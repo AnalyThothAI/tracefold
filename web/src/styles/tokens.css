@@ -42,6 +42,18 @@
   --signal-info-border: rgba(121, 169, 255, 0.38);
   --signal-neutral: #8f9bae;
 
+  /* Quantitative series palette */
+  --chart-series-1: #67d4ff;
+  --chart-series-2: #f6c85f;
+  --chart-series-3: #9d8cff;
+  --chart-series-4: #ff7c8b;
+  --chart-series-5: #66c2a5;
+  --chart-series-6: #fc8d62;
+  --chart-series-7: #8da0cb;
+  --chart-series-8: #e78ac3;
+  --chart-series-9: #a6d854;
+  --chart-series-10: #ffd92f;
+
   /* Shape, density and motion */
   --radius-sm: 5px;
   --radius-md: 8px;

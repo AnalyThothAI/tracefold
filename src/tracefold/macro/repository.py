@@ -35,35 +35,9 @@ class MacroRepository:
             ON CONFLICT(target_key) DO UPDATE SET
               clock_kind = EXCLUDED.clock_kind,
               max_attempts = EXCLUDED.max_attempts,
-              status = CASE
-                WHEN macro_acquisition_targets.status = 'stale'
-                  AND macro_acquisition_targets.clock_kind <> 'backfill'
-                  AND EXCLUDED.clock_kind <> 'backfill'
-                  THEN 'delayed'
-                ELSE macro_acquisition_targets.status
-              END,
-              attempt_count = CASE
-                WHEN macro_acquisition_targets.status = 'stale'
-                  AND macro_acquisition_targets.clock_kind <> 'backfill'
-                  AND EXCLUDED.clock_kind <> 'backfill'
-                  THEN 0
-                ELSE macro_acquisition_targets.attempt_count
-              END,
-              next_due_at_ms = CASE
-                WHEN macro_acquisition_targets.status = 'stale'
-                  AND macro_acquisition_targets.clock_kind <> 'backfill'
-                  AND EXCLUDED.clock_kind <> 'backfill'
-                  THEN LEAST(macro_acquisition_targets.next_due_at_ms, EXCLUDED.next_due_at_ms)
-                ELSE macro_acquisition_targets.next_due_at_ms
-              END,
               updated_at_ms = EXCLUDED.updated_at_ms
             WHERE macro_acquisition_targets.clock_kind IS DISTINCT FROM EXCLUDED.clock_kind
                OR macro_acquisition_targets.max_attempts IS DISTINCT FROM EXCLUDED.max_attempts
-               OR (
-                 macro_acquisition_targets.status = 'stale'
-                 AND macro_acquisition_targets.clock_kind <> 'backfill'
-                 AND EXCLUDED.clock_kind <> 'backfill'
-               )
             """,
             (
                 spec.target_key,
@@ -369,6 +343,7 @@ class MacroRepository:
             "series_id": fact.series_id,
             "reference_period": fact.reference_period,
             "scheduled_at_ms": fact.scheduled_at_ms,
+            "published_at_ms": fact.published_at_ms,
             "actual_value": fact.actual_value,
             "prior_value": fact.prior_value,
             "revised_prior_value": fact.revised_prior_value,
@@ -581,20 +556,54 @@ class MacroRepository:
         return status if row is not None else None
 
     def target_states(self, *, dataset_ids: tuple[str, ...] = ()) -> list[dict[str, Any]]:
-        if dataset_ids:
-            rows = self.conn.execute(
-                """
-                SELECT *
-                FROM macro_acquisition_targets
-                WHERE dataset_id = ANY(%s)
-                ORDER BY dataset_id, partition_key
-                """,
-                (list(dataset_ids),),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM macro_acquisition_targets ORDER BY dataset_id, partition_key"
-            ).fetchall()
+        rows = self.conn.execute(
+            """
+            WITH scoped AS (
+              SELECT
+                targets.*,
+                CASE
+                  WHEN clock_kind = 'backfill' THEN COALESCE(
+                    NULLIF(cursor_json ->> 'history_class', ''),
+                    'explicit_backfill'
+                  )
+                  ELSE 'steady'
+                END AS target_contract,
+                CASE
+                  WHEN cursor_json ? 'end_date' THEN (cursor_json ->> 'end_date')::date
+                  ELSE NULL
+                END AS semantic_end,
+                CASE
+                  WHEN cursor_json ? 'start_date' THEN (cursor_json ->> 'start_date')::date
+                  ELSE NULL
+                END AS semantic_start
+              FROM macro_acquisition_targets AS targets
+              WHERE cardinality(%s::text[]) = 0
+                 OR dataset_id = ANY(%s::text[])
+            ), ranked AS (
+              SELECT
+                scoped.*,
+                row_number() OVER (
+                  PARTITION BY dataset_id, target_contract
+                  ORDER BY
+                    semantic_end DESC NULLS LAST,
+                    created_at_ms DESC,
+                    updated_at_ms DESC,
+                    semantic_start ASC NULLS LAST,
+                    target_key DESC
+                ) AS canonical_rank
+              FROM scoped
+            )
+            SELECT
+              target_key, dataset_id, partition_key, clock_kind, cursor_json,
+              status, next_due_at_ms, priority, leased_until_ms, lease_owner,
+              attempt_count, max_attempts, last_success_at_ms, last_error_code,
+              created_at_ms, updated_at_ms
+            FROM ranked
+            WHERE canonical_rank = 1
+            ORDER BY dataset_id, partition_key
+            """,
+            (list(dataset_ids), list(dataset_ids)),
+        ).fetchall()
         return [dict(row) for row in rows]
 
     def projection_source_state(self) -> dict[str, Any]:
@@ -1118,26 +1127,66 @@ class MacroRepository:
     def release_history(
         self,
         *,
-        dataset_ids: tuple[str, ...],
+        history_limits: Mapping[str, int],
         received_before_ms: int | None = None,
         row_cap: int | None = None,
     ) -> list[dict[str, Any]]:
-        if not dataset_ids:
+        requested = dict(sorted((str(dataset_id), int(limit)) for dataset_id, limit in history_limits.items()))
+        if not requested:
             return []
+        if any(limit <= 0 for limit in requested.values()):
+            raise ValueError("macro_release_history_limit_invalid")
         rows = self.conn.execute(
             """
-            SELECT *
-            FROM macro_release_facts
-            WHERE dataset_id = ANY(%s)
-              AND received_at_ms <= COALESCE(%s::bigint, received_at_ms)
+            WITH requested(dataset_id, history_limit) AS (
+              SELECT *
+              FROM unnest(%s::text[], %s::integer[])
+            ), eligible AS (
+              SELECT
+                facts.*,
+                requested.history_limit,
+                row_number() OVER (
+                  PARTITION BY facts.dataset_id, facts.series_id, facts.reference_period
+                  ORDER BY
+                    facts.received_at_ms DESC,
+                    facts.published_at_ms DESC NULLS LAST,
+                    facts.fact_hash DESC,
+                    facts.release_fact_id DESC
+                ) AS revision_rank
+              FROM macro_release_facts AS facts
+              JOIN requested USING (dataset_id)
+              WHERE facts.received_at_ms <= COALESCE(%s::bigint, facts.received_at_ms)
+            ), ranked AS (
+              SELECT
+                eligible.*,
+                dense_rank() OVER (
+                  PARTITION BY dataset_id
+                  ORDER BY reference_period DESC
+                ) AS semantic_rank
+              FROM eligible
+              WHERE revision_rank = 1
+            )
+            SELECT
+              release_fact_id, dataset_id, release_id, series_id, reference_period,
+              scheduled_at_ms, published_at_ms, received_at_ms, actual_value,
+              prior_value, revised_prior_value, estimate_value, unit, importance_tier,
+              source_url, fact_hash, raw_data_json
+            FROM ranked
+            WHERE semantic_rank <= history_limit
             ORDER BY
               dataset_id,
               reference_period,
+              series_id,
               received_at_ms,
               fact_hash
             LIMIT %s
             """,
-            (list(dataset_ids), received_before_ms, _row_limit(row_cap)),
+            (
+                list(requested),
+                list(requested.values()),
+                received_before_ms,
+                _row_limit(row_cap),
+            ),
         ).fetchall()
         return [dict(row) for row in rows]
 

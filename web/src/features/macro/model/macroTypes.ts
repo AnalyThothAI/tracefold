@@ -2,16 +2,8 @@ import type { components } from "@lib/types/openapi";
 
 type MacroSchemas = components["schemas"];
 
-export type JsonObject = Record<string, unknown>;
-
 export type MacroReason = MacroSchemas["MacroReason"];
-export type MacroModuleId =
-  | "rates_fed"
-  | "economy_inflation"
-  | "liquidity_funding"
-  | "credit"
-  | "volatility"
-  | "cross_asset";
+export type MacroModuleId = MacroSchemas["MacroModuleUnavailableData"]["module_id"];
 
 export type MacroCoverageCapability = MacroSchemas["MacroCoverageCapabilityData"];
 export type MacroCoverage = MacroSchemas["MacroCoverageData"];
@@ -35,6 +27,9 @@ export type MacroLiquidityFundingReadData = MacroSchemas["MacroLiquidityFundingR
 export type MacroCreditReadData = MacroSchemas["MacroCreditReadData"];
 export type MacroVolatilityReadData = MacroSchemas["MacroVolatilityReadData"];
 export type MacroCrossAssetReadData = MacroSchemas["MacroCrossAssetReadData"];
+export type MacroCreditCycleDimension = MacroSchemas["MacroCreditCycleDimensionData"];
+export type MacroFedTimelineEvent = MacroSchemas["MacroFedTimelineEventData"];
+export type MacroSettlement = MacroSchemas["MacroSettlementData"];
 
 export type MacroTypedModuleReadData =
   | MacroRatesFedReadData
@@ -46,6 +41,14 @@ export type MacroTypedModuleReadData =
 
 export type MacroModuleUnavailableReadData = MacroSchemas["MacroModuleUnavailableData"];
 export type MacroModuleRouteReadData = MacroTypedModuleReadData | MacroModuleUnavailableReadData;
+
+export type MacroAvailableModuleById = {
+  [ModuleId in MacroModuleId]: Extract<MacroTypedModuleReadData, { module_id: ModuleId }>;
+};
+
+export type MacroModuleRouteReadDataFor<ModuleId extends MacroModuleId> =
+  | MacroAvailableModuleById[ModuleId]
+  | (Omit<MacroModuleUnavailableReadData, "module_id"> & { module_id: ModuleId });
 
 export type MacroModuleSummary = MacroSchemas["MacroModuleSummaryData"];
 export type MacroOverviewReadData = MacroSchemas["MacroOverviewReadData"];

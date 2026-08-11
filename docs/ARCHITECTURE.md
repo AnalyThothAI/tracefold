@@ -635,8 +635,10 @@ atomically writes facts, cursor, and current target success/error state.
 Unchanged source content writes zero fact rows. Revisions append a new fact and
 never overwrite history.
 
-Macro history reads, Calculation Registry execution, and all six module payload
-builds occur outside the write transaction. A short compare-and-set write phase
+Macro bounded history reads and the Calculation Registry's typed builder
+contracts execute inside the six module payload builds, outside the write
+transaction. There is no second generic feature-materialization engine. A
+short compare-and-set write phase
 publishes the stable module row and projection fingerprint. Unchanged module
 payloads write zero serving rows.
 
@@ -670,12 +672,14 @@ closed and maintenance sessions do not age the last expected market bar against
 wall time.
 
 The six product modules are `rates_fed`, `economy_inflation`,
-`liquidity_funding`, `credit`, `volatility`, and `cross_asset`. Each has one
-explicit typed payload (rates v7, economy/liquidity v5, and
-credit/volatility/cross-asset v7), deterministic module-specific analysis, exact
+`liquidity_funding`, `credit`, `volatility`, and `cross_asset`. One code-owned
+module descriptor fixes each ID, label, schema version, and builder key. Each
+has one explicit typed payload (rates v8, economy v6, liquidity v5,
+credit/volatility v7, and cross-asset v8), deterministic module-specific analysis, exact
 market timestamps, natural publication cadence, source roles, importance
 ranks with factor explanations, and evidence lineage. Release payloads keep expected, actual, surprise,
-revision, and publication time distinct. ETF daily history is the Nasdaq public
+revision, publication time, and Registry-owned seasonal-adjustment semantics
+distinct. ETF daily history is the Nasdaq public
 five-year lane; Yahoo supplies ETF intraday prices and paired intraday/daily
 continuous-contract futures proxies. No generic chart-array contract survives. The Calculation
 Registry records every feature's inputs, formula version, windows, minimum
@@ -684,17 +688,21 @@ The Natural Change Calculation Registry separately fixes every Dataset's
 cadence-native windows, minimum observations, formula, unit, revision/surprise
 rules, bounded-gap policy, and output schema. Exact month/quarter lags cannot
 fall back to an older available row while retaining the requested window label.
-Treasury shape, matched breakevens, normalized asset returns, credit ladder
-history, and funding comparisons remain deterministic. Credit exposes spread,
+Treasury shape, matched breakevens, normalized asset returns, 30/90/252
+common-daily-return correlations, credit ladder history, and funding
+comparisons remain deterministic. Correlation pair facts are undirected and
+exclude diagonals; the payload's presentation contract owns the default window
+and mirrored unit-diagonal display rule. Credit exposes spread,
 funding cost, bank supply, and borrower quality concurrently and never reduces
 them to a score.
 
-Rates v7 also carries the current official FOMC calendar snapshot and recent
+Rates v8 also carries the current official FOMC calendar snapshot and recent
 Treasury auction-demand facts. The calendar adapter emits one immutable
 revision across all meetings on the official page, so an official reschedule
 replaces the prior snapshot in the read model without deleting its audit facts.
-Auction bid-to-cover, high yield, offering amount, and bidder award shares enter
-the existing release-fact family from Treasury Fiscal Data. The competitive
+Auction bid-to-cover, Bill discount rate, investment rate, high yield, offering
+amount, and bidder award shares enter the existing release-fact family from
+Treasury Fiscal Data as distinct fields. The competitive
 close is a scheduled clock; no result publication time is invented. SOFR has
 one Registry owner and one fact identity while the dependency graph makes that
 same fact available to both Rates and Liquidity.
@@ -728,6 +736,16 @@ Migration `20260810_0251` is the Rates v7 hard cut: it deletes the rebuildable
 v6 `rates_fed` current/frontier rows and changes the database schema invariant
 to v7. Typed Macro facts and immutable analyses are preserved and the sole
 projection writer rebuilds the current row.
+Migration `20260811_0252` converts unreachable legacy acquisition-target
+states once, removes `invalid` from the live state machine, preserves the six
+serving rows, and clears only their rebuildable frontiers. On startup the sole
+projection writer reconciles those missing frontiers from persisted Dataset
+projection state and republishes all six modules without provider I/O.
+Migration
+`20260811_0253` is the current semantic-contract hard cut: it invalidates only
+the rebuildable Rates, Economy, and Cross-Asset current/frontier rows and
+requires v8, v6, and v8 respectively. Material facts, targets, documents, and
+analyses remain intact; there is no dual reader.
 
 ## Safety boundary
 

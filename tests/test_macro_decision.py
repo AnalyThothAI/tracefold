@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+
+import pytest
 
 from tracefold.app.http import schemas as api_schemas
 from tracefold.macro import (
+    CALCULATION_REGISTRY,
     MACRO_MODULE_IDS,
     NATURAL_CHANGE_REGISTRY,
     module_payloads,
     natural_change_calculation,
 )
+from tracefold.macro import domain as macro_domain
+from tracefold.macro import registry as macro_registry
 from tracefold.macro.coverage import COVERAGE_MANIFEST
 from tracefold.macro.dependencies import MODULE_DATASET_DEPENDENCIES
 from tracefold.macro.fed_roles import effective_roster_rows, match_effective_role
@@ -82,6 +87,7 @@ def _release_row(
     received_at_ms: int = NOW_MS,
     scheduled_at_ms: int | None = None,
     published_at_ms: int | None = None,
+    raw_data_json: dict | None = None,
 ) -> dict:
     return {
         "release_fact_id": f"release:{dataset_id}:{release_id}:{series_id}:{received_at_ms}",
@@ -100,7 +106,7 @@ def _release_row(
         "importance_tier": 2,
         "source_url": "https://example.com/official",
         "fact_hash": f"hash:{release_id}:{series_id}:{actual_value}",
-        "raw_data_json": {},
+        "raw_data_json": raw_data_json or {},
     }
 
 
@@ -153,6 +159,129 @@ def test_daily_official_fact_does_not_expire_over_a_weekend() -> None:
     )
 
     assert _dataset_state(module, "fred.dgs2")["current_health"] == "current"
+
+
+def test_economy_labor_health_requires_official_payroll_and_unemployment_releases() -> None:
+    module = _module("economy_inflation")
+
+    payroll = _dataset_state(module, "bls.payrolls.release")
+    unemployment = _dataset_state(module, "bls.unemployment.release")
+    labor_coverage = next(
+        capability
+        for capability in module["status"]["coverage"]["capabilities"]
+        if capability["capability_id"] == "economy.labor"
+    )
+
+    assert payroll["required_for_current"] is True
+    assert unemployment["required_for_current"] is True
+    assert labor_coverage["dataset_ids"] == [
+        "bls.payrolls.release",
+        "bls.unemployment.release",
+        "fred.payems",
+        "fred.unrate",
+        "fred.icsa",
+    ]
+
+
+def test_calculation_registry_contains_only_typed_builder_calculations() -> None:
+    assert set(CALCULATION_REGISTRY) == {
+        "rates.treasury_curve_cross_sections",
+        "rates.matched_breakeven_curve",
+        "rates.curve_shape",
+        "credit.rating_ladder",
+        "credit.funding_cost_comparisons",
+        "cross_asset.normalized_returns",
+        "cross_asset.return_correlations",
+    }
+
+
+def test_cross_asset_correlations_publish_three_server_owned_common_return_windows() -> None:
+    start = datetime(2025, 11, 1, 21, tzinfo=UTC)
+    market_rows = [
+        _market_row(
+            dataset_id,
+            int((start + timedelta(days=index)).timestamp() * 1_000),
+            multiplier * (100 + index),
+        )
+        for index in range(254)
+        for dataset_id, multiplier in (
+            ("nasdaq.spy.daily", 1.0),
+            ("nasdaq.qqq.daily", 2.0),
+        )
+    ]
+
+    module = _module("cross_asset", market_rows=market_rows)
+    spec = CALCULATION_REGISTRY["cross_asset.return_correlations"]
+    pair_facts = [row for row in module["correlations"] if row["left"] == "SPY" and row["right"] == "QQQ"]
+
+    assert spec.windows == (
+        "30_daily_returns",
+        "90_daily_returns",
+        "252_daily_returns",
+    )
+    assert spec.minimum_observations == 20
+    assert module["correlation_contract"] == {
+        "default_window": "90_daily_returns",
+        "supported_windows": [
+            "30_daily_returns",
+            "90_daily_returns",
+            "252_daily_returns",
+        ],
+        "minimum_common_observations": 20,
+        "presentation_derivation": "undirected_pairs_mirrored_with_unit_diagonal",
+    }
+    assert [(row["window"], row["sample_count"]) for row in pair_facts] == [
+        ("30_daily_returns", 30),
+        ("90_daily_returns", 90),
+        ("252_daily_returns", 252),
+    ]
+    assert all(row["correlation"] == 1.0 for row in pair_facts)
+    assert not any(row["left"] == row["right"] for row in module["correlations"])
+    assert not any(row["left"] == "QQQ" and row["right"] == "SPY" for row in module["correlations"])
+
+
+def test_dataset_registry_uses_the_exact_acquisition_adapter_contract() -> None:
+    expected = frozenset(
+        {
+            "bea_release_page",
+            "binance_spot",
+            "bls_release",
+            "cfe_settlement",
+            "cftc_tff",
+            "fed_board_speech_archive",
+            "fed_fomc_calendar",
+            "fed_fomc_schedule",
+            "fed_reserve_bank_sitemaps",
+            "fred_csv",
+            "nasdaq_history",
+            "treasury_curve_xml",
+            "treasury_fiscaldata_auctions",
+            "yfinance_history",
+        }
+    )
+
+    assert expected == macro_registry.MACRO_ACQUISITION_ADAPTER_IDS
+    assert {spec.adapter_id for spec in DATASET_REGISTRY.values() if spec.clock_kind != "derived"} == expected
+
+
+def test_macro_module_definitions_are_the_single_typed_builder_authority() -> None:
+    expected_versions = {
+        "rates_fed": "macro_rates_fed_v8",
+        "economy_inflation": "macro_economy_inflation_v6",
+        "liquidity_funding": "macro_liquidity_funding_v5",
+        "credit": "macro_credit_v7",
+        "volatility": "macro_volatility_v7",
+        "cross_asset": "macro_cross_asset_v8",
+    }
+
+    assert set(macro_domain.MACRO_MODULE_DEFINITIONS) == set(MACRO_MODULE_IDS)
+    assert {
+        module_id: definition.schema_version for module_id, definition in macro_domain.MACRO_MODULE_DEFINITIONS.items()
+    } == expected_versions
+    assert {definition.builder_key for definition in macro_domain.MACRO_MODULE_DEFINITIONS.values()} == set(
+        MACRO_MODULE_IDS
+    )
+    assert {module_id: _module(module_id)["schema_version"] for module_id in MACRO_MODULE_IDS} == expected_versions
 
 
 def test_semantic_history_start_survives_bounded_projection_window() -> None:
@@ -216,17 +345,15 @@ def test_market_latest_fact_exposes_all_source_clocks_and_prefers_observed_time(
     assert latest["received_at_ms"] == NOW_MS - 5_000
 
 
-def test_coverage_manifest_keeps_expected_but_unregistered_capability_visible(
+def test_typed_module_rejects_coverage_registry_drift(
     monkeypatch,
 ) -> None:
     registry = dict(module_payloads.DATASET_REGISTRY)
     registry.pop("federal_reserve.reserve_bank.speeches")
     monkeypatch.setattr(module_payloads, "DATASET_REGISTRY", registry)
-    module = _module("rates_fed")
-    capabilities = {item["capability_id"]: item for item in module["status"]["coverage"]["capabilities"]}
 
-    assert module["status"]["coverage"]["state"] == "partial"
-    assert capabilities["fed.reserve_bank_speeches"]["state"] == "missing"
+    with pytest.raises(KeyError, match=r"federal_reserve\.reserve_bank\.speeches"):
+        _module("rates_fed")
 
 
 def test_implemented_fed_capabilities_exclude_unavailable_licensed_products() -> None:
@@ -277,7 +404,7 @@ def test_rates_payload_uses_only_the_latest_official_fomc_calendar_revision() ->
 
     module = _module("rates_fed", release_rows=release_rows)
 
-    assert module["schema_version"] == "macro_rates_fed_v7"
+    assert module["schema_version"] == "macro_rates_fed_v8"
     assert module["fed"]["meeting_calendar"] == {
         "revision_id": "new",
         "meetings": [
@@ -304,12 +431,14 @@ def test_rates_payload_uses_only_the_latest_official_fomc_calendar_revision() ->
     api_schemas.MacroRatesFedPersistedData.model_validate(module)
 
 
-def test_rates_payload_groups_treasury_auction_metrics_without_inventing_publication_time() -> None:
+def test_rates_payload_keeps_treasury_auction_rates_independent_without_inventing_publication_time() -> None:
     release_id = "TREASURY_AUCTION:91282ABC1:2026-07-27"
     scheduled_at_ms = 1_785_171_600_000
     metrics = {
         "bid_to_cover": (2.67, "ratio"),
         "direct_award_share": (12.5, "percent"),
+        "high_discount_rate": (4.201, "percent"),
+        "high_investment_rate": (4.398, "percent"),
         "high_yield": (4.321, "percent"),
         "indirect_award_share": (70.0, "percent"),
         "offering_amount": (42_000_000_000.0, "usd"),
@@ -324,6 +453,7 @@ def test_rates_payload_groups_treasury_auction_metrics_without_inventing_publica
             actual_value=value,
             unit=unit,
             scheduled_at_ms=scheduled_at_ms,
+            raw_data_json={"security_term": "10-Year"},
         )
         for metric, (value, unit) in metrics.items()
     ]
@@ -334,7 +464,7 @@ def test_rates_payload_groups_treasury_auction_metrics_without_inventing_publica
         {
             "auction_id": release_id,
             "cusip": "91282ABC1",
-            "security_term": "10_YEAR",
+            "security_term": "10-Year",
             "auction_date": "2026-07-27",
             "scheduled_at_ms": scheduled_at_ms,
             "published_at_ms": None,
@@ -342,16 +472,40 @@ def test_rates_payload_groups_treasury_auction_metrics_without_inventing_publica
             "source_url": "https://example.com/official",
             "bid_to_cover_ratio": 2.67,
             "high_yield_pct": 4.321,
+            "high_discount_rate_pct": 4.201,
+            "high_investment_rate_pct": 4.398,
             "offering_amount_usd": 42_000_000_000.0,
             "indirect_award_share_pct": 70.0,
             "direct_award_share_pct": 12.5,
             "primary_dealer_award_share_pct": 17.5,
         }
     ]
-    api_schemas.MacroRatesFedPersistedData.model_validate(module)
     assert DATASET_REGISTRY["yfinance.spy.intraday"].module_id == "cross_asset"
     assert all(capability.requirement in {"required", "supporting"} for capability in COVERAGE_MANIFEST.values())
     assert "licensed_unavailable" not in json.dumps(module, sort_keys=True)
+
+
+def test_rates_payload_leaves_each_missing_treasury_auction_rate_null() -> None:
+    release_id = "TREASURY_AUCTION:912797NN7:2026-08-04"
+    module = _module(
+        "rates_fed",
+        release_rows=[
+            _release_row(
+                dataset_id="treasury.auction.results",
+                release_id=release_id,
+                series_id="26_WEEK:high_discount_rate",
+                reference_period="2026-08-04",
+                actual_value=4.177,
+                unit="percent",
+            )
+        ],
+    )
+
+    result = module["treasury_auctions"]["recent_results"][0]
+    assert result["security_term"] == "26_WEEK"
+    assert result["high_yield_pct"] is None
+    assert result["high_discount_rate_pct"] == 4.177
+    assert result["high_investment_rate_pct"] is None
 
 
 def test_every_coverage_dataset_is_a_declared_module_input_dependency() -> None:
@@ -439,7 +593,7 @@ def test_missing_fed_document_analysis_does_not_degrade_current_rates_facts() ->
     assert analysis_capability["requirement"] == "supporting"
     assert analysis_state["required_for_current"] is False
     assert analysis_state["current_health"] == "unavailable"
-    assert analysis_state["current_reason"]["code"] == "derived_fact_pending"
+    assert analysis_state["current_reason"]["code"] == "document_analysis_disabled"
     assert module["fed"]["institutional_stance"]["state"] == "no_call"
     assert module["fed"]["institutional_stance"]["reason"]
 
@@ -623,7 +777,7 @@ def test_rates_payload_is_tenor_native_and_matches_the_issue_31_acceptance_sampl
 
     api_schemas.MacroRatesFedPersistedData.model_validate(module)
     assert module == reversed_module
-    assert module["schema_version"] == "macro_rates_fed_v7"
+    assert module["schema_version"] == "macro_rates_fed_v8"
     assert "summary" not in module
     assert "contradictions" not in module
     assert "falsifiers" not in module
@@ -1162,11 +1316,12 @@ def test_release_payload_preserves_latest_fields_and_bounds_twelve_observations(
         "economy_inflation",
         release_rows=list(reversed(releases)),
     )
-    api_schemas.MacroEconomyInflationPersistedData.model_validate(module)
     summary = module["inflation"]["official_releases"][0]
     observations = summary["observations"]
 
     assert len(observations) == 12
+    assert summary["seasonal_adjustment"] == "not_seasonally_adjusted"
+    assert {item["seasonal_adjustment"] for item in observations} == {"not_seasonally_adjusted"}
     assert [item["reference_period"] for item in observations] == list(reversed(periods[2:]))
     assert summary["reference_period"] == observations[0]["reference_period"] == "2026-M02"
     assert summary["actual_value"] == observations[0]["actual_value"]
@@ -1174,6 +1329,29 @@ def test_release_payload_preserves_latest_fields_and_bounds_twelve_observations(
         next(item for item in observations if item["reference_period"] == "2026-M01")["revised_prior_value"] == 311.25
     )
     assert reversed_module["inflation"]["official_releases"] == module["inflation"]["official_releases"]
+
+
+def test_economy_release_registry_owns_each_official_seasonal_adjustment() -> None:
+    assert {
+        dataset_id: DATASET_REGISTRY[dataset_id].seasonal_adjustment
+        for dataset_id in (
+            "bls.cpi.release",
+            "bls.core_cpi.release",
+            "bls.payrolls.release",
+            "bls.unemployment.release",
+            "bea.gdp.release",
+            "bea.pce.release",
+            "bea.core_pce.release",
+        )
+    } == {
+        "bls.cpi.release": "not_seasonally_adjusted",
+        "bls.core_cpi.release": "not_seasonally_adjusted",
+        "bls.payrolls.release": "seasonally_adjusted",
+        "bls.unemployment.release": "seasonally_adjusted",
+        "bea.gdp.release": "seasonally_adjusted_annual_rate",
+        "bea.pce.release": "seasonally_adjusted",
+        "bea.core_pce.release": "seasonally_adjusted",
+    }
 
 
 def test_natural_change_metrics_follow_non_curve_dataset_cadence() -> None:

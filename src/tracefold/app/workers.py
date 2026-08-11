@@ -847,7 +847,6 @@ async def _wire_components(
     source_config = settings.providers.macro_sources
     if source_config.enabled:
         macro_source = MacroSourceClient(
-            timeout_seconds=min(30.0, float(source_config.request_timeout_seconds)),
             user_agent=str(source_config.user_agent),
             fred_enabled=source_config.fred_enabled,
             cboe_enabled=source_config.cboe_enabled,
@@ -875,7 +874,7 @@ async def _wire_components(
                 ),
             )
             macro_turns.append(turn)
-            idle_seconds, _old_batch = acquisition_loop_policy(clock_kind)
+            idle_seconds = acquisition_loop_policy(clock_kind)[0]
             due_turns.append((turn.turn, idle_seconds))
 
     if providers.dex_discovery_market is not None:
@@ -959,6 +958,13 @@ async def _reconcile_once(components: _Components) -> None:
         await turn.reconcile()
     if components.document_model is not None:
         await components.document_model.reconcile()
+    macro_projections = tuple(
+        projection for projection in components.projections if isinstance(projection, MacroProjectionCandidate)
+    )
+    if len(macro_projections) > 1:
+        raise RuntimeError("macro_projection_candidate_wiring_duplicate")
+    if macro_projections:
+        await macro_projections[0].reconcile()
 
 
 async def _graceful_cleanup(

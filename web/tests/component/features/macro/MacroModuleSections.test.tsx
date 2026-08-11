@@ -42,6 +42,16 @@ describe("macro module evidence workbench", () => {
     expect(screen.queryByRole("heading", { name: "扭转式陡峭化 · 1D 主时钟" })).toBeNull();
   });
 
+  it("canonicalizes an invalid hash to the module default section", async () => {
+    window.location.hash = "#retired-view";
+
+    render(<MacroModuleSections module={macroModuleFixture("volatility")} />);
+
+    await waitFor(() => expect(window.location.hash).toBe("#term"));
+    expect(screen.getByRole("tab", { name: "现货–3M" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "VIX 期限结构" })).toBeVisible();
+  });
+
   it("renders CFE settlement expiry only in the volatility term structure", () => {
     window.location.hash = "#term";
     const volatility = macroModuleFixture("volatility");
@@ -56,6 +66,250 @@ describe("macro module evidence workbench", () => {
     render(<MacroModuleSections module={macroModuleFixture("cross_asset")} />);
     expect(screen.getByRole("heading", { name: "期货市场与仓位确认" })).toBeVisible();
     expect(screen.queryByText("VXQ26")).toBeNull();
+  });
+
+  it("labels normalized volatility as a base-100 comparison instead of raw index points", () => {
+    window.location.hash = "#cross-asset";
+    const module = macroModuleFixture("volatility");
+    if (module.module_id !== "volatility") throw new Error("expected volatility fixture");
+    module.cross_asset_implied.normalized_groups = [
+      {
+        display_order: 1,
+        group_id: "implied-volatility",
+        label: "隐含波动率归一化",
+        series: [
+          {
+            display_order: 1,
+            label: "VXN",
+            points: [
+              { date: "2026-07-21", normalized_value: 100 },
+              { date: "2026-07-29", normalized_value: 104.2 },
+            ],
+            source: {
+              dataset_id: "cboe.vxn",
+              fact: null,
+              label: "CBOE VXN",
+              source_role: "decision_primary",
+            },
+            symbol: "VXN",
+          },
+        ],
+      },
+    ];
+
+    render(<MacroModuleSections module={module} />);
+
+    expect(screen.getAllByText(/基期=100/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/最新：VXN 104\.2（基期=100）/)).toBeVisible();
+    expect(screen.queryByText(/VXN 104\.2 点/)).toBeNull();
+  });
+
+  it("shows separate latest and return sources, as-of clocks, and the price unit", () => {
+    window.location.hash = "#returns";
+    const module = macroModuleFixture("cross_asset");
+    if (module.module_id !== "cross_asset") throw new Error("expected cross-asset fixture");
+    module.assets.return_matrix = [
+      {
+        display_order: 1,
+        group_id: "equities",
+        group_label: "股票",
+        identity_policy: "separate_source_facts_no_blend",
+        label: "标普 500 ETF",
+        latest_source: {
+          dataset_id: "market.spy.intraday",
+          fact: {
+            as_of: "2026-07-29",
+            change_1d_pct: 0.4,
+            change_1m_pct: 2.1,
+            change_1w_pct: 1.2,
+            dataset_id: "market.spy.intraday",
+            latest_value: 501.25,
+            market_time_ms: Date.parse("2026-07-29T19:59:00Z"),
+            source_url: "https://example.com/spy/latest",
+            unit: "price",
+          },
+          label: "SPY 实时源",
+          source_role: "intraday_proxy",
+        },
+        return_source: {
+          dataset_id: "market.spy.daily",
+          fact: {
+            as_of: "2026-07-28",
+            change_1d_pct: 0.3,
+            change_1m_pct: 2,
+            change_1w_pct: 1.1,
+            dataset_id: "market.spy.daily",
+            latest_value: 499.25,
+            market_time_ms: Date.parse("2026-07-28T20:00:00Z"),
+            source_url: "https://example.com/spy/returns",
+            unit: "price",
+          },
+          label: "SPY 日收益源",
+          source_role: "decision_primary",
+        },
+        selection_policy: "intraday_latest_and_daily_returns_exact",
+        symbol: "SPY",
+      },
+    ];
+
+    render(<MacroModuleSections module={module} />);
+
+    const row = screen.getByText("SPY").closest('[role="row"]');
+    if (!(row instanceof HTMLElement)) throw new Error("expected SPY row");
+    expect(within(row).getByText("501.25（价格）")).toBeVisible();
+    expect(within(row).getByText("最新：SPY 实时源 · 2026-07-29")).toBeVisible();
+    expect(within(row).getByText("收益：SPY 日收益源 · 2026-07-28")).toBeVisible();
+    expect(within(row).queryByText(/单位未解释/)).toBeNull();
+  });
+
+  it("puts server-owned benchmark facts and source clocks on the cross-asset first view", () => {
+    window.location.hash = "#returns";
+    const module = macroModuleFixture("cross_asset");
+    if (module.module_id !== "cross_asset") throw new Error("expected cross-asset fixture");
+    module.assets.source_identity = [
+      ["WTI", "原油", "fred.wti", 74.5, "usd_per_barrel"],
+      ["BTC", "比特币", "market.btc", 66_500, "usdt"],
+      ["VIX", "VIX", "fred.vix", 15.2, "index"],
+      ["SPY", "标普代理", "market.spy", 501.25, "price"],
+      ["UUP", "美元代理", "market.uup", 28.4, "price"],
+    ].map(([symbol, label, datasetId, latestValue, unit], index) => ({
+      display_order: index + 1,
+      evidence_kind: index < 3 ? "benchmark" : "fixed_etf_proxy",
+      identity_policy: "separate_source_facts_no_blend" as const,
+      label: String(label),
+      selection_policy: "server_owned_exact_source",
+      sources: [
+        {
+          dataset_id: String(datasetId),
+          fact: {
+            as_of: "2026-07-29",
+            change_1d_pct: null,
+            change_1m_pct: null,
+            change_1w_pct: null,
+            dataset_id: String(datasetId),
+            latest_value: Number(latestValue),
+            market_time_ms: Date.parse("2026-07-29T20:00:00Z"),
+            source_url: `https://example.com/${String(symbol).toLowerCase()}`,
+            unit: String(unit),
+          },
+          label: `${String(symbol)} 服务端事实源`,
+          source_role: "decision_primary",
+        },
+      ],
+      symbol: String(symbol),
+    }));
+
+    render(<MacroModuleSections module={module} />);
+
+    const strip = screen.getByRole("region", { name: "基准与来源事实" });
+    expect(within(strip).getByText("74.5 美元/桶")).toBeVisible();
+    expect(within(strip).getByText("66,500 USDT")).toBeVisible();
+    expect(within(strip).getByText("15.2 点")).toBeVisible();
+    expect(within(strip).getAllByText("2026-07-29")).toHaveLength(5);
+    expect(within(strip).queryByText(/分数|score/i)).toBeNull();
+  });
+
+  it("selects correlation windows from the server contract and explains matrix derivation", () => {
+    window.location.hash = "#correlations";
+    const module = macroModuleFixture("cross_asset");
+    if (module.module_id !== "cross_asset") throw new Error("expected cross-asset fixture");
+    module.correlations = [
+      {
+        correlation: 0.1,
+        left: "SPY",
+        right: "TLT",
+        sample_count: 30,
+        window: "30_daily_returns",
+      },
+      {
+        correlation: 0.5,
+        left: "SPY",
+        right: "TLT",
+        sample_count: 90,
+        window: "90_daily_returns",
+      },
+      {
+        correlation: 0.8,
+        left: "SPY",
+        right: "TLT",
+        sample_count: 252,
+        window: "252_daily_returns",
+      },
+    ];
+
+    const rendered = render(<MacroModuleSections module={module} />);
+
+    const selector = screen.getByRole("combobox", { name: "相关收益窗口" });
+    expect(selector).toHaveValue("90_daily_returns");
+    expect(screen.getByText(/最少共同观测：20/)).toBeVisible();
+    expect(screen.getByText(/undirected_pairs_mirrored_with_unit_diagonal/)).toBeVisible();
+    expect(screen.getByLabelText("SPY 与 TLT 相关性 0.50")).toBeVisible();
+    expect(screen.getByLabelText("TLT 与 SPY 相关性 0.50")).toBeVisible();
+    expect(screen.getByLabelText("SPY 与 SPY 相关性 1.00")).toBeVisible();
+
+    fireEvent.change(selector, { target: { value: "252_daily_returns" } });
+
+    expect(screen.getByLabelText("SPY 与 TLT 相关性 0.80")).toBeVisible();
+    expect(screen.queryByLabelText("SPY 与 TLT 相关性 0.50")).toBeNull();
+
+    module.correlation_contract = {
+      ...module.correlation_contract,
+      default_window: "30_daily_returns",
+      supported_windows: ["30_daily_returns"],
+    };
+    rendered.rerender(<MacroModuleSections module={{ ...module }} />);
+
+    expect(selector).toHaveValue("30_daily_returns");
+    expect(screen.getByLabelText("SPY 与 TLT 相关性 0.10")).toBeVisible();
+  });
+
+  it("shows the economy release reference period and all publication clocks", () => {
+    window.location.hash = "#inflation";
+    const module = macroModuleFixture("economy_inflation");
+    if (module.module_id !== "economy_inflation") throw new Error("expected economy fixture");
+    module.inflation.official_releases = [
+      {
+        actual_value: 2.7,
+        dataset_id: "bls.cpi",
+        estimate_value: 2.6,
+        label: "CPI 同比",
+        observations: [
+          {
+            actual_value: 2.7,
+            estimate_value: 2.6,
+            prior_value: 2.5,
+            published_at_ms: Date.parse("2026-07-14T12:30:00Z"),
+            received_at_ms: Date.parse("2026-07-14T12:31:00Z"),
+            reference_period: "2026-06",
+            revised_prior_value: 2.5,
+            revision: 0,
+            scheduled_at_ms: Date.parse("2026-07-14T12:30:00Z"),
+            seasonal_adjustment: "seasonally_adjusted",
+            source_url: "https://www.bls.gov/cpi/",
+            surprise: 0.1,
+            unit: "percent",
+          },
+        ],
+        prior_value: 2.5,
+        published_at_ms: Date.parse("2026-07-14T12:30:00Z"),
+        received_at_ms: Date.parse("2026-07-14T12:31:00Z"),
+        reference_period: "2026-06",
+        revised_prior_value: 2.5,
+        revision: 0,
+        scheduled_at_ms: Date.parse("2026-07-14T12:30:00Z"),
+        seasonal_adjustment: "seasonally_adjusted",
+        source_url: "https://www.bls.gov/cpi/",
+        surprise: 0.1,
+        unit: "percent",
+      },
+    ];
+
+    render(<MacroModuleSections module={module} />);
+
+    const release = screen.getByRole("region", { name: "官方发布事实" });
+    expect(within(release).getByText("CPI 同比 · 参考期 2026-06")).toBeVisible();
+    expect(within(release).getByText("调整：季节调整")).toBeVisible();
+    expect(within(release).getByText(/计划 .* · 发布 .* · 接收/)).toBeVisible();
   });
 
   it("does not render a zero-value Fed distribution as a valid chart when state is no_call", () => {
@@ -194,7 +448,7 @@ describe("macro module evidence workbench", () => {
     expect(within(roster).getByText(/Chair · Federal Reserve Board/)).toBeVisible();
   });
 
-  it("renders the official FOMC meeting calendar with revision and source clocks", () => {
+  it("renders upcoming FOMC meetings and keeps the complete official calendar reachable", () => {
     window.location.hash = "#fed";
     const module = macroModuleFixture("rates_fed");
     if (module.module_id !== "rates_fed") throw new Error("expected rates fixture");
@@ -212,13 +466,20 @@ describe("macro module evidence workbench", () => {
 
     const calendar = screen.getByRole("region", { name: "官方 FOMC 会议日历" });
     expect(within(calendar).getByText("fomc-calendar-2026-07-28")).toBeVisible();
-    expect(within(calendar).getByText("2026-09-15—2026-09-16")).toBeVisible();
-    expect(within(calendar).queryByText("2025-12-09—2025-12-10")).toBeNull();
-    expect(within(calendar).getByText("包含 SEP")).toBeVisible();
-    expect(within(calendar).getByText(/日历发布/)).toBeVisible();
-    expect(within(calendar).getByText(/系统接收/)).toBeVisible();
+    const upcomingMeeting = within(calendar).getByText("2026-09-15—2026-09-16").closest("article");
+    if (!(upcomingMeeting instanceof HTMLElement)) throw new Error("expected upcoming meeting");
+    const completeCalendar = within(calendar)
+      .getByText("查看完整会议日历（2 次）")
+      .closest("details");
+    if (!(completeCalendar instanceof HTMLDetailsElement)) {
+      throw new Error("expected complete meeting calendar audit");
+    }
+    expect(within(completeCalendar).getByText("2025-12-09—2025-12-10")).toBeInTheDocument();
+    expect(within(upcomingMeeting).getByText("包含 SEP")).toBeVisible();
+    expect(within(upcomingMeeting).getByText(/日历发布/)).toBeVisible();
+    expect(within(upcomingMeeting).getByText(/系统接收/)).toBeVisible();
     expect(
-      within(calendar).getByRole("link", { name: "Federal Reserve 原始日历" }),
+      within(upcomingMeeting).getByRole("link", { name: "Federal Reserve 原始日历" }),
     ).toHaveAttribute("href", "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm");
   });
 
@@ -239,6 +500,27 @@ describe("macro module evidence workbench", () => {
       "href",
       "https://fiscal.treasury.gov/reports-statements/treasury-auctions/",
     );
+  });
+
+  it("uses the contract's exact discount and investment rate labels for Treasury Bills", () => {
+    window.location.hash = "#policy";
+    const module = macroModuleFixture("rates_fed");
+    if (module.module_id !== "rates_fed") throw new Error("expected rates fixture");
+    const auction = module.treasury_auctions.recent_results[0];
+    if (!auction) throw new Error("expected auction fixture");
+    Object.assign(auction, {
+      high_discount_rate_pct: 5.2,
+      high_investment_rate_pct: 5.35,
+      high_yield_pct: null,
+      security_term: "4-Week Bill",
+    });
+
+    render(<MacroModuleSections module={module} />);
+
+    const auctions = screen.getByRole("region", { name: "美国国债拍卖结果" });
+    expect(within(auctions).getByText("最高贴现率").nextElementSibling).toHaveTextContent("5.2%");
+    expect(within(auctions).getByText("最高投资率").nextElementSibling).toHaveTextContent("5.35%");
+    expect(within(auctions).queryByText("最高得标收益率")).toBeNull();
   });
 
   it("shows explicit gaps for missing Treasury auction result fields", () => {
@@ -269,5 +551,32 @@ describe("macro module evidence workbench", () => {
     expect(screen.queryByText("矛盾")).toBeNull();
     expect(screen.queryByText("失效条件")).toBeNull();
     expect(screen.queryByText("下一检查点")).toBeNull();
+  });
+
+  it("keeps credit funding formula and input-fact lineage reachable", () => {
+    window.location.hash = "#funding";
+    const module = macroModuleFixture("credit");
+    if (module.module_id !== "credit") throw new Error("expected credit fixture");
+    module.funding_costs.comparisons = [
+      {
+        as_of: "2026-07-28",
+        corporate_dataset_id: "fred.bamlh0a0hym2ey",
+        formula_version: "matched_rate_difference_v1",
+        input_fact_ids: ["fact:hy:2026-07-28", "fact:ust10y:2026-07-28"],
+        label: "HY 减 10Y Treasury",
+        reference_dataset_id: "treasury.daily_nominal_curve",
+        value_bp: 310,
+      },
+    ];
+
+    render(<MacroModuleSections module={module} />);
+
+    const audit = screen.getByText("融资比较审计（1）").closest("details");
+    if (!(audit instanceof HTMLDetailsElement)) throw new Error("expected funding audit");
+    expect(audit).toHaveTextContent("matched_rate_difference_v1");
+    expect(audit).toHaveTextContent("fred.bamlh0a0hym2ey");
+    expect(audit).toHaveTextContent("treasury.daily_nominal_curve");
+    expect(audit).toHaveTextContent("fact:hy:2026-07-28");
+    expect(audit).toHaveTextContent("2026-07-28");
   });
 });

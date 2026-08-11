@@ -1,4 +1,5 @@
 export { useMacroModuleQuery, useMacroOverviewQuery } from "./api/useMacroDecisionQuery";
+export { MACRO_MODULE_DEFINITIONS, type MacroModuleDefinition } from "./model/macroModules";
 export type {
   MacroChange,
   MacroModuleId,

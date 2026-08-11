@@ -4,10 +4,17 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
-from tracefold.macro.domain import MacroModuleId
+from tracefold.macro.assets import CROSS_ASSET_DATASETS
+from tracefold.macro.domain import MACRO_MODULE_IDS, MacroModuleId
 
 CoverageRequirement = Literal["required", "supporting"]
 CoverageState = Literal["complete", "partial"]
+
+_CREDIT_ETF_CONFIRMATION_INSTRUMENTS = tuple(CROSS_ASSET_DATASETS.etf_instrument(symbol) for symbol in ("LQD", "HYG"))
+_CREDIT_ETF_CONFIRMATION_DATASET_IDS = (
+    *(instrument.daily_dataset_id for instrument in _CREDIT_ETF_CONFIRMATION_INSTRUMENTS),
+    *(instrument.intraday_dataset_id for instrument in _CREDIT_ETF_CONFIRMATION_INSTRUMENTS),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +125,13 @@ _COVERAGE = (
         "economy_inflation",
         "就业、失业率与初请",
         "required",
-        ("fred.payems", "fred.unrate", "fred.icsa"),
+        (
+            "bls.payrolls.release",
+            "bls.unemployment.release",
+            "fred.payems",
+            "fred.unrate",
+            "fred.icsa",
+        ),
     ),
     CoverageSpec(
         "liquidity.balance_sheet",
@@ -186,13 +199,7 @@ _COVERAGE = (
         "credit",
         "LQD/HYG 与 CFTC 市场确认",
         "supporting",
-        (
-            "nasdaq.lqd.daily",
-            "nasdaq.hyg.daily",
-            "yfinance.lqd.intraday",
-            "yfinance.hyg.intraday",
-            "cftc.tff.credit_positions",
-        ),
+        (*_CREDIT_ETF_CONFIRMATION_DATASET_IDS, "cftc.tff.credit_positions"),
     ),
     CoverageSpec(
         "volatility.core",
@@ -213,36 +220,14 @@ _COVERAGE = (
         "cross_asset",
         "固定十只 ETF 盘中代理矩阵",
         "required",
-        (
-            "yfinance.spy.intraday",
-            "yfinance.qqq.intraday",
-            "yfinance.iwm.intraday",
-            "yfinance.tlt.intraday",
-            "yfinance.ief.intraday",
-            "yfinance.lqd.intraday",
-            "yfinance.hyg.intraday",
-            "yfinance.dxy.intraday",
-            "yfinance.gld.intraday",
-            "yfinance.uso.intraday",
-        ),
+        CROSS_ASSET_DATASETS.etf_intraday_dataset_ids,
     ),
     CoverageSpec(
         "cross_asset.etf_daily_history",
         "cross_asset",
         "固定十只 ETF 五年日线",
         "required",
-        (
-            "nasdaq.spy.daily",
-            "nasdaq.qqq.daily",
-            "nasdaq.iwm.daily",
-            "nasdaq.tlt.daily",
-            "nasdaq.ief.daily",
-            "nasdaq.lqd.daily",
-            "nasdaq.hyg.daily",
-            "nasdaq.dxy.daily",
-            "nasdaq.gld.daily",
-            "nasdaq.uso.daily",
-        ),
+        CROSS_ASSET_DATASETS.etf_daily_dataset_ids,
     ),
     CoverageSpec(
         "cross_asset.wti",
@@ -268,34 +253,14 @@ _COVERAGE = (
         "cross_asset",
         "股指、利率、商品主要期货与美元指数",
         "required",
-        (
-            "yfinance.es_future.intraday",
-            "yfinance.nq_future.intraday",
-            "yfinance.rty_future.intraday",
-            "yfinance.zb_future.intraday",
-            "yfinance.zn_future.intraday",
-            "yfinance.dx_future.intraday",
-            "yfinance.gc_future.intraday",
-            "yfinance.cl_future.intraday",
-            "yfinance.hg_future.intraday",
-        ),
+        CROSS_ASSET_DATASETS.futures_intraday_dataset_ids,
     ),
     CoverageSpec(
         "cross_asset.major_futures_daily_history",
         "cross_asset",
         "股指、利率、商品主要期货与美元指数五年日线",
         "required",
-        (
-            "yfinance.es_future.daily",
-            "yfinance.nq_future.daily",
-            "yfinance.rty_future.daily",
-            "yfinance.zb_future.daily",
-            "yfinance.zn_future.daily",
-            "yfinance.dx_future.daily",
-            "yfinance.gc_future.daily",
-            "yfinance.cl_future.daily",
-            "yfinance.hg_future.daily",
-        ),
+        CROSS_ASSET_DATASETS.futures_daily_dataset_ids,
     ),
     CoverageSpec(
         "cross_asset.futures_confirmation",
@@ -310,6 +275,8 @@ COVERAGE_MANIFEST = MappingProxyType({spec.capability_id: spec for spec in _COVE
 
 if len(COVERAGE_MANIFEST) != len(_COVERAGE):
     raise RuntimeError("macro_coverage_manifest_duplicate_capability")
+if {spec.module_id for spec in _COVERAGE} != set(MACRO_MODULE_IDS):
+    raise RuntimeError("macro_coverage_manifest_module_contract_drift")
 
 
 def coverage_for_module(module_id: MacroModuleId) -> tuple[CoverageSpec, ...]:

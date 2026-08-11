@@ -6,7 +6,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from tracefold.macro import MacroReason
+from tracefold.macro import (
+    MacroModuleId,
+    MacroReason,
+    MacroSeasonalAdjustment,
+    MacroSourceRole,
+)
 
 JsonObject = dict[str, Any]
 
@@ -651,7 +656,7 @@ class MacroImportanceFactorsData(ExactApiSchema):
 class MacroChangeData(ExactApiSchema):
     dataset_id: str
     concept_id: str
-    source_role: str
+    source_role: MacroSourceRole
     label: str
     as_of: str | None
     value: float
@@ -680,7 +685,7 @@ class MacroOverviewModuleSummaryStateData(ExactApiSchema):
 class MacroDatasetStateData(ExactApiSchema):
     dataset_id: str
     concept_id: str
-    source_role: str
+    source_role: MacroSourceRole
     required_for_current: bool
     required_for_history: bool
     label: str
@@ -716,7 +721,7 @@ class MacroEvidenceFactData(ExactApiSchema):
 
 class MacroReconciliationObservationData(ExactApiSchema):
     dataset_id: str
-    source_role: str
+    source_role: MacroSourceRole
     reference: str | None
     value: float | str | None
     unit: str
@@ -759,8 +764,8 @@ class MacroModuleEvidenceData(ExactApiSchema):
 class MacroNextCheckpointData(ExactApiSchema):
     dataset_id: str
     label: str
-    current_health: str
-    history_depth: str
+    current_health: Literal["current", "degraded", "unavailable"]
+    history_depth: Literal["complete", "partial", "insufficient", "not_required"]
     reason: MacroReason | None
     next_check_at_ms: int | None
 
@@ -1150,6 +1155,8 @@ class MacroTreasuryAuctionResultData(ExactApiSchema):
     source_url: str
     bid_to_cover_ratio: float | None
     high_yield_pct: float | None
+    high_discount_rate_pct: float | None
+    high_investment_rate_pct: float | None
     offering_amount_usd: float | None
     indirect_award_share_pct: float | None
     direct_award_share_pct: float | None
@@ -1172,6 +1179,7 @@ class MacroDocumentAnalysisRuntimeData(ExactApiSchema):
 
 class MacroReleaseObservationData(ExactApiSchema):
     reference_period: str
+    seasonal_adjustment: MacroSeasonalAdjustment
     scheduled_at_ms: int | None
     actual_value: float | None
     estimate_value: float | None
@@ -1254,7 +1262,7 @@ class MacroCreditFundingCostsData(ExactApiSchema):
 class MacroCrossAssetSourceSelectionData(ExactApiSchema):
     dataset_id: str
     label: str
-    source_role: str
+    source_role: MacroSourceRole
     fact: MacroMarketFactData | MacroIndicatorData | None
 
 
@@ -1323,12 +1331,26 @@ class MacroCrossAssetAssetsData(ExactApiSchema):
     source_identity: list[MacroCrossAssetSourceIdentityData]
 
 
+MacroCorrelationWindow = Literal[
+    "30_daily_returns",
+    "90_daily_returns",
+    "252_daily_returns",
+]
+
+
+class MacroCorrelationContractData(ExactApiSchema):
+    default_window: MacroCorrelationWindow
+    supported_windows: list[MacroCorrelationWindow]
+    minimum_common_observations: int
+    presentation_derivation: Literal["undirected_pairs_mirrored_with_unit_diagonal"]
+
+
 class MacroCorrelationData(ExactApiSchema):
     left: str
     right: str
     correlation: float | None
     sample_count: int
-    window: Literal["up_to_120_daily_returns"]
+    window: MacroCorrelationWindow
 
 
 class MacroSettlementData(ExactApiSchema):
@@ -1349,7 +1371,7 @@ class MacroCrossAssetFuturesData(ExactApiSchema):
 
 
 class MacroRatesFedPersistedData(ExactApiSchema):
-    schema_version: Literal["macro_rates_fed_v7"]
+    schema_version: Literal["macro_rates_fed_v8"]
     module_id: Literal["rates_fed"]
     label: str
     status: MacroModuleStatusData
@@ -1371,7 +1393,7 @@ class MacroRatesFedReadData(MacroRatesFedPersistedData):
 
 
 class MacroEconomyInflationPersistedData(_MacroModulePersistedBaseData):
-    schema_version: Literal["macro_economy_inflation_v5"]
+    schema_version: Literal["macro_economy_inflation_v6"]
     module_id: Literal["economy_inflation"]
     inflation: MacroEconomySectionData
     labor: MacroEconomySectionData
@@ -1424,9 +1446,10 @@ class MacroVolatilityReadData(MacroVolatilityPersistedData):
 
 
 class MacroCrossAssetPersistedData(_MacroModulePersistedBaseData):
-    schema_version: Literal["macro_cross_asset_v7"]
+    schema_version: Literal["macro_cross_asset_v8"]
     module_id: Literal["cross_asset"]
     assets: MacroCrossAssetAssetsData
+    correlation_contract: MacroCorrelationContractData
     correlations: list[MacroCorrelationData]
     futures: MacroCrossAssetFuturesData
 
@@ -1438,7 +1461,7 @@ class MacroCrossAssetReadData(MacroCrossAssetPersistedData):
 
 class MacroModuleUnavailableData(ExactApiSchema):
     schema_version: Literal["macro_module_unavailable_v1"] = "macro_module_unavailable_v1"
-    module_id: str
+    module_id: MacroModuleId
     label: str
     availability: Literal["unavailable"] = "unavailable"
     reason: MacroReason
@@ -1446,7 +1469,7 @@ class MacroModuleUnavailableData(ExactApiSchema):
 
 
 class MacroModuleSummaryData(ExactApiSchema):
-    module_id: str
+    module_id: MacroModuleId
     label: str
     availability: Literal["available", "unavailable"]
     reason: MacroReason | None

@@ -25,7 +25,7 @@ AUTH = {"Authorization": "Bearer secret"}
 CUTOFF_MS = int(datetime(2026, 7, 28, 12, 50, tzinfo=UTC).timestamp() * 1_000)
 
 
-def test_rates_curve_material_facts_project_to_v7_postgres_and_public_api(
+def test_rates_curve_material_facts_project_to_v8_postgres_and_public_api(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -83,7 +83,7 @@ def test_rates_curve_material_facts_project_to_v7_postgres_and_public_api(
 
     assert persisted is not None
     stored = persisted["payload_json"]
-    assert stored["schema_version"] == "macro_rates_fed_v7"
+    assert stored["schema_version"] == "macro_rates_fed_v8"
     assert "summary" not in stored
     assert "top_changes" not in stored
     assert response.status_code == 200
@@ -367,3 +367,41 @@ def test_overview_serves_six_current_modules_without_research(
     assert "run" not in data
     assert "recovery" not in data
     assert research.status_code == 404
+
+
+def test_module_reads_revalidate_unchanged_current_payload_with_etag(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _current_time(monkeypatch)
+    app = create_app(settings=_settings(tmp_path))
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            _insert_modules(repos)
+
+        first = client.get(
+            "/api/macro/rates-fed",
+            headers={**AUTH, "Accept-Encoding": "gzip"},
+        )
+        unchanged = client.get(
+            "/api/macro/rates-fed",
+            headers={
+                **AUTH,
+                "If-None-Match": f'"different", {first.headers["etag"]}',
+            },
+        )
+        wildcard = client.get(
+            "/api/macro/rates-fed",
+            headers={**AUTH, "If-None-Match": "*"},
+        )
+
+    assert first.status_code == 200
+    assert first.headers["etag"].startswith('W/"')
+    assert first.headers["cache-control"] == "private, no-cache"
+    assert first.headers["content-encoding"] == "gzip"
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+    assert unchanged.headers["etag"] == first.headers["etag"]
+    assert unchanged.headers["vary"] == "Accept-Encoding"
+    assert wildcard.status_code == 304
+    assert wildcard.content == b""

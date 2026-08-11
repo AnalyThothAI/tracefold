@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import time
 from typing import Annotated, Any
 
@@ -12,7 +10,7 @@ from pydantic import BaseModel
 from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
-from tracefold.app.http.responses import _validated_json
+from tracefold.app.http.responses import _validated_etag_json, _validated_json
 from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
 
 router = APIRouter()
@@ -180,14 +178,12 @@ def _etagged(
     *,
     envelope: type[BaseModel],
 ) -> JSONResponse | Response:
-    encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    etag = f'"{hashlib.sha256(encoded).hexdigest()}"'
-    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-    response = _validated_json(envelope, {"ok": True, "data": data})
-    response.headers.update(headers)
-    return response
+    return _validated_etag_json(
+        envelope,
+        {"ok": True, "data": data},
+        data=data,
+        request=request,
+    )
 
 
 def _validate_query_params(request: Request, *, supported: set[str]) -> None:

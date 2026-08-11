@@ -66,6 +66,56 @@ class MacroProjectionService:
                 ),
             )
 
+    def reconcile_frontiers(self, *, now_ms: int) -> int:
+        """Restore only missing or contract-stale module frontiers at startup."""
+
+        with self._session() as repos, repos.transaction():
+            states = repos.macro.dataset_projection_states(
+                dataset_ids=tuple(DATASET_REGISTRY),
+            )
+            state_by_dataset = {str(row["dataset_id"]): dict(row) for row in states}
+            if not state_by_dataset:
+                return 0
+            existing_rows = repos.conn.execute(
+                """
+                SELECT module_id, input_fingerprint, projection_version
+                FROM macro_module_frontiers
+                ORDER BY module_id
+                """
+            ).fetchall()
+            existing_by_module = {str(row["module_id"]): dict(row) for row in existing_rows}
+            written = 0
+            for module_id in MACRO_MODULE_IDS:
+                module_states = [
+                    state_by_dataset[dataset_id]
+                    for dataset_id in MODULE_DATASET_DEPENDENCIES[module_id]
+                    if dataset_id in state_by_dataset
+                ]
+                input_fingerprint = module_input_fingerprint(module_id, module_states)
+                projection_version = module_projection_version(module_id)
+                existing = existing_by_module.get(module_id)
+                if (
+                    existing is not None
+                    and str(existing["input_fingerprint"]) == input_fingerprint
+                    and str(existing["projection_version"]) == projection_version
+                ):
+                    continue
+                written += repos.projection_frontiers.mark_dirty(
+                    MACRO_FRONTIER,
+                    key={"module_id": module_id},
+                    dirty_at_ms=now_ms,
+                    deadline_at_ms=now_ms,
+                    input_fingerprint=input_fingerprint,
+                    version=projection_version,
+                    extra_insert={
+                        "source_frontier_ms": max(
+                            (int(row["source_frontier_ms"]) for row in module_states),
+                            default=0,
+                        )
+                    },
+                )
+        return written
+
     def prepare_maintenance_frontiers(self, *, now_ms: int) -> int:
         """One-shot hard-cut rebuild preparation; never called by steady runtime."""
 
@@ -171,17 +221,12 @@ class MacroProjectionService:
         specs = tuple(DATASET_REGISTRY[dataset_id] for dataset_id in dataset_ids)
         series_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "series")
         market_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "market_observation")
-        market_limits = {
-            dataset_id: (
-                36
-                if DATASET_REGISTRY[dataset_id].frequency == "intraday"
-                else market_history_limits((dataset_id,))[dataset_id]
-            )
-            for dataset_id in market_ids
-        }
+        market_limits = market_history_limits(market_ids)
         position_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "market_position")
         settlement_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "market_settlement")
-        release_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "release")
+        release_limits = {
+            spec.dataset_id: int(spec.metadata["projection_periods"]) for spec in specs if spec.fact_family == "release"
+        }
         document_ids = tuple(spec.dataset_id for spec in specs if spec.fact_family == "document")
         with self._session() as repos:
             dataset_states = repos.macro.dataset_projection_states(dataset_ids=dataset_ids)
@@ -246,7 +291,7 @@ class MacroProjectionService:
                     row_cap=_INPUT_ROW_CAP,
                 ),
                 "release_rows": repos.macro.release_history(
-                    dataset_ids=release_ids,
+                    history_limits=release_limits,
                     row_cap=_INPUT_ROW_CAP,
                 ),
                 "document_rows": document_rows,

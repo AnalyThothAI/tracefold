@@ -327,6 +327,7 @@ class CliTests(unittest.TestCase):
         self.assertFalse(payload["news"]["rss_enabled"])
         self.assertTrue(settings.providers.macro_sources.enabled)
         self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
+        self.assertNotIn("request_timeout_seconds", payload["providers"]["macro_sources"])
 
     def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
         retired_payloads = {
@@ -342,6 +343,7 @@ class CliTests(unittest.TestCase):
                     ]
                 }
             },
+            "macro source request timeout": {"providers": {"macro_sources": {"request_timeout_seconds": 15}}},
         }
 
         for label, payload in retired_payloads.items():

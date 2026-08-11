@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from tracefold.market import (
@@ -39,6 +40,12 @@ MacroFactFamily = Literal[
     "market_settlement",
 ]
 MacroTrustTier = MarketTrustTier
+MacroSeasonalAdjustment = Literal[
+    "seasonally_adjusted",
+    "not_seasonally_adjusted",
+    "seasonally_adjusted_annual_rate",
+    "unknown",
+]
 MacroSourceRole = Literal[
     "decision_primary",
     "history",
@@ -75,23 +82,49 @@ class MacroSourceClientProtocol(Protocol):
     def close(self) -> None: ...
 
 
-MACRO_MODULE_IDS: tuple[MacroModuleId, ...] = (
-    "rates_fed",
-    "economy_inflation",
-    "liquidity_funding",
-    "credit",
-    "volatility",
-    "cross_asset",
-)
+@dataclass(frozen=True, slots=True)
+class MacroModuleDefinition:
+    module_id: MacroModuleId
+    label: str
+    schema_version: str
+    builder_key: MacroModuleId
 
-MACRO_MODULE_LABELS: dict[MacroModuleId, str] = {
-    "rates_fed": "利率与美联储",
-    "economy_inflation": "经济与通胀",
-    "liquidity_funding": "流动性与融资",
-    "credit": "信用市场",
-    "volatility": "波动率",
-    "cross_asset": "大类资产与期货",
-}
+
+_MACRO_MODULE_DEFINITIONS = (
+    MacroModuleDefinition("rates_fed", "利率与美联储", "macro_rates_fed_v8", "rates_fed"),
+    MacroModuleDefinition(
+        "economy_inflation",
+        "经济与通胀",
+        "macro_economy_inflation_v6",
+        "economy_inflation",
+    ),
+    MacroModuleDefinition(
+        "liquidity_funding",
+        "流动性与融资",
+        "macro_liquidity_funding_v5",
+        "liquidity_funding",
+    ),
+    MacroModuleDefinition("credit", "信用市场", "macro_credit_v7", "credit"),
+    MacroModuleDefinition("volatility", "波动率", "macro_volatility_v7", "volatility"),
+    MacroModuleDefinition(
+        "cross_asset",
+        "大类资产与期货",
+        "macro_cross_asset_v8",
+        "cross_asset",
+    ),
+)
+MACRO_MODULE_DEFINITIONS = MappingProxyType(
+    {definition.module_id: definition for definition in _MACRO_MODULE_DEFINITIONS}
+)
+if len(MACRO_MODULE_DEFINITIONS) != len(_MACRO_MODULE_DEFINITIONS):
+    raise RuntimeError("macro_module_definition_duplicate_id")
+if {definition.builder_key for definition in _MACRO_MODULE_DEFINITIONS} != set(MACRO_MODULE_DEFINITIONS):
+    raise RuntimeError("macro_module_definition_builder_key_drift")
+
+MACRO_MODULE_IDS: tuple[MacroModuleId, ...] = tuple(definition.module_id for definition in _MACRO_MODULE_DEFINITIONS)
+MACRO_MODULE_LABELS = MappingProxyType(
+    {definition.module_id: definition.label for definition in _MACRO_MODULE_DEFINITIONS}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +144,7 @@ class DatasetSpec:
     frequency: str
     freshness_seconds: int
     refresh_seconds: int
+    seasonal_adjustment: MacroSeasonalAdjustment
     critical: bool = False
     trust_tier: MacroTrustTier = "official"
     instrument_id: str | None = None
@@ -218,6 +252,7 @@ class FetchBatch:
 
 
 __all__ = [
+    "MACRO_MODULE_DEFINITIONS",
     "MACRO_MODULE_IDS",
     "MACRO_MODULE_LABELS",
     "DatasetSpec",
@@ -227,7 +262,9 @@ __all__ = [
     "MacroClockKind",
     "MacroFactFamily",
     "MacroModelExpectedError",
+    "MacroModuleDefinition",
     "MacroModuleId",
+    "MacroSeasonalAdjustment",
     "MacroSourceClientProtocol",
     "MacroSourceError",
     "MacroSourceRole",

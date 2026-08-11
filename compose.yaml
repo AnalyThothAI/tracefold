@@ -119,8 +119,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    environment:
-      FINANCE_FRED_API_KEY: ${FINANCE_FRED_API_KEY:-}
     ports:
       - "${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"
     volumes:

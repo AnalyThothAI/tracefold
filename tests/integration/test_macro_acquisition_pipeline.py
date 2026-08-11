@@ -13,7 +13,7 @@ from tests.postgres_test_utils import (
     reset_postgres_schema,
 )
 from tracefold.integrations.macro_sources import MacroSourceClient
-from tracefold.macro import FetchBatch, SeriesFact, require_dataset
+from tracefold.macro import FetchBatch, ReleaseFact, SeriesFact, require_dataset
 from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.market import MarketObservationFact, MarketSettlementFact
 
@@ -592,13 +592,168 @@ def test_all_macro_history_queries_accept_an_absent_cutoff(tmp_path) -> None:
         reset_postgres_schema(conn)
         with repository_session_for_connection(conn) as repos:
             assert repos.macro.series_history(history_limits={"fred.dgs10": 500}) == []
-            assert repos.macro.release_history(dataset_ids=("bls.cpi.release",)) == []
+            assert repos.macro.release_history(history_limits={"bls.cpi.release": 24}) == []
             assert repos.macro.document_history(dataset_ids=("federal_reserve.fomc.documents",)) == []
             assert repos.macro_market.market_history(history_limits={"yfinance.spy.intraday": 5_000}) == []
             assert repos.macro_market.settlement_history(dataset_ids=("cboe.cfe.vx.settlement",)) == []
             assert repos.macro_market.position_history(dataset_ids=("cftc.tff.rates_positions",)) == []
     finally:
         conn.close()
+
+
+def test_release_history_returns_latest_revision_inside_each_dataset_window(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("bls.cpi.release")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            for reference_period, value, received_at_ms in (
+                ("2026-M01", 1.0, 100),
+                ("2026-M02", 2.0, 200),
+                ("2026-M02", 2.2, 300),
+                ("2026-M03", 3.0, 400),
+            ):
+                repos.macro.insert_release_fact(
+                    ReleaseFact(
+                        dataset_id=spec.dataset_id,
+                        release_id=f"BLS:{spec.series_id}:{reference_period}",
+                        series_id=str(spec.series_id),
+                        reference_period=reference_period,
+                        scheduled_at_ms=None,
+                        published_at_ms=None,
+                        received_at_ms=received_at_ms,
+                        actual_value=value,
+                        prior_value=None,
+                        revised_prior_value=None,
+                        estimate_value=None,
+                        unit=spec.unit,
+                        importance_tier=3,
+                        source_url=spec.source_url,
+                        raw_data={"value": value},
+                    )
+                )
+        with repository_session_for_connection(conn) as repos:
+            rows = repos.macro.release_history(history_limits={spec.dataset_id: 2})
+    finally:
+        conn.close()
+
+    assert [(row["reference_period"], float(row["actual_value"])) for row in rows] == [
+        ("2026-M02", 2.2),
+        ("2026-M03", 3.0),
+    ]
+
+
+def test_target_states_returns_only_the_canonical_backfill_for_each_history_contract(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("fred.payems")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            old = repos.macro.enqueue_backfill_target(
+                spec,
+                start_date=date(2020, 1, 1),
+                end_date=date(2026, 1, 1),
+                now_ms=100,
+                max_attempts=1,
+                history_class="required_history",
+            )
+            old_claim = repos.macro.claim_target(
+                clock_kind="backfill",
+                lease_owner="old-backfill",
+                lease_ms=1_000,
+                now_ms=100,
+                target_keys=(str(old["target_key"]),),
+            )
+            assert old_claim is not None
+            assert (
+                repos.macro.fail_target(
+                    target=old_claim,
+                    lease_owner="old-backfill",
+                    error_code="old_source_failure",
+                    next_due_at_ms=200,
+                    completed_at_ms=101,
+                    unavailable=False,
+                )
+                == "stale"
+            )
+
+            current = repos.macro.enqueue_backfill_target(
+                spec,
+                start_date=date(2021, 1, 1),
+                end_date=date(2026, 1, 1),
+                now_ms=200,
+                max_attempts=1,
+                history_class="required_history",
+            )
+            current_claim = repos.macro.claim_target(
+                clock_kind="backfill",
+                lease_owner="current-backfill",
+                lease_ms=1_000,
+                now_ms=200,
+                target_keys=(str(current["target_key"]),),
+            )
+            assert current_claim is not None
+            assert repos.macro.complete_target(
+                target_key=str(current["target_key"]),
+                lease_owner="current-backfill",
+                cursor={**dict(current_claim["cursor_json"]), "backfill_complete": True},
+                next_due_at_ms=200,
+                completed_at_ms=201,
+            )
+        with repository_session_for_connection(conn) as repos:
+            states = repos.macro.target_states(dataset_ids=(spec.dataset_id,))
+    finally:
+        conn.close()
+
+    assert [(row["partition_key"], row["status"]) for row in states] == [
+        ("2021-01-01..2026-01-01", "current"),
+    ]
+
+
+def test_release_publication_clock_correction_appends_a_new_fact(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("bea.pce.release")
+        common = {
+            "dataset_id": spec.dataset_id,
+            "release_id": "BEA:PCE:2026-M06:personal-income-june-2026",
+            "series_id": str(spec.series_id),
+            "reference_period": "2026-M06",
+            "scheduled_at_ms": 100,
+            "actual_value": 2.6,
+            "prior_value": 2.5,
+            "revised_prior_value": None,
+            "estimate_value": None,
+            "unit": spec.unit,
+            "importance_tier": 3,
+            "source_url": spec.source_url,
+            "raw_data": {"fixture": "publication-clock-correction"},
+        }
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            first_write = repos.macro.insert_release_fact(
+                ReleaseFact(
+                    **common,
+                    published_at_ms=100,
+                    received_at_ms=100,
+                )
+            )
+            corrected_write = repos.macro.insert_release_fact(
+                ReleaseFact(
+                    **common,
+                    published_at_ms=200,
+                    received_at_ms=200,
+                )
+            )
+        with repository_session_for_connection(conn) as repos:
+            rows = repos.macro.release_history(history_limits={spec.dataset_id: 1})
+    finally:
+        conn.close()
+
+    assert first_write == 1
+    assert corrected_write == 1
+    assert len(rows) == 1
+    assert rows[0]["published_at_ms"] == 200
 
 
 def test_settlement_history_collapses_revisions_at_the_requested_cutoff(tmp_path) -> None:
@@ -872,7 +1027,7 @@ def test_steady_acquisition_keeps_retrying_transport_failures(tmp_path) -> None:
     }
 
 
-def test_ensure_target_revives_stale_steady_target(tmp_path) -> None:
+def test_ensure_target_does_not_rewrite_a_terminal_steady_target(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -900,7 +1055,7 @@ def test_ensure_target_revives_stale_steady_target(tmp_path) -> None:
         conn.close()
 
     assert dict(stored) == {
-        "status": "delayed",
-        "attempt_count": 0,
-        "next_due_at_ms": 2_000,
+        "status": "stale",
+        "attempt_count": 2,
+        "next_due_at_ms": 9_000,
     }

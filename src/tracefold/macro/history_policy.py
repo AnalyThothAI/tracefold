@@ -11,7 +11,10 @@ from tracefold.macro.registry import DATASET_REGISTRY
 _PRESENTATION_HISTORY_ROWS = 500
 _CURVE_PRESENTATION_HISTORY_ROWS = 130
 _FULL_AVAILABLE_HISTORY_ROWS = 10_000
-_INTRADAY_MONTH_HISTORY_ROWS = 5_000
+# Projection storage reduces intraday facts to one end-of-UTC-day point. One
+# current point, the 30-day comparison window, its four-day bounded lag, and
+# one boundary point are sufficient for every intraday payload calculation.
+_INTRADAY_COMPARISON_ROWS = 36
 _DAILY_COMPARISON_ROWS = 260
 
 # These payloads expose actual-available-history percentiles. Truncating them
@@ -64,7 +67,7 @@ def market_history_limits(dataset_ids: Iterable[str]) -> dict[str, int]:
     for dataset_id in dict.fromkeys(str(item) for item in dataset_ids):
         spec = DATASET_REGISTRY[dataset_id]
         if spec.frequency == "intraday":
-            limits[dataset_id] = _INTRADAY_MONTH_HISTORY_ROWS
+            limits[dataset_id] = _INTRADAY_COMPARISON_ROWS
         elif spec.frequency == "daily":
             limits[dataset_id] = _DAILY_COMPARISON_ROWS
         else:

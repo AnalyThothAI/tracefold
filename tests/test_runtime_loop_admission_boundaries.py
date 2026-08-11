@@ -4,6 +4,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from tracefold.app import workers as workers_module
@@ -13,6 +14,8 @@ from tracefold.app.workers import (
     _run_due,
     _run_periodic,
 )
+from tracefold.integrations.macro_sources import MacroSourceClient
+from tracefold.macro import MacroProjectionCandidate, require_dataset
 from tracefold.macro.domain import MacroSourceError
 from tracefold.macro.runtime import MacroAcquisition
 from tracefold.market.identity.resolution_refresh_worker import ResolutionRefresh
@@ -41,6 +44,26 @@ class _SubmittedOverrunFiniteOperations:
         if on_submitted is not None:
             on_submitted()
         raise ResourceOperationOverrun(f"resource_operation_overrun:{operation_name}")
+
+
+def test_macro_projection_candidate_runs_bounded_startup_reconciliation() -> None:
+    class _Database:
+        async def run_business(self, operation_name, function, /, *_args, **kwargs):
+            assert operation_name == "macro_projection_reconcile"
+            assert function.__name__ == "reconcile_frontiers"
+            assert kwargs["operation_timeout_seconds"] == 3.0
+            assert isinstance(kwargs["now_ms"], int)
+            return 4
+
+    async def scenario() -> int:
+        candidate = MacroProjectionCandidate(
+            db=_Database(),
+            cpu=object(),
+            runtime_id="a3b1f67c-6f83-4c7f-9ea4-aab4b652e343",
+        )
+        return await candidate.reconcile()
+
+    assert asyncio.run(scenario()) == 4
 
 
 def test_productive_due_loop_has_a_minimum_repoll_cadence() -> None:
@@ -512,6 +535,60 @@ def test_macro_provider_overrun_publishes_a_bounded_source_failure_without_relea
     assert asyncio.run(macro.turn()) is True
     assert isinstance(database.failure, MacroSourceError)
     assert str(database.failure) == "macro_fetch_total_timeout"
+    assert database.operations == ["macro_target_claim", "macro_publish_failure"]
+
+
+def test_macro_malformed_success_json_is_published_as_a_source_failure() -> None:
+    claim = {"target_key": "bls:unemployment"}
+
+    class _InlineFiniteOperations:
+        async def run(self, _operation_name, function, /, *args, **kwargs):
+            kwargs["on_submitted"]()
+            return function(*args)
+
+    class _Database:
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+            self.failure: Exception | None = None
+
+        async def run_business(self, operation_name, function, /, *args, **_kwargs):
+            self.operations.append(operation_name)
+            if operation_name == "macro_target_claim":
+                return claim
+            if operation_name == "macro_publish_failure":
+                self.failure = args[-1]
+                return function(*args)
+            raise AssertionError(operation_name)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{", request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    database = _Database()
+    macro = MacroAcquisition(
+        db=database,
+        finite_operations=_InlineFiniteOperations(),
+        service=SimpleNamespace(
+            claim_next=lambda: claim,
+            fetch_claim=lambda _claim: client.fetch(
+                require_dataset("bls.unemployment.release"),
+                partition_key="latest",
+                cursor={},
+            ),
+            publish_failure=lambda _claim, error: {
+                "published": True,
+                "error_code": str(error),
+            },
+        ),
+    )
+
+    try:
+        assert asyncio.run(macro.turn()) is True
+    finally:
+        client.close()
+
+    assert isinstance(database.failure, MacroSourceError)
+    assert str(database.failure) == "bls_release_payload_invalid"
     assert database.operations == ["macro_target_claim", "macro_publish_failure"]
 
 

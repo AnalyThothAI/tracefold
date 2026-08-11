@@ -36,6 +36,16 @@ class MacroProjectionCandidate:
             db=db,
         )
 
+    async def reconcile(self) -> int:
+        return int(
+            await self.db.run_business(
+                "macro_projection_reconcile",
+                self.service.reconcile_frontiers,
+                operation_timeout_seconds=3.0,
+                now_ms=_now_ms(),
+            )
+        )
+
     async def peek(self, *, now_ms: int) -> ProjectionShard | None:
         row = await self.db.run_business(
             "macro_projection_peek",

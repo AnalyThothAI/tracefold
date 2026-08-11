@@ -1,9 +1,11 @@
 import * as PageState from "@shared/ui/PageState";
 import { Button } from "@shared/ui/button";
 import { RefreshCw } from "lucide-react";
+import { lazy, Suspense } from "react";
 import { Link } from "react-router-dom";
 
 import { useMacroModuleQuery, useMacroOverviewQuery } from "../api/useMacroDecisionQuery";
+import { MACRO_MODULE_DEFINITIONS } from "../model/macroModules";
 import { formatInstant, moduleLabel } from "../model/macroPresentation";
 import type {
   MacroModuleId,
@@ -14,24 +16,16 @@ import type {
   MacroTypedModuleReadData,
 } from "../model/macroTypes";
 
-import { MacroModuleSections, RatesDecisionSummary } from "./MacroModuleSections";
-
-import "./MacroDecisionBrief.css";
-import "./MacroDecisionOverview.css";
 import "./MacroDecisionPage.css";
 import "./MacroDecisionPageResponsive.css";
 import "./MacroDatasetStatus.css";
 import "./MacroOverviewStatus.css";
 import "./MacroUpdateState.css";
 
-const MODULE_ROUTES: ReadonlyArray<{ id: MacroModuleId; path: string; label: string }> = [
-  { id: "rates_fed", path: "/macro/rates-fed", label: "利率与美联储" },
-  { id: "economy_inflation", path: "/macro/economy-inflation", label: "经济与通胀" },
-  { id: "liquidity_funding", path: "/macro/liquidity-funding", label: "流动性与融资" },
-  { id: "credit", path: "/macro/credit", label: "信用市场" },
-  { id: "volatility", path: "/macro/volatility", label: "波动率" },
-  { id: "cross_asset", path: "/macro/cross-asset", label: "大类资产与期货" },
-];
+const MacroModuleWorkspace = lazy(async () => {
+  const module = await import("./MacroModuleWorkspace");
+  return { default: module.MacroModuleWorkspace };
+});
 
 export type MacroPageSessionProps = {
   bootstrapError: boolean;
@@ -115,9 +109,17 @@ export function MacroModulePage({
         {query.isError ? (
           <UpdateDelayed error={query.error} onRetry={() => void query.refetch()} />
         ) : null}
-        <ModuleDiagnostics module={module} />
-        {module.module_id === "rates_fed" ? <RatesDecisionSummary module={module} /> : null}
-        <MacroModuleSections module={module} />
+        <ModuleCurrentStatus module={module} />
+        <Suspense
+          fallback={
+            <p aria-live="polite" className="macro-decision__workspace-loading" role="status">
+              加载事实工作台…
+            </p>
+          }
+        >
+          <MacroModuleWorkspace module={module} />
+        </Suspense>
+        <ModuleDatasetAudit module={module} />
       </section>
     </PageState.Stale>
   );
@@ -244,17 +246,13 @@ function ModuleOverview({ data }: { data: MacroOverviewReadData }) {
   );
 }
 
-function ModuleDiagnostics({ module }: { module: MacroTypedModuleReadData }) {
-  const auditOpen = module.evidence.dataset_states.some(
-    (dataset) =>
-      (dataset.required_for_current && dataset.current_health !== "current") ||
-      (dataset.required_for_history &&
-        dataset.history_depth !== "complete" &&
-        dataset.history_depth !== "not_required"),
+function ModuleCurrentStatus({ module }: { module: MacroTypedModuleReadData }) {
+  const currentBlockers = module.evidence.dataset_states.filter(
+    (dataset) => dataset.required_for_current && dataset.current_health !== "current",
   );
   return (
     <section
-      aria-label="数据集状态"
+      aria-label="当前事实状态"
       className="macro-decision__dataset-status macro-decision__diagnostic-strip"
     >
       <header>
@@ -281,6 +279,31 @@ function ModuleDiagnostics({ module }: { module: MacroTypedModuleReadData }) {
           />
         </dl>
       </header>
+      {currentBlockers.length ? (
+        <div className="macro-decision__current-blockers">
+          {currentBlockers.map((dataset) => (
+            <article data-health={dataset.current_health} key={dataset.dataset_id}>
+              <header>
+                <strong>{dataset.label}</strong>
+                <small>{dataset.dataset_id}</small>
+              </header>
+              <DatasetReason label="当前原因" reason={dataset.current_reason} />
+            </article>
+          ))}
+        </div>
+      ) : module.reason ? (
+        <ReasonSummary reason={module.reason} />
+      ) : null}
+    </section>
+  );
+}
+
+function ModuleDatasetAudit({ module }: { module: MacroTypedModuleReadData }) {
+  const auditOpen = module.evidence.dataset_states.some(
+    (dataset) => dataset.required_for_current && dataset.current_health !== "current",
+  );
+  return (
+    <section aria-label="数据集审计" className="macro-decision__dataset-status">
       {module.evidence.dataset_states.length ? (
         <details className="macro-decision__dataset-audit" open={auditOpen}>
           <summary>数据集审计 · {module.evidence.dataset_states.length} 条</summary>
@@ -426,11 +449,11 @@ function MacroNavigation({ activeModule }: { activeModule?: MacroModuleId }) {
       <Link aria-current={activeModule ? undefined : "page"} to="/macro">
         主线总览
       </Link>
-      {MODULE_ROUTES.map((route) => (
+      {MACRO_MODULE_DEFINITIONS.map((route) => (
         <Link
           aria-current={activeModule === route.id ? "page" : undefined}
           key={route.id}
-          to={route.path}
+          to={route.routePath}
         >
           {route.label}
         </Link>

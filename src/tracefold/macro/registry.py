@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+from typing import get_args
 
-from tracefold.macro.domain import DatasetSpec, MacroModuleId
+from tracefold.macro.domain import (
+    MACRO_MODULE_IDS,
+    DatasetSpec,
+    MacroModuleId,
+    MacroSeasonalAdjustment,
+)
 
 _FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 _NASDAQ_HISTORY = "https://api.nasdaq.com/api/quote/{symbol}/historical"
@@ -57,8 +63,12 @@ def _fred(
             else _DEFAULT_FRESHNESS_SECONDS.get(frequency, _DAILY_FRESHNESS_SECONDS)
         ),
         refresh_seconds=refresh_seconds,
+        seasonal_adjustment="unknown",
         critical=critical,
-        metadata={"official_owner": "Federal Reserve Bank of St. Louis"},
+        metadata={
+            "official_owner": "Federal Reserve Bank of St. Louis",
+            **({"history_years": 5} if source_role == "history" else {}),
+        },
     )
 
 
@@ -85,6 +95,7 @@ def _nasdaq_daily(
         frequency="daily",
         freshness_seconds=_DAILY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
+        seasonal_adjustment="unknown",
         trust_tier="untrusted_proxy",
         instrument_id=f"{instrument_id}_daily",
         symbol=symbol,
@@ -129,6 +140,7 @@ def _yfinance_intraday(
         frequency="intraday",
         freshness_seconds=freshness_seconds,
         refresh_seconds=300,
+        seasonal_adjustment="unknown",
         trust_tier="untrusted_proxy",
         instrument_id=instrument_id,
         symbol=symbol,
@@ -182,6 +194,7 @@ def _yfinance_daily(
         frequency="daily",
         freshness_seconds=_DAILY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
+        seasonal_adjustment="unknown",
         trust_tier="untrusted_proxy",
         instrument_id=f"{instrument_id}_daily",
         symbol=symbol,
@@ -225,6 +238,7 @@ def _treasury_curve(
         frequency="daily",
         freshness_seconds=_DAILY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
+        seasonal_adjustment="unknown",
         critical=True,
         metadata={
             "official_owner": "U.S. Department of the Treasury",
@@ -240,6 +254,7 @@ def _bls_release(
     dataset_id: str,
     label: str,
     unit: str,
+    seasonal_adjustment: MacroSeasonalAdjustment,
     importance_tier: int = 2,
 ) -> DatasetSpec:
     return DatasetSpec(
@@ -258,11 +273,13 @@ def _bls_release(
         frequency="monthly",
         freshness_seconds=_MONTHLY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
+        seasonal_adjustment=seasonal_adjustment,
         critical=False,
         metadata={
             "official_owner": "U.S. Bureau of Labor Statistics",
             "importance_tier": importance_tier,
             "role": "official_release_catalyst",
+            "projection_periods": 24,
         },
     )
 
@@ -275,6 +292,7 @@ def _bea_release(
     metric: str,
     label: str,
     frequency: str,
+    seasonal_adjustment: MacroSeasonalAdjustment,
 ) -> DatasetSpec:
     return DatasetSpec(
         dataset_id=dataset_id,
@@ -292,6 +310,7 @@ def _bea_release(
         frequency=frequency,
         freshness_seconds=(_MONTHLY_FRESHNESS_SECONDS if frequency == "monthly" else _QUARTERLY_FRESHNESS_SECONDS),
         refresh_seconds=21_600,
+        seasonal_adjustment=seasonal_adjustment,
         critical=True,
         metadata={
             "official_owner": "U.S. Bureau of Economic Analysis",
@@ -300,6 +319,7 @@ def _bea_release(
             "release_family": release_family,
             "metric": metric,
             "contract": "public_official_release_page",
+            "projection_periods": 24 if frequency == "monthly" else 12,
         },
     )
 
@@ -327,6 +347,7 @@ def _cftc_tff(
         frequency="weekly",
         freshness_seconds=_WEEKLY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
+        seasonal_adjustment="unknown",
         trust_tier="official",
         critical=False,
         metadata={
@@ -533,6 +554,7 @@ _DATASETS = (
         dataset_id="bls.cpi.release",
         label="BLS CPI官方发布事实",
         unit="index",
+        seasonal_adjustment="not_seasonally_adjusted",
         importance_tier=3,
     ),
     _bls_release(
@@ -540,6 +562,7 @@ _DATASETS = (
         dataset_id="bls.core_cpi.release",
         label="BLS核心CPI官方发布事实",
         unit="index",
+        seasonal_adjustment="not_seasonally_adjusted",
         importance_tier=3,
     ),
     _bls_release(
@@ -547,6 +570,7 @@ _DATASETS = (
         dataset_id="bls.unemployment.release",
         label="BLS失业率官方发布事实",
         unit="percent",
+        seasonal_adjustment="seasonally_adjusted",
         importance_tier=3,
     ),
     _bls_release(
@@ -554,6 +578,7 @@ _DATASETS = (
         dataset_id="bls.payrolls.release",
         label="BLS非农就业官方发布事实",
         unit="thousands_persons",
+        seasonal_adjustment="seasonally_adjusted",
         importance_tier=3,
     ),
     _bea_release(
@@ -563,6 +588,7 @@ _DATASETS = (
         metric="real_gdp",
         label="BEA实际GDP官方发布事实",
         frequency="quarterly",
+        seasonal_adjustment="seasonally_adjusted_annual_rate",
     ),
     _bea_release(
         dataset_id="bea.pce.release",
@@ -571,6 +597,7 @@ _DATASETS = (
         metric="pce",
         label="BEA PCE价格指数官方发布事实",
         frequency="monthly",
+        seasonal_adjustment="seasonally_adjusted",
     ),
     _bea_release(
         dataset_id="bea.core_pce.release",
@@ -579,6 +606,7 @@ _DATASETS = (
         metric="core_pce",
         label="BEA核心PCE价格指数官方发布事实",
         frequency="monthly",
+        seasonal_adjustment="seasonally_adjusted",
     ),
     _cftc_tff(
         "cftc.tff.rates_positions",
@@ -766,10 +794,12 @@ _DATASETS = (
         frequency="event",
         freshness_seconds=7_776_000,
         refresh_seconds=21_600,
+        seasonal_adjustment="unknown",
         critical=False,
         metadata={
             "official_owner": "Board of Governors of the Federal Reserve System",
             "importance_tier": 1,
+            "projection_periods": 32,
         },
     ),
     DatasetSpec(
@@ -788,11 +818,13 @@ _DATASETS = (
         frequency="event",
         freshness_seconds=604_800,
         refresh_seconds=21_600,
+        seasonal_adjustment="unknown",
         critical=False,
         metadata={
             "official_owner": "U.S. Department of the Treasury",
             "importance_tier": 2,
             "lookback_days": 120,
+            "projection_periods": 32,
         },
     ),
     DatasetSpec(
@@ -811,6 +843,7 @@ _DATASETS = (
         frequency="event",
         freshness_seconds=7_776_000,
         refresh_seconds=3_600,
+        seasonal_adjustment="unknown",
         critical=False,
         metadata={
             "official_owner": "Board of Governors of the Federal Reserve System",
@@ -834,6 +867,7 @@ _DATASETS = (
         frequency="event",
         freshness_seconds=2_592_000,
         refresh_seconds=3_600,
+        seasonal_adjustment="unknown",
         critical=False,
         metadata={
             "official_owner": "Board of Governors of the Federal Reserve System",
@@ -857,6 +891,7 @@ _DATASETS = (
         frequency="event",
         freshness_seconds=2_592_000,
         refresh_seconds=3_600,
+        seasonal_adjustment="unknown",
         critical=False,
         metadata={
             "role": "official_policy_communication",
@@ -893,6 +928,7 @@ _DATASETS = (
         frequency="event",
         freshness_seconds=31_536_000,
         refresh_seconds=0,
+        seasonal_adjustment="unknown",
         critical=True,
         metadata={"derived_from": ("federal_reserve.fomc.documents",)},
     ),
@@ -912,6 +948,7 @@ _DATASETS = (
         frequency="event",
         freshness_seconds=2_592_000,
         refresh_seconds=0,
+        seasonal_adjustment="unknown",
         critical=True,
         metadata={
             "derived_from": (
@@ -1209,6 +1246,7 @@ _DATASETS = (
         frequency="daily",
         freshness_seconds=_DAILY_FRESHNESS_SECONDS,
         refresh_seconds=21_600,
+        seasonal_adjustment="unknown",
         trust_tier="exchange",
         instrument_id="btc",
         symbol="BTC",
@@ -1233,6 +1271,7 @@ _DATASETS = (
         frequency="daily",
         freshness_seconds=259_200,
         refresh_seconds=21_600,
+        seasonal_adjustment="unknown",
         trust_tier="official",
         instrument_id="vx_future",
         symbol="VX",
@@ -1258,6 +1297,62 @@ DATASET_REGISTRY = MappingProxyType({spec.dataset_id: spec for spec in _DATASETS
 
 if len(DATASET_REGISTRY) != len(_DATASETS):
     raise RuntimeError("macro_dataset_registry_duplicate_id")
+if {spec.module_id for spec in _DATASETS} != set(MACRO_MODULE_IDS):
+    raise RuntimeError("macro_dataset_registry_module_contract_drift")
+
+_seasonal_adjustments = frozenset(get_args(MacroSeasonalAdjustment))
+if any(spec.seasonal_adjustment not in _seasonal_adjustments for spec in _DATASETS):
+    raise RuntimeError("macro_dataset_registry_seasonal_adjustment_invalid")
+if any(
+    spec.seasonal_adjustment == "unknown"
+    for spec in _DATASETS
+    if spec.module_id == "economy_inflation" and spec.fact_family == "release"
+):
+    raise RuntimeError("macro_economy_release_seasonal_adjustment_missing")
+if any(
+    not isinstance(spec.metadata.get("projection_periods"), int) or int(spec.metadata["projection_periods"]) <= 0
+    for spec in _DATASETS
+    if spec.fact_family == "release"
+):
+    raise RuntimeError("macro_release_projection_periods_missing")
+if any(
+    not isinstance(spec.metadata.get("history_years"), int) or int(spec.metadata["history_years"]) <= 0
+    for spec in _DATASETS
+    if spec.source_role == "history"
+):
+    raise RuntimeError("macro_required_history_contract_missing")
+
+MACRO_ACQUISITION_ADAPTER_IDS = frozenset(
+    {
+        "bea_release_page",
+        "binance_spot",
+        "bls_release",
+        "cfe_settlement",
+        "cftc_tff",
+        "fed_board_speech_archive",
+        "fed_fomc_calendar",
+        "fed_fomc_schedule",
+        "fed_reserve_bank_sitemaps",
+        "fred_csv",
+        "nasdaq_history",
+        "treasury_curve_xml",
+        "treasury_fiscaldata_auctions",
+        "yfinance_history",
+    }
+)
+MACRO_DERIVED_ADAPTER_IDS = frozenset(
+    {
+        "derived_document_analysis",
+        "derived_fomc_minutes_roster",
+    }
+)
+
+_acquisition_adapter_ids = {spec.adapter_id for spec in _DATASETS if spec.clock_kind != "derived"}
+if _acquisition_adapter_ids != MACRO_ACQUISITION_ADAPTER_IDS:
+    raise RuntimeError("macro_dataset_registry_acquisition_adapter_contract_drift")
+_derived_adapter_ids = {spec.adapter_id for spec in _DATASETS if spec.clock_kind == "derived"}
+if _derived_adapter_ids != MACRO_DERIVED_ADAPTER_IDS:
+    raise RuntimeError("macro_dataset_registry_derived_adapter_contract_drift")
 
 _SPECS_BY_CONCEPT: dict[str, list[DatasetSpec]] = {}
 for _spec in _DATASETS:
@@ -1287,6 +1382,8 @@ def require_dataset(dataset_id: str) -> DatasetSpec:
 
 __all__ = [
     "DATASET_REGISTRY",
+    "MACRO_ACQUISITION_ADAPTER_IDS",
+    "MACRO_DERIVED_ADAPTER_IDS",
     "datasets_for_clock",
     "datasets_for_module",
     "require_dataset",

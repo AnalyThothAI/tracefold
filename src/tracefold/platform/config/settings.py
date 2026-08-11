@@ -215,7 +215,6 @@ class MacroSourcesConfig(BaseModel):
     cftc_enabled: bool = True
     nasdaq_daily_enabled: bool = True
     yfinance_enabled: bool = True
-    request_timeout_seconds: float = Field(default=60.0, ge=1)
     user_agent: str = "TracefoldMacro/1.0 research@localhost"
 
 
@@ -437,7 +436,6 @@ providers:
     cftc_enabled: true
     nasdaq_daily_enabled: true
     yfinance_enabled: true
-    request_timeout_seconds: 60
     user_agent: "TracefoldMacro/1.0 research@localhost"
 
 news:

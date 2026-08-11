@@ -1,6 +1,6 @@
 import { MacroModulePage, MacroOverviewPage } from "@features/macro";
 import type { MacroModuleRouteReadData } from "@features/macro";
-import { cleanup, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { macroModuleFixture, macroOverviewFixture } from "@tests/fixtures/macroFixture";
 import { server } from "@tests/msw/server";
 import { createTestQueryClient, renderWithProviders } from "@tests/render/renderWithProviders";
@@ -117,7 +117,7 @@ describe("Macro current-fact workbench", () => {
     expect(screen.getByText(/确定性事实页/)).toBeVisible();
   });
 
-  it("presents server-owned dataset status and recovery before the module workbench", async () => {
+  it("opens a current blocker audit after the module workbench", async () => {
     const module = macroModuleFixture("rates_fed");
     module.evidence.dataset_states = [
       {
@@ -155,7 +155,7 @@ describe("Macro current-fact workbench", () => {
         next_open_ms: null,
         required_for_current: true,
         required_for_history: false,
-        source_role: "official_primary",
+        source_role: "decision_primary",
         source_state: "healthy",
         source_url: "https://fred.stlouisfed.org/series/DFF",
         trust_tier: "official",
@@ -169,7 +169,11 @@ describe("Macro current-fact workbench", () => {
       route: "/macro/rates-fed",
     });
 
-    const diagnostics = await screen.findByRole("region", { name: "数据集状态" });
+    const currentStatus = await screen.findByRole("region", { name: "当前事实状态" });
+    expect(within(currentStatus).getByText("等待下一次官方发布。")).toBeVisible();
+    expect(within(currentStatus).getByText(/恢复：下个交易时段/)).toBeVisible();
+    expect(within(currentStatus).getByText(/受影响数据集：fred.dff/)).toBeVisible();
+    const diagnostics = await screen.findByRole("region", { name: "数据集审计" });
     expect(
       within(diagnostics)
         .getByText(/数据集审计/)
@@ -183,7 +187,7 @@ describe("Macro current-fact workbench", () => {
     expect(datasetStatus.getByText("当前健康").nextElementSibling).toHaveTextContent("降级");
     expect(datasetStatus.getByText("当前合同").nextElementSibling).toHaveTextContent("必需");
     expect(datasetStatus.getByText("来源角色").nextElementSibling).toHaveTextContent(
-      "official_primary",
+      "decision_primary",
     );
     expect(datasetStatus.getByText("来源状态").nextElementSibling).toHaveTextContent("健康");
     expect(datasetStatus.getByText("信任层级").nextElementSibling).toHaveTextContent("官方");
@@ -197,9 +201,78 @@ describe("Macro current-fact workbench", () => {
     expect(datasetStatus.getByText("等待下一次官方发布。")).toBeVisible();
     expect(datasetStatus.getByText(/恢复：下个交易时段/)).toBeVisible();
     expect(datasetStatus.getByText(/下次检查/)).toBeVisible();
+    const workbench = await screen.findByRole("tabpanel");
     expect(
-      diagnostics.compareDocumentPosition(screen.getByRole("tabpanel")) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      currentStatus.compareDocumentPosition(workbench) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      workbench.compareDocumentPosition(diagnostics) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps history-only partial audit collapsed after the current workbench", async () => {
+    const module = macroModuleFixture("rates_fed");
+    module.evidence.dataset_states = [
+      {
+        concept_id: "treasury_history",
+        critical: false,
+        current_health: "current",
+        current_reason: {
+          affected_claim_ids: [],
+          affected_dataset_ids: [],
+          code: "current",
+          impact: "none",
+          message: "当前事实完整。",
+          recovery: "none",
+          retryable: false,
+        },
+        dataset_id: "treasury.daily_nominal_curve",
+        health_group: "rates",
+        history_depth: "partial",
+        history_reason: {
+          affected_claim_ids: [],
+          affected_dataset_ids: ["treasury.daily_nominal_curve"],
+          code: "history_backfill_pending",
+          impact: "limited",
+          message: "历史回填仍在进行。",
+          recovery: "automatic",
+          retryable: false,
+        },
+        label: "Treasury 历史曲线",
+        last_market_at_ms: null,
+        latest_received_at_ms: Date.parse("2026-07-28T12:45:00Z"),
+        latest_reference: "2026-07-28",
+        market_state: "closed",
+        next_open_ms: null,
+        required_for_current: true,
+        required_for_history: true,
+        source_role: "history",
+        source_state: "healthy",
+        source_url: "https://home.treasury.gov/",
+        trust_tier: "official",
+      },
+    ];
+    server.use(
+      http.get(/.*\/api\/macro\/rates-fed$/, () => HttpResponse.json({ ok: true, data: module })),
+    );
+
+    renderWithProviders(<MacroModulePage {...SESSION_PROPS} moduleId="rates_fed" />, {
+      route: "/macro/rates-fed",
+    });
+
+    const currentStatus = await screen.findByRole("region", { name: "当前事实状态" });
+    const diagnostics = await screen.findByRole("region", { name: "数据集审计" });
+    expect(
+      within(diagnostics)
+        .getByText(/数据集审计/)
+        .closest("details"),
+    ).not.toHaveAttribute("open");
+    const workbench = await screen.findByRole("tabpanel");
+    expect(
+      currentStatus.compareDocumentPosition(workbench) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      workbench.compareDocumentPosition(diagnostics) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
@@ -218,6 +291,7 @@ describe("Macro current-fact workbench", () => {
     });
 
     expect(await screen.findByRole("heading", { name: "利率与美联储" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     const delayed = await screen.findByRole("status", { name: "Update delayed" });
     expect(delayed).toHaveTextContent("Update delayed");
     expect(delayed).toHaveTextContent("refresh unavailable");

@@ -21,9 +21,10 @@ Any failed boundary makes the command return non-zero and directs the operator
 to `make logs`.
 
 ```bash
-make status  # fail closed unless the complete product is ready
-make logs    # follow PostgreSQL, migration, Serve, and Workers logs
-make down    # stop containers; preserve config, passwords, and database data
+make status            # fail closed on infrastructure/runtime readiness
+make macro-acceptance  # verify all six Macro product reads after deployment
+make logs              # follow PostgreSQL, migration, Serve, and Workers logs
+make down              # stop containers; preserve config, passwords, and database data
 ```
 
 The console is available at `http://127.0.0.1:8765/`. PostgreSQL, public HTTP,
@@ -217,10 +218,13 @@ ETFs, BTC, VIX, and major futures plus five-year daily continuous-futures
 proxies. Nasdaq public ETF history supplies the separate five-year daily ETF
 lane.
 `providers.macro_sources` can disable the entire family or FRED, Cboe, CFTC,
-Nasdaq daily, and Yahoo Chart independently and owns only request timeout/user-agent transport
-settings. It does not own dataset membership, formulas, freshness, or
-scheduling. Capabilities that require unavailable paid data are not part of the
-current product contract and are not filled with a fake proxy.
+Nasdaq daily, and Yahoo Chart independently and owns only provider admission
+and user-agent identity. Request timeout and bounded-operation budgets are
+code-owned. The retired `request_timeout_seconds` key is rejected; remove it
+from an existing operator config before upgrading. Provider config does not own
+dataset membership, formulas, freshness, or scheduling. Capabilities that
+require unavailable paid data are not part of the current product contract and
+are not filled with a fake proxy.
 
 Five explicit acquisition due loops own distinct clocks:
 `macro_intraday_market`, `macro_settlements`, `macro_economic_releases`,
@@ -299,10 +303,18 @@ token-identity collision guard; there is no Stocks product or route. Stop Serve
 and Workers while an existing database crosses this revision. General
 cross-asset Market facts and Macro remain installed. After migration, start only
 the new runtime. A fresh database migrates directly to head.
-Current head `20260810_0251` hard-cuts only the rebuildable Rates v6 serving
-row/frontier to `macro_rates_fed_v7`; typed facts, acquisition state, official
-documents, jobs, and immutable analyses are preserved. Stop Serve and Workers,
-apply the migration, then let the sole Macro projection writer rebuild Rates.
+Migration `20260811_0252` converts legacy acquisition-target states to the
+reachable state machine, removes `invalid`, preserves all six current rows, and
+clears only their rebuildable frontiers; it does not call a provider. Worker
+startup reconstructs missing/version-mismatched frontiers from persisted
+Dataset projection state, while matching clean frontiers remain zero-write.
+Current head `20260811_0253` hard-cuts only the rebuildable Rates, Economy, and
+Cross-Asset serving rows/frontiers to `macro_rates_fed_v8`,
+`macro_economy_inflation_v6`, and `macro_cross_asset_v8`. Typed facts,
+acquisition state, official documents, jobs, and immutable analyses are
+preserved. Stop Serve and Workers, apply both migrations, then let the sole
+Macro projection writer reconcile all six frontiers and rebuild the three
+semantic-contract rows.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
@@ -320,8 +332,9 @@ here. A snapshot lives at `generated/cli-help.md`.
 
 ## Container deployment
 
-`make up`, `make status`, `make logs`, and `make down` are the supported
-operator lifecycle. `make up` passes an existing `GITHUB_TOKEN` into the image
+`make up`, `make status`, `make macro-acceptance`, `make logs`, and `make down`
+are the supported operator lifecycle. `make up` passes an existing
+`GITHUB_TOKEN` into the image
 build as a BuildKit secret; when unset, it uses `gh auth token` if available.
 Public dependencies need neither. The token is not stored in an image layer or
 application config.
@@ -337,7 +350,10 @@ role-repair mechanism. Normal startup consists of PostgreSQL, the one-shot
 migration service, and separate Serve/Workers runtimes. `make status` returns
 non-zero for a failed/missing migration, stopped or unhealthy required
 container, failed Serve or Workers readiness endpoint, or missing HTML console.
-Use `make logs` for the bounded startup evidence named by a failure.
+It intentionally does not make business-data freshness part of readiness. Run
+`make macro-acceptance` after deployment to validate the overview and six
+current modules; use `make logs` for the bounded startup evidence named by a
+failure.
 
 ### Token Radar v2 and Stocks derived-state reset
 
@@ -355,6 +371,7 @@ Use the ordinary lifecycle after the transition:
 ```bash
 make up
 make status
+make macro-acceptance
 make logs
 make down
 ```

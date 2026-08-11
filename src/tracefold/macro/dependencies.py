@@ -47,6 +47,23 @@ DATASET_MODULE_DEPENDENCIES = MappingProxyType(
     }
 )
 
+_registry_dataset_ids = set(DATASET_REGISTRY)
+_dependency_dataset_ids = {
+    dataset_id for dataset_ids in MODULE_DATASET_DEPENDENCIES.values() for dataset_id in dataset_ids
+}
+if _dependency_dataset_ids != _registry_dataset_ids:
+    raise RuntimeError("macro_dependency_dataset_contract_drift")
+if set(DATASET_MODULE_DEPENDENCIES) != _registry_dataset_ids:
+    raise RuntimeError("macro_dependency_reverse_dataset_contract_drift")
+if {feature_id for feature_ids in MODULE_CALCULATION_DEPENDENCIES.values() for feature_id in feature_ids} != set(
+    CALCULATION_REGISTRY
+):
+    raise RuntimeError("macro_dependency_calculation_contract_drift")
+if set(NATURAL_CHANGE_REGISTRY) != _registry_dataset_ids:
+    raise RuntimeError("macro_natural_change_registry_contract_drift")
+if any(spec.module_id not in DATASET_MODULE_DEPENDENCIES[spec.dataset_id] for spec in DATASET_REGISTRY.values()):
+    raise RuntimeError("macro_dependency_owner_module_missing")
+
 
 def module_projection_version(module_id: MacroModuleId) -> str:
     from tracefold.macro.module_payloads import schema_version_for_module

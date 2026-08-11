@@ -8,11 +8,12 @@ import json
 import math
 import re
 import time
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
@@ -22,6 +23,7 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 from tracefold.macro import (
+    MACRO_ACQUISITION_ADAPTER_IDS,
     DatasetSpec,
     DocumentFact,
     FetchBatch,
@@ -41,6 +43,39 @@ _MAX_DECODED_BYTES = 25_000_000
 _MAX_FACTS = 5_000
 _MAX_BATCH_BYTES = 16_777_216
 _TOTAL_OPERATION_SECONDS = 28.0
+_REQUEST_TIMEOUT_SECONDS = 30.0
+_MacroAcquisitionAdapter = Callable[[DatasetSpec, str, dict[str, Any], int], FetchBatch]
+_ACQUISITION_ADAPTER_METHOD_NAMES = {
+    "bea_release_page": "_fetch_bea_release",
+    "binance_spot": "_fetch_binance_spot",
+    "bls_release": "_fetch_bls_release",
+    "cfe_settlement": "_fetch_cfe_settlement",
+    "cftc_tff": "_fetch_cftc_tff",
+    "fed_board_speech_archive": "_fetch_board_speech_archive",
+    "fed_fomc_calendar": "_fetch_fed_fomc_calendar",
+    "fed_fomc_schedule": "_fetch_fomc_schedule",
+    "fed_reserve_bank_sitemaps": "_fetch_reserve_bank_speeches",
+    "fred_csv": "_fetch_fred",
+    "nasdaq_history": "_fetch_nasdaq_history",
+    "treasury_curve_xml": "_fetch_treasury_curve",
+    "treasury_fiscaldata_auctions": "_fetch_treasury_auctions",
+    "yfinance_history": "_fetch_yfinance_history",
+}
+
+
+def _require_adapter_contract() -> None:
+    production_ids = frozenset(_ACQUISITION_ADAPTER_METHOD_NAMES)
+    missing = MACRO_ACQUISITION_ADAPTER_IDS - production_ids
+    extra = production_ids - MACRO_ACQUISITION_ADAPTER_IDS
+    if missing or extra:
+        raise RuntimeError(
+            "macro_source_adapter_contract_mismatch:"
+            f"missing={','.join(sorted(missing)) or '-'};"
+            f"extra={','.join(sorted(extra)) or '-'}"
+        )
+
+
+_require_adapter_contract()
 
 
 @dataclass(slots=True)
@@ -161,7 +196,6 @@ class MacroSourceClient:
     def __init__(
         self,
         *,
-        timeout_seconds: float = 30.0,
         user_agent: str = "TracefoldMacro/1.0 research@localhost",
         fred_enabled: bool = True,
         cboe_enabled: bool = True,
@@ -170,14 +204,20 @@ class MacroSourceClient:
         yfinance_enabled: bool = True,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        _require_adapter_contract()
+        self._adapters: dict[str, _MacroAcquisitionAdapter] = {}
+        for adapter_id, method_name in _ACQUISITION_ADAPTER_METHOD_NAMES.items():
+            handler = getattr(self, method_name, None)
+            if not callable(handler):
+                raise RuntimeError(f"macro_source_adapter_handler_invalid:{adapter_id}:{method_name}")
+            self._adapters[adapter_id] = cast(_MacroAcquisitionAdapter, handler)
         headers = {"User-Agent": user_agent, "Accept": "text/csv,application/json"}
         self._client = httpx.Client(
-            timeout=timeout_seconds,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
             follow_redirects=True,
             headers=headers,
             transport=transport,
         )
-        self._timeout_seconds = float(timeout_seconds)
         self._fred_enabled = bool(fred_enabled)
         self._cboe_enabled = bool(cboe_enabled)
         self._cftc_enabled = bool(cftc_enabled)
@@ -241,26 +281,8 @@ class MacroSourceClient:
             raise MacroSourceUnavailable("nasdaq_daily_disabled")
         if spec.adapter_id == "yfinance_history" and not self._yfinance_enabled:
             raise MacroSourceUnavailable("yfinance_disabled")
-        adapters = {
-            "fred_csv": self._fetch_fred,
-            "treasury_curve_xml": self._fetch_treasury_curve,
-            "nasdaq_history": self._fetch_nasdaq_history,
-            "yfinance_history": self._fetch_yfinance_history,
-            "binance_spot": self._fetch_binance_spot,
-            "cftc_tff": self._fetch_cftc_tff,
-            "bls_release": self._fetch_bls_release,
-            "fed_board_speech_archive": self._fetch_board_speech_archive,
-            "fed_fomc_schedule": self._fetch_fomc_schedule,
-            "fed_fomc_calendar": self._fetch_fed_fomc_calendar,
-            "fed_reserve_bank_sitemaps": self._fetch_reserve_bank_speeches,
-            "treasury_fiscaldata_auctions": self._fetch_treasury_auctions,
-        }
-        if spec.adapter_id == "cfe_settlement":
-            return self._fetch_cfe_settlement(spec, partition_key, cursor, received_at_ms)
-        if spec.adapter_id == "bea_release_page":
-            return self._fetch_bea_release(spec, partition_key, received_at_ms)
         try:
-            adapter = adapters[spec.adapter_id]
+            adapter = self._adapters[spec.adapter_id]
         except KeyError as exc:
             raise MacroSourceError(f"unsupported_macro_adapter:{spec.adapter_id}") from exc
         return adapter(spec, partition_key, cursor, received_at_ms)
@@ -273,7 +295,7 @@ class MacroSourceClient:
 
     def _httpx_request(self, method: str, *args: Any, **kwargs: Any) -> httpx.Response:
         budget = _required_budget()
-        remaining = min(self._timeout_seconds, budget.begin_request())
+        remaining = min(_REQUEST_TIMEOUT_SECONDS, budget.begin_request())
         kwargs["timeout"] = httpx.Timeout(
             remaining,
             connect=min(5.0, remaining),
@@ -396,7 +418,10 @@ class MacroSourceClient:
             headers={"Accept": "application/json, text/plain, */*"},
         )
         _require_success(response, source_id=spec.source_id)
-        payload = response.json()
+        payload = _decode_json(
+            response,
+            error_code="nasdaq_history_payload_invalid",
+        )
         status_code = (
             payload.get("status", {}).get("rCode")
             if isinstance(payload, dict) and isinstance(payload.get("status"), dict)
@@ -479,7 +504,10 @@ class MacroSourceClient:
         )
         _require_success(response, source_id=spec.source_id)
         try:
-            chart = response.json()["chart"]
+            chart = _decode_json(
+                response,
+                error_code="yfinance_history_payload_invalid",
+            )["chart"]
             if chart.get("error") is not None:
                 raise MacroSourceError("yfinance_chart_error")
             result = chart["result"][0]
@@ -666,7 +694,10 @@ class MacroSourceClient:
             params["endTime"] = _date_end_ms(end_date)
         response = self._get(spec.source_url, params=params)
         _require_success(response, source_id=spec.source_id)
-        payload = response.json()
+        payload = _decode_json(
+            response,
+            error_code="binance_spot_payload_invalid",
+        )
         if not isinstance(payload, list):
             raise MacroSourceError("binance_spot_payload_invalid")
         facts: list[MarketObservationFact] = []
@@ -843,7 +874,10 @@ class MacroSourceClient:
             },
         )
         _require_success(response, source_id=spec.source_id)
-        payload = response.json()
+        payload = _decode_json(
+            response,
+            error_code="cftc_tff_payload_invalid",
+        )
         if not isinstance(payload, list):
             raise MacroSourceError("cftc_tff_payload_invalid")
         facts: list[MarketPositionFact] = []
@@ -954,7 +988,10 @@ class MacroSourceClient:
             },
         )
         _require_success(response, source_id=spec.source_id)
-        payload = response.json()
+        payload = _decode_json(
+            response,
+            error_code="bls_release_payload_invalid",
+        )
         series = payload.get("Results", {}).get("series", []) if isinstance(payload, dict) else []
         raw_rows = series[0].get("data", []) if series and isinstance(series[0], dict) else []
         rows = [
@@ -1012,6 +1049,7 @@ class MacroSourceClient:
         self,
         spec: DatasetSpec,
         partition_key: str,
+        _cursor: dict[str, Any],
         received_at_ms: int,
     ) -> FetchBatch:
         listing_response = self._get(
@@ -1239,10 +1277,10 @@ class MacroSourceClient:
             headers={"Accept": "application/json"},
         )
         _require_success(response, source_id=spec.source_id)
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise MacroSourceError("treasury_auction_json_invalid") from exc
+        payload = _decode_json(
+            response,
+            error_code="treasury_auction_json_invalid",
+        )
         rows = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
             raise MacroSourceError("treasury_auction_rows_missing")
@@ -1273,15 +1311,23 @@ class MacroSourceClient:
             )
             metric_values: dict[str, tuple[float | None, str]] = {
                 "bid_to_cover": (bid_to_cover, "ratio"),
-                "high_yield": (
-                    _first_number(
-                        raw_row.get("high_yield"),
-                        raw_row.get("high_discnt_rate"),
-                        raw_row.get("high_investment_rate"),
-                    ),
+                "high_discount_rate": (
+                    _optional_number(raw_row.get("high_discnt_rate")),
                     "percent",
                 ),
+                "high_investment_rate": (
+                    _optional_number(raw_row.get("high_investment_rate")),
+                    "percent",
+                ),
+                "high_yield": (_optional_number(raw_row.get("high_yield")), "percent"),
                 "offering_amount": (_optional_number(raw_row.get("offering_amt")), "usd"),
+            }
+            source_fields = {
+                "bid_to_cover": "bid_to_cover_ratio",
+                "high_discount_rate": "high_discnt_rate",
+                "high_investment_rate": "high_investment_rate",
+                "high_yield": "high_yield",
+                "offering_amount": "offering_amt",
             }
             accepted = _optional_number(raw_row.get("comp_accepted"))
             if accepted is not None and accepted > 0:
@@ -1304,6 +1350,7 @@ class MacroSourceClient:
             for metric, (value, unit) in sorted(metric_values.items()):
                 if value is None:
                     continue
+                source_field = source_fields.get(metric)
                 facts.append(
                     ReleaseFact(
                         dataset_id=spec.dataset_id,
@@ -1327,6 +1374,14 @@ class MacroSourceClient:
                             "security_type": raw_row.get("security_type"),
                             "security_term": raw_row.get("security_term"),
                             "metric": metric,
+                            **(
+                                {
+                                    "source_field": source_field,
+                                    "source_value": raw_row.get(source_field),
+                                }
+                                if source_field is not None
+                                else {}
+                            ),
                         },
                     )
                 )
@@ -1838,21 +1893,11 @@ def _require_success(
         raise MacroSourceError(f"{source_id}_http_error:{response.status_code}") from exc
 
 
-def _read_bounded_stream(
-    response: httpx.Response,
-    *,
-    max_bytes: int,
-    error_code: str,
-) -> bytes:
-    content_length = _optional_int(response.headers.get("content-length"))
-    if content_length is not None and content_length > max_bytes:
-        raise MacroSourceError(error_code)
-    body = bytearray()
-    for chunk in response.iter_bytes():
-        body.extend(chunk)
-        if len(body) > max_bytes:
-            raise MacroSourceError(error_code)
-    return bytes(body)
+def _decode_json(response: httpx.Response, *, error_code: str) -> Any:
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise MacroSourceError(error_code) from exc
 
 
 def _finite_float(value: Any) -> float | None:
@@ -1911,14 +1956,6 @@ def _required_date(value: Any) -> date:
 
 def _optional_number(value: Any) -> float | None:
     return _finite_float(value)
-
-
-def _first_number(*values: Any) -> float | None:
-    for value in values:
-        parsed = _optional_number(value)
-        if parsed is not None:
-            return parsed
-    return None
 
 
 def _percentage(numerator: Any, denominator: float) -> float | None:

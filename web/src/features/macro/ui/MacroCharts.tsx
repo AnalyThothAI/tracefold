@@ -13,6 +13,15 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
+import {
+  MACRO_CHART_COLORS as SERIES_COLORS,
+  formatInstant,
+  formatMacroNumber as formatNumber,
+  formatMacroSigned as formatSigned,
+  formatMacroUnit as unitLabel,
+  formatMacroValue as formatOptional,
+  macroChartColor,
+} from "../model/macroPresentation";
 import type {
   MacroCorrelationView,
   MacroCurveSnapshotView,
@@ -71,19 +80,6 @@ type ResolvedChartAnnotation = Required<
     sourceDate: string;
     sourceTimestamp: string;
   };
-
-const SERIES_COLORS = [
-  "#67d4ff",
-  "#f6c85f",
-  "#9d8cff",
-  "#ff7c8b",
-  "#66c2a5",
-  "#fc8d62",
-  "#8da0cb",
-  "#e78ac3",
-  "#a6d854",
-  "#ffd92f",
-];
 
 const EMPTY_ANNOTATIONS: MacroChartAnnotation[] = [];
 
@@ -172,7 +168,7 @@ export function MacroTimeSeriesChart({
     }> = [];
     visibleSeries.forEach((item, index) => {
       const api = chart.addSeries(LineSeries, {
-        color: item.color ?? SERIES_COLORS[index % SERIES_COLORS.length],
+        color: resolveCssColor(item.color ?? macroChartColor(index)),
         lineWidth: 2,
         lineStyle: chartLineStyle(item.lineStyle),
         priceLineVisible: false,
@@ -208,7 +204,7 @@ export function MacroTimeSeriesChart({
           api,
           bound.map((annotation): SeriesMarker<Time> => {
             const marker = {
-              color: annotationColor(annotation.tone),
+              color: resolveCssColor(annotationColor(annotation.tone)),
               id: annotation.id,
               shape: annotationShape(annotation.tone),
               text: annotation.tone === "latest" ? undefined : annotation.label,
@@ -232,7 +228,7 @@ export function MacroTimeSeriesChart({
         .forEach((annotation) => {
           api.createPriceLine({
             axisLabelVisible: true,
-            color: annotationColor(annotation.tone),
+            color: resolveCssColor(annotationColor(annotation.tone)),
             lineStyle: LineStyle.Dashed,
             lineWidth: 1,
             price: annotation.value,
@@ -690,40 +686,46 @@ export function MacroCorrelationHeatmap({
         </div>
       </figcaption>
       <div
-        className="macro-chart__heatmap"
-        style={{ "--heatmap-columns": symbols.length + 1 } as CSSProperties}
+        aria-label={`${title}横向滚动区域`}
+        className="macro-chart__heatmap-scroll"
+        role="region"
       >
-        <span aria-hidden="true" />
-        {symbols.map((symbol) => (
-          <strong key={`head:${symbol}`}>{symbol}</strong>
-        ))}
-        {symbols.flatMap((left) => [
-          <strong key={`row:${left}`}>{left}</strong>,
-          ...symbols.map((right) => {
-            const row = lookup.get(`${left}:${right}`);
-            const value = left === right ? 1 : (row?.correlation ?? null);
-            return (
-              <span
-                aria-label={`${left} 与 ${right} 相关性 ${value == null ? "不可用" : value.toFixed(2)}`}
-                data-empty={value == null || undefined}
-                key={`${left}:${right}`}
-                style={
-                  value == null
-                    ? undefined
-                    : ({
-                        "--heat-alpha": Math.max(Math.abs(value), 0.08),
-                        "--heat-color": value >= 0 ? "103, 212, 255" : "255, 124, 139",
-                      } as CSSProperties)
-                }
-                title={`${left}/${right}: ${value == null ? "—" : value.toFixed(2)}${
-                  row?.sampleCount ? ` (n=${row.sampleCount})` : ""
-                }`}
-              >
-                {value == null ? "—" : value.toFixed(2)}
-              </span>
-            );
-          }),
-        ])}
+        <div
+          className="macro-chart__heatmap"
+          style={{ "--heatmap-columns": symbols.length + 1 } as CSSProperties}
+        >
+          <span aria-hidden="true" />
+          {symbols.map((symbol) => (
+            <strong key={`head:${symbol}`}>{symbol}</strong>
+          ))}
+          {symbols.flatMap((left) => [
+            <strong key={`row:${left}`}>{left}</strong>,
+            ...symbols.map((right) => {
+              const row = lookup.get(`${left}:${right}`);
+              const value = left === right ? 1 : (row?.correlation ?? null);
+              return (
+                <span
+                  aria-label={`${left} 与 ${right} 相关性 ${value == null ? "不可用" : value.toFixed(2)}`}
+                  data-empty={value == null || undefined}
+                  key={`${left}:${right}`}
+                  style={
+                    value == null
+                      ? undefined
+                      : ({
+                          "--heat-alpha": Math.max(Math.abs(value), 0.08),
+                          "--heat-color": value >= 0 ? "103, 212, 255" : "255, 124, 139",
+                        } as CSSProperties)
+                  }
+                  title={`${left}/${right}: ${value == null ? "—" : value.toFixed(2)}${
+                    row?.sampleCount ? ` (n=${row.sampleCount})` : ""
+                  }`}
+                >
+                  {value == null ? "—" : value.toFixed(2)}
+                </span>
+              );
+            }),
+          ])}
+        </div>
       </div>
       <details className="macro-chart__data">
         <summary>查看相关性数据（{rows.length} 对）</summary>
@@ -819,8 +821,9 @@ export function MacroReleaseStrip({ releases }: { releases: MacroReleaseView[] }
           key={`${release.datasetId}:${release.referencePeriod ?? release.publishedAtMs ?? release.scheduledAtMs ?? "latest"}`}
         >
           <span>
-            {release.label} · {release.referencePeriod ?? "当前期"}
+            {release.label} · 参考期 {release.referencePeriod}
           </span>
+          <small>调整：{seasonalAdjustmentLabel(release.seasonalAdjustment)}</small>
           <strong>{formatOptional(release.actualValue, release.unit)}</strong>
           <small>
             {release.estimateValue == null
@@ -834,14 +837,11 @@ export function MacroReleaseStrip({ releases }: { releases: MacroReleaseView[] }
               : null}
             前值修订 {formatSigned(release.revision)}
           </small>
-          {release.publishedAtMs || release.receivedAtMs ? (
-            <small>
-              {release.publishedAtMs
-                ? `发布 ${formatInstant(release.publishedAtMs)}`
-                : "未提供发布时间"}
-              {release.receivedAtMs ? ` · 接收 ${formatInstant(release.receivedAtMs)}` : ""}
-            </small>
-          ) : null}
+          <small>
+            计划 {formatOptionalClock(release.scheduledAtMs)} · 发布{" "}
+            {formatOptionalClock(release.publishedAtMs)} · 接收{" "}
+            {formatInstant(release.receivedAtMs)}
+          </small>
           {release.sourceUrl ? (
             <a href={release.sourceUrl} rel="noreferrer" target="_blank">
               官方来源
@@ -1136,11 +1136,16 @@ function curvePointX(years: number, minimumYears: number, maturitySpan: number):
 }
 
 function annotationColor(tone: ResolvedChartAnnotation["tone"]): string {
-  if (tone === "invalidation") return "#ff7c8b";
-  if (tone === "weakening" || tone === "checkpoint") return "#f6c85f";
-  if (tone === "confirming") return "#66c2a5";
-  if (tone === "cutoff") return "#9d8cff";
-  return "#67d4ff";
+  if (tone === "invalidation") return macroChartColor(3);
+  if (tone === "weakening" || tone === "checkpoint") return macroChartColor(1);
+  if (tone === "confirming") return macroChartColor(4);
+  if (tone === "cutoff") return macroChartColor(2);
+  return macroChartColor(0);
+}
+
+function resolveCssColor(value: string): string {
+  const token = /^var\((--[^)]+)\)$/.exec(value)?.[1];
+  return token ? getComputedStyle(document.documentElement).getPropertyValue(token).trim() : value;
 }
 
 function annotationShape(tone: ResolvedChartAnnotation["tone"]): SeriesMarker<Time>["shape"] {
@@ -1160,46 +1165,17 @@ function isTestDom(): boolean {
   return typeof window !== "undefined" && /jsdom/i.test(window.navigator.userAgent);
 }
 
-function formatOptional(value: number | null, unit?: string): string {
-  return value == null ? "—" : `${formatNumber(value)}${unitLabel(unit)}`;
+function formatOptionalClock(value: number | null): string {
+  return value == null ? "未提供" : formatInstant(value);
 }
 
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
-}
-
-function formatInstant(value: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    dateStyle: "short",
-    hour12: false,
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-function formatSigned(value: number | null): string {
-  if (value == null) return "—";
-  return `${value > 0 ? "+" : ""}${formatNumber(value)}`;
-}
-
-function unitLabel(unit?: string): string {
-  if (!unit) return "";
-  return (
-    {
-      basis_points: " bp",
-      billions_chained_2017_usd: " 十亿 2017 年不变价美元",
-      billions_usd: " 十亿美元",
-      bp: " bp",
-      index: " 点",
-      index_points: " 点",
-      millions_usd: " 百万美元",
-      percent: "%",
-      percent_open_interest: "% OI",
-      persons: " 人",
-      thousands_persons: " 千人",
-      usd_per_barrel: " 美元/桶",
-      usdt: " USDT",
-    }[unit] ?? "（单位未解释）"
-  );
+function seasonalAdjustmentLabel(value: MacroReleaseView["seasonalAdjustment"]): string {
+  return {
+    not_seasonally_adjusted: "未经季节调整",
+    seasonally_adjusted: "季节调整",
+    seasonally_adjusted_annual_rate: "季调年率",
+    unknown: "未说明",
+  }[value];
 }
 
 function windowLabel(value: MacroCurveSnapshotView["window"]): string {

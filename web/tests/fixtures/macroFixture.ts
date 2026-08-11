@@ -48,7 +48,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "rates_fed") {
     return {
       ...moduleCore(moduleId),
-      schema_version: "macro_rates_fed_v7",
+      schema_version: "macro_rates_fed_v8",
       module_id: "rates_fed",
       document_analysis_runtime: {
         state: "disabled",
@@ -329,6 +329,8 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
             received_at_ms: CUTOFF_MS - 30_000,
             source_url: "https://fiscal.treasury.gov/reports-statements/treasury-auctions/",
             bid_to_cover_ratio: 2.67,
+            high_discount_rate_pct: null,
+            high_investment_rate_pct: null,
             high_yield_pct: 4.321,
             offering_amount_usd: 42_000_000_000,
             indirect_award_share_pct: 70,
@@ -344,7 +346,7 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   if (moduleId === "economy_inflation") {
     return {
       ...common,
-      schema_version: "macro_economy_inflation_v5",
+      schema_version: "macro_economy_inflation_v6",
       module_id: "economy_inflation",
       inflation: {
         indicators: [indicatorFixture("fred.cpi", "CPI 同比", 2.7)],
@@ -410,10 +412,16 @@ export function macroModuleFixture(moduleId: MacroModuleId): MacroTypedModuleRea
   }
   return {
     ...common,
-    schema_version: "macro_cross_asset_v7",
+    schema_version: "macro_cross_asset_v8",
     module_id: "cross_asset",
     assets: { return_matrix: [], normalized_groups: [], source_identity: [] },
-    correlations: [],
+    correlation_contract: {
+      default_window: "90_daily_returns",
+      minimum_common_observations: 20,
+      presentation_derivation: "undirected_pairs_mirrored_with_unit_diagonal",
+      supported_windows: ["30_daily_returns", "90_daily_returns", "252_daily_returns"],
+    },
+    correlations: correlationFixture(),
     futures: { return_matrix: [], positions: [] },
   };
 }
@@ -633,6 +641,19 @@ function indicatorFixture(
       { date: SESSION_DATE, value },
     ],
   };
+}
+
+function correlationFixture(): Schemas["MacroCorrelationData"][] {
+  const symbols = ["SPY", "QQQ", "IWM", "TLT", "HYG", "LQD", "GLD", "USO", "UUP", "EEM"];
+  return symbols.flatMap((left, leftIndex) =>
+    symbols.slice(leftIndex + 1).map((right, rightOffset) => ({
+      correlation: Number((0.75 - (leftIndex + rightOffset) * 0.08).toFixed(2)),
+      left,
+      right,
+      sample_count: 90,
+      window: "90_daily_returns" as const,
+    })),
+  );
 }
 
 function stanceCounts(): Schemas["MacroFedStanceCountsData"] {

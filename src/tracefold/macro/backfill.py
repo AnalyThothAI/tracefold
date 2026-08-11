@@ -3,36 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from tracefold.macro.assets import CROSS_ASSET_DATASETS
 from tracefold.macro.registry import DATASET_REGISTRY
 
 PROFESSIONAL_FIVE_YEAR_DATASETS = frozenset(
-    {
+    (
         "treasury.daily_nominal_curve",
         "treasury.daily_real_curve",
         "federal_reserve.fomc.documents",
         "federal_reserve.board.speeches",
         "federal_reserve.reserve_bank.speeches",
         "binance.btcusdt.spot",
-        "nasdaq.spy.daily",
-        "nasdaq.qqq.daily",
-        "nasdaq.iwm.daily",
-        "nasdaq.tlt.daily",
-        "nasdaq.ief.daily",
-        "nasdaq.lqd.daily",
-        "nasdaq.hyg.daily",
-        "nasdaq.dxy.daily",
-        "nasdaq.gld.daily",
-        "nasdaq.uso.daily",
-        "yfinance.es_future.daily",
-        "yfinance.nq_future.daily",
-        "yfinance.rty_future.daily",
-        "yfinance.zb_future.daily",
-        "yfinance.zn_future.daily",
-        "yfinance.dx_future.daily",
-        "yfinance.gc_future.daily",
-        "yfinance.cl_future.daily",
-        "yfinance.hg_future.daily",
-    }
+        *CROSS_ASSET_DATASETS.five_year_backfill_dataset_ids,
+    )
 )
 
 
@@ -72,6 +55,17 @@ def professional_backfill_policies(*, through_date: date) -> tuple[MacroBackfill
         )
 
     recent_history_start = _years_before(through_date, 5)
+    for spec in DATASET_REGISTRY.values():
+        if spec.source_role != "history":
+            continue
+        history_years = int(spec.metadata["history_years"])
+        register(
+            spec.dataset_id,
+            "required_history",
+            _years_before(through_date, history_years),
+            priority=10,
+        )
+
     for dataset_id in PROFESSIONAL_FIVE_YEAR_DATASETS:
         register(
             dataset_id,

@@ -157,10 +157,6 @@
     stroke-dasharray: 6 3;
   }
 
-  .macro-chart__curve-line[data-window="1m"] {
-    stroke-dasharray: 3 3;
-  }
-
   .macro-chart__curve-line[data-window="3m"] {
     stroke-dasharray: 1 4;
   }
@@ -378,6 +374,13 @@
     text-decoration: none;
   }
 
+  .macro-chart__heatmap-scroll {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
   .macro-chart__heatmap {
     display: grid;
     grid-template-columns: minmax(3rem, 0.6fr) repeat(
@@ -385,8 +388,8 @@
         minmax(2.9rem, 1fr)
       );
     gap: 2px;
-    min-width: max-content;
-    overflow-x: auto;
+    width: max-content;
+    min-width: 100%;
   }
 
   .macro-chart__heatmap > span,

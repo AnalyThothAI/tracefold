@@ -9,6 +9,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from starlette.middleware.gzip import GZipMiddleware
 
 from tracefold.app.http.exceptions import (
     ApiBadRequest,
@@ -66,6 +67,7 @@ def create_app(
                 primary_error.add_note(f"runtime cleanup failed: {type(cleanup_exc).__name__}: {cleanup_exc}")
 
     app = FastAPI(title="Tracefold", lifespan=lifespan)
+    app.add_middleware(GZipMiddleware, minimum_size=1_024, compresslevel=5)
     app.add_exception_handler(ApiUnauthorized, api_unauthorized_response)
     app.add_exception_handler(ApiBadRequest, api_bad_request_response)
     app.add_exception_handler(ApiUnavailable, api_unavailable_response)

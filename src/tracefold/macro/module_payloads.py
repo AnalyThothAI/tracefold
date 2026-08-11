@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from tracefold.macro.assets import MACRO_ASSET_DATASET_IDS
+from tracefold.macro.assets import CROSS_ASSET_DATASETS
 from tracefold.macro.calculations import (
     calculate_curve_contract,
     calculate_funding_cost_comparisons,
@@ -17,54 +17,16 @@ from tracefold.macro.calculations import (
 )
 from tracefold.macro.coverage import coverage_for_module
 from tracefold.macro.dependencies import MODULE_DATASET_DEPENDENCIES
-from tracefold.macro.domain import MACRO_MODULE_LABELS, DatasetSpec, MacroModuleId
+from tracefold.macro.domain import (
+    MACRO_MODULE_DEFINITIONS,
+    DatasetSpec,
+    MacroModuleId,
+)
 from tracefold.macro.fed_roles import effective_roster_rows, match_effective_role
 from tracefold.macro.market_calendar import market_clock
 from tracefold.macro.reasons import macro_reason
 from tracefold.macro.registry import DATASET_REGISTRY
 
-_SCHEMA_VERSIONS: dict[MacroModuleId, str] = {
-    "rates_fed": "macro_rates_fed_v7",
-    "economy_inflation": "macro_economy_inflation_v5",
-    "liquidity_funding": "macro_liquidity_funding_v5",
-    "credit": "macro_credit_v7",
-    "volatility": "macro_volatility_v7",
-    "cross_asset": "macro_cross_asset_v7",
-}
-_ETF_DAILY_IDS = (
-    "nasdaq.spy.daily",
-    "nasdaq.qqq.daily",
-    "nasdaq.iwm.daily",
-    "nasdaq.tlt.daily",
-    "nasdaq.ief.daily",
-    "nasdaq.lqd.daily",
-    "nasdaq.hyg.daily",
-    "nasdaq.dxy.daily",
-    "nasdaq.gld.daily",
-    "nasdaq.uso.daily",
-)
-_ETF_INTRADAY_IDS = tuple(
-    dataset_id.replace("nasdaq.", "yfinance.").replace(".daily", ".intraday") for dataset_id in _ETF_DAILY_IDS
-)
-_ETF_DATASETS = tuple(zip(_ETF_DAILY_IDS, _ETF_INTRADAY_IDS, strict=True))
-_CROSS_ASSET_NORMALIZED_GROUPS = (
-    ("equity", "权益", _ETF_DAILY_IDS[:3]),
-    ("duration_credit", "久期与信用", _ETF_DAILY_IDS[3:7]),
-    ("dollar_commodities", "美元与商品", _ETF_DAILY_IDS[7:]),
-)
-_FUTURES_DAILY_IDS = (
-    "yfinance.es_future.daily",
-    "yfinance.nq_future.daily",
-    "yfinance.rty_future.daily",
-    "yfinance.zb_future.daily",
-    "yfinance.zn_future.daily",
-    "yfinance.dx_future.daily",
-    "yfinance.gc_future.daily",
-    "yfinance.cl_future.daily",
-    "yfinance.hg_future.daily",
-)
-_FUTURES_INTRADAY_IDS = tuple(dataset_id.replace(".daily", ".intraday") for dataset_id in _FUTURES_DAILY_IDS)
-_FUTURES_DATASETS = tuple(zip(_FUTURES_DAILY_IDS, _FUTURES_INTRADAY_IDS, strict=True))
 _HEALTH_GROUP_LABELS = {
     "etf_intraday": "ETF盘中行情",
     "etf_daily": "ETF五年日线",
@@ -91,14 +53,11 @@ def build_typed_module_payload(
     analysis_rows: list[dict[str, Any]] | None = None,
     analysis_job_state: dict[str, int] | None = None,
 ) -> dict[str, Any]:
+    definition = MACRO_MODULE_DEFINITIONS[module_id]
     role_rows = role_rows or []
     analysis_rows = analysis_rows or []
     settlement_rows = _current_settlement_revisions(settlement_rows)
-    specs = tuple(
-        DATASET_REGISTRY[dataset_id]
-        for dataset_id in MODULE_DATASET_DEPENDENCIES[module_id]
-        if dataset_id in DATASET_REGISTRY
-    )
+    specs = tuple(DATASET_REGISTRY[dataset_id] for dataset_id in MODULE_DATASET_DEPENDENCIES[module_id])
     dataset_ids = {spec.dataset_id for spec in specs}
     module_facts = [
         row
@@ -128,9 +87,9 @@ def build_typed_module_payload(
     history_depth = _history_depth(dataset_states)
     backfill_execution = _backfill_execution(specs, target_states)
     payload: dict[str, Any] = {
-        "schema_version": _SCHEMA_VERSIONS[module_id],
+        "schema_version": definition.schema_version,
         "module_id": module_id,
-        "label": MACRO_MODULE_LABELS[module_id],
+        "label": definition.label,
         "status": {
             "coverage": coverage,
             "current_health": current_health,
@@ -160,18 +119,10 @@ def build_typed_module_payload(
             }
         )
         payload["evidence"]["asset_changes"] = [
-            change for change in changes if str(change["dataset_id"]) in MACRO_ASSET_DATASET_IDS
+            change for change in changes if str(change["dataset_id"]) in CROSS_ASSET_DATASETS.asset_change_dataset_ids
         ]
-    builders = {
-        "rates_fed": _rates_payload,
-        "economy_inflation": _economy_payload,
-        "liquidity_funding": _liquidity_payload,
-        "credit": _credit_payload,
-        "volatility": _volatility_payload,
-        "cross_asset": _cross_asset_payload,
-    }
     payload.update(
-        builders[module_id](
+        _MODULE_BUILDERS[definition.builder_key](
             series_rows=series_rows,
             market_rows=market_rows,
             position_rows=position_rows,
@@ -186,43 +137,26 @@ def build_typed_module_payload(
 
 
 def schema_version_for_module(module_id: MacroModuleId) -> str:
-    return _SCHEMA_VERSIONS[module_id]
+    return MACRO_MODULE_DEFINITIONS[module_id].schema_version
 
 
 def _coverage(module_id: MacroModuleId) -> dict[str, Any]:
     capabilities = []
-    required_missing = False
     for capability in coverage_for_module(module_id):
-        datasets = [DATASET_REGISTRY.get(dataset_id) for dataset_id in capability.dataset_ids]
-        active = all(spec is not None for spec in datasets)
-        state = "available" if active else "missing"
-        if not active and capability.requirement == "required":
-            required_missing = True
+        for dataset_id in capability.dataset_ids:
+            DATASET_REGISTRY[dataset_id]
         capabilities.append(
             {
                 "capability_id": capability.capability_id,
                 "label": capability.label,
                 "requirement": capability.requirement,
-                "state": state,
+                "state": "available",
                 "dataset_ids": list(capability.dataset_ids),
-                "reason": (
-                    None
-                    if active
-                    else macro_reason(
-                        code="dataset_not_registered",
-                        message="该能力声明的 Dataset 尚未注册，不能作为当前模块证据。",
-                        impact="blocked" if capability.requirement == "required" else "limited",
-                        affected_dataset_ids=tuple(capability.dataset_ids),
-                        retryable=False,
-                        recovery="operator_action",
-                        next_action="修复 Dataset Registry 后重新投影模块。",
-                    )
-                ),
+                "reason": None,
             }
         )
-    state = "partial" if required_missing else "complete"
     return {
-        "state": state,
+        "state": "complete",
         "expected_capabilities": len(capabilities),
         "available_capabilities": sum(item["state"] == "available" for item in capabilities),
         "capabilities": capabilities,
@@ -257,6 +191,7 @@ def _dataset_states(
         dataset_id = str(row["dataset_id"])
         if dataset_id not in latest_by_dataset or _fact_order(row) > _fact_order(latest_by_dataset[dataset_id]):
             latest_by_dataset[dataset_id] = row
+    fact_dataset_ids = set(latest_by_dataset)
     states = []
     for spec in specs:
         required_for_current = spec.dataset_id in required_dataset_ids and spec.source_role not in {
@@ -299,6 +234,15 @@ def _dataset_states(
         ):
             current_health = "unavailable"
             current_reason = "document_analysis_initial_build_pending"
+        elif (
+            spec.dataset_id == "federal_reserve.document.analysis"
+            and analysis_job_state is not None
+            and int(analysis_job_state.get("total", 0)) == 0
+            and latest is None
+            and any(str(dataset_id) in fact_dataset_ids for dataset_id in spec.metadata.get("derived_from", ()))
+        ):
+            current_health = "unavailable"
+            current_reason = "document_analysis_disabled"
         elif spec.adapter_id.startswith("derived_") and latest is None:
             current_health = "unavailable"
             current_reason = "derived_fact_pending"
@@ -319,8 +263,6 @@ def _dataset_states(
         elif str(target.get("status") or "") in {
             "stale",
             "unavailable",
-            "invalid",
-            "failed",
         }:
             current_health = "degraded" if latest is not None else "unavailable"
             current_reason = "source_terminal_stale"
@@ -410,7 +352,7 @@ def _source_state(target: dict[str, Any] | None) -> str:
     status = str(target.get("status") or "")
     if status == "current":
         return "healthy"
-    if status in {"stale", "unavailable", "invalid", "failed"}:
+    if status in {"stale", "unavailable"}:
         return "failed"
     return "degraded"
 
@@ -418,6 +360,7 @@ def _source_state(target: dict[str, Any] | None) -> str:
 _CURRENT_REASON_MESSAGES = {
     "document_analysis_jobs_failed": "部分政策文件分析任务失败，现有事实仍可读取但分析覆盖受限。",
     "document_analysis_initial_build_pending": "政策文件分析尚未形成首个有效事实。",
+    "document_analysis_disabled": "政策文件分析未启用；官方利率与美联储事实仍独立可用。",
     "derived_fact_pending": "确定性派生事实尚未生成。",
     "derived_fact_past_freshness_budget": "派生事实已超过最大 freshness 预算。",
     "derived_fact_delayed": "派生事实已超过预期 freshness 预算。",
@@ -452,6 +395,7 @@ def _dataset_current_reason(
     healthy = current_health == "current"
     operator_action = code in {
         "acquisition_target_missing",
+        "document_analysis_disabled",
         "source_terminal_stale",
     }
     return macro_reason(
@@ -466,6 +410,8 @@ def _dataset_current_reason(
             if healthy
             else "由操作员检查并恢复该 Dataset；系统不会自动重试。"
             if code == "source_terminal_stale"
+            else "如需该 supporting evidence，由操作员配置政策文件分析模型。"
+            if code == "document_analysis_disabled"
             else "创建 acquisition target 后重新投影模块。"
             if code == "acquisition_target_missing"
             else "等待下一次采集或派生投影，并复核该 Dataset。"
@@ -537,7 +483,7 @@ def _dataset_history_depth(
     covered_days = (history_end - history_start).days if history_start is not None and history_end is not None else 0
     if covered_days >= expected_years * 365 - 14:
         return "complete", "expected_history_window_present"
-    if any(str(row.get("status") or "") in {"stale", "unavailable", "invalid", "failed"} for row in backfills):
+    if any(str(row.get("status") or "") in {"stale", "unavailable"} for row in backfills):
         return (
             ("partial", "history_backfill_terminal") if dated_facts else ("insufficient", "history_backfill_terminal")
         )
@@ -605,7 +551,7 @@ def _backfill_execution(
     ]
     statuses = [str(row.get("status") or "") for row in backfills]
     complete_targets = sum(status == "current" for status in statuses)
-    failed_targets = sum(status in {"stale", "unavailable", "invalid", "failed"} for status in statuses)
+    failed_targets = sum(status in {"stale", "unavailable"} for status in statuses)
     pending_targets = len(backfills) - complete_targets
     next_check_at_ms = min(
         (int(row["next_due_at_ms"]) for row in backfills if row.get("next_due_at_ms") is not None),
@@ -642,7 +588,7 @@ def _backfill_execution(
                     {
                         str(row["dataset_id"])
                         for row in backfills
-                        if str(row.get("status") or "") in {"stale", "unavailable", "invalid", "failed"}
+                        if str(row.get("status") or "") in {"stale", "unavailable"}
                     }
                 )
             ),
@@ -699,9 +645,9 @@ def _health_groups(dataset_states: list[dict[str, Any]]) -> list[dict[str, Any]]
             {
                 "group_id": group_id,
                 "label": _HEALTH_GROUP_LABELS.get(group_id, group_id.replace("_", " ")),
-                "current_health": _summary_axis(rows, "current_health", healthy="current"),
-                "market_state": _summary_axis(rows, "market_state", healthy="open"),
-                "source_state": _summary_axis(rows, "source_state", healthy="healthy"),
+                "current_health": _summary_axis(rows, "current_health"),
+                "market_state": _summary_axis(rows, "market_state"),
+                "source_state": _summary_axis(rows, "source_state"),
                 "current_datasets": sum(row["current_health"] == "current" for row in rows),
                 "tracked_datasets": len(rows),
             }
@@ -709,13 +655,9 @@ def _health_groups(dataset_states: list[dict[str, Any]]) -> list[dict[str, Any]]
     return output
 
 
-def _summary_axis(rows: list[dict[str, Any]], key: str, *, healthy: str) -> str:
+def _summary_axis(rows: list[dict[str, Any]], key: str) -> str:
     values = {str(row[key]) for row in rows}
-    if len(values) == 1:
-        return next(iter(values))
-    if healthy in values:
-        return "mixed"
-    return "mixed"
+    return next(iter(values)) if len(values) == 1 else "mixed"
 
 
 def _rates_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
@@ -799,10 +741,8 @@ def _liquidity_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _credit_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
     series_rows = groups["series_rows"]
-    confirmation_pairs = (
-        ("nasdaq.lqd.daily", "yfinance.lqd.intraday"),
-        ("nasdaq.hyg.daily", "yfinance.hyg.intraday"),
-    )
+    confirmation_instruments = tuple(CROSS_ASSET_DATASETS.etf_instrument(symbol) for symbol in ("LQD", "HYG"))
+    confirmation_pairs = tuple(instrument.dataset_pair for instrument in confirmation_instruments)
     confirmation_matrix = _cross_asset_return_matrix(
         groups["market_rows"],
         confirmation_pairs,
@@ -1106,26 +1046,32 @@ def _cross_asset_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
     market_rows = groups["market_rows"]
     series_rows = groups["series_rows"]
     symbol_by_dataset = {
-        dataset_id: str(DATASET_REGISTRY[dataset_id].symbol or dataset_id) for dataset_id in _ETF_DAILY_IDS
+        instrument.daily_dataset_id: instrument.symbol for instrument in CROSS_ASSET_DATASETS.etf_instruments
     }
     comparison = calculate_market_comparison(
         market_rows,
-        _ETF_DAILY_IDS,
+        CROSS_ASSET_DATASETS.etf_daily_dataset_ids,
         symbol_by_dataset,
     )
     return_matrix = _cross_asset_return_matrix(
         market_rows,
-        _ETF_DATASETS,
+        CROSS_ASSET_DATASETS.etf_dataset_pairs,
         group_by_history_dataset={
             dataset_id: (group_id, group_label)
-            for group_id, group_label, dataset_ids in _CROSS_ASSET_NORMALIZED_GROUPS
+            for group_id, group_label, dataset_ids in CROSS_ASSET_DATASETS.etf_normalized_groups
             for dataset_id in dataset_ids
         },
     )
     futures_return_matrix = _cross_asset_return_matrix(
         market_rows,
-        _FUTURES_DATASETS,
-        group_by_history_dataset={dataset_id: ("major_futures", "主要连续期货") for dataset_id in _FUTURES_DAILY_IDS},
+        CROSS_ASSET_DATASETS.futures_dataset_pairs,
+        group_by_history_dataset={
+            dataset_id: (
+                CROSS_ASSET_DATASETS.futures_group.group_id,
+                CROSS_ASSET_DATASETS.futures_group.label,
+            )
+            for dataset_id in CROSS_ASSET_DATASETS.futures_daily_dataset_ids
+        },
     )
     market_facts = {
         str(item["dataset_id"]): item
@@ -1205,11 +1151,12 @@ def _cross_asset_payload(**groups: list[dict[str, Any]]) -> dict[str, Any]:
             "return_matrix": return_matrix,
             "normalized_groups": _normalized_groups(
                 comparison["normalized"],
-                _CROSS_ASSET_NORMALIZED_GROUPS,
+                CROSS_ASSET_DATASETS.etf_normalized_groups,
             ),
             "source_identity": source_identity,
         },
         "correlations": comparison["correlations"],
+        "correlation_contract": comparison["correlation_contract"],
         "futures": {
             "return_matrix": futures_return_matrix,
             "positions": _position_rows(groups["position_rows"], "cftc.tff.cross_asset_positions"),
@@ -1588,6 +1535,8 @@ def _treasury_auction_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
     field_by_metric = {
         "bid_to_cover": "bid_to_cover_ratio",
         "high_yield": "high_yield_pct",
+        "high_discount_rate": "high_discount_rate_pct",
+        "high_investment_rate": "high_investment_rate_pct",
         "offering_amount": "offering_amount_usd",
         "indirect_award_share": "indirect_award_share_pct",
         "direct_award_share": "direct_award_share_pct",
@@ -1603,6 +1552,8 @@ def _treasury_auction_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         latest_row = max(auction_rows, key=_release_order)
         term = str(latest_row.get("series_id") or "").split(":", maxsplit=1)[0]
+        raw_data = latest_row.get("raw_data_json")
+        source_term = str(raw_data.get("security_term") or "").strip() if isinstance(raw_data, dict) else ""
         metrics: dict[str, float | None] = {field: None for field in field_by_metric.values()}
         for row in auction_rows:
             series_parts = str(row.get("series_id") or "").split(":", maxsplit=1)
@@ -1615,7 +1566,7 @@ def _treasury_auction_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
             {
                 "auction_id": release_id,
                 "cusip": release_parts[1],
-                "security_term": term,
+                "security_term": source_term or term,
                 "auction_date": auction_date.isoformat(),
                 "scheduled_at_ms": (
                     int(latest_row["scheduled_at_ms"]) if latest_row.get("scheduled_at_ms") is not None else None
@@ -1785,6 +1736,7 @@ def _release_summaries(rows: list[dict[str, Any]], dataset_ids: tuple[str, ...])
 
 
 def _release_observation(row: dict[str, Any]) -> dict[str, Any]:
+    spec = DATASET_REGISTRY[str(row["dataset_id"])]
     return {
         "reference_period": row["reference_period"],
         "scheduled_at_ms": (int(row["scheduled_at_ms"]) if row.get("scheduled_at_ms") is not None else None),
@@ -1794,6 +1746,7 @@ def _release_observation(row: dict[str, Any]) -> dict[str, Any]:
         "revised_prior_value": row["revised_prior_value"],
         **_release_delta(row),
         "unit": row["unit"],
+        "seasonal_adjustment": spec.seasonal_adjustment,
         "published_at_ms": (int(row["published_at_ms"]) if row.get("published_at_ms") is not None else None),
         "received_at_ms": int(row["received_at_ms"]),
         "source_url": row["source_url"],
@@ -2502,6 +2455,18 @@ def _release_order(row: dict[str, Any]) -> tuple[str, int, int, int, str]:
         int(row.get("received_at_ms") or 0),
         str(row.get("fact_hash") or row.get("release_fact_id") or ""),
     )
+
+
+_MODULE_BUILDERS = {
+    "rates_fed": _rates_payload,
+    "economy_inflation": _economy_payload,
+    "liquidity_funding": _liquidity_payload,
+    "credit": _credit_payload,
+    "volatility": _volatility_payload,
+    "cross_asset": _cross_asset_payload,
+}
+if set(_MODULE_BUILDERS) != {definition.builder_key for definition in MACRO_MODULE_DEFINITIONS.values()}:
+    raise RuntimeError("macro_module_builder_contract_drift")
 
 
 __all__ = ["build_typed_module_payload", "schema_version_for_module"]

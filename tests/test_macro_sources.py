@@ -14,9 +14,11 @@ from tracefold.integrations.macro_sources import (
     MacroSourceUnavailable,
 )
 from tracefold.macro import DATASET_REGISTRY, DocumentFact, ReleaseFact, SeriesFact, require_dataset
+from tracefold.macro.registry import MACRO_ACQUISITION_ADAPTER_IDS
 from tracefold.market import MarketObservationFact, MarketPositionFact, MarketSettlementFact
 
 NOW_MS = int(datetime(2026, 7, 27, 12, tzinfo=UTC).timestamp() * 1_000)
+_REMOVED_ACQUISITION_ADAPTER_ID = min(MACRO_ACQUISITION_ADAPTER_IDS)
 
 
 def _fetch_macro_continuations(
@@ -43,6 +45,68 @@ def _fetch_macro_continuations(
             return batch, batches
         next_cursor = batch.cursor
     raise AssertionError("macro continuation did not converge")
+
+
+@pytest.mark.parametrize(
+    ("registry_contract", "expected_drift"),
+    [
+        (
+            MACRO_ACQUISITION_ADAPTER_IDS | {"unwired_test_adapter"},
+            "missing=unwired_test_adapter",
+        ),
+        (
+            MACRO_ACQUISITION_ADAPTER_IDS - {_REMOVED_ACQUISITION_ADAPTER_ID},
+            f"extra={_REMOVED_ACQUISITION_ADAPTER_ID}",
+        ),
+    ],
+)
+def test_macro_source_client_constructor_fails_fast_on_dispatch_contract_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    registry_contract: frozenset[str],
+    expected_drift: str,
+) -> None:
+    monkeypatch.setattr(
+        macro_source_client,
+        "MACRO_ACQUISITION_ADAPTER_IDS",
+        registry_contract,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="macro_source_adapter_contract_mismatch") as exc_info:
+        MacroSourceClient()
+
+    assert expected_drift in str(exc_info.value)
+
+
+def test_macro_source_client_dispatches_the_exact_registry_adapter_contract() -> None:
+    representative_specs = {}
+    for spec in DATASET_REGISTRY.values():
+        if spec.adapter_id in MACRO_ACQUISITION_ADAPTER_IDS:
+            representative_specs.setdefault(spec.adapter_id, spec)
+    assert frozenset(representative_specs) == MACRO_ACQUISITION_ADAPTER_IDS
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503, request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        for adapter_id in sorted(MACRO_ACQUISITION_ADAPTER_IDS):
+            request_count = len(requests)
+            try:
+                client.fetch(
+                    representative_specs[adapter_id],
+                    partition_key="latest",
+                    cursor={},
+                    now_ms=NOW_MS,
+                )
+            except MacroSourceError as exc:
+                assert "unsupported_macro_adapter" not in str(exc)
+            assert len(requests) > request_count
+    finally:
+        client.close()
 
 
 def test_fred_csv_uses_explicit_backfill_bounds_and_emits_typed_series_facts() -> None:
@@ -572,6 +636,68 @@ def test_treasury_auction_adapter_emits_typed_demand_metrics_for_completed_resul
     assert batch.cursor == {"auction_date": "2026-07-27", "record_date": "2026-07-27"}
 
 
+def test_treasury_bill_preserves_each_source_rate_as_a_distinct_typed_fact() -> None:
+    response_payload = {
+        "data": [
+            {
+                "record_date": "2026-08-10",
+                "cusip": "912797QJ2",
+                "security_type": "Bill",
+                "security_term": "13-Week",
+                "auction_date": "2026-08-10",
+                "closing_time_comp": "11:30 AM",
+                "bid_to_cover_ratio": "2.880000",
+                "high_discnt_rate": "3.735000",
+                "high_investment_rate": "3.823000",
+                "high_yield": "3.901000",
+                "offering_amt": "85000000000",
+                "comp_accepted": "null",
+                "pdf_filenm_comp_results": "R_20260810_1.pdf",
+            }
+        ],
+        "meta": {"total-count": 1},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response_payload, request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        batch = client.fetch(
+            require_dataset("treasury.auction.results"),
+            partition_key="latest",
+            cursor={},
+            now_ms=NOW_MS,
+        )
+    finally:
+        client.close()
+
+    rate_facts = [
+        fact
+        for fact in batch.facts
+        if fact.series_id
+        in {
+            "13_WEEK:high_discount_rate",
+            "13_WEEK:high_investment_rate",
+            "13_WEEK:high_yield",
+        }
+    ]
+    assert all(isinstance(fact, ReleaseFact) for fact in rate_facts)
+    assert [
+        (
+            fact.series_id,
+            fact.actual_value,
+            fact.raw_data["source_field"],
+            fact.raw_data["source_value"],
+        )
+        for fact in rate_facts
+    ] == [
+        ("13_WEEK:high_discount_rate", 3.735, "high_discnt_rate", "3.735000"),
+        ("13_WEEK:high_investment_rate", 3.823, "high_investment_rate", "3.823000"),
+        ("13_WEEK:high_yield", 3.901, "high_yield", "3.901000"),
+    ]
+
+
 def test_fomc_calendar_adapter_extracts_official_sep_pdf(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -989,6 +1115,55 @@ def test_nasdaq_daily_history_requests_five_year_window_and_emits_daily_facts() 
     assert requests[0].url.params["fromdate"] == "2021-07-27"
     assert requests[0].url.params["todate"] == "2026-07-27"
     assert requests[0].url.params["limit"] == "5000"
+
+
+def test_nasdaq_malformed_success_json_is_a_source_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{", request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(MacroSourceError, match=r"^nasdaq_history_payload_invalid$"):
+            client.fetch(
+                require_dataset("nasdaq.spy.daily"),
+                partition_key="latest",
+                cursor={},
+                now_ms=NOW_MS,
+            )
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    ("dataset_id", "error_code"),
+    [
+        ("binance.btcusdt.spot", "binance_spot_payload_invalid"),
+        ("cftc.tff.rates_positions", "cftc_tff_payload_invalid"),
+        ("bls.unemployment.release", "bls_release_payload_invalid"),
+        ("yfinance.spy.intraday", "yfinance_history_payload_invalid"),
+        ("treasury.auction.results", "treasury_auction_json_invalid"),
+    ],
+)
+def test_json_providers_translate_malformed_success_payloads(
+    dataset_id: str,
+    error_code: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{", request=request)
+
+    client = MacroSourceClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(MacroSourceError) as exc_info:
+            client.fetch(
+                require_dataset(dataset_id),
+                partition_key="latest",
+                cursor={},
+                now_ms=NOW_MS,
+            )
+    finally:
+        client.close()
+
+    assert str(exc_info.value) == error_code
 
 
 def test_yfinance_intraday_emits_market_time_facts_and_switches_to_incremental_period() -> None:

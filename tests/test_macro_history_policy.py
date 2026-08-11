@@ -23,7 +23,7 @@ def test_series_history_policy_preserves_full_percentiles_without_universal_cap(
     assert limits["treasury.daily_real_curve"] == 130
 
 
-def test_market_history_policy_matches_formula_frequency() -> None:
+def test_market_history_policy_bounds_intraday_to_the_longest_comparison_window() -> None:
     limits = market_history_limits(
         (
             "yfinance.spy.intraday",
@@ -31,6 +31,6 @@ def test_market_history_policy_matches_formula_frequency() -> None:
         )
     )
     assert limits == {
-        "yfinance.spy.intraday": 5_000,
+        "yfinance.spy.intraday": 36,
         "nasdaq.spy.daily": 260,
     }

@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
 from tracefold.app.http.exceptions import ApiBadRequest
-from tracefold.app.http.responses import _validated_json
+from tracefold.app.http.macro_modules import MACRO_HTTP_MODULE_BY_ID
+from tracefold.app.http.responses import _validated_etag_json, _validated_json
 from tracefold.app.runtime_capabilities import macro_document_analysis_runtime
 from tracefold.macro import (
     MACRO_MODULE_IDS,
@@ -20,25 +21,29 @@ from tracefold.macro import (
 )
 
 router = APIRouter()
-
-_MODULE_HREFS = {
-    "rates_fed": "/macro/rates-fed",
-    "economy_inflation": "/macro/economy-inflation",
-    "liquidity_funding": "/macro/liquidity-funding",
-    "credit": "/macro/credit",
-    "volatility": "/macro/volatility",
-    "cross_asset": "/macro/cross-asset",
+_MACRO_ETAG_HEADERS: dict[str, dict[str, object]] = {
+    "Cache-Control": {
+        "description": "Requires revalidation before reuse.",
+        "schema": {"type": "string"},
+    },
+    "ETag": {
+        "description": "Weak semantic validator shared by identity and gzip representations.",
+        "schema": {"type": "string"},
+    },
 }
-_MODULE_PERSISTED_SCHEMAS: dict[
-    MacroModuleId,
-    type[api_schemas.ExactApiSchema],
-] = {
-    "rates_fed": api_schemas.MacroRatesFedPersistedData,
-    "economy_inflation": api_schemas.MacroEconomyInflationPersistedData,
-    "liquidity_funding": api_schemas.MacroLiquidityFundingPersistedData,
-    "credit": api_schemas.MacroCreditPersistedData,
-    "volatility": api_schemas.MacroVolatilityPersistedData,
-    "cross_asset": api_schemas.MacroCrossAssetPersistedData,
+_MACRO_ETAG_RESPONSES = {
+    200: {"headers": _MACRO_ETAG_HEADERS},
+    304: {"description": "Not Modified", "headers": _MACRO_ETAG_HEADERS},
+}
+_MACRO_ETAG_OPENAPI_EXTRA = {
+    "parameters": [
+        {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": False,
+            "schema": {"title": "If-None-Match", "type": "string"},
+        }
+    ]
 }
 
 
@@ -93,7 +98,7 @@ def _read_module(request: Request, module_id: MacroModuleId) -> dict[str, Any]:
             "label": MACRO_MODULE_LABELS[module_id],
             "availability": "unavailable",
             "reason": module_reason,
-            "href": _MODULE_HREFS[module_id],
+            "href": MACRO_HTTP_MODULE_BY_ID[module_id].href,
         }
     if module_id == "rates_fed":
         payload["document_analysis_runtime"] = macro_document_analysis_runtime(runtime.settings)
@@ -105,8 +110,10 @@ def _read_module(request: Request, module_id: MacroModuleId) -> dict[str, Any]:
 @router.get(
     "/macro/rates-fed",
     response_model=api_schemas.ApiEnvelope[api_schemas.MacroRatesFedReadData | api_schemas.MacroModuleUnavailableData],
+    responses=_MACRO_ETAG_RESPONSES,
+    openapi_extra=_MACRO_ETAG_OPENAPI_EXTRA,
 )
-def macro_rates_fed(request: Request) -> JSONResponse:
+def macro_rates_fed(request: Request) -> Response:
     return _module_response(request, "rates_fed", api_schemas.MacroRatesFedReadData)
 
 
@@ -115,8 +122,10 @@ def macro_rates_fed(request: Request) -> JSONResponse:
     response_model=api_schemas.ApiEnvelope[
         api_schemas.MacroEconomyInflationReadData | api_schemas.MacroModuleUnavailableData
     ],
+    responses=_MACRO_ETAG_RESPONSES,
+    openapi_extra=_MACRO_ETAG_OPENAPI_EXTRA,
 )
-def macro_economy_inflation(request: Request) -> JSONResponse:
+def macro_economy_inflation(request: Request) -> Response:
     return _module_response(
         request,
         "economy_inflation",
@@ -129,8 +138,10 @@ def macro_economy_inflation(request: Request) -> JSONResponse:
     response_model=api_schemas.ApiEnvelope[
         api_schemas.MacroLiquidityFundingReadData | api_schemas.MacroModuleUnavailableData
     ],
+    responses=_MACRO_ETAG_RESPONSES,
+    openapi_extra=_MACRO_ETAG_OPENAPI_EXTRA,
 )
-def macro_liquidity_funding(request: Request) -> JSONResponse:
+def macro_liquidity_funding(request: Request) -> Response:
     return _module_response(
         request,
         "liquidity_funding",
@@ -141,8 +152,10 @@ def macro_liquidity_funding(request: Request) -> JSONResponse:
 @router.get(
     "/macro/credit",
     response_model=api_schemas.ApiEnvelope[api_schemas.MacroCreditReadData | api_schemas.MacroModuleUnavailableData],
+    responses=_MACRO_ETAG_RESPONSES,
+    openapi_extra=_MACRO_ETAG_OPENAPI_EXTRA,
 )
-def macro_credit(request: Request) -> JSONResponse:
+def macro_credit(request: Request) -> Response:
     return _module_response(request, "credit", api_schemas.MacroCreditReadData)
 
 
@@ -151,8 +164,10 @@ def macro_credit(request: Request) -> JSONResponse:
     response_model=api_schemas.ApiEnvelope[
         api_schemas.MacroVolatilityReadData | api_schemas.MacroModuleUnavailableData
     ],
+    responses=_MACRO_ETAG_RESPONSES,
+    openapi_extra=_MACRO_ETAG_OPENAPI_EXTRA,
 )
-def macro_volatility(request: Request) -> JSONResponse:
+def macro_volatility(request: Request) -> Response:
     return _module_response(request, "volatility", api_schemas.MacroVolatilityReadData)
 
 
@@ -161,8 +176,10 @@ def macro_volatility(request: Request) -> JSONResponse:
     response_model=api_schemas.ApiEnvelope[
         api_schemas.MacroCrossAssetReadData | api_schemas.MacroModuleUnavailableData
     ],
+    responses=_MACRO_ETAG_RESPONSES,
+    openapi_extra=_MACRO_ETAG_OPENAPI_EXTRA,
 )
-def macro_cross_asset(request: Request) -> JSONResponse:
+def macro_cross_asset(request: Request) -> Response:
     return _module_response(request, "cross_asset", api_schemas.MacroCrossAssetReadData)
 
 
@@ -170,13 +187,17 @@ def _module_response(
     request: Request,
     module_id: MacroModuleId,
     read_schema: type[api_schemas.ExactApiSchema],
-) -> JSONResponse:
+) -> Response:
     envelope = api_schemas.ApiEnvelope[
         read_schema | api_schemas.MacroModuleUnavailableData  # type: ignore[valid-type]
     ]
-    return _validated_json(
+    data = _read_module(request, module_id)
+    return _validated_etag_json(
         envelope,
-        {"ok": True, "data": _read_module(request, module_id)},
+        {"ok": True, "data": data},
+        data=data,
+        request=request,
+        weak=True,
     )
 
 
@@ -209,7 +230,7 @@ def _module_payload(
     payload = row.get("payload_json")
     if isinstance(payload, dict) and payload.get("schema_version") == expected_schema:
         try:
-            validated = _MODULE_PERSISTED_SCHEMAS[module_id].model_validate(payload)
+            validated = MACRO_HTTP_MODULE_BY_ID[module_id].persisted_schema.model_validate(payload)
         except ValidationError:
             pass
         else:
@@ -245,7 +266,7 @@ def _module_summary(
             "coverage_gap_count": 1,
             "current_health_gap_count": 1,
             "history_gap_count": 0,
-            "href": _MODULE_HREFS[module_id],
+            "href": MACRO_HTTP_MODULE_BY_ID[module_id].href,
         }
     status = dict(payload["status"])
     coverage = dict(status["coverage"])
@@ -288,7 +309,7 @@ def _module_summary(
             0,
             int(history_depth["tracked_datasets"]) - int(history_depth["complete_datasets"]),
         ),
-        "href": _MODULE_HREFS[module_id],
+        "href": MACRO_HTTP_MODULE_BY_ID[module_id].href,
     }
 
 

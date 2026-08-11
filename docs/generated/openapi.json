@@ -1434,6 +1434,15 @@
             "title": "Primary Change"
           },
           "source_role": {
+            "enum": [
+              "decision_primary",
+              "history",
+              "release",
+              "intraday_proxy",
+              "reconciliation_only",
+              "official_document",
+              "derived"
+            ],
             "title": "Source Role",
             "type": "string"
           },
@@ -1470,6 +1479,49 @@
         "title": "MacroChangeData",
         "type": "object"
       },
+      "MacroCorrelationContractData": {
+        "additionalProperties": false,
+        "properties": {
+          "default_window": {
+            "enum": [
+              "30_daily_returns",
+              "90_daily_returns",
+              "252_daily_returns"
+            ],
+            "title": "Default Window",
+            "type": "string"
+          },
+          "minimum_common_observations": {
+            "title": "Minimum Common Observations",
+            "type": "integer"
+          },
+          "presentation_derivation": {
+            "const": "undirected_pairs_mirrored_with_unit_diagonal",
+            "title": "Presentation Derivation",
+            "type": "string"
+          },
+          "supported_windows": {
+            "items": {
+              "enum": [
+                "30_daily_returns",
+                "90_daily_returns",
+                "252_daily_returns"
+              ],
+              "type": "string"
+            },
+            "title": "Supported Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "default_window",
+          "supported_windows",
+          "minimum_common_observations",
+          "presentation_derivation"
+        ],
+        "title": "MacroCorrelationContractData",
+        "type": "object"
+      },
       "MacroCorrelationData": {
         "additionalProperties": false,
         "properties": {
@@ -1497,7 +1549,11 @@
             "type": "integer"
           },
           "window": {
-            "const": "up_to_120_daily_returns",
+            "enum": [
+              "30_daily_returns",
+              "90_daily_returns",
+              "252_daily_returns"
+            ],
             "title": "Window",
             "type": "string"
           }
@@ -2096,6 +2152,9 @@
             "title": "Contradictions",
             "type": "array"
           },
+          "correlation_contract": {
+            "$ref": "#/components/schemas/MacroCorrelationContractData"
+          },
           "correlations": {
             "items": {
               "$ref": "#/components/schemas/MacroCorrelationData"
@@ -2147,7 +2206,7 @@
             ]
           },
           "schema_version": {
-            "const": "macro_cross_asset_v7",
+            "const": "macro_cross_asset_v8",
             "title": "Schema Version",
             "type": "string"
           },
@@ -2170,6 +2229,7 @@
           "schema_version",
           "module_id",
           "assets",
+          "correlation_contract",
           "correlations",
           "futures",
           "availability",
@@ -2306,6 +2366,15 @@
             "type": "string"
           },
           "source_role": {
+            "enum": [
+              "decision_primary",
+              "history",
+              "release",
+              "intraday_proxy",
+              "reconciliation_only",
+              "official_document",
+              "derived"
+            ],
             "title": "Source Role",
             "type": "string"
           }
@@ -3017,6 +3086,15 @@
             "type": "boolean"
           },
           "source_role": {
+            "enum": [
+              "decision_primary",
+              "history",
+              "release",
+              "intraday_proxy",
+              "reconciliation_only",
+              "official_document",
+              "derived"
+            ],
             "title": "Source Role",
             "type": "string"
           },
@@ -3174,7 +3252,7 @@
             ]
           },
           "schema_version": {
-            "const": "macro_economy_inflation_v5",
+            "const": "macro_economy_inflation_v6",
             "title": "Schema Version",
             "type": "string"
           },
@@ -4543,6 +4621,14 @@
             "title": "Latest Fact At Ms"
           },
           "module_id": {
+            "enum": [
+              "rates_fed",
+              "economy_inflation",
+              "liquidity_funding",
+              "credit",
+              "volatility",
+              "cross_asset"
+            ],
             "title": "Module Id",
             "type": "string"
           },
@@ -4645,6 +4731,14 @@
             "type": "string"
           },
           "module_id": {
+            "enum": [
+              "rates_fed",
+              "economy_inflation",
+              "liquidity_funding",
+              "credit",
+              "volatility",
+              "cross_asset"
+            ],
             "title": "Module Id",
             "type": "string"
           },
@@ -4671,6 +4765,11 @@
         "additionalProperties": false,
         "properties": {
           "current_health": {
+            "enum": [
+              "current",
+              "degraded",
+              "unavailable"
+            ],
             "title": "Current Health",
             "type": "string"
           },
@@ -4679,6 +4778,12 @@
             "type": "string"
           },
           "history_depth": {
+            "enum": [
+              "complete",
+              "partial",
+              "insufficient",
+              "not_required"
+            ],
             "title": "History Depth",
             "type": "string"
           },
@@ -4822,6 +4927,16 @@
             ],
             "title": "Scheduled At Ms"
           },
+          "seasonal_adjustment": {
+            "enum": [
+              "seasonally_adjusted",
+              "not_seasonally_adjusted",
+              "seasonally_adjusted_annual_rate",
+              "unknown"
+            ],
+            "title": "Seasonal Adjustment",
+            "type": "string"
+          },
           "source_url": {
             "title": "Source Url",
             "type": "string"
@@ -4844,6 +4959,7 @@
         },
         "required": [
           "reference_period",
+          "seasonal_adjustment",
           "scheduled_at_ms",
           "actual_value",
           "estimate_value",
@@ -5377,7 +5493,7 @@
             ]
           },
           "schema_version": {
-            "const": "macro_rates_fed_v7",
+            "const": "macro_rates_fed_v8",
             "title": "Schema Version",
             "type": "string"
           },
@@ -6048,6 +6164,15 @@
             "title": "Reference"
           },
           "source_role": {
+            "enum": [
+              "decision_primary",
+              "history",
+              "release",
+              "intraday_proxy",
+              "reconciliation_only",
+              "official_document",
+              "derived"
+            ],
             "title": "Source Role",
             "type": "string"
           },
@@ -6233,6 +6358,16 @@
             ],
             "title": "Scheduled At Ms"
           },
+          "seasonal_adjustment": {
+            "enum": [
+              "seasonally_adjusted",
+              "not_seasonally_adjusted",
+              "seasonally_adjusted_annual_rate",
+              "unknown"
+            ],
+            "title": "Seasonal Adjustment",
+            "type": "string"
+          },
           "source_url": {
             "title": "Source Url",
             "type": "string"
@@ -6255,6 +6390,7 @@
         },
         "required": [
           "reference_period",
+          "seasonal_adjustment",
           "scheduled_at_ms",
           "actual_value",
           "estimate_value",
@@ -6419,6 +6555,28 @@
             ],
             "title": "Direct Award Share Pct"
           },
+          "high_discount_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High Discount Rate Pct"
+          },
+          "high_investment_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High Investment Rate Pct"
+          },
           "high_yield_pct": {
             "anyOf": [
               {
@@ -6509,6 +6667,8 @@
           "source_url",
           "bid_to_cover_ratio",
           "high_yield_pct",
+          "high_discount_rate_pct",
+          "high_investment_rate_pct",
           "offering_amount_usd",
           "indirect_award_share_pct",
           "direct_award_share_pct",
@@ -10982,6 +11142,17 @@
     "/api/macro/credit": {
       "get": {
         "operationId": "macro_credit_api_macro_credit_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "title": "If-None-Match",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -10991,7 +11162,38 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "summary": "Macro Credit",
@@ -11003,6 +11205,17 @@
     "/api/macro/cross-asset": {
       "get": {
         "operationId": "macro_cross_asset_api_macro_cross_asset_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "title": "If-None-Match",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11012,7 +11225,38 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "summary": "Macro Cross Asset",
@@ -11024,6 +11268,17 @@
     "/api/macro/economy-inflation": {
       "get": {
         "operationId": "macro_economy_inflation_api_macro_economy_inflation_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "title": "If-None-Match",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11033,7 +11288,38 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "summary": "Macro Economy Inflation",
@@ -11045,6 +11331,17 @@
     "/api/macro/liquidity-funding": {
       "get": {
         "operationId": "macro_liquidity_funding_api_macro_liquidity_funding_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "title": "If-None-Match",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11054,7 +11351,38 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "summary": "Macro Liquidity Funding",
@@ -11087,6 +11415,17 @@
     "/api/macro/rates-fed": {
       "get": {
         "operationId": "macro_rates_fed_api_macro_rates_fed_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "title": "If-None-Match",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11096,7 +11435,38 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "summary": "Macro Rates Fed",
@@ -11108,6 +11478,17 @@
     "/api/macro/volatility": {
       "get": {
         "operationId": "macro_volatility_api_macro_volatility_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "title": "If-None-Match",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11117,7 +11498,38 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified",
+            "headers": {
+              "Cache-Control": {
+                "description": "Requires revalidation before reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak semantic validator shared by identity and gzip representations.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "summary": "Macro Volatility",

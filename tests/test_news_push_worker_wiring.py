@@ -9,6 +9,7 @@ import pytest
 
 from tracefold.app import workers
 from tracefold.app.market_providers import AssetMarketProviders
+from tracefold.macro import MacroProjectionCandidate
 from tracefold.news import NewsPushReceipt
 from tracefold.news.push import NewsStoryPush
 from tracefold.platform.config.settings import Settings
@@ -199,18 +200,37 @@ def test_startup_reconcile_publishes_token_radar_before_competing_business_work(
         async def reconcile(self) -> None:
             calls.append(("profile", None))
 
+    class _Database:
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            assert operation_name == "macro_projection_reconcile"
+            calls.append(("macro_projection", None))
+            return 0
+
+    macro_projection = MacroProjectionCandidate(
+        db=_Database(),
+        cpu=object(),
+        runtime_id="a3b1f67c-6f83-4c7f-9ea4-aab4b652e343",
+    )
+
     components = SimpleNamespace(
         radar_current=_Radar(),
         asset_profile_refresh=_ProfileRefresh(),
         news=_News(),
         news_push=_Push(),
         macro_turns=(),
+        projections=(macro_projection,),
         document_model=None,
     )
 
     asyncio.run(workers._reconcile_once(components))  # type: ignore[arg-type]
 
-    assert [name for name, _value in calls] == ["radar", "profile", "news", "push"]
+    assert [name for name, _value in calls] == [
+        "radar",
+        "profile",
+        "news",
+        "push",
+        "macro_projection",
+    ]
     assert calls[3][1] is not None
 
 

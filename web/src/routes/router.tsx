@@ -76,34 +76,10 @@ export function createAppRouteObjects(): RouteObject[] {
                 };
               },
             },
-            ...(
-              [
-                ["rates-fed", "rates_fed"],
-                ["economy-inflation", "economy_inflation"],
-                ["liquidity-funding", "liquidity_funding"],
-                ["credit", "credit"],
-                ["volatility", "volatility"],
-                ["cross-asset", "cross_asset"],
-              ] as const
-            ).map(([path, moduleId]) => ({
-              path: `macro/${path}`,
-              lazy: async () => {
-                const { MacroModulePage } = await import("@features/macro");
-                return {
-                  Component: function MacroModuleRoute() {
-                    const { bootstrapError, bootstrapLoading, token } = useShellRouteContext();
-                    return (
-                      <MacroModulePage
-                        bootstrapError={bootstrapError}
-                        bootstrapLoading={bootstrapLoading}
-                        moduleId={moduleId}
-                        token={token}
-                      />
-                    );
-                  },
-                };
-              },
-            })),
+            {
+              path: "macro/:modulePath",
+              lazy: () => import("./macro.route"),
+            },
             {
               index: true,
               lazy: () => import("./live.route"),

@@ -44,6 +44,18 @@ def test_professional_backfill_policy_matches_confirmed_history_boundaries() -> 
     assert expected_intraday_proxies <= DATASET_REGISTRY.keys()
 
 
+def test_professional_backfill_derives_every_required_history_target_from_the_registry() -> None:
+    through_date = date(2026, 7, 27)
+    policies = {policy.dataset_id: policy for policy in professional_backfill_policies(through_date=through_date)}
+    required_history = {spec.dataset_id for spec in DATASET_REGISTRY.values() if spec.source_role == "history"}
+
+    assert len(required_history) == 11
+    assert required_history <= policies.keys()
+    assert all(policies[dataset_id].history_class == "required_history" for dataset_id in required_history)
+    assert all(policies[dataset_id].start_date == date(2021, 7, 27) for dataset_id in required_history)
+    assert all(policies[dataset_id].priority == 10 for dataset_id in required_history)
+
+
 def test_wti_daily_observations_use_the_official_weekly_release_freshness() -> None:
     spec = DATASET_REGISTRY["fred.dcoilwtico"]
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
@@ -10,7 +8,7 @@ from fastapi.responses import JSONResponse, Response
 from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http.dependencies import _authenticated_runtime, _now_ms
 from tracefold.app.http.exceptions import ApiBadRequest
-from tracefold.app.http.responses import _validated_json
+from tracefold.app.http.responses import _validated_etag_json, _validated_json
 from tracefold.app.http.validators import _target_type
 from tracefold.market import live_market_snapshot, served_token_radar_snapshot
 
@@ -91,11 +89,9 @@ def _validate_token_radar_query(request: Request) -> None:
 
 
 def _etagged_token_radar(data: dict[str, object], request: Request) -> Response:
-    encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    etag = f'"{hashlib.sha256(encoded).hexdigest()}"'
-    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-    response = _validated_json(_TokenRadarEnvelope, {"ok": True, "data": data})
-    response.headers.update(headers)
-    return response
+    return _validated_etag_json(
+        _TokenRadarEnvelope,
+        {"ok": True, "data": data},
+        data=data,
+        request=request,
+    )

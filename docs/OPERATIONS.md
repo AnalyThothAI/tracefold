@@ -23,6 +23,7 @@ The canonical complete-product lifecycle is:
 ```bash
 make up
 make status
+make macro-acceptance
 make logs
 make down
 ```
@@ -47,6 +48,8 @@ contract; startup never repairs an unknown role/schema boundary.
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
 HTML console all pass. It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
+`make macro-acceptance` is the separate product-data gate for the overview and
+six Macro reads; it is not part of `/readyz`.
 
 ## Health and status
 
@@ -57,6 +60,7 @@ Compose command whose exit status ignores an unhealthy Worker.
 | Workers `/readyz` | root running, singleton session healthy, and latest O(1) heartbeat persisted within 15 s | no queue inspection |
 | `/api/status` | separate runtime truth and persisted Provider operations | bounded control plus ordinary read |
 | `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
+| `make macro-acceptance` | exact Macro contracts, current health, coverage, and ETag revalidation | persisted product-read acceptance |
 | `tracefold ops ...` | explicit on-demand diagnosis and repair | command-specific |
 
 Provider degradation and a missing Fed document analysis do not make the HTTP
@@ -710,12 +714,27 @@ stable fact identities before and after the migration, then start only the new
 runtime. There is no dual read/write, compatibility adapter, feature flag, v1
 fallback, Stocks route, staging runtime, or history import.
 
-Migration `20260810_0251` is the current database head and the Rates v7 hard
-cut. It deletes only the rebuildable v6 `rates_fed` current/frontier rows,
-changes the persisted schema constraint to `macro_rates_fed_v7`, and preserves
-all typed Macro/Market facts, acquisition state, documents, jobs, and immutable
-analyses. Restart the sole Macro projection writer to rebuild the Rates row;
-there is no v6 reader or compatibility path.
+Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
+`20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to
+the reachable state machine, removes `invalid` from the database constraint,
+preserves all six current serving rows, and clears their rebuildable frontiers.
+Worker startup recreates missing or version-mismatched frontiers from persisted
+Dataset projection state and republishes them without provider I/O; already
+matching clean frontiers remain zero-write.
+Current head `20260811_0253` deletes only the rebuildable Rates, Economy, and
+Cross-Asset current/frontier rows and requires `macro_rates_fed_v8`,
+`macro_economy_inflation_v6`, and `macro_cross_asset_v8`. It preserves all typed
+Macro/Market facts, acquisition state, documents, jobs, and immutable analyses.
+Restart the sole Macro projection writer to reconcile all six frontiers and
+rebuild the three semantic-contract rows; there is
+no old-schema reader or compatibility path.
+
+Container readiness intentionally remains infrastructure-only. After every
+deployment, run `make macro-acceptance` separately. It validates the overview
+and all six exact response contracts, requires complete coverage and current
+health, and proves weak semantic ETag `304` revalidation. A failed report is a product
+acceptance failure even when Serve, Workers, PostgreSQL, and `/readyz` are
+healthy.
 
 The independent performance bundle proves, on representative facts:
 

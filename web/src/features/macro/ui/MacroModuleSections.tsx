@@ -1,33 +1,37 @@
 import { ExternalLink } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
+import { MACRO_MODULES } from "../model/macroModules";
+import {
+  formatInstant,
+  formatMacroNumber as formatNumber,
+  formatMacroSigned as formatSigned,
+  formatMacroValue as formatOptional,
+  macroChartColor as chartColor,
+} from "../model/macroPresentation";
 import type {
-  JsonObject,
+  MacroCreditCycleDimension,
   MacroCreditReadData,
   MacroEconomyInflationReadData,
+  MacroFedTimelineEvent,
   MacroLiquidityFundingReadData,
   MacroRatesFedReadData,
+  MacroSettlement,
   MacroTypedModuleReadData,
   MacroVolatilityReadData,
 } from "../model/macroTypes";
 import {
-  asRecord,
-  asRecords,
+  parseBreakevenCurveSnapshots,
   parseCorrelations,
   parseCrossAssetNormalizedGroups,
   parseCrossAssetReturnMatrix,
   parseCrossAssetSourceIdentity,
-  parseCurveSnapshots,
   parseHistory,
   parseIndicators,
-  parsePointRecords,
   parsePositions,
   parseReleases,
-  readBoolean,
-  readNumber,
-  readRecord,
-  readRecords,
-  readText,
+  parseSpreadPoints,
+  parseYieldCurveSnapshots,
   type MacroCrossAssetNormalizedGroupView,
   type MacroCrossAssetReturnRowView,
   type MacroCrossAssetSourceIdentityView,
@@ -49,50 +53,17 @@ import {
 } from "./MacroCharts";
 
 import "./MacroRatesDecision.css";
+import "./MacroCrossAssetBenchmarkStrip.css";
+import "./MacroCorrelationContract.css";
 import "./MacroFedCommunication.css";
 import "./MacroModuleSections.css";
+import "./MacroModuleSectionsResponsive.css";
 import "./MacroOfficialRatesFacts.css";
 
 type Section = { id: string; label: string };
 
-const SECTIONS: Record<MacroTypedModuleReadData["module_id"], readonly Section[]> = {
-  rates_fed: [
-    { id: "curve", label: "收益率曲线" },
-    { id: "policy", label: "政策走廊" },
-    { id: "fed", label: "美联储沟通" },
-    { id: "positioning", label: "利率仓位" },
-  ],
-  economy_inflation: [
-    { id: "inflation", label: "通胀" },
-    { id: "labor", label: "就业" },
-    { id: "growth", label: "增长" },
-  ],
-  liquidity_funding: [
-    { id: "balance-sheet", label: "资产负债表" },
-    { id: "funding", label: "融资条件" },
-  ],
-  credit: [
-    { id: "cycle", label: "周期四维" },
-    { id: "spreads", label: "评级利差" },
-    { id: "funding", label: "融资成本" },
-    { id: "banks", label: "银行供需" },
-    { id: "quality", label: "贷款质量" },
-    { id: "confirmation", label: "市场确认" },
-  ],
-  volatility: [
-    { id: "term", label: "现货–3M" },
-    { id: "cross-asset", label: "跨资产隐波" },
-  ],
-  cross_asset: [
-    { id: "returns", label: "收益矩阵" },
-    { id: "normalized", label: "分组走势" },
-    { id: "correlations", label: "相关矩阵" },
-    { id: "futures", label: "期货与仓位" },
-  ],
-};
-
 export function MacroModuleSections({ module }: { module: MacroTypedModuleReadData }) {
-  const sections = SECTIONS[module.module_id];
+  const sections = MACRO_MODULES[module.module_id].sections;
   const active = useHashSection(sections);
   const panelId = `macro-${module.module_id}-${active}-panel`;
   return (
@@ -185,6 +156,15 @@ function useHashSection(sections: readonly Section[]) {
     return sections.some((section) => section.id === candidate) ? candidate : fallback;
   }, [fallback, sections]);
   const [active, setActive] = useState(read);
+  useEffect(() => {
+    const candidate = window.location.hash.replace(/^#/, "");
+    if (!candidate || sections.some((section) => section.id === candidate)) return;
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}#${fallback}`,
+    );
+  }, [fallback, sections]);
   useEffect(() => {
     const onHashChange = () => setActive(read());
     window.addEventListener("hashchange", onHashChange);
@@ -385,17 +365,15 @@ function RatesSection({ module, active }: { module: MacroRatesFedReadData; activ
     );
   }
 
-  const curve = asRecord(module.curve);
-  const nominal = parseCurveSnapshots(curve, "nominal_snapshots", "yield_pct");
-  const real = parseCurveSnapshots(curve, "real_snapshots", "yield_pct");
-  const breakeven = parseCurveSnapshots(curve, "breakeven_snapshots", "breakeven_pct");
-  const spreadContainer = readRecord(curve, "spreads");
-  const spreadSeries: MacroChartSeries[] = Object.entries(spreadContainer).map(
+  const nominal = parseYieldCurveSnapshots(module.curve.nominal_snapshots);
+  const real = parseYieldCurveSnapshots(module.curve.real_snapshots);
+  const breakeven = parseBreakevenCurveSnapshots(module.curve.breakeven_snapshots);
+  const spreadSeries: MacroChartSeries[] = Object.entries(module.curve.spreads).map(
     ([id, value], index) => ({
       id,
       label: spreadLabel(id),
       color: chartColor(index),
-      points: parsePointRecords(value, "value_bp"),
+      points: parseSpreadPoints(value),
     }),
   );
   const oneDayClassification = module.decision.classifications.find((item) => item.window === "1d");
@@ -424,9 +402,9 @@ function RatesCurveCharts({
   spreadSeries,
   module,
 }: {
-  nominal: ReturnType<typeof parseCurveSnapshots>;
-  real: ReturnType<typeof parseCurveSnapshots>;
-  breakeven: ReturnType<typeof parseCurveSnapshots>;
+  nominal: ReturnType<typeof parseYieldCurveSnapshots>;
+  real: ReturnType<typeof parseYieldCurveSnapshots>;
+  breakeven: ReturnType<typeof parseBreakevenCurveSnapshots>;
   spreadSeries: MacroChartSeries[];
   module: MacroRatesFedReadData;
 }) {
@@ -434,7 +412,7 @@ function RatesCurveCharts({
     () => new Set(),
   );
   const visible = new Set(["current", "previous", ...backgroundWindows]);
-  const filter = (snapshots: ReturnType<typeof parseCurveSnapshots>) =>
+  const filter = (snapshots: ReturnType<typeof parseYieldCurveSnapshots>) =>
     snapshots.filter((snapshot) => visible.has(snapshot.window));
   return (
     <div className="macro-decision__chart-stack">
@@ -529,7 +507,7 @@ function FedCommunication({ module }: { module: MacroRatesFedReadData }) {
       ) : null}
       <FedDistribution distribution={distribution} groups={groups} />
       <FedRoster roster={module.fed.roster} />
-      <FedTimeline rows={asRecords(module.fed.timeline)} />
+      <FedTimeline rows={module.fed.timeline} />
     </ModuleWorkbench>
   );
 }
@@ -578,6 +556,10 @@ function FedMeetingCalendar({
     .slice(0, 10);
   const upcoming = calendar.meetings.filter((meeting) => meeting.end_date >= referenceDate);
   const visibleMeetings = (upcoming.length ? upcoming : calendar.meetings.slice(-2)).slice(0, 8);
+  const visibleIds = new Set(visibleMeetings.map((meeting) => meeting.meeting_id));
+  const remainingMeetings = calendar.meetings.filter(
+    (meeting) => !visibleIds.has(meeting.meeting_id),
+  );
   return (
     <section aria-label="官方 FOMC 会议日历" className="macro-decision__meeting-calendar">
       <header>
@@ -590,28 +572,50 @@ function FedMeetingCalendar({
       {calendar.meetings.length ? (
         <div>
           {visibleMeetings.map((meeting) => (
-            <article key={meeting.meeting_id}>
-              <header>
-                <strong>
-                  {meeting.start_date}—{meeting.end_date}
-                </strong>
-                <span>{meeting.has_sep ? "包含 SEP" : "不含 SEP"}</span>
-              </header>
-              <dl>
-                <StatusMetric
-                  label="日历发布"
-                  value={formatOptionalInstant(meeting.calendar_published_at_ms)}
-                />
-                <StatusMetric label="系统接收" value={formatInstant(meeting.received_at_ms)} />
-              </dl>
-              <a href={meeting.source_url} rel="noreferrer" target="_blank">
-                Federal Reserve 原始日历
-              </a>
-            </article>
+            <FedMeetingCard key={meeting.meeting_id} meeting={meeting} />
           ))}
         </div>
       ) : null}
+      <details>
+        <summary>查看完整会议日历（{calendar.meetings.length} 次）</summary>
+        {remainingMeetings.length ? (
+          <div>
+            {remainingMeetings.map((meeting) => (
+              <FedMeetingCard key={meeting.meeting_id} meeting={meeting} />
+            ))}
+          </div>
+        ) : (
+          <p>全部会议已在上方展示。</p>
+        )}
+      </details>
     </section>
+  );
+}
+
+function FedMeetingCard({
+  meeting,
+}: {
+  meeting: MacroRatesFedReadData["fed"]["meeting_calendar"]["meetings"][number];
+}) {
+  return (
+    <article>
+      <header>
+        <strong>
+          {meeting.start_date}—{meeting.end_date}
+        </strong>
+        <span>{meeting.has_sep ? "包含 SEP" : "不含 SEP"}</span>
+      </header>
+      <dl>
+        <StatusMetric
+          label="日历发布"
+          value={formatOptionalInstant(meeting.calendar_published_at_ms)}
+        />
+        <StatusMetric label="系统接收" value={formatInstant(meeting.received_at_ms)} />
+      </dl>
+      <a href={meeting.source_url} rel="noreferrer" target="_blank">
+        Federal Reserve 原始日历
+      </a>
+    </article>
   );
 }
 
@@ -626,7 +630,7 @@ function TreasuryAuctionResults({
       <header>
         <span>OFFICIAL TREASURY AUCTIONS</span>
         <h3>美国国债拍卖结果</h3>
-        <p>结果按服务端顺序展示投标、收益率和分配比例。</p>
+        <p>结果按服务端顺序展示投标、收益率或 Bill 贴现 / 投资率，以及分配比例。</p>
       </header>
       <div>
         {rows.map((auction) => (
@@ -644,10 +648,24 @@ function TreasuryAuctionResults({
                 label="投标覆盖倍数"
                 value={formatAuctionNumber(auction.bid_to_cover_ratio)}
               />
-              <StatusMetric
-                label="最高得标收益率"
-                value={formatAuctionPercent(auction.high_yield_pct)}
-              />
+              {auction.high_discount_rate_pct != null ||
+              auction.high_investment_rate_pct != null ? (
+                <>
+                  <StatusMetric
+                    label="最高贴现率"
+                    value={formatAuctionPercent(auction.high_discount_rate_pct)}
+                  />
+                  <StatusMetric
+                    label="最高投资率"
+                    value={formatAuctionPercent(auction.high_investment_rate_pct)}
+                  />
+                </>
+              ) : (
+                <StatusMetric
+                  label="最高得标收益率"
+                  value={formatAuctionPercent(auction.high_yield_pct)}
+                />
+              )}
               <StatusMetric label="发行额" value={formatAuctionUsd(auction.offering_amount_usd)} />
               <StatusMetric
                 label="投标分配"
@@ -763,7 +781,7 @@ function EconomySection({
 }) {
   const payload =
     active === "labor" ? module.labor : active === "growth" ? module.growth : module.inflation;
-  const indicators = parseIndicators(payload);
+  const indicators = parseIndicators(payload.indicators);
   const releases = parseReleases(payload);
   const copy = {
     growth: {
@@ -801,9 +819,8 @@ function LiquiditySection({
   active: string;
 }) {
   if (active === "funding") {
-    const funding = asRecord(module.funding);
-    const indicators = parseIndicators(funding);
-    const spread = parsePointRecords(funding.sofr_minus_iorb_bp_history, "value");
+    const indicators = parseIndicators(module.funding.indicators);
+    const spread = parseHistory(module.funding.sofr_minus_iorb_bp_history);
     return (
       <ModuleWorkbench
         description="SOFR 与 IORB 使用同一百分比坐标；SOFR−IORB 利差由服务端确定性计算，不在浏览器推导。"
@@ -834,7 +851,7 @@ function LiquiditySection({
       </ModuleWorkbench>
     );
   }
-  const indicators = parseIndicators(module.balance_sheet);
+  const indicators = parseIndicators(module.balance_sheet.indicators);
   return (
     <ModuleWorkbench
       description="Fed 总资产、准备金、TGA 与 RRP 四条余额分图呈现，同时比较 1W / 1M 变化；不压成综合流动性分数。"
@@ -867,9 +884,8 @@ function CreditSection({ module, active }: { module: MacroCreditReadData; active
     );
   }
   if (active === "spreads") {
-    const ladder = asRecord(module.spread_ladder);
-    const indicators = parseIndicators(readRecords(ladder, "rows"));
-    const tailGap = readNumber(ladder, "tail_gap");
+    const indicators = parseIndicators(module.spread_ladder.rows);
+    const tailGap = module.spread_ladder.tail_gap;
     return (
       <ModuleWorkbench
         description="IG → BBB → BB → B → CCC 同时展示当前水平、历史变化与真实样本分位。"
@@ -896,7 +912,7 @@ function CreditSection({ module, active }: { module: MacroCreditReadData; active
         {tailGap == null ? null : (
           <p className="macro-decision__callout">
             CCC−BB 尾差：
-            {formatOptional(tailGap, readText(ladder, "tail_gap_unit"))}
+            {formatOptional(tailGap, module.spread_ladder.tail_gap_unit)}
           </p>
         )}
         <MacroIndicatorTable indicators={indicators} />
@@ -904,10 +920,9 @@ function CreditSection({ module, active }: { module: MacroCreditReadData; active
     );
   }
   if (active === "funding") {
-    const funding = asRecord(module.funding_costs);
-    const corporate = parseIndicators(readRecords(funding, "corporate_yields"));
-    const reference = parseIndicators(readRecords(funding, "reference_rates"));
-    const comparisons = readRecords(funding, "comparisons");
+    const corporate = parseIndicators(module.funding_costs.corporate_yields);
+    const reference = parseIndicators(module.funding_costs.reference_rates);
+    const comparisons = module.funding_costs.comparisons;
     return (
       <ModuleWorkbench
         description="公司债 effective yield 与 EFFR、10Y Treasury 并列；紧利差不等于低融资成本。"
@@ -922,26 +937,27 @@ function CreditSection({ module, active }: { module: MacroCreditReadData; active
           unit="percent"
         />
         <MacroBarChart
-          groups={comparisons.map((row, index) => ({
-            id: readText(row, "label") ?? `comparison-${index}`,
-            label: readText(row, "label") ?? `比较 ${index + 1}`,
+          groups={comparisons.map((row) => ({
+            id: `${row.corporate_dataset_id}:${row.reference_dataset_id}:${row.as_of}`,
+            label: row.label,
             values: [
               {
                 id: "spread",
                 label: "利差",
-                value: readNumber(row, "value_bp"),
+                value: row.value_bp,
               },
             ],
           }))}
           title="公司债收益率减参考利率"
           unit="basis_points"
         />
+        <FundingComparisonAudit rows={comparisons} />
         <MacroIndicatorTable indicators={[...corporate, ...reference]} />
       </ModuleWorkbench>
     );
   }
   if (active === "banks") {
-    const indicators = parseIndicators(module.bank_lending);
+    const indicators = parseIndicators(module.bank_lending.indicators);
     return (
       <ModuleWorkbench
         description="C&I、CRE 与消费信贷的标准和需求按官方季度时钟分开读。"
@@ -955,7 +971,7 @@ function CreditSection({ module, active }: { module: MacroCreditReadData; active
     );
   }
   if (active === "quality") {
-    const indicators = parseIndicators(module.loan_quality);
+    const indicators = parseIndicators(module.loan_quality.indicators);
     return (
       <ModuleWorkbench
         description="企业、CRE 与消费贷款逾期率和核销率检验市场信用定价。"
@@ -968,10 +984,9 @@ function CreditSection({ module, active }: { module: MacroCreditReadData; active
       </ModuleWorkbench>
     );
   }
-  const confirmations = asRecord(module.confirmations);
-  const returnMatrix = parseCrossAssetReturnMatrix(confirmations.return_matrix);
-  const sourceIdentity = parseCrossAssetSourceIdentity(confirmations.source_identity);
-  const positions = parsePositions(readRecords(confirmations, "positions"));
+  const returnMatrix = parseCrossAssetReturnMatrix(module.confirmations.return_matrix);
+  const sourceIdentity = parseCrossAssetSourceIdentity(module.confirmations.source_identity);
+  const positions = parsePositions(module.confirmations.positions);
   return (
     <ModuleWorkbench
       description="LQD/HYG 与 CFTC 只作确认；最新价和历史收益严格读取服务端指定来源，不在浏览器内替补。"
@@ -990,6 +1005,32 @@ function CreditSection({ module, active }: { module: MacroCreditReadData; active
   );
 }
 
+function FundingComparisonAudit({
+  rows,
+}: {
+  rows: MacroCreditReadData["funding_costs"]["comparisons"];
+}) {
+  if (!rows.length) return null;
+  return (
+    <details className="macro-decision__source-table">
+      <summary>融资比较审计（{rows.length}）</summary>
+      <div>
+        {rows.map((row) => (
+          <article key={`${row.corporate_dataset_id}:${row.reference_dataset_id}:${row.as_of}`}>
+            <strong>{row.label}</strong>
+            <small>事实截止 {row.as_of}</small>
+            <small>
+              公司债 {row.corporate_dataset_id} · 参考 {row.reference_dataset_id}
+            </small>
+            <small>公式 {row.formula_version}</small>
+            <small>输入事实 {row.input_fact_ids.join("、")}</small>
+          </article>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function VolatilitySection({
   module,
   active,
@@ -998,12 +1039,11 @@ function VolatilitySection({
   active: string;
 }) {
   if (active === "cross-asset") {
-    const payload = asRecord(module.cross_asset_implied);
-    const indicators = parseIndicators(payload);
-    const groups = parseCrossAssetNormalizedGroups(payload.normalized_groups);
+    const indicators = parseIndicators(module.cross_asset_implied.indicators);
+    const groups = parseCrossAssetNormalizedGroups(module.cross_asset_implied.normalized_groups);
     return (
       <ModuleWorkbench
-        description="VXN、GVZ 与 OVX 先按各自水平呈现；服务端归一化序列用于跨资产方向比较。"
+        description="VXN、GVZ 与 OVX 先按各自水平呈现；归一化序列由服务端以窗口首日为基期 100，仅用于跨资产方向比较。"
         eyebrow="CROSS-ASSET IMPLIED VOL"
         module={module}
         title="股票、黄金与原油隐含波动率"
@@ -1017,7 +1057,7 @@ function VolatilitySection({
                 module={module}
                 series={crossAssetNormalizedSeries(group)}
                 title={group.label}
-                unit="index"
+                unit="normalized_index"
               />
             ))}
           </div>
@@ -1028,10 +1068,9 @@ function VolatilitySection({
       </ModuleWorkbench>
     );
   }
-  const term = asRecord(module.term_structure);
-  const indicators = parseIndicators(readRecords(term, "spot_and_three_month"));
-  const spread = parseHistory(term.spread_history);
-  const officialVxCurve = readRecords(term, "official_vx_curve");
+  const indicators = parseIndicators(module.term_structure.spot_and_three_month);
+  const spread = parseHistory(module.term_structure.spread_history);
+  const officialVxCurve = module.term_structure.official_vx_curve;
   return (
     <ModuleWorkbench
       description="现货与三个月 VIX 用于时间序列比较；完整期货曲线只读取带官方到期日的 CFE 结算，不用合约代码猜到期。"
@@ -1065,9 +1104,21 @@ function CrossAssetSection({
   module: Extract<MacroTypedModuleReadData, { module_id: "cross_asset" }>;
   active: string;
 }) {
-  const assetsPayload = asRecord(module.assets);
+  const [requestedCorrelationWindow, setRequestedCorrelationWindow] = useState(
+    module.correlation_contract.default_window,
+  );
+  const correlationWindow = module.correlation_contract.supported_windows.includes(
+    requestedCorrelationWindow,
+  )
+    ? requestedCorrelationWindow
+    : module.correlation_contract.default_window;
+  useEffect(() => {
+    if (requestedCorrelationWindow !== correlationWindow) {
+      setRequestedCorrelationWindow(correlationWindow);
+    }
+  }, [correlationWindow, requestedCorrelationWindow]);
   if (active === "normalized") {
-    const groups = parseCrossAssetNormalizedGroups(assetsPayload.normalized_groups);
+    const groups = parseCrossAssetNormalizedGroups(module.assets.normalized_groups);
     return (
       <ModuleWorkbench
         description="各资产由服务端归一为窗口首日 100，并按服务端返回的稳定分组和顺序拆图；不同价格单位不会直接比较。"
@@ -1084,7 +1135,7 @@ function CrossAssetSection({
                 module={module}
                 series={crossAssetNormalizedSeries(group)}
                 title={group.label}
-                unit="index"
+                unit="normalized_index"
               />
             ))}
           </div>
@@ -1095,24 +1146,49 @@ function CrossAssetSection({
     );
   }
   if (active === "correlations") {
+    const correlations = parseCorrelations(module.correlations).filter(
+      (row) => row.window === correlationWindow,
+    );
     return (
       <ModuleWorkbench
-        description="相关性使用共同日收益样本，样本数随单元格保留；矩阵仅重排 API 事实。"
+        description="相关性使用共同日收益样本；浏览器按服务端合同选择窗口，并确定性镜像无向资产对、补单位对角线。"
         eyebrow="CORRELATION MATRIX"
         module={module}
         title="跨资产相关性"
       >
-        <MacroCorrelationHeatmap
-          rows={parseCorrelations(module.correlations)}
-          title="日收益相关矩阵"
-        />
+        <div className="macro-decision__correlation-contract">
+          <label>
+            相关收益窗口
+            <select
+              aria-label="相关收益窗口"
+              onChange={(event) => {
+                const selected = module.correlation_contract.supported_windows.find(
+                  (window) => window === event.target.value,
+                );
+                if (selected) setRequestedCorrelationWindow(selected);
+              }}
+              value={correlationWindow}
+            >
+              {module.correlation_contract.supported_windows.map((window) => (
+                <option key={window} value={window}>
+                  {correlationWindowLabel(window)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p>
+            服务端默认：{module.correlation_contract.default_window} · 最少共同观测：
+            {module.correlation_contract.minimum_common_observations} · 展示推导：
+            {module.correlation_contract.presentation_derivation}
+          </p>
+        </div>
+        <MacroCorrelationHeatmap rows={correlations} title="日收益相关矩阵" />
       </ModuleWorkbench>
     );
   }
   if (active === "futures") {
-    const futures = asRecord(module.futures);
-    const returnMatrix = parseCrossAssetReturnMatrix(futures.return_matrix);
-    const positions = parsePositions(readRecords(futures, "positions"));
+    const returnMatrix = parseCrossAssetReturnMatrix(module.futures.return_matrix);
+    const positions = parsePositions(module.futures.positions);
     return (
       <ModuleWorkbench
         description="连续期货市场与 CFTC 周度仓位分层呈现，不混用来源时钟；VIX 官方期限曲线由波动率模块负责。"
@@ -1130,8 +1206,8 @@ function CrossAssetSection({
       </ModuleWorkbench>
     );
   }
-  const returnMatrix = parseCrossAssetReturnMatrix(assetsPayload.return_matrix);
-  const sourceIdentity = parseCrossAssetSourceIdentity(assetsPayload.source_identity);
+  const returnMatrix = parseCrossAssetReturnMatrix(module.assets.return_matrix);
+  const sourceIdentity = parseCrossAssetSourceIdentity(module.assets.source_identity);
   return (
     <ModuleWorkbench
       description="固定十只 ETF 用最新价与 1D / 1W / 1M 收益热力矩阵开场；每个单元格只读取服务端指定来源，不在浏览器中替补或混合。"
@@ -1139,9 +1215,61 @@ function CrossAssetSection({
       module={module}
       title="固定十只 ETF 收益矩阵"
     >
+      <CrossAssetBenchmarkStrip rows={sourceIdentity} />
       <CrossAssetReturnMatrix label="十只 ETF 收益矩阵" rows={returnMatrix} />
       <CrossAssetSourceIdentityTable rows={sourceIdentity} />
     </ModuleWorkbench>
+  );
+}
+
+function correlationWindowLabel(
+  window: Extract<
+    MacroTypedModuleReadData,
+    { module_id: "cross_asset" }
+  >["correlation_contract"]["supported_windows"][number],
+): string {
+  return {
+    "30_daily_returns": "30 日收益",
+    "90_daily_returns": "90 日收益",
+    "252_daily_returns": "252 日收益",
+  }[window];
+}
+
+function CrossAssetBenchmarkStrip({ rows }: { rows: MacroCrossAssetSourceIdentityView[] }) {
+  if (!rows.length) return null;
+  return (
+    <section aria-label="基准与来源事实" className="macro-decision__benchmark-strip">
+      <header>
+        <h3>基准与来源事实</h3>
+        <p>只展示服务端返回的资产事实、精确来源与截止时钟，不添加浏览器派生判断。</p>
+      </header>
+      <div>
+        {rows.flatMap((row) =>
+          row.sources.map((source) => (
+            <article
+              key={`${row.displayOrder}:${row.symbol}:${source.sourceRole}:${source.datasetId}`}
+            >
+              <div>
+                <strong>{row.symbol}</strong>
+                <small>
+                  {row.label} · {row.evidenceKind}
+                </small>
+              </div>
+              <strong>
+                {formatOptional(source.fact?.latestValue ?? null, source.fact?.unit ?? null)}
+              </strong>
+              <small>{source.label}</small>
+              <time>{sourceAsOf(source)}</time>
+              {source.fact?.sourceUrl ? (
+                <a href={source.fact.sourceUrl} rel="noreferrer" target="_blank">
+                  来源 <ExternalLink aria-hidden="true" />
+                </a>
+              ) : null}
+            </article>
+          )),
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1364,42 +1492,26 @@ function LatestMetricStrip({ indicators }: { indicators: MacroIndicatorView[] })
   );
 }
 
-function CreditDimensions({ rows }: { rows: JsonObject[] }) {
-  const contentRows = rows.filter(
-    (row) =>
-      readText(row, "label") ||
-      readText(row, "state") ||
-      readText(row, "driver") ||
-      asRecords(row.conflicts).length ||
-      (Array.isArray(row.conflicts) && row.conflicts.length),
-  );
-  if (!contentRows.length) return <EmptyState text="信用周期维度尚未形成。" />;
+function CreditDimensions({ rows }: { rows: MacroCreditCycleDimension[] }) {
+  if (!rows.length) return <EmptyState text="信用周期维度尚未形成。" />;
   return (
     <div aria-label="信用周期四维结论" className="macro-decision__credit-dimensions">
-      {contentRows.map((row, index) => {
-        const conflicts = asRecords(row.conflicts).length
-          ? asRecords(row.conflicts)
-              .map((item) => readText(item, "text"))
-              .filter(Boolean)
-          : Array.isArray(row.conflicts)
-            ? row.conflicts.filter((item): item is string => typeof item === "string")
-            : [];
-        return (
-          <article
-            data-state={readText(row, "state") ?? undefined}
-            key={readText(row, "dimension_id") ?? index}
-          >
-            {readText(row, "label") ? <span>{readText(row, "label")}</span> : null}
-            {readText(row, "state") ? (
-              <strong>{creditStateLabel(readText(row, "state")!)}</strong>
-            ) : null}
-            {readText(row, "driver") ? <p>{readText(row, "driver")}</p> : null}
-            {conflicts.map((conflict) => (
-              <small key={conflict}>{conflict}</small>
-            ))}
-          </article>
-        );
-      })}
+      {rows.map((row) => (
+        <article data-state={row.state} key={row.dimension_id}>
+          <span>{row.label}</span>
+          <strong>{creditStateLabel(row.state)}</strong>
+          <p>{row.driver}</p>
+          {row.conflicts.map((conflict) => (
+            <small key={conflict}>{conflict}</small>
+          ))}
+          {row.evidence_dataset_ids.length ? (
+            <details>
+              <summary>证据数据集（{row.evidence_dataset_ids.length}）</summary>
+              <small>{row.evidence_dataset_ids.join("、")}</small>
+            </details>
+          ) : null}
+        </article>
+      ))}
     </div>
   );
 }
@@ -1505,8 +1617,19 @@ function CrossAssetReturnMatrix({
             <strong>{row.symbol}</strong>
             <small>{row.label}</small>
             <small>{row.groupLabel}</small>
+            <small>
+              最新：{row.latestSource.label} · {sourceAsOf(row.latestSource)}
+            </small>
+            <small>
+              收益：{row.returnSource.label} · {sourceAsOf(row.returnSource)}
+            </small>
           </span>
-          <span role="cell">{formatOptional(row.latestSource.fact?.latestValue ?? null, "")}</span>
+          <span role="cell">
+            {formatOptional(
+              row.latestSource.fact?.latestValue ?? null,
+              row.latestSource.fact?.unit ?? null,
+            )}
+          </span>
           <HeatCell value={row.returnSource.fact?.change1dPct ?? null} />
           <HeatCell value={row.returnSource.fact?.change1wPct ?? null} />
           <HeatCell value={row.returnSource.fact?.change1mPct ?? null} />
@@ -1629,6 +1752,12 @@ function SourceClockAndLink({ source }: { source: MacroCrossAssetSourceView }) {
   );
 }
 
+function sourceAsOf(source: MacroCrossAssetSourceView): string {
+  const fact = source.fact;
+  if (!fact) return "尚无来源事实";
+  return fact.asOf || (fact.marketTimeMs ? formatInstant(fact.marketTimeMs) : "时钟未返回");
+}
+
 function HeatCell({ value }: { value: number | null }) {
   const intensity = value == null ? 0 : Math.min(Math.abs(value) / 8, 1);
   return (
@@ -1642,39 +1771,51 @@ function HeatCell({ value }: { value: number | null }) {
   );
 }
 
-function FedTimeline({ rows }: { rows: JsonObject[] }) {
+function FedTimeline({ rows }: { rows: MacroFedTimelineEvent[] }) {
   if (!rows.length) return <EmptyState text="FOMC 文件与讲话正文尚未回填。" />;
   return (
-    <details className="macro-decision__timeline" open>
-      <summary>政策事件时间线（最近 {Math.min(rows.length, 20)} 条）</summary>
+    <details className="macro-decision__timeline">
+      <summary>政策事件时间线（全部 {rows.length} 条）</summary>
       <ol>
-        {rows.slice(0, 20).map((row, index) => {
-          const analysis = readRecord(row, "analysis");
-          return (
-            <li key={readText(row, "document_id") ?? index}>
-              <time>{readText(row, "effective_date") ?? "—"}</time>
-              <div>
-                <span>
-                  {readText(row, "document_type") ?? "政策材料"}
-                  {readText(analysis, "stance")
-                    ? ` · ${stanceLabel(readText(analysis, "stance")!)}`
-                    : ""}
-                </span>
-                <strong>{readText(row, "title") ?? "未命名政策材料"}</strong>
-                <small>
-                  {readText(row, "speaker_name") ?? "美联储机构材料"} ·{" "}
-                  {readText(row, "role_title") ?? "机构材料"} ·{" "}
-                  {voterLabel(readBoolean(row, "fomc_voter"))}
-                </small>
-              </div>
-              {readText(row, "source_url") ? (
-                <a href={readText(row, "source_url")!} rel="noreferrer" target="_blank">
-                  原文
-                </a>
+        {rows.map((row) => (
+          <li key={row.document_id}>
+            <time>{row.effective_date}</time>
+            <div>
+              <span>
+                {row.document_type} · {stanceLabel(row.analysis.stance)}
+              </span>
+              <strong>{row.title}</strong>
+              <small>
+                {row.speaker_name ?? "美联储机构材料"} · {row.role_title ?? "机构材料"} ·{" "}
+                {voterLabel(row.fomc_voter)} · 发布 {formatInstant(row.published_at_ms)}
+              </small>
+              {row.analysis.state === "analyzed" ? (
+                <details>
+                  <summary>查看分析证据</summary>
+                  {row.analysis.rationale ? <p>{row.analysis.rationale}</p> : null}
+                  <small>
+                    置信度 {formatOptional(row.analysis.confidence, "")} · 审阅{" "}
+                    {row.analysis.reviewer_disposition ?? "未审阅"}
+                  </small>
+                  {row.analysis.model_name ? (
+                    <small>
+                      {row.analysis.model_name} · {row.analysis.prompt_version ?? "无提示版本"}
+                    </small>
+                  ) : null}
+                  {row.analysis.evidence.map((evidence) => (
+                    <blockquote key={`${evidence.claim}:${evidence.excerpt}`}>
+                      <strong>{evidence.claim}</strong>
+                      <p>{evidence.excerpt}</p>
+                    </blockquote>
+                  ))}
+                </details>
               ) : null}
-            </li>
-          );
-        })}
+            </div>
+            <a href={row.source_url} rel="noreferrer" target="_blank">
+              原文
+            </a>
+          </li>
+        ))}
       </ol>
     </details>
   );
@@ -1699,7 +1840,7 @@ function PositionSourceList({ rows }: { rows: ReturnType<typeof parsePositions> 
   );
 }
 
-function SettlementTable({ rows }: { rows: JsonObject[] }) {
+function SettlementTable({ rows }: { rows: MacroSettlement[] }) {
   if (!rows.length) return null;
   return (
     <details className="macro-decision__settlements" open>
@@ -1713,25 +1854,24 @@ function SettlementTable({ rows }: { rows: JsonObject[] }) {
           <span role="columnheader">持仓 / 成交</span>
           <span role="columnheader">来源时钟</span>
         </div>
-        {rows.map((row, index) => (
+        {rows.map((row) => (
           <div
-            key={`${readText(row, "trade_date")}:${readText(row, "contract_code")}:${readText(row, "contract_expiration_date")}:${index}`}
+            key={`${row.trade_date}:${row.contract_code}:${row.contract_expiration_date}`}
             role="row"
           >
-            <span role="cell">{readText(row, "trade_date") ?? "—"}</span>
-            <span role="cell">{readText(row, "contract_code") ?? "—"}</span>
-            <span role="cell">{readText(row, "contract_expiration_date") ?? "—"}</span>
-            <span role="cell">{formatOptional(readNumber(row, "settlement_price"), "")}</span>
+            <span role="cell">{row.trade_date}</span>
+            <span role="cell">{row.contract_code}</span>
+            <span role="cell">{row.contract_expiration_date}</span>
+            <span role="cell">{formatOptional(row.settlement_price, "")}</span>
             <span role="cell">
-              {formatOptional(readNumber(row, "open_interest"), "")} /{" "}
-              {formatOptional(readNumber(row, "volume"), "")}
+              {formatOptional(row.open_interest, "")} / {formatOptional(row.volume, "")}
             </span>
             <span role="cell">
-              发布{" "}
-              {readNumber(row, "published_at_ms")
-                ? formatInstant(readNumber(row, "published_at_ms") ?? 0)
-                : "—"}
-              <small>接收 {formatInstant(readNumber(row, "received_at_ms") ?? 0)}</small>
+              发布 {formatOptionalInstant(row.published_at_ms)}
+              <small>接收 {formatInstant(row.received_at_ms)}</small>
+              <a href={row.source_url} rel="noreferrer" target="_blank">
+                CFE 原始结算
+              </a>
             </span>
           </div>
         ))}
@@ -1886,31 +2026,8 @@ function shortIndicatorLabel(value: string): string {
   return value.length > 16 ? `${value.slice(0, 15)}…` : value;
 }
 
-function chartColor(index: number): string {
-  return [
-    "#67d4ff",
-    "#f6c85f",
-    "#9d8cff",
-    "#ff7c8b",
-    "#66c2a5",
-    "#fc8d62",
-    "#8da0cb",
-    "#e78ac3",
-    "#a6d854",
-    "#ffd92f",
-  ][index % 10]!;
-}
-
 function EmptyState({ text }: { text: string }) {
   return <p className="macro-decision__empty">{text}</p>;
-}
-
-function formatInstant(value: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    dateStyle: "short",
-    hour12: false,
-    timeStyle: "short",
-  }).format(new Date(value));
 }
 
 function formatOptionalInstant(value: number | null): string {
@@ -1933,40 +2050,6 @@ function formatAuctionUsd(value: number | null): string {
     : `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value)} USD`;
 }
 
-function formatOptional(value: number | null, unit: string | null): string {
-  if (value == null) return "—";
-  return `${formatNumber(value)}${unitLabel(unit)}`;
-}
-
-function formatSigned(value: number | null): string {
-  if (value == null) return "—";
-  return `${value > 0 ? "+" : ""}${formatNumber(value)}`;
-}
-
 function formatSignedBp(value: number | null): string {
   return value == null ? "—" : `${value > 0 ? "+" : ""}${formatNumber(value)}bp`;
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
-}
-
-function unitLabel(unit: string | null): string {
-  if (!unit) return "";
-  return (
-    {
-      basis_points: " bp",
-      billions_chained_2017_usd: " 十亿 2017 年不变价美元",
-      billions_usd: " 十亿美元",
-      bp: " bp",
-      index: " 点",
-      index_points: " 点",
-      millions_usd: " 百万美元",
-      percent: "%",
-      percent_open_interest: "% OI",
-      thousands_persons: " 千人",
-      usd_per_barrel: " 美元/桶",
-      usdt: " USDT",
-    }[unit] ?? "（单位未解释）"
-  );
 }

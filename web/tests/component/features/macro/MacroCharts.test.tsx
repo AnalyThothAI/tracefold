@@ -220,8 +220,20 @@ describe("macro chart semantics", () => {
     render(
       <MacroCorrelationHeatmap
         rows={[
-          { correlation: 0.62, left: "SPY", right: "TLT", sampleCount: 118, window: "120d" },
-          { correlation: -0.31, left: "SPY", right: "DXY", sampleCount: 116, window: "120d" },
+          {
+            correlation: 0.62,
+            left: "SPY",
+            right: "TLT",
+            sampleCount: 118,
+            window: "90_daily_returns",
+          },
+          {
+            correlation: -0.31,
+            left: "SPY",
+            right: "DXY",
+            sampleCount: 116,
+            window: "90_daily_returns",
+          },
         ]}
         title="日收益相关矩阵"
       />,
@@ -232,7 +244,7 @@ describe("macro chart semantics", () => {
     );
     fireEvent.click(screen.getByText("查看相关性数据（2 对）"));
     expect(screen.getByRole("table", { name: "日收益相关矩阵等价数据表" })).toHaveTextContent(
-      "SPY / TLT0.62n=118 · 120d",
+      "SPY / TLT0.62n=118 · 90_daily_returns",
     );
   });
 });

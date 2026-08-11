@@ -133,7 +133,6 @@ def _drain_backfills(
         }
     source_config = settings.providers.macro_sources
     client = MacroSourceClient(
-        timeout_seconds=float(source_config.request_timeout_seconds),
         user_agent=str(source_config.user_agent),
         fred_enabled=source_config.fred_enabled,
         cboe_enabled=source_config.cboe_enabled,

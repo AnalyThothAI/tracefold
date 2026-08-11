@@ -437,23 +437,26 @@ daily narrative or historical-session product. Each module route returns its
 matching persisted schema or `macro_module_unavailable_v1` with a typed reason:
 
 - overview: `macro_overview_v9`
-- `macro_rates_fed_v7`
-- `macro_economy_inflation_v5`
+- `macro_rates_fed_v8`
+- `macro_economy_inflation_v6`
 - `macro_liquidity_funding_v5`
 - `macro_credit_v7`
 - `macro_volatility_v7`
-- `macro_cross_asset_v7`
+- `macro_cross_asset_v8`
 
 The five non-rates modules share identity, clocks, status, summary,
-contradictions, falsifiers, checkpoints, and evidence lineage. Rates v7
+contradictions, falsifiers, checkpoints, and evidence lineage. Rates v8
 deliberately has no generic `summary`, `top_changes`, contradiction, or
 falsifier fields. Its `decision` contract is tenor-native: 2Y/10Y/30Y current
 facts, actual baseline dates for 1D/1W/MTD/3M/past-30-day changes,
 session-completeness state, 2s10s/10s30s summaries, same-day 10Y/30Y
 nominal-real-Breakeven decomposition, window-qualified classifications, and
 fact references. It additionally exposes one revisioned official FOMC meeting
-calendar and recent typed Treasury auction results (bid-to-cover, high yield,
-offering amount, and indirect/direct/primary-dealer award shares). Treasury
+calendar and recent typed Treasury auction results. Bill discount rate,
+investment rate, and high yield are three independent nullable fields; the
+service never collapses them into one first-available value. Bid-to-cover,
+offering amount, and indirect/direct/primary-dealer award shares remain
+separate facts. Treasury
 completed-session curves are decision-primary; FRED
 single-tenor series are history/reconciliation only. Treasury cross-sections,
 Fed events, credit ladders, and the ETF comparison matrix are explicit typed
@@ -469,6 +472,22 @@ unavailable slot without failing the other five. All seven fact payloads use
 secret-free optional-analysis runtime state from Serve configuration. Reads
 never call a provider/model, advance a target, rebuild a projection, or write
 fallback content.
+
+Economy v6 adds one required `seasonal_adjustment` enum to every official
+release observation. The value is Registry-owned source metadata
+(`seasonally_adjusted`, `not_seasonally_adjusted`, or
+`seasonally_adjusted_annual_rate`); it is never inferred from the number.
+Cross-Asset v8 publishes pair facts for 30, 90, and 252 common daily-return
+observations plus a server-owned `correlation_contract`. The browser uses its
+default window, minimum common-observation count, supported windows, and
+mirrored-matrix presentation rule; it does not invent a correlation default or
+persist duplicate reverse/diagonal facts.
+
+Each successful module representation has a weak semantic `ETag` and
+`Cache-Control: private, no-cache`; an unchanged `If-None-Match` read returns an
+empty `304`. The weak validator safely spans identity and gzip transfer
+representations; responses above the transport threshold are gzip-compressed. The
+overview remains a read-time snapshot because `read_at_ms` changes per read.
 
 The Dataset and Calculation Registries are code-owned public semantics, not
 runtime configuration. Provider config may only enable the free source

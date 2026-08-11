@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
@@ -11,8 +9,16 @@ from itertools import pairwise
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
+from tracefold.macro.assets import CROSS_ASSET_DATASETS
 from tracefold.macro.domain import DatasetSpec, MacroModuleId
 from tracefold.macro.registry import DATASET_REGISTRY
+
+_CORRELATION_WINDOWS = (
+    ("30_daily_returns", 30),
+    ("90_daily_returns", 90),
+    ("252_daily_returns", 252),
+)
+_DEFAULT_CORRELATION_WINDOW = "90_daily_returns"
 
 GapPolicy = Literal["intersection", "latest_available"]
 
@@ -31,7 +37,6 @@ class CalculationSpec:
     baseline: str
     output_schema: str
     operation: str
-    materialize_feature: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,118 +119,6 @@ def natural_change_calculation(dataset_id: str) -> NaturalChangeCalculationSpec:
 
 _CALCULATIONS = (
     CalculationSpec(
-        "rates.curve_10y2y",
-        "rates_fed",
-        ("fred.dgs10", "fred.dgs2"),
-        "difference_v1",
-        "basis_points",
-        ("latest", "1w", "1m"),
-        1,
-        "intersection",
-        259_200,
-        "zero_and_5y_distribution",
-        "feature_point_v1",
-        "difference_x100",
-    ),
-    CalculationSpec(
-        "rates.real_10y",
-        "rates_fed",
-        ("fred.dfii10",),
-        "identity_v1",
-        "percent",
-        ("latest", "1w", "1m"),
-        1,
-        "latest_available",
-        259_200,
-        "5y_distribution",
-        "feature_point_v1",
-        "identity",
-    ),
-    CalculationSpec(
-        "inflation.cpi_yoy",
-        "economy_inflation",
-        ("fred.cpiaucsl",),
-        "year_over_year_pct_v1",
-        "percent",
-        ("latest", "3m", "1y"),
-        13,
-        "latest_available",
-        3_974_400,
-        "pre_2020_and_5y_distribution",
-        "feature_point_v1",
-        "yoy_pct",
-    ),
-    CalculationSpec(
-        "inflation.core_pce_yoy",
-        "economy_inflation",
-        ("fred.pcepilfe",),
-        "year_over_year_pct_v1",
-        "percent",
-        ("latest", "3m", "1y"),
-        13,
-        "latest_available",
-        3_974_400,
-        "pre_2020_and_5y_distribution",
-        "feature_point_v1",
-        "yoy_pct",
-    ),
-    CalculationSpec(
-        "labor.payroll_monthly_change",
-        "economy_inflation",
-        ("fred.payems",),
-        "first_difference_v1",
-        "thousands_persons",
-        ("latest", "3m"),
-        2,
-        "latest_available",
-        3_974_400,
-        "5y_distribution",
-        "feature_point_v1",
-        "difference",
-    ),
-    CalculationSpec(
-        "liquidity.net_liquidity",
-        "liquidity_funding",
-        ("fred.walcl", "fred.wtregen", "fred.rrpontsyd"),
-        "fed_assets_minus_tga_rrp_v1",
-        "billions_usd",
-        ("latest", "1m", "3m"),
-        1,
-        "latest_available",
-        950_400,
-        "5y_distribution",
-        "feature_point_v1",
-        "net_liquidity",
-    ),
-    CalculationSpec(
-        "credit.hy_ig_oas_gap",
-        "credit",
-        ("fred.bamlh0a0hym2", "fred.bamlc0a0cm"),
-        "difference_v1",
-        "basis_points",
-        ("latest", "1w", "1m"),
-        1,
-        "intersection",
-        259_200,
-        "5y_distribution",
-        "feature_point_v1",
-        "difference_x100",
-    ),
-    CalculationSpec(
-        "volatility.vix_term_spread",
-        "volatility",
-        ("fred.vixcls", "fred.vxvcls"),
-        "difference_v1",
-        "index_points",
-        ("latest", "1w", "1m"),
-        1,
-        "intersection",
-        259_200,
-        "5y_distribution",
-        "feature_point_v1",
-        "difference",
-    ),
-    CalculationSpec(
         "rates.treasury_curve_cross_sections",
         "rates_fed",
         ("treasury.daily_nominal_curve", "treasury.daily_real_curve"),
@@ -238,7 +131,6 @@ _CALCULATIONS = (
         "official_completed_session_cross_sections",
         "macro_rates_curve_v3",
         "curve_contract",
-        False,
     ),
     CalculationSpec(
         "rates.matched_breakeven_curve",
@@ -253,7 +145,6 @@ _CALCULATIONS = (
         "matching_tenor_and_reference_date",
         "macro_breakeven_snapshots_v2",
         "curve_contract",
-        False,
     ),
     CalculationSpec(
         "rates.curve_shape",
@@ -268,7 +159,6 @@ _CALCULATIONS = (
         "two_ten_thirty_year_five_basis_point_materiality",
         "macro_curve_classification_v3",
         "curve_contract",
-        False,
     ),
     CalculationSpec(
         "credit.rating_ladder",
@@ -289,7 +179,6 @@ _CALCULATIONS = (
         "actual_observation_distribution",
         "macro_indicator_rows_v2",
         "series_statistics",
-        False,
     ),
     CalculationSpec(
         "credit.funding_cost_comparisons",
@@ -309,23 +198,11 @@ _CALCULATIONS = (
         "zero",
         "macro_funding_comparisons_v1",
         "funding_comparisons",
-        False,
     ),
     CalculationSpec(
         "cross_asset.normalized_returns",
         "cross_asset",
-        (
-            "nasdaq.spy.daily",
-            "nasdaq.qqq.daily",
-            "nasdaq.iwm.daily",
-            "nasdaq.tlt.daily",
-            "nasdaq.ief.daily",
-            "nasdaq.lqd.daily",
-            "nasdaq.hyg.daily",
-            "nasdaq.dxy.daily",
-            "nasdaq.gld.daily",
-            "nasdaq.uso.daily",
-        ),
+        CROSS_ASSET_DATASETS.etf_daily_dataset_ids,
         "normalized_to_100_v1",
         "index",
         ("up_to_260_observations",),
@@ -335,37 +212,26 @@ _CALCULATIONS = (
         "first_observation_equals_100",
         "macro_normalized_asset_points_v1",
         "market_comparison",
-        False,
     ),
     CalculationSpec(
         "cross_asset.return_correlations",
         "cross_asset",
-        (
-            "nasdaq.spy.daily",
-            "nasdaq.qqq.daily",
-            "nasdaq.iwm.daily",
-            "nasdaq.tlt.daily",
-            "nasdaq.ief.daily",
-            "nasdaq.lqd.daily",
-            "nasdaq.hyg.daily",
-            "nasdaq.dxy.daily",
-            "nasdaq.gld.daily",
-            "nasdaq.uso.daily",
-        ),
-        "pearson_daily_returns_v1",
+        CROSS_ASSET_DATASETS.etf_daily_dataset_ids,
+        "pearson_daily_returns_v2",
         "correlation",
-        ("up_to_120_daily_returns",),
+        tuple(window_id for window_id, _size in _CORRELATION_WINDOWS),
         20,
         "intersection",
         259_200,
         "zero",
-        "macro_asset_correlations_v1",
+        "macro_asset_correlations_v2",
         "market_comparison",
-        False,
     ),
 )
 
 CALCULATION_REGISTRY = MappingProxyType({spec.feature_id: spec for spec in _CALCULATIONS})
+if len(CALCULATION_REGISTRY) != len(_CALCULATIONS):
+    raise RuntimeError("macro_calculation_registry_duplicate_feature")
 
 _TREASURY_TENOR_YEARS = {
     "1M": 1 / 12,
@@ -383,25 +249,6 @@ _TREASURY_TENOR_YEARS = {
     "20Y": 20,
     "30Y": 30,
 }
-
-
-def calculate_features(
-    series_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    by_dataset: dict[str, list[dict[str, Any]]] = {}
-    for row in series_rows:
-        by_dataset.setdefault(str(row["dataset_id"]), []).append(row)
-    for rows in by_dataset.values():
-        rows.sort(key=lambda row: row["reference_date"])
-
-    features: list[dict[str, Any]] = []
-    for spec in _CALCULATIONS:
-        if not spec.materialize_feature:
-            continue
-        computed = _calculate(spec, by_dataset)
-        if computed is not None:
-            features.append(computed)
-    return features
 
 
 def calculate_curve_contract(series_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -551,9 +398,9 @@ def calculate_market_comparison(
     market_rows: list[dict[str, Any]],
     dataset_ids: tuple[str, ...],
     symbol_by_dataset: Mapping[str, str],
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, Any]:
     _require_calculation("cross_asset.normalized_returns")
-    _require_calculation("cross_asset.return_correlations")
+    correlation_spec = _require_calculation("cross_asset.return_correlations")
     closes: dict[str, dict[date, float]] = defaultdict(dict)
     for row in market_rows:
         dataset_id = str(row["dataset_id"])
@@ -578,10 +425,9 @@ def calculate_market_comparison(
             }
             for reference_date, value in ordered
         )
-        return_window = ordered[-121:]
         daily_returns[dataset_id] = {
             current_date: current_value / prior_value - 1
-            for (prior_date, prior_value), (current_date, current_value) in pairwise(return_window)
+            for (prior_date, prior_value), (current_date, current_value) in pairwise(ordered)
             if prior_date < current_date and prior_value
         }
 
@@ -589,112 +435,31 @@ def calculate_market_comparison(
     for index, left in enumerate(dataset_ids):
         for right in dataset_ids[index + 1 :]:
             common_dates = sorted(daily_returns.get(left, {}).keys() & daily_returns.get(right, {}).keys())
-            if len(common_dates) < 20:
+            if len(common_dates) < correlation_spec.minimum_observations:
                 continue
-            correlations.append(
-                {
-                    "left": symbol_by_dataset[left],
-                    "right": symbol_by_dataset[right],
-                    "correlation": _correlation(
-                        [daily_returns[left][item] for item in common_dates],
-                        [daily_returns[right][item] for item in common_dates],
-                    ),
-                    "sample_count": len(common_dates),
-                    "window": "up_to_120_daily_returns",
-                }
-            )
-    return {"normalized": normalized, "correlations": correlations}
-
-
-def _calculate(
-    spec: CalculationSpec,
-    by_dataset: dict[str, list[dict[str, Any]]],
-) -> dict[str, Any] | None:
-    inputs = [by_dataset.get(dataset_id, []) for dataset_id in spec.input_dataset_ids]
-    if any(len(rows) < spec.minimum_observations for rows in inputs):
-        return None
-    if spec.operation in {"identity", "difference", "yoy_pct"}:
-        return _single_series(spec, inputs[0])
-    if spec.operation in {"difference_x100", "net_liquidity"}:
-        return _multi_series(spec, inputs)
-    raise ValueError(f"unknown_calculation_operation:{spec.operation}")
-
-
-def _single_series(
-    spec: CalculationSpec,
-    rows: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    latest = rows[-1]
-    latest_value = _numeric(latest)
-    if latest_value is None:
-        return None
-    inputs = [_input_ref(latest)]
-    value = latest_value
-    if spec.operation == "difference":
-        previous = _numeric(rows[-2])
-        if previous is None:
-            return None
-        value = latest_value - previous
-        inputs.append(_input_ref(rows[-2]))
-    elif spec.operation == "yoy_pct":
-        previous = _numeric(rows[-13])
-        if previous is None or previous == 0.0:
-            return None
-        value = (latest_value / previous - 1.0) * 100.0
-        inputs.append(_input_ref(rows[-13]))
-    return _feature_payload(spec, latest["reference_date"], value, inputs)
-
-
-def _multi_series(
-    spec: CalculationSpec,
-    inputs: list[list[dict[str, Any]]],
-) -> dict[str, Any] | None:
-    by_date = [{row["reference_date"]: row for row in rows if _numeric(row) is not None} for rows in inputs]
-    if spec.gap_policy == "intersection":
-        common_dates = set(by_date[0])
-        for rows_by_date in by_date[1:]:
-            common_dates &= set(rows_by_date)
-        if not common_dates:
-            return None
-        as_of_date = max(common_dates)
-        rows = [rows_by_date[as_of_date] for rows_by_date in by_date]
-    else:
-        rows = [max(rows_by_date.values(), key=lambda row: row["reference_date"]) for rows_by_date in by_date]
-        as_of_date = min(row["reference_date"] for row in rows)
-    values = [_numeric(row) for row in rows]
-    if any(value is None for value in values):
-        return None
-    numeric_values = [float(value) for value in values if value is not None]
-    if spec.operation == "difference_x100":
-        value = (numeric_values[0] - numeric_values[1]) * 100.0
-    elif spec.operation == "net_liquidity":
-        value = numeric_values[0] / 1_000.0 - numeric_values[1] - numeric_values[2]
-    else:
-        raise ValueError(f"unknown_multi_series_operation:{spec.operation}")
-    return _feature_payload(spec, as_of_date, value, [_input_ref(row) for row in rows])
-
-
-def _feature_payload(
-    spec: CalculationSpec,
-    as_of_date: date,
-    value: float,
-    inputs: list[dict[str, Any]],
-) -> dict[str, Any]:
-    payload = {
-        "feature_id": spec.feature_id,
-        "module_id": spec.module_id,
-        "as_of_date": as_of_date,
-        "formula_version": spec.formula_version,
-        "value_numeric": round(value, 6),
-        "unit": spec.unit,
-        "inputs": inputs,
-        "baseline": spec.baseline,
-        "windows": list(spec.windows),
-    }
-    encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+            for window_id, window_size in _CORRELATION_WINDOWS:
+                selected_dates = common_dates[-window_size:]
+                correlations.append(
+                    {
+                        "left": symbol_by_dataset[left],
+                        "right": symbol_by_dataset[right],
+                        "correlation": _correlation(
+                            [daily_returns[left][item] for item in selected_dates],
+                            [daily_returns[right][item] for item in selected_dates],
+                        ),
+                        "sample_count": len(selected_dates),
+                        "window": window_id,
+                    }
+                )
     return {
-        **payload,
-        "payload_hash": "sha256:" + hashlib.sha256(encoded.encode()).hexdigest(),
+        "normalized": normalized,
+        "correlations": correlations,
+        "correlation_contract": {
+            "default_window": _DEFAULT_CORRELATION_WINDOW,
+            "supported_windows": list(correlation_spec.windows),
+            "minimum_common_observations": correlation_spec.minimum_observations,
+            "presentation_derivation": "undirected_pairs_mirrored_with_unit_diagonal",
+        },
     }
 
 
@@ -1462,29 +1227,12 @@ def _correlation(left: list[float], right: list[float]) -> float | None:
     return round(numerator / denominator, 4) if denominator else None
 
 
-def _numeric(row: dict[str, Any]) -> float | None:
-    value = row.get("value_numeric")
-    return float(value) if value is not None else None
-
-
-def _input_ref(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "dataset_id": row["dataset_id"],
-        "fact_id": row["fact_id"],
-        "reference_date": str(row["reference_date"]),
-        "vintage_date": str(row["vintage_date"]),
-        "value_numeric": row["value_numeric"],
-        "unit": row["unit"],
-    }
-
-
 __all__ = [
     "CALCULATION_REGISTRY",
     "NATURAL_CHANGE_REGISTRY",
     "CalculationSpec",
     "NaturalChangeCalculationSpec",
     "calculate_curve_contract",
-    "calculate_features",
     "calculate_funding_cost_comparisons",
     "calculate_market_comparison",
     "calculate_market_statistics",

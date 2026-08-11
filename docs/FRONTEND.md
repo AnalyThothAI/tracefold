@@ -177,6 +177,9 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   distinguish expected, actual, surprise, revision, source publication time,
   and ingestion time. Dataset details keep data, market, and source state
   separate; optional history affects History Depth, not Current Health.
+  Current blockers are expanded before the workbench. Historical partial-depth
+  audit remains collapsed below the primary task; it must never push the first
+  useful section thousands of pixels down the page.
 
   Rates begins with the persisted 2Y/10Y/30Y completed-session matrix,
   2s10s/10s30s, and aligned 10Y/30Y nominal-real-breakeven decomposition. It
@@ -187,8 +190,15 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   evidence lane. `active` means the worker's configuration admission conditions
   are satisfied; it is not a process-liveness signal. Disabled analysis does not
   make official Rates/Fed facts unavailable,
-  and `no_call` never renders as a zero-score distribution. Cross-Asset keeps the fixed
-  ETF matrix, normalized comparison, futures, and USD-index facts distinct.
+  and `no_call` never renders as a zero-score distribution. Bill discount rate,
+  investment rate, and high yield retain distinct labels and nullable values.
+  Economy releases show their Registry-owned seasonal-adjustment convention
+  beside reference, publication, and ingestion clocks. Cross-Asset keeps the fixed
+  ETF matrix, normalized comparison, futures, and USD-index facts distinct. Its
+  normalized charts state that the comparison base is 100; a compact benchmark
+  strip exposes each price/return source and as-of time. The correlation window
+  selector is generated solely from the server's correlation contract, and the
+  mirrored matrix/diagonal are presentation-only derivations.
   Credit keeps its four concurrent dimensions and no composite score.
   Volatility alone owns the official-expiry CFE VX settlement curve.
 
@@ -196,13 +206,18 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   chooses a fallback conclusion, invokes a model, or repairs persisted state.
   A missing module renders its typed unavailable reason without hiding the
   other five. At desktop, tablet, and mobile widths, content becomes labelled
-  stacked sections without horizontal scrolling or hover-only evidence.
+  stacked sections without page-level horizontal scrolling or hover-only
+  evidence. Dense correlation matrices may use one labelled local scroller.
 
   Module headers and the Dataset audit render server-owned group/Dataset
   health, exact reasons, affected Dataset IDs, source/effective/received
   clocks, recovery mode, and next-check time. A cached refetch failure is
   visibly stale instead of silently presenting the cached body as current;
   typed unavailable states retain their retry or operator-recovery action.
+  Module reads poll every 60 seconds with a 30-second query stale time and use
+  a stable per-module ETag cache key. Unchanged bodies reuse the cached typed
+  response after `304`; transport failures keep the last body only behind the
+  visible update-delayed state.
 - **Page state.** Only an active first HTTP request may show Loading.
   Bootstrap pending/error, disabled query, transport error, same-session stale
   cache, and typed module-unavailable states use distinct `PageState.*`

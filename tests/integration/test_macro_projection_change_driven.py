@@ -13,7 +13,7 @@ from tests.postgres_test_utils import (
     repository_session_for_connection,
     reset_postgres_schema,
 )
-from tracefold.macro import SeriesFact, require_dataset
+from tracefold.macro import ReleaseFact, SeriesFact, require_dataset
 from tracefold.macro.calculations import calculate_series_statistics
 from tracefold.macro.dependencies import (
     MODULE_DATASET_DEPENDENCIES,
@@ -245,6 +245,78 @@ def test_macro_maintenance_reseeds_clean_unchanged_frontiers() -> None:
         conn.close()
 
 
+def test_macro_startup_reconcile_restores_missing_and_old_version_frontiers_only() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        service = _service(conn)
+        service.prepare_maintenance_frontiers(now_ms=NOW_MS)
+        conn.execute(
+            """
+            UPDATE macro_module_frontiers
+               SET status = 'clean',
+                   first_dirty_at_ms = NULL,
+                   deadline_at_ms = NULL,
+                   updated_at_ms = %s
+            """,
+            (NOW_MS + 1,),
+        )
+        conn.execute(
+            """
+            DELETE FROM macro_module_frontiers
+            WHERE module_id IN ('rates_fed', 'economy_inflation', 'cross_asset')
+            """
+        )
+        conn.execute(
+            """
+            UPDATE macro_module_frontiers
+               SET projection_version = 'legacy-version'
+             WHERE module_id = 'volatility'
+            """
+        )
+
+        assert service.reconcile_frontiers(now_ms=NOW_MS + 2) == 4
+
+        rows = conn.execute(
+            """
+            SELECT
+              module_id, status, projection_version, first_dirty_at_ms,
+              deadline_at_ms, updated_at_ms
+            FROM macro_module_frontiers
+            ORDER BY module_id
+            """
+        ).fetchall()
+        assert len(rows) == 6
+        by_module = {str(row["module_id"]): row for row in rows}
+        dirty_modules = {
+            "rates_fed",
+            "economy_inflation",
+            "cross_asset",
+            "volatility",
+        }
+        assert {module_id for module_id, row in by_module.items() if row["status"] == "dirty"} == dirty_modules
+        assert all(
+            row["projection_version"] == module_projection_version(module_id) for module_id, row in by_module.items()
+        )
+        assert all(by_module[module_id]["first_dirty_at_ms"] == NOW_MS + 2 for module_id in dirty_modules)
+        assert all(by_module[module_id]["deadline_at_ms"] == NOW_MS + 2 for module_id in dirty_modules)
+        assert by_module["credit"]["updated_at_ms"] == NOW_MS + 1
+        assert by_module["liquidity_funding"]["updated_at_ms"] == NOW_MS + 1
+    finally:
+        conn.close()
+
+
+def test_macro_startup_reconcile_does_not_invent_frontiers_without_dataset_state() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+
+        assert _service(conn).reconcile_frontiers(now_ms=NOW_MS) == 0
+        assert conn.execute("SELECT count(*) AS count FROM macro_module_frontiers").fetchone()["count"] == 0
+    finally:
+        conn.close()
+
+
 def test_macro_series_reducer_preserves_capped_history_percentile_semantics() -> None:
     conn = connect_postgres_test()
     try:
@@ -327,6 +399,80 @@ def test_macro_market_history_keeps_the_last_fact_for_the_latest_actual_days() -
         assert [int(row["row_number"]) for row in rows] == [2, 1]
     finally:
         conn.close()
+
+
+def test_economy_projection_loads_only_the_recent_release_window() -> None:
+    conn = connect_postgres_test()
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("bls.cpi.release")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            for period_index in range(30):
+                year = 2024 + period_index // 12
+                month = period_index % 12 + 1
+                reference_period = f"{year}-M{month:02d}"
+                for revision, value in enumerate((float(period_index), float(period_index) + 0.5)):
+                    repos.macro.insert_release_fact(
+                        ReleaseFact(
+                            dataset_id=spec.dataset_id,
+                            release_id=f"BLS:{spec.series_id}:{reference_period}",
+                            series_id=str(spec.series_id),
+                            reference_period=reference_period,
+                            scheduled_at_ms=None,
+                            published_at_ms=None,
+                            received_at_ms=period_index * 10 + revision + 1,
+                            actual_value=value,
+                            prior_value=None,
+                            revised_prior_value=None,
+                            estimate_value=None,
+                            unit=spec.unit,
+                            importance_tier=3,
+                            source_url=spec.source_url,
+                            raw_data={"revision": revision},
+                        )
+                    )
+            for dataset_id in MODULE_DATASET_DEPENDENCIES["economy_inflation"]:
+                repos.macro.upsert_dataset_projection_state(
+                    dataset_id=dataset_id,
+                    material_fingerprint=(
+                        "sha256:bounded-release-history"
+                        if dataset_id == spec.dataset_id
+                        else f"sha256:missing:{dataset_id}"
+                    ),
+                    acquisition_status="current" if dataset_id == spec.dataset_id else "uninitialized",
+                    source_frontier_ms=300 if dataset_id == spec.dataset_id else 0,
+                    updated_at_ms=NOW_MS,
+                )
+            states = repos.macro.dataset_projection_states(
+                dataset_ids=MODULE_DATASET_DEPENDENCIES["economy_inflation"],
+            )
+            repos.projection_frontiers.mark_dirty(
+                MACRO_FRONTIER,
+                key={"module_id": "economy_inflation"},
+                dirty_at_ms=NOW_MS,
+                deadline_at_ms=NOW_MS,
+                input_fingerprint=module_input_fingerprint("economy_inflation", states),
+                version=module_projection_version("economy_inflation"),
+                extra_insert={"source_frontier_ms": 300},
+            )
+
+        service = _service(conn)
+        claim = service.claim_module(
+            module_id="economy_inflation",
+            runtime_id=str(uuid4()),
+            now_ms=NOW_MS,
+        )
+        assert claim is not None
+        loaded = service.load_module(claim, now_ms=NOW_MS)
+    finally:
+        conn.close()
+
+    cpi_rows = [row for row in loaded["release_rows"] if row["dataset_id"] == spec.dataset_id]
+    assert len(cpi_rows) == 24
+    assert cpi_rows[0]["reference_period"] == "2024-M07"
+    assert float(cpi_rows[0]["actual_value"]) == 6.5
+    assert cpi_rows[-1]["reference_period"] == "2026-M06"
+    assert float(cpi_rows[-1]["actual_value"]) == 29.5
 
 
 def _seed_rates_frontier(conn: Any) -> None:

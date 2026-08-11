@@ -17,6 +17,30 @@ const modules = [
   ["/macro/cross-asset", "大类资产与期货"],
 ] as const;
 
+const moduleViews = [
+  ["/macro/rates-fed", "curve", "收益率曲线"],
+  ["/macro/rates-fed", "policy", "政策走廊"],
+  ["/macro/rates-fed", "fed", "美联储沟通"],
+  ["/macro/rates-fed", "positioning", "利率仓位"],
+  ["/macro/economy-inflation", "inflation", "通胀"],
+  ["/macro/economy-inflation", "labor", "就业"],
+  ["/macro/economy-inflation", "growth", "增长"],
+  ["/macro/liquidity-funding", "balance-sheet", "资产负债表"],
+  ["/macro/liquidity-funding", "funding", "融资条件"],
+  ["/macro/credit", "cycle", "周期四维"],
+  ["/macro/credit", "spreads", "评级利差"],
+  ["/macro/credit", "funding", "融资成本"],
+  ["/macro/credit", "banks", "银行供需"],
+  ["/macro/credit", "quality", "贷款质量"],
+  ["/macro/credit", "confirmation", "市场确认"],
+  ["/macro/volatility", "term", "现货–3M"],
+  ["/macro/volatility", "cross-asset", "跨资产隐波"],
+  ["/macro/cross-asset", "returns", "收益矩阵"],
+  ["/macro/cross-asset", "normalized", "分组走势"],
+  ["/macro/cross-asset", "correlations", "相关矩阵"],
+  ["/macro/cross-asset", "futures", "期货与仓位"],
+] as const;
+
 test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
@@ -55,6 +79,29 @@ test("hard-loads one hash-selected category and preserves it on reload", async (
   await expectNoUnhandledApiRequests(page);
 });
 
+test("hard-loads all 21 internal hashes as one reachable workbench at every viewport", async ({
+  page,
+}) => {
+  test.slow();
+  expect(moduleViews).toHaveLength(21);
+  for (const [path, hash, label] of moduleViews) {
+    await page.goto(`${path}#${hash}`);
+
+    await expect(page).toHaveURL(new RegExp(`${path}#${hash}$`));
+    if ((page.viewportSize()?.width ?? 0) <= 767) {
+      await expect(page.locator(".macro-decision__section-select select")).toHaveValue(hash);
+    } else {
+      await expect(page.getByRole("tab", { name: label })).toHaveAttribute("aria-selected", "true");
+    }
+    const panel = page.getByRole("tabpanel", { name: label });
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole("heading", { level: 2 })).toHaveCount(1);
+    await expect(page.getByRole("tabpanel")).toHaveCount(1);
+    await expectMacroLayout(page);
+  }
+  await expectNoUnhandledApiRequests(page);
+});
+
 test("keeps the chart workbench readable at 1920, 1366, 834 and 390px", async ({ page }) => {
   for (const viewport of [
     { width: 1920, height: 1080 },
@@ -65,9 +112,45 @@ test("keeps the chart workbench readable at 1920, 1366, 834 and 390px", async ({
     await page.setViewportSize(viewport);
     await page.goto("/macro/rates-fed#curve");
     await expect(page.getByRole("img", { name: "名义 Treasury 曲线" })).toBeVisible();
+    if (viewport.width === 390) {
+      const workspace = await page.evaluate(() => {
+        const stage = document.querySelector<HTMLElement>(".macro-decision__chart-stage");
+        const pair = document.querySelector<HTMLElement>(".macro-decision__chart-pair");
+        return {
+          pairColumns: pair ? getComputedStyle(pair).gridTemplateColumns : null,
+          stageWidth: stage?.clientWidth ?? 0,
+        };
+      });
+      expect(workspace.stageWidth).toBeGreaterThan(300);
+      expect(workspace.pairColumns?.split(" ")).toHaveLength(1);
+    }
     await expectMacroLayout(page);
   }
   await expectNoUnhandledApiRequests(page);
+});
+
+test("contains the wide correlation heatmap in a local mobile scroller", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/macro/cross-asset#correlations");
+
+  await expect(page.getByRole("heading", { name: "跨资产相关性" })).toBeVisible();
+  const metrics = await page.evaluate(() => {
+    const center = document.querySelector<HTMLElement>(".center-column");
+    const scroller = document.querySelector<HTMLElement>(".macro-chart__heatmap-scroll");
+    if (!center || !scroller) return null;
+    return {
+      centerClientWidth: center.clientWidth,
+      centerScrollWidth: center.scrollWidth,
+      overflowX: getComputedStyle(scroller).overflowX,
+      scrollerClientWidth: scroller.clientWidth,
+      scrollerScrollWidth: scroller.scrollWidth,
+    };
+  });
+
+  expect(metrics).not.toBeNull();
+  expect(metrics!.centerScrollWidth).toBeLessThanOrEqual(metrics!.centerClientWidth + 1);
+  expect(metrics!.overflowX).toBe("auto");
+  expect(metrics!.scrollerScrollWidth).toBeGreaterThan(metrics!.scrollerClientWidth);
 });
 
 test("opens rates with the 1D tenor matrix and keeps background curves opt-in", async ({
@@ -108,6 +191,7 @@ for (const [path, title] of modules) {
     await expect(page.locator(".macro-decision")).not.toContainText(
       "展开 Coverage、Current Health、History Depth 与原始事实",
     );
+    await expect(page.locator(".macro-decision__semantic-section")).toBeVisible();
 
     await expectMacroLayout(page);
     await expectScrollableToLastMeaningfulElement(

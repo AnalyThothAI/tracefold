@@ -79,6 +79,36 @@
     min-width: 0;
   }
 
+  .macro-decision__current-blockers {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .macro-decision__current-blockers > article {
+    display: grid;
+    grid-template-columns: minmax(9rem, 0.35fr) minmax(0, 1fr);
+    gap: 0.55rem;
+    border-left: 2px solid var(--signal-caution);
+    background: var(--surface-raised);
+    padding: 0.5rem;
+  }
+
+  .macro-decision__current-blockers > article[data-health="unavailable"] {
+    border-left-color: var(--signal-negative);
+  }
+
+  .macro-decision__current-blockers > article > header {
+    display: grid;
+    align-content: start;
+    gap: 0.1rem;
+  }
+
+  .macro-decision__current-blockers small {
+    overflow-wrap: anywhere;
+    color: var(--text-muted);
+    font-size: 0.59rem;
+  }
+
   .macro-decision__dataset-audit {
     min-width: 0;
   }
@@ -183,6 +213,10 @@
     .macro-decision__dataset-status > header dl,
     .macro-decision__dataset-grid > article dl {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .macro-decision__current-blockers > article {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 

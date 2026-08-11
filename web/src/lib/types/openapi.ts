@@ -783,14 +783,34 @@ export interface components {
             };
             /** Primary Change */
             primary_change: number | null;
-            /** Source Role */
-            source_role: string;
+            /**
+             * Source Role
+             * @enum {string}
+             */
+            source_role: "decision_primary" | "history" | "release" | "intraday_proxy" | "reconciliation_only" | "official_document" | "derived";
             /** Source Url */
             source_url: string;
             /** Unit */
             unit: string;
             /** Value */
             value: number;
+        };
+        /** MacroCorrelationContractData */
+        MacroCorrelationContractData: {
+            /**
+             * Default Window
+             * @enum {string}
+             */
+            default_window: "30_daily_returns" | "90_daily_returns" | "252_daily_returns";
+            /** Minimum Common Observations */
+            minimum_common_observations: number;
+            /**
+             * Presentation Derivation
+             * @constant
+             */
+            presentation_derivation: "undirected_pairs_mirrored_with_unit_diagonal";
+            /** Supported Windows */
+            supported_windows: ("30_daily_returns" | "90_daily_returns" | "252_daily_returns")[];
         };
         /** MacroCorrelationData */
         MacroCorrelationData: {
@@ -804,9 +824,9 @@ export interface components {
             sample_count: number;
             /**
              * Window
-             * @constant
+             * @enum {string}
              */
-            window: "up_to_120_daily_returns";
+            window: "30_daily_returns" | "90_daily_returns" | "252_daily_returns";
         };
         /** MacroCoverageCapabilityData */
         MacroCoverageCapabilityData: {
@@ -1014,6 +1034,7 @@ export interface components {
             availability: "available";
             /** Contradictions */
             contradictions: string[];
+            correlation_contract: components["schemas"]["MacroCorrelationContractData"];
             /** Correlations */
             correlations: components["schemas"]["MacroCorrelationData"][];
             evidence: components["schemas"]["MacroModuleEvidenceData"];
@@ -1036,7 +1057,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_cross_asset_v7";
+            schema_version: "macro_cross_asset_v8";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
         };
@@ -1093,8 +1114,11 @@ export interface components {
             fact: components["schemas"]["MacroMarketFactData"] | components["schemas"]["MacroIndicatorData"] | null;
             /** Label */
             label: string;
-            /** Source Role */
-            source_role: string;
+            /**
+             * Source Role
+             * @enum {string}
+             */
+            source_role: "decision_primary" | "history" | "release" | "intraday_proxy" | "reconciliation_only" | "official_document" | "derived";
         };
         /** MacroCurrentHealthData */
         MacroCurrentHealthData: {
@@ -1341,8 +1365,11 @@ export interface components {
             required_for_current: boolean;
             /** Required For History */
             required_for_history: boolean;
-            /** Source Role */
-            source_role: string;
+            /**
+             * Source Role
+             * @enum {string}
+             */
+            source_role: "decision_primary" | "history" | "release" | "intraday_proxy" | "reconciliation_only" | "official_document" | "derived";
             /**
              * Source State
              * @enum {string}
@@ -1406,7 +1433,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_economy_inflation_v5";
+            schema_version: "macro_economy_inflation_v6";
             status: components["schemas"]["MacroModuleStatusData"];
             summary: components["schemas"]["MacroModuleSummaryStateData"];
         };
@@ -1834,8 +1861,11 @@ export interface components {
             label: string;
             /** Latest Fact At Ms */
             latest_fact_at_ms: number | null;
-            /** Module Id */
-            module_id: string;
+            /**
+             * Module Id
+             * @enum {string}
+             */
+            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
             reason: components["schemas"]["MacroReason"] | null;
             summary: components["schemas"]["MacroOverviewModuleSummaryStateData"] | null;
         };
@@ -1860,8 +1890,11 @@ export interface components {
             href: string;
             /** Label */
             label: string;
-            /** Module Id */
-            module_id: string;
+            /**
+             * Module Id
+             * @enum {string}
+             */
+            module_id: "rates_fed" | "economy_inflation" | "liquidity_funding" | "credit" | "volatility" | "cross_asset";
             reason: components["schemas"]["MacroReason"];
             /**
              * Schema Version
@@ -1872,12 +1905,18 @@ export interface components {
         };
         /** MacroNextCheckpointData */
         MacroNextCheckpointData: {
-            /** Current Health */
-            current_health: string;
+            /**
+             * Current Health
+             * @enum {string}
+             */
+            current_health: "current" | "degraded" | "unavailable";
             /** Dataset Id */
             dataset_id: string;
-            /** History Depth */
-            history_depth: string;
+            /**
+             * History Depth
+             * @enum {string}
+             */
+            history_depth: "complete" | "partial" | "insufficient" | "not_required";
             /** Label */
             label: string;
             /** Next Check At Ms */
@@ -1910,6 +1949,11 @@ export interface components {
             revision: number | null;
             /** Scheduled At Ms */
             scheduled_at_ms: number | null;
+            /**
+             * Seasonal Adjustment
+             * @enum {string}
+             */
+            seasonal_adjustment: "seasonally_adjusted" | "not_seasonally_adjusted" | "seasonally_adjusted_annual_rate" | "unknown";
             /** Source Url */
             source_url: string;
             /** Surprise */
@@ -2077,7 +2121,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "macro_rates_fed_v7";
+            schema_version: "macro_rates_fed_v8";
             status: components["schemas"]["MacroModuleStatusData"];
             treasury_auctions: components["schemas"]["MacroTreasuryAuctionsData"];
         };
@@ -2285,8 +2329,11 @@ export interface components {
             fact_ref: string | null;
             /** Reference */
             reference: string | null;
-            /** Source Role */
-            source_role: string;
+            /**
+             * Source Role
+             * @enum {string}
+             */
+            source_role: "decision_primary" | "history" | "release" | "intraday_proxy" | "reconciliation_only" | "official_document" | "derived";
             /** Unit */
             unit: string;
             /** Value */
@@ -2338,6 +2385,11 @@ export interface components {
             revision: number | null;
             /** Scheduled At Ms */
             scheduled_at_ms: number | null;
+            /**
+             * Seasonal Adjustment
+             * @enum {string}
+             */
+            seasonal_adjustment: "seasonally_adjusted" | "not_seasonally_adjusted" | "seasonally_adjusted_annual_rate" | "unknown";
             /** Source Url */
             source_url: string;
             /** Surprise */
@@ -2398,6 +2450,10 @@ export interface components {
             cusip: string;
             /** Direct Award Share Pct */
             direct_award_share_pct: number | null;
+            /** High Discount Rate Pct */
+            high_discount_rate_pct: number | null;
+            /** High Investment Rate Pct */
+            high_investment_rate_pct: number | null;
             /** High Yield Pct */
             high_yield_pct: number | null;
             /** Indirect Award Share Pct */
@@ -3809,7 +3865,9 @@ export interface operations {
     macro_credit_api_macro_credit_get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3818,18 +3876,35 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_Union_MacroCreditReadData__MacroModuleUnavailableData__"];
                 };
             };
+            /** @description Not Modified */
+            304: {
+                headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     macro_cross_asset_api_macro_cross_asset_get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3838,18 +3913,35 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_Union_MacroCrossAssetReadData__MacroModuleUnavailableData__"];
                 };
             };
+            /** @description Not Modified */
+            304: {
+                headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     macro_economy_inflation_api_macro_economy_inflation_get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3858,18 +3950,35 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_Union_MacroEconomyInflationReadData__MacroModuleUnavailableData__"];
                 };
             };
+            /** @description Not Modified */
+            304: {
+                headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     macro_liquidity_funding_api_macro_liquidity_funding_get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3878,11 +3987,26 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_Union_MacroLiquidityFundingReadData__MacroModuleUnavailableData__"];
                 };
+            };
+            /** @description Not Modified */
+            304: {
+                headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -3909,7 +4033,9 @@ export interface operations {
     macro_rates_fed_api_macro_rates_fed_get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3918,18 +4044,35 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_Union_MacroRatesFedReadData__MacroModuleUnavailableData__"];
                 };
             };
+            /** @description Not Modified */
+            304: {
+                headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     macro_volatility_api_macro_volatility_get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -3938,11 +4081,26 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_Union_MacroVolatilityReadData__MacroModuleUnavailableData__"];
                 };
+            };
+            /** @description Not Modified */
+            304: {
+                headers: {
+                    /** @description Requires revalidation before reuse. */
+                    "Cache-Control"?: string;
+                    /** @description Weak semantic validator shared by identity and gzip representations. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
