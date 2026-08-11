@@ -239,7 +239,9 @@ Target identity is a closed discriminated contract. `Asset` requires non-empty
 `exchange` with `chain=null` and `address=null`. Robinhood Chain uses the single
 internal chain value `robinhood` (provider adapters map its external chain index
 `4663` at the OKX boundary); the public payload does not publish a second
-`eip155:4663` alias.
+`eip155:4663` alias. When an exact-address Asset has no canonical symbol yet,
+`symbol` contains that same full address as a deterministic presentation
+fallback; clients present it as a contract address rather than a ticker.
 
 The response has `Cache-Control: private, no-cache` and a strong ETag bound to
 the complete served v3 object, including public state. A matching

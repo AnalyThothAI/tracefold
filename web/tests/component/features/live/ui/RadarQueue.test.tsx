@@ -108,6 +108,24 @@ describe("RadarQueue", () => {
     ).toBeVisible();
   });
 
+  it("renders an address-only asset without fabricating a ticker", () => {
+    const address = "J7o48eA9qftqHpod2CsUbBH4q1Tzq3doTRXFDA4wpump";
+    const snapshot = fixture(1);
+    snapshot.items[0].target.symbol = address;
+    snapshot.items[0].target.name = null;
+    snapshot.items[0].target.address = address;
+
+    renderQueue(snapshot);
+
+    expect(screen.getByText("J7o48eA9...4wpump")).toBeVisible();
+    expect(screen.getByText("Contract address")).toBeVisible();
+    expect(screen.queryByText(`$${address}`)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open J7o48eA9...4wpump on GMGN" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Copy J7o48eA9...4wpump contract address" }),
+    ).toBeVisible();
+  });
+
   it("presents market and evidence as labelled scan groups instead of a clipped sentence", () => {
     const snapshot = fixture(1);
     renderQueue(snapshot);

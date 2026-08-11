@@ -181,10 +181,13 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
   } | null>(null);
   const empty = item === null;
   const symbol = item?.target.symbol ?? "";
-  const displayName = item?.target.name ?? symbol;
   const logoUrl = item?.target.logo_url ?? null;
   const identity = item ? formatIdentity(item) : "";
   const address = item?.target.address?.trim() || null;
+  const addressOnly =
+    item?.target.target_type === "Asset" && address !== null && symbol === address;
+  const identityLabel = addressOnly && address ? shortAddress(address) : symbol;
+  const displayName = item?.target.name ?? (addressOnly ? "Contract address" : symbol);
   const interactiveAddress = empty ? null : address;
   const gmgnUrl = item ? gmgnTokenUrl(item.target.chain, address) : null;
   const copyStatus = copyResult?.address === interactiveAddress ? copyResult.status : "idle";
@@ -203,7 +206,7 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
       <div className="live-radar-identity">
         <span className="live-radar-icon" style={empty ? { visibility: "hidden" } : undefined}>
           <span className="live-radar-icon-fallback" aria-hidden>
-            {symbol.slice(0, 1).toUpperCase()}
+            {identityLabel.slice(0, 1).toUpperCase()}
           </span>
           <img
             alt={empty ? "" : `${displayName} icon`}
@@ -221,7 +224,7 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
         </span>
         <span className="live-radar-token-copy">
           <strong role={empty ? "status" : undefined}>
-            {empty ? "No eligible cases" : `$${symbol}`}
+            {empty ? "No eligible cases" : addressOnly ? identityLabel : `$${symbol}`}
           </strong>
           <span title={empty ? undefined : `${displayName} · ${identity}`}>
             {empty ? "Waiting for fixed evidence rules" : displayName}
@@ -229,7 +232,7 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
           <small className="live-radar-contract">
             <a
               aria-hidden={empty || undefined}
-              aria-label={!empty && gmgnUrl ? `Open ${symbol} on GMGN` : undefined}
+              aria-label={!empty && gmgnUrl ? `Open ${identityLabel} on GMGN` : undefined}
               href={gmgnUrl ?? undefined}
               rel={gmgnUrl ? "noreferrer" : undefined}
               tabIndex={!empty && gmgnUrl ? undefined : -1}
@@ -252,12 +255,12 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
                 !interactiveAddress
                   ? undefined
                   : copyStatus === "copied"
-                    ? `${symbol} contract address copied`
+                    ? `${identityLabel} contract address copied`
                     : copyStatus === "failed"
-                      ? `${symbol} contract address copy failed`
+                      ? `${identityLabel} contract address copy failed`
                       : copyStatus === "copying"
-                        ? `${symbol} contract address copying`
-                        : `Copy ${symbol} contract address`
+                        ? `${identityLabel} contract address copying`
+                        : `Copy ${identityLabel} contract address`
               }
               aria-live="polite"
               disabled={!interactiveAddress || copyStatus === "copying"}
@@ -292,7 +295,7 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
       </div>
       <div
         aria-hidden={empty || undefined}
-        aria-label={empty ? undefined : `${symbol} market facts`}
+        aria-label={empty ? undefined : `${identityLabel} market facts`}
         className="live-radar-market"
         style={empty ? { visibility: "hidden" } : undefined}
       >
@@ -337,7 +340,7 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
       </div>
       <div
         aria-hidden={empty || undefined}
-        aria-label={empty ? undefined : `${symbol} evidence`}
+        aria-label={empty ? undefined : `${identityLabel} evidence`}
         className="live-radar-item-evidence"
         style={empty ? { visibility: "hidden" } : undefined}
       >

@@ -709,6 +709,8 @@ def _public_identity(target: TargetKey, fact: Mapping[str, Any]) -> dict[str, An
     chain = _text(fact.get("chain"))
     exchange = _text(fact.get("exchange"))
     address = _text(fact.get("address"))
+    if symbol is None and target[0] == "Asset" and address is not None:
+        symbol = address
     if symbol is None:
         raise TokenRadarInvariantViolation("token_radar_identity_symbol_missing")
     if target[0] == "Asset":

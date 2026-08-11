@@ -125,6 +125,28 @@ def test_v3_enrichment_drops_invalid_or_stale_presentation_fields_independently(
     }
 
 
+def test_v3_enrichment_keeps_an_exact_asset_address_without_inventing_a_symbol() -> None:
+    address = "J7o48eA9qftqHpod2CsUbBH4q1Tzq3doTRXFDA4wpump"
+    reduced = reduce_token_radar(_eligible_revisions(), now_ms=NOW_MS)
+
+    enriched = enrich_token_radar(
+        reduced,
+        [_presentation(symbol=None, name=None, address=address)],
+        now_ms=NOW_MS,
+    )
+
+    assert enriched.snapshot["items"][0]["target"] == {
+        "target_type": "Asset",
+        "target_id": "asset-1",
+        "symbol": address,
+        "name": None,
+        "logo_url": f"/api/token-images/{'a' * 64}",
+        "chain": "solana",
+        "exchange": None,
+        "address": address,
+    }
+
+
 def test_reducer_selects_exact_first_fifty_before_presentation_hydration() -> None:
     rows: list[RadarEvidenceRevision] = []
     for target_index in range(60):
