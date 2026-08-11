@@ -287,41 +287,71 @@ def _code_owned_sql_literals(values: tuple[str, ...]) -> str:
 _TOKEN_RADAR_INPUT_SQL = rf"""
 SELECT
   event.event_id,
-  intent.intent_id,
-  resolution.resolution_id,
+  material.intent_id,
+  material.resolution_id,
   event.timestamp_ms AS source_event_at_ms,
   event.received_at_ms,
   event.created_at_ms AS event_created_at_ms,
   event.action,
   event.author_handle,
   COALESCE(event.text_clean, event.search_text, event.text) AS text,
-  resolution.resolution_status,
-  resolution.target_type,
-  resolution.target_id,
-  resolution.decision_time_ms AS resolution_decision_at_ms,
-  resolution.created_at_ms AS resolution_created_at_ms
-FROM events event
-JOIN token_intents intent
-  ON intent.event_id = event.event_id
-JOIN token_intent_resolutions resolution
-  ON resolution.intent_id = intent.intent_id
- AND resolution.event_id = event.event_id
-WHERE event.timestamp_ms > %s
-  AND event.timestamp_ms <= %s
-  AND event.source_provider = '{TOKEN_RADAR_SEMANTICS.source_provider}'
-  AND event.source_transport = '{TOKEN_RADAR_SEMANTICS.source_transport}'
-  AND event.coverage = '{TOKEN_RADAR_SEMANTICS.source_coverage}'
-  AND event.channel IN (
-    {_code_owned_sql_literals(TOKEN_RADAR_SEMANTICS.source_channels)}
-  )
-  AND event.action IN ({_code_owned_sql_literals(TOKEN_RADAR_SEMANTICS.actions)})
+  material.resolution_status,
+  material.target_type,
+  material.target_id,
+  material.decision_time_ms AS resolution_decision_at_ms,
+  material.created_at_ms AS resolution_created_at_ms
+FROM (
+  SELECT
+    candidate.event_id,
+    candidate.timestamp_ms,
+    candidate.received_at_ms,
+    candidate.created_at_ms,
+    candidate.action,
+    candidate.author_handle,
+    candidate.text_clean,
+    candidate.search_text,
+    candidate.text
+    FROM events candidate
+   WHERE candidate.timestamp_ms > %s
+     AND candidate.timestamp_ms <= %s
+     AND candidate.source_provider = '{TOKEN_RADAR_SEMANTICS.source_provider}'
+     AND candidate.source_transport = '{TOKEN_RADAR_SEMANTICS.source_transport}'
+     AND candidate.coverage = '{TOKEN_RADAR_SEMANTICS.source_coverage}'
+     AND candidate.channel IN (
+       {_code_owned_sql_literals(TOKEN_RADAR_SEMANTICS.source_channels)}
+     )
+     AND candidate.action IN ({_code_owned_sql_literals(TOKEN_RADAR_SEMANTICS.actions)})
+   ORDER BY candidate.timestamp_ms ASC, candidate.event_id ASC
+   OFFSET 0
+) event
+CROSS JOIN LATERAL (
+  SELECT
+    intent.intent_id,
+    resolution.resolution_id,
+    resolution.resolution_status,
+    resolution.target_type,
+    resolution.target_id,
+    resolution.decision_time_ms,
+    resolution.created_at_ms
+  FROM token_intents intent
+  JOIN token_intent_resolutions resolution
+    ON resolution.intent_id = intent.intent_id
+   AND resolution.event_id = event.event_id
+  WHERE intent.event_id = event.event_id
+  ORDER BY
+    intent.intent_id ASC,
+    resolution.decision_time_ms ASC,
+    resolution.created_at_ms ASC,
+    resolution.resolution_id ASC
+  OFFSET 0
+) material
 ORDER BY
   event.timestamp_ms ASC,
   event.event_id ASC,
-  intent.intent_id ASC,
-  resolution.decision_time_ms ASC,
-  resolution.created_at_ms ASC,
-  resolution.resolution_id ASC
+  material.intent_id ASC,
+  material.decision_time_ms ASC,
+  material.created_at_ms ASC,
+  material.resolution_id ASC
 LIMIT %s
 """
 

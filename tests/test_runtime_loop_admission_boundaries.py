@@ -15,7 +15,7 @@ from tracefold.app.workers import (
     _run_periodic,
 )
 from tracefold.integrations.macro_sources import MacroSourceClient
-from tracefold.macro import MacroProjectionCandidate, require_dataset
+from tracefold.macro import MacroProjectionCandidate, acquisition_loop_policy, require_dataset
 from tracefold.macro.domain import MacroSourceError
 from tracefold.macro.runtime import MacroAcquisition
 from tracefold.market.identity.resolution_refresh_worker import ResolutionRefresh
@@ -84,6 +84,14 @@ def test_productive_due_loop_has_a_minimum_repoll_cadence() -> None:
 
     assert len(started_at) == 2
     assert started_at[1] - started_at[0] >= 0.20
+
+
+def test_macro_idle_poll_never_sleeps_past_the_retry_clock() -> None:
+    assert acquisition_loop_policy("intraday_market") == (300.0, 32)
+    assert acquisition_loop_policy("daily_settlement") == (900.0, 32)
+    assert acquisition_loop_policy("scheduled_release") == (900.0, 4)
+    assert acquisition_loop_policy("official_state") == (900.0, 4)
+    assert acquisition_loop_policy("official_document") == (900.0, 2)
 
 
 def test_periodic_loop_can_defer_its_first_sample_without_changing_cadence(

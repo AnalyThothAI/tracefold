@@ -401,6 +401,74 @@ def test_resolution_refresh_durably_continues_beyond_500_in_bounded_pages_withou
     assert final_resolved == 501
 
 
+def test_resolution_refresh_continuation_keeps_owned_unresolved_lookup_across_pages(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        ingest = _ingest_service(conn)
+        for index in range(3):
+            ingest.ingest_event(
+                make_event(
+                    f"event-empty-{index}",
+                    text="$EMPTY",
+                    received_at_ms=NOW_MS + index,
+                )
+            )
+
+        repos = repositories_for_connection(conn)
+        with conn.transaction():
+            claim = repos.discovery.claim_due_lookup_keys(
+                now_ms=NOW_MS + 10,
+                limit=1,
+                lease_ms=60_000,
+                running_timeout_ms=60_000,
+                lease_owner="test-continuation",
+            )[0]
+            assert repos.discovery.save_reprocess_continuation(
+                claim,
+                lookup_keys=["cex_token:EMPTY", "project_symbol:EMPTY", "symbol:EMPTY"],
+                after_intent_id=None,
+                resolved=False,
+                queue_due_at_ms=NOW_MS + 60_000,
+                now_ms=NOW_MS + 10,
+            )
+
+        market = _DexMarket(candidates=[])
+        worker = _worker(conn, market, reprocess_limit=2)
+        first_page = asyncio.run(worker.turn(now_ms=NOW_MS + 11))
+        second_page = asyncio.run(worker.turn(now_ms=NOW_MS + 12))
+        queue = conn.execute(
+            """
+            SELECT due_at_ms, attempt_count, lease_owner, leased_until_ms,
+                   reprocess_lookup_keys, reprocess_after_intent_id
+              FROM token_discovery_dirty_lookup_keys
+             WHERE lookup_key = 'symbol:EMPTY'
+            """
+        ).fetchone()
+        unresolved_count = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+              FROM token_intent_resolutions
+             WHERE is_current AND resolution_status = 'NIL'
+            """
+        ).fetchone()["count"]
+    finally:
+        conn.close()
+
+    assert first_page is True
+    assert second_page is True
+    assert market.search_requests == 0
+    assert unresolved_count == 3
+    assert queue == {
+        "due_at_ms": NOW_MS + 60_000,
+        "attempt_count": 1,
+        "lease_owner": None,
+        "leased_until_ms": None,
+        "reprocess_lookup_keys": None,
+        "reprocess_after_intent_id": None,
+    }
+
+
 def test_new_lookup_payload_discards_stale_reprocess_continuation(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:

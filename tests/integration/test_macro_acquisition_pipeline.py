@@ -13,7 +13,7 @@ from tests.postgres_test_utils import (
     reset_postgres_schema,
 )
 from tracefold.integrations.macro_sources import MacroSourceClient
-from tracefold.macro import FetchBatch, ReleaseFact, SeriesFact, require_dataset
+from tracefold.macro import FetchBatch, MacroSourceError, ReleaseFact, SeriesFact, require_dataset
 from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.market import MarketObservationFact, MarketSettlementFact
 
@@ -142,6 +142,11 @@ class _EmptyCompletedBackfillClient:
 class _FailingClient:
     def fetch(self, *_args: Any, **_kwargs: Any) -> FetchBatch:
         raise RuntimeError("official_source_failed")
+
+
+class _CodedFailingClient:
+    def fetch(self, *_args: Any, **_kwargs: Any) -> FetchBatch:
+        raise MacroSourceError("macro_source_transport_failed:ConnectError")
 
 
 def test_official_fomc_schedule_and_treasury_auctions_flow_through_one_fact_pipeline(
@@ -997,7 +1002,7 @@ def test_steady_acquisition_keeps_retrying_transport_failures(tmp_path) -> None:
             db=_TestDb(conn),
             worker_name="macro_daily_settlement",
             clock_kind=spec.clock_kind,
-            source_client=_FailingClient(),
+            source_client=_CodedFailingClient(),
             clock_ms=clock,
         )
 
@@ -1023,7 +1028,7 @@ def test_steady_acquisition_keeps_retrying_transport_failures(tmp_path) -> None:
     assert dict(stored) == {
         "status": "delayed",
         "attempt_count": 3,
-        "last_error_code": "RuntimeError",
+        "last_error_code": "macro_source_transport_failed:ConnectError",
     }
 
 

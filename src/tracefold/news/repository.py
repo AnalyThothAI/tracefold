@@ -1446,6 +1446,12 @@ class NewsRepository:
                 FROM news_stories st
                WHERE {" AND ".join(where)}
             ),
+            member_facts AS MATERIALIZED (
+              SELECT filtered.story_id, item.source_id, item.reporting_origin
+                FROM filtered_stories filtered
+                JOIN news_story_members member ON member.story_id = filtered.story_id
+                JOIN news_items item ON item.item_id = member.item_id
+            ),
             facet_rows AS (
               SELECT 'category'::text AS facet_type,
                      filtered.category AS value,
@@ -1464,22 +1470,18 @@ class NewsRepository:
               SELECT 'source'::text AS facet_type,
                      source.source_id AS value,
                      source.name AS label,
-                     count(DISTINCT filtered.story_id)::integer AS count
-                FROM filtered_stories filtered
-                JOIN news_story_members member ON member.story_id = filtered.story_id
-                JOIN news_items item ON item.item_id = member.item_id
-                JOIN news_sources source ON source.source_id = item.source_id
+                     count(DISTINCT member_facts.story_id)::integer AS count
+                FROM member_facts
+                JOIN news_sources source ON source.source_id = member_facts.source_id
                GROUP BY source.source_id, source.name
               UNION ALL
               SELECT 'reporting_origin'::text AS facet_type,
-                     lower(btrim(item.reporting_origin)) AS value,
-                     min(btrim(item.reporting_origin)) AS label,
-                     count(DISTINCT filtered.story_id)::integer AS count
-                FROM filtered_stories filtered
-                JOIN news_story_members member ON member.story_id = filtered.story_id
-                JOIN news_items item ON item.item_id = member.item_id
-               WHERE nullif(btrim(item.reporting_origin), '') IS NOT NULL
-               GROUP BY lower(btrim(item.reporting_origin))
+                     lower(btrim(member_facts.reporting_origin)) AS value,
+                     min(btrim(member_facts.reporting_origin)) AS label,
+                     count(DISTINCT member_facts.story_id)::integer AS count
+                FROM member_facts
+               WHERE nullif(btrim(member_facts.reporting_origin), '') IS NOT NULL
+               GROUP BY lower(btrim(member_facts.reporting_origin))
             ),
             ranked AS (
               SELECT facet_rows.*,

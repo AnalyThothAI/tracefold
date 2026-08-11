@@ -20,6 +20,7 @@ from tracefold.macro.domain import (
     DocumentFact,
     FetchBatch,
     MacroSourceClientProtocol,
+    MacroSourceError,
     MacroSourceUnavailable,
     ReleaseFact,
     SeriesFact,
@@ -171,7 +172,7 @@ class MacroAcquisitionService:
     ) -> dict[str, Any] | None:
         completed_at_ms = int(self.clock_ms())
         unavailable = isinstance(error, MacroSourceUnavailable)
-        error_code = str(error) if unavailable else type(error).__name__
+        error_code = str(error) if isinstance(error, MacroSourceError) else type(error).__name__
         with self._session() as repos, repos.transaction():
             target_status = repos.macro.fail_target(
                 target=claim.target,
@@ -332,10 +333,10 @@ class MacroAcquisitionService:
 
 def acquisition_loop_policy(clock_kind: str) -> tuple[float, int]:
     try:
-        interval_seconds, batch_size, _retry_ms = _ACQUISITION_POLICY[str(clock_kind)]
+        interval_seconds, batch_size, retry_ms = _ACQUISITION_POLICY[str(clock_kind)]
     except KeyError as exc:
         raise ValueError(f"macro_acquisition_clock_invalid:{clock_kind}") from exc
-    return interval_seconds, batch_size
+    return min(interval_seconds, retry_ms / 1_000), batch_size
 
 
 def _mark_dataset_state_and_modules(

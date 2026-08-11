@@ -38,6 +38,7 @@ def reprocess_token_intent_page(
     limit: int,
     lookup_keys: list[str] | None,
     after_intent_id: str | None = None,
+    excluded_discovery_lookup_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     repos.require_transaction(operation="token_resolution_refresh")
     since_ms = int(now_ms) - PRODUCT_WINDOW_MS[window]
@@ -59,6 +60,7 @@ def reprocess_token_intent_page(
     reprocessed = 0
     resolved = 0
     discovery_lookup_keys: set[str] = set()
+    excluded_lookup_keys = excluded_discovery_lookup_keys or set()
     evidence_by_intent = repos.token_evidence.evidence_for_intents([str(intent["intent_id"]) for intent in intents])
     for intent in intents:
         evidence = evidence_by_intent.get(str(intent["intent_id"]), [])
@@ -80,7 +82,9 @@ def reprocess_token_intent_page(
             resolved += 1
         else:
             discovery_lookup_keys.update(
-                key for key in decision.lookup_keys if str(key).startswith(("symbol:", "address:"))
+                key
+                for key in decision.lookup_keys
+                if str(key).startswith(("symbol:", "address:")) and key not in excluded_lookup_keys
             )
     if discovery_lookup_keys:
         repos.discovery.enqueue_lookup_keys(

@@ -296,6 +296,7 @@ class ResolutionRefresh:
                     repos=repos,
                     lookup_keys=lookup_keys,
                     after_intent_id=None if cursor is None else str(cursor),
+                    excluded_discovery_lookup_keys={str(lookup["lookup_key"])},
                     now_ms=now_ms,
                     window=TOKEN_REPROCESS_WINDOW,
                     limit=self.reprocess_limit,
