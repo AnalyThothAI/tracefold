@@ -19,8 +19,8 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
       db: {
         ok: true,
         schema_ok: true,
-        current_revision: "20260810_0251",
-        expected_revision: "20260810_0251",
+        current_revision: "20260811_0254",
+        expected_revision: "20260811_0254",
         error_code: null,
       },
       workers_runtime: {
@@ -41,8 +41,11 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
 
 export function tokenRadarFixture(overrides: Partial<TokenRadarSnapshot> = {}): TokenRadarSnapshot {
   return {
-    schema_version: "token_radar_snapshot_v2",
-    evidence_as_of_ms: NOW,
+    schema_version: "token_radar_snapshot_v3",
+    state: "current",
+    stale_reason: null,
+    state_changed_at_ms: NOW - 120_000,
+    social_evidence_as_of_ms: NOW,
     eligible_total: 1,
     items: [tokenRadarItemFixture()],
     ...overrides,
@@ -62,22 +65,22 @@ export function tokenRadarItemFixture() {
       address: RADAR_ADDRESS,
     },
     trigger_event_id: "event-upeg-1",
-    triggered_at_ms: NOW - 60_000,
+    trigger_source_event_at_ms: NOW - 60_000,
+    qualified_at_ms: NOW - 45_000,
     why_now: { current_mentions: 7, prior_mentions: 2, mention_delta: 5 },
     evidence: {
-      new_independent_author_count: 4,
+      independent_author_count: 4,
       independent_text_count: 5,
       time_to_nth_author_ms: 90_000,
       duplicate_share: 0.08,
     },
     market: {
-      status: "confirmed" as const,
       price_usd: 0.042,
+      price_observed_at_ms: NOW - 30_000,
       price_change_since_signal: 0.12,
       market_cap_usd: 42_000_000,
-      observed_at_ms: NOW - 30_000,
+      market_cap_observed_at_ms: NOW - 40_000,
     },
-    counter_evidence: null,
   };
 }
 

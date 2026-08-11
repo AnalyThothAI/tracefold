@@ -133,7 +133,6 @@ from .radar.constants import (
 )
 from .radar.current_worker import TokenRadarCurrentProjection
 from .radar.operations import TokenRadarStatusUnavailable, token_radar_status
-from .radar.snapshot_repository import TokenRadarCurrentRepository
 from .views.event_token_projection_query import EventTokenProjectionQuery
 from .views.search_events_query import SearchEventsQuery
 from .views.search_inspect_service import SearchInspectService
@@ -268,7 +267,6 @@ __all__ = [
     "TokenProfileReadModel",
     "TokenProfileSourceQuery",
     "TokenRadarCurrentProjection",
-    "TokenRadarCurrentRepository",
     "TokenRadarStatusUnavailable",
     "TokenSnapshot",
     "TokenTargetCursorError",

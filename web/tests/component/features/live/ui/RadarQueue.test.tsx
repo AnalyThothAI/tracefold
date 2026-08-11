@@ -9,6 +9,37 @@ afterEach(() => {
 });
 
 describe("RadarQueue", () => {
+  it("keeps the complete last-known-good queue behind the server-owned stale banner", () => {
+    const stale = {
+      ...fixture(1),
+      state: "stale",
+      stale_reason: "source_unavailable",
+    } as const;
+
+    renderQueue(stale);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Radar stale");
+    expect(screen.getByRole("status")).toHaveTextContent("Source unavailable");
+    expect(screen.getByText("$TOKEN1")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Token Case" })).toBeVisible();
+  });
+
+  it("renders the server-owned unavailable state without an invented queue row", () => {
+    const unavailable = {
+      ...fixture(0),
+      state: "unavailable",
+      state_changed_at_ms: 0,
+      social_evidence_as_of_ms: 0,
+    } as const;
+
+    renderQueue(unavailable);
+
+    expect(screen.getByText("Radar unavailable")).toBeInTheDocument();
+    expect(screen.getByText("No validated Radar snapshot is available yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Radar priority queue" })).not.toBeInTheDocument();
+    expect(screen.queryByText("No eligible cases")).not.toBeInTheDocument();
+  });
+
   it("renders a rich server-ordered Top 50 with one Case action per item and no hydration", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -17,9 +48,9 @@ describe("RadarQueue", () => {
     const rows = screen.getAllByRole("listitem");
 
     expect(screen.getByRole("heading", { name: "Radar" })).toBeInTheDocument();
-    expect(screen.getByText("1h acceleration · newest trigger first")).toBeInTheDocument();
+    expect(screen.getByText("1h causal change · newest qualification first")).toBeInTheDocument();
     expect(screen.getByText("63 eligible · showing 50 / 50")).toBeInTheDocument();
-    expect(screen.getByText(/Evidence through/)).toBeInTheDocument();
+    expect(screen.getByText(/Social evidence through/)).toBeInTheDocument();
     expect(rows).toHaveLength(50);
     expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual(
       Array.from({ length: 50 }, (_, index) => `$TOKEN${index + 1}`),
@@ -55,11 +86,11 @@ describe("RadarQueue", () => {
     snapshot.items[0].target.logo_url = null;
     snapshot.items[0].target.name = null;
     snapshot.items[0].market = {
-      status: "unavailable",
       price_usd: null,
+      price_observed_at_ms: null,
       price_change_since_signal: null,
       market_cap_usd: null,
-      observed_at_ms: null,
+      market_cap_observed_at_ms: null,
     };
 
     const { container } = renderQueue(snapshot);
@@ -68,26 +99,43 @@ describe("RadarQueue", () => {
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(fallback).toHaveTextContent("T");
-    expect(within(row).getByRole("group", { name: "Price No fresh quote" })).toBeVisible();
+    expect(
+      within(row).getByRole("group", { name: "Price No fresh quote, No observation" }),
+    ).toBeVisible();
     expect(within(row).getByRole("group", { name: "Since signal No signal change" })).toBeVisible();
-    expect(within(row).getByRole("group", { name: "Market cap No fresh cap" })).toBeVisible();
+    expect(
+      within(row).getByRole("group", { name: "Market cap No fresh cap, No observation" }),
+    ).toBeVisible();
   });
 
   it("presents market and evidence as labelled scan groups instead of a clipped sentence", () => {
-    renderQueue(fixture(1));
+    const snapshot = fixture(1);
+    renderQueue(snapshot);
     const row = screen.getByRole("listitem");
     const market = screen.getByLabelText("TOKEN1 market facts");
     const evidence = screen.getByLabelText("TOKEN1 evidence");
 
-    expect(within(market).getByRole("group", { name: "Price $0.00003281" })).toBeVisible();
+    expect(
+      within(market).getByRole("group", { name: /Price \$0\.00003281, Observed/ }),
+    ).toBeVisible();
     expect(within(market).getByRole("group", { name: "Since signal +12%" })).toBeVisible();
-    expect(within(market).getByRole("group", { name: "Market cap $1.3M" })).toBeVisible();
+    expect(
+      within(market).getByRole("group", { name: /Market cap \$1\.3M, Observed/ }),
+    ).toBeVisible();
+    expect(screen.getByTitle("Price observation time")).toHaveAttribute(
+      "datetime",
+      new Date(snapshot.items[0].market.price_observed_at_ms!).toISOString(),
+    );
+    expect(screen.getByTitle("Market-cap observation time")).toHaveAttribute(
+      "datetime",
+      new Date(snapshot.items[0].market.market_cap_observed_at_ms!).toISOString(),
+    );
     expect(
       within(evidence).getByRole("group", { name: "Mentions 2 to 7, increase 5" }),
     ).toBeVisible();
     expect(
       within(evidence).getByRole("group", {
-        name: "New evidence, 4 new authors, 5 independent texts",
+        name: "Independent evidence, 4 independent authors, 5 independent texts",
       }),
     ).toBeVisible();
     expect(
@@ -98,7 +146,9 @@ describe("RadarQueue", () => {
     expect(row).toHaveTextContent("2→7 · +5");
     expect(row).toHaveTextContent("4 authors · 5 texts");
     expect(row).toHaveTextContent("2m to form · 10% duplicate");
-    expect(row).toHaveTextContent(/Triggered/);
+    expect(screen.getByTitle("Trigger source-event time")).toHaveTextContent("Source");
+    expect(screen.getByTitle("Qualification time")).toHaveTextContent("Qualified");
+    expect(row).not.toHaveTextContent(/new authors/i);
   });
 
   it("copies the full contract address and opens the supported asset on GMGN", async () => {
@@ -223,7 +273,12 @@ describe("RadarQueue", () => {
   });
 
   it("renders a truthful empty state and only creates rows for real eligible items", () => {
-    const emptySnapshot = { ...fixture(), eligible_total: 0, evidence_as_of_ms: 0, items: [] };
+    const emptySnapshot = {
+      ...fixture(),
+      eligible_total: 0,
+      social_evidence_as_of_ms: 0,
+      items: [],
+    };
     const { container, rerender } = render(
       <MemoryRouter>
         <RadarQueue
@@ -246,7 +301,7 @@ describe("RadarQueue", () => {
     expect(screen.queryByRole("link", { name: "Open Token Case" })).not.toBeInTheDocument();
     const evidenceClock = container.querySelector(".live-radar-header time");
     expect(evidenceClock).not.toBeNull();
-    expect(evidenceClock).toHaveTextContent("No evidence yet");
+    expect(evidenceClock).toHaveTextContent("No social evidence yet");
 
     rerender(
       <MemoryRouter>
@@ -267,7 +322,7 @@ describe("RadarQueue", () => {
     expect(screen.getByRole("list", { name: "Radar priority queue" })).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(container.querySelector(".live-radar-header time")).toBe(evidenceClock);
-    expect(evidenceClock).not.toHaveTextContent("No evidence yet");
+    expect(evidenceClock).not.toHaveTextContent("No social evidence yet");
     expect(screen.getAllByRole("listitem")).toHaveLength(50);
     expect(screen.getAllByRole("link", { name: "Open Token Case" })).toHaveLength(50);
   });
@@ -293,8 +348,11 @@ function renderQueue(snapshot: TokenRadarSnapshot, error: Error | null = null) {
 
 function fixture(count = 50): TokenRadarSnapshot {
   return {
-    schema_version: "token_radar_snapshot_v2",
-    evidence_as_of_ms: 1_778_426_440_000,
+    schema_version: "token_radar_snapshot_v3",
+    state: "current",
+    stale_reason: null,
+    state_changed_at_ms: 1_778_426_420_000,
+    social_evidence_as_of_ms: 1_778_426_440_000,
     eligible_total: count === 50 ? 63 : count,
     items: Array.from({ length: count }, (_, index) =>
       item(`TOKEN${index + 1}`, `token-${index + 1}`, 5 + index),
@@ -315,21 +373,21 @@ function item(symbol: string, id: string, mentionDelta: number) {
       address: id,
     },
     trigger_event_id: `event-${id}`,
-    triggered_at_ms: 1_778_426_430_000,
+    trigger_source_event_at_ms: 1_778_426_430_000,
+    qualified_at_ms: 1_778_426_435_000,
     why_now: { current_mentions: 7, prior_mentions: 2, mention_delta: mentionDelta },
     evidence: {
-      new_independent_author_count: 4,
+      independent_author_count: 4,
       independent_text_count: 5,
       time_to_nth_author_ms: 90_000,
       duplicate_share: 0.1,
     },
     market: {
-      status: "confirmed" as const,
       price_usd: 0.00003281,
+      price_observed_at_ms: 1_778_426_439_000,
       price_change_since_signal: 0.12,
       market_cap_usd: 1_250_000,
-      observed_at_ms: 1_778_426_435_000,
+      market_cap_observed_at_ms: 1_778_426_438_000,
     },
-    counter_evidence: null,
   };
 }

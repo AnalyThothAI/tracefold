@@ -291,30 +291,34 @@ facts, targets, document analyses, and module rows.
 Historical migration `20260801_0237` added an OpenNews recovery boundary;
 News migration `20260809_0247` removes that state, installs public RSS
 source scheduling, and hard-cuts Brief persistence to two singleton tables.
-Token Radar migration `20260810_0249` removes the retired Radar projection
-tables and temporary replay-only schema, then installs the compact singleton.
-It preserves material Events, intents, resolutions, identities, and market
-facts. Migration `20260810_0250` resets that v1 singleton to one empty
-`token_radar_snapshot_v2`, installs the fixed Top-50/96-KiB contract, and drops
+Token Radar migration `20260810_0249` removed the retired Radar projection
+tables and temporary replay-only schema, then installed the compact singleton.
+It preserved material Events, intents, resolutions, identities, and market
+facts. Historical migration `20260810_0250` reset that v1 singleton to one empty
+`token_radar_snapshot_v2`, installed the fixed Top-50/96-KiB contract, and dropped
 the three Stocks-only derived tables `stock_attention_target_features`,
-`stocks_radar_current_rows`, and `stocks_radar_publication_state`. It preserves
+`stocks_radar_current_rows`, and `stocks_radar_publication_state`. It preserved
 all material facts and retains `us_equity_symbols` only as an internal
-token-identity collision guard; there is no Stocks product or route. Stop Serve
-and Workers while an existing database crosses this revision. General
-cross-asset Market facts and Macro remain installed. After migration, start only
-the new runtime. A fresh database migrates directly to head.
+token-identity collision guard; there is no Stocks product or route.
 Migration `20260811_0252` converts legacy acquisition-target states to the
 reachable state machine, removes `invalid`, preserves all six current rows, and
 clears only their rebuildable frontiers; it does not call a provider. Worker
 startup reconstructs missing/version-mismatched frontiers from persisted
 Dataset projection state, while matching clean frontiers remain zero-write.
-Current head `20260811_0253` hard-cuts only the rebuildable Rates, Economy, and
+Migration `20260811_0253` hard-cuts only the rebuildable Rates, Economy, and
 Cross-Asset serving rows/frontiers to `macro_rates_fed_v8`,
 `macro_economy_inflation_v6`, and `macro_cross_asset_v8`. Typed facts,
 acquisition state, official documents, jobs, and immutable analyses are
 preserved. Stop Serve and Workers, apply both migrations, then let the sole
 Macro projection writer reconcile all six frontiers and rebuild the three
 semantic-contract rows.
+Current head `20260811_0254` hard-cuts only the rebuildable Radar singleton to
+`token_radar_snapshot_v3`, initial `unavailable` state, and the bounded
+source-time index/basic serving constraints. It preserves every material Event,
+intent, resolution revision, identity/profile fact, and market fact. Stop Serve
+and Workers while an existing database crosses this revision; after migration,
+start only the v3 runtime and let its first successful three-hour bounded replay
+publish `current`. A fresh database migrates directly to head.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
@@ -355,16 +359,24 @@ It intentionally does not make business-data freshness part of readiness. Run
 current modules; use `make logs` for the bounded startup evidence named by a
 failure.
 
-### Token Radar v2 and Stocks derived-state reset
+### Token Radar v3 serving reset
 
-For the one-time `0249` to `0250` transition, build the new image first, stop
+For the one-time `0253` to `0254` transition, build the new image first, stop
 Serve and Workers, run the ordinary one-shot migration service, and verify that
 material fact counts and identities are unchanged before starting the new
-runtime. The migration is transactional: failure leaves the v1 singleton and
-Stocks-derived tables in place. After it succeeds, fix forward with the new
-code; the v1 packet, Stocks route/writer/read models, and compatibility code are
-not retained. The first new Worker turn reconstructs the v2 singleton only from
-the bounded fact window and its one selected-target profile/market batch read.
+runtime. The migration is transactional: failure leaves the v2 singleton in
+place. After it succeeds, fix forward with the v3 code; the v2 packet and any
+compatibility reader/writer are not retained. The public state is
+`unavailable` until the first complete Worker sample, then `current`; a later
+known source or projection failure retains the complete LKG as `stale`, and the
+next complete sample restores `current`.
+
+The first v3 Worker turn replays only the bounded three-hour source-time and
+resolution-revision horizon, opens only on a positive full-Gate false-to-true
+transition, applies one-hour TTL suppression, selects Top 50, then performs one
+selected-target identity/market presentation batch read. Market facts do not
+participate in admission or order. The cut adds no episode, frontier, Gate audit,
+or history table and changes no WebSocket behavior.
 
 Use the ordinary lifecycle after the transition:
 

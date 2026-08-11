@@ -51,7 +51,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   business inference.
 - **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads/writes. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, `postApi`, or `queryClient.set*` directly. `frontendDataOwnership.test.ts` enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
 - **URL state.** Shareable Search and Token Case options live in their owning route-state helpers. Token Radar has no filter, window, venue, sort, selection, or pagination state. Local stores are only for interaction state that should not survive hard reloads.
-- **Socket lifecycle.** `shared/socket` owns authentication, Token Case live-market cache patches, and ref-counted market-target subscriptions. The React client sends `replay: 0` and does not retain public `event` messages; backend event/replay remains a public evidence contract for other consumers. Token Radar registers no market target and is never patched from WebSocket state. Token Case subscribes only its active target. Stream/poll workers emit live market messages only after durable current-row persistence; those messages remain a cache enhancement, not a second source of truth.
+- **Socket lifecycle.** `shared/socket` owns authentication, Token Case live-market cache patches, and ref-counted market-target subscriptions. The React client sends `replay: 0` and does not retain public `event` messages; backend event/replay remains a public evidence contract for other consumers. Token Radar registers no market target and is never patched from WebSocket state. Token Case subscribes only its active target. Stream/poll workers emit live market messages only after durable current-row persistence; those messages remain a cache enhancement, not a second source of truth. The Radar v3 hard cut changes no WebSocket route, message, replay, or subscription behavior.
 - **Search route.** `/search` reuses the cockpit topbar but owns its
   search-local rail, filters, resolver candidates, and selected result. Topbar
   submit navigates to `/search?q=<query>`. Token search results render the
@@ -75,31 +75,41 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   keeps the server order and never scores, filters, admits, fills, or reorders
   Items.
 - **Token Radar currentness.** `/` is one full-height, maximum-fifty rich
-  research queue over `token_radar_snapshot_v2`. Each real row renders the
+  research queue over `token_radar_snapshot_v3`. The browser renders the
+  server-owned `current|stale|unavailable` state rather than inferring
+  projection health from HTTP success. `current` renders the queue; `stale`
+  retains every LKG row and shows one bounded source/projection banner;
+  `unavailable` renders an explicit empty state and no placeholder queue row.
+  Each real row renders the
   server-provided same-origin icon or a fixed-size symbol fallback, symbol/name,
   chain/address, current USD price, price change since the signal, market
   capitalization, transparent attention/evidence, and one Token Case action.
   Identity uses one primary symbol/name line plus one canonical identity line;
   canonical chain identifiers are rendered as human-readable network names and
   supported addresses expose an explicit GMGN destination. The header states
-  that the queue compares adjacent one-hour windows, preserves newest-trigger
-  order, and caps the public result at fifty. Missing price or capitalization
-  is labelled as unavailable fresh evidence rather than rendered as an
-  unexplained dash.
-  market and evidence are separate labelled scan groups rather than one clipped
+  that the queue is one-hour causal change, preserves newest-qualification
+  order, and caps the public result at fifty. The exact trigger source-event
+  time and qualification time are distinct semantic `<time>` values. Evidence
+  labels the actual independent-author count rather than a prior-relative
+  "new author" count. Price and market capitalization each render their own
+  observation clock; a missing value/clock is labelled as unavailable evidence
+  rather than rendered as an unexplained dash.
+  Market and evidence are separate labelled scan groups rather than one clipped
   prose string. Desktop keeps at least four complete decisions visible at the
   `1280x504` sidebar boundary; the reported `1210x504` viewport remains fully
   contained, and mobile evidence values wrap instead of being ellipsized.
   It does not request `/api/recent`, subscribe to market targets, buffer
   WebSocket events, hydrate profiles or market data, pre-mount fifty empty rows,
   or render a Tape/task switcher. The header reports the displayed count against
-  `eligible_total` plus the static `evidence_as_of_ms` timestamp. The one feature
+  `eligible_total` plus the static `social_evidence_as_of_ms` timestamp; market
+  clocks never advance that social label. The one feature
   query polls `/api/token-radar` every 30 seconds with an ETag-bound conditional
   GET; a `304` reuses the exact cached snapshot. Image elements may read only the
   same-origin paths already present in that snapshot.
-  Cached content survives a recoverable refresh error and shows one standard
-  `Update delayed` state. There is no green health badge, per-second age timer,
-  client-side staleness inference, or window/venue frame cache.
+  Cached content survives a recoverable transport refresh error and shows one
+  standard `Update delayed` state; that transport state does not replace the
+  server-owned stale banner. There is no green health badge, per-second age
+  timer, client-side staleness inference, or window/venue frame cache.
 - **News routes.** `/news` is a decision-first scan surface over the flat global
   Story Feed from `/api/news/feed`; the browser never clusters, scores, selects
   provider evidence, or reorders. The public News navigation contains `全球新闻`,
@@ -241,7 +251,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
 - **Score display.** Any displayed ranking score includes its component breakdown from the API. The UI does not recompute ranking facts locally.
 - **Token images.** Token Case/profile surfaces render
-  `profile.identity.logo_url` directly, and Radar renders the v2 Item
+  `profile.identity.logo_url` directly, and Radar renders the v3 Item
   `target.logo_url` directly. The API contract guarantees either value is
   `null` or a same-origin `/api/token-images/{image_id}` path; DB
   constraints reject remote provider URLs before they reach the frontend. Do
@@ -296,7 +306,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 6. Confirm Token Case/profile logos either load from `/api/token-images/{image_id}` or show
    fallback marks, with no browser requests to provider image URLs such as
    GMGN `external-res`.
-7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, the full-height Radar shows its static evidence timestamp, no filter/Tape/task bar exists, each Case action is reachable, and the final Radar Item is visible without overlap.
+7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, the full-height Radar shows its static social-evidence timestamp and independent Item clocks, no filter/Tape/task bar exists, each Case action is reachable, and the final Radar Item is visible without overlap.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar title, labelled market/evidence groups, full-height list, and no-overflow contract remain intact.
 9. At `1920px`, `1366px`, `834px`, and `390px`, verify the News Feed requests
    latest 25-row pages with strict `provider_score_gt=70` in the default `重点`

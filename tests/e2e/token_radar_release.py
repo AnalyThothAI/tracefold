@@ -31,6 +31,7 @@ def run_token_radar_browser_release(
     app_home: Path,
 ) -> None:
     """Prove one persisted fact reaches the real served browser without mocks."""
+    _reset_token_radar_current(postgres_dsn)
     ready_path = coordination_dir / "browser-ready"
     evidence_path = coordination_dir / "radar-evidence.json"
     timings_path = coordination_dir / "radar-browser-timings.json"
@@ -73,6 +74,38 @@ def run_token_radar_browser_release(
         print(f"TOKEN_RADAR_BROWSER_TIMINGS {json.dumps(timings, sort_keys=True)}")
     finally:
         _stop_process_group(process)
+
+
+def _reset_token_radar_current(postgres_dsn: str) -> None:
+    """Give this browser lane the same unavailable singleton as the v3 hard cut."""
+    with psycopg.connect(postgres_dsn) as connection, connection.transaction():
+        connection.execute(
+            """
+            UPDATE token_radar_current
+               SET schema_version = 'token_radar_snapshot_v3',
+                   ruleset_version = NULL,
+                   ruleset_fingerprint = NULL,
+                   input_fingerprint = NULL,
+                   state_fingerprint = NULL,
+                   evidence_as_of_ms = 0,
+                   evaluation_at_ms = 0,
+                   input_rows = 0,
+                   input_bytes = 0,
+                   latest_attempt_status = 'never',
+                   latest_error_code = NULL,
+                   failure_count = 0,
+                   state_changed_at_ms = 0,
+                   served_payload = jsonb_build_object(
+                     'schema_version', 'token_radar_snapshot_v3',
+                     'social_evidence_as_of_ms', 0,
+                     'eligible_total', 0,
+                     'items', jsonb_build_array()
+                   ),
+                   created_at_ms = 0,
+                   updated_at_ms = 0
+             WHERE singleton_key = true
+            """
+        )
 
 
 def _stop_process_group(process: subprocess.Popen[str]) -> None:
@@ -378,7 +411,8 @@ def _insert_event(connection: Any, *, event_id: str, author: str, received_at_ms
           urls_json, cashtags_json, hashtags_json, mentions_json, media_json,
           reference_json, raw_json, event_json, created_at_ms, updated_at_ms
         ) VALUES (
-          %s, %s, NULL, 'e2e', 'direct', 'public_stream', 'e2e', 'tweet', NULL,
+          %s, %s, NULL, 'gmgn', 'direct_ws', 'public_stream',
+          'twitter_monitor_basic', 'tweet', NULL,
           %s, %s, %s, %s, %s, %s, NULL, 1,
           '[]'::jsonb, %s, %s, %s, %s,
           '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,

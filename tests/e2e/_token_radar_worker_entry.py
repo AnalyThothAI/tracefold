@@ -29,7 +29,11 @@ async def _sample(postgres_dsn: str) -> None:
     cpu = CpuProcess()
     try:
         await cpu.prewarm()
-        await TokenRadarCurrentProjection(db=database, cpu=cpu).sample()
+        await TokenRadarCurrentProjection(
+            db=database,
+            cpu=cpu,
+            source_is_streaming=lambda: True,
+        ).sample()
     finally:
         cpu.close_admission()
         database.close_business_admission()

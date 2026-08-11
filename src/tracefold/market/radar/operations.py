@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-TOKEN_RADAR_CURRENT_MIGRATION = "20260810_0250"
+TOKEN_RADAR_CURRENT_MIGRATION = "20260811_0254"
 
 
 class TokenRadarStatusUnavailable(RuntimeError):
@@ -25,7 +25,7 @@ def token_radar_status(conn: Any) -> dict[str, Any]:
                input_fingerprint, state_fingerprint,
                evidence_as_of_ms, evaluation_at_ms, input_rows, input_bytes,
                latest_attempt_status, latest_error_code, failure_count,
-               updated_at_ms,
+               state_changed_at_ms, updated_at_ms,
                COALESCE((served_payload ->> 'eligible_total')::bigint, 0)
                  AS eligible_total,
                jsonb_array_length(served_payload -> 'items') AS public_items

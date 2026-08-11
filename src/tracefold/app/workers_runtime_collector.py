@@ -28,6 +28,7 @@ from tracefold.market import (
     TOKEN_RADAR_MAX_ITEMS,
     TOKEN_RADAR_OUTPUT_BYTE_CAP,
 )
+from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.postgres.postgres_audit import (
     HOT_QUERIES,
@@ -535,19 +536,10 @@ class _ProductionSampler:
 
     def _read_token_radar_database_state(self) -> dict[str, Any]:
         try:
-            row = self._conn.execute(
-                """
-                SELECT served_payload
-                  FROM token_radar_current
-                 WHERE singleton_key = true
-                """
-            ).fetchone()
+            payload = TokenRadarCurrentRepository(self._conn).served_snapshot()
         except BaseException as exc:
             raise _SampleFailure("token_radar_database", exc) from exc
-        if row is None:
-            raise _SampleFailure("token_radar_database_singleton_missing")
-        payload = row.get("served_payload")
-        if not isinstance(payload, Mapping) or not isinstance(payload.get("items"), list):
+        if not isinstance(payload.get("items"), list):
             raise _SampleFailure("token_radar_database_payload")
         encoded = _canonical_token_radar_data(payload)
         return {

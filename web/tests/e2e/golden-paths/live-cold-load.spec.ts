@@ -18,17 +18,21 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
 
   await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
   await expect(page.getByText("1 eligible · showing 1 / 50")).toBeVisible();
-  await expect(page.getByText("1h acceleration · newest trigger first")).toBeVisible();
+  await expect(page.getByText("1h causal change · newest qualification first")).toBeVisible();
   const item = page.locator(".live-radar-item").first();
   await expect(item.getByText("$UPEG", { exact: true })).toBeVisible();
   await expect(item.getByRole("img", { name: "Unpegged Token icon" })).toBeVisible();
-  await expect(item.getByRole("group", { name: "Price $0.042" })).toBeVisible();
+  await expect(item.getByRole("group", { name: /Price \$0\.042, Observed/ })).toBeVisible();
   await expect(item.getByRole("group", { name: "Since signal +12%" })).toBeVisible();
-  await expect(item.getByRole("group", { name: "Market cap $42M" })).toBeVisible();
+  await expect(item.getByRole("group", { name: /Market cap \$42M, Observed/ })).toBeVisible();
   await expect(item.getByRole("group", { name: "Mentions 2 to 7, increase 5" })).toBeVisible();
   await expect(
-    item.getByRole("group", { name: "New evidence, 4 new authors, 5 independent texts" }),
+    item.getByRole("group", {
+      name: "Independent evidence, 4 independent authors, 5 independent texts",
+    }),
   ).toBeVisible();
+  await expect(item.getByTitle("Trigger source-event time")).toBeVisible();
+  await expect(item.getByTitle("Qualification time")).toBeVisible();
   await expect(item.locator("details")).toHaveCount(0);
   await expect(item.getByRole("button", { name: "Copy UPEG contract address" })).toBeVisible();
   await expect(item.getByRole("link", { name: "Open UPEG on GMGN" })).toHaveAttribute(

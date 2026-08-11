@@ -1,6 +1,6 @@
 import type { components } from "@lib/types/openapi";
 
-export const TOKEN_RADAR_SNAPSHOT_SCHEMA = "token_radar_snapshot_v2" as const;
+export const TOKEN_RADAR_SNAPSHOT_SCHEMA = "token_radar_snapshot_v3" as const;
 
 export type TokenRadarSnapshotItem = components["schemas"]["TokenRadarItemData"];
 export type TokenRadarSnapshot = components["schemas"]["TokenRadarData"];
@@ -9,31 +9,84 @@ export function parseTokenRadarSnapshot(value: unknown): TokenRadarSnapshot {
   const snapshot = record(value, "snapshot");
   exactKeys(
     snapshot,
-    ["schema_version", "evidence_as_of_ms", "eligible_total", "items"],
+    [
+      "schema_version",
+      "state",
+      "stale_reason",
+      "state_changed_at_ms",
+      "social_evidence_as_of_ms",
+      "eligible_total",
+      "items",
+    ],
     "snapshot",
   );
   if (snapshot.schema_version !== TOKEN_RADAR_SNAPSHOT_SCHEMA) fail("snapshot.schema_version");
-  const evidenceAsOfMs = nonnegativeInteger(
-    snapshot.evidence_as_of_ms,
-    "snapshot.evidence_as_of_ms",
+  if (
+    snapshot.state !== "current" &&
+    snapshot.state !== "stale" &&
+    snapshot.state !== "unavailable"
+  ) {
+    fail("snapshot.state");
+  }
+  const staleReason = tokenRadarStaleReason(snapshot.stale_reason, "snapshot.stale_reason");
+  if ((snapshot.state === "stale") !== (staleReason !== null)) {
+    fail("snapshot.stale_reason");
+  }
+  const stateChangedAtMs = nonnegativeInteger(
+    snapshot.state_changed_at_ms,
+    "snapshot.state_changed_at_ms",
+  );
+  const socialEvidenceAsOfMs = nonnegativeInteger(
+    snapshot.social_evidence_as_of_ms,
+    "snapshot.social_evidence_as_of_ms",
   );
   const eligibleTotal = nonnegativeInteger(snapshot.eligible_total, "snapshot.eligible_total");
   if (!Array.isArray(snapshot.items) || snapshot.items.length > 50) fail("snapshot.items");
   const items = snapshot.items.map(parseItem);
-  if (eligibleTotal < items.length) fail("snapshot.eligible_total");
+  items.forEach((item, index) => {
+    if (item.qualified_at_ms > socialEvidenceAsOfMs) {
+      fail(`snapshot.items[${index}].qualified_at_ms`);
+    }
+  });
+  if (items.length !== Math.min(eligibleTotal, 50)) fail("snapshot.eligible_total");
+  validateServerOrder(items);
   if (
-    items.some(
-      (item) => item.market.observed_at_ms !== null && item.market.observed_at_ms > evidenceAsOfMs,
-    )
+    snapshot.state === "unavailable" &&
+    (stateChangedAtMs !== 0 ||
+      socialEvidenceAsOfMs !== 0 ||
+      eligibleTotal !== 0 ||
+      items.length !== 0)
   ) {
-    fail("snapshot.evidence_as_of_ms");
+    fail("snapshot.state");
   }
   return {
     schema_version: TOKEN_RADAR_SNAPSHOT_SCHEMA,
-    evidence_as_of_ms: evidenceAsOfMs,
+    state: snapshot.state,
+    stale_reason: staleReason,
+    state_changed_at_ms: stateChangedAtMs,
+    social_evidence_as_of_ms: socialEvidenceAsOfMs,
     eligible_total: eligibleTotal,
     items,
   };
+}
+
+function validateServerOrder(items: TokenRadarSnapshotItem[]): void {
+  const targets = new Set<string>();
+  let previous: TokenRadarSnapshotItem | null = null;
+  for (const item of items) {
+    const key = `${item.target.target_type}\u0000${item.target.target_id}`;
+    if (targets.has(key)) fail("snapshot.items");
+    targets.add(key);
+    if (
+      previous !== null &&
+      (item.qualified_at_ms > previous.qualified_at_ms ||
+        (item.qualified_at_ms === previous.qualified_at_ms &&
+          key < `${previous.target.target_type}\u0000${previous.target.target_id}`))
+    ) {
+      fail("snapshot.items");
+    }
+    previous = item;
+  }
 }
 
 function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
@@ -44,11 +97,11 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
     [
       "target",
       "trigger_event_id",
-      "triggered_at_ms",
+      "trigger_source_event_at_ms",
+      "qualified_at_ms",
       "why_now",
       "evidence",
       "market",
-      "counter_evidence",
     ],
     path,
   );
@@ -81,7 +134,7 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
   exactKeys(
     evidence,
     [
-      "new_independent_author_count",
+      "independent_author_count",
       "independent_text_count",
       "time_to_nth_author_ms",
       "duplicate_share",
@@ -93,11 +146,15 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
   const market = record(item.market, `${path}.market`);
   exactKeys(
     market,
-    ["status", "price_usd", "price_change_since_signal", "market_cap_usd", "observed_at_ms"],
+    [
+      "price_usd",
+      "price_observed_at_ms",
+      "price_change_since_signal",
+      "market_cap_usd",
+      "market_cap_observed_at_ms",
+    ],
     `${path}.market`,
   );
-  if (market.status !== "confirmed" && market.status !== "unavailable")
-    fail(`${path}.market.status`);
   const priceChange = nullableFiniteNumber(
     market.price_change_since_signal,
     `${path}.market.price_change_since_signal`,
@@ -107,18 +164,33 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
     market.market_cap_usd,
     `${path}.market.market_cap_usd`,
   );
-  const observedAtMs = nullableNonnegativeInteger(
-    market.observed_at_ms,
-    `${path}.market.observed_at_ms`,
+  const priceObservedAtMs = nullableNonnegativeInteger(
+    market.price_observed_at_ms,
+    `${path}.market.price_observed_at_ms`,
   );
-  const hasMetrics = priceUsd !== null || marketCapUsd !== null;
-  if (hasMetrics !== (observedAtMs !== null)) fail(`${path}.market.observed_at_ms`);
-  if (market.status === "unavailable" && priceChange !== null) {
+  const marketCapObservedAtMs = nullableNonnegativeInteger(
+    market.market_cap_observed_at_ms,
+    `${path}.market.market_cap_observed_at_ms`,
+  );
+  if ((priceUsd === null) !== (priceObservedAtMs === null)) {
+    fail(`${path}.market.price_observed_at_ms`);
+  }
+  if ((marketCapUsd === null) !== (marketCapObservedAtMs === null)) {
+    fail(`${path}.market.market_cap_observed_at_ms`);
+  }
+  if (priceChange !== null && (priceUsd === null || priceObservedAtMs === null)) {
     fail(`${path}.market.price_change_since_signal`);
   }
+  const triggerSourceEventAtMs = nonnegativeInteger(
+    item.trigger_source_event_at_ms,
+    `${path}.trigger_source_event_at_ms`,
+  );
+  const qualifiedAtMs = nonnegativeInteger(item.qualified_at_ms, `${path}.qualified_at_ms`);
+  if (qualifiedAtMs < triggerSourceEventAtMs) fail(`${path}.qualified_at_ms`);
   if (
-    market.status === "confirmed" &&
-    (priceChange === null || priceUsd === null || observedAtMs === null)
+    priceChange !== null &&
+    priceObservedAtMs !== null &&
+    priceObservedAtMs < triggerSourceEventAtMs
   ) {
     fail(`${path}.market.price_change_since_signal`);
   }
@@ -134,16 +206,17 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
       address,
     },
     trigger_event_id: nonemptyString(item.trigger_event_id, `${path}.trigger_event_id`),
-    triggered_at_ms: nonnegativeInteger(item.triggered_at_ms, `${path}.triggered_at_ms`),
+    trigger_source_event_at_ms: triggerSourceEventAtMs,
+    qualified_at_ms: qualifiedAtMs,
     why_now: {
       current_mentions: currentMentions,
       prior_mentions: priorMentions,
       mention_delta: mentionDelta,
     },
     evidence: {
-      new_independent_author_count: nonnegativeInteger(
-        evidence.new_independent_author_count,
-        `${path}.evidence.new_independent_author_count`,
+      independent_author_count: nonnegativeInteger(
+        evidence.independent_author_count,
+        `${path}.evidence.independent_author_count`,
       ),
       independent_text_count: nonnegativeInteger(
         evidence.independent_text_count,
@@ -156,13 +229,12 @@ function parseItem(value: unknown, index: number): TokenRadarSnapshotItem {
       duplicate_share: duplicateShare,
     },
     market: {
-      status: market.status,
       price_usd: priceUsd,
+      price_observed_at_ms: priceObservedAtMs,
       price_change_since_signal: priceChange,
       market_cap_usd: marketCapUsd,
-      observed_at_ms: observedAtMs,
+      market_cap_observed_at_ms: marketCapObservedAtMs,
     },
-    counter_evidence: counterEvidence(item.counter_evidence, `${path}.counter_evidence`),
   };
 }
 
@@ -192,8 +264,13 @@ function nullableTokenImagePath(value: unknown, path: string): string | null {
   return parsed;
 }
 
-function counterEvidence(value: unknown, path: string): "market_confirmation_unavailable" | null {
-  if (value === null || value === "market_confirmation_unavailable") return value;
+function tokenRadarStaleReason(
+  value: unknown,
+  path: string,
+): "source_unavailable" | "projection_failed" | null {
+  if (value === null || value === "source_unavailable" || value === "projection_failed") {
+    return value;
+  }
   return fail(path);
 }
 

@@ -172,41 +172,67 @@ singleton. It has no product query parameter: `window`, `venue`, `limit`,
 aliased. The existing authentication `token` query remains an authentication
 transport, not a Radar option.
 
-The exact data payload is one `token_radar_snapshot_v2` object:
+The exact data payload is one `token_radar_snapshot_v3` object. Before the
+first successful v3 sample it is:
 
 ```json
 {
-  "schema_version": "token_radar_snapshot_v2",
-  "evidence_as_of_ms": 0,
+  "schema_version": "token_radar_snapshot_v3",
+  "state": "unavailable",
+  "stale_reason": null,
+  "state_changed_at_ms": 0,
+  "social_evidence_as_of_ms": 0,
   "eligible_total": 0,
   "items": []
 }
 ```
 
+`state` is exactly `current|stale|unavailable`. `current` means the latest
+complete sample published successfully. `stale` preserves the complete
+last-known-good Items and uses only
+`source_unavailable|projection_failed` as its non-null `stale_reason`.
+`unavailable` has `stale_reason=null`, zero social clock/counts, and no Items
+because no v3 LKG exists. `state_changed_at_ms` changes only when this public
+state/reason changes; `social_evidence_as_of_ms` is the latest persisted social
+fact-availability clock represented by the replay, never a market clock.
+Repeated identical current or stale observations do not advance either clock
+or rewrite serving state. `schema_version` is the only public semantic version;
+the Gate/ruleset version and fingerprints remain internal.
+
 `items` contains at most fifty entries in server-owned order. Each entry has
 exactly canonical `target` identity (`target_type`, `target_id`, `symbol`, and
-nullable `name`, same-origin `logo_url`, `chain`, `exchange`, `address`); one
-`trigger_event_id` and `triggered_at_ms`; `why_now` current/prior 1-hour mention
-counts and their difference; `evidence` new-independent-author count,
-independent-text count, time to the required author, and duplicate share; and
-one `market` packet with `status`, nullable current `price_usd`, nullable
-`price_change_since_signal`, nullable `market_cap_usd`, and nullable
-`observed_at_ms`. `logo_url` is either `null` or the exact same-origin form
-`/api/token-images/{64-lowercase-hex-image-id}`. A fresh positive current metric
-requires `observed_at_ms`; price and market capitalization are selected from
-persisted market facts and validated independently against the same five-minute
-freshness bound. When both fields are present, `observed_at_ms` is the earlier
-of their actual observation times, so the packet never presents the older fact
-as newer than it is. When only one field is present, it is that field's
-observation time. A confirmed signal change additionally requires a fresh
-positive current price observed no earlier than the trigger. Missing, stale,
-future, non-positive, or non-finite evidence degrades only the affected
-presentation field rather than changing admission or order. The nullable
-`counter_evidence` remains exactly
-`market_confirmation_unavailable|null`. `eligible_total` counts the complete
-eligible population before the maximum-fifty selection. Order is primarily
-newest trigger first with stable fact-key ties. The complete uncompressed
-snapshot is capped at 96 KiB.
+nullable `name`, same-origin `logo_url`, `chain`, `exchange`, `address`);
+`trigger_event_id`, `trigger_source_event_at_ms`, and `qualified_at_ms`;
+`why_now` current/prior one-hour mention counts and their difference;
+`evidence` actual independent-author count, independent-text count, time to the
+required author, and duplicate share; and one nullable presentation-only
+`market` packet:
+
+```json
+{
+  "price_usd": null,
+  "price_observed_at_ms": null,
+  "price_change_since_signal": null,
+  "market_cap_usd": null,
+  "market_cap_observed_at_ms": null
+}
+```
+
+`logo_url` is either `null` or the exact same-origin form
+`/api/token-images/{64-lowercase-hex-image-id}`. Each price or market-cap value
+is paired with its own observation clock; absence, staleness, future time,
+non-positive value, or non-finite value nulls only that presentation fact.
+`price_change_since_signal` additionally requires a valid current price and the
+persisted trigger price anchor, with its current-price observation no earlier
+than the trigger source-event time. Market presentation never changes admission,
+qualification, or order, and v3 has no market `status` or
+`counter_evidence`. `eligible_total` counts the complete eligible population
+before the maximum-fifty selection; Items contain that full population when it
+is at most fifty and exactly fifty otherwise. Order is `qualified_at_ms`
+descending with stable `(target_type, target_id)` ties. Trigger source time
+cannot exceed qualification time, qualification time cannot exceed
+`social_evidence_as_of_ms`, target keys are unique, and the complete
+uncompressed snapshot is capped at 96 KiB.
 
 Target identity is a closed discriminated contract. `Asset` requires non-empty
 `chain` and `address` with `exchange=null`; `CexToken` requires a non-empty
@@ -216,15 +242,17 @@ internal chain value `robinhood` (provider adapters map its external chain index
 `eip155:4663` alias.
 
 The response has `Cache-Control: private, no-cache` and a strong ETag bound to
-the complete served snapshot. A matching `If-None-Match` returns `304` with no
-body. The endpoint never calls a provider, recalculates the reducer, hydrates a
-profile, returns source-event lists, or falls back to the retired v1 row/factor
-contract. The writer obtains profile, current-price, and independently fresh
-positive market-cap facts in one bounded batch read after server selection;
-the browser makes no per-Item profile or live-market data request. Scores,
-ranks, decisions, factor families,
-gates, normalization, security judgments, windows, venues, and compatibility
-fields do not exist.
+the complete served v3 object, including public state. A matching
+`If-None-Match` returns `304` with no body, including for unchanged healthy or
+unchanged stale reads. The endpoint never calls a provider, recalculates the
+reducer, hydrates a profile, returns source-event lists, or falls back to a v2
+contract. The writer obtains identity/profile, exact trigger-price anchor,
+current-price, and independently fresh market-cap facts in one bounded batch
+read only after Top-50 selection; the browser makes no per-Item profile or
+live-market data request. Scores, ranks, decisions, factor families, per-rule
+Gate audits, rejected-candidate histories, normalization, security judgments,
+windows, venues, and compatibility fields do not exist. Radar v3 changes no
+WebSocket route, message, replay, or subscription contract.
 Search and Token Case remain independent fact readers; a Radar link may focus
 the exact trigger Event in Token Case, but Radar current state is not copied
 into the dossier.

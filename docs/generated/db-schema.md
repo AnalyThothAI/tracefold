@@ -1133,6 +1133,7 @@
 | `served_payload` | `JSONB` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `state_changed_at_ms` | `BIGINT` | False | `0` |
 
 ## `us_equity_symbols`
 

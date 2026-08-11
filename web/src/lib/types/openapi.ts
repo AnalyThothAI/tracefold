@@ -3651,55 +3651,61 @@ export interface components {
         TokenRadarData: {
             /** Eligible Total */
             eligible_total: number;
-            /** Evidence As Of Ms */
-            evidence_as_of_ms: number;
             /** Items */
             items: components["schemas"]["TokenRadarItemData"][];
             /**
              * Schema Version
              * @constant
              */
-            schema_version: "token_radar_snapshot_v2";
+            schema_version: "token_radar_snapshot_v3";
+            /** Social Evidence As Of Ms */
+            social_evidence_as_of_ms: number;
+            /** Stale Reason */
+            stale_reason: ("source_unavailable" | "projection_failed") | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "current" | "stale" | "unavailable";
+            /** State Changed At Ms */
+            state_changed_at_ms: number;
         };
         /** TokenRadarEvidenceData */
         TokenRadarEvidenceData: {
             /** Duplicate Share */
             duplicate_share: number;
+            /** Independent Author Count */
+            independent_author_count: number;
             /** Independent Text Count */
             independent_text_count: number;
-            /** New Independent Author Count */
-            new_independent_author_count: number;
             /** Time To Nth Author Ms */
             time_to_nth_author_ms: number;
         };
         /** TokenRadarItemData */
         TokenRadarItemData: {
-            /** Counter Evidence */
-            counter_evidence: "market_confirmation_unavailable" | null;
             evidence: components["schemas"]["TokenRadarEvidenceData"];
             market: components["schemas"]["TokenRadarMarketData"];
+            /** Qualified At Ms */
+            qualified_at_ms: number;
             target: components["schemas"]["TokenRadarTargetData"];
             /** Trigger Event Id */
             trigger_event_id: string;
-            /** Triggered At Ms */
-            triggered_at_ms: number;
+            /** Trigger Source Event At Ms */
+            trigger_source_event_at_ms: number;
             why_now: components["schemas"]["TokenRadarWhyNowData"];
         };
         /** TokenRadarMarketData */
         TokenRadarMarketData: {
+            /** Market Cap Observed At Ms */
+            market_cap_observed_at_ms: number | null;
             /** Market Cap Usd */
             market_cap_usd: number | null;
-            /** Observed At Ms */
-            observed_at_ms: number | null;
             /** Price Change Since Signal */
             price_change_since_signal: number | null;
+            /** Price Observed At Ms */
+            price_observed_at_ms: number | null;
             /** Price Usd */
             price_usd: number | null;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "confirmed" | "unavailable";
         };
         /** TokenRadarTargetData */
         TokenRadarTargetData: {

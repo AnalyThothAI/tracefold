@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 
 import pytest
 from pydantic import ValidationError
@@ -8,50 +9,155 @@ from pydantic import ValidationError
 from tracefold.app.http.schemas import TokenRadarData
 
 
-def test_token_radar_schema_rejects_incoherent_market_and_selection_states() -> None:
-    packet = _packet()
+def test_token_radar_schema_accepts_exact_v3_packet_with_independent_market_clocks() -> None:
+    packet = _v3_packet()
 
-    confirmed_without_change = _packet()
-    confirmed_without_change["items"][0]["market"] = {
-        "status": "confirmed",
-        "price_change_since_signal": None,
-        "price_usd": 1.0,
-        "market_cap_usd": 1_000_000.0,
-        "observed_at_ms": 1,
-    }
-    with pytest.raises(ValidationError, match="token_radar_confirmed_market_change_required"):
-        TokenRadarData.model_validate(confirmed_without_change)
+    validated = TokenRadarData.model_validate(packet)
 
-    unavailable_with_change = _packet()
-    unavailable_with_change["items"][0]["market"] = {
-        "status": "unavailable",
-        "price_change_since_signal": 0.1,
-        "price_usd": 1.0,
-        "market_cap_usd": 1_000_000.0,
-        "observed_at_ms": 1,
-    }
-    with pytest.raises(ValidationError, match="token_radar_unavailable_market_change_forbidden"):
-        TokenRadarData.model_validate(unavailable_with_change)
+    assert validated.model_dump(mode="json") == packet
 
-    nonfinite = _packet()
-    nonfinite["items"][0]["market"] = {
-        "status": "confirmed",
-        "price_change_since_signal": math.inf,
-        "price_usd": 1.0,
-        "market_cap_usd": 1_000_000.0,
-        "observed_at_ms": 1,
-    }
-    with pytest.raises(ValidationError, match="token_radar_confirmed_market_change_required"):
-        TokenRadarData.model_validate(nonfinite)
 
-    packet["eligible_total"] = 0
-    with pytest.raises(ValidationError, match="token_radar_eligible_total_invalid"):
+@pytest.mark.parametrize(
+    ("state", "stale_reason"),
+    [
+        ("current", "source_unavailable"),
+        ("stale", None),
+        ("unavailable", "projection_failed"),
+    ],
+)
+def test_token_radar_schema_rejects_incoherent_public_state(
+    state: str,
+    stale_reason: str | None,
+) -> None:
+    packet = _v3_packet()
+    packet["state"] = state
+    packet["stale_reason"] = stale_reason
+
+    with pytest.raises(ValidationError, match="token_radar_state_reason_invalid"):
         TokenRadarData.model_validate(packet)
 
-    unsupported_counter = _packet()
-    unsupported_counter["items"][0]["counter_evidence"] = "unknown_reason"
+
+def test_token_radar_schema_rejects_unavailable_state_with_business_payload() -> None:
+    packet = _v3_packet()
+    packet["state"] = "unavailable"
+
+    with pytest.raises(ValidationError, match="token_radar_unavailable_payload_invalid"):
+        TokenRadarData.model_validate(packet)
+
+
+def test_token_radar_schema_rejects_unavailable_state_with_change_clock() -> None:
+    packet = _v3_packet()
+    packet.update(
+        {
+            "state": "unavailable",
+            "state_changed_at_ms": 1,
+            "social_evidence_as_of_ms": 0,
+            "eligible_total": 0,
+            "items": [],
+        }
+    )
+
+    with pytest.raises(ValidationError, match="token_radar_unavailable_state_clock_invalid"):
+        TokenRadarData.model_validate(packet)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("price_usd", None),
+        ("price_observed_at_ms", None),
+        ("market_cap_usd", None),
+        ("market_cap_observed_at_ms", None),
+    ],
+)
+def test_token_radar_schema_rejects_market_value_without_its_own_clock(
+    field: str,
+    value: object,
+) -> None:
+    packet = _v3_packet()
+    packet["items"][0]["market"][field] = value
+
+    with pytest.raises(ValidationError, match="token_radar_market_clock_invalid"):
+        TokenRadarData.model_validate(packet)
+
+
+def test_token_radar_schema_rejects_price_change_before_trigger_source_time() -> None:
+    packet = _v3_packet()
+    packet["items"][0]["market"]["price_observed_at_ms"] = 79
+
+    with pytest.raises(ValidationError, match="token_radar_price_change_clock_invalid"):
+        TokenRadarData.model_validate(packet)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("trigger_source_event_at_ms", 91),
+        ("qualified_at_ms", 101),
+    ],
+)
+def test_token_radar_schema_rejects_incoherent_causal_times(field: str, value: int) -> None:
+    packet = _v3_packet()
+    packet["items"][0][field] = value
+
+    with pytest.raises(ValidationError, match="token_radar_causal_time_invalid"):
+        TokenRadarData.model_validate(packet)
+
+
+def test_token_radar_schema_rejects_duplicate_target_keys() -> None:
+    packet = _v3_packet()
+    packet["eligible_total"] = 2
+    packet["items"].append(deepcopy(packet["items"][0]))
+
+    with pytest.raises(ValidationError, match="token_radar_target_duplicate"):
+        TokenRadarData.model_validate(packet)
+
+
+@pytest.mark.parametrize(
+    ("qualified_at_ms", "target_id"),
+    [
+        (95, "asset:z"),
+        (90, "asset:alpha"),
+    ],
+)
+def test_token_radar_schema_rejects_non_server_ordered_items(
+    qualified_at_ms: int,
+    target_id: str,
+) -> None:
+    packet = _v3_packet()
+    second = deepcopy(packet["items"][0])
+    second["target"]["target_id"] = target_id
+    second["qualified_at_ms"] = qualified_at_ms
+    packet["eligible_total"] = 2
+    packet["items"].append(second)
+
+    with pytest.raises(ValidationError, match="token_radar_server_order_invalid"):
+        TokenRadarData.model_validate(packet)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("target_id", ""),
+        ("target_id", "   "),
+        ("symbol", ""),
+        ("symbol", "   "),
+        ("name", ""),
+        ("name", "   "),
+        ("trigger_event_id", ""),
+        ("trigger_event_id", "   "),
+    ],
+)
+def test_token_radar_schema_rejects_blank_public_identifiers(field: str, value: str) -> None:
+    packet = _v3_packet()
+    item = packet["items"][0]
+    if field == "trigger_event_id":
+        item[field] = value
+    else:
+        item["target"][field] = value
+
     with pytest.raises(ValidationError):
-        TokenRadarData.model_validate(unsupported_counter)
+        TokenRadarData.model_validate(packet)
 
 
 @pytest.mark.parametrize(
@@ -61,40 +167,55 @@ def test_token_radar_schema_rejects_incoherent_market_and_selection_states() -> 
         ("price_usd", math.inf),
         ("market_cap_usd", -1),
         ("market_cap_usd", math.nan),
+        ("price_change_since_signal", math.inf),
     ],
 )
-def test_token_radar_schema_rejects_nonpositive_or_nonfinite_current_metrics(
+def test_token_radar_schema_rejects_nonpositive_or_nonfinite_market_metrics(
     field: str,
     value: float,
 ) -> None:
-    packet = _packet()
+    packet = _v3_packet()
     packet["items"][0]["market"][field] = value
 
     with pytest.raises(ValidationError):
         TokenRadarData.model_validate(packet)
 
 
-def test_token_radar_schema_rejects_remote_logo_and_market_timestamp_without_metrics() -> None:
-    remote_logo = _packet()
+def test_token_radar_schema_rejects_remote_logo() -> None:
+    remote_logo = _v3_packet()
     remote_logo["items"][0]["target"]["logo_url"] = "https://remote.example/token.png"
-    with pytest.raises(ValidationError):
+
+    with pytest.raises(ValidationError, match="token_radar_logo_url_invalid"):
         TokenRadarData.model_validate(remote_logo)
 
-    timestamp_without_metrics = _packet()
-    timestamp_without_metrics["items"][0]["market"] = {
-        "status": "unavailable",
-        "price_change_since_signal": None,
-        "price_usd": None,
-        "market_cap_usd": None,
-        "observed_at_ms": 1,
-    }
-    with pytest.raises(ValidationError, match="token_radar_market_observation_without_metrics"):
-        TokenRadarData.model_validate(timestamp_without_metrics)
 
-    missing_required_market_field = _packet()
-    del missing_required_market_field["items"][0]["market"]["price_usd"]
+def test_token_radar_schema_rejects_incoherent_counts() -> None:
+    invalid_selection = _v3_packet()
+    invalid_selection["eligible_total"] = 0
+    with pytest.raises(ValidationError, match="token_radar_eligible_total_invalid"):
+        TokenRadarData.model_validate(invalid_selection)
+
+    underfilled_selection = _v3_packet()
+    underfilled_selection["eligible_total"] = 2
+    with pytest.raises(ValidationError, match="token_radar_eligible_total_invalid"):
+        TokenRadarData.model_validate(underfilled_selection)
+
+    invalid_delta = _v3_packet()
+    invalid_delta["items"][0]["why_now"]["mention_delta"] = 1
+    with pytest.raises(ValidationError, match="token_radar_mention_delta_invalid"):
+        TokenRadarData.model_validate(invalid_delta)
+
+
+def test_token_radar_schema_rejects_removed_v2_fields() -> None:
+    old_market_status = _v3_packet()
+    old_market_status["items"][0]["market"]["status"] = "confirmed"
     with pytest.raises(ValidationError):
-        TokenRadarData.model_validate(missing_required_market_field)
+        TokenRadarData.model_validate(old_market_status)
+
+    old_counter = _v3_packet()
+    old_counter["items"][0]["counter_evidence"] = "market_confirmation_unavailable"
+    with pytest.raises(ValidationError):
+        TokenRadarData.model_validate(old_counter)
 
 
 @pytest.mark.parametrize(
@@ -143,17 +264,20 @@ def test_token_radar_schema_rejects_remote_logo_and_market_timestamp_without_met
     ],
 )
 def test_token_radar_schema_rejects_ambiguous_target_identity(target: dict[str, object]) -> None:
-    packet = _packet()
+    packet = _v3_packet()
     packet["items"][0]["target"] = target
 
     with pytest.raises(ValidationError, match="token_radar_target_identity_invalid"):
         TokenRadarData.model_validate(packet)
 
 
-def _packet() -> dict[str, object]:
+def _v3_packet() -> dict[str, object]:
     return {
-        "schema_version": "token_radar_snapshot_v2",
-        "evidence_as_of_ms": 1,
+        "schema_version": "token_radar_snapshot_v3",
+        "state": "current",
+        "stale_reason": None,
+        "state_changed_at_ms": 120,
+        "social_evidence_as_of_ms": 100,
         "eligible_total": 1,
         "items": [
             {
@@ -168,26 +292,26 @@ def _packet() -> dict[str, object]:
                     "address": "0xtest",
                 },
                 "trigger_event_id": "event-1",
-                "triggered_at_ms": 1,
+                "trigger_source_event_at_ms": 80,
+                "qualified_at_ms": 90,
                 "why_now": {
                     "current_mentions": 3,
                     "prior_mentions": 1,
                     "mention_delta": 2,
                 },
                 "evidence": {
-                    "new_independent_author_count": 3,
+                    "independent_author_count": 3,
                     "independent_text_count": 3,
                     "time_to_nth_author_ms": 1,
                     "duplicate_share": 0.0,
                 },
                 "market": {
-                    "status": "unavailable",
-                    "price_change_since_signal": None,
                     "price_usd": 1.0,
+                    "price_observed_at_ms": 110,
+                    "price_change_since_signal": 0.1,
                     "market_cap_usd": 1_000_000.0,
-                    "observed_at_ms": 1,
+                    "market_cap_observed_at_ms": 105,
                 },
-                "counter_evidence": "market_confirmation_unavailable",
             }
         ],
     }

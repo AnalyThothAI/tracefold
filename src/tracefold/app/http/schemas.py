@@ -1575,8 +1575,8 @@ class TokenCaseData(ExactApiSchema):
 
 class TokenRadarTargetData(ExactApiSchema):
     target_type: Literal["Asset", "CexToken"]
-    target_id: str
-    symbol: str
+    target_id: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
     name: str | None
     logo_url: str | None
     chain: str | None
@@ -1585,6 +1585,10 @@ class TokenRadarTargetData(ExactApiSchema):
 
     @model_validator(mode="after")
     def validate_target(self) -> TokenRadarTargetData:
+        if not self.target_id.strip() or not self.symbol.strip():
+            raise ValueError("token_radar_target_text_required")
+        if self.name is not None and not self.name.strip():
+            raise ValueError("token_radar_target_text_required")
         prefix = "/api/token-images/"
         if self.logo_url is not None:
             image_id = self.logo_url.removeprefix(prefix)
@@ -1624,66 +1628,87 @@ class TokenRadarWhyNowData(ExactApiSchema):
 
 
 class TokenRadarEvidenceData(ExactApiSchema):
-    new_independent_author_count: int = Field(ge=0)
+    independent_author_count: int = Field(ge=0)
     independent_text_count: int = Field(ge=0)
     time_to_nth_author_ms: int = Field(ge=0)
     duplicate_share: float = Field(ge=0, le=1)
 
 
 class TokenRadarMarketData(ExactApiSchema):
-    status: Literal["confirmed", "unavailable"]
-    price_change_since_signal: float | None
     price_usd: float | None = Field(gt=0)
+    price_observed_at_ms: int | None = Field(ge=0)
+    price_change_since_signal: float | None
     market_cap_usd: float | None = Field(gt=0)
-    observed_at_ms: int | None = Field(ge=0)
+    market_cap_observed_at_ms: int | None = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_market_state(self) -> TokenRadarMarketData:
-        metrics = (self.price_usd, self.market_cap_usd)
+        metrics = (self.price_usd, self.price_change_since_signal, self.market_cap_usd)
         if any(value is not None and not math.isfinite(value) for value in metrics):
             raise ValueError("token_radar_market_metric_invalid")
-        if any(value is not None for value in metrics) and self.observed_at_ms is None:
-            raise ValueError("token_radar_market_observation_required")
-        if all(value is None for value in metrics) and self.observed_at_ms is not None:
-            raise ValueError("token_radar_market_observation_without_metrics")
-        if self.status == "confirmed":
-            if (
-                self.price_change_since_signal is None
-                or not math.isfinite(self.price_change_since_signal)
-                or self.price_usd is None
-                or self.observed_at_ms is None
-            ):
-                raise ValueError("token_radar_confirmed_market_change_required")
-        elif self.price_change_since_signal is not None:
-            raise ValueError("token_radar_unavailable_market_change_forbidden")
+        if (self.price_usd is None) != (self.price_observed_at_ms is None):
+            raise ValueError("token_radar_market_clock_invalid")
+        if (self.market_cap_usd is None) != (self.market_cap_observed_at_ms is None):
+            raise ValueError("token_radar_market_clock_invalid")
+        if self.price_change_since_signal is not None and self.price_usd is None:
+            raise ValueError("token_radar_market_clock_invalid")
         return self
 
 
 class TokenRadarItemData(ExactApiSchema):
     target: TokenRadarTargetData
-    trigger_event_id: str
-    triggered_at_ms: int = Field(ge=0)
+    trigger_event_id: str = Field(min_length=1)
+    trigger_source_event_at_ms: int = Field(ge=0)
+    qualified_at_ms: int = Field(ge=0)
     why_now: TokenRadarWhyNowData
     evidence: TokenRadarEvidenceData
     market: TokenRadarMarketData
-    counter_evidence: Literal["market_confirmation_unavailable"] | None
+
+    @model_validator(mode="after")
+    def validate_item(self) -> TokenRadarItemData:
+        if not self.trigger_event_id.strip():
+            raise ValueError("token_radar_trigger_event_id_required")
+        if self.market.price_change_since_signal is not None and (
+            self.market.price_observed_at_ms is None
+            or self.market.price_observed_at_ms < self.trigger_source_event_at_ms
+        ):
+            raise ValueError("token_radar_price_change_clock_invalid")
+        return self
 
 
 class TokenRadarData(ExactApiSchema):
-    schema_version: Literal["token_radar_snapshot_v2"]
-    evidence_as_of_ms: int = Field(ge=0)
+    schema_version: Literal["token_radar_snapshot_v3"]
+    state: Literal["current", "stale", "unavailable"]
+    stale_reason: Literal["source_unavailable", "projection_failed"] | None
+    state_changed_at_ms: int = Field(ge=0)
+    social_evidence_as_of_ms: int = Field(ge=0)
     eligible_total: int = Field(ge=0)
     items: list[TokenRadarItemData] = Field(max_length=50)
 
     @model_validator(mode="after")
     def validate_selection_count(self) -> TokenRadarData:
-        if self.eligible_total < len(self.items):
-            raise ValueError("token_radar_eligible_total_invalid")
+        if (self.state == "stale") != (self.stale_reason is not None):
+            raise ValueError("token_radar_state_reason_invalid")
+        if self.state == "unavailable" and (
+            self.social_evidence_as_of_ms != 0 or self.eligible_total != 0 or self.items
+        ):
+            raise ValueError("token_radar_unavailable_payload_invalid")
+        if self.state == "unavailable" and self.state_changed_at_ms != 0:
+            raise ValueError("token_radar_unavailable_state_clock_invalid")
         if any(
-            item.market.observed_at_ms is not None and item.market.observed_at_ms > self.evidence_as_of_ms
+            item.trigger_source_event_at_ms > item.qualified_at_ms
+            or item.qualified_at_ms > self.social_evidence_as_of_ms
             for item in self.items
         ):
-            raise ValueError("token_radar_market_observation_after_evidence")
+            raise ValueError("token_radar_causal_time_invalid")
+        target_keys = [(item.target.target_type, item.target.target_id) for item in self.items]
+        if len(set(target_keys)) != len(target_keys):
+            raise ValueError("token_radar_target_duplicate")
+        server_order = [(-item.qualified_at_ms, item.target.target_type, item.target.target_id) for item in self.items]
+        if server_order != sorted(server_order):
+            raise ValueError("token_radar_server_order_invalid")
+        if len(self.items) != min(self.eligible_total, 50):
+            raise ValueError("token_radar_eligible_total_invalid")
         return self
 
 

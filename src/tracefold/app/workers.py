@@ -935,7 +935,12 @@ async def _wire_components(
     wired_profile_provider_ids = tuple(source.provider for source in providers.dex_profile_sources)
     if wired_profile_provider_ids != active_profile_provider_ids:
         raise RuntimeError("profile_provider_wiring_mismatch")
-    token_radar_current = TokenRadarCurrentProjection(db=db, cpu=projection_cpu, telemetry=telemetry)
+    token_radar_current = TokenRadarCurrentProjection(
+        db=db,
+        cpu=projection_cpu,
+        telemetry=telemetry,
+        source_is_streaming=collector.source_is_streaming if collector is not None else lambda: False,
+    )
     projections = (
         ProfileProjectionCandidate(
             db=db,

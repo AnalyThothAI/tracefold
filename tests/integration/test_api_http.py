@@ -28,7 +28,7 @@ from tracefold.market import (
     market_tick_id,
     parse_gmgn_token_payload,
 )
-from tracefold.market.radar.reducer import enrich_token_radar, reduce_token_radar
+from tracefold.market.radar.reducer import RadarEvidenceRevision, enrich_token_radar, reduce_token_radar
 from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 from tracefold.news import (
     NewsBriefSource,
@@ -423,26 +423,44 @@ def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> Non
     conn = connect_postgres_test(read_only=False)
     try:
         repository = TokenRadarCurrentRepository(conn)
-        reduced = reduce_token_radar(
-            repository.load_material_inputs(now_ms=base_now_ms),
-            now_ms=base_now_ms,
-        )
-        reduced = enrich_token_radar(
-            reduced,
-            repository.load_presentation_facts(
-                [
-                    (str(item["target"]["target_type"]), str(item["target"]["target_id"]))
-                    for item in reduced.snapshot["items"]
-                ],
-                now_ms=base_now_ms,
-            ),
-            now_ms=base_now_ms,
-        )
         with conn.transaction():
+            reduced = reduce_token_radar(
+                repository.load_material_inputs(now_ms=base_now_ms),
+                now_ms=base_now_ms,
+            )
+            reduced = enrich_token_radar(
+                reduced,
+                repository.load_presentation_facts(
+                    list(reduced.selected_keys),
+                    now_ms=base_now_ms,
+                ),
+                now_ms=base_now_ms,
+            )
             result = repository.publish(reduced, evaluation_at_ms=base_now_ms)
         assert result["status"] in {"published", "unchanged", "recovered"}
     finally:
         conn.close()
+
+
+def token_radar_revision(*, target_id: str, event_index: int, now_ms: int) -> RadarEvidenceRevision:
+    source_event_at_ms = now_ms - (3 - event_index) * 60_000
+    event_id = f"event-{target_id}-{event_index}"
+    return RadarEvidenceRevision(
+        event_id=event_id,
+        intent_id=f"intent-{target_id}-{event_index}",
+        resolution_id=f"resolution-{target_id}-{event_index}",
+        source_event_at_ms=source_event_at_ms,
+        received_at_ms=source_event_at_ms + 1_000,
+        event_created_at_ms=source_event_at_ms + 2_000,
+        action="tweet",
+        author_key=f"author-{target_id}-{event_index}",
+        text=f"independent text {target_id} {event_index}",
+        resolution_status="EXACT",
+        target_type="Asset",
+        target_id=target_id,
+        resolution_decision_at_ms=source_event_at_ms + 2_000,
+        resolution_created_at_ms=source_event_at_ms + 3_000,
+    )
 
 
 def seed_resolved_asset_with_event(
@@ -1876,8 +1894,11 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
 
     assert radar.status_code == 200
     assert radar.json()["data"] == {
-        "schema_version": "token_radar_snapshot_v2",
-        "evidence_as_of_ms": now_ms - 1_000,
+        "schema_version": "token_radar_snapshot_v3",
+        "state": "current",
+        "stale_reason": None,
+        "state_changed_at_ms": rebuild_now_ms,
+        "social_evidence_as_of_ms": 0,
         "eligible_total": 0,
         "items": [],
     }
@@ -1916,10 +1937,15 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["schema_version"] == "token_radar_snapshot_v2"
-    assert data["eligible_total"] == 0
-    assert data["items"] == []
-    assert data["evidence_as_of_ms"] == now_ms - 1_000
+    assert data == {
+        "schema_version": "token_radar_snapshot_v3",
+        "state": "current",
+        "stale_reason": None,
+        "state_changed_at_ms": rebuild_now_ms,
+        "social_evidence_as_of_ms": 0,
+        "eligible_total": 0,
+        "items": [],
+    }
 
 
 def test_live_market_reads_durable_current_without_gateway(tmp_path):
@@ -2042,28 +2068,48 @@ def test_api_token_radar_rejects_all_product_queries_but_keeps_auth_token(tmp_pa
         {"ok": False, "error": "unsupported_query_param", "field": name} for name in names
     ]
     assert auth_query.status_code == 200
+    assert auth_query.json()["data"] == {
+        "schema_version": "token_radar_snapshot_v3",
+        "state": "unavailable",
+        "stale_reason": None,
+        "state_changed_at_ms": 0,
+        "social_evidence_as_of_ms": 0,
+        "eligible_total": 0,
+        "items": [],
+    }
 
 
 def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
     now_ms = int(time.time() * 1_000)
     settings = make_settings(tmp_path)
-    reduced = reduce_token_radar(
+    reduced = enrich_token_radar(
+        reduce_token_radar(
+            [
+                token_radar_revision(
+                    target_id="asset:test",
+                    event_index=index,
+                    now_ms=now_ms,
+                )
+                for index in range(3)
+            ],
+            now_ms=now_ms,
+        ),
         [
             {
                 "target_type": "Asset",
                 "target_id": "asset:test",
                 "symbol": "TEST",
+                "name": "Test Token",
+                "logo_url": None,
                 "chain": "eip155:1",
                 "exchange": None,
                 "address": "0xtest",
-                "resolution_status": "EXACT",
-                "event_id": f"trigger-{index}",
-                "received_at_ms": now_ms - (3 - index) * 60_000,
-                "author_handle": f"author-{index}",
-                "text": f"independent text {index}",
-                "signal_price_usd": None,
+                "signal_price_usd": "1",
+                "price_usd": "1.25",
+                "price_observed_at_ms": now_ms - 30_000,
+                "market_cap_usd": "1000000",
+                "market_cap_observed_at_ms": now_ms - 45_000,
             }
-            for index in range(3)
         ],
         now_ms=now_ms,
     )
@@ -2076,25 +2122,88 @@ def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
     app = create_app(settings=settings)
 
     with TestClient(app) as client:
-        response = client.get(
+        current = client.get(
             "/api/token-radar",
             headers={"Authorization": "Bearer secret"},
         )
-        not_modified = client.get(
+        current_not_modified = client.get(
             "/api/token-radar",
             headers={
                 "Authorization": "Bearer secret",
-                "If-None-Match": response.headers["etag"],
+                "If-None-Match": current.headers["etag"],
+            },
+        )
+        with write_repositories() as repos, repos.transaction():
+            failure_writes = TokenRadarCurrentRepository(repos.conn).record_failure(
+                error_code="token_radar_source_unavailable",
+                evaluation_at_ms=now_ms + 1,
+            )
+        stale = client.get(
+            "/api/token-radar",
+            headers={
+                "Authorization": "Bearer secret",
+                "If-None-Match": current.headers["etag"],
+            },
+        )
+        stale_not_modified = client.get(
+            "/api/token-radar",
+            headers={
+                "Authorization": "Bearer secret",
+                "If-None-Match": stale.headers["etag"],
+            },
+        )
+        with write_repositories() as repos, repos.transaction():
+            recovered_result = TokenRadarCurrentRepository(repos.conn).publish(
+                reduced,
+                evaluation_at_ms=now_ms + 2,
+            )
+        recovered = client.get(
+            "/api/token-radar",
+            headers={
+                "Authorization": "Bearer secret",
+                "If-None-Match": stale.headers["etag"],
             },
         )
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True, "data": reduced.snapshot}
-    assert response.headers["cache-control"] == "private, no-cache"
-    assert response.headers["etag"].startswith('"')
-    assert not_modified.status_code == 304
-    assert not not_modified.content
-    assert not_modified.headers["etag"] == response.headers["etag"]
+    assert current.status_code == 200
+    assert current.json() == {
+        "ok": True,
+        "data": {
+            "schema_version": "token_radar_snapshot_v3",
+            "state": "current",
+            "stale_reason": None,
+            "state_changed_at_ms": now_ms,
+            "social_evidence_as_of_ms": reduced.snapshot["social_evidence_as_of_ms"],
+            "eligible_total": 1,
+            "items": reduced.snapshot["items"],
+        },
+    }
+    assert current.headers["cache-control"] == "private, no-cache"
+    assert current.headers["etag"].startswith('"')
+    assert current_not_modified.status_code == 304
+    assert not current_not_modified.content
+    assert current_not_modified.headers["etag"] == current.headers["etag"]
+
+    assert failure_writes == 1
+    assert stale.status_code == 200
+    assert stale.json()["data"] == {
+        **current.json()["data"],
+        "state": "stale",
+        "stale_reason": "source_unavailable",
+        "state_changed_at_ms": now_ms + 1,
+    }
+    assert stale.headers["etag"] != current.headers["etag"]
+    assert stale_not_modified.status_code == 304
+    assert not stale_not_modified.content
+    assert stale_not_modified.headers["etag"] == stale.headers["etag"]
+
+    assert recovered_result == {"status": "recovered", "rows_written": 1}
+    assert recovered.status_code == 200
+    assert recovered.json()["data"] == {
+        **current.json()["data"],
+        "state_changed_at_ms": now_ms + 2,
+    }
+    assert recovered.headers["etag"] != stale.headers["etag"]
 
 
 def test_api_token_radar_local_p95_budgets_at_maximum_public_size(tmp_path):
@@ -2102,20 +2211,11 @@ def test_api_token_radar_local_p95_budgets_at_maximum_public_size(tmp_path):
     settings = make_settings(tmp_path)
     reduced = reduce_token_radar(
         [
-            {
-                "target_type": "Asset",
-                "target_id": f"asset:perf:{target_index}",
-                "symbol": f"P{target_index}",
-                "chain": "eip155:1",
-                "exchange": None,
-                "address": f"0x{target_index:040x}",
-                "resolution_status": "EXACT",
-                "event_id": f"perf-{target_index}-{event_index}",
-                "received_at_ms": now_ms - (3 - event_index) * 60_000,
-                "author_handle": f"author-{target_index}-{event_index}",
-                "text": f"independent evidence {target_index} {event_index}",
-                "signal_price_usd": None,
-            }
+            token_radar_revision(
+                target_id=f"asset:perf:{target_index}",
+                event_index=event_index,
+                now_ms=now_ms,
+            )
             for target_index in range(50)
             for event_index in range(3)
         ],
@@ -2127,8 +2227,13 @@ def test_api_token_radar_local_p95_budgets_at_maximum_public_size(tmp_path):
             {
                 "target_type": "Asset",
                 "target_id": f"asset:perf:{target_index}",
+                "symbol": f"P{target_index}",
                 "name": f"Performance Token {target_index}",
                 "logo_url": f"/api/token-images/{target_index:064x}",
+                "chain": "eip155:1",
+                "exchange": None,
+                "address": f"0x{target_index:040x}",
+                "signal_price_usd": None,
                 "price_usd": "1.25",
                 "price_observed_at_ms": now_ms,
                 "market_cap_usd": "1250000",

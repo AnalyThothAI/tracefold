@@ -158,8 +158,8 @@ function statusData() {
       db: {
         ok: true,
         schema_ok: true,
-        current_revision: "20260810_0251",
-        expected_revision: "20260810_0251",
+        current_revision: "20260811_0254",
+        expected_revision: "20260811_0254",
         error_code: null,
       },
       workers_runtime: {
@@ -183,8 +183,11 @@ function statusData() {
 
 function tokenRadarData(itemCount: number, presentationStress: boolean, unsupportedChain: boolean) {
   return {
-    schema_version: "token_radar_snapshot_v2",
-    evidence_as_of_ms: NOW,
+    schema_version: "token_radar_snapshot_v3",
+    state: "current",
+    stale_reason: null,
+    state_changed_at_ms: NOW - 120_000,
+    social_evidence_as_of_ms: NOW,
     eligible_total: itemCount,
     items: Array.from({ length: itemCount }, (_, index) =>
       radarItem(index, presentationStress, unsupportedChain),
@@ -211,26 +214,26 @@ function radarItem(index: number, presentationStress: boolean, unsupportedChain:
       address: index ? `${ADDRESS}${index + 1}` : ADDRESS,
     },
     trigger_event_id: index ? `event-upeg-${index + 1}` : "event-upeg-1",
-    triggered_at_ms: NOW - (index + 1) * 60_000,
+    trigger_source_event_at_ms: NOW - (index + 1) * 60_000,
+    qualified_at_ms: NOW - (index + 1) * 60_000 + 15_000,
     why_now: {
       current_mentions: stressFirstItem ? 12_345 : 7 + index,
       prior_mentions: stressFirstItem ? 1_234 : 2,
       mention_delta: stressFirstItem ? 11_111 : 5 + index,
     },
     evidence: {
-      new_independent_author_count: stressFirstItem ? 1_234 : 4,
+      independent_author_count: stressFirstItem ? 1_234 : 4,
       independent_text_count: stressFirstItem ? 5_678 : 5,
       time_to_nth_author_ms: 90_000,
       duplicate_share: 0.08,
     },
     market: {
-      status: "confirmed",
       price_usd: stressFirstItem ? 0.000000000123456789 : 0.042,
+      price_observed_at_ms: NOW - 30_000,
       price_change_since_signal: 0.12,
       market_cap_usd: 42_000_000,
-      observed_at_ms: NOW - 30_000,
+      market_cap_observed_at_ms: NOW - 45_000,
     },
-    counter_evidence: null,
   };
 }
 

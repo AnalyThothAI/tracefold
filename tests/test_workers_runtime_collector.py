@@ -115,12 +115,32 @@ def test_token_radar_sampler_authenticates_200_then_revalidates_its_etag(monkeyp
 
 
 def test_token_radar_database_state_hashes_the_served_payload() -> None:
-    payload = {"schema_version": "v1", "items": [{"target": {"symbol": "代币"}}]}
+    payload = {
+        "schema_version": "token_radar_snapshot_v3",
+        "social_evidence_as_of_ms": 1_800_000_000_000,
+        "eligible_total": 1,
+        "items": [{"target": {"symbol": "代币"}}],
+    }
+    public = {
+        "schema_version": "token_radar_snapshot_v3",
+        "state": "stale",
+        "stale_reason": "source_unavailable",
+        "state_changed_at_ms": 1_800_000_000_001,
+        "social_evidence_as_of_ms": 1_800_000_000_000,
+        "eligible_total": 1,
+        "items": [{"target": {"symbol": "代币"}}],
+    }
 
     class Result:
         @staticmethod
         def fetchone():
-            return {"served_payload": payload}
+            return {
+                "state_fingerprint": "sha256:" + "a" * 64,
+                "latest_attempt_status": "failed",
+                "latest_error_code": "token_radar_source_unavailable",
+                "state_changed_at_ms": 1_800_000_000_001,
+                "served_payload": payload,
+            }
 
     class Connection:
         @staticmethod
@@ -133,7 +153,7 @@ def test_token_radar_database_state_hashes_the_served_payload() -> None:
     assert sampler._read_token_radar_database_state() == {
         "data_sha256": hashlib.sha256(
             json.dumps(
-                payload,
+                public,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),

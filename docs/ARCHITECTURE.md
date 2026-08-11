@@ -93,9 +93,10 @@ and publication checkpoints. `first_dirty_at_ms` records the causal change,
 `deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
 eligibility clock for a scheduled recheck or retry. An eligible shard may run
 before its deadline; the deadline is never a start gate. Token Radar has no
-source edge, dirty frontier, claim, lease, or quarantine state: its fixed-period
-writer rereads a bounded fact window and retains the last good singleton on
-failure. Profile refresh heat tiers, retry attempts, provider circuits, and terminal reasons are
+durable source-edge row, dirty frontier, claim, lease, or quarantine state: its
+fixed-period writer rereads a bounded fact window, consults the already-owned
+stream state only to freeze LKG while known non-streaming, and retains the last
+good singleton on failure. Profile refresh heat tiers, retry attempts, provider circuits, and terminal reasons are
 likewise queue policy, not profile facts.
 The sealed `news_brief_current.served_payload` and rows in
 `macro_document_analyses` are derived model outputs bound to frozen evidence;
@@ -256,71 +257,107 @@ Radar admission or order, so the dependency cannot feed a market result back
 into queue membership.
 
 ```text
-events + intents + resolutions + market facts
-  -> bounded evidence read of (now - 2h, now]
-  -> compare rolling current 1h with immediately preceding 1h
-  -> explicit boolean admission + deterministic trigger-time order
-  -> bounded batch presentation read for the selected targets
-  -> atomic token_radar_current v2 singleton (maximum 50 Items / 96 KiB)
+events + intent resolution revisions
+  -> bounded three-hour source-time/revision evidence read
+  -> replay availability-ordered changes over adjacent source-time hours
+  -> boundaries/removals may close; positive additions may open only on Gate false -> true
+  -> one-hour episode TTL and suppression until a later positive false -> true crossing
+  -> qualified_at descending + stable target-key ties -> Top 50
+  -> bounded selected-target identity and market-presentation hydration
+  -> atomic token_radar_current v3 current/LKG singleton (maximum 50 Items / 96 KiB)
   -> Token Radar -> focused Token Case evidence
 ```
 
 Token Radar is a change-first research queue, not a score, trading action,
 market screener, security audit, or operational monitor. Every 30 seconds its
-sole writer reads at most 10,000 resolved material-fact rows and 8 MiB of input,
-then runs one pure deterministic reducer with a five-second hard ceiling. After
-selection, a second bounded batch read loads at most fifty target keys from
-`token_profile_current`, `market_tick_current`, and the five-minute slice of
-append-only `market_ticks` needed to recover an independently fresh positive
-market-cap fact; it never performs one query per Item. The Radar Module exposes
-only its fixed-period sample interface to
-Workers; the two query interfaces are private internal seams satisfied by the
-Postgres Adapter. The only
-code-owned rule set requires a minimum attention delta, a minimum count of
-independent authors, a maximum duplicate-text share, and a maximum time to the
-required author. Authors have equal weight; follower counts, provider tags,
-KOL/Smart-Money labels, composite weights, normalization, multi-slot
-baselines, and model output cannot affect admission or order.
+sole writer streams at most 10,000 typed Event/resolution-revision rows and 8
+MiB from a three-hour source-time horizon, then runs one deterministic reducer
+with a five-second hard ceiling. Source event time defines current
+`[t-1h, t]` and prior `(t-2h, t-1h)` windows. A fact becomes available at the
+later of the Event creation clock and its eligible resolution creation clock;
+`evidence_available_at_ms = max(event.created_at_ms,
+eligible_resolution.created_at_ms)`, and that clock determines `qualified_at`.
+Received time is used only for the live boundary:
+`0 <= received_at_ms - source_event_at_ms <= 120000` and
+`0 <= resolution.created_at_ms - received_at_ms <= 120000`. Resolution revisions are
+replayed directly: a timely retarget removes the old binding and may add the
+new one, a late retarget only removes, and a same-target refresh preserves an
+already timely binding. There is no second availability ledger.
 
-The reducer scans ordered persisted events to bind each eligible target to the
-first event at which all rules become true. Items are ordered primarily by
-that trigger time descending with deterministic fact-key ties. The public
-snapshot contains only canonical target identity, the current/prior mention
-change, independent-author/text evidence, propagation time, duplicate share,
-the optional profile name and same-origin mirrored icon, fresh current USD price,
-fresh market capitalization, price change from the trigger, at most one
-counter-evidence reason, and the exact trigger Event ID. Presentation facts are
-nullable evidence and never affect admission or order. The snapshot has no
-rank, decision, score, factor tree, source-event list, remote image, external
-link, window, venue, pagination, archive, or user-adjustable parameter.
+The code-owned Gate remains four equal-weight Boolean rules: minimum attention
+delta, minimum independent authors, maximum duplicate-text share, and maximum
+time to the required author. At one effective millisecond, window boundaries
+and binding removals run first and can only close a case; positive additions
+then apply atomically and can qualify only when the complete Gate changes from
+false to true. When multiple additions share that millisecond, the stable
+Event/intent/resolution/target fact-key order chooses the representative
+trigger. A qualified episode leaves immediately when the Gate becomes false and
+expires one hour after qualification. Expiry while the Gate remains true
+suppresses the target until a later false state and new positive false-to-true
+crossing. This episode is reconstructed on each bounded replay;
+there is no episode, frontier, rejected-candidate, Gate-audit, or history table.
+Authors have equal weight. Within the admitted provenance/action set, action,
+follower, and provider labels cannot affect the Gate or order; neither can
+composite scores, fuzzy similarity, model output, or market facts.
+
+Items are ordered by `qualified_at` descending with stable target-key ties.
+Only after Top-50 selection does one bounded batch read load canonical identity,
+the exact trigger price anchor, optional profile presentation, current price,
+and recent market capitalization; it never performs one query per Item. Market
+values and their independent observation clocks are nullable presentation
+facts and cannot change membership or order. The compact public Item contains
+the causal trigger Event ID, trigger source-event time, qualification time,
+current/prior mention change, actual independent-author/text counts,
+propagation time, duplicate share, and that presentation packet. It contains
+no rank, decision, score, per-rule evaluation history, rejected candidates,
+source-event list, window, venue, pagination, archive, or user-adjustable
+parameter. The Radar Module exposes only its fixed-period `sample` interface to
+Workers; evidence, presentation, publication, and serving operations remain
+private PostgreSQL Adapter seams.
 
 Publication locks the one stable product row and replaces the complete compact
-payload atomically. A business-identical payload writes zero serving state.
-Oversized input, timeout, or calculation failure never samples or truncates;
-it records an operational failure while preserving the complete last-good
-payload. Restart recovery is the next bounded PostgreSQL reread. Search and
-Token Case read their owning facts directly and never use Radar current state
-as evidence authority. There is no Stocks product, route, public read model, or
-writer. `us_equity_symbols` remains only an identity-collision guard for token
+payload atomically. Public state is `current` after a complete sample, `stale`
+with the full last-known-good payload after a known source or projection
+failure, and `unavailable` before any v3 last-known-good payload exists. Stale
+reasons are a small generic enum; they never contain provider or internal error
+detail. A business-identical payload or repeated identical stale observation
+writes zero serving state. Oversized input, timeout, calculation failure, or a
+known non-streaming source never samples, truncates, or publishes an apparently
+healthy empty queue. The next complete successful sample restores `current`.
+Restart recovery is the next bounded PostgreSQL replay. Search and Token Case
+read their owning facts directly and never use Radar current state as evidence
+authority. Radar v3 changes no WebSocket route, message, or subscription
+behavior. There is no Stocks product, route, public read model, or writer.
+`us_equity_symbols` remains only an identity-collision guard for token
 resolution and does not constitute a Stocks surface. General cross-asset Market
 facts and the six Macro modules remain unchanged.
 
-Migration `20260810_0249` is the irreversible Radar serving hard cut. It removes
-the six retired Radar projection tables and their terminal rows, removes the
-temporary replay-only columns installed by `20260810_0248`, and creates the one
-empty compact singleton. Material Events, intents, resolutions, identities,
-and market facts are unchanged. The new writer rebuilds only from the bounded
-two-hour fact window; there is no history import, dual read/write, compatibility
-adapter, staging runtime, or legacy fallback.
+Historical migration `20260810_0249` was the irreversible Radar serving hard
+cut. It removes the six retired Radar projection tables and their terminal rows,
+removes the temporary replay-only columns installed by `20260810_0248`, and
+creates the one empty compact singleton. Material Events, intents, resolutions,
+identities, and market facts are unchanged. At that revision the writer rebuilt
+from its then-current two-hour fact window; there was no history import, dual
+read/write, compatibility adapter, staging runtime, or legacy fallback.
 
-Migration `20260810_0250`, directly after `0249`, is the v2 product hard cut. It
-resets the v1 singleton to one empty `token_radar_snapshot_v2`, installs the
-fifty-Item schema invariant, and drops the three Stocks-only derived tables
+Historical migration `20260810_0250`, directly after `0249`, was the v2 product
+hard cut. It reset the v1 singleton to one empty
+`token_radar_snapshot_v2`, installed the fifty-Item schema invariant, and
+dropped the three Stocks-only derived tables
 `stock_attention_target_features`, `stocks_radar_current_rows`, and
-`stocks_radar_publication_state`. It preserves all material Events, intents,
+`stocks_radar_publication_state`. It preserved all material Events, intents,
 resolutions, identities, profile facts, and market facts, including the
-`us_equity_symbols` collision guard. No v1 or Stocks compatibility interface is
-retained.
+`us_equity_symbols` collision guard. No v1 or Stocks compatibility interface
+was retained.
+
+Migration `20260811_0254` supersedes that serving contract with one irreversible
+v3 hard cut. It resets only the rebuildable singleton to initial
+`unavailable`, adds the bounded source-time evidence index and v3 basic-shape
+constraints, and preserves Events, intents, all resolution revisions,
+identities, profiles, and market facts. The first successful Worker sample
+reconstructs causal state from the bounded three-hour horizon. No v2 trigger is
+imported, and no dual reader/writer, episode/frontier/history table, Gate audit,
+or compatibility path is installed.
 
 Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
 error outcomes back off exponentially to a bounded terminal state, and only a

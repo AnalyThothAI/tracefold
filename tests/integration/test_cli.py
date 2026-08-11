@@ -379,7 +379,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(lines[0]["data"]["events"][0]["event_id"], "event-1")
         self.assertEqual(lines[1]["data"]["items"][0]["event"]["event_id"], "event-1")
-        self.assertEqual(lines[2]["data"]["schema_version"], "token_radar_snapshot_v2")
+        self.assertEqual(lines[2]["data"]["schema_version"], "token_radar_snapshot_v3")
         self.assertEqual(lines[2]["data"]["latest_attempt_status"], "ready")
         self.assertEqual(lines[2]["data"]["public_items"], 0)
 

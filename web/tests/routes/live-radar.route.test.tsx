@@ -16,7 +16,7 @@ describe("live radar route", () => {
 
     expect(await screen.findByRole("heading", { name: "Radar" })).toBeInTheDocument();
     expect(await screen.findByText("1 eligible · showing 1 / 50")).toBeInTheDocument();
-    expect(screen.getByText("1h acceleration · newest trigger first")).toBeInTheDocument();
+    expect(screen.getByText("1h causal change · newest qualification first")).toBeInTheDocument();
     expect(await screen.findByText(/\$UPEG/)).toBeInTheDocument();
     expect(screen.getByText(/\+5/)).toBeInTheDocument();
     expect(screen.queryByLabelText("radar window")).not.toBeInTheDocument();
@@ -52,18 +52,62 @@ describe("live radar route", () => {
     expect(screen.getByText(/\$UPEG/)).toBeInTheDocument();
   });
 
+  it("renders server-owned stale state while retaining its last-known-good row", async () => {
+    setupAppRouteTest((mock) => {
+      mockLiveRadarRoute(mock);
+      const base = mock.getApiImpl;
+      mock.getApiImpl = async (path, options) =>
+        path === "/api/token-radar"
+          ? ok(
+              tokenRadarFixture({
+                state: "stale",
+                stale_reason: "projection_failed",
+              }),
+            )
+          : base(path, options);
+    });
+    renderAppRoute("/");
+
+    expect(await screen.findByText(/Radar stale/)).toHaveTextContent("Projection unavailable");
+    expect(screen.getByText(/\$UPEG/)).toBeInTheDocument();
+  });
+
+  it("renders server-owned unavailable state without a placeholder queue row", async () => {
+    setupAppRouteTest((mock) => {
+      mockLiveRadarRoute(mock);
+      const base = mock.getApiImpl;
+      mock.getApiImpl = async (path, options) =>
+        path === "/api/token-radar"
+          ? ok(
+              tokenRadarFixture({
+                state: "unavailable",
+                stale_reason: null,
+                state_changed_at_ms: 0,
+                social_evidence_as_of_ms: 0,
+                eligible_total: 0,
+                items: [],
+              }),
+            )
+          : base(path, options);
+    });
+    renderAppRoute("/");
+
+    expect(await screen.findByText("Radar unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No eligible cases")).not.toBeInTheDocument();
+  });
+
   it("renders an empty no-evidence snapshot without a 1970 timestamp", async () => {
     setupAppRouteTest((mock) => {
       mockLiveRadarRoute(mock);
       const base = mock.getApiImpl;
       mock.getApiImpl = async (path, options) =>
         path === "/api/token-radar"
-          ? ok(tokenRadarFixture({ evidence_as_of_ms: 0, eligible_total: 0, items: [] }))
+          ? ok(tokenRadarFixture({ social_evidence_as_of_ms: 0, eligible_total: 0, items: [] }))
           : base(path, options);
     });
     renderAppRoute("/");
 
-    expect(await screen.findByText("No evidence yet")).toBeInTheDocument();
+    expect(await screen.findByText("No social evidence yet")).toBeInTheDocument();
     expect(screen.getByText("No eligible cases")).toBeInTheDocument();
     expect(screen.queryByText(/1970/)).not.toBeInTheDocument();
   });

@@ -150,24 +150,34 @@ therefore covered by the native database deadline; the async caller adds only a
 bounded completion grace before treating an unfinished future as fatal.
 
 Token Radar is one fixed-period 30-second reducer turn outside the EDF
-coordinator. One turn first reads only `(now - 2h, now]`, accepts at most 10,000
-rows and 8 MiB of materialized input, and deterministically selects at most
-fifty targets. A second bounded query batch-reads presentation facts for that
-selected set from `token_profile_current` and `market_tick_current`; query count
-does not grow with Item count. The complete turn must finish within a five-second
-hard budget, with measured P95 at or below two seconds. The complete public v2
-snapshot is capped at fifty Items and 96 KiB uncompressed.
+coordinator. One turn streams only the typed Event and resolution-revision
+fields needed by the reducer from the bounded three-hour source-time horizon
+and closed action/provenance set. A `10001` sentinel and incremental byte count
+enforce the 10,000-row and 8 MiB envelopes before full materialization. The
+reducer replays source-time window boundaries and fact-availability changes,
+opens only on a positive full-Gate false-to-true transition, applies the
+one-hour episode TTL/suppression rule, and selects Top 50 by qualification time.
+A second bounded query batch-reads identity/profile, exact trigger anchor,
+current price, and recent market-cap presentation for only that selected set;
+query count does not grow with Item count. The complete turn must finish within
+a five-second hard budget, with measured P95 at or below two seconds. The
+complete public v3 snapshot is capped at fifty Items and 96 KiB uncompressed.
 Overflow or timeout fails the turn without sampling, truncation, partial
 publication, or widening the source interval; the last-good singleton remains
-unchanged. There is no Radar source edge, dirty frontier, claim, lease,
-quarantine, rank closure, feature cache, or publication-state table.
+unchanged. There is no Radar dirty frontier, claim, lease, episode table,
+frontier table, history table, rejected-candidate or Gate-audit store,
+quarantine, rank closure, feature cache, or second publication-state machine.
 
 The reducer calculates outside its short publication transaction. Publication
 locks one stable singleton and writes the complete payload only when its
-business fingerprint changes. A failed-attempt marker may change operational
-state without replacing the served payload. Restart and catch-up consist only
-of the next two bounded reads. There is no Stocks route, writer, query family,
-or read model. The retained `us_equity_symbols` catalog is only a token-identity
+business fingerprint changes. Before the first successful v3 sample, the public
+state is `unavailable`. A complete sample publishes `current`; a known
+non-streaming source or bounded projection failure publishes one generic
+`stale` transition while retaining the complete LKG payload. Repeated identical
+stale observations write zero serving rows, and the next complete sample
+restores `current`. Restart and catch-up consist only of the next bounded
+replay/presentation sample. There is no Stocks route, writer, query family, or
+read model. The retained `us_equity_symbols` catalog is only a token-identity
 collision guard and owns no runtime Stocks loop.
 
 Profile and Macro projection claims retain their 30-second lease envelopes.
@@ -232,10 +242,12 @@ For missing or stale live data:
 Token Radar:
 
 ```text
-event -> intent -> current resolution + market facts
-  -> bounded adjacent-hour read -> deterministic boolean reducer
-  -> one bounded selected-target profile/market read
-  -> one atomic token_radar_current v2 snapshot
+event -> intent -> resolution revisions
+  -> bounded three-hour source-time/revision read
+  -> availability-ordered adjacent-hour replay
+  -> negative close + positive false-to-true qualification + one-hour suppression
+  -> Top 50 -> one bounded selected-target identity/market presentation read
+  -> one atomic token_radar_current v3 current/LKG snapshot
 ```
 
 Market current is maintained transactionally with `market_ticks`; it has no
@@ -251,7 +263,9 @@ keeps presentation facts fresh and never changes Radar admission or rank. The
 OKX path uses the bounded batch
 `/api/v6/dex/market/price-info` contract, so price, market capitalization,
 liquidity, and holder facts share one request and observation clock rather than
-an N+1 enrichment loop.
+an N+1 enrichment loop. Radar nevertheless publishes independent price and
+market-cap clocks because the selected persisted facts may come from different
+observations; neither market value is an admission fact.
 
 News:
 
@@ -679,10 +693,12 @@ Frontier-backed hot paths claim narrow stable keys and hydrate wide JSONB only
 after selection. Partial indexes must match the real due/status predicate. An
 idle frontier worker must not scan broad facts merely to prove that no work is
 due. Token Radar is the explicit exception: its code-owned 30-second reducer
-performs one indexed, two-hour, row/byte-capped evidence read followed by one
-selected-target batch presentation read and has no wake or due state. Both reads
-are bounded independently; there is no per-Item profile or market query. Current
-models remain bounded by stable product keys; a
+performs one indexed, three-hour source-time/revision, row/byte-capped evidence
+read followed by one Top-50 batch presentation read and has no wake or due
+state. Both reads are bounded independently; there is no per-Item profile or
+market query. Use one representative `EXPLAIN (ANALYZE, BUFFERS)` for this
+bounded evidence path; do not create a second acceptance or planner-assertion
+control plane. Current models remain bounded by stable product keys; a
 latest-generation pointer is not a retention policy.
 
 Projection sessions disable PostgreSQL parallel gather and JIT and use 16 MB
@@ -714,20 +730,26 @@ For an ordinary migration or production cutover:
    and unchanged-projection zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
 
-## Token Radar v2 hard cut and acceptance
+## Token Radar v3 hard cut and acceptance
 
 Historical migration `20260810_0249` removed the six pre-singleton Radar tables
-and installed the v1 singleton. Migration `20260810_0250` is the Token Radar
-one-time, transactional product reset. Stop Serve and Workers before applying
-it. From `0249`, it resets the v1 row to one empty
-`token_radar_snapshot_v2`, replaces the schema constraint with the fifty-Item
-contract, and drops `stock_attention_target_features`,
-`stocks_radar_current_rows`, and `stocks_radar_publication_state`. It preserves
+and installed the v1 singleton. Historical migration `20260810_0250` reset it
+to `token_radar_snapshot_v2` and dropped `stock_attention_target_features`,
+`stocks_radar_current_rows`, and `stocks_radar_publication_state`. It preserved
 material Events, intents, resolutions, identity/profile facts, market facts,
-and the internal `us_equity_symbols` collision guard. Verify fact counts and
-stable fact identities before and after the migration, then start only the new
-runtime. There is no dual read/write, compatibility adapter, feature flag, v1
-fallback, Stocks route, staging runtime, or history import.
+and the internal `us_equity_symbols` collision guard.
+
+Migration `20260811_0254` is the current one-time transactional Radar reset.
+Stop Serve and Workers before applying it. It hard-cuts the singleton to an
+empty `token_radar_snapshot_v3` business payload and initial public
+`unavailable` state, adds the bounded source-time/action index and only basic
+singleton/schema/shape/size constraints, and preserves all material facts and
+identity/profile/market evidence. Verify fact counts and stable fact identities
+before and after the migration, then start only the v3 runtime. The first
+successful sample reconstructs causal state from the three-hour fact horizon;
+it does not import v2 trigger values. There is no dual read/write, compatibility
+adapter, feature flag, v2 fallback, episode, frontier, or history table, Gate
+audit, Stocks route, staging runtime, or history import.
 
 Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
 `20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to
@@ -736,7 +758,7 @@ preserves all six current serving rows, and clears their rebuildable frontiers.
 Worker startup recreates missing or version-mismatched frontiers from persisted
 Dataset projection state and republishes them without provider I/O; already
 matching clean frontiers remain zero-write.
-Current head `20260811_0253` deletes only the rebuildable Rates, Economy, and
+Migration `20260811_0253` deletes only the rebuildable Rates, Economy, and
 Cross-Asset current/frontier rows and requires `macro_rates_fed_v8`,
 `macro_economy_inflation_v6`, and `macro_cross_asset_v8`. It preserves all typed
 Macro/Market facts, acquisition state, documents, jobs, and immutable analyses.
@@ -753,6 +775,10 @@ healthy.
 
 The independent performance bundle proves, on representative facts:
 
+- causal replay opens only on a positive complete-Gate false-to-true crossing;
+  source-time aging and removals never open or reorder a case, one-hour expiry
+  suppresses a continuously true target, and a later false state plus positive
+  crossing permits re-entry;
 - reducer P95 at or below two seconds, no turn above five seconds, no overflow,
   and a continuous 30-minute interval with zero hard-budget misses or growing
   remaining-domain backlog;
@@ -766,17 +792,19 @@ The independent performance bundle proves, on representative facts:
 The maintained non-mock browser lane is
 `uv run pytest -q tests/e2e/test_token_radar_browser_release.py`. It builds the
 real React distribution, serves it from FastAPI over an isolated PostgreSQL
-database, opens an initially empty Radar page, then persists three independent
-resolved facts and runs one real Token Radar `load`/`reduce`/`publish` sample.
+database, opens an initially unavailable Radar page, then persists three
+independent resolved facts and runs one real Token Radar
+`load`/`reduce`/`publish` sample.
 The browser waits for its normal 30-second poll and proves the resulting Item
 becomes visible within 60 seconds of fact persistence, exercises same-origin
 icon/current-price/signal-change/market-cap rendering without frontend data
 hydration, and records no update long task above 50 ms. The maintained
 `web/tests/e2e/golden-paths/live-cold-load.spec.ts` browser lane separately
 proves exact fifty-Item order and reachability, responsive containment, and an
-empty-to-fifty refresh with no long task above 50 ms. This
-test-only harness never targets an operator or production database and does
-not install route mocks.
+API-mocked current-empty-to-fifty refresh with no long task above 50 ms. The
+non-mock release lane proves unavailable-to-current publication; both test-only
+harnesses use isolated state and never target an operator or production
+database.
 
 ## Issue #33 Workers Runtime V2 acceptance and sealing
 

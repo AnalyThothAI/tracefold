@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 from tracefold.market.radar.constants import TOKEN_RADAR_REDUCER_BUDGET_SECONDS
 from tracefold.market.radar.reducer import (
+    RadarEvidenceRevision,
     TokenRadarBudgetExceeded,
     TokenRadarInputOverflow,
+    TokenRadarInvariantViolation,
     TokenRadarOutputOverflow,
     enrich_token_radar,
     reduce_token_radar,
@@ -38,7 +42,7 @@ class TokenRadarCurrentService:
         *,
         now_ms: int,
         session_timeout_seconds: float = _TOKEN_RADAR_LOAD_TIMEOUT_SECONDS,
-    ) -> list[dict[str, Any]]:
+    ) -> list[RadarEvidenceRevision]:
         with self._session(timeout_seconds=session_timeout_seconds) as repos:
             return TokenRadarCurrentRepository(repos.conn).load_material_inputs(now_ms=now_ms)
 
@@ -62,12 +66,9 @@ class TokenRadarCurrentService:
         now_ms: int,
         session_timeout_seconds: float = _TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS,
     ) -> list[dict[str, Any]]:
-        targets = [
-            (str(item["target"]["target_type"]), str(item["target"]["target_id"])) for item in reduced.snapshot["items"]
-        ]
         with self._session(timeout_seconds=session_timeout_seconds) as repos:
             return TokenRadarCurrentRepository(repos.conn).load_presentation_facts(
-                targets,
+                list(reduced.selected_keys),
                 now_ms=now_ms,
             )
 
@@ -100,12 +101,14 @@ class TokenRadarCurrentProjection:
         *,
         db: Any,
         cpu: Any,
+        source_is_streaming: Callable[[], bool],
         telemetry: Any | None = None,
         clock: Any | None = None,
     ) -> None:
         self.db = db
         self.cpu = cpu
         self.clock = clock or _now_ms
+        self.source_is_streaming = source_is_streaming
         self.telemetry = telemetry
         self.service = TokenRadarCurrentService(db=db)
 
@@ -129,6 +132,15 @@ class TokenRadarCurrentProjection:
                 now_ms=now_ms,
                 deadline=time.monotonic() + _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS,
             )
+        except Exception:
+            outcome = outcome or "failed"
+            with suppress(Exception):
+                await self._mark_failed(
+                    "token_radar_projection_failed",
+                    now_ms=now_ms,
+                    deadline=time.monotonic() + _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS,
+                )
+            raise
         finally:
             if deadline_missed:
                 self._record_deadline_miss()
@@ -140,6 +152,13 @@ class TokenRadarCurrentProjection:
 
     async def _sample_with_deadline(self, *, now_ms: int, deadline: float) -> tuple[str, bool]:
         try:
+            if not self.source_is_streaming():
+                await self._mark_failed(
+                    "token_radar_source_unavailable",
+                    now_ms=now_ms,
+                    deadline=deadline,
+                )
+                return "failed", False
             load_timeout = _phase_timeout(
                 deadline,
                 cap=_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS,
@@ -183,6 +202,13 @@ class TokenRadarCurrentProjection:
             self._set_rows("public", len(reduced.snapshot["items"]))
             self._set_bytes("input", reduced.input_bytes)
             self._set_bytes("output", reduced.output_bytes)
+            if not self.source_is_streaming():
+                await self._mark_failed(
+                    "token_radar_source_unavailable",
+                    now_ms=now_ms,
+                    deadline=deadline,
+                )
+                return "failed", False
             publish_timeout = _phase_timeout(
                 deadline,
                 cap=_TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS,
@@ -206,7 +232,7 @@ class TokenRadarCurrentProjection:
         ) as exc:
             await self._mark_failed(_error_code(exc), now_ms=now_ms, deadline=deadline)
             return "failed", True
-        except (TokenRadarInputOverflow, TokenRadarOutputOverflow) as exc:
+        except (TokenRadarInputOverflow, TokenRadarInvariantViolation, TokenRadarOutputOverflow) as exc:
             await self._mark_failed(_error_code(exc), now_ms=now_ms, deadline=deadline)
             return "failed", False
 

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import importlib
+import json
 from decimal import Decimal
 from typing import Any
 
+import pytest
 from alembic import command
+from psycopg.errors import CheckViolation
+from psycopg.types.json import Jsonb
 
 from tests.factories import make_event
 from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
@@ -189,9 +194,9 @@ def test_upgrade_from_0249_replaces_v1_with_top50_and_drops_stocks_only() -> Non
         )
         conn.commit()
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260810_0250")
 
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260810_0251"}
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260810_0250"}
         assert _fact_identities(conn) == before
         assert (
             conn.execute(
@@ -238,6 +243,230 @@ def test_upgrade_from_0249_replaces_v1_with_top50_and_drops_stocks_only() -> Non
         conn.close()
 
 
+def test_upgrade_from_0253_hard_cuts_v2_current_to_v3_without_touching_facts() -> None:
+    config, conn = _reset_to_0248()
+    try:
+        _seed_nonempty_0248_state(conn)
+        command.upgrade(config, "20260811_0253")
+        fingerprint = "sha256:" + ("2" * 64)
+        conn.execute(
+            """
+            UPDATE token_radar_current
+               SET ruleset_version = 'token_radar_rules_v1',
+                   ruleset_fingerprint = %s,
+                   input_fingerprint = %s,
+                   state_fingerprint = %s,
+                   evidence_as_of_ms = 20,
+                   evaluation_at_ms = 21,
+                   input_rows = 22,
+                   input_bytes = 23,
+                   latest_attempt_status = 'failed',
+                   latest_error_code = 'old_v2_failure',
+                   failure_count = 3,
+                   served_payload = %s::jsonb,
+                   created_at_ms = 10,
+                   updated_at_ms = 21
+             WHERE singleton_key = true
+            """,
+            (
+                fingerprint,
+                fingerprint,
+                fingerprint,
+                '{"schema_version":"token_radar_snapshot_v2","evidence_as_of_ms":20,"eligible_total":1,"items":[{}]}',
+            ),
+        )
+        conn.commit()
+        before_facts = _fact_identities(conn)
+        before_tables = _public_tables(conn)
+        before_columns = _table_columns(conn, "token_radar_current")
+
+        command.upgrade(config, "20260811_0254")
+
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260811_0254"}
+        assert _fact_identities(conn) == before_facts
+        assert _public_tables(conn) == before_tables
+        assert _table_columns(conn, "token_radar_current") == before_columns | {"state_changed_at_ms"}
+        assert conn.execute(
+            """
+            SELECT data_type, is_nullable, column_default
+              FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND table_name = 'token_radar_current'
+               AND column_name = 'state_changed_at_ms'
+            """
+        ).fetchone() == {
+            "data_type": "bigint",
+            "is_nullable": "NO",
+            "column_default": "0",
+        }
+        assert conn.execute(
+            """
+            SELECT schema_version, ruleset_version, ruleset_fingerprint,
+                   input_fingerprint, state_fingerprint, evidence_as_of_ms,
+                   evaluation_at_ms, input_rows, input_bytes,
+                   latest_attempt_status, latest_error_code, failure_count,
+                   served_payload, state_changed_at_ms,
+                   created_at_ms, updated_at_ms
+              FROM token_radar_current
+             WHERE singleton_key = true
+            """
+        ).fetchone() == {
+            "schema_version": "token_radar_snapshot_v3",
+            "ruleset_version": None,
+            "ruleset_fingerprint": None,
+            "input_fingerprint": None,
+            "state_fingerprint": None,
+            "evidence_as_of_ms": 0,
+            "evaluation_at_ms": 0,
+            "input_rows": 0,
+            "input_bytes": 0,
+            "latest_attempt_status": "never",
+            "latest_error_code": None,
+            "failure_count": 0,
+            "served_payload": {
+                "schema_version": "token_radar_snapshot_v3",
+                "social_evidence_as_of_ms": 0,
+                "eligible_total": 0,
+                "items": [],
+            },
+            "state_changed_at_ms": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+        }
+
+        index = conn.execute(
+            """
+            SELECT pg_get_indexdef(indexrelid) AS definition,
+                   pg_get_expr(indpred, indrelid) AS predicate
+              FROM pg_index
+             WHERE indexrelid = 'idx_events_token_radar_source_time'::regclass
+            """
+        ).fetchone()
+        assert index is not None
+        assert "USING btree (timestamp_ms, event_id)" in index["definition"]
+        predicate = str(index["predicate"])
+        for required in (
+            "source_provider = 'gmgn'::text",
+            "source_transport = 'direct_ws'::text",
+            "coverage = 'public_stream'::text",
+            "twitter_monitor_basic",
+            "twitter_monitor_token",
+            "twitter_monitor_translation",
+            "twitter_monitor_express",
+            "'tweet'::text",
+            "'quote'::text",
+            "'reply'::text",
+            "'repost'::text",
+        ):
+            assert required in predicate
+
+        current_constraint = conn.execute(
+            """
+            SELECT pg_get_constraintdef(oid) AS definition
+              FROM pg_constraint
+             WHERE conrelid = 'token_radar_current'::regclass
+               AND conname = 'token_radar_current_schema_check'
+            """
+        ).fetchone()
+        assert current_constraint is not None
+        assert "octet_length" in str(current_constraint["definition"])
+        assert "98304" not in str(current_constraint["definition"])
+        assert "131072" in str(current_constraint["definition"])
+
+        representative_items = [
+            {f"field_{field_index:02d}": f"{item_index}-{field_index}" for field_index in range(24)}
+            for item_index in range(50)
+        ]
+        representative_items[0]["padding"] = ""
+        representative_payload = {
+            "schema_version": "token_radar_snapshot_v3",
+            "social_evidence_as_of_ms": 0,
+            "eligible_total": 50,
+            "items": representative_items,
+        }
+        canonical_size = len(
+            json.dumps(
+                representative_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        representative_items[0]["padding"] = "x" * (98_276 - canonical_size)
+        assert (
+            len(
+                json.dumps(
+                    representative_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            == 98_276
+        )
+        conn.execute(
+            """
+            UPDATE token_radar_current
+               SET served_payload = %s
+             WHERE singleton_key = true
+            """,
+            (Jsonb(representative_payload),),
+        )
+        stored_size = conn.execute(
+            """
+            SELECT octet_length(served_payload::text) AS bytes
+              FROM token_radar_current
+             WHERE singleton_key = true
+            """
+        ).fetchone()
+        assert stored_size is not None
+        assert 98_304 < int(stored_size["bytes"]) <= 131_072
+        conn.rollback()
+
+        with pytest.raises(CheckViolation):
+            conn.execute(
+                """
+                UPDATE token_radar_current
+                   SET served_payload = %s
+                 WHERE singleton_key = true
+                """,
+                (
+                    Jsonb(
+                        {
+                            "schema_version": "token_radar_snapshot_v3",
+                            "social_evidence_as_of_ms": 0,
+                            "eligible_total": 1,
+                            "items": [{"padding": "x" * 132_000}],
+                        }
+                    ),
+                ),
+            )
+        conn.rollback()
+
+        with pytest.raises(CheckViolation):
+            conn.execute(
+                """
+                UPDATE token_radar_current
+                   SET served_payload =
+                       '{"schema_version":"token_radar_snapshot_v2","evidence_as_of_ms":0,"eligible_total":0,"items":[]}'::jsonb
+                 WHERE singleton_key = true
+                """
+            )
+        conn.rollback()
+    finally:
+        reset_postgres_schema(conn)
+        conn.close()
+
+
+def test_0254_downgrade_is_explicitly_irreversible() -> None:
+    migration = importlib.import_module(
+        "tracefold.platform.postgres.alembic.versions.20260811_0254_token_radar_v3_hard_cut"
+    )
+
+    with pytest.raises(RuntimeError, match="irreversible Token Radar v3 hard cut"):
+        migration.downgrade()
+
+
 def _reset_to_0248() -> tuple[Any, Any]:
     config = alembic_config()
     config.attributes["database_url"] = _test_postgres_dsn()
@@ -248,6 +477,34 @@ def _reset_to_0248() -> tuple[Any, Any]:
     conn.commit()
     command.upgrade(config, "20260810_0248")
     return config, conn
+
+
+def _public_tables(conn: Any) -> set[str]:
+    return {
+        str(row["tablename"])
+        for row in conn.execute(
+            """
+            SELECT tablename
+              FROM pg_tables
+             WHERE schemaname = 'public'
+            """
+        ).fetchall()
+    }
+
+
+def _table_columns(conn: Any, table_name: str) -> set[str]:
+    return {
+        str(row["column_name"])
+        for row in conn.execute(
+            """
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND table_name = %s
+            """,
+            (table_name,),
+        ).fetchall()
+    }
 
 
 def _seed_nonempty_0248_state(conn: Any) -> tuple[str, str, str]:

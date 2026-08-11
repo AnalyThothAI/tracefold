@@ -101,16 +101,32 @@ export function RadarQueue({
       </section>
     );
   }
+  if (snapshot?.state === "unavailable") {
+    return (
+      <section className="live-radar-queue" aria-label="Radar" aria-busy={isRefreshing}>
+        <RadarHeader snapshot={snapshot} />
+        <PageState.Empty
+          hint="No validated Radar snapshot is available yet."
+          title="Radar unavailable"
+        />
+      </section>
+    );
+  }
   const items = snapshot?.items ?? [];
+  const serverStale = snapshot?.state === "stale";
 
   return (
     <section
-      className={`live-radar-queue${snapshot && error ? " live-radar-queue--delayed" : ""}`}
+      className={`live-radar-queue${snapshot && (error || serverStale) ? " live-radar-queue--delayed" : ""}`}
       aria-label="Radar"
       aria-busy={isRefreshing}
     >
       <RadarHeader snapshot={snapshot} />
-      {snapshot && error ? (
+      {snapshot && serverStale ? (
+        <p className="live-radar-delay" role="status">
+          {`Radar stale · ${staleReasonLabel(snapshot.stale_reason)} · last-known-good queue retained`}
+        </p>
+      ) : snapshot && error ? (
         <p className="live-radar-delay" role="status">
           更新延迟
         </p>
@@ -134,7 +150,7 @@ function RadarHeader({ snapshot }: { snapshot: TokenRadarSnapshot | null }) {
   return (
     <header className="live-radar-header">
       <h1>Radar</h1>
-      <span className="live-radar-method">1h acceleration · newest trigger first</span>
+      <span className="live-radar-method">1h causal change · newest qualification first</span>
       {snapshot ? (
         <span className="live-radar-count">
           {`${snapshot.eligible_total} eligible · showing ${snapshot.items.length} / ${TOKEN_RADAR_MAX_ITEMS}`}
@@ -143,14 +159,14 @@ function RadarHeader({ snapshot }: { snapshot: TokenRadarSnapshot | null }) {
       {snapshot ? (
         <time
           dateTime={
-            snapshot.evidence_as_of_ms > 0
-              ? new Date(snapshot.evidence_as_of_ms).toISOString()
+            snapshot.social_evidence_as_of_ms > 0
+              ? new Date(snapshot.social_evidence_as_of_ms).toISOString()
               : undefined
           }
         >
-          {snapshot.evidence_as_of_ms > 0
-            ? `Evidence through ${formatTimestamp(snapshot.evidence_as_of_ms)}`
-            : "No evidence yet"}
+          {snapshot.social_evidence_as_of_ms > 0
+            ? `Social evidence through ${formatTimestamp(snapshot.social_evidence_as_of_ms)}`
+            : "No social evidence yet"}
         </time>
       ) : null}
     </header>
@@ -281,11 +297,15 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
         style={empty ? { visibility: "hidden" } : undefined}
       >
         <span
-          aria-label={`Price ${formatPrice(item?.market.price_usd ?? null)}`}
+          aria-label={`Price ${formatPrice(item?.market.price_usd ?? null)}, ${formatObservation(item?.market.price_observed_at_ms ?? null)}`}
           data-label="Price"
           role="group"
         >
           {formatPrice(item?.market.price_usd ?? null)}
+          <MarketObservation
+            label="Price observation time"
+            value={item?.market.price_observed_at_ms ?? null}
+          />
         </span>
         <span
           aria-label={`Since signal ${formatChange(change)}`}
@@ -304,11 +324,15 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
           {formatChange(change)}
         </span>
         <span
-          aria-label={`Market cap ${formatMarketCap(item?.market.market_cap_usd ?? null)}`}
+          aria-label={`Market cap ${formatMarketCap(item?.market.market_cap_usd ?? null)}, ${formatObservation(item?.market.market_cap_observed_at_ms ?? null)}`}
           data-label="Market cap"
           role="group"
         >
           {formatMarketCap(item?.market.market_cap_usd ?? null)}
+          <MarketObservation
+            label="Market-cap observation time"
+            value={item?.market.market_cap_observed_at_ms ?? null}
+          />
         </span>
       </div>
       <div
@@ -325,11 +349,11 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
           {`${item?.why_now.prior_mentions ?? 0}→${item?.why_now.current_mentions ?? 0} · ${formatSigned(item?.why_now.mention_delta ?? 0)}`}
         </span>
         <span
-          aria-label={`New evidence, ${item?.evidence.new_independent_author_count ?? 0} new authors, ${item?.evidence.independent_text_count ?? 0} independent texts`}
-          data-label="New evidence"
+          aria-label={`Independent evidence, ${item?.evidence.independent_author_count ?? 0} independent authors, ${item?.evidence.independent_text_count ?? 0} independent texts`}
+          data-label="Independent evidence"
           role="group"
         >
-          {`${item?.evidence.new_independent_author_count ?? 0} authors · ${item?.evidence.independent_text_count ?? 0} texts`}
+          {`${item?.evidence.independent_author_count ?? 0} authors · ${item?.evidence.independent_text_count ?? 0} texts`}
         </span>
         <span
           aria-label={`Formation quality, formed in ${formatDuration(item?.evidence.time_to_nth_author_ms ?? 0)}, ${formatPercent(item?.evidence.duplicate_share ?? 0)} duplicate text`}
@@ -339,14 +363,17 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
           {`${formatDuration(item?.evidence.time_to_nth_author_ms ?? 0)} to form · ${formatPercent(item?.evidence.duplicate_share ?? 0)} duplicate`}
         </span>
         <time
-          dateTime={item ? new Date(item.triggered_at_ms).toISOString() : undefined}
-          title="Signal trigger time"
+          dateTime={item ? new Date(item.trigger_source_event_at_ms).toISOString() : undefined}
+          title="Trigger source-event time"
         >
-          {item ? `Triggered ${RADAR_TRIGGER_FORMATTER.format(item.triggered_at_ms)}` : ""}
+          {item ? `Source ${RADAR_TRIGGER_FORMATTER.format(item.trigger_source_event_at_ms)}` : ""}
         </time>
-        {item?.counter_evidence ? (
-          <span className="live-radar-counter">Market confirmation unavailable</span>
-        ) : null}
+        <time
+          dateTime={item ? new Date(item.qualified_at_ms).toISOString() : undefined}
+          title="Qualification time"
+        >
+          {item ? `Qualified ${RADAR_TRIGGER_FORMATTER.format(item.qualified_at_ms)}` : ""}
+        </time>
       </div>
       <Link
         aria-hidden={empty || undefined}
@@ -357,6 +384,20 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
         Open Token Case
       </Link>
     </li>
+  );
+}
+
+function MarketObservation({ label, value }: { label: string; value: number | null }) {
+  return (
+    <small>
+      {value === null ? (
+        "No observation"
+      ) : (
+        <time dateTime={new Date(value).toISOString()} title={label}>
+          {formatObservation(value)}
+        </time>
+      )}
+    </small>
   );
 }
 
@@ -417,6 +458,14 @@ function formatPercent(value: number): string {
 function formatDuration(value: number): string {
   if (value < 60_000) return `${Math.round(value / 1_000)}s`;
   return `${Math.round(value / 60_000)}m`;
+}
+
+function formatObservation(value: number | null): string {
+  return value === null ? "No observation" : `Observed ${RADAR_TRIGGER_FORMATTER.format(value)}`;
+}
+
+function staleReasonLabel(reason: TokenRadarSnapshot["stale_reason"]): string {
+  return reason === "source_unavailable" ? "Source unavailable" : "Projection unavailable";
 }
 
 function formatTimestamp(value: number): string {

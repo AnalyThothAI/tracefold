@@ -502,6 +502,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "latest_attempt_status",
         "latest_error_code",
         "failure_count",
+        "state_changed_at_ms",
         "served_payload",
         "created_at_ms",
         "updated_at_ms",
@@ -525,7 +526,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260811_0253"
+    assert version == latest_migration_version() == "20260811_0254"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -550,7 +551,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260811_0253"
+    assert version == latest_migration_version() == "20260811_0254"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -812,7 +813,7 @@ def test_rates_fed_v7_hard_cut_invalidates_v6_current_and_frontier(
         )
         conn.commit()
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260810_0251")
 
         assert (
             conn.execute("SELECT count(*) AS count FROM macro_module_current WHERE module_id = 'rates_fed'").fetchone()[
@@ -1002,7 +1003,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260811_0253"
+        assert version == latest_migration_version() == "20260811_0254"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

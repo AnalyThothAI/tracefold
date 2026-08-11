@@ -146,7 +146,7 @@ test("renders a real Token Radar publication within one polling interval", async
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
-  await expect(page.getByText("No eligible cases")).toBeVisible();
+  await expect(page.getByText("Radar unavailable")).toBeVisible();
   await page.evaluate(() => {
     const timings = (window as RadarWindow).__tokenRadarTimings;
     const radarQueue = document.querySelector(".live-radar-queue");
@@ -290,9 +290,9 @@ test("renders a real Token Radar publication within one polling interval", async
   await expect(item).toHaveCount(1);
   await expect(item).toBeVisible();
   await expect(item.getByRole("img", { name: "E2E Radar icon" })).toBeVisible();
-  await expect(item.getByRole("group", { name: "Price $12.00" })).toBeVisible();
+  await expect(item.getByRole("group", { name: /Price \$12\.00, Observed/ })).toBeVisible();
   await expect(item.getByRole("group", { name: "Since signal +20%" })).toBeVisible();
-  await expect(item.getByRole("group", { name: "Market cap $12M" })).toBeVisible();
+  await expect(item.getByRole("group", { name: /Market cap \$12M, Observed/ })).toBeVisible();
 });
 
 function requiredEnvironment(name: string): string {

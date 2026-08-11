@@ -136,7 +136,8 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     {
         "name": "token_radar_latest",
         "sql": """
-            SELECT schema_version, evidence_as_of_ms, served_payload
+            SELECT schema_version, state_fingerprint, latest_attempt_status,
+                   latest_error_code, state_changed_at_ms, served_payload
             FROM token_radar_current
             WHERE singleton_key = true
         """,
@@ -717,7 +718,7 @@ class ProjectionValidationAudit:
                        WHEN count(*) <> 1 THEN 1
                        ELSE count(*) FILTER (
                          WHERE NOT singleton_key
-                            OR schema_version <> 'token_radar_snapshot_v2'
+                            OR schema_version <> 'token_radar_snapshot_v3'
                             OR (
                               latest_attempt_status = 'ready'
                               AND state_fingerprint IS NULL
@@ -730,7 +731,7 @@ class ProjectionValidationAudit:
                               )
                             )
                             OR served_payload ->> 'schema_version'
-                                 <> 'token_radar_snapshot_v2'
+                                 <> 'token_radar_snapshot_v3'
                             OR jsonb_typeof(served_payload -> 'items') <> 'array'
                             OR jsonb_array_length(served_payload -> 'items') > 50
                             OR COALESCE((served_payload ->> 'eligible_total')::bigint, -1)
