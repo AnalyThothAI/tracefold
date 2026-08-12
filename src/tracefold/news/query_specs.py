@@ -188,56 +188,12 @@ def story_push_contexts_query(
 ) -> ReadQuerySpec:
     if len(story_ids) > PUBLIC_LIST_LIMIT:
         raise ValueError("news_push_context_story_ids_limit")
-    story_filter = "AND member.story_id = ANY(%s)"
-    requested_sql = "SELECT unnest(%s::text[]) AS story_id"
-    ledger_member_candidates = """
-                  UNION ALL
-                  SELECT member_delivery.story_id, 2 AS priority
-                    FROM news_story_members ledger_member
-                    JOIN news_push_deliveries member_delivery
-                      ON member_delivery.selected_item_id = ledger_member.item_id
-                   WHERE ledger_member.story_id = requested.story_id
-            """
     values = list(story_ids)
-    params = (values, values)
     return ReadQuerySpec(
         name="news_feed_push_contexts",
-        sql=f"""
-            WITH selected AS (
-              SELECT DISTINCT ON (member.story_id)
-                     member.story_id,
-                     story.importance_score,
-                     story.item_count,
-                     story.source_count,
-                     story.first_published_at_ms,
-                     story.last_published_at_ms,
-                     item.item_id,
-                     item.canonical_url,
-                     item.provider_metadata,
-                     item.reporting_origin,
-                     item.title,
-                     item.description,
-                     item.lang,
-                     item.published_at_ms,
-                     item.push_eligibility_updated_at_ms AS eligibility_observed_at_ms,
-                     coalesce(
-                       item.provider_score_updated_at_ms,
-                       item.updated_at_ms
-                     ) AS threshold_observed_at_ms,
-                     (item.provider_metadata ->> 'score')::numeric
-                       AS provider_score
-                FROM news_story_members member
-                JOIN news_stories story ON story.story_id = member.story_id
-                JOIN news_items item ON item.item_id = member.item_id
-               WHERE jsonb_typeof(item.provider_metadata -> 'score') = 'number'
-                     {story_filter}
-               ORDER BY member.story_id,
-                        (item.provider_metadata ->> 'score')::numeric DESC,
-                        item.published_at_ms DESC,
-                        item.item_id
-            ),
-            requested AS (
-              {requested_sql}
+        sql="""
+            WITH requested AS (
+              SELECT unnest(%s::text[]) AS story_id
             )
             SELECT requested.story_id,
                    selected.importance_score,
@@ -259,19 +215,55 @@ def story_push_contexts_query(
                    state.baseline_at_ms AS push_baseline_at_ms,
                    delivery.status AS push_delivery_status
               FROM requested
-              LEFT JOIN selected ON selected.story_id = requested.story_id
+              LEFT JOIN LATERAL (
+                SELECT story.importance_score,
+                     story.item_count,
+                     story.source_count,
+                     story.first_published_at_ms,
+                     story.last_published_at_ms,
+                     item.item_id,
+                     item.canonical_url,
+                     item.provider_metadata,
+                     item.reporting_origin,
+                     item.title,
+                     item.description,
+                     item.lang,
+                     item.published_at_ms,
+                     item.push_eligibility_updated_at_ms AS eligibility_observed_at_ms,
+                     coalesce(
+                       item.provider_score_updated_at_ms,
+                       item.updated_at_ms
+                     ) AS threshold_observed_at_ms,
+                     (item.provider_metadata ->> 'score')::numeric
+                       AS provider_score
+                FROM news_stories story
+                JOIN news_story_members member
+                  ON member.story_id = story.story_id
+                JOIN news_items item ON item.item_id = member.item_id
+               WHERE story.story_id = requested.story_id
+                 AND jsonb_typeof(item.provider_metadata -> 'score') = 'number'
+               ORDER BY (item.provider_metadata ->> 'score')::numeric DESC,
+                        item.published_at_ms DESC,
+                        item.item_id
+               LIMIT 1
+              ) selected ON true
               LEFT JOIN news_push_state state
                 ON state.singleton_key = 'current'
               LEFT JOIN LATERAL (
                 SELECT delivery.status
                   FROM (
                     SELECT requested.story_id, 0 AS priority
-                    UNION ALL
-                    SELECT selected_delivery.story_id, 1 AS priority
-                      FROM news_push_deliveries selected_delivery
-                     WHERE selected.item_id IS NOT NULL
-                       AND selected_delivery.selected_item_id = selected.item_id
-                    {ledger_member_candidates}
+                  UNION ALL
+                  SELECT selected_delivery.story_id, 1 AS priority
+                    FROM news_push_deliveries selected_delivery
+                   WHERE selected.item_id IS NOT NULL
+                     AND selected_delivery.selected_item_id = selected.item_id
+                  UNION ALL
+                  SELECT member_delivery.story_id, 2 AS priority
+                    FROM news_story_members ledger_member
+                    JOIN news_push_deliveries member_delivery
+                      ON member_delivery.selected_item_id = ledger_member.item_id
+                   WHERE ledger_member.story_id = requested.story_id
                   ) matched
                   JOIN news_push_deliveries delivery
                     ON delivery.story_id = matched.story_id
@@ -282,7 +274,7 @@ def story_push_contexts_query(
               ) delivery ON true
              ORDER BY requested.story_id
         """,
-        params=params,
+        params=(values,),
     )
 
 
