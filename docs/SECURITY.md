@@ -90,7 +90,8 @@ News Push title translation reuses the operator-owned direct DeepSeek
 `llm.api_key`, `llm.base_url`, and `llm.news_brief_model`; there is no
 `news.push.translation` secret, second copy, inferred endpoint/model, or
 fallback provider. When translation is available, only the selected title is
-sent to DeepSeek; coins, score, URL, description, Story data, Feishu webhook, and
+sent to DeepSeek; asset annotations, score, URL, description, Story data,
+Feishu webhook, and
 signing secret are never included. Configuration diagnostics expose only
 `translation_enabled`, derived from Push enablement plus the direct triple, and
 `translation_configured`, derived from that triple's availability. The

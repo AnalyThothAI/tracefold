@@ -196,6 +196,49 @@ describe("NewsPage", () => {
     );
   });
 
+  it("shows provider-selected related assets in Feed order and omits missing assets", async () => {
+    const feed = newsFeedFixture();
+    feed.stories[0].provider_evidence!.provider_metadata.assets = [
+      { symbol: "BTC", market_type: "spot", match: "Bitcoin" },
+      { symbol: "GOOGL", market_type: "stock", match: "Alphabet" },
+      { symbol: "CL", market_type: "futures", match: "Crude oil" },
+      { symbol: "NATGAS", market_type: "futures", match: "Natural gas" },
+    ];
+    feed.stories.push({
+      ...feed.stories[0],
+      provider_evidence: {
+        ...feed.stories[0].provider_evidence!,
+        provider_metadata: {
+          ...feed.stories[0].provider_evidence!.provider_metadata,
+          assets: null,
+        },
+      },
+      story_id: "story-without-assets",
+      title: "A second Story without related assets",
+    });
+    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    const firstRow = (await screen.findByRole("heading", { name: feed.stories[0].title })).closest(
+      "article",
+    );
+    const secondRow = screen
+      .getByRole("heading", { name: feed.stories[1].title })
+      .closest("article");
+    expect(firstRow).not.toBeNull();
+    expect(secondRow).not.toBeNull();
+    expect(within(firstRow!).getByText("关联资产")).toBeInTheDocument();
+    expect(
+      within(within(firstRow!).getByRole("list", { name: "关联资产" }))
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["BTC", "GOOGL", "CL", "NATGAS"]);
+    expect(within(firstRow!).queryByText("代币")).not.toBeInTheDocument();
+    expect(within(secondRow!).queryByText("关联资产")).not.toBeInTheDocument();
+    expect(within(secondRow!).queryByText(/暂无|未提供/)).not.toBeInTheDocument();
+  });
+
   it("omits the OpenNews score cleanly when provider evidence is unavailable", async () => {
     const feed = newsFeedFixture();
     feed.stories[0].provider_evidence = null;
@@ -600,6 +643,37 @@ describe("NewsPage", () => {
       "href",
       "https://scoring.example/detail",
     );
+  });
+
+  it("shows provider-selected related assets in the Story detail hero", async () => {
+    const detail = newsStoryDetailFixture();
+    detail.provider_evidence!.provider_metadata.assets = [
+      { symbol: "BTC", market_type: "spot", match: "Bitcoin" },
+      { symbol: "GOOGL", market_type: "stock", match: "Alphabet" },
+      { symbol: "CL", market_type: "futures", match: "Crude oil" },
+      { symbol: "NATGAS", market_type: "futures", match: "Natural gas" },
+    ];
+    server.use(
+      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: detail }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage storyId="story-global-policy" token="test-token" view="story" />,
+      "/news/stories/story-global-policy",
+    );
+
+    const title = await screen.findByRole("heading", { level: 1, name: detail.title });
+    const hero = title.closest(".news-story-hero") as HTMLElement | null;
+    expect(hero).not.toBeNull();
+    expect(within(hero!).getByText("关联资产")).toBeInTheDocument();
+    expect(
+      within(within(hero!).getByRole("list", { name: "关联资产" }))
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["BTC", "GOOGL", "CL", "NATGAS"]);
+    expect(within(hero!).queryByText("代币")).not.toBeInTheDocument();
   });
 
   it("keeps an overlong detail title readable behind an explicit expansion", async () => {

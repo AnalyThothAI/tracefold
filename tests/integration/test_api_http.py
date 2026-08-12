@@ -680,7 +680,16 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
                             "score": 76,
                             "signal": "long",
                             "grade": "A",
-                            "coins": [{"symbol": "BTC", "market_type": "spot"}],
+                            "coins": [
+                                {
+                                    "symbol": "BTC",
+                                    "market_type": "spot",
+                                    "match": "Bitcoin",
+                                    "score": 91,
+                                    "signal": "bullish",
+                                    "grade": "A+",
+                                }
+                            ],
                         },
                     ),
                     _opennews_event(
@@ -839,9 +848,19 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
             "score": 76,
             "signal": "long",
             "grade": "A",
-            "coins": [{"symbol": "BTC", "market_type": "spot"}],
+            "assets": [
+                {
+                    "symbol": "BTC",
+                    "market_type": "spot",
+                    "match": "Bitcoin",
+                    "score": 91,
+                    "signal": "bullish",
+                    "grade": "A+",
+                }
+            ],
         },
     }
+    assert "coins" not in story["provider_evidence"]["provider_metadata"]
     assert set(story["provider_evidence"]) == {
         "item_id",
         "url",
@@ -872,6 +891,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert detail["members"][0]["reporting_origin"]
     assert detail["members"][0]["provider_record_id"]
     assert detail["members"][0]["provider_metadata"] == story["provider_evidence"]["provider_metadata"]
+    assert "coins" not in detail["members"][0]["provider_metadata"]
     assert detail["members_page"] == {
         "returned_count": 2,
         "has_more": False,
@@ -1304,7 +1324,10 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
                         description="The exchange published its custody launch details.",
                         published_at_ms=now_ms - 2_000,
                         reporting_origin="exchange",
-                        provider_metadata={"score": 91},
+                        provider_metadata={
+                            "score": 91,
+                            "coins": [{"symbol": "BTC", "market_type": "spot"}],
+                        },
                     ),
                     _opennews_event(
                         provider_record_id="push-state-low",
@@ -1313,6 +1336,43 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
                         published_at_ms=now_ms - 1_000,
                         reporting_origin="ministry",
                         provider_metadata={"score": 70},
+                    ),
+                    _opennews_event(
+                        provider_record_id="push-state-assetless",
+                        title="Space agency publishes a telescope maintenance calendar",
+                        description="The agency listed routine observatory maintenance dates.",
+                        published_at_ms=now_ms - 800,
+                        reporting_origin="space-agency",
+                        provider_metadata={"score": 92},
+                    ),
+                    _opennews_event(
+                        provider_record_id="push-state-cl-only",
+                        title="Customs authority revises regional paperwork requirements",
+                        description="The authority clarified forms for cross-border declarations.",
+                        published_at_ms=now_ms - 600,
+                        reporting_origin="customs-authority",
+                        provider_metadata={
+                            "score": 93,
+                            "coins": [
+                                {"symbol": "CL", "market_type": "cex"},
+                                {"symbol": "XYZ-CL", "market_type": "cex"},
+                            ],
+                        },
+                    ),
+                    _opennews_event(
+                        provider_record_id="push-state-malformed-assets",
+                        title="Museum announces an extended exhibition schedule",
+                        description="The museum extended public viewing dates for its collection.",
+                        published_at_ms=now_ms - 400,
+                        reporting_origin="museum",
+                        provider_metadata={
+                            "score": 89,
+                            "coins": [
+                                {"market_type": "spot"},
+                                {"symbol": "BTC"},
+                                "invalid",
+                            ],
+                        },
                     ),
                 ),
                 observed_at_ms=now_ms,
@@ -1323,9 +1383,22 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
         initial = client.get("/api/news/feed", headers=headers).json()["data"]["stories"]
         high = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 91)
         low = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 70)
+        assetless = next(
+            story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 92
+        )
+        cl_only = next(
+            story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 93
+        )
+        malformed_assets = next(
+            story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 89
+        )
 
         assert high["push_delivery_state"] == "pending"
         assert low["push_delivery_state"] is None
+        assert assetless["push_delivery_state"] is None
+        assert cl_only["push_delivery_state"] is None
+        assert "assets" not in malformed_assets["provider_evidence"]["provider_metadata"]
+        assert malformed_assets["push_delivery_state"] is None
 
         with write_repositories() as repos, repos.transaction():
             assert repos.news.insert_push_candidate(

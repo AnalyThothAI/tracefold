@@ -84,6 +84,10 @@ reporting origin, publication clock, and provider metadata, and initializes
 required deterministic serving columns. Story consumes that canonical title
 and persists only the full-window classification, importance, and activity
 values. It never overwrites acquisition-owned facts.
+OpenNews's raw `coins` annotation remains source evidence in `news_items`; the
+public News read adapter exposes that bounded annotation as generic `assets`
+because provider symbols can represent crypto, equities, or commodities. It
+does not classify, validate, or correct those labels.
 
 Source connection health in `news_sources`, queues, leases, retries, native
 model runs/jobs, and terminal events are control state. Typed Macro and Profile
@@ -104,7 +108,7 @@ they are not material facts.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
 they freeze no-backfill baselines, selected Story evidence, one optional
 presentation-only Chinese title translation or explicit original fallback,
-compact cards with provider coins, provider score, and an
+compact cards with provider-labelled assets, provider score, and an
 optional original-link button, plus claims, retries, and explicit delivery
 receipts. They
 do not become a second Story read model or notification product.
@@ -565,12 +569,16 @@ exactly `unavailable`, `current`, `degraded`, or `last_known_good`.
 `NewsStoryPush` is a News-owned durable outbound worker, not a model candidate
 or generic Notifications service. On first enablement it atomically suppresses
 every currently eligible Story and records the initialized baseline without
-network work. Later it
-qualifies a Story only when the maximum numeric OpenNews provider score among
-its current members is strictly greater than 70 and the selected Item was
-published after the baseline and within the code-owned 15-minute live-alert
-window. Older Items discovered through REST overlap or a later Story identity
-are durably suppressed, never backfilled to Feishu. It chooses the
+network work. Later it qualifies a Story only when the maximum numeric
+OpenNews provider score among its current members is strictly greater than 70,
+the selected Item was published after the baseline and within the code-owned
+15-minute live-alert window, and that Item has a qualifying provider asset
+set. A set is qualifying when it has at least one non-empty symbol and is not
+contained entirely in the normalized CL family `{CL, XYZ-CL}`. Mixed sets such
+as `{CL, BTC}` remain eligible; this narrow outbound noise filter neither hides
+News reads nor attempts to repair other provider mislabelling. Older Items
+discovered through REST overlap or a later Story identity are durably
+suppressed, never backfilled to Feishu. It chooses the
 highest-scored member with deterministic publication-time and Item-ID ties, and
 freezes that Story/Item evidence once. Its code-owned 10-second reconcile reads
 only persisted current Story membership and NewsItem metadata; it neither rebuilds
@@ -583,11 +591,11 @@ second translation endpoint, credential, model, or fallback. The request
 timeout is 7.5 seconds inside an 8-second total translation budget. Success
 freezes a Chinese header plus visible original; any provider, validation,
 length, or timeout failure freezes and sends the original in the same turn.
-Only the selected title enters the model request. Its compact body renders the selected Item's valid
-OpenNews coin symbols, preserving provider order and deduplicating by case,
-plus the provider score and one original-link button when a canonical HTTP(S)
-Item URL exists. Items without valid coins show `未提供`; a missing URL omits
-the button.
+Only the selected title enters the model request. Its compact body renders the
+selected Item's provider-labelled asset symbols under `关联资产`, preserving
+provider order and deduplicating by case, plus the provider score and one
+original-link button when a canonical HTTP(S) Item URL exists. A missing URL
+omits the button.
 
 Translation preparation and Feishu delivery both run outside the database
 transaction through the finite-operation capability. After preparation, the

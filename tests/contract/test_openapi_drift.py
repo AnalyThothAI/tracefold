@@ -184,6 +184,23 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     ):
         assert schema["components"]["schemas"][name]["additionalProperties"] is False
 
+    components = schema["components"]["schemas"]
+    metadata_properties = components["NewsProviderMetadataData"]["properties"]
+    assert "NewsProviderAssetData" in components
+    assert "NewsProviderCoinData" not in components
+    assert set(metadata_properties) == {"score", "source", "signal", "grade", "assets"}
+    assert metadata_properties["assets"]["anyOf"][0]["items"] == {
+        "$ref": "#/components/schemas/NewsProviderAssetData"
+    }
+    assert set(components["NewsProviderAssetData"]["properties"]) == {
+        "symbol",
+        "market_type",
+        "match",
+        "score",
+        "signal",
+        "grade",
+    }
+
 
 @pytest.mark.contract
 def test_news_contract_hard_cuts_title_translation_and_old_brief_aggregates() -> None:

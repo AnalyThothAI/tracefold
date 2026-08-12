@@ -142,9 +142,14 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   canonical persisted headline is primary; the browser makes no model call.
   Only a valid safe plain-text description is shown, clamped to two lines.
   The backend-selected numeric OpenNews score is the first compact metadata
-  badge and is omitted without numeric evidence; provider signal, grade, coins,
-  and Push state are not reading-layer decoration. Tracefold importance is
-  secondary and its supplied factors live under row-local `为什么重要`. The
+  badge and is omitted without numeric evidence. Non-empty
+  `provider_metadata.assets` follow under the generic `关联资产` label in
+  provider order; these labels may be crypto, equities, oil, or other
+  commodities. The browser does not infer an asset class, correct provider
+  labels, or hide CL-family labels from the reading surface. Missing assets are
+  omitted, while provider signal, grade, and Push state are not reading-layer
+  decoration. Tracefold importance is secondary and its supplied factors live
+  under row-local `为什么重要`. The
   primary row action opens
   `/news/stories/:storyId`; a separate link opens original evidence when a
   valid URL exists and is otherwise omitted. Missing values are omitted.
@@ -152,9 +157,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   rows, with no horizontal overflow.
 
   `/news/stories/:storyId` reads `/api/news/stories/{story_id}` and is
-  reading-first: canonical headline, selected numeric OpenNews score, severity,
-  reporting origin/time, independent-origin count, valid description, and
-  representative original link precede related reports. Complete member
+  reading-first: canonical headline, selected numeric OpenNews score,
+  provider-labelled `关联资产`, severity, reporting origin/time,
+  independent-origin count, valid description, and representative original
+  link precede related reports. Complete member
   pagination remains reachable. Internal IDs, complete factor math, provider
   metadata, and aggregation evidence do not replace canonical evidence.
   User-facing language is `新闻事件`, `相关报道`, and `独立来源`; machine terms

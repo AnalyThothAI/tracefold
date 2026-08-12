@@ -94,10 +94,14 @@ live-alert admission requires the selected Item to be newer than the
 first-enable baseline and no more than 15 minutes old; stale recovery data is
 recorded as suppressed and is never sent. Every frozen retry rechecks that age
 immediately before network submission and becomes suppressed once the deadline
-passes. Its
-compact body shows only the selected highest-score Item's OpenNews coin symbols
-and provider score. Coin symbols preserve provider order after
-case-insensitive deduplication; missing symbols render as `未提供`. A canonical
+passes. The selected Item must also contain at least one non-empty
+provider-labelled asset symbol; a normalized symbol set contained entirely in
+`CL` and `XYZ-CL` is excluded as CL-family-only noise. Mixed sets such as `CL`
+plus `BTC` remain eligible. This asset qualification is Push-only and does not
+hide the Story from News reads. Its compact body shows only the selected
+highest-score Item's OpenNews asset symbols and provider score under the
+generic `关联资产` label. Asset symbols preserve provider order after
+case-insensitive deduplication. A canonical
 HTTP(S) Item URL adds one `查看原文` button; a missing URL omits the button. The
 card has no subtitle, summary, signal, grade, Story score, source, or publication
 time. Push translation is presentation-only: Article, Story, provider score, and
@@ -275,7 +279,7 @@ The News public surface is exactly five read-only routes:
   comparison against the backend-selected maximum numeric OpenNews score;
   `reporting_origin` is a normalized exact
   match. `q` is normalized server-side search over the canonical title and
-  description, reporting origin, provider source, and coin symbols. All search
+  description, reporting origin, provider source, and asset symbols. All search
   and filters run before deterministic
   keyset ordering and pagination. Every cursor and ETag binds the complete
   normalized filter identity. The response includes Stories, filtered facets
@@ -284,8 +288,12 @@ The News public surface is exactly five read-only routes:
   Each Story carries nullable `provider_evidence`, selected by the backend from
   the member with the maximum numeric OpenNews provider score and deterministic
   publication-time/Item-ID ties. It binds that Item ID, URL, and bounded
-  provider metadata together; the browser does not cluster, score, select the
-  maximum, or reorder.
+  provider metadata together. Public provider metadata exposes the upstream
+  labels as `assets`; it never exposes the provider's misleadingly named raw
+  `coins` field. An asset is a provider label and may name crypto, an equity,
+  or a commodity such as oil; Tracefold does not infer or correct its class.
+  The browser does not cluster, score, select the maximum, classify assets, or
+  reorder them.
   `push_delivery_state` remains null for a non-eligible Story and otherwise one
   of `pending`, `sent`, `suppressed`, or `failed`, derived at read time from the
   current selected Item and the existing durable delivery ledger.
@@ -340,7 +348,9 @@ Verified Twitter wrapper reports use
 the author handle as reporting origin; other reports use `newsType`, then the
 canonical URL host, then `opennews`. Linkless reports remain valid. Provider
 metadata is limited to the provider-source label, `score`, `signal`, `grade`,
-and coin details.
+and provider-labelled `assets` details. The OpenNews adapter persists the
+upstream raw `coins` member as source evidence, while every public News read
+maps it to `assets` and omits `coins`.
 Provider annotations merge metadata into the same current row; translation
 frames received from OpenNews and non-news messages are discarded. Provider
 metadata is descriptive and does not affect Story identity, classification,

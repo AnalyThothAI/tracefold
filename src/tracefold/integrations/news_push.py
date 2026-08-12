@@ -210,7 +210,7 @@ class FeishuNewsPushDelivery:
                 raise ValueError("news_push_source_payload_invalid")
             original_title = _required_text(evidence_value, "title")
             source_url = _optional_http_url(evidence_value.get("url"))
-            symbols = _provider_coin_symbols(evidence_value)
+            symbols = _provider_asset_symbols(evidence_value)
             score = _provider_score_text(evidence_value)
         except (KeyError, TypeError, ValueError, OverflowError, OSError):
             raise NewsPushDeliveryError(
@@ -500,8 +500,8 @@ def _news_story_card(
     elif headline_clipped:
         elements.append(_plain_div(f"原文节选：{original_preview}"))
 
-    coins_text = " · ".join(symbols) if symbols else "未提供"
-    elements.append(_plain_div(f"代币：{coins_text}\nOpenNews 评分：{score}"))
+    assets_text = " · ".join(symbols) if symbols else "未提供"
+    elements.append(_plain_div(f"关联资产：{assets_text}\nOpenNews 评分：{score}"))
     if source_url is not None:
         elements.append(
             {
@@ -599,7 +599,7 @@ def _graphemes(value: str) -> list[str]:
     return clusters
 
 
-def _provider_coin_symbols(evidence: Mapping[str, Any]) -> tuple[str, ...]:
+def _provider_asset_symbols(evidence: Mapping[str, Any]) -> tuple[str, ...]:
     metadata = evidence.get("provider_metadata")
     if not isinstance(metadata, Mapping):
         return ()

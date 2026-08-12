@@ -32,6 +32,7 @@ def _event(
     score: float,
     published_at_ms: int,
     url: str | None = "https://example.com/news",
+    asset_symbols: tuple[str, ...] = ("BTC",),
 ):
     event = parse_opennews_message(
         {
@@ -49,7 +50,10 @@ def _event(
                     "signal": "long",
                     "grade": "A",
                 },
-                "coins": [{"symbol": "BTC", "market_type": "spot"}],
+                "coins": [
+                    {"symbol": symbol, "market_type": "spot"}
+                    for symbol in asset_symbols
+                ],
             },
         }
     )
@@ -57,17 +61,28 @@ def _event(
     return event
 
 
-def _annotation(record_id: str, *, score: float):
+def _annotation(
+    record_id: str,
+    *,
+    score: float,
+    asset_symbols: tuple[str, ...] | None = None,
+):
+    params: dict[str, Any] = {
+        "newsId": record_id,
+        "engineType": "news",
+        "score": score,
+        "signal": "long",
+        "grade": "A+",
+    }
+    if asset_symbols is not None:
+        params["coins"] = [
+            {"symbol": symbol, "market_type": "spot"}
+            for symbol in asset_symbols
+        ]
     event = parse_opennews_message(
         {
             "method": "news.ai_update",
-            "params": {
-                "newsId": record_id,
-                "engineType": "news",
-                "score": score,
-                "signal": "long",
-                "grade": "A+",
-            },
+            "params": params,
         }
     )
     assert event is not None
@@ -83,6 +98,29 @@ def _seed_source(conn: Any) -> NewsRepository:
 
 def _push_health(conn: Any, *, now_ms: int) -> dict[str, Any]:
     return NewsRepository(conn).push_health_snapshot(now_ms=now_ms)
+
+
+def _replace_ledger_asset_symbols(conn: Any, asset_symbols: tuple[str, ...]) -> None:
+    row = conn.execute(
+        "SELECT story_id, source_payload FROM news_push_deliveries"
+    ).fetchone()
+    source_payload = dict(row["source_payload"])
+    evidence = dict(source_payload["provider_evidence"])
+    metadata = dict(evidence["provider_metadata"])
+    if asset_symbols:
+        metadata["coins"] = [
+            {"symbol": symbol, "market_type": "spot"}
+            for symbol in asset_symbols
+        ]
+    else:
+        metadata.pop("coins", None)
+    evidence["provider_metadata"] = metadata
+    source_payload["provider_evidence"] = evidence
+    conn.execute(
+        "UPDATE news_push_deliveries SET source_payload = %s WHERE story_id = %s",
+        (Jsonb(source_payload), row["story_id"]),
+    )
+    conn.commit()
 
 
 def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() -> None:
@@ -149,8 +187,14 @@ def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() 
         assert scored_story["provider_evidence"] == {
             "item_id": tie_ids[0],
             "url": "https://example.com/news",
-            "provider_metadata": evidence["provider_metadata"],
+            "provider_metadata": {
+                "score": 81,
+                "signal": "long",
+                "grade": "A",
+                "assets": [{"symbol": "BTC", "market_type": "spot"}],
+            },
         }
+        assert "coins" not in scored_story["provider_evidence"]["provider_metadata"]
         assert set(scored_story["provider_evidence"]) == {
             "item_id",
             "url",
@@ -318,6 +362,243 @@ def test_first_reconcile_suppresses_existing_eligible_story() -> None:
         assert health["status"] == "ready"
         assert health["initialized"] is True
         assert health["suppressed_count"] == 1
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("asset_symbols", "should_suppress"),
+    (
+        ((), True),
+        (("CL",), True),
+        (("XYZ-CL",), True),
+        (("CL", "XYZ-CL"), True),
+        (("BTC",), False),
+        (("GOOGL",), False),
+        (("NATGAS",), False),
+        (("CL", "BTC"), False),
+    ),
+)
+def test_reconcile_admits_only_candidates_with_non_cl_family_assets(
+    monkeypatch: pytest.MonkeyPatch,
+    asset_symbols: tuple[str, ...],
+    should_suppress: bool,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 3}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    delivery = _Delivery()
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "asset-admission",
+                        title="Provider reports a market-moving development",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                        asset_symbols=asset_symbols,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
+
+        expected_inserted = int(not should_suppress)
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2)) == {
+            "inserted": expected_inserted,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        assert asyncio.run(runtime.turn()) is (not should_suppress)
+
+        row = conn.execute(
+            "SELECT status, translation_status FROM news_push_deliveries"
+        ).fetchone()
+        expected_row = (
+            None
+            if should_suppress
+            else {"status": "sent", "translation_status": "not_needed"}
+        )
+        assert row == expected_row
+        assert delivery.prepare_calls == int(not should_suppress)
+        assert len(delivery.payloads) == int(not should_suppress)
+    finally:
+        conn.close()
+
+
+def test_skipped_candidate_can_qualify_after_provider_assets_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 4}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    delivery = _Delivery()
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "later-assets",
+                        title="Issuer updates its market outlook",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                        asset_symbols=(),
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
+
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        assert conn.execute(
+            "SELECT count(*) AS count FROM news_push_deliveries"
+        ).fetchone()["count"] == 0
+
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _annotation(
+                        "later-assets",
+                        score=88,
+                        asset_symbols=("BTC",),
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 3,
+            )
+
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 4)) == {
+            "inserted": 1,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        assert asyncio.run(runtime.turn()) is True
+        assert conn.execute(
+            "SELECT status FROM news_push_deliveries"
+        ).fetchone()["status"] == "sent"
+        assert delivery.prepare_calls == 1
+        assert len(delivery.payloads) == 1
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("asset_symbols", ((), ("CL", "XYZ-CL")))
+def test_existing_unfrozen_delivery_with_filtered_assets_is_suppressed(
+    monkeypatch: pytest.MonkeyPatch,
+    asset_symbols: tuple[str, ...],
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 3}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    delivery = _Delivery()
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "existing-unfrozen",
+                        title="Provider publishes a market alert",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2))["inserted"] == 1
+        _replace_ledger_asset_symbols(conn, asset_symbols)
+
+        assert asyncio.run(runtime.turn()) is True
+        assert conn.execute(
+            "SELECT status, translation_status FROM news_push_deliveries"
+        ).fetchone() == {
+            "status": "suppressed",
+            "translation_status": "not_requested",
+        }
+        assert delivery.prepare_calls == 0
+        assert delivery.payloads == []
+        assert asyncio.run(runtime.turn()) is False
+    finally:
+        conn.close()
+
+
+def test_existing_frozen_retry_with_cl_family_only_assets_is_suppressed_before_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    clock = {"now_ms": BASE_MS + 3}
+    monkeypatch.setattr(push_module, "_now_ms", lambda: clock["now_ms"])
+    delivery = _Delivery(fail_first=True)
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=delivery)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "existing-frozen-retry",
+                        title="Provider publishes a second market alert",
+                        score=88,
+                        published_at_ms=BASE_MS + 1,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1,
+            )
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
+        asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2))
+        assert asyncio.run(runtime.turn()) is True
+        assert conn.execute(
+            "SELECT status, delivery_attempts FROM news_push_deliveries"
+        ).fetchone() == {"status": "retry_wait", "delivery_attempts": 1}
+        assert delivery.prepare_calls == 1
+        assert len(delivery.payloads) == 1
+
+        _replace_ledger_asset_symbols(conn, ("CL", "XYZ-CL"))
+        clock["now_ms"] += 5_000
+
+        assert asyncio.run(runtime.turn()) is True
+        assert conn.execute(
+            """
+            SELECT status, translation_status, delivery_attempts,
+                   delivery_payload IS NOT NULL AS has_delivery_payload
+              FROM news_push_deliveries
+            """
+        ).fetchone() == {
+            "status": "suppressed",
+            "translation_status": "not_needed",
+            "delivery_attempts": 1,
+            "has_delivery_payload": True,
+        }
+        assert delivery.prepare_calls == 1
+        assert len(delivery.payloads) == 1
+        assert asyncio.run(runtime.turn()) is False
     finally:
         conn.close()
 

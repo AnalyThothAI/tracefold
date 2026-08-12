@@ -545,6 +545,7 @@ function StoryCard({ story }: { story: NewsStory }) {
           <h2>{displayTitle}</h2>
         </Link>
         {summary ? <p className="news-story-summary">{summary}</p> : null}
+        <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
         <footer className="news-story-footer">
           <details className="news-story-why">
             <summary>
@@ -721,6 +722,7 @@ function StoryHero({ story }: { story: NewsStory }) {
         </details>
       ) : null}
       {summary ? <p className="news-story-lead">{summary}</p> : null}
+      <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
       <div className="news-story-hero-footer">
         <div className="news-evidence-metrics">
           <span>
@@ -757,6 +759,20 @@ function OpenNewsScoreBadge({ score }: { score: number | null | undefined }) {
       <span>OpenNews</span>
       <b>{formattedScore}</b>
     </span>
+  );
+}
+
+function RelatedAssets({ assets }: { assets: readonly { symbol: string }[] | null | undefined }) {
+  if (!assets?.length) return null;
+  return (
+    <div className="news-related-assets">
+      <span>关联资产</span>
+      <ul aria-label="关联资产">
+        {assets.map((asset, index) => (
+          <li key={`${asset.symbol}:${index}`}>{asset.symbol}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

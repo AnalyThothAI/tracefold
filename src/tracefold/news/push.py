@@ -15,6 +15,8 @@ PUSH_PAYLOAD_SCHEMA_VERSION = "news_story_push_v1"
 PUSH_PROVIDER_SCORE_THRESHOLD = 70.0
 PUSH_SOURCE_FRESHNESS_MS = 15 * 60 * 1_000
 
+_PUSH_SUPPRESSED_ASSET_SYMBOLS = frozenset({"cl", "xyz-cl"})
+
 _DELIVERY_MAX_ATTEMPTS = 6
 _DELIVERY_RETRY_DELAYS_MS = (5_000, 30_000, 120_000, 600_000, 1_800_000)
 _LEASE_MS = 60_000
@@ -152,6 +154,36 @@ class NewsStoryPush:
         source_payload = dict(claim["source_payload"])
         provider_evidence = dict(source_payload["provider_evidence"])
         published_at_ms = int(provider_evidence["published_at_ms"])
+        if _provider_assets_require_suppression(provider_evidence):
+            if claim.get("delivery_payload") is None:
+                suppressed = await self.db.run_business(
+                    "news_story_push_suppress_filtered",
+                    self._suppress_claimed_sync,
+                    story_id,
+                    lease_token,
+                    now_ms,
+                    operation_timeout_seconds=1.0,
+                )
+            else:
+                attempt = await self.db.run_business(
+                    "news_story_push_start_filtered_suppression",
+                    self._start_delivery_sync,
+                    story_id,
+                    lease_token,
+                    now_ms,
+                    operation_timeout_seconds=0.5,
+                )
+                if attempt is None:
+                    return False
+                suppressed = await self.db.run_business(
+                    "news_story_push_suppress_filtered",
+                    self._suppress_unsubmitted_sync,
+                    story_id,
+                    lease_token,
+                    now_ms,
+                    operation_timeout_seconds=0.5,
+                )
+            return bool(suppressed)
         if claim.get("delivery_payload") is None:
             deadline_ms = published_at_ms + PUSH_SOURCE_FRESHNESS_MS
             translation_attempted_at_ms = (
@@ -459,6 +491,8 @@ class NewsStoryPush:
                 score = float(evidence["provider_score"])
                 if score <= PUSH_PROVIDER_SCORE_THRESHOLD:
                     continue
+                if _provider_assets_require_suppression(evidence):
+                    continue
                 # Push is a live alert, not a recovery backfill. Suppress both
                 # the enablement snapshot and any provider score that arrives
                 # later for an old Item (for example through REST recovery).
@@ -741,6 +775,30 @@ def _source_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
             "last_published_at_ms": int(candidate["last_published_at_ms"]),
         },
     }
+
+
+def _provider_assets_require_suppression(evidence: Mapping[str, Any]) -> bool:
+    metadata = evidence.get("provider_metadata")
+    if not isinstance(metadata, Mapping):
+        return True
+    raw_assets = metadata.get("coins")
+    if not isinstance(raw_assets, list):
+        return True
+
+    symbols: set[str] = set()
+    for raw_asset in raw_assets:
+        if not isinstance(raw_asset, Mapping):
+            continue
+        raw_symbol = raw_asset.get("symbol")
+        if not isinstance(raw_symbol, str):
+            continue
+        raw_market_type = raw_asset.get("market_type")
+        if not isinstance(raw_market_type, str) or not raw_market_type.strip():
+            continue
+        symbol = raw_symbol.strip().casefold()
+        if symbol:
+            symbols.add(symbol)
+    return not symbols or symbols.issubset(_PUSH_SUPPRESSED_ASSET_SYMBOLS)
 
 
 def _receipt_payload(receipt: NewsPushReceipt) -> dict[str, Any]:

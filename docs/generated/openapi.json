@@ -8131,7 +8131,7 @@
         "title": "NewsOpenNewsStatusData",
         "type": "object"
       },
-      "NewsProviderCoinData": {
+      "NewsProviderAssetData": {
         "additionalProperties": false,
         "properties": {
           "grade": {
@@ -8194,7 +8194,7 @@
           "symbol",
           "market_type"
         ],
-        "title": "NewsProviderCoinData",
+        "title": "NewsProviderAssetData",
         "type": "object"
       },
       "NewsProviderEvidenceData": {
@@ -8230,11 +8230,11 @@
       "NewsProviderMetadataData": {
         "additionalProperties": false,
         "properties": {
-          "coins": {
+          "assets": {
             "anyOf": [
               {
                 "items": {
-                  "$ref": "#/components/schemas/NewsProviderCoinData"
+                  "$ref": "#/components/schemas/NewsProviderAssetData"
                 },
                 "type": "array"
               },
@@ -8242,7 +8242,7 @@
                 "type": "null"
               }
             ],
-            "title": "Coins"
+            "title": "Assets"
           },
           "grade": {
             "anyOf": [

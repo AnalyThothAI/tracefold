@@ -159,7 +159,7 @@ NewsCategory = Literal[
 NewsHealthStatus = Literal["ready", "warming", "degraded"]
 
 
-class NewsProviderCoinData(ExactApiSchema):
+class NewsProviderAssetData(ExactApiSchema):
     symbol: str
     market_type: str
     match: str | None = None
@@ -173,7 +173,7 @@ class NewsProviderMetadataData(ExactApiSchema):
     source: str | None = None
     signal: str | None = None
     grade: str | None = None
-    coins: list[NewsProviderCoinData] | None = None
+    assets: list[NewsProviderAssetData] | None = None
 
 
 class NewsProviderEvidenceData(ExactApiSchema):

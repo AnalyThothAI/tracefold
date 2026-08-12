@@ -2923,8 +2923,8 @@ export interface components {
             /** Source Id */
             source_id: string;
         };
-        /** NewsProviderCoinData */
-        NewsProviderCoinData: {
+        /** NewsProviderAssetData */
+        NewsProviderAssetData: {
             /** Grade */
             grade?: string | null;
             /** Market Type */
@@ -2948,8 +2948,8 @@ export interface components {
         };
         /** NewsProviderMetadataData */
         NewsProviderMetadataData: {
-            /** Coins */
-            coins?: components["schemas"]["NewsProviderCoinData"][] | null;
+            /** Assets */
+            assets?: components["schemas"]["NewsProviderAssetData"][] | null;
             /** Grade */
             grade?: string | null;
             /** Score */

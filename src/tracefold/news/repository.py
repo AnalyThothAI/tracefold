@@ -2899,6 +2899,34 @@ def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_provider_metadata(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    public = {
+        key: value[key]
+        for key in ("score", "source", "signal", "grade")
+        if key in value
+    }
+    coins = value.get("coins")
+    if isinstance(coins, list):
+        assets = [
+            {
+                key: coin[key]
+                for key in ("symbol", "market_type", "match", "score", "signal", "grade")
+                if key in coin
+            }
+            for coin in coins
+            if isinstance(coin, Mapping)
+            and isinstance(coin.get("symbol"), str)
+            and str(coin["symbol"]).strip()
+            and isinstance(coin.get("market_type"), str)
+            and str(coin["market_type"]).strip()
+        ]
+        if assets:
+            public["assets"] = assets
+    return public
+
+
 def _public_provider_evidence(selected: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if selected is None:
         return None
@@ -2908,7 +2936,7 @@ def _public_provider_evidence(selected: Mapping[str, Any] | None) -> dict[str, A
     return {
         "item_id": str(evidence["item_id"]),
         "url": str(evidence["url"]) if evidence.get("url") else None,
-        "provider_metadata": dict(evidence.get("provider_metadata") or {}),
+        "provider_metadata": _public_provider_metadata(evidence.get("provider_metadata")),
     }
 
 
@@ -2922,6 +2950,10 @@ def _public_push_delivery_state(selected: Mapping[str, Any] | None) -> str | Non
     if not _numeric_provider_score(score) or float(cast(int | float, score)) <= 70:
         return None
     status = selected.get("push_delivery_status")
+    if status is None and _provider_assets_are_push_filtered(
+        evidence.get("provider_metadata")
+    ):
+        return None
     if status in {"pending_translation", "pending_delivery", "retry_wait"}:
         return "pending"
     if status == "sent":
@@ -2931,6 +2963,24 @@ def _public_push_delivery_state(selected: Mapping[str, Any] | None) -> str | Non
     if status == "terminal":
         return "failed"
     return "pending"
+
+
+def _provider_assets_are_push_filtered(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return True
+    coins = value.get("coins")
+    if not isinstance(coins, list):
+        return True
+    symbols = {
+        str(coin["symbol"]).strip().casefold()
+        for coin in coins
+        if isinstance(coin, Mapping)
+        and isinstance(coin.get("symbol"), str)
+        and str(coin["symbol"]).strip()
+        and isinstance(coin.get("market_type"), str)
+        and str(coin["market_type"]).strip()
+    }
+    return not symbols or symbols.issubset({"cl", "xyz-cl"})
 
 
 def _public_push_error(value: str) -> str:
@@ -2944,7 +2994,7 @@ def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "item_id": str(row["item_id"]),
         "provider_record_id": (str(row["provider_record_id"]) if row.get("provider_record_id") is not None else None),
-        "provider_metadata": dict(row.get("provider_metadata") or {}),
+        "provider_metadata": _public_provider_metadata(row.get("provider_metadata")),
         "source_id": str(row["source_id"]),
         "source_name": str(row["source_name"]),
         "reporting_origin": str(row["reporting_origin"]),

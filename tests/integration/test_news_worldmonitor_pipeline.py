@@ -807,6 +807,11 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         assert detail is not None
         assert detail["members"][0]["provider_record_id"] == "wire-1"
         assert detail["members"][0]["provider_metadata"]["score"] == 82
+        assert detail["members"][0]["provider_metadata"]["assets"] == [
+            {"symbol": "BTC", "market_type": "spot", "match": "Bitcoin"}
+        ]
+        assert detail["members"][0]["provider_metadata"] == story["provider_evidence"]["provider_metadata"]
+        assert "coins" not in detail["members"][0]["provider_metadata"]
 
         sources = repository.list_sources()["items"]
         assert len(sources) == 1

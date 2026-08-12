@@ -297,12 +297,13 @@ UTC half-hour slot
   -> /api/news/brief
 
 Every 10 seconds, current Story with max persisted OpenNews provider score > 70
+  -> require non-empty provider assets and exclude CL-family-only sets
   -> News-owned durable push candidate
   -> suppress first-enable/pre-baseline/stale (>15 minute) evidence
   -> otherwise freeze one highest-score Item
   -> one Chinese-title attempt (7.5 s request, 8 s total) or immediate original fallback
   -> freeze bilingual/original presentation exactly once
-  -> compact selected-Item coin/score body + optional original-link button
+  -> compact selected-Item `关联资产`/score body + optional original-link button
   -> signed or explicitly unsigned Feishu card through finite-operation adapter
   -> explicit success or bounded durable retry/terminal state
 ```
@@ -368,9 +369,12 @@ when cluster membership changes the current Story ID. A newly ingested report mu
 enter a Story through the 60-second projection before it can qualify; a later
 `news.ai_update` on an existing Story no longer waits for another Story rebuild.
 Push is a live alert rather than a recovery replay: the selected Item must be
-newer than the enablement baseline and at most 15 minutes old. A stale Item that
-only becomes scored through REST overlap is frozen as suppressed and performs
-no outbound request. Each frozen retry checks the same deadline again in the
+newer than the enablement baseline, at most 15 minutes old, and carry at least
+one non-empty provider asset symbol. A normalized set contained entirely in
+`{CL, XYZ-CL}` is also excluded. These exclusions write no delivery candidate;
+mixed sets such as `{CL, BTC}` continue normally, and News reads remain
+unchanged. A stale Item that only becomes scored through REST overlap is frozen
+as suppressed and performs no outbound request. Each frozen retry checks the same deadline again in the
 finite-operation pre-submit phase; an aged retry is atomically suppressed and
 never reaches Feishu.
 The selected-Item ledger lookup is index-backed. It is intentionally non-unique
@@ -378,9 +382,9 @@ so historical duplicate audit rows remain intact; candidate insertion still
 writes zero new rows for any already-ledgered selected Item.
 
 `published_at_ms` is the provider's article clock, not the score-eligibility
-clock. OpenNews can publish a report first and later attach `aiRating` and
-`coins` through `news.ai_update`; the Story may therefore already exist while
-push remains ineligible. `provider_score_updated_at_ms` changes only when the
+clock. OpenNews can publish a report first and later attach `aiRating` and its
+raw `coins` asset annotation through `news.ai_update`; the Story may therefore
+already exist while push remains ineligible. `provider_score_updated_at_ms` changes only when the
 current numeric score fact changes. Story projection writes cannot move it, and
 candidate creation freezes it as `threshold_observed_at_ms`. Therefore
 `threshold -> sent|suppressed|terminal` is the local end-to-end interval from
@@ -449,12 +453,13 @@ but unfrozen row never resubmits translation: it freezes an interrupted
 original-title fallback and either delivers or age-suppresses that envelope. A
 valid Chinese result becomes the header and the original
 stays visible; Chinese input bypasses the endpoint. Timeout, invalid output,
-changed numeric or token anchors, and titles over 500 graphemes immediately
+changed numeric or asset-symbol anchors, and titles over 500 graphemes immediately
 freeze the original fallback and continue delivery. The compact body shows its
-provider-order, case-insensitively deduplicated coin symbols and provider score,
+provider-order, case-insensitively deduplicated asset symbols under `关联资产`
+and its provider score,
 plus one
-`查看原文` button when a canonical HTTP(S) Item URL exists. Missing symbols are
-shown as `未提供`; a missing URL omits the button. No summary, signal, grade,
+`查看原文` button when a canonical HTTP(S) Item URL exists. A missing URL omits
+the button. No summary, signal, grade,
 Story score, source, or publication time is rendered. Status and logs expose
 only configured booleans and sanitized error codes, never the webhook or
 signing secret. In `tracefold config`, `translation_enabled` combines Push

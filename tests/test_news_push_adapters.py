@@ -409,7 +409,7 @@ def test_feishu_news_push_renders_compact_evidence_v2_card() -> None:
                     "tag": "div",
                     "text": {
                         "tag": "plain_text",
-                        "content": "代币：BTC · ETH\nOpenNews 评分：91",
+                        "content": "关联资产：BTC · ETH\nOpenNews 评分：91",
                     },
                     "margin": "0px 0px 0px 0px",
                 },
@@ -501,7 +501,7 @@ def test_feishu_news_push_translates_once_and_keeps_original_visible() -> None:
     body_text = [element["text"]["content"] for element in card["body"]["elements"] if element.get("tag") == "div"]
     assert body_text == [
         "自动翻译，仅供参考\n原文：Bitcoin ETF records 10% inflows",
-        "代币：BTC · ETH\nOpenNews 评分：91",
+        "关联资产：BTC · ETH\nOpenNews 评分：91",
     ]
     assert len(translation_requests) == 1
     request_payload = json.loads(translation_requests[0].content)
@@ -930,7 +930,7 @@ def test_feishu_news_push_uses_english_original_without_model_work() -> None:
             "tag": "div",
             "text": {
                 "tag": "plain_text",
-                "content": "代币：BTC · ETH\nOpenNews 评分：91",
+                "content": "关联资产：BTC · ETH\nOpenNews 评分：91",
             },
             "margin": "0px 0px 0px 0px",
         },
@@ -950,10 +950,10 @@ def test_feishu_news_push_uses_chinese_original_unchanged() -> None:
 
     card = rendered["card"]
     assert card["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
-    assert card["body"]["elements"][0]["text"]["content"] == ("代币：BTC · ETH\nOpenNews 评分：91")
+    assert card["body"]["elements"][0]["text"]["content"] == ("关联资产：BTC · ETH\nOpenNews 评分：91")
 
 
-def test_feishu_news_push_coin_body_preserves_order_and_deduplicates() -> None:
+def test_feishu_news_push_asset_body_preserves_order_and_deduplicates() -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
@@ -974,11 +974,11 @@ def test_feishu_news_push_coin_body_preserves_order_and_deduplicates() -> None:
         delivery.close()
 
     assert rendered["card"]["header"]["title"]["content"] == "Bitcoin ETF records inflows"
-    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("代币：NEAR · BTC\nOpenNews 评分：91")
+    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("关联资产：NEAR · BTC\nOpenNews 评分：91")
 
 
 @pytest.mark.parametrize("coins", (None, [], "BTC", [{"market_type": "spot"}]))
-def test_feishu_news_push_without_valid_coins_marks_them_unavailable(coins: object) -> None:
+def test_feishu_news_push_without_valid_assets_marks_them_unavailable(coins: object) -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
@@ -991,7 +991,7 @@ def test_feishu_news_push_without_valid_coins_marks_them_unavailable(coins: obje
         delivery.close()
 
     assert rendered["card"]["header"]["title"]["content"] == "Bitcoin ETF records inflows"
-    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("代币：未提供\nOpenNews 评分：91")
+    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("关联资产：未提供\nOpenNews 评分：91")
 
 
 @pytest.mark.parametrize(
@@ -1068,7 +1068,7 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     assert sent_cards == [frozen["card"], frozen["card"]]
     assert all(card["header"]["title"]["content"] == "Bitcoin ETF records inflows" for card in sent_cards)
     assert all(
-        card["body"]["elements"][0]["text"]["content"] == "代币：BTC · ETH\nOpenNews 评分：91" for card in sent_cards
+        card["body"]["elements"][0]["text"]["content"] == "关联资产：BTC · ETH\nOpenNews 评分：91" for card in sent_cards
     )
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
 

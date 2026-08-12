@@ -166,10 +166,11 @@ polling makes a later non-empty selection in the same half hour eligible, with
 no wake service or compatibility path.
 Push is a separate News-owned delivery state machine with a code-owned 10-second
 persisted-evidence reconcile: initial
-enablement suppresses the current eligible baseline, later strict
-score-greater-than-70 crossings freeze one highest-scored Item and send one
-optionally signed Feishu card containing the selected Item's original OpenNews
-headline plus a compact body with its coins, provider score, and optional
+enablement suppresses the current eligible baseline; later strict
+score-greater-than-70 crossings with at least one provider asset symbol, except
+CL-family-only sets, freeze one highest-scored Item and send one optionally
+signed Feishu card containing the selected Item's original OpenNews headline
+plus a compact body with its `关联资产`, provider score, and optional
 original-link button, with durable at-least-once retries. It is not a
 generic Notifications product or item-level analysis path.
 Changing cadence does not repair source admission, Story identity, or Brief
