@@ -23,6 +23,8 @@ PUBLIC_NEWS_INTERFACE = {
     "NewsFeedReader",
     "NewsPushDelivery",
     "NewsPushDeliveryError",
+    "NewsPushEligibility",
+    "NewsPushIneligibleReason",
     "NewsPushReceipt",
     "NewsSourceDefinition",
     "NewsStoryProjection",
@@ -32,6 +34,7 @@ PUBLIC_NEWS_INTERFACE = {
     "PublicInsightsCategory",
     "PublicInsightsThreatLevel",
     "ThreatLevel",
+    "evaluate_news_push_eligibility",
 }
 
 

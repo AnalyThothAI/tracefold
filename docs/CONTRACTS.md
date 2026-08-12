@@ -299,9 +299,20 @@ The News public surface is exactly five read-only routes:
   or a commodity such as oil; Tracefold does not infer or correct its class.
   The browser does not cluster, score, select the maximum, classify assets, or
   reorder them.
-  `push_delivery_state` remains null for a non-eligible Story and otherwise one
-  of `pending`, `sent`, `suppressed`, or `failed`, derived at read time from the
-  current selected Item and the existing durable delivery ledger.
+  Each Story carries an exact `notification` object. `eligible` is the current
+  Story Push qualification, and `ineligible_reason` is null when eligible or
+  exactly `disabled|score_threshold|no_asset|cl_family_only|baseline|stale`.
+  The reason precedence is score threshold, asset presence, CL-family-only
+  noise, runtime enablement, durable first-enable baseline, then the 15-minute
+  Article deadline; an Article exactly 15 minutes old is still eligible.
+  `delivery_state` is independently and exclusively derived from the durable
+  ledger as `not_created|pending|sent|suppressed|failed`. Thus an ineligible
+  Story may still be `sent`, `suppressed`, `failed`, or `pending`; a later
+  score change, missing current provider evidence, expiry, or disabled runtime
+  never erases a historical delivery fact. Current membership also resolves
+  the existing selected-Item ledger after a Story-ID change. The object is a
+  read-time Story Push projection, not a generic Notifications product, and
+  the browser does not reproduce its policy.
 - `GET /api/news/stories/{story_id}` returns one current Story and its complete
   NewsItem evidence. It exposes representative/scoring item identity,
   title/reporting-origin/time, classification, reporting-origin count,

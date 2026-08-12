@@ -12,7 +12,7 @@ from threading import BoundedSemaphore
 from typing import Any, Protocol, cast
 
 from psycopg import OperationalError
-from psycopg.errors import LockNotAvailable, QueryCanceled, TransactionTimeout
+from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolClosed, PoolTimeout
 
 from tracefold.app.repositories import RepositorySession, repositories_for_connection
@@ -20,7 +20,7 @@ from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import create_pool, with_password_from_file
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
-    ResourceOperationOverrun,
+    await_concurrent_future,
 )
 from tracefold.platform.validation import require_nonnegative_float
 
@@ -318,22 +318,20 @@ class WorkerDatabase:
         )
         if on_submitted is not None:
             on_submitted()
-        done, _ = await asyncio.wait(
-            {wrapped},
-            timeout=max(
-                0.001,
-                float(operation_timeout_seconds)
-                + (
-                    _WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS
-                    if capability == "database_business"
-                    else _WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS
-                ),
-            ),
-        )
-        if not done:
-            raise ResourceOperationOverrun(f"resource_operation_overrun:db:{_normalize_operation_name(operation_name)}")
         try:
-            return await wrapped
+            return await await_concurrent_future(
+                underlying,
+                wrapped,
+                timeout_seconds=(
+                    float(operation_timeout_seconds)
+                    + (
+                        _WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS
+                        if capability == "database_business"
+                        else _WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS
+                    )
+                ),
+                overrun_code=f"resource_operation_overrun:db:{_normalize_operation_name(operation_name)}",
+            )
         except LockNotAvailable as exc:
             raise ResourceAdmissionTimeout(
                 f"worker_database_lock_timeout:{_normalize_operation_name(operation_name)}"
@@ -345,6 +343,12 @@ class WorkerDatabase:
         except TransactionTimeout as exc:
             raise ResourceAdmissionTimeout(
                 f"worker_database_transaction_timeout:{_normalize_operation_name(operation_name)}"
+            ) from exc
+        except IdleInTransactionSessionTimeout as exc:
+            if capability != "database_business":
+                raise
+            raise ResourceAdmissionTimeout(
+                f"worker_database_idle_transaction_timeout:{_normalize_operation_name(operation_name)}"
             ) from exc
         except PoolTimeout as exc:
             if capability != "database_business":

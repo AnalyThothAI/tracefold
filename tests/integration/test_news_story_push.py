@@ -50,10 +50,7 @@ def _event(
                     "signal": "long",
                     "grade": "A",
                 },
-                "coins": [
-                    {"symbol": symbol, "market_type": "spot"}
-                    for symbol in asset_symbols
-                ],
+                "coins": [{"symbol": symbol, "market_type": "spot"} for symbol in asset_symbols],
             },
         }
     )
@@ -75,10 +72,7 @@ def _annotation(
         "grade": "A+",
     }
     if asset_symbols is not None:
-        params["coins"] = [
-            {"symbol": symbol, "market_type": "spot"}
-            for symbol in asset_symbols
-        ]
+        params["coins"] = [{"symbol": symbol, "market_type": "spot"} for symbol in asset_symbols]
     event = parse_opennews_message(
         {
             "method": "news.ai_update",
@@ -100,30 +94,7 @@ def _push_health(conn: Any, *, now_ms: int) -> dict[str, Any]:
     return NewsRepository(conn).push_health_snapshot(now_ms=now_ms)
 
 
-def _replace_ledger_asset_symbols(conn: Any, asset_symbols: tuple[str, ...]) -> None:
-    row = conn.execute(
-        "SELECT story_id, source_payload FROM news_push_deliveries"
-    ).fetchone()
-    source_payload = dict(row["source_payload"])
-    evidence = dict(source_payload["provider_evidence"])
-    metadata = dict(evidence["provider_metadata"])
-    if asset_symbols:
-        metadata["coins"] = [
-            {"symbol": symbol, "market_type": "spot"}
-            for symbol in asset_symbols
-        ]
-    else:
-        metadata.pop("coins", None)
-    evidence["provider_metadata"] = metadata
-    source_payload["provider_evidence"] = evidence
-    conn.execute(
-        "UPDATE news_push_deliveries SET source_payload = %s WHERE story_id = %s",
-        (Jsonb(source_payload), row["story_id"]),
-    )
-    conn.commit()
-
-
-def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() -> None:
+def test_story_push_contexts_select_numeric_max_then_newest_then_item_id() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -170,7 +141,7 @@ def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() 
         conn.execute("UPDATE news_items SET provider_metadata = '{}'::jsonb WHERE provider_record_id = 'no-score'")
         conn.commit()
 
-        selected = next(iter(repository.story_provider_evidence().values()))
+        selected = next(iter(repository.story_push_contexts().values()))
         evidence = selected["provider_evidence"]
 
         assert evidence["item_id"] == tie_ids[0]
@@ -179,7 +150,7 @@ def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() 
         assert evidence["provider_metadata"]["signal"] == "long"
         assert set(evidence) >= {"item_id", "url", "provider_metadata"}
 
-        feed = repository.list_feed()
+        feed = repository.list_feed(push_enabled=False, now_ms=BASE_MS + 10)
         scored_story = next(story for story in feed["stories"] if story["title"] == title)
         no_score_story = next(
             story for story in feed["stories"] if story["title"] == "Volcano closes an airport runway"
@@ -202,7 +173,11 @@ def test_story_provider_evidence_selects_numeric_max_then_newest_then_item_id() 
         }
         assert no_score_story["provider_evidence"] is None
 
-        detail = repository.get_story(story_id=scored_story["story_id"])
+        detail = repository.get_story(
+            story_id=scored_story["story_id"],
+            push_enabled=False,
+            now_ms=BASE_MS + 10,
+        )
         assert detail is not None
         assert detail["provider_evidence"] == scored_story["provider_evidence"]
     finally:
@@ -229,12 +204,12 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
             )
             rebuild_news_projection(repository, now_ms=BASE_MS + 10)
 
-        initial = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
+        initial = next(iter(repository.story_push_contexts().values()))["provider_evidence"]
         assert initial["threshold_observed_at_ms"] == BASE_MS + 10
 
         with conn.transaction():
             rebuild_news_projection(repository, now_ms=BASE_MS + 7_200_000)
-        after_story_write = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
+        after_story_write = next(iter(repository.story_push_contexts().values()))["provider_evidence"]
         assert after_story_write["threshold_observed_at_ms"] == BASE_MS + 10
 
         with conn.transaction():
@@ -243,7 +218,7 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
                 events=(_annotation("score-clock", score=82),),
                 observed_at_ms=BASE_MS + 7_200_010,
             )
-        qualified = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
+        qualified = next(iter(repository.story_push_contexts().values()))["provider_evidence"]
         assert qualified["threshold_observed_at_ms"] == BASE_MS + 7_200_010
 
         with conn.transaction():
@@ -252,7 +227,7 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
                 events=(_annotation("score-clock", score=82),),
                 observed_at_ms=BASE_MS + 7_200_020,
             )
-        duplicate = next(iter(repository.story_provider_evidence().values()))["provider_evidence"]
+        duplicate = next(iter(repository.story_push_contexts().values()))["provider_evidence"]
         assert duplicate["threshold_observed_at_ms"] == BASE_MS + 7_200_010
     finally:
         conn.close()
@@ -295,7 +270,7 @@ def test_selected_item_score_change_keeps_the_story_ledger_state(
             )
             rebuild_news_projection(repository, now_ms=BASE_MS + 3)
 
-        initial = next(iter(repository.story_provider_evidence().values()))
+        initial = next(iter(repository.story_push_contexts().values()))
         story_id = initial["story_id"]
         assert initial["provider_evidence"]["provider_score"] == 80
         assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 4)) == {
@@ -313,12 +288,16 @@ def test_selected_item_score_change_keeps_the_story_ledger_state(
                 observed_at_ms=BASE_MS + 5,
             )
 
-        selected_later = repository.story_provider_evidence()[story_id]
+        selected_later = repository.story_push_contexts()[story_id]
         assert selected_later["provider_evidence"]["provider_score"] == 90
         assert selected_later["push_delivery_status"] == "sent"
-        detail = repository.get_story(story_id=story_id)
+        detail = repository.get_story(
+            story_id=story_id,
+            push_enabled=True,
+            now_ms=BASE_MS + 5,
+        )
         assert detail is not None
-        assert detail["push_delivery_state"] == "sent"
+        assert detail["notification"]["delivery_state"] == "sent"
         assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 6)) == {
             "inserted": 0,
             "suppressed": 0,
@@ -421,14 +400,8 @@ def test_reconcile_admits_only_candidates_with_non_cl_family_assets(
         }
         assert asyncio.run(runtime.turn()) is (not should_suppress)
 
-        row = conn.execute(
-            "SELECT status, translation_status FROM news_push_deliveries"
-        ).fetchone()
-        expected_row = (
-            None
-            if should_suppress
-            else {"status": "sent", "translation_status": "not_needed"}
-        )
+        row = conn.execute("SELECT status, translation_status FROM news_push_deliveries").fetchone()
+        expected_row = None if should_suppress else {"status": "sent", "translation_status": "not_needed"}
         assert row == expected_row
         assert delivery.prepare_calls == int(not should_suppress)
         assert len(delivery.payloads) == int(not should_suppress)
@@ -469,9 +442,7 @@ def test_skipped_candidate_can_qualify_after_provider_assets_update(
             "suppressed": 0,
             "terminalized": 0,
         }
-        assert conn.execute(
-            "SELECT count(*) AS count FROM news_push_deliveries"
-        ).fetchone()["count"] == 0
+        assert conn.execute("SELECT count(*) AS count FROM news_push_deliveries").fetchone()["count"] == 0
 
         with conn.transaction():
             repository.record_opennews_events(
@@ -492,9 +463,7 @@ def test_skipped_candidate_can_qualify_after_provider_assets_update(
             "terminalized": 0,
         }
         assert asyncio.run(runtime.turn()) is True
-        assert conn.execute(
-            "SELECT status FROM news_push_deliveries"
-        ).fetchone()["status"] == "sent"
+        assert conn.execute("SELECT status FROM news_push_deliveries").fetchone()["status"] == "sent"
         assert delivery.prepare_calls == 1
         assert len(delivery.payloads) == 1
     finally:
@@ -530,12 +499,30 @@ def test_existing_unfrozen_delivery_with_filtered_assets_is_suppressed(
             )
             rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2))["inserted"] == 1
-        _replace_ledger_asset_symbols(conn, asset_symbols)
+        with conn.transaction():
+            if asset_symbols:
+                repository.record_opennews_events(
+                    source=opennews_source(),
+                    events=(
+                        _annotation(
+                            "existing-unfrozen",
+                            score=88,
+                            asset_symbols=asset_symbols,
+                        ),
+                    ),
+                    observed_at_ms=BASE_MS + 3,
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE news_items
+                       SET provider_metadata = provider_metadata - 'coins'
+                     WHERE provider_record_id = 'existing-unfrozen'
+                    """
+                )
 
         assert asyncio.run(runtime.turn()) is True
-        assert conn.execute(
-            "SELECT status, translation_status FROM news_push_deliveries"
-        ).fetchone() == {
+        assert conn.execute("SELECT status, translation_status FROM news_push_deliveries").fetchone() == {
             "status": "suppressed",
             "translation_status": "not_requested",
         }
@@ -574,13 +561,25 @@ def test_existing_frozen_retry_with_cl_family_only_assets_is_suppressed_before_s
             rebuild_news_projection(repository, now_ms=BASE_MS + 1)
         asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2))
         assert asyncio.run(runtime.turn()) is True
-        assert conn.execute(
-            "SELECT status, delivery_attempts FROM news_push_deliveries"
-        ).fetchone() == {"status": "retry_wait", "delivery_attempts": 1}
+        assert conn.execute("SELECT status, delivery_attempts FROM news_push_deliveries").fetchone() == {
+            "status": "retry_wait",
+            "delivery_attempts": 1,
+        }
         assert delivery.prepare_calls == 1
         assert len(delivery.payloads) == 1
 
-        _replace_ledger_asset_symbols(conn, ("CL", "XYZ-CL"))
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _annotation(
+                        "existing-frozen-retry",
+                        score=88,
+                        asset_symbols=("CL", "XYZ-CL"),
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 3,
+            )
         clock["now_ms"] += 5_000
 
         assert asyncio.run(runtime.turn()) is True
@@ -1226,7 +1225,7 @@ def test_story_identity_change_does_not_requalify_the_same_selected_item() -> No
             )
             rebuild_news_projection(repository, now_ms=BASE_MS)
 
-        initial_evidence = repository.story_provider_evidence()
+        initial_evidence = repository.story_push_contexts()
         assert len(initial_evidence) == 1
         original_story_id, original = next(iter(initial_evidence.items()))
         selected_item_id = original["provider_evidence"]["item_id"]
@@ -1244,7 +1243,7 @@ def test_story_identity_change_does_not_requalify_the_same_selected_item() -> No
         after_expiry_ms = BASE_MS + (2 * hour_ms)
         with conn.transaction():
             rebuild_news_projection(repository, now_ms=after_expiry_ms)
-        current_evidence = repository.story_provider_evidence()
+        current_evidence = repository.story_push_contexts()
         assert len(current_evidence) == 1
         new_story_id, current = next(iter(current_evidence.items()))
         assert new_story_id != original_story_id
@@ -1317,7 +1316,7 @@ def test_sent_item_is_not_resent_when_its_story_identity_changes(
             )
             rebuild_news_projection(repository, now_ms=first_projection_ms)
 
-        initial_evidence = repository.story_provider_evidence()
+        initial_evidence = repository.story_push_contexts()
         assert len(initial_evidence) == 1
         original_story_id, original = next(iter(initial_evidence.items()))
         selected_item_id = original["provider_evidence"]["item_id"]
@@ -1336,7 +1335,7 @@ def test_sent_item_is_not_resent_when_its_story_identity_changes(
         clock["now_ms"] = BASE_MS + 121_000
         with conn.transaction():
             rebuild_news_projection(repository, now_ms=clock["now_ms"])
-        current_evidence = repository.story_provider_evidence()
+        current_evidence = repository.story_push_contexts()
         assert len(current_evidence) == 1
         new_story_id, current = next(iter(current_evidence.items()))
         assert new_story_id != original_story_id

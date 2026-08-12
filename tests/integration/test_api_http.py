@@ -14,6 +14,7 @@ from tests.postgres_test_utils import (
     postgres_settings_storage,
     prepare_postgres_database,
 )
+from tracefold.app.http import routes_news
 from tracefold.app.http.app import create_app
 from tracefold.app.http.responses import _json
 from tracefold.app.repositories import repositories_for_connection
@@ -1312,9 +1313,20 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
     assert disabled_push["latest_sent_at_ms"] == now_ms + 3
 
 
-def test_api_news_feed_derives_push_delivery_state_from_selected_provider_evidence(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-    now_ms = int(time.time() * 1000)
+def test_api_news_notification_separates_current_eligibility_from_durable_delivery(
+    tmp_path,
+    monkeypatch,
+):
+    clock = {"now_ms": 1_800_000_000_000}
+    monkeypatch.setattr(routes_news, "_now_ms", lambda: clock["now_ms"])
+    settings = make_settings(tmp_path)
+    settings.news.push = type(settings.news.push)(
+        enabled=True,
+        feishu_webhook_url=("https://open.feishu.cn/open-apis/bot/v2/hook/http-notification-test"),
+    )
+    app = create_app(settings=settings)
+    now_ms = clock["now_ms"]
+    baseline_at_ms = now_ms - 2 * 60 * 60 * 1_000
     source = opennews_source()
 
     with TestClient(app) as client:
@@ -1379,31 +1391,95 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
                             ],
                         },
                     ),
+                    _opennews_event(
+                        provider_record_id="push-state-baseline",
+                        title="Shipping authority publishes a port inspection schedule",
+                        description="The authority published its inspection timetable.",
+                        published_at_ms=baseline_at_ms,
+                        reporting_origin="shipping-authority",
+                        provider_metadata={
+                            "score": 94,
+                            "coins": [{"symbol": "ETH", "market_type": "spot"}],
+                        },
+                    ),
+                    _opennews_event(
+                        provider_record_id="push-state-stale",
+                        title="Energy producer announces a completed facility inspection",
+                        description="The producer completed the scheduled facility review.",
+                        published_at_ms=(now_ms - 15 * 60 * 1_000 - 1),
+                        reporting_origin="energy-producer",
+                        provider_metadata={
+                            "score": 95,
+                            "coins": [{"symbol": "SOL", "market_type": "spot"}],
+                        },
+                    ),
+                    _opennews_event(
+                        provider_record_id="push-state-boundary",
+                        title="Treasury announces a digital asset custody consultation",
+                        description="The consultation covers institutional custody standards.",
+                        published_at_ms=now_ms - 15 * 60 * 1_000,
+                        reporting_origin="treasury",
+                        provider_metadata={
+                            "score": 96,
+                            "coins": [{"symbol": "XRP", "market_type": "spot"}],
+                        },
+                    ),
                 ),
                 observed_at_ms=now_ms,
+            )
+            repos.conn.execute(
+                """
+                UPDATE news_push_state
+                   SET baseline_at_ms = %s, updated_at_ms = %s
+                 WHERE singleton_key = 'current'
+                """,
+                (baseline_at_ms, now_ms),
             )
             _rebuild_news_projection(repos, now_ms=now_ms)
 
         headers = {"Authorization": "Bearer secret"}
-        initial = client.get("/api/news/feed", headers=headers).json()["data"]["stories"]
+        initial_response = client.get("/api/news/feed", headers=headers)
+        initial = initial_response.json()["data"]["stories"]
         high = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 91)
         low = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 70)
-        assetless = next(
-            story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 92
-        )
-        cl_only = next(
-            story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 93
-        )
+        assetless = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 92)
+        cl_only = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 93)
         malformed_assets = next(
             story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 89
         )
+        baseline = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 94)
+        stale = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 95)
+        boundary = next(story for story in initial if story["provider_evidence"]["provider_metadata"]["score"] == 96)
 
-        assert high["push_delivery_state"] == "pending"
-        assert low["push_delivery_state"] is None
-        assert assetless["push_delivery_state"] is None
-        assert cl_only["push_delivery_state"] is None
+        assert high["notification"] == {
+            "eligible": True,
+            "ineligible_reason": None,
+            "delivery_state": "not_created",
+        }
+        assert low["notification"] == {
+            "eligible": False,
+            "ineligible_reason": "score_threshold",
+            "delivery_state": "not_created",
+        }
+        assert assetless["notification"] == {
+            "eligible": False,
+            "ineligible_reason": "no_asset",
+            "delivery_state": "not_created",
+        }
+        assert cl_only["notification"] == {
+            "eligible": False,
+            "ineligible_reason": "cl_family_only",
+            "delivery_state": "not_created",
+        }
         assert "assets" not in malformed_assets["provider_evidence"]["provider_metadata"]
-        assert malformed_assets["push_delivery_state"] is None
+        assert malformed_assets["notification"]["ineligible_reason"] == "no_asset"
+        assert baseline["notification"]["ineligible_reason"] == "baseline"
+        assert stale["notification"]["ineligible_reason"] == "stale"
+        assert boundary["notification"] == {
+            "eligible": True,
+            "ineligible_reason": None,
+            "delivery_state": "not_created",
+        }
 
         with write_repositories() as repos, repos.transaction():
             assert repos.news.insert_push_candidate(
@@ -1417,7 +1493,11 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
             )
 
         pending = client.get(f"/api/news/stories/{high['story_id']}", headers=headers).json()["data"]
-        assert pending["push_delivery_state"] == "pending"
+        assert pending["notification"] == {
+            "eligible": True,
+            "ineligible_reason": None,
+            "delivery_state": "pending",
+        }
 
         expected_by_ledger_status = {
             "retry_wait": "pending",
@@ -1432,17 +1512,17 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
                     (ledger_status, high["story_id"]),
                 )
             detail = client.get(f"/api/news/stories/{high['story_id']}", headers=headers).json()["data"]
-            assert detail["push_delivery_state"] == expected
+            assert detail["notification"]["delivery_state"] == expected
 
         with write_repositories() as repos, repos.transaction():
             repos.conn.execute(
+                "UPDATE news_push_deliveries SET status = 'sent' WHERE story_id = %s",
+                (high["story_id"],),
+            )
+            repos.conn.execute(
                 """
                 UPDATE news_items
-                   SET provider_metadata = jsonb_set(
-                         provider_metadata,
-                         '{score}',
-                         '70'::jsonb
-                       ),
+                   SET provider_metadata = '{}'::jsonb,
                        provider_score_updated_at_ms = %s
                  WHERE item_id = %s
                 """,
@@ -1452,7 +1532,93 @@ def test_api_news_feed_derives_push_delivery_state_from_selected_provider_eviden
             f"/api/news/stories/{high['story_id']}",
             headers=headers,
         ).json()["data"]
-        assert low_with_historical_ledger["push_delivery_state"] is None
+        assert low_with_historical_ledger["provider_evidence"] is None
+        assert low_with_historical_ledger["notification"] == {
+            "eligible": False,
+            "ineligible_reason": "score_threshold",
+            "delivery_state": "sent",
+        }
+
+        with write_repositories() as repos, repos.transaction():
+            assert repos.news.insert_push_candidate(
+                story_id="f" * 64,
+                selected_item_id=boundary["provider_evidence"]["item_id"],
+                provider_score=96,
+                threshold_observed_at_ms=now_ms,
+                source_payload={"provider_evidence": boundary["provider_evidence"]},
+                suppressed=False,
+                now_ms=now_ms,
+            )
+            repos.conn.execute(
+                "UPDATE news_push_deliveries SET status = 'sent' WHERE story_id = %s",
+                ("f" * 64,),
+            )
+        rebound = client.get(
+            f"/api/news/stories/{boundary['story_id']}",
+            headers=headers,
+        ).json()["data"]
+        assert rebound["notification"]["delivery_state"] == "sent"
+
+        settings.news.push = type(settings.news.push)()
+        disabled = client.get(
+            f"/api/news/stories/{boundary['story_id']}",
+            headers=headers,
+        ).json()["data"]
+        assert disabled["notification"] == {
+            "eligible": False,
+            "ineligible_reason": "disabled",
+            "delivery_state": "sent",
+        }
+
+        settings.news.push = type(settings.news.push)(
+            enabled=True,
+            feishu_webhook_url=("https://open.feishu.cn/open-apis/bot/v2/hook/http-notification-test"),
+        )
+        at_boundary = client.get("/api/news/feed", headers=headers)
+        boundary_etag = at_boundary.headers["etag"]
+        boundary_before_expiry = next(
+            story for story in at_boundary.json()["data"]["stories"] if story["story_id"] == boundary["story_id"]
+        )
+        assert boundary_before_expiry["notification"] == {
+            "eligible": True,
+            "ineligible_reason": None,
+            "delivery_state": "sent",
+        }
+        clock["now_ms"] += 1
+        revalidated = client.get(
+            "/api/news/feed",
+            headers={**headers, "If-None-Match": boundary_etag},
+        )
+        assert revalidated.status_code == 200
+        assert revalidated.headers["etag"] != boundary_etag
+        aged_boundary = next(
+            story for story in revalidated.json()["data"]["stories"] if story["story_id"] == boundary["story_id"]
+        )
+        assert aged_boundary["notification"] == {
+            "eligible": False,
+            "ineligible_reason": "stale",
+            "delivery_state": "sent",
+        }
+
+        with write_repositories() as repos, repos.transaction():
+            repos.conn.execute(
+                """
+                UPDATE news_items
+                   SET provider_metadata = '{}'::jsonb,
+                       provider_score_updated_at_ms = %s
+                 WHERE item_id = %s
+                """,
+                (now_ms + 1, boundary["provider_evidence"]["item_id"]),
+            )
+        rebound_without_current_evidence = client.get(
+            f"/api/news/stories/{boundary['story_id']}",
+            headers=headers,
+        ).json()["data"]
+        assert rebound_without_current_evidence["notification"] == {
+            "eligible": False,
+            "ineligible_reason": "score_threshold",
+            "delivery_state": "sent",
+        }
 
 
 def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
@@ -1524,7 +1690,7 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
 
         with write_repositories() as repos, repos.transaction():
             repos.conn.execute("DELETE FROM workers_runtime")
-            evidence = next(iter(repos.news.story_provider_evidence().values()))
+            evidence = next(iter(repos.news.story_push_contexts().values()))
             selected = evidence["provider_evidence"]
             for index, duration_ms in enumerate((1_000, 4_000), start=1):
                 story_id = f"{index:x}" * 64

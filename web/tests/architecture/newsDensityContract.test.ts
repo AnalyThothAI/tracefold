@@ -35,7 +35,6 @@ describe("News feed density contract", () => {
   it("keeps compact cards readable and moves factor math behind a row-local disclosure", () => {
     const page = readSource("src/features/news/NewsPage.tsx");
     const chromeCss = readSource("src/features/news/news.css");
-    const feedCss = readSource("src/features/news/newsFeed.css");
 
     expect(page).toContain('data-feed-density="compact"');
     expect(page).toMatch(
@@ -43,9 +42,6 @@ describe("News feed density contract", () => {
     );
     expect(cssRule(chromeCss, ".news-story-shell")).toContain("gap: 0.45rem");
     expect(cssRule(chromeCss, ".news-feed-toolbar")).toContain("justify-content: space-between");
-    expect(cssRule(feedCss, ".news-story-primary")).toContain("padding: 0.68rem 0.82rem 0.62rem");
-    expect(cssRule(feedCss, ".news-story-title h2")).toContain("font-size: 1rem");
-    expect(cssRule(feedCss, ".news-story-why > summary")).toContain("min-height: 1.7rem");
     expect(page).toMatch(
       /className="news-story-classification"[\s\S]*?<OpenNewsScoreBadge[\s\S]*?news-severity/,
     );

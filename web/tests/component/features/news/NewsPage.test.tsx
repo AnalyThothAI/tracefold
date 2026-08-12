@@ -181,6 +181,8 @@ describe("NewsPage", () => {
     expect(row).not.toBeNull();
     expect(within(row!).getByText("多个央行正在重新评估政策路径。")).toBeInTheDocument();
     expect(within(row!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
+    expect(within(row!).getByText(story.source_name)).toBeInTheDocument();
+    expect(within(row!).getByText("4 家独立来源")).toBeInTheDocument();
     const whySummary = within(row!).getByText("为什么重要").closest("summary");
     const whyDisclosure = whySummary?.closest("details");
     expect(whySummary).not.toBeNull();
@@ -196,7 +198,135 @@ describe("NewsPage", () => {
     );
   });
 
-  it("shows provider-selected related assets in Feed order and omits missing assets", async () => {
+  it("renders provider direction as accessible text and a semantic card tone", async () => {
+    const feed = newsFeedFixture();
+    const base = feed.stories[0];
+    feed.stories = [
+      base,
+      {
+        ...base,
+        provider_evidence: {
+          ...base.provider_evidence!,
+          provider_metadata: { ...base.provider_evidence!.provider_metadata, signal: "short" },
+        },
+        story_id: "story-short",
+        title: "A provider-rated downside event",
+      },
+      {
+        ...base,
+        provider_evidence: {
+          ...base.provider_evidence!,
+          provider_metadata: { ...base.provider_evidence!.provider_metadata, signal: "neutral" },
+        },
+        story_id: "story-neutral",
+        title: "A provider-rated neutral event",
+      },
+    ];
+    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    const positiveRow = (await screen.findByRole("heading", { name: base.title })).closest(
+      "article",
+    );
+    const negativeRow = screen
+      .getByRole("heading", { name: "A provider-rated downside event" })
+      .closest("article");
+    const neutralRow = screen
+      .getByRole("heading", { name: "A provider-rated neutral event" })
+      .closest("article");
+    expect(positiveRow).toHaveAttribute("data-signal-tone", "positive");
+    expect(within(positiveRow!).getByLabelText("OpenNews 信号 利多")).toBeInTheDocument();
+    expect(negativeRow).toHaveAttribute("data-signal-tone", "negative");
+    expect(within(negativeRow!).getByLabelText("OpenNews 信号 利空")).toBeInTheDocument();
+    expect(neutralRow).toHaveAttribute("data-signal-tone", "neutral");
+    expect(within(neutralRow!).getByLabelText("OpenNews 信号 中性")).toBeInTheDocument();
+  });
+
+  it("renders the server-owned notification lifecycle without re-evaluating eligibility", async () => {
+    const feed = newsFeedFixture();
+    const base = feed.stories[0];
+    const cases = [
+      {
+        delivery_state: "sent",
+        detail: "当前已过通知时限",
+        eligible: false,
+        ineligible_reason: "stale",
+        label: "已通知",
+        title: "A Story that was already notified",
+        tone: "success",
+      },
+      {
+        delivery_state: "not_created",
+        detail: null,
+        eligible: true,
+        ineligible_reason: null,
+        label: "待通知",
+        title: "A Story waiting for notification",
+        tone: "info",
+      },
+      {
+        delivery_state: "not_created",
+        detail: "无关联资产",
+        eligible: false,
+        ineligible_reason: "no_asset",
+        label: "不通知",
+        title: "A Story without notification assets",
+        tone: "neutral",
+      },
+      {
+        delivery_state: "not_created",
+        detail: "仅 CL 资产",
+        eligible: false,
+        ineligible_reason: "cl_family_only",
+        label: "不通知",
+        title: "A CL-only Story",
+        tone: "neutral",
+      },
+      {
+        delivery_state: "pending",
+        detail: null,
+        eligible: true,
+        ineligible_reason: null,
+        label: "通知中",
+        title: "A Story with notification in progress",
+        tone: "info",
+      },
+      {
+        delivery_state: "failed",
+        detail: null,
+        eligible: true,
+        ineligible_reason: null,
+        label: "通知失败",
+        title: "A Story with failed notification",
+        tone: "negative",
+      },
+    ] as const;
+    feed.stories = cases.map(
+      ({ detail: _detail, label: _label, title, tone: _tone, ...notification }, index) => ({
+        ...base,
+        notification,
+        story_id: `story-notification-${index}`,
+        title,
+      }),
+    );
+    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    await screen.findByRole("heading", { name: cases[0].title });
+    for (const item of cases) {
+      const row = screen.getByRole("heading", { name: item.title }).closest("article");
+      const state = within(row!).getByLabelText(
+        `通知状态 ${item.label}${item.detail ? `；${item.detail}` : ""}`,
+      );
+      expect(state).toHaveAttribute("data-tone", item.tone);
+      expect(state).toHaveTextContent(item.label);
+      if (item.detail) expect(state).toHaveTextContent(item.detail);
+    }
+  });
+
+  it("shows provider-selected related assets in Feed order and labels missing upstream assets", async () => {
     const feed = newsFeedFixture();
     feed.stories[0].provider_evidence!.provider_metadata.assets = [
       { symbol: "BTC", market_type: "spot", match: "Bitcoin" },
@@ -235,8 +365,8 @@ describe("NewsPage", () => {
         .map((item) => item.textContent),
     ).toEqual(["BTC", "GOOGL", "CL", "NATGAS"]);
     expect(within(firstRow!).queryByText("代币")).not.toBeInTheDocument();
-    expect(within(secondRow!).queryByText("关联资产")).not.toBeInTheDocument();
-    expect(within(secondRow!).queryByText(/暂无|未提供/)).not.toBeInTheDocument();
+    const missingAssets = within(secondRow!).getByRole("group", { name: "关联资产" });
+    expect(missingAssets).toHaveTextContent("上游未标注");
   });
 
   it("omits the OpenNews score cleanly when provider evidence is unavailable", async () => {
@@ -605,6 +735,11 @@ describe("NewsPage", () => {
     const detail = newsStoryDetailFixture();
     detail.url = "https://representative.example/detail";
     detail.members[0].url = "https://scoring.example/detail";
+    detail.notification = {
+      delivery_state: "sent",
+      eligible: false,
+      ineligible_reason: "stale",
+    };
     server.use(
       http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
         HttpResponse.json({ ok: true, data: detail }),
@@ -626,6 +761,7 @@ describe("NewsPage", () => {
     expect(hero).not.toBeNull();
     expect(within(hero!).getByText(detail.source_name)).toBeInTheDocument();
     expect(within(hero!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
+    expect(within(hero!).getByLabelText("通知状态 已通知；当前已过通知时限")).toBeInTheDocument();
     const auditSummary = screen.getByText("查看 Tracefold 评分与新闻事件审计");
     expect(title.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(
@@ -674,6 +810,26 @@ describe("NewsPage", () => {
         .map((item) => item.textContent),
     ).toEqual(["BTC", "GOOGL", "CL", "NATGAS"]);
     expect(within(hero!).queryByText("代币")).not.toBeInTheDocument();
+  });
+
+  it("labels missing upstream assets in the Story detail hero", async () => {
+    const detail = newsStoryDetailFixture();
+    detail.provider_evidence!.provider_metadata.assets = null;
+    server.use(
+      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: detail }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage storyId="story-global-policy" token="test-token" view="story" />,
+      "/news/stories/story-global-policy",
+    );
+
+    const title = await screen.findByRole("heading", { level: 1, name: detail.title });
+    const hero = title.closest(".news-story-hero") as HTMLElement | null;
+    expect(hero).not.toBeNull();
+    expect(within(hero!).getByRole("group", { name: "关联资产" })).toHaveTextContent("上游未标注");
   });
 
   it("keeps an overlong detail title readable behind an explicit expansion", async () => {

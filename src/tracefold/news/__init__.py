@@ -16,6 +16,11 @@ from .models import (
     PublicInsightsThreatLevel,
     ThreatLevel,
 )
+from .notification import (
+    NewsPushEligibility,
+    NewsPushIneligibleReason,
+    evaluate_news_push_eligibility,
+)
 from .opennews import OpenNewsEvent, OpenNewsExpectedError
 from .projection_worker import NewsStoryProjection
 from .push import (
@@ -41,6 +46,8 @@ __all__ = [
     "NewsFeedReader",
     "NewsPushDelivery",
     "NewsPushDeliveryError",
+    "NewsPushEligibility",
+    "NewsPushIneligibleReason",
     "NewsPushReceipt",
     "NewsSourceDefinition",
     "NewsStoryProjection",
@@ -50,4 +57,5 @@ __all__ = [
     "PublicInsightsCategory",
     "PublicInsightsThreatLevel",
     "ThreatLevel",
+    "evaluate_news_push_eligibility",
 ]

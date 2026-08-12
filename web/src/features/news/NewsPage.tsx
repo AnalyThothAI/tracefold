@@ -17,6 +17,7 @@ import {
   type BriefTopStory,
   type NewsBrief,
   type NewsLevel,
+  type NewsNotification,
   type NewsStatus,
   type NewsStory,
   type NewsStoryDetail,
@@ -512,6 +513,10 @@ function StoryCard({ story }: { story: NewsStory }) {
   const displayTitle = story.title;
   const summary = validSummary(story.description, displayTitle);
   const originalUrl = story.url;
+  const providerSignal = providerSignalPresentation(
+    story.provider_evidence?.provider_metadata.signal,
+  );
+  const notification = story.notification;
   const factors = story.importance_factors;
   const boosts = [
     factors.diplomacy_flashpoint_boost
@@ -523,11 +528,17 @@ function StoryCard({ story }: { story: NewsStory }) {
   ].filter(Boolean);
 
   return (
-    <article className="news-story-row" data-level={story.level} data-story-id={story.story_id}>
+    <article
+      className="news-story-row"
+      data-level={story.level}
+      data-signal-tone={providerSignal?.tone ?? "none"}
+      data-story-id={story.story_id}
+    >
       <div className="news-story-primary">
         <header className="news-story-meta">
           <span className="news-story-classification">
             <OpenNewsScoreBadge score={story.provider_evidence?.provider_metadata.score} />
+            <ProviderSignalBadge signal={providerSignal} />
             <span className="news-severity" data-level={story.level}>
               {LEVEL_LABELS[story.level]}
             </span>
@@ -545,8 +556,9 @@ function StoryCard({ story }: { story: NewsStory }) {
           <h2>{displayTitle}</h2>
         </Link>
         {summary ? <p className="news-story-summary">{summary}</p> : null}
-        <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
         <footer className="news-story-footer">
+          <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
+          <NotificationState notification={notification} />
           <details className="news-story-why">
             <summary>
               <span>为什么重要</span>
@@ -705,6 +717,9 @@ function StoryHero({ story }: { story: NewsStory }) {
     <header className="news-story-hero">
       <div className="news-story-badges">
         <OpenNewsScoreBadge score={story.provider_evidence?.provider_metadata.score} />
+        <ProviderSignalBadge
+          signal={providerSignalPresentation(story.provider_evidence?.provider_metadata.signal)}
+        />
         <span data-level={story.level}>{LEVEL_LABELS[story.level]}</span>
         <span>{CATEGORY_LABELS[story.category] ?? story.category}</span>
         <span>{story.source_name}</span>
@@ -722,7 +737,10 @@ function StoryHero({ story }: { story: NewsStory }) {
         </details>
       ) : null}
       {summary ? <p className="news-story-lead">{summary}</p> : null}
-      <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
+      <div className="news-story-support">
+        <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
+        <NotificationState notification={story.notification} />
+      </div>
       <div className="news-story-hero-footer">
         <div className="news-evidence-metrics">
           <span>
@@ -762,16 +780,132 @@ function OpenNewsScoreBadge({ score }: { score: number | null | undefined }) {
   );
 }
 
-function RelatedAssets({ assets }: { assets: readonly { symbol: string }[] | null | undefined }) {
-  if (!assets?.length) return null;
+type ProviderSignalPresentation = {
+  label: string;
+  tone: "info" | "negative" | "neutral" | "positive";
+};
+
+type NotificationPresentation = {
+  detail: string | null;
+  label: string;
+  tone: "caution" | "info" | "negative" | "neutral" | "success";
+};
+
+function ProviderSignalBadge({ signal }: { signal: ProviderSignalPresentation | null }) {
+  if (!signal) return null;
   return (
-    <div className="news-related-assets">
+    <span
+      aria-label={`OpenNews 信号 ${signal.label}`}
+      className="news-provider-signal"
+      data-tone={signal.tone}
+    >
+      <span>信号</span>
+      <b>{signal.label}</b>
+    </span>
+  );
+}
+
+function providerSignalPresentation(
+  signal: string | null | undefined,
+): ProviderSignalPresentation | null {
+  const value = signal?.trim();
+  if (!value) return null;
+  const normalized = value.toLowerCase();
+  if (["bullish", "buy", "long", "positive", "up"].includes(normalized)) {
+    return { label: "利多", tone: "positive" };
+  }
+  if (["bearish", "down", "negative", "sell", "short"].includes(normalized)) {
+    return { label: "利空", tone: "negative" };
+  }
+  if (["flat", "hold", "neutral"].includes(normalized)) {
+    return { label: "中性", tone: "neutral" };
+  }
+  return { label: value, tone: "info" };
+}
+
+function NotificationState({ notification }: { notification: NewsNotification }) {
+  const presentation = notificationPresentation(notification);
+  const accessibleLabel = `通知状态 ${presentation.label}${
+    presentation.detail ? `；${presentation.detail}` : ""
+  }`;
+  return (
+    <span
+      aria-label={accessibleLabel}
+      className="news-notification-state"
+      data-tone={presentation.tone}
+    >
+      <b>{presentation.label}</b>
+      {presentation.detail ? (
+        <span className="news-notification-detail">· {presentation.detail}</span>
+      ) : null}
+    </span>
+  );
+}
+
+function notificationPresentation(notification: NewsNotification): NotificationPresentation {
+  const currentDetail = notification.eligible
+    ? null
+    : notificationIneligibleDetail(notification.ineligible_reason);
+  switch (notification.delivery_state) {
+    case "sent":
+      return {
+        detail: currentDetail ? `当前${currentDetail}` : null,
+        label: "已通知",
+        tone: "success",
+      };
+    case "pending":
+      return {
+        detail: currentDetail ? `当前${currentDetail}` : null,
+        label: "通知中",
+        tone: "info",
+      };
+    case "failed":
+      return {
+        detail: currentDetail ? `当前${currentDetail}` : null,
+        label: "通知失败",
+        tone: "negative",
+      };
+    case "suppressed":
+      return {
+        detail: currentDetail ? `当前${currentDetail}` : null,
+        label: "已抑制",
+        tone: "caution",
+      };
+    case "not_created":
+      break;
+  }
+  if (notification.eligible) return { detail: null, label: "待通知", tone: "info" };
+  return { detail: currentDetail, label: "不通知", tone: "neutral" };
+}
+
+function notificationIneligibleDetail(
+  reason: NewsNotification["ineligible_reason"],
+): string | null {
+  if (!reason) return null;
+  const detailByReason: Record<NonNullable<NewsNotification["ineligible_reason"]>, string> = {
+    baseline: "基线前",
+    cl_family_only: "仅 CL 资产",
+    disabled: "通知关闭",
+    no_asset: "无关联资产",
+    score_threshold: "分数未达阈值",
+    stale: "已过通知时限",
+  };
+  return detailByReason[reason];
+}
+
+function RelatedAssets({ assets }: { assets: readonly { symbol: string }[] | null | undefined }) {
+  return (
+    <div aria-label="关联资产" className="news-related-assets" role="group">
       <span>关联资产</span>
-      <ul aria-label="关联资产">
-        {assets.map((asset, index) => (
-          <li key={`${asset.symbol}:${index}`}>{asset.symbol}</li>
-        ))}
-      </ul>
+      {assets?.length ? (
+        <ul aria-label="关联资产">
+          {assets.map((asset, index) => (
+            <li key={`${asset.symbol}:${index}`}>{asset.symbol}</li>
+          ))}
+        </ul>
+      ) : (
+        <span className="news-related-assets-empty">上游未标注</span>
+      )}
     </div>
   );
 }

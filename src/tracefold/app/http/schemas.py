@@ -196,6 +196,34 @@ class NewsImportanceFactorsData(ExactApiSchema):
     total: int
 
 
+class NewsNotificationData(ExactApiSchema):
+    eligible: bool
+    ineligible_reason: (
+        Literal[
+            "disabled",
+            "score_threshold",
+            "no_asset",
+            "cl_family_only",
+            "baseline",
+            "stale",
+        ]
+        | None
+    )
+    delivery_state: Literal[
+        "not_created",
+        "pending",
+        "sent",
+        "suppressed",
+        "failed",
+    ]
+
+    @model_validator(mode="after")
+    def validate_eligibility_reason(self) -> NewsNotificationData:
+        if self.eligible == (self.ineligible_reason is not None):
+            raise ValueError("news_notification_eligibility_reason_invalid")
+        return self
+
+
 class NewsStoryData(ExactApiSchema):
     story_id: str
     title: str
@@ -214,7 +242,7 @@ class NewsStoryData(ExactApiSchema):
     first_published_at_ms: int
     last_published_at_ms: int
     provider_evidence: NewsProviderEvidenceData | None
-    push_delivery_state: Literal["pending", "sent", "suppressed", "failed"] | None
+    notification: NewsNotificationData
 
 
 class NewsFeedFacetData(ExactApiSchema):

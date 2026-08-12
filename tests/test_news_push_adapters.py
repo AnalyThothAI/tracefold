@@ -1068,7 +1068,8 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     assert sent_cards == [frozen["card"], frozen["card"]]
     assert all(card["header"]["title"]["content"] == "Bitcoin ETF records inflows" for card in sent_cards)
     assert all(
-        card["body"]["elements"][0]["text"]["content"] == "关联资产：BTC · ETH\nOpenNews 评分：91" for card in sent_cards
+        card["body"]["elements"][0]["text"]["content"] == "关联资产：BTC · ETH\nOpenNews 评分：91"
+        for card in sent_cards
     )
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
 

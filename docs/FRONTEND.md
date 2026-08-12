@@ -147,8 +147,12 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   provider order; these labels may be crypto, equities, oil, or other
   commodities. The browser does not infer an asset class, correct provider
   labels, or hide CL-family labels from the reading surface. Missing assets are
-  omitted, while provider signal, grade, and Push state are not reading-layer
-  decoration. Tracefold importance is secondary and its supplied factors live
+  labelled `上游未标注` without hiding the Story. Provider signal is rendered
+  as both text and a semantic card rail; grade remains omitted. Each row also
+  renders the server-owned `notification` lifecycle: the durable delivery fact
+  is primary and current ineligibility is secondary, so a historical `sent`
+  Story never becomes visually `不通知`. The browser does not reimplement Push
+  qualification. Tracefold importance is secondary and its supplied factors live
   under row-local `为什么重要`. The
   primary row action opens
   `/news/stories/:storyId`; a separate link opens original evidence when a
@@ -157,8 +161,8 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   rows, with no horizontal overflow.
 
   `/news/stories/:storyId` reads `/api/news/stories/{story_id}` and is
-  reading-first: canonical headline, selected numeric OpenNews score,
-  provider-labelled `关联资产`, severity, reporting origin/time,
+  reading-first: canonical headline, selected numeric OpenNews score and signal,
+  provider-labelled `关联资产`, server-owned notification lifecycle, severity, reporting origin/time,
   independent-origin count, valid description, and representative original
   link precede related reports. Complete member
   pagination remains reachable. Internal IDs, complete factor math, provider

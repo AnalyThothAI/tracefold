@@ -76,19 +76,32 @@
     height: 0.9rem;
   }
 
+  .news-story-support {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.8rem;
+    align-items: center;
+    margin-top: 0.65rem;
+  }
+
   .news-related-assets {
     display: flex;
     flex-wrap: wrap;
     gap: 0.3rem 0.42rem;
     align-items: center;
     min-width: 0;
-    color: var(--muted-foreground);
-    font: 0.64rem/1.35 var(--font-mono);
+    color: var(--text-muted);
+    font: 0.66rem/1.35 var(--font-mono);
   }
 
   .news-related-assets > span {
     font-weight: 650;
     white-space: nowrap;
+  }
+
+  .news-related-assets > .news-related-assets-empty {
+    color: var(--text-subtle);
+    font-weight: 500;
   }
 
   .news-related-assets ul {
@@ -102,13 +115,56 @@
   }
 
   .news-related-assets li {
-    padding: 0.06rem 0.32rem;
-    border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--background) 34%, transparent);
-    color: var(--foreground);
+    padding: 0.08rem 0.34rem;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    color: var(--text-secondary);
     font-weight: 650;
     white-space: nowrap;
+  }
+
+  .news-notification-state {
+    display: inline-flex;
+    gap: 0.3rem;
+    align-items: center;
+    color: var(--text-muted);
+    font: 600 0.65rem/1.35 var(--font-mono);
+    white-space: nowrap;
+  }
+
+  .news-notification-state::before {
+    width: 0.38rem;
+    height: 0.38rem;
+    border-radius: 50%;
+    background: currentcolor;
+    content: "";
+  }
+
+  .news-notification-state b {
+    color: inherit;
+    font-weight: 650;
+  }
+
+  .news-notification-detail {
+    color: var(--text-subtle);
+    font-weight: 500;
+  }
+
+  .news-notification-state[data-tone="success"] {
+    color: var(--signal-positive);
+  }
+
+  .news-notification-state[data-tone="info"] {
+    color: var(--signal-info);
+  }
+
+  .news-notification-state[data-tone="caution"] {
+    color: var(--signal-caution);
+  }
+
+  .news-notification-state[data-tone="negative"] {
+    color: var(--signal-negative);
   }
 
   .news-back-link {

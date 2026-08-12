@@ -34,7 +34,11 @@ export function newsStoryFixture(overrides: Partial<NewsStory> = {}): NewsStory 
     item_count: 4,
     last_published_at_ms: NEWS_NOW_MS - 30_000,
     level: "high",
-    push_delivery_state: null,
+    notification: {
+      delivery_state: "sent",
+      eligible: false,
+      ineligible_reason: "stale",
+    },
     provider_evidence: {
       item_id: "news-item-reuters",
       provider_metadata: {

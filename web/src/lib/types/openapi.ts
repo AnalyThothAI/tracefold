@@ -2892,6 +2892,18 @@ export interface components {
              */
             status: "ready" | "warming" | "degraded";
         };
+        /** NewsNotificationData */
+        NewsNotificationData: {
+            /**
+             * Delivery State
+             * @enum {string}
+             */
+            delivery_state: "not_created" | "pending" | "sent" | "suppressed" | "failed";
+            /** Eligible */
+            eligible: boolean;
+            /** Ineligible Reason */
+            ineligible_reason: ("disabled" | "score_threshold" | "no_asset" | "cl_family_only" | "baseline" | "stale") | null;
+        };
         /** NewsOpenNewsStatusData */
         NewsOpenNewsStatusData: {
             /** Consecutive Failures */
@@ -3165,9 +3177,8 @@ export interface components {
              * @enum {string}
              */
             level: "critical" | "high" | "medium" | "low" | "info";
+            notification: components["schemas"]["NewsNotificationData"];
             provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
-            /** Push Delivery State */
-            push_delivery_state: ("pending" | "sent" | "suppressed" | "failed") | null;
             /** Representative Item Id */
             representative_item_id: string;
             /** Scoring Item Id */
@@ -3213,9 +3224,8 @@ export interface components {
             /** Members */
             members: components["schemas"]["NewsStoryMemberData"][];
             members_page: components["schemas"]["NewsStoryMembersPageData"];
+            notification: components["schemas"]["NewsNotificationData"];
             provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
-            /** Push Delivery State */
-            push_delivery_state: ("pending" | "sent" | "suppressed" | "failed") | null;
             /** Representative Item Id */
             representative_item_id: string;
             /** Scoring Item Id */

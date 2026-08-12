@@ -6,8 +6,8 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Any
 
 import pytest
-from psycopg import OperationalError
-from psycopg.errors import LockNotAvailable, QueryCanceled, TransactionTimeout
+from psycopg import InternalError, OperationalError
+from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, QueryCanceled, TransactionTimeout
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatabase
@@ -335,6 +335,44 @@ def test_business_connection_loss_is_recoverable_but_control_loss_is_fatal() -> 
                 await database.run_control(
                     "workers_runtime_heartbeat",
                     connection_lost,
+                    operation_timeout_seconds=0.5,
+                )
+        finally:
+            database.close_executors()
+
+    asyncio.run(scenario())
+
+
+def test_business_idle_transaction_timeout_is_recoverable_but_control_and_other_internal_errors_are_fatal() -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+
+        def idle_transaction_timeout() -> None:
+            raise IdleInTransactionSessionTimeout("terminating connection due to idle-in-transaction timeout")
+
+        def other_internal_error() -> None:
+            raise InternalError("unexpected internal database error")
+
+        try:
+            with pytest.raises(
+                ResourceAdmissionTimeout,
+                match="worker_database_idle_transaction_timeout:gmgn_event_publish",
+            ):
+                await database.run_business(
+                    "gmgn_event_publish",
+                    idle_transaction_timeout,
+                    operation_timeout_seconds=0.5,
+                )
+            with pytest.raises(IdleInTransactionSessionTimeout):
+                await database.run_control(
+                    "workers_runtime_heartbeat",
+                    idle_transaction_timeout,
+                    operation_timeout_seconds=0.5,
+                )
+            with pytest.raises(InternalError, match="unexpected internal database error"):
+                await database.run_business(
+                    "unknown_internal_failure",
+                    other_internal_error,
                     operation_timeout_seconds=0.5,
                 )
         finally:

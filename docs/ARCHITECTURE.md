@@ -111,7 +111,10 @@ presentation-only Chinese title translation or explicit original fallback,
 compact cards with provider-labelled assets, provider score, and an
 optional original-link button, plus claims, retries, and explicit delivery
 receipts. They
-do not become a second Story read model or notification product.
+do not become a second Story read model or notification product. The public
+Story `notification` object is only a read-time projection of two orthogonal
+News-owned facts: current Story Push eligibility and the existing durable
+delivery ledger.
 
 ## Package map
 
@@ -235,8 +238,11 @@ in one setup round trip, so PostgreSQL is the native deadline authority for all
 SQL in that session. Transaction exit restores the connection automatically;
 there is no session reset round trip. Awaiting DB, CPU, finite-operation, and
 model work adds only a bounded completion grace so the native result wins at
-its deadline. A DB, model, CPU, cleanup, or otherwise unclassified future that
-remains alive beyond that grace is fatal. Only an explicitly classified true
+its deadline. If an asyncio wrapper callback is delayed, an already-completed
+native future is consumed directly; a DB, model, CPU, cleanup, or otherwise
+unclassified native future that itself remains alive beyond that grace is
+fatal. A business-lane PostgreSQL idle-transaction disconnect is bounded
+admission failure, while the same control-lane failure remains fatal. Only an explicitly classified true
 external provider seam may translate a finite-operation overrun into its
 existing durable retry, degradation, or terminal policy; doing so never
 releases the shared capability permit before the underlying future actually
@@ -689,6 +695,25 @@ before external submission; an aged frozen retry becomes suppressed without a
 network call. Current waiting work whose score-fact clock is older than 120
 seconds is a stalled operating state, even when a retry is scheduled for the
 future.
+
+Feed and detail expose one complete Story Push lifecycle projection rather
+than a nullable delivery badge. `notification.eligible` and
+`notification.ineligible_reason` evaluate the same News-owned policy used by
+reconcile against the current Story-selected evidence, runtime Push enablement,
+durable baseline, and request clock. Claim, preparation completion, and the
+immediate pre-submit fence rerun that policy against the currently persisted
+provider fact for the delivery ledger's durable selected Item, so a later
+provider annotation cannot bypass asset filtering while the frozen presentation
+remains retry-stable. The single reason
+precedence is `score_threshold`, `no_asset`, `cl_family_only`, `disabled`,
+`baseline`, then `stale`; exactly 15 minutes old remains eligible. Separately,
+`notification.delivery_state` maps only the durable ledger to `not_created`,
+`pending`, `sent`, `suppressed`, or `failed`. A later score change, missing
+current provider evidence, expiry, or disabled configuration can make a Story
+currently ineligible but never erases a historical `sent` fact. Current Story
+membership also resolves an existing selected-Item ledger after a Story-ID
+change. This projection adds no table, general notification lifecycle, or
+browser-owned qualification rule.
 
 The complete live News storage boundary is exactly nine tables:
 `news_sources`, `news_items`, `news_stories`,

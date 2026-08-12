@@ -63,6 +63,7 @@ const routeCases: RouteCase[] = [
       await expect(rows).toHaveCount(5);
       await expect(page.locator(".news-provider-score")).toHaveCount(5);
       await expect(page.locator(".news-provider-score").first()).toBeVisible();
+      await expect(page.locator('[aria-label="通知状态 已通知；当前已过通知时限"]')).toHaveCount(5);
       const fullyVisibleRows = await rows.evaluateAll(
         (elements) =>
           elements.filter((element) => {

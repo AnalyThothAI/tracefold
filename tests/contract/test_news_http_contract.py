@@ -1,4 +1,6 @@
+import pytest
 from fastapi.routing import APIRoute
+from pydantic import ValidationError
 
 from tracefold.app.http import routes_news
 from tracefold.app.http.schemas import (
@@ -9,6 +11,7 @@ from tracefold.app.http.schemas import (
     NewsIngestStatusData,
     NewsRssStatusData,
     NewsSourceData,
+    NewsStoryData,
     NewsStoryStatusData,
 )
 
@@ -28,6 +31,37 @@ def test_news_exposes_exactly_five_read_only_routes() -> None:
         ("GET", "/news/sources"),
         ("GET", "/news/status"),
     }
+
+
+def test_news_story_notification_contract_separates_eligibility_from_delivery() -> None:
+    from tracefold.app.http import schemas
+
+    notification = schemas.NewsNotificationData
+
+    assert set(notification.model_fields) == {
+        "eligible",
+        "ineligible_reason",
+        "delivery_state",
+    }
+    assert "notification" in NewsStoryData.model_fields
+    assert "push_delivery_state" not in NewsStoryData.model_fields
+
+    with pytest.raises(ValidationError, match="news_notification_eligibility_reason_invalid"):
+        notification.model_validate(
+            {
+                "eligible": True,
+                "ineligible_reason": "stale",
+                "delivery_state": "sent",
+            }
+        )
+    with pytest.raises(ValidationError, match="news_notification_eligibility_reason_invalid"):
+        notification.model_validate(
+            {
+                "eligible": False,
+                "ineligible_reason": None,
+                "delivery_state": "not_created",
+            }
+        )
 
 
 def test_news_brief_http_contract_is_one_slot_and_one_sealed_payload() -> None:

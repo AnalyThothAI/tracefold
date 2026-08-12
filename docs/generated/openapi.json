@@ -8012,6 +8012,52 @@
         "title": "NewsIngestStatusData",
         "type": "object"
       },
+      "NewsNotificationData": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery_state": {
+            "enum": [
+              "not_created",
+              "pending",
+              "sent",
+              "suppressed",
+              "failed"
+            ],
+            "title": "Delivery State",
+            "type": "string"
+          },
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "ineligible_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "disabled",
+                  "score_threshold",
+                  "no_asset",
+                  "cl_family_only",
+                  "baseline",
+                  "stale"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ineligible Reason"
+          }
+        },
+        "required": [
+          "eligible",
+          "ineligible_reason",
+          "delivery_state"
+        ],
+        "title": "NewsNotificationData",
+        "type": "object"
+      },
       "NewsOpenNewsStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -9012,6 +9058,9 @@
             "title": "Level",
             "type": "string"
           },
+          "notification": {
+            "$ref": "#/components/schemas/NewsNotificationData"
+          },
           "provider_evidence": {
             "anyOf": [
               {
@@ -9021,23 +9070,6 @@
                 "type": "null"
               }
             ]
-          },
-          "push_delivery_state": {
-            "anyOf": [
-              {
-                "enum": [
-                  "pending",
-                  "sent",
-                  "suppressed",
-                  "failed"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Push Delivery State"
           },
           "representative_item_id": {
             "title": "Representative Item Id",
@@ -9097,7 +9129,7 @@
           "first_published_at_ms",
           "last_published_at_ms",
           "provider_evidence",
-          "push_delivery_state"
+          "notification"
         ],
         "title": "NewsStoryData",
         "type": "object"
@@ -9173,6 +9205,9 @@
           "members_page": {
             "$ref": "#/components/schemas/NewsStoryMembersPageData"
           },
+          "notification": {
+            "$ref": "#/components/schemas/NewsNotificationData"
+          },
           "provider_evidence": {
             "anyOf": [
               {
@@ -9182,23 +9217,6 @@
                 "type": "null"
               }
             ]
-          },
-          "push_delivery_state": {
-            "anyOf": [
-              {
-                "enum": [
-                  "pending",
-                  "sent",
-                  "suppressed",
-                  "failed"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Push Delivery State"
           },
           "representative_item_id": {
             "title": "Representative Item Id",
@@ -9258,7 +9276,7 @@
           "first_published_at_ms",
           "last_published_at_ms",
           "provider_evidence",
-          "push_delivery_state",
+          "notification",
           "canonical_title",
           "members",
           "members_page"

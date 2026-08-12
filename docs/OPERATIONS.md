@@ -324,11 +324,17 @@ Every 10 seconds, current Story with max persisted OpenNews provider score > 70
   -> News-owned durable push candidate
   -> suppress first-enable/pre-baseline/stale (>15 minute) evidence
   -> otherwise freeze one highest-score Item
+  -> recheck that selected Item's current provider fact at claim, after preparation, and before submit
   -> one Chinese-title attempt (7.5 s request, 8 s total) or immediate original fallback
   -> freeze bilingual/original presentation exactly once
   -> compact selected-Item `关联资产`/score body + optional original-link button
   -> signed or explicitly unsigned Feishu card through finite-operation adapter
   -> explicit success or bounded durable retry/terminal state
+
+/api/news/feed and /api/news/stories/{story_id}
+  -> evaluate current Story Push eligibility from the same server-owned policy
+  -> map the independent durable ledger to not_created/pending/sent/suppressed/failed
+  -> retain historical delivery fact even when current eligibility later changes
 ```
 
 News acquisition always registers OpenNews. `news.rss_enabled` defaults to

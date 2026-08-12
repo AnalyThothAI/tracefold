@@ -84,6 +84,7 @@ _NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS = 60.0
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
 _MARKET_TICK_POLL_SECONDS = 35.0
+_NEWS_STORY_REFRESH_SECONDS = 60.0
 _NEWS_PUSH_IDLE_SECONDS = 5.0
 _NEWS_RSS_IDLE_SECONDS = 30.0
 _NEWS_PUSH_RECONCILE_SECONDS = 10.0
@@ -382,7 +383,7 @@ async def run_workers(settings: Settings) -> None:
                         _guard_child(
                             _run_periodic(
                                 lambda: _sample_news_story(news_story=components.news_story),
-                                period_seconds=60.0,
+                                period_seconds=_NEWS_STORY_REFRESH_SECONDS,
                                 stop_event=work_stop_event,
                             ),
                             on_fatal=enter_fatal,

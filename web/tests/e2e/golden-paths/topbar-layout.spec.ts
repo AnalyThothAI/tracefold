@@ -56,6 +56,7 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   await expect(page.getByRole("link", { name: /重点/ })).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".news-provider-score")).toHaveCount(6);
   await expect(page.locator(".news-provider-score").first()).toContainText("OpenNews88");
+  await expect(page.locator('[aria-label="通知状态 已通知；当前已过通知时限"]')).toHaveCount(6);
   const fullyVisible = await rows.evaluateAll(
     (elements) =>
       elements.filter((element) => {
@@ -75,6 +76,7 @@ test("desktop News detail keeps navigation adjacent to the story", async ({ page
   const hero = page.locator(".news-story-hero");
   await expect(backLink).toBeVisible();
   await expect(hero).toBeVisible();
+  await expect(hero.locator('[aria-label="通知状态 已通知；当前已过通知时限"]')).toBeVisible();
 
   const backBox = await backLink.boundingBox();
   const heroBox = await hero.boundingBox();

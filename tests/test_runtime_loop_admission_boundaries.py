@@ -40,6 +40,9 @@ from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperat
 
 class _SubmittedOverrunFiniteOperations:
     async def run(self, operation_name, _function, /, *_args, **kwargs):
+        before_submit = kwargs.get("before_submit")
+        if before_submit is not None:
+            await before_submit()
         on_submitted = kwargs.get("on_submitted")
         if on_submitted is not None:
             on_submitted()
@@ -611,6 +614,7 @@ def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_
             self.operations.append(operation_name)
             if operation_name == "news_story_push_claim":
                 return {
+                    "selected_item_id": "item-1",
                     "source_payload": {
                         "provider_evidence": {
                             "published_at_ms": 9_000_000_000_000,
@@ -618,6 +622,15 @@ def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_
                     },
                     "delivery_payload": payload,
                     "payload_fingerprint": _payload_fingerprint(payload),
+                    "push_baseline_at_ms": 0,
+                }
+            if operation_name == "news_story_push_current_eligibility":
+                return {
+                    "provider_score": 90,
+                    "provider_metadata": {
+                        "coins": [{"symbol": "BTC", "market_type": "spot"}],
+                    },
+                    "published_at_ms": 9_000_000_000_000,
                 }
             if operation_name == "news_story_push_start_delivery":
                 return {"delivery_attempts": 1}
@@ -639,7 +652,12 @@ def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_
     push._record_delivery_failure = record_failure  # type: ignore[method-assign]
 
     assert asyncio.run(push._execute_story("story-1", now_ms=1_000)) is True
-    assert database.operations == ["news_story_push_claim", "news_story_push_start_delivery"]
+    assert database.operations == [
+        "news_story_push_claim",
+        "news_story_push_current_eligibility",
+        "news_story_push_start_delivery",
+        "news_story_push_current_eligibility",
+    ]
     assert len(failures) == 1
     error = failures[0]["error"]
     assert isinstance(error, NewsPushDeliveryError)

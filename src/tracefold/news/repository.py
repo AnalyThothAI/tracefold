@@ -8,7 +8,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from math import ceil, isfinite
-from typing import Any, cast
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from psycopg.types.json import Jsonb
@@ -22,6 +22,7 @@ from .models import (
     NewsFeedFetch,
     NewsSourceDefinition,
 )
+from .notification import evaluate_news_push_eligibility
 from .opennews import OpenNewsEvent
 
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
@@ -1271,6 +1272,8 @@ class NewsRepository:
     def list_feed(
         self,
         *,
+        push_enabled: bool,
+        now_ms: int,
         category: str | None = None,
         level: str | None = None,
         source_id: str | None = None,
@@ -1386,7 +1389,7 @@ class NewsRepository:
         has_more = len(rows) > limit
         page = rows[:limit]
         page_story_ids = [str(row["story_id"]) for row in page]
-        provider_evidence = self.story_provider_evidence(story_ids=page_story_ids)
+        provider_evidence = self.story_push_contexts(story_ids=page_story_ids)
         next_cursor = None
         if has_more and page:
             last = page[-1]
@@ -1405,7 +1408,11 @@ class NewsRepository:
             story = _story_summary(row)
             selected = provider_evidence.get(str(row["story_id"]))
             story["provider_evidence"] = _public_provider_evidence(selected)
-            story["push_delivery_state"] = _public_push_delivery_state(selected)
+            story["notification"] = _public_notification(
+                selected,
+                push_enabled=push_enabled,
+                now_ms=now_ms,
+            )
             stories.append(story)
         return {
             "sort": sort,
@@ -1536,6 +1543,8 @@ class NewsRepository:
         self,
         *,
         story_id: str,
+        push_enabled: bool,
+        now_ms: int,
         members_limit: int = 100,
         members_cursor: str | None = None,
     ) -> dict[str, Any] | None:
@@ -1554,7 +1563,7 @@ class NewsRepository:
         ).fetchone()
         if row is None:
             return None
-        selected = self.story_provider_evidence(story_ids=(story_id,)).get(story_id)
+        selected = self.story_push_contexts(story_ids=(story_id,)).get(story_id)
         provider_evidence = _public_provider_evidence(selected)
         member_where = ["m.story_id = %s"]
         member_params: list[Any] = [story_id]
@@ -1618,7 +1627,11 @@ class NewsRepository:
         return {
             **story,
             "provider_evidence": provider_evidence,
-            "push_delivery_state": _public_push_delivery_state(selected),
+            "notification": _public_notification(
+                selected,
+                push_enabled=push_enabled,
+                now_ms=now_ms,
+            ),
             "canonical_title": str(row["canonical_title"]),
             "members": [_item_payload(member) for member in page],
             "members_page": {
@@ -1777,25 +1790,38 @@ class NewsRepository:
 
     # News Story push ----------------------------------------------------------
 
-    def story_provider_evidence(
+    def story_push_contexts(
         self,
         *,
         story_ids: Sequence[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Return each Story's highest numeric provider-score item.
+        """Return selected provider evidence and durable push state per Story.
 
         Selection is deterministic: numeric score descending, then newest
-        publication, then item identity. The same bounded query also resolves
-        the selected Article's durable push-ledger status for Feed and detail.
+        publication, then item identity. Requested Story IDs remain present
+        without numeric evidence so Feed/detail can still expose a durable
+        Story-scoped delivery fact. Without an explicit scope, only Stories
+        with numeric provider evidence are returned for push reconciliation.
         """
 
         if story_ids is not None and not story_ids:
             return {}
         story_filter = ""
+        requested_sql = "SELECT story_id FROM selected"
+        ledger_member_candidates = ""
         params: tuple[Any, ...] = ()
         if story_ids is not None:
             story_filter = "AND member.story_id = ANY(%s)"
-            params = (list(story_ids),)
+            requested_sql = "SELECT unnest(%s::text[]) AS story_id"
+            ledger_member_candidates = """
+                  UNION ALL
+                  SELECT member_delivery.story_id, 2 AS priority
+                    FROM news_story_members ledger_member
+                    JOIN news_push_deliveries member_delivery
+                      ON member_delivery.selected_item_id = ledger_member.item_id
+                   WHERE ledger_member.story_id = requested.story_id
+            """
+            params = (list(story_ids), list(story_ids))
         rows = self.conn.execute(
             f"""
             WITH selected AS (
@@ -1829,33 +1855,76 @@ class NewsRepository:
                         (item.provider_metadata ->> 'score')::numeric DESC,
                         item.published_at_ms DESC,
                         item.item_id
+            ),
+            requested AS (
+              {requested_sql}
             )
-            SELECT selected.*, delivery.status AS push_delivery_status
-              FROM selected
+            SELECT requested.story_id,
+                   selected.importance_score,
+                   selected.item_count,
+                   selected.source_count,
+                   selected.first_published_at_ms,
+                   selected.last_published_at_ms,
+                   selected.item_id,
+                   selected.canonical_url,
+                   selected.provider_metadata,
+                   selected.reporting_origin,
+                   selected.title,
+                   selected.description,
+                   selected.lang,
+                   selected.published_at_ms,
+                   selected.threshold_observed_at_ms,
+                   selected.provider_score,
+                   state.baseline_at_ms AS push_baseline_at_ms,
+                   delivery.status AS push_delivery_status
+              FROM requested
+              LEFT JOIN selected ON selected.story_id = requested.story_id
+              LEFT JOIN news_push_state state
+                ON state.singleton_key = 'current'
               LEFT JOIN LATERAL (
-                SELECT status
-                  FROM news_push_deliveries delivery
-                 WHERE delivery.story_id = selected.story_id
-                    OR delivery.selected_item_id = selected.item_id
-                 ORDER BY (delivery.story_id = selected.story_id) DESC,
+                SELECT delivery.status
+                  FROM (
+                    SELECT requested.story_id, 0 AS priority
+                    UNION ALL
+                    SELECT selected_delivery.story_id, 1 AS priority
+                      FROM news_push_deliveries selected_delivery
+                     WHERE selected.item_id IS NOT NULL
+                       AND selected_delivery.selected_item_id = selected.item_id
+                    {ledger_member_candidates}
+                  ) matched
+                  JOIN news_push_deliveries delivery
+                    ON delivery.story_id = matched.story_id
+                 ORDER BY matched.priority,
                           delivery.updated_at_ms DESC,
                           delivery.story_id
                  LIMIT 1
               ) delivery ON true
-             ORDER BY selected.story_id
+             ORDER BY requested.story_id
             """,
             params,
         ).fetchall()
-        return {
-            str(row["story_id"]): {
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            story_id = str(row["story_id"])
+            selected: dict[str, Any] = {
                 "story_id": str(row["story_id"]),
-                "importance_score": int(row["importance_score"]),
-                "item_count": int(row["item_count"]),
-                "source_count": int(row["source_count"]),
-                "first_published_at_ms": int(row["first_published_at_ms"]),
-                "last_published_at_ms": int(row["last_published_at_ms"]),
                 "push_delivery_status": row["push_delivery_status"],
-                "provider_evidence": {
+                "push_baseline_at_ms": (
+                    int(row["push_baseline_at_ms"]) if row["push_baseline_at_ms"] is not None else None
+                ),
+                "provider_evidence": None,
+            }
+            if row["item_id"] is not None:
+                selected.update(
+                    {
+                        "importance_score": int(row["importance_score"]),
+                        "item_count": int(row["item_count"]),
+                        "source_count": int(row["source_count"]),
+                        "first_published_at_ms": int(row["first_published_at_ms"]),
+                        "last_published_at_ms": int(row["last_published_at_ms"]),
+                    }
+                )
+                selected["provider_evidence"] = {
                     "item_id": str(row["item_id"]),
                     "url": str(row["canonical_url"]) if row["canonical_url"] else None,
                     "provider_metadata": dict(row["provider_metadata"] or {}),
@@ -1866,10 +1935,9 @@ class NewsRepository:
                     "published_at_ms": int(row["published_at_ms"]),
                     "threshold_observed_at_ms": int(row["threshold_observed_at_ms"]),
                     "provider_score": float(row["provider_score"]),
-                },
-            }
-            for row in rows
-        }
+                }
+            result[story_id] = selected
+        return result
 
     def initialize_push_baseline(self, *, now_ms: int) -> tuple[int, bool]:
         row = self.conn.execute(
@@ -1894,6 +1962,42 @@ class NewsRepository:
             (int(now_ms), int(now_ms)),
         )
         return int(now_ms), True
+
+    def current_push_eligibility_evidence(
+        self,
+        *,
+        selected_item_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the durable selected Item's currently persisted provider fact."""
+
+        row = self.conn.execute(
+            """
+            SELECT item_id, canonical_url, provider_metadata,
+                   reporting_origin, title, description, lang,
+                   published_at_ms,
+                   coalesce(provider_score_updated_at_ms, updated_at_ms)
+                     AS threshold_observed_at_ms,
+                   (provider_metadata ->> 'score')::numeric AS provider_score
+              FROM news_items
+             WHERE item_id = %s
+               AND jsonb_typeof(provider_metadata -> 'score') = 'number'
+            """,
+            (str(selected_item_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "item_id": str(row["item_id"]),
+            "url": str(row["canonical_url"]) if row["canonical_url"] else None,
+            "provider_metadata": dict(row["provider_metadata"] or {}),
+            "reporting_origin": str(row["reporting_origin"]),
+            "title": str(row["title"]),
+            "description": str(row["description"]),
+            "lang": str(row["lang"]),
+            "published_at_ms": int(row["published_at_ms"]),
+            "threshold_observed_at_ms": int(row["threshold_observed_at_ms"]),
+            "provider_score": float(row["provider_score"]),
+        }
 
     def insert_push_candidate(
         self,
@@ -2027,24 +2131,30 @@ class NewsRepository:
     ) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            UPDATE news_push_deliveries
-               SET lease_owner = %s,
-                   lease_token = %s,
-                   lease_expires_at_ms = %s,
-                   updated_at_ms = CASE
-                     WHEN translation_status = 'attempted'
-                       AND delivery_payload IS NULL
-                       THEN updated_at_ms
-                     ELSE %s
-                   END
-             WHERE story_id = %s
-               AND status IN (
-                     'pending_translation', 'pending_delivery', 'retry_wait'
-                   )
-               AND next_attempt_at_ms <= %s
-               AND delivery_attempts < %s
-               AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= %s)
-            RETURNING *
+            WITH claimed AS (
+              UPDATE news_push_deliveries
+                 SET lease_owner = %s,
+                     lease_token = %s,
+                     lease_expires_at_ms = %s,
+                     updated_at_ms = CASE
+                       WHEN translation_status = 'attempted'
+                         AND delivery_payload IS NULL
+                         THEN updated_at_ms
+                       ELSE %s
+                     END
+               WHERE story_id = %s
+                 AND status IN (
+                       'pending_translation', 'pending_delivery', 'retry_wait'
+                     )
+                 AND next_attempt_at_ms <= %s
+                 AND delivery_attempts < %s
+                 AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= %s)
+              RETURNING *
+            )
+            SELECT claimed.*, state.baseline_at_ms AS push_baseline_at_ms
+              FROM claimed
+              LEFT JOIN news_push_state state
+                ON state.singleton_key = 'current'
             """,
             (
                 lease_owner,
@@ -2902,19 +3012,11 @@ def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
 def _public_provider_metadata(value: object) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
-    public = {
-        key: value[key]
-        for key in ("score", "source", "signal", "grade")
-        if key in value
-    }
+    public = {key: value[key] for key in ("score", "source", "signal", "grade") if key in value}
     coins = value.get("coins")
     if isinstance(coins, list):
         assets = [
-            {
-                key: coin[key]
-                for key in ("symbol", "market_type", "match", "score", "signal", "grade")
-                if key in coin
-            }
+            {key: coin[key] for key in ("symbol", "market_type", "match", "score", "signal", "grade") if key in coin}
             for coin in coins
             if isinstance(coin, Mapping)
             and isinstance(coin.get("symbol"), str)
@@ -2940,47 +3042,39 @@ def _public_provider_evidence(selected: Mapping[str, Any] | None) -> dict[str, A
     }
 
 
-def _public_push_delivery_state(selected: Mapping[str, Any] | None) -> str | None:
-    if selected is None:
-        return None
-    evidence = selected.get("provider_evidence")
-    if not isinstance(evidence, Mapping):
-        return None
-    score = evidence.get("provider_score")
-    if not _numeric_provider_score(score) or float(cast(int | float, score)) <= 70:
-        return None
-    status = selected.get("push_delivery_status")
-    if status is None and _provider_assets_are_push_filtered(
-        evidence.get("provider_metadata")
-    ):
-        return None
+def _public_notification(
+    selected: Mapping[str, Any] | None,
+    *,
+    push_enabled: bool,
+    now_ms: int,
+) -> dict[str, Any]:
+    evidence = selected.get("provider_evidence") if selected is not None else None
+    eligibility = evaluate_news_push_eligibility(
+        evidence if isinstance(evidence, Mapping) else None,
+        enabled=push_enabled,
+        baseline_at_ms=(
+            int(selected["push_baseline_at_ms"])
+            if selected is not None and selected.get("push_baseline_at_ms") is not None
+            else None
+        ),
+        now_ms=now_ms,
+    )
+    status = selected.get("push_delivery_status") if selected is not None else None
     if status in {"pending_translation", "pending_delivery", "retry_wait"}:
-        return "pending"
-    if status == "sent":
-        return "sent"
-    if status == "suppressed":
-        return "suppressed"
-    if status == "terminal":
-        return "failed"
-    return "pending"
-
-
-def _provider_assets_are_push_filtered(value: object) -> bool:
-    if not isinstance(value, Mapping):
-        return True
-    coins = value.get("coins")
-    if not isinstance(coins, list):
-        return True
-    symbols = {
-        str(coin["symbol"]).strip().casefold()
-        for coin in coins
-        if isinstance(coin, Mapping)
-        and isinstance(coin.get("symbol"), str)
-        and str(coin["symbol"]).strip()
-        and isinstance(coin.get("market_type"), str)
-        and str(coin["market_type"]).strip()
+        delivery_state = "pending"
+    elif status == "sent":
+        delivery_state = "sent"
+    elif status == "suppressed":
+        delivery_state = "suppressed"
+    elif status == "terminal":
+        delivery_state = "failed"
+    else:
+        delivery_state = "not_created"
+    return {
+        "eligible": eligibility.eligible,
+        "ineligible_reason": eligibility.ineligible_reason,
+        "delivery_state": delivery_state,
     }
-    return not symbols or symbols.issubset({"cl", "xyz-cl"})
 
 
 def _public_push_error(value: str) -> str:

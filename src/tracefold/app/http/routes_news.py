@@ -50,9 +50,12 @@ def get_news_feed(
         },
     )
     runtime = _authenticated_runtime(request)
+    now_ms = _now_ms()
     try:
         with runtime.repositories() as repos:
             data = repos.news.list_feed(
+                push_enabled=runtime.settings.news.push.enabled,
+                now_ms=now_ms,
                 category=category or None,
                 level=level or None,
                 source_id=source_id or None,
@@ -86,10 +89,13 @@ def get_news_story(
         supported={"token", "members_limit", "members_cursor"},
     )
     runtime = _authenticated_runtime(request)
+    now_ms = _now_ms()
     try:
         with runtime.repositories() as repos:
             data = repos.news.get_story(
                 story_id=story_id.strip(),
+                push_enabled=runtime.settings.news.push.enabled,
+                now_ms=now_ms,
                 members_limit=members_limit,
                 members_cursor=members_cursor or None,
             )
@@ -170,6 +176,10 @@ def _news_workers_observation(conn: Any, *, now_ms: int) -> tuple[str | None, st
     if state in {"stopped", "failed"}:
         return "stalled", f"workers_runtime_{state}"
     raise RuntimeError("news_workers_runtime_state_invalid")
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def _etagged(

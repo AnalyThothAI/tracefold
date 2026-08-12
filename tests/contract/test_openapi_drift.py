@@ -177,6 +177,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsFeedData",
         "NewsStoryData",
         "NewsStoryDetailData",
+        "NewsNotificationData",
         "NewsProviderMetadataData",
         "NewsBriefData",
         "NewsSourcesData",
@@ -189,9 +190,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     assert "NewsProviderAssetData" in components
     assert "NewsProviderCoinData" not in components
     assert set(metadata_properties) == {"score", "source", "signal", "grade", "assets"}
-    assert metadata_properties["assets"]["anyOf"][0]["items"] == {
-        "$ref": "#/components/schemas/NewsProviderAssetData"
-    }
+    assert metadata_properties["assets"]["anyOf"][0]["items"] == {"$ref": "#/components/schemas/NewsProviderAssetData"}
     assert set(components["NewsProviderAssetData"]["properties"]) == {
         "symbol",
         "market_type",
@@ -200,6 +199,30 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "signal",
         "grade",
     }
+    story_properties = components["NewsStoryData"]["properties"]
+    assert story_properties["notification"] == {"$ref": "#/components/schemas/NewsNotificationData"}
+    assert "push_delivery_state" not in story_properties
+    notification = components["NewsNotificationData"]
+    assert set(notification["required"]) == {
+        "eligible",
+        "ineligible_reason",
+        "delivery_state",
+    }
+    assert notification["properties"]["ineligible_reason"]["anyOf"][0]["enum"] == [
+        "disabled",
+        "score_threshold",
+        "no_asset",
+        "cl_family_only",
+        "baseline",
+        "stale",
+    ]
+    assert notification["properties"]["delivery_state"]["enum"] == [
+        "not_created",
+        "pending",
+        "sent",
+        "suppressed",
+        "failed",
+    ]
 
 
 @pytest.mark.contract

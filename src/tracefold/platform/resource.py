@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Future
 
 
 class ResourceAdmissionTimeout(TimeoutError):
@@ -18,6 +19,27 @@ class CpuTaskTimeout(TimeoutError):
 
 class CpuTaskProcessExpired(RuntimeError):
     """The spawn-only CPU child exited unexpectedly."""
+
+
+async def await_concurrent_future[T](
+    underlying: Future[T],
+    wrapped: asyncio.Future[T],
+    *,
+    timeout_seconds: float,
+    overrun_code: str,
+) -> T:
+    """Let an already-finished native future win over a delayed asyncio callback."""
+
+    done, _ = await asyncio.wait(
+        {wrapped},
+        timeout=max(0.001, float(timeout_seconds)),
+    )
+    if done:
+        return await wrapped
+    if underlying.done():
+        wrapped.cancel()
+        return underlying.result()
+    raise ResourceOperationOverrun(overrun_code)
 
 
 class ResourceSubmissionTracker:
@@ -55,4 +77,5 @@ __all__ = [
     "ResourceAdmissionTimeout",
     "ResourceOperationOverrun",
     "ResourceSubmissionTracker",
+    "await_concurrent_future",
 ]

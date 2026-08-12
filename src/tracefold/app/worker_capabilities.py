@@ -9,6 +9,7 @@ from contextlib import suppress
 from functools import partial
 from typing import Any
 
+from pebble import CONSTS as PEBBLE_CONSTS
 from pebble import ProcessExpired, ProcessPool
 
 from tracefold.platform.resource import (
@@ -16,10 +17,11 @@ from tracefold.platform.resource import (
     CpuTaskTimeout,
     ResourceAdmissionTimeout,
     ResourceOperationOverrun,
+    await_concurrent_future,
 )
 
 _THREAD_FUTURE_COMPLETION_GRACE_SECONDS = 0.500
-_CPU_FUTURE_COMPLETION_GRACE_SECONDS = 4.000
+_CPU_FUTURE_COMPLETION_SCHEDULING_GRACE_SECONDS = 5.000
 
 
 class FiniteOperations:
@@ -123,13 +125,12 @@ class FiniteOperations:
         )
         if on_submitted is not None:
             on_submitted()
-        done, _ = await asyncio.wait(
-            {wrapped},
-            timeout=max(0.001, float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS),
+        return await await_concurrent_future(
+            underlying,
+            wrapped,
+            timeout_seconds=float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS,
+            overrun_code=f"resource_operation_overrun:{_operation_name(operation_name)}",
         )
-        if not done:
-            raise ResourceOperationOverrun(f"resource_operation_overrun:{_operation_name(operation_name)}")
-        return await wrapped
 
     def close_admission(self) -> None:
         self._accepting = False
@@ -210,13 +211,12 @@ class ModelAdapter:
         )
         if on_submitted is not None:
             on_submitted()
-        done, _ = await asyncio.wait(
-            {wrapped},
-            timeout=max(0.001, float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS),
+        return await await_concurrent_future(
+            underlying,
+            wrapped,
+            timeout_seconds=float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS,
+            overrun_code=f"resource_operation_overrun:{_operation_name(operation_name)}",
         )
-        if not done:
-            raise ResourceOperationOverrun(f"resource_operation_overrun:{_operation_name(operation_name)}")
-        return await wrapped
 
     def close_admission(self) -> None:
         self._accepting = False
@@ -329,17 +329,17 @@ class CpuProcess:
         )
         if on_submitted is not None:
             on_submitted()
-        done, _ = await asyncio.wait(
-            {wrapped},
-            timeout=max(
-                0.001,
-                service_timeout + _CPU_FUTURE_COMPLETION_GRACE_SECONDS,
-            ),
-        )
-        if not done:
-            raise ResourceOperationOverrun(f"resource_operation_overrun:{_operation_name(operation_name)}")
         try:
-            return await wrapped
+            return await await_concurrent_future(
+                underlying,
+                wrapped,
+                timeout_seconds=(
+                    service_timeout
+                    + float(PEBBLE_CONSTS.term_timeout)
+                    + _CPU_FUTURE_COMPLETION_SCHEDULING_GRACE_SECONDS
+                ),
+                overrun_code=f"resource_operation_overrun:{_operation_name(operation_name)}",
+            )
         except FutureTimeoutError as exc:
             raise CpuTaskTimeout(f"cpu_task_timeout:{_operation_name(operation_name)}:{service_timeout:g}s") from exc
         except ProcessExpired as exc:

@@ -6,6 +6,33 @@ import threading
 from typing import Any
 
 
+def _ignore_sigterm_and_sleep(delay_seconds: float) -> None:
+    import signal
+    import time
+
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    time.sleep(delay_seconds)
+
+
+def _return_one() -> int:
+    return 1
+
+
+def _native_news_push_timeout(db: Any) -> None:
+    with db.worker_session(
+        "test_news_push_bounded_timeout",
+        statement_timeout_seconds=0.05,
+        transaction_timeout_seconds=0.2,
+    ) as repos:
+        repos.conn.execute("SELECT pg_sleep(0.2)")
+
+
+def _news_push_liveness(db: Any) -> int:
+    with db.worker_session("test_news_push_recovery") as repos:
+        row = repos.conn.execute("SELECT 1 AS ok").fetchone()
+        return int(row["ok"])
+
+
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dsn", required=True)
@@ -21,6 +48,7 @@ def _arguments() -> argparse.Namespace:
             "model_overrun",
             "control_overrun",
             "provider_publication",
+            "news_bounded_recovery",
         ),
     )
     return parser.parse_args()
@@ -60,12 +88,21 @@ def _components(
 
 
 async def _main() -> None:
+    arguments = _arguments()
+    if arguments.mode == "news_bounded_recovery":
+        from pebble import CONSTS
+
+        # Make the native TERM -> KILL interval longer than the old fixed
+        # wrapper grace so the process test deterministically exercises a
+        # late, but still classified and recoverable, native CPU timeout.
+        CONSTS.term_timeout = 4.5
+
     from tracefold.app import market_providers as market_providers_module
     from tracefold.app import workers
     from tracefold.platform.config.settings import Settings
     from tracefold.platform.model_candidate import ModelCandidate
+    from tracefold.platform.resource import CpuTaskTimeout
 
-    arguments = _arguments()
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1
 
@@ -141,6 +178,81 @@ async def _main() -> None:
 
         if arguments.mode == "control_overrun":
             return _components(workers, market_providers_module, due_turns=())
+
+        if arguments.mode == "news_bounded_recovery":
+            news_cpu = kwargs["news_cpu"]
+            assert news_cpu is not None
+            db = kwargs["db"]
+            workers._NEWS_STORY_REFRESH_SECONDS = 0.1
+            workers._NEWS_PUSH_RECONCILE_SECONDS = 0.1
+
+            class RecoveringNewsStory:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                async def sample(self) -> None:
+                    self.calls += 1
+                    if self.calls == 1:
+                        try:
+                            await news_cpu.run(
+                                "test_news_story_bounded_timeout",
+                                _ignore_sigterm_and_sleep,
+                                30.0,
+                                service_timeout_seconds=0.05,
+                            )
+                        except CpuTaskTimeout:
+                            print("NEWS_STORY_BOUNDED_TIMEOUT", flush=True)
+                            return
+                    if self.calls == 2:
+                        assert (
+                            await news_cpu.run(
+                                "test_news_story_recovery",
+                                _return_one,
+                                service_timeout_seconds=1.0,
+                            )
+                            == 1
+                        )
+                        print("NEWS_STORY_RECOVERED", flush=True)
+
+            class RecoveringNewsPush:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                async def reconcile(self, *, now_ms: int) -> dict[str, int]:
+                    del now_ms
+                    self.calls += 1
+                    if self.calls == 1:
+                        return {}
+                    if self.calls == 2:
+                        try:
+                            await db.run_business(
+                                "test_news_push_bounded_timeout",
+                                _native_news_push_timeout,
+                                db,
+                                operation_timeout_seconds=0.05,
+                            )
+                        finally:
+                            print("NEWS_PUSH_BOUNDED_TIMEOUT", flush=True)
+                    if self.calls == 3:
+                        assert (
+                            await db.run_business(
+                                "test_news_push_recovery",
+                                _news_push_liveness,
+                                db,
+                                operation_timeout_seconds=1.0,
+                            )
+                            == 1
+                        )
+                        print("NEWS_PUSH_RECOVERED", flush=True)
+                    return {}
+
+                async def close(self) -> None:
+                    return None
+
+            components = _components(workers, market_providers_module, due_turns=())
+            components.news_story = RecoveringNewsStory()
+            components.news_push = RecoveringNewsPush()
+            return components
 
         db = kwargs["db"]
         published = False

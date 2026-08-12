@@ -11,11 +11,14 @@ from typing import Any, Protocol, cast
 
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
-PUSH_PAYLOAD_SCHEMA_VERSION = "news_story_push_v1"
-PUSH_PROVIDER_SCORE_THRESHOLD = 70.0
-PUSH_SOURCE_FRESHNESS_MS = 15 * 60 * 1_000
+from .notification import (
+    PUSH_PROVIDER_SCORE_THRESHOLD,
+    PUSH_SOURCE_FRESHNESS_MS,
+    NewsPushEligibility,
+    evaluate_news_push_eligibility,
+)
 
-_PUSH_SUPPRESSED_ASSET_SYMBOLS = frozenset({"cl", "xyz-cl"})
+PUSH_PAYLOAD_SCHEMA_VERSION = "news_story_push_v1"
 
 _DELIVERY_MAX_ATTEMPTS = 6
 _DELIVERY_RETRY_DELAYS_MS = (5_000, 30_000, 120_000, 600_000, 1_800_000)
@@ -154,7 +157,22 @@ class NewsStoryPush:
         source_payload = dict(claim["source_payload"])
         provider_evidence = dict(source_payload["provider_evidence"])
         published_at_ms = int(provider_evidence["published_at_ms"])
-        if _provider_assets_require_suppression(provider_evidence):
+        translation_attempted_at_ms = (
+            int(claim["updated_at_ms"]) if claim.get("translation_status") == "attempted" else None
+        )
+        push_baseline_at_ms = (
+            int(claim["push_baseline_at_ms"]) if claim.get("push_baseline_at_ms") is not None else None
+        )
+        eligibility = await self._current_eligibility(
+            selected_item_id=str(claim["selected_item_id"]),
+            baseline_at_ms=push_baseline_at_ms,
+            now_ms=now_ms,
+        )
+        if not eligibility.eligible and (
+            claim.get("delivery_payload") is not None
+            or translation_attempted_at_ms is None
+            or eligibility.ineligible_reason != "stale"
+        ):
             if claim.get("delivery_payload") is None:
                 suppressed = await self.db.run_business(
                     "news_story_push_suppress_filtered",
@@ -186,19 +204,6 @@ class NewsStoryPush:
             return bool(suppressed)
         if claim.get("delivery_payload") is None:
             deadline_ms = published_at_ms + PUSH_SOURCE_FRESHNESS_MS
-            translation_attempted_at_ms = (
-                int(claim["updated_at_ms"]) if claim.get("translation_status") == "attempted" else None
-            )
-            if translation_attempted_at_ms is None and published_at_ms < now_ms - PUSH_SOURCE_FRESHNESS_MS:
-                suppressed = await self.db.run_business(
-                    "news_story_push_suppress_stale",
-                    self._suppress_claimed_sync,
-                    story_id,
-                    lease_token,
-                    now_ms,
-                    operation_timeout_seconds=1.0,
-                )
-                return bool(suppressed)
 
             async def fence_translation_dispatch() -> None:
                 nonlocal translation_attempted_at_ms
@@ -289,7 +294,12 @@ class NewsStoryPush:
                 )
                 return bool(terminalized)
             prepared_at_ms = _now_ms()
-            if published_at_ms < prepared_at_ms - PUSH_SOURCE_FRESHNESS_MS:
+            prepared_eligibility = await self._current_eligibility(
+                selected_item_id=str(claim["selected_item_id"]),
+                baseline_at_ms=push_baseline_at_ms,
+                now_ms=prepared_at_ms,
+            )
+            if not prepared_eligibility.eligible:
                 if translation_attempted_at_ms is not None:
                     suppressed = await self.db.run_business(
                         "news_story_push_suppress_prepared_stale",
@@ -360,7 +370,12 @@ class NewsStoryPush:
 
         async def suppress_if_stale_before_submit() -> None:
             submitted_at_ms = _now_ms()
-            if published_at_ms >= submitted_at_ms - PUSH_SOURCE_FRESHNESS_MS:
+            submission_eligibility = await self._current_eligibility(
+                selected_item_id=str(claim["selected_item_id"]),
+                baseline_at_ms=push_baseline_at_ms,
+                now_ms=submitted_at_ms,
+            )
+            if submission_eligibility.eligible:
                 return
             suppressed = await self.db.run_business(
                 "news_story_push_suppress_unsubmitted_stale",
@@ -447,6 +462,26 @@ class NewsStoryPush:
         )
         return bool(completed)
 
+    async def _current_eligibility(
+        self,
+        *,
+        selected_item_id: str,
+        baseline_at_ms: int | None,
+        now_ms: int,
+    ) -> NewsPushEligibility:
+        evidence = await self.db.run_business(
+            "news_story_push_current_eligibility",
+            self._current_eligibility_sync,
+            selected_item_id,
+            operation_timeout_seconds=0.5,
+        )
+        return evaluate_news_push_eligibility(
+            evidence if isinstance(evidence, Mapping) else None,
+            enabled=True,
+            baseline_at_ms=baseline_at_ms,
+            now_ms=now_ms,
+        )
+
     async def _record_delivery_failure(
         self,
         *,
@@ -478,7 +513,7 @@ class NewsStoryPush:
                 now_ms=now_ms,
             )
             baseline_at_ms, initialized = repos.news.initialize_push_baseline(now_ms=now_ms)
-            candidates = repos.news.story_provider_evidence()
+            candidates = repos.news.story_push_contexts()
             inserted = 0
             suppressed = 0
             for candidate in candidates.values():
@@ -487,21 +522,27 @@ class NewsStoryPush:
                 # no-op INSERT for ledgered Stories on every reconcile turn.
                 if candidate.get("push_delivery_status") is not None:
                     continue
-                evidence = dict(candidate["provider_evidence"])
+                raw_evidence = candidate.get("provider_evidence")
+                if not isinstance(raw_evidence, Mapping):
+                    continue
+                evidence = dict(raw_evidence)
+                eligibility = evaluate_news_push_eligibility(
+                    evidence,
+                    enabled=True,
+                    baseline_at_ms=baseline_at_ms,
+                    now_ms=now_ms,
+                )
+                if eligibility.ineligible_reason in {
+                    "score_threshold",
+                    "no_asset",
+                    "cl_family_only",
+                }:
+                    continue
                 score = float(evidence["provider_score"])
-                if score <= PUSH_PROVIDER_SCORE_THRESHOLD:
-                    continue
-                if _provider_assets_require_suppression(evidence):
-                    continue
                 # Push is a live alert, not a recovery backfill. Suppress both
                 # the enablement snapshot and any provider score that arrives
                 # later for an old Item (for example through REST recovery).
-                published_at_ms = int(evidence["published_at_ms"])
-                should_suppress = (
-                    initialized
-                    or published_at_ms <= baseline_at_ms
-                    or published_at_ms < now_ms - PUSH_SOURCE_FRESHNESS_MS
-                )
+                should_suppress = initialized or not eligibility.eligible
                 created = repos.news.insert_push_candidate(
                     story_id=str(candidate["story_id"]),
                     selected_item_id=str(evidence["item_id"]),
@@ -522,6 +563,15 @@ class NewsStoryPush:
             "suppressed": suppressed,
             "terminalized": terminalized,
         }
+
+    def _current_eligibility_sync(self, selected_item_id: str) -> dict[str, Any] | None:
+        with self.db.worker_session("news_story_push_current_eligibility", 0.5) as repos:
+            return cast(
+                dict[str, Any] | None,
+                repos.news.current_push_eligibility_evidence(
+                    selected_item_id=selected_item_id,
+                ),
+            )
 
     def _peek_sync(self, now_ms: int) -> dict[str, Any] | None:
         with self.db.worker_session("news_story_push_peek", 0.5) as repos:
@@ -775,30 +825,6 @@ def _source_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
             "last_published_at_ms": int(candidate["last_published_at_ms"]),
         },
     }
-
-
-def _provider_assets_require_suppression(evidence: Mapping[str, Any]) -> bool:
-    metadata = evidence.get("provider_metadata")
-    if not isinstance(metadata, Mapping):
-        return True
-    raw_assets = metadata.get("coins")
-    if not isinstance(raw_assets, list):
-        return True
-
-    symbols: set[str] = set()
-    for raw_asset in raw_assets:
-        if not isinstance(raw_asset, Mapping):
-            continue
-        raw_symbol = raw_asset.get("symbol")
-        if not isinstance(raw_symbol, str):
-            continue
-        raw_market_type = raw_asset.get("market_type")
-        if not isinstance(raw_market_type, str) or not raw_market_type.strip():
-            continue
-        symbol = raw_symbol.strip().casefold()
-        if symbol:
-            symbols.add(symbol)
-    return not symbols or symbols.issubset(_PUSH_SUPPRESSED_ASSET_SYMBOLS)
 
 
 def _receipt_payload(receipt: NewsPushReceipt) -> dict[str, Any]:

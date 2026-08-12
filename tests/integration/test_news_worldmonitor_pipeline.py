@@ -802,8 +802,15 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         assert result["items_updated"] == 1
         assert after["item_id"] == before["item_id"]
 
-        story = repository.list_feed()["stories"][0]
-        detail = repository.get_story(story_id=story["story_id"])
+        story = repository.list_feed(
+            push_enabled=False,
+            now_ms=NOW_MS + 4,
+        )["stories"][0]
+        detail = repository.get_story(
+            story_id=story["story_id"],
+            push_enabled=False,
+            now_ms=NOW_MS + 4,
+        )
         assert detail is not None
         assert detail["members"][0]["provider_record_id"] == "wire-1"
         assert detail["members"][0]["provider_metadata"]["score"] == 82

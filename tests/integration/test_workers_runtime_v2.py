@@ -441,6 +441,36 @@ def test_real_workers_never_returning_control_operation_is_fatal() -> None:
         _ensure_process_stopped(process)
 
 
+def test_real_workers_news_native_timeouts_recover_without_root_restart() -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    process = _start_workers_process("news_bounded_recovery", port)
+    try:
+        _wait_ready(process, port)
+        _wait_for_outputs(
+            process,
+            (
+                "NEWS_PUSH_BOUNDED_TIMEOUT",
+                "NEWS_PUSH_RECOVERED",
+                "NEWS_STORY_BOUNDED_TIMEOUT",
+                "NEWS_STORY_RECOVERED",
+            ),
+            timeout_seconds=12.0,
+        )
+        assert process.poll() is None
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "running"
+        assert row["fatal_code"] is None
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "stopped"
+        assert row["fatal_code"] is None
+    finally:
+        _ensure_process_stopped(process)
+
+
 def test_sigterm_after_provider_completion_preserves_inflight_publication() -> None:
     prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
@@ -576,6 +606,36 @@ def _wait_for_output(
         if expected in line:
             return
     raise AssertionError(f"missing process marker {expected!r}; output={''.join(seen)!r}")
+
+
+def _wait_for_outputs(
+    process: subprocess.Popen[str],
+    expected: tuple[str, ...],
+    *,
+    timeout_seconds: float,
+) -> None:
+    output = process.stdout
+    assert output is not None
+    deadline = time.monotonic() + timeout_seconds
+    missing = set(expected)
+    seen: list[str] = []
+    lines: queue.Queue[str] = queue.Queue()
+
+    def read_lines() -> None:
+        for line in output:
+            lines.put(line)
+
+    threading.Thread(target=read_lines, daemon=True).start()
+    while time.monotonic() < deadline and missing:
+        try:
+            line = lines.get(timeout=min(0.1, deadline - time.monotonic()))
+        except queue.Empty:
+            if process.poll() is not None:
+                break
+            continue
+        seen.append(line)
+        missing = {marker for marker in missing if marker not in line}
+    assert not missing, f"missing process markers {sorted(missing)!r}; output={''.join(seen)!r}"
 
 
 def _assert_probe_closed(port: int) -> None:

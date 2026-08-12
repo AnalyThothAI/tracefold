@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from concurrent.futures import Future
 from contextlib import suppress
 from threading import Event, Lock
 from typing import Any
 
 import pytest
+from pebble import CONSTS as PEBBLE_CONSTS
 
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
@@ -17,7 +19,7 @@ from tracefold.app.worker_cpu_prewarm import (
     projection_cpu_modules_loaded,
 )
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.resource import CpuTaskTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import CpuTaskTimeout, ResourceOperationOverrun, await_concurrent_future
 
 
 def _sleep_and_return(delay_seconds: float, value: int) -> int:
@@ -62,6 +64,36 @@ def test_native_completion_finishes_before_thread_wrapper_watchdog(capability_ty
                 )
         finally:
             capability.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("outcome", ["result", "error"])
+def test_completed_native_future_wins_and_cancels_its_delayed_wrapper(outcome: str) -> None:
+    async def scenario() -> None:
+        underlying: Future[int] = Future()
+        wrapped: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        if outcome == "result":
+            underlying.set_result(7)
+            assert (
+                await await_concurrent_future(
+                    underlying,
+                    wrapped,
+                    timeout_seconds=0.001,
+                    overrun_code="resource_operation_overrun:test",
+                )
+                == 7
+            )
+        else:
+            underlying.set_exception(_ExpectedNativeFailure("native_failure"))
+            with pytest.raises(_ExpectedNativeFailure, match="native_failure"):
+                await await_concurrent_future(
+                    underlying,
+                    wrapped,
+                    timeout_seconds=0.001,
+                    overrun_code="resource_operation_overrun:test",
+                )
+        assert wrapped.cancelled()
 
     asyncio.run(scenario())
 
@@ -451,6 +483,39 @@ def test_cpu_native_timeout_finishes_before_the_wrapper_watchdog() -> None:
                     1,
                     service_timeout_seconds=0.05,
                 )
+        finally:
+            capability.close()
+
+    asyncio.run(scenario())
+
+
+def test_cpu_native_timeout_grace_includes_pebble_process_termination_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(PEBBLE_CONSTS, "term_timeout", 4.5)
+
+    async def scenario() -> None:
+        capability = CpuProcess()
+        try:
+            await capability.prewarm()
+            with pytest.raises(CpuTaskTimeout, match="cpu_task_timeout:late_native_timeout"):
+                await capability.run(
+                    "late_native_timeout",
+                    _ignore_sigterm_and_sleep,
+                    30.0,
+                    1,
+                    service_timeout_seconds=0.05,
+                )
+            assert (
+                await capability.run(
+                    "after_late_native_timeout",
+                    _sleep_and_return,
+                    0.01,
+                    7,
+                    service_timeout_seconds=1.0,
+                )
+                == 7
+            )
         finally:
             capability.close()
 
