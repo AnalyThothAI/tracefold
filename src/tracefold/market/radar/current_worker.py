@@ -92,7 +92,7 @@ class TokenRadarCurrentService:
         return self.db.worker_session(
             self.worker_name,
             statement_timeout_seconds=timeout_seconds,
-            transaction_timeout_seconds=timeout_seconds,
+            transaction_timeout_seconds=None,
         )
 
 

@@ -193,6 +193,10 @@ a 12.0-second hard budget, with measured P95 at or below eight seconds. The base
 phase caps are 9.0 seconds for load, 2.5 seconds for compute, and 0.25 seconds
 each for presentation and publication. A phase gets the smaller of its absolute
 cap and the remaining whole-turn time after later fixed phases are reserved.
+Radar database phases apply that phase cap as a per-statement deadline and use
+the standard five-second transaction cleanup margin; the enclosing twelve-second
+turn remains the hard projection-outcome deadline while the native margin
+bounds cleanup of an in-flight multi-statement transaction.
 Earlier unused time remains whole-turn slack; it never lets a later phase exceed
 its cap, and the whole turn never exceeds 12.0 seconds. The complete public v4
 snapshot is

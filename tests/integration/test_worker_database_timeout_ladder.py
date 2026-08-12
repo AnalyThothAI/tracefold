@@ -9,6 +9,7 @@ from psycopg.errors import IdleInTransactionSessionTimeout
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.app import workers as workers_module
 from tracefold.app.database import WorkerDatabase
+from tracefold.market.radar.current_worker import TokenRadarCurrentService
 from tracefold.platform.postgres.postgres_client import connect_postgres, create_pool
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -186,6 +187,47 @@ def test_native_transaction_timeout_bounds_the_complete_worker_session() -> None
                 "transaction_timeout_recovery",
                 liveness_query,
                 operation_timeout_seconds=3.0,
+            )
+            == 1
+        )
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        database.close_executors()
+        pool.close()
+
+
+@pytest.mark.integration
+def test_token_radar_statement_budget_does_not_cancel_its_multi_statement_transaction() -> None:
+    pool = create_pool(
+        _test_postgres_dsn(),
+        min_size=1,
+        max_size=4,
+        max_waiting=3,
+        connect_timeout_seconds=5.0,
+        application_name="tracefold_radar_transaction_margin_test",
+        statement_timeout_seconds=0.5,
+        lock_timeout_seconds=0.25,
+        idle_in_transaction_session_timeout_seconds=5.0,
+    )
+    pool.wait(timeout=5.0)
+    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    service = TokenRadarCurrentService(db=database)
+
+    def two_individually_bounded_queries() -> int:
+        with service._session(timeout_seconds=0.2) as repos:
+            repos.conn.execute("SELECT pg_sleep(0.12)")
+            repos.conn.execute("SELECT pg_sleep(0.12)")
+            row = repos.conn.execute("SELECT 1 AS ok").fetchone()
+            return int(row["ok"])
+
+    async def scenario() -> None:
+        assert (
+            await database.run_business(
+                "token_radar_transaction_margin_probe",
+                two_individually_bounded_queries,
+                operation_timeout_seconds=1.0,
             )
             == 1
         )

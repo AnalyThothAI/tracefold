@@ -187,6 +187,21 @@ def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() ->
         ]
 
 
+def test_token_radar_multi_statement_sessions_keep_native_transaction_cleanup_margin() -> None:
+    database = _RecordingSessionDatabase()
+    service = TokenRadarCurrentService(db=database)
+
+    service._session(timeout_seconds=9.0)
+
+    assert database.calls == [
+        {
+            "name": "token_radar_current",
+            "statement_timeout_seconds": 9.0,
+            "transaction_timeout_seconds": None,
+        }
+    ]
+
+
 def test_macro_acquisition_uses_one_native_budget_for_statement_and_transaction() -> None:
     database = _RecordingSessionDatabase()
     service = object.__new__(MacroAcquisitionService)
