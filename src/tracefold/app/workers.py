@@ -13,6 +13,9 @@ from uuid import uuid4
 
 import uvicorn
 from loguru import logger
+from psycopg import OperationalError
+from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, QueryCanceled, TransactionTimeout
+from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.llm import configured_chat_model, llm_is_configured
@@ -77,6 +80,8 @@ _WORKER_INTERNAL_PORT = 8766
 _RUNTIME_REVISION_ENV = "TRACEFOLD_RUNTIME_REVISION"
 _HEARTBEAT_SECONDS = 5.0
 _CONTROL_TIMEOUT_SECONDS = 1.0
+_CONTROL_RETRY_SECONDS = 0.250
+_CONTROL_HEARTBEAT_STALE_SECONDS = 15.0
 _EVENT_ANCHOR_ACTIVE_WINDOW_MS = 300_000
 _DOCUMENT_MODEL_TIMEOUT_SECONDS = 180.0
 _MODEL_MAX_TOKENS = 6_000
@@ -87,7 +92,7 @@ _MARKET_TICK_POLL_SECONDS = 35.0
 _NEWS_STORY_REFRESH_SECONDS = 60.0
 _NEWS_PUSH_IDLE_SECONDS = 5.0
 _NEWS_RSS_IDLE_SECONDS = 30.0
-_NEWS_PUSH_RECONCILE_SECONDS = 10.0
+_NEWS_PUSH_RECONCILE_SECONDS = 2.5
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
     ("macro_settlements", "daily_settlement"),
@@ -124,8 +129,10 @@ class _ProbeState:
     unavailable_reason: str = "runtime_starting"
 
     def payload(self) -> dict[str, Any]:
+        heartbeat_stale_after_ms = int(_CONTROL_HEARTBEAT_STALE_SECONDS * 1_000)
         heartbeat_current = (
-            self.heartbeat_at_ms is not None and max(0, int(self.clock_ms()) - int(self.heartbeat_at_ms)) <= 15_000
+            self.heartbeat_at_ms is not None
+            and max(0, int(self.clock_ms()) - int(self.heartbeat_at_ms)) <= heartbeat_stale_after_ms
         )
         ready = self.ready and self.lifecycle_state == "running" and heartbeat_current
         unavailable_reason = self.unavailable_reason
@@ -140,7 +147,7 @@ class _ProbeState:
             "lifecycle_state": self.lifecycle_state,
             "started_at_ms": self.started_at_ms,
             "heartbeat_at_ms": self.heartbeat_at_ms,
-            "heartbeat_stale_after_ms": 15_000,
+            "heartbeat_stale_after_ms": heartbeat_stale_after_ms,
             "unavailable_reason": None if ready else unavailable_reason,
         }
 
@@ -292,29 +299,6 @@ async def run_workers(settings: Settings) -> None:
                 ),
                 name="workers-probe",
             )
-            control_task = group.create_task(
-                _guard_child(
-                    _run_control(
-                        db=db,
-                        lock_conn=lock_conn,
-                        runtime_id=runtime_id,
-                        probe_state=probe_state,
-                        stop_event=control_stop_event,
-                    ),
-                    on_fatal=enter_fatal,
-                ),
-                name="workers-control",
-            )
-            control_watchdog_task = group.create_task(
-                _guard_child(
-                    _run_control_watchdog(
-                        probe_state=probe_state,
-                        stop_event=control_stop_event,
-                    ),
-                    on_fatal=enter_fatal,
-                ),
-                name="workers-control-watchdog",
-            )
             if components.collector is not None:
                 business_tasks.append(
                     group.create_task(
@@ -432,14 +416,22 @@ async def run_workers(settings: Settings) -> None:
                 _wait_for_probe_start(server),
                 on_fatal=enter_fatal,
             )
-            probe_state.heartbeat_at_ms = await _guard_child(
-                _control_liveness_and_heartbeat(
-                    db=db,
-                    lock_conn=lock_conn,
-                    runtime_id=runtime_id,
-                ),
-                on_fatal=enter_fatal,
-            )
+            try:
+                async with asyncio.timeout(_CONTROL_HEARTBEAT_STALE_SECONDS):
+                    initial_heartbeat_at_ms = await _guard_child(
+                        _control_heartbeat_with_retry(
+                            db=db,
+                            lock_conn=lock_conn,
+                            runtime_id=runtime_id,
+                            stop_event=control_stop_event,
+                        ),
+                        on_fatal=enter_fatal,
+                    )
+            except TimeoutError as exc:
+                raise _ControlFailure("workers_control_heartbeat_stale") from exc
+            if initial_heartbeat_at_ms is None:
+                raise asyncio.CancelledError
+            probe_state.heartbeat_at_ms = initial_heartbeat_at_ms
             await _guard_child(
                 db.run_control(
                     "workers_runtime_running",
@@ -455,6 +447,29 @@ async def run_workers(settings: Settings) -> None:
             probe_state.ready = True
             probe_state.lifecycle_state = "running"
             probe_state.unavailable_reason = ""
+            control_task = group.create_task(
+                _guard_child(
+                    _run_control(
+                        db=db,
+                        lock_conn=lock_conn,
+                        runtime_id=runtime_id,
+                        probe_state=probe_state,
+                        stop_event=control_stop_event,
+                    ),
+                    on_fatal=enter_fatal,
+                ),
+                name="workers-control",
+            )
+            control_watchdog_task = group.create_task(
+                _guard_child(
+                    _run_control_watchdog(
+                        probe_state=probe_state,
+                        stop_event=control_stop_event,
+                    ),
+                    on_fatal=enter_fatal,
+                ),
+                name="workers-control-watchdog",
+            )
             phase = "runtime"
 
             await shutdown_requested.wait()
@@ -651,11 +666,15 @@ async def _run_control(
 ) -> None:
     try:
         while not stop_event.is_set():
-            probe_state.heartbeat_at_ms = await _control_liveness_and_heartbeat(
+            heartbeat_at_ms = await _control_heartbeat_with_retry(
                 db=db,
                 lock_conn=lock_conn,
                 runtime_id=runtime_id,
+                stop_event=stop_event,
             )
+            if heartbeat_at_ms is None:
+                return
+            probe_state.heartbeat_at_ms = heartbeat_at_ms
             await _wait_or_stop(stop_event, _HEARTBEAT_SECONDS)
     except asyncio.CancelledError:
         raise
@@ -665,6 +684,37 @@ async def _run_control(
         raise _ControlFailure("workers_control_failed") from exc
     except Exception as exc:
         raise _ControlFailure("workers_control_failed") from exc
+
+
+async def _control_heartbeat_with_retry(
+    *,
+    db: WorkerDatabase,
+    lock_conn: Any,
+    runtime_id: str,
+    stop_event: asyncio.Event,
+) -> int | None:
+    """Retry only the idempotent heartbeat's precise transient DB failures."""
+
+    while True:
+        try:
+            return await _control_liveness_and_heartbeat(
+                db=db,
+                lock_conn=lock_conn,
+                runtime_id=runtime_id,
+            )
+        except (
+            ResourceAdmissionTimeout,
+            LockNotAvailable,
+            QueryCanceled,
+            TransactionTimeout,
+            IdleInTransactionSessionTimeout,
+            PoolTimeout,
+            OperationalError,
+        ) as exc:
+            logger.bind(error=type(exc).__name__).warning("Workers control heartbeat transient database failure")
+            await _wait_or_stop(stop_event, _CONTROL_RETRY_SECONDS)
+            if stop_event.is_set():
+                return None
 
 
 async def _run_control_watchdog(
@@ -679,7 +729,7 @@ async def _run_control_watchdog(
         if probe_state.heartbeat_at_ms != last_heartbeat_at_ms:
             last_heartbeat_at_ms = probe_state.heartbeat_at_ms
             last_success_at = loop.time()
-        if loop.time() - last_success_at > 15.0:
+        if loop.time() - last_success_at > _CONTROL_HEARTBEAT_STALE_SECONDS:
             raise _ControlFailure("workers_control_heartbeat_stale")
         await _wait_or_stop(stop_event, 0.250)
 
@@ -697,6 +747,8 @@ async def _control_liveness_and_heartbeat(
             lock_conn,
             operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
         )
+    except ResourceAdmissionTimeout:
+        raise
     except Exception as exc:
         raise RuntimeError("singleton_lost") from exc
     heartbeat_at_ms = _now_ms()

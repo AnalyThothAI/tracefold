@@ -65,7 +65,7 @@ def test_all_worker_sessions_use_the_uniform_bounded_postgres_policy() -> None:
     assert configured.keys() >= {"max_parallel_workers_per_gather", "jit", "work_mem"}
 
 
-def test_steady_worker_session_default_sql_budget_is_three_seconds() -> None:
+def test_steady_worker_session_default_sql_budget_leaves_native_cleanup_grace() -> None:
     conn = _FakeConnection()
     bundle = WorkerDatabase(worker_pool=_FakePool(conn), telemetry=None)
 
@@ -74,7 +74,7 @@ def test_steady_worker_session_default_sql_budget_is_three_seconds() -> None:
 
     assert len(conn.executed) == 1
     assert _combined_config(conn.executed[0])["statement_timeout"] == "3000ms"
-    assert _combined_config(conn.executed[0])["transaction_timeout"] == "3100ms"
+    assert _combined_config(conn.executed[0])["transaction_timeout"] == "8000ms"
     assert "true" in conn.executed[0][0]
 
 
@@ -285,6 +285,31 @@ def test_native_statement_timeout_finishes_before_the_wrapper_watchdog() -> None
                     operation_timeout_seconds=0.01,
                 )
             assert await database.drain_business(timeout_seconds=1.0)
+        finally:
+            database.close_executors()
+
+    asyncio.run(scenario())
+
+
+def test_native_control_statement_timeout_finishes_before_the_wrapper_watchdog() -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=None)
+
+        def native_statement_timeout() -> None:
+            time.sleep(2.5)
+            raise QueryCanceled("canceling statement due to statement timeout")
+
+        try:
+            with pytest.raises(
+                ResourceAdmissionTimeout,
+                match="worker_database_statement_timeout:workers_runtime_heartbeat",
+            ):
+                await database.run_control(
+                    "workers_runtime_heartbeat",
+                    native_statement_timeout,
+                    operation_timeout_seconds=0.01,
+                )
+            assert await database.drain_control(timeout_seconds=1.0)
         finally:
             database.close_executors()
 

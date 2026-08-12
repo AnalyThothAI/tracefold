@@ -10,6 +10,8 @@ from tracefold.platform.postgres.postgres_audit import ReadQuerySpec
 PUBLIC_LIST_LIMIT = 100
 _SLO_WINDOW_MS = 24 * 60 * 60 * 1000
 SLO_SAMPLE_LIMIT = 5_000
+_PUSH_RECONCILE_PAGE_SIZE = 1_000
+_PUSH_RECONCILE_PROBE_LIMIT = _PUSH_RECONCILE_PAGE_SIZE + 1
 
 
 def feed_rows_query(
@@ -182,16 +184,13 @@ def feed_facets_query(
 
 def story_push_contexts_query(
     *,
-    story_ids: Sequence[str] | None,
+    story_ids: Sequence[str],
 ) -> ReadQuerySpec:
-    story_filter = ""
-    requested_sql = "SELECT story_id FROM selected"
-    ledger_member_candidates = ""
-    params: tuple[Any, ...] = ()
-    if story_ids is not None:
-        story_filter = "AND member.story_id = ANY(%s)"
-        requested_sql = "SELECT unnest(%s::text[]) AS story_id"
-        ledger_member_candidates = """
+    if len(story_ids) > PUBLIC_LIST_LIMIT:
+        raise ValueError("news_push_context_story_ids_limit")
+    story_filter = "AND member.story_id = ANY(%s)"
+    requested_sql = "SELECT unnest(%s::text[]) AS story_id"
+    ledger_member_candidates = """
                   UNION ALL
                   SELECT member_delivery.story_id, 2 AS priority
                     FROM news_story_members ledger_member
@@ -199,8 +198,8 @@ def story_push_contexts_query(
                       ON member_delivery.selected_item_id = ledger_member.item_id
                    WHERE ledger_member.story_id = requested.story_id
             """
-        values = list(story_ids)
-        params = (values, values)
+    values = list(story_ids)
+    params = (values, values)
     return ReadQuerySpec(
         name="news_feed_push_contexts",
         sql=f"""
@@ -220,6 +219,7 @@ def story_push_contexts_query(
                      item.description,
                      item.lang,
                      item.published_at_ms,
+                     item.push_eligibility_updated_at_ms AS eligibility_observed_at_ms,
                      coalesce(
                        item.provider_score_updated_at_ms,
                        item.updated_at_ms
@@ -253,6 +253,7 @@ def story_push_contexts_query(
                    selected.description,
                    selected.lang,
                    selected.published_at_ms,
+                   selected.eligibility_observed_at_ms,
                    selected.threshold_observed_at_ms,
                    selected.provider_score,
                    state.baseline_at_ms AS push_baseline_at_ms,
@@ -282,6 +283,125 @@ def story_push_contexts_query(
              ORDER BY requested.story_id
         """,
         params=params,
+    )
+
+
+def story_push_reconcile_page_query() -> ReadQuerySpec:
+    """Read one exact Story-id page for the durable push discovery loop."""
+
+    return ReadQuerySpec(
+        name="news_push_reconcile_page",
+        sql="""
+            WITH push_state AS MATERIALIZED (
+              SELECT baseline_at_ms, reconcile_cursor_story_id
+                FROM news_push_state
+               WHERE singleton_key = 'current'
+            ),
+            page_scan AS MATERIALIZED (
+              SELECT story.story_id,
+                     story.importance_score,
+                     story.item_count,
+                     story.source_count,
+                     story.first_published_at_ms,
+                     story.last_published_at_ms
+                FROM news_stories story
+               WHERE story.story_id > coalesce(
+                       (SELECT reconcile_cursor_story_id FROM push_state),
+                       ''
+                     )
+               ORDER BY story_id
+               LIMIT %s
+            ),
+            page AS MATERIALIZED (
+              SELECT page_scan.*
+                FROM page_scan
+               ORDER BY page_scan.story_id
+               LIMIT %s
+            ),
+            selected AS (
+              SELECT page.story_id,
+                     page.importance_score,
+                     page.item_count,
+                     page.source_count,
+                     page.first_published_at_ms,
+                     page.last_published_at_ms,
+                     evidence.*
+                FROM page
+                JOIN LATERAL (
+                  SELECT item.item_id,
+                         item.canonical_url,
+                         item.provider_metadata,
+                         item.reporting_origin,
+                         item.title,
+                         item.description,
+                         item.lang,
+                         item.published_at_ms,
+                         item.push_eligibility_updated_at_ms AS eligibility_observed_at_ms,
+                         coalesce(
+                           item.provider_score_updated_at_ms,
+                           item.updated_at_ms
+                         ) AS threshold_observed_at_ms,
+                         (item.provider_metadata ->> 'score')::numeric
+                           AS provider_score
+                    FROM news_story_members member
+                    JOIN news_items item ON item.item_id = member.item_id
+                   WHERE member.story_id = page.story_id
+                     AND jsonb_typeof(item.provider_metadata -> 'score') = 'number'
+                   ORDER BY (item.provider_metadata ->> 'score')::numeric DESC,
+                            item.published_at_ms DESC,
+                            item.item_id
+                   LIMIT 1
+                ) evidence ON true
+            )
+            SELECT page.story_id AS page_story_id,
+                   EXISTS (
+                     SELECT 1
+                       FROM page_scan extra
+                       LEFT JOIN page current
+                         ON current.story_id = extra.story_id
+                      WHERE current.story_id IS NULL
+                   ) AS has_more,
+                   selected.importance_score,
+                   selected.item_count,
+                   selected.source_count,
+                   selected.first_published_at_ms,
+                   selected.last_published_at_ms,
+                   selected.item_id,
+                   selected.canonical_url,
+                   selected.provider_metadata,
+                   selected.reporting_origin,
+                   selected.title,
+                   selected.description,
+                   selected.lang,
+                   selected.published_at_ms,
+                   selected.eligibility_observed_at_ms,
+                   selected.threshold_observed_at_ms,
+                   selected.provider_score,
+                   state.baseline_at_ms AS push_baseline_at_ms,
+                   delivery.status AS push_delivery_status
+              FROM page
+              CROSS JOIN push_state state
+              LEFT JOIN selected ON selected.story_id = page.story_id
+              LEFT JOIN LATERAL (
+                SELECT delivery.status
+                  FROM (
+                    SELECT page.story_id, 0 AS priority
+                    UNION ALL
+                    SELECT selected_delivery.story_id, 1 AS priority
+                      FROM news_push_deliveries selected_delivery
+                     WHERE selected.item_id IS NOT NULL
+                       AND selected_delivery.selected_item_id = selected.item_id
+                  ) matched
+                  JOIN news_push_deliveries delivery
+                    ON delivery.story_id = matched.story_id
+                 ORDER BY matched.priority,
+                          delivery.updated_at_ms DESC,
+                          delivery.story_id
+                 LIMIT 1
+              ) delivery ON true
+             ORDER BY page.story_id
+        """,
+        params=(_PUSH_RECONCILE_PROBE_LIMIT, _PUSH_RECONCILE_PAGE_SIZE),
     )
 
 
@@ -540,6 +660,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             q=None,
         ),
         story_push_contexts_query(story_ids=audit_story_ids),
+        story_push_reconcile_page_query(),
         story_query(story_id="audit-missing-story"),
         story_members_query(story_id="audit-missing-story", limit=100),
         brief_query(),

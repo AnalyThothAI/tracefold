@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from psycopg import OperationalError
 
 from tracefold.app import workers as workers_module
 from tracefold.app.model_arbiter import run_model_arbiter
@@ -127,6 +128,91 @@ def test_periodic_loop_can_defer_its_first_sample_without_changing_cadence(
 
     assert samples == 1
     assert waits[0] == 30.0
+
+
+def test_control_loop_retries_a_transient_pooled_heartbeat_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    waits: list[float] = []
+
+    async def heartbeat(**_kwargs: object) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OperationalError("server closed the pooled connection")
+        stop_event.set()
+        return 2_000
+
+    async def wait(_stop_event: asyncio.Event, seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(workers_module, "_control_liveness_and_heartbeat", heartbeat)
+    monkeypatch.setattr(workers_module, "_wait_or_stop", wait)
+    stop_event = asyncio.Event()
+    probe_state = workers_module._ProbeState(
+        runtime_id="runtime-control-retry",
+        runtime_version="v2",
+        started_at_ms=1_000,
+        clock_ms=lambda: 2_000,
+    )
+
+    asyncio.run(
+        workers_module._run_control(
+            db=object(),  # type: ignore[arg-type]
+            lock_conn=object(),
+            runtime_id=probe_state.runtime_id,
+            probe_state=probe_state,
+            stop_event=stop_event,
+        )
+    )
+
+    assert calls == 2
+    assert waits == [workers_module._CONTROL_RETRY_SECONDS, workers_module._HEARTBEAT_SECONDS]
+    assert probe_state.heartbeat_at_ms == 2_000
+
+
+def test_persistent_transient_heartbeat_failures_remain_bounded_by_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def heartbeat(**_kwargs: object) -> int:
+        raise OperationalError("server keeps closing the pooled connection")
+
+    async def scenario() -> None:
+        stop_event = asyncio.Event()
+        probe_state = workers_module._ProbeState(
+            runtime_id="runtime-control-watchdog",
+            runtime_version="v2",
+            started_at_ms=1_000,
+            clock_ms=lambda: 2_000,
+        )
+        control = asyncio.create_task(
+            workers_module._run_control(
+                db=object(),  # type: ignore[arg-type]
+                lock_conn=object(),
+                runtime_id=probe_state.runtime_id,
+                probe_state=probe_state,
+                stop_event=stop_event,
+            )
+        )
+        try:
+            await asyncio.wait_for(
+                workers_module._run_control_watchdog(
+                    probe_state=probe_state,
+                    stop_event=stop_event,
+                ),
+                timeout=0.5,
+            )
+        finally:
+            stop_event.set()
+            await control
+
+    monkeypatch.setattr(workers_module, "_control_liveness_and_heartbeat", heartbeat)
+    monkeypatch.setattr(workers_module, "_CONTROL_RETRY_SECONDS", 0.05)
+    monkeypatch.setattr(workers_module, "_CONTROL_HEARTBEAT_STALE_SECONDS", 0.01)
+
+    with pytest.raises(workers_module._ControlFailure, match="workers_control_heartbeat_stale"):
+        asyncio.run(scenario())
 
 
 def test_productive_model_candidate_has_a_minimum_repoll_cadence() -> None:
@@ -631,6 +717,7 @@ def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_
                         "coins": [{"symbol": "BTC", "market_type": "spot"}],
                     },
                     "published_at_ms": 9_000_000_000_000,
+                    "eligibility_observed_at_ms": 1,
                 }
             if operation_name == "news_story_push_start_delivery":
                 return {"delivery_attempts": 1}

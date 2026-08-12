@@ -512,8 +512,8 @@ class NewsStoryPush:
                 active_lease_owner=self.lease_owner,
                 now_ms=now_ms,
             )
-            baseline_at_ms, initialized = repos.news.initialize_push_baseline(now_ms=now_ms)
-            candidates = repos.news.story_push_contexts()
+            baseline_at_ms, _initialized = repos.news.initialize_push_baseline(now_ms=now_ms)
+            candidates, next_cursor = repos.news.story_push_reconcile_page()
             inserted = 0
             suppressed = 0
             for candidate in candidates.values():
@@ -542,7 +542,7 @@ class NewsStoryPush:
                 # Push is a live alert, not a recovery backfill. Suppress both
                 # the enablement snapshot and any provider score that arrives
                 # later for an old Item (for example through REST recovery).
-                should_suppress = initialized or not eligibility.eligible
+                should_suppress = not eligibility.eligible
                 created = repos.news.insert_push_candidate(
                     story_id=str(candidate["story_id"]),
                     selected_item_id=str(evidence["item_id"]),
@@ -557,6 +557,10 @@ class NewsStoryPush:
             terminalized = repos.news.terminalize_exhausted_push_deliveries(
                 now_ms=now_ms,
                 max_attempts=_DELIVERY_MAX_ATTEMPTS,
+            )
+            repos.news.advance_push_reconcile_cursor(
+                story_id=next_cursor,
+                now_ms=now_ms,
             )
         return {
             "inserted": inserted,

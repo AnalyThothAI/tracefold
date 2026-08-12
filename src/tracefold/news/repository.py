@@ -760,7 +760,20 @@ class NewsRepository:
                 cursor = self.conn.execute(
                     """
                     UPDATE news_items
-                       SET provider_score_updated_at_ms = CASE
+                       SET push_eligibility_updated_at_ms = CASE
+                             WHEN (
+                               %(metadata)s ? 'score'
+                               AND provider_metadata -> 'score' IS DISTINCT FROM
+                                   %(metadata)s -> 'score'
+                             ) OR (
+                               %(metadata)s ? 'coins'
+                               AND provider_metadata -> 'coins' IS DISTINCT FROM
+                                   %(metadata)s -> 'coins'
+                             )
+                               THEN %(observed_at_ms)s
+                             ELSE push_eligibility_updated_at_ms
+                           END,
+                           provider_score_updated_at_ms = CASE
                              WHEN jsonb_typeof(%(metadata)s -> 'score') = 'number'
                               AND provider_metadata -> 'score' IS DISTINCT FROM
                                   %(metadata)s -> 'score'
@@ -835,6 +848,9 @@ class NewsRepository:
                 "provider_score_updated_at_ms": (
                     observed_at_ms if _numeric_provider_score(incoming_metadata.get("score")) else None
                 ),
+                "push_eligibility_updated_at_ms": (
+                    observed_at_ms if {"score", "coins"}.intersection(incoming_metadata) else None
+                ),
                 "canonical_url": canonical_url,
                 "reporting_origin": reporting_origin,
                 "title": title,
@@ -849,6 +865,7 @@ class NewsRepository:
                 INSERT INTO news_items AS current_item (
                   item_id, source_id, source_item_key, provider_record_id,
                   provider_metadata, provider_score_updated_at_ms,
+                  push_eligibility_updated_at_ms,
                   canonical_url, reporting_origin, title,
                   description, lang, published_at_ms,
                   first_observed_at_ms, last_observed_at_ms,
@@ -857,6 +874,7 @@ class NewsRepository:
                   %(item_id)s, %(source_id)s, %(source_item_key)s,
                   %(provider_record_id)s, %(provider_metadata)s,
                   %(provider_score_updated_at_ms)s,
+                  %(push_eligibility_updated_at_ms)s,
                   %(canonical_url)s, %(reporting_origin)s, %(title)s,
                   %(description)s, %(lang)s,
                   %(published_at_ms)s, %(observed_at_ms)s,
@@ -868,6 +886,19 @@ class NewsRepository:
                   WHERE provider_record_id IS NOT NULL
                 DO UPDATE SET
                   source_item_key = EXCLUDED.source_item_key,
+                  push_eligibility_updated_at_ms = CASE
+                    WHEN (
+                      EXCLUDED.provider_metadata ? 'score'
+                      AND current_item.provider_metadata -> 'score' IS DISTINCT FROM
+                          EXCLUDED.provider_metadata -> 'score'
+                    ) OR (
+                      EXCLUDED.provider_metadata ? 'coins'
+                      AND current_item.provider_metadata -> 'coins' IS DISTINCT FROM
+                          EXCLUDED.provider_metadata -> 'coins'
+                    )
+                      THEN EXCLUDED.push_eligibility_updated_at_ms
+                    ELSE current_item.push_eligibility_updated_at_ms
+                  END,
                   provider_score_updated_at_ms = CASE
                     WHEN jsonb_typeof(EXCLUDED.provider_metadata -> 'score') = 'number'
                      AND current_item.provider_metadata -> 'score' IS DISTINCT FROM
@@ -1596,18 +1627,18 @@ class NewsRepository:
     def story_push_contexts(
         self,
         *,
-        story_ids: Sequence[str] | None = None,
+        story_ids: Sequence[str],
     ) -> dict[str, dict[str, Any]]:
         """Return selected provider evidence and durable push state per Story.
 
         Selection is deterministic: numeric score descending, then newest
         publication, then item identity. Requested Story IDs remain present
         without numeric evidence so Feed/detail can still expose a durable
-        Story-scoped delivery fact. Without an explicit scope, only Stories
-        with numeric provider evidence are returned for push reconciliation.
+        Story-scoped delivery fact. Callers must provide their already-bounded
+        serving scope; push reconciliation owns a separate cursor-paged read.
         """
 
-        if story_ids is not None and not story_ids:
+        if not story_ids:
             return {}
         contexts_query = query_specs.story_push_contexts_query(story_ids=story_ids)
         rows = self.conn.execute(
@@ -1617,38 +1648,39 @@ class NewsRepository:
         result: dict[str, dict[str, Any]] = {}
         for row in rows:
             story_id = str(row["story_id"])
-            selected: dict[str, Any] = {
-                "story_id": str(row["story_id"]),
-                "push_delivery_status": row["push_delivery_status"],
-                "push_baseline_at_ms": (
-                    int(row["push_baseline_at_ms"]) if row["push_baseline_at_ms"] is not None else None
-                ),
-                "provider_evidence": None,
-            }
-            if row["item_id"] is not None:
-                selected.update(
-                    {
-                        "importance_score": int(row["importance_score"]),
-                        "item_count": int(row["item_count"]),
-                        "source_count": int(row["source_count"]),
-                        "first_published_at_ms": int(row["first_published_at_ms"]),
-                        "last_published_at_ms": int(row["last_published_at_ms"]),
-                    }
-                )
-                selected["provider_evidence"] = {
-                    "item_id": str(row["item_id"]),
-                    "url": str(row["canonical_url"]) if row["canonical_url"] else None,
-                    "provider_metadata": dict(row["provider_metadata"] or {}),
-                    "reporting_origin": str(row["reporting_origin"]),
-                    "title": str(row["title"]),
-                    "description": str(row["description"]),
-                    "lang": str(row["lang"]),
-                    "published_at_ms": int(row["published_at_ms"]),
-                    "threshold_observed_at_ms": int(row["threshold_observed_at_ms"]),
-                    "provider_score": float(row["provider_score"]),
-                }
-            result[story_id] = selected
+            result[story_id] = _push_context_payload(row, story_id=story_id)
         return result
+
+    def story_push_reconcile_page(self) -> tuple[dict[str, dict[str, Any]], str | None]:
+        """Return one durable cursor page of exact push-discovery evidence."""
+
+        page_query = query_specs.story_push_reconcile_page_query()
+        rows = self.conn.execute(page_query.sql, page_query.params).fetchall()
+        candidates: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if row["item_id"] is None:
+                continue
+            story_id = str(row["page_story_id"])
+            candidates[story_id] = _push_context_payload(row, story_id=story_id)
+        next_cursor = str(rows[-1]["page_story_id"]) if rows and bool(rows[0]["has_more"]) else None
+        return candidates, next_cursor
+
+    def advance_push_reconcile_cursor(
+        self,
+        *,
+        story_id: str | None,
+        now_ms: int,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE news_push_state
+               SET reconcile_cursor_story_id = %s,
+                   updated_at_ms = greatest(updated_at_ms, %s)
+             WHERE singleton_key = 'current'
+               AND reconcile_cursor_story_id IS DISTINCT FROM %s
+            """,
+            (story_id, int(now_ms), story_id),
+        )
 
     def initialize_push_baseline(self, *, now_ms: int) -> tuple[int, bool]:
         row = self.conn.execute(
@@ -1697,6 +1729,7 @@ class NewsRepository:
             SELECT item_id, canonical_url, provider_metadata,
                    reporting_origin, title, description, lang,
                    published_at_ms,
+                   push_eligibility_updated_at_ms AS eligibility_observed_at_ms,
                    coalesce(provider_score_updated_at_ms, updated_at_ms)
                      AS threshold_observed_at_ms,
                    (provider_metadata ->> 'score')::numeric AS provider_score
@@ -1717,6 +1750,9 @@ class NewsRepository:
             "description": str(row["description"]),
             "lang": str(row["lang"]),
             "published_at_ms": int(row["published_at_ms"]),
+            "eligibility_observed_at_ms": (
+                int(row["eligibility_observed_at_ms"]) if row["eligibility_observed_at_ms"] is not None else None
+            ),
             "threshold_observed_at_ms": int(row["threshold_observed_at_ms"]),
             "provider_score": float(row["provider_score"]),
         }
@@ -2837,6 +2873,46 @@ def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
         "first_published_at_ms": int(row["first_published_at_ms"]),
         "last_published_at_ms": int(row["last_published_at_ms"]),
     }
+
+
+def _push_context_payload(
+    row: Mapping[str, Any],
+    *,
+    story_id: str,
+) -> dict[str, Any]:
+    selected: dict[str, Any] = {
+        "story_id": story_id,
+        "push_delivery_status": row["push_delivery_status"],
+        "push_baseline_at_ms": (int(row["push_baseline_at_ms"]) if row["push_baseline_at_ms"] is not None else None),
+        "provider_evidence": None,
+    }
+    if row["item_id"] is None:
+        return selected
+    selected.update(
+        {
+            "importance_score": int(row["importance_score"]),
+            "item_count": int(row["item_count"]),
+            "source_count": int(row["source_count"]),
+            "first_published_at_ms": int(row["first_published_at_ms"]),
+            "last_published_at_ms": int(row["last_published_at_ms"]),
+        }
+    )
+    selected["provider_evidence"] = {
+        "item_id": str(row["item_id"]),
+        "url": str(row["canonical_url"]) if row["canonical_url"] else None,
+        "provider_metadata": dict(row["provider_metadata"] or {}),
+        "reporting_origin": str(row["reporting_origin"]),
+        "title": str(row["title"]),
+        "description": str(row["description"]),
+        "lang": str(row["lang"]),
+        "published_at_ms": int(row["published_at_ms"]),
+        "eligibility_observed_at_ms": (
+            int(row["eligibility_observed_at_ms"]) if row["eligibility_observed_at_ms"] is not None else None
+        ),
+        "threshold_observed_at_ms": int(row["threshold_observed_at_ms"]),
+        "provider_score": float(row["provider_score"]),
+    }
+    return selected
 
 
 def _public_provider_metadata(value: object) -> dict[str, Any]:

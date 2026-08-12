@@ -7,8 +7,9 @@ import pytest
 from psycopg.errors import IdleInTransactionSessionTimeout
 
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tracefold.app import workers as workers_module
 from tracefold.app.database import WorkerDatabase
-from tracefold.platform.postgres.postgres_client import create_pool
+from tracefold.platform.postgres.postgres_client import connect_postgres, create_pool
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
@@ -63,6 +64,78 @@ def test_native_postgres_timeout_is_recoverable_before_wrapper_watchdog() -> Non
     try:
         asyncio.run(scenario())
     finally:
+        database.close_executors()
+        pool.close()
+
+
+@pytest.mark.integration
+def test_control_loop_survives_one_idle_pool_connection_closed_by_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = create_pool(
+        _test_postgres_dsn(),
+        min_size=1,
+        max_size=1,
+        connect_timeout_seconds=5.0,
+        application_name="tracefold_worker_control_recovery_test",
+        statement_timeout_seconds=0.5,
+        lock_timeout_seconds=0.25,
+        idle_in_transaction_session_timeout_seconds=5.0,
+    )
+    pool.wait(timeout=5.0)
+    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    killer = connect_postgres(_test_postgres_dsn())
+    try:
+        conn = pool.getconn(timeout=1.0)
+        backend_pid = int(conn.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"])
+        pool.putconn(conn)
+        row = killer.execute("SELECT pg_terminate_backend(%s) AS terminated", (backend_pid,)).fetchone()
+        assert row is not None and bool(row["terminated"])
+
+        stop_event = asyncio.Event()
+        attempts = 0
+
+        async def heartbeat(**_kwargs: object) -> int:
+            nonlocal attempts
+            attempts += 1
+
+            def liveness() -> int:
+                with database.worker_session("workers_runtime_heartbeat", 1.0) as repos:
+                    result = repos.conn.execute("SELECT 1 AS ok").fetchone()
+                    return int(result["ok"])
+
+            result = await database.run_control(
+                "workers_runtime_heartbeat",
+                liveness,
+                operation_timeout_seconds=1.0,
+            )
+            stop_event.set()
+            return result
+
+        monkeypatch.setattr(workers_module, "_control_liveness_and_heartbeat", heartbeat)
+        probe = workers_module._ProbeState(
+            runtime_id="runtime-control-recovery",
+            runtime_version="v2",
+            started_at_ms=1,
+            clock_ms=lambda: 1,
+        )
+        asyncio.run(
+            asyncio.wait_for(
+                workers_module._run_control(
+                    db=database,
+                    lock_conn=object(),
+                    runtime_id=probe.runtime_id,
+                    probe_state=probe,
+                    stop_event=stop_event,
+                ),
+                timeout=10.0,
+            )
+        )
+
+        assert attempts >= 2
+        assert probe.heartbeat_at_ms == 1
+    finally:
+        killer.close()
         database.close_executors()
         pool.close()
 

@@ -26,6 +26,273 @@ from tracefold.news.sources import opennews_source
 BASE_MS = 1_785_560_400_000
 
 
+def test_push_reconcile_discovery_is_one_audited_fixed_page() -> None:
+    query = query_specs_module.story_push_reconcile_page_query()
+
+    assert query.name == "news_push_reconcile_page"
+    assert query.params == (1_001, 1_000)
+    assert query.name in {spec.name for spec in query_specs_module.news_query_specs(now_ms=BASE_MS)}
+
+    with pytest.raises(ValueError, match="news_push_context_story_ids_limit"):
+        query_specs_module.story_push_contexts_query(story_ids=tuple(f"story-{index}" for index in range(101)))
+
+
+def test_push_reconcile_pages_and_revisits_later_ai_qualification() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        _seed_source(conn)
+        runtime = _runtime(conn, delivery=_Delivery())
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO news_items(
+                  item_id, source_id, source_item_key, provider_record_id,
+                  provider_metadata, provider_score_updated_at_ms,
+                  push_eligibility_updated_at_ms,
+                  reporting_origin, title, description, lang,
+                  published_at_ms, first_observed_at_ms, last_observed_at_ms,
+                  content_fingerprint, level, category, classification_source,
+                  classification_confidence, importance_score,
+                  importance_factors, active, created_at_ms, updated_at_ms
+                )
+                SELECT 'reconcile-item-' || value,
+                       'news-opennews', 'reconcile-item-' || value,
+                       'reconcile-item-' || value,
+                       jsonb_build_object(
+                         'score', CASE WHEN value = 1001 THEN 90 ELSE 60 END,
+                         'coins', jsonb_build_array(jsonb_build_object(
+                           'symbol', 'BTC', 'market_type', 'spot'
+                         ))
+                       ),
+                       %s, %s, 'Audit Wire', 'Reconcile report ' || value, '', 'en',
+                       CASE WHEN value = 1001 THEN %s ELSE %s END,
+                       %s, %s, 'reconcile-fingerprint-' || value,
+                       'info', 'general', 'keyword', 1, 1, '{}'::jsonb,
+                       true, %s, %s
+                  FROM generate_series(1, 1001) value
+                """,
+                (
+                    BASE_MS + 1,
+                    BASE_MS + 1,
+                    BASE_MS - 1,
+                    BASE_MS + 1,
+                    BASE_MS + 1,
+                    BASE_MS + 1,
+                    BASE_MS + 1,
+                    BASE_MS + 1,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO news_stories(
+                  story_id, canonical_key, canonical_title,
+                  representative_item_id, representative_source_id,
+                  representative_title, representative_description,
+                  scoring_item_id, level, category, importance_score,
+                  importance_factors, item_count, source_count,
+                  first_published_at_ms, last_published_at_ms,
+                  state_fingerprint, created_at_ms, updated_at_ms, facet_facts
+                )
+                SELECT lpad(to_hex(value), 64, '0'), 'reconcile-key-' || value,
+                       'Reconcile story ' || value, 'reconcile-item-' || value,
+                       'news-opennews', 'Reconcile story ' || value, '',
+                       'reconcile-item-' || value, 'info', 'general', 1,
+                       '{}'::jsonb, 1, 1,
+                       CASE WHEN value = 1001 THEN %s ELSE %s END,
+                       CASE WHEN value = 1001 THEN %s ELSE %s END,
+                       'reconcile-story-fingerprint-' || value, %s, %s,
+                       '{"source_ids":["news-opennews"],"reporting_origins":["Audit Wire"]}'::jsonb
+                  FROM generate_series(1, 1001) value
+                """,
+                (
+                    BASE_MS - 1,
+                    BASE_MS + 1,
+                    BASE_MS - 1,
+                    BASE_MS + 1,
+                    BASE_MS + 1,
+                    BASE_MS + 1,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO news_story_members(story_id, item_id)
+                SELECT lpad(to_hex(value), 64, '0'), 'reconcile-item-' || value
+                  FROM generate_series(1, 1001) value
+                """
+            )
+
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 2)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        first_page_cursor = conn.execute(
+            """
+            SELECT reconcile_cursor_story_id
+              FROM news_push_state
+             WHERE singleton_key = 'current'
+            """
+        ).fetchone()["reconcile_cursor_story_id"]
+        assert first_page_cursor == f"{1000:064x}"
+
+        with conn.transaction():
+            conn.execute(
+                """
+                UPDATE news_items
+                   SET provider_metadata = jsonb_set(provider_metadata, '{score}', '90'::jsonb),
+                       provider_score_updated_at_ms = %s,
+                       push_eligibility_updated_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE item_id = 'reconcile-item-1'
+                """,
+                (BASE_MS + 3, BASE_MS + 3, BASE_MS + 3),
+            )
+
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 3)) == {
+            "inserted": 1,
+            "suppressed": 1,
+            "terminalized": 0,
+        }
+        assert (
+            conn.execute(
+                "SELECT reconcile_cursor_story_id FROM news_push_state WHERE singleton_key = 'current'"
+            ).fetchone()["reconcile_cursor_story_id"]
+            is None
+        )
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 4)) == {
+            "inserted": 1,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        assert conn.execute(
+            """
+            SELECT selected_item_id, status
+              FROM news_push_deliveries
+             WHERE selected_item_id = 'reconcile-item-1'
+            """
+        ).fetchone() == {
+            "selected_item_id": "reconcile-item-1",
+            "status": "pending_translation",
+        }
+        assert (
+            conn.execute(
+                """
+            SELECT status
+              FROM news_push_deliveries
+             WHERE selected_item_id = 'reconcile-item-1001'
+            """
+            ).fetchone()["status"]
+            == "suppressed"
+        )
+    finally:
+        conn.close()
+
+
+def test_push_reconcile_baseline_fences_a_preexisting_future_clock_story_after_restart() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=_Delivery())
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "future-clock-at-enable",
+                        title="Provider clock is ahead when push becomes enabled",
+                        score=90,
+                        published_at_ms=BASE_MS + 60_000,
+                    ),
+                ),
+                observed_at_ms=BASE_MS - 1,
+            )
+            rebuild_news_projection(repository, now_ms=BASE_MS - 1)
+            story_id = str(conn.execute("SELECT story_id FROM news_stories").fetchone()["story_id"])
+            conn.execute(
+                """
+                UPDATE news_push_state
+                   SET baseline_at_ms = %s,
+                       reconcile_cursor_story_id = %s,
+                       updated_at_ms = %s
+                 WHERE singleton_key = 'current'
+                """,
+                (BASE_MS, "0" * 64, BASE_MS),
+            )
+
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 1)) == {
+            "inserted": 1,
+            "suppressed": 1,
+            "terminalized": 0,
+        }
+        assert conn.execute("SELECT story_id, status FROM news_push_deliveries").fetchone() == {
+            "story_id": story_id,
+            "status": "suppressed",
+        }
+    finally:
+        conn.close()
+
+
+def test_push_baseline_fence_ignores_later_projection_and_noneligibility_metadata() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        runtime = _runtime(conn, delivery=_Delivery())
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "prebaseline-before-story",
+                        title="Prebaseline report projects after enablement",
+                        score=90,
+                        published_at_ms=BASE_MS + 60_000,
+                    ),
+                ),
+                observed_at_ms=BASE_MS - 1,
+            )
+
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS)) == {
+            "inserted": 0,
+            "suppressed": 0,
+            "terminalized": 0,
+        }
+        with conn.transaction():
+            rebuild_news_projection(repository, now_ms=BASE_MS + 1)
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(_annotation("prebaseline-before-story", score=90),),
+                observed_at_ms=BASE_MS + 2,
+            )
+
+        clocks = conn.execute(
+            """
+            SELECT push_eligibility_updated_at_ms, updated_at_ms
+              FROM news_items
+             WHERE provider_record_id = 'prebaseline-before-story'
+            """
+        ).fetchone()
+        assert clocks == {
+            "push_eligibility_updated_at_ms": BASE_MS - 1,
+            "updated_at_ms": BASE_MS + 2,
+        }
+        assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 3)) == {
+            "inserted": 1,
+            "suppressed": 1,
+            "terminalized": 0,
+        }
+        assert conn.execute("SELECT status FROM news_push_deliveries").fetchone() == {"status": "suppressed"}
+    finally:
+        conn.close()
+
+
 def _event(
     record_id: str,
     *,
@@ -89,6 +356,23 @@ def _seed_source(conn: Any) -> NewsRepository:
     with conn.transaction():
         repository.sync_sources((opennews_source(),), now_ms=BASE_MS)
     return repository
+
+
+def _only_numeric_story_contexts(
+    repository: NewsRepository,
+) -> dict[str, dict[str, Any]]:
+    rows = repository.conn.execute(
+        """
+        SELECT DISTINCT member.story_id
+          FROM news_story_members member
+          JOIN news_items item ON item.item_id = member.item_id
+         WHERE jsonb_typeof(item.provider_metadata -> 'score') = 'number'
+         ORDER BY member.story_id
+         LIMIT 2
+        """
+    ).fetchall()
+    assert len(rows) == 1
+    return repository.story_push_contexts(story_ids=(str(rows[0]["story_id"]),))
 
 
 def _push_health(conn: Any, *, now_ms: int) -> dict[str, Any]:
@@ -593,7 +877,7 @@ def test_story_push_contexts_select_numeric_max_then_newest_then_item_id() -> No
         conn.execute("UPDATE news_items SET provider_metadata = '{}'::jsonb WHERE provider_record_id = 'no-score'")
         conn.commit()
 
-        selected = next(iter(repository.story_push_contexts().values()))
+        selected = next(iter(_only_numeric_story_contexts(repository).values()))
         evidence = selected["provider_evidence"]
 
         assert evidence["item_id"] == tie_ids[0]
@@ -656,12 +940,12 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
             )
             rebuild_news_projection(repository, now_ms=BASE_MS + 10)
 
-        initial = next(iter(repository.story_push_contexts().values()))["provider_evidence"]
+        initial = next(iter(_only_numeric_story_contexts(repository).values()))["provider_evidence"]
         assert initial["threshold_observed_at_ms"] == BASE_MS + 10
 
         with conn.transaction():
             rebuild_news_projection(repository, now_ms=BASE_MS + 7_200_000)
-        after_story_write = next(iter(repository.story_push_contexts().values()))["provider_evidence"]
+        after_story_write = next(iter(_only_numeric_story_contexts(repository).values()))["provider_evidence"]
         assert after_story_write["threshold_observed_at_ms"] == BASE_MS + 10
 
         with conn.transaction():
@@ -670,7 +954,7 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
                 events=(_annotation("score-clock", score=82),),
                 observed_at_ms=BASE_MS + 7_200_010,
             )
-        qualified = next(iter(repository.story_push_contexts().values()))["provider_evidence"]
+        qualified = next(iter(_only_numeric_story_contexts(repository).values()))["provider_evidence"]
         assert qualified["threshold_observed_at_ms"] == BASE_MS + 7_200_010
 
         with conn.transaction():
@@ -679,7 +963,7 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
                 events=(_annotation("score-clock", score=82),),
                 observed_at_ms=BASE_MS + 7_200_020,
             )
-        duplicate = next(iter(repository.story_push_contexts().values()))["provider_evidence"]
+        duplicate = next(iter(_only_numeric_story_contexts(repository).values()))["provider_evidence"]
         assert duplicate["threshold_observed_at_ms"] == BASE_MS + 7_200_010
     finally:
         conn.close()
@@ -722,7 +1006,7 @@ def test_selected_item_score_change_keeps_the_story_ledger_state(
             )
             rebuild_news_projection(repository, now_ms=BASE_MS + 3)
 
-        initial = next(iter(repository.story_push_contexts().values()))
+        initial = next(iter(_only_numeric_story_contexts(repository).values()))
         story_id = initial["story_id"]
         assert initial["provider_evidence"]["provider_score"] == 80
         assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 4)) == {
@@ -740,7 +1024,7 @@ def test_selected_item_score_change_keeps_the_story_ledger_state(
                 observed_at_ms=BASE_MS + 5,
             )
 
-        selected_later = repository.story_push_contexts()[story_id]
+        selected_later = repository.story_push_contexts(story_ids=(story_id,))[story_id]
         assert selected_later["provider_evidence"]["provider_score"] == 90
         assert selected_later["push_delivery_status"] == "sent"
         detail = repository.get_story(
@@ -1675,7 +1959,7 @@ def test_story_identity_change_does_not_requalify_the_same_selected_item() -> No
             )
             rebuild_news_projection(repository, now_ms=BASE_MS)
 
-        initial_evidence = repository.story_push_contexts()
+        initial_evidence = _only_numeric_story_contexts(repository)
         assert len(initial_evidence) == 1
         original_story_id, original = next(iter(initial_evidence.items()))
         selected_item_id = original["provider_evidence"]["item_id"]
@@ -1693,7 +1977,7 @@ def test_story_identity_change_does_not_requalify_the_same_selected_item() -> No
         after_expiry_ms = BASE_MS + (2 * hour_ms)
         with conn.transaction():
             rebuild_news_projection(repository, now_ms=after_expiry_ms)
-        current_evidence = repository.story_push_contexts()
+        current_evidence = _only_numeric_story_contexts(repository)
         assert len(current_evidence) == 1
         new_story_id, current = next(iter(current_evidence.items()))
         assert new_story_id != original_story_id
@@ -1766,7 +2050,7 @@ def test_sent_item_is_not_resent_when_its_story_identity_changes(
             )
             rebuild_news_projection(repository, now_ms=first_projection_ms)
 
-        initial_evidence = repository.story_push_contexts()
+        initial_evidence = _only_numeric_story_contexts(repository)
         assert len(initial_evidence) == 1
         original_story_id, original = next(iter(initial_evidence.items()))
         selected_item_id = original["provider_evidence"]["item_id"]
@@ -1785,7 +2069,7 @@ def test_sent_item_is_not_resent_when_its_story_identity_changes(
         clock["now_ms"] = BASE_MS + 121_000
         with conn.transaction():
             rebuild_news_projection(repository, now_ms=clock["now_ms"])
-        current_evidence = repository.story_push_contexts()
+        current_evidence = _only_numeric_story_contexts(repository)
         assert len(current_evidence) == 1
         new_story_id, current = next(iter(current_evidence.items()))
         assert new_story_id != original_story_id

@@ -90,8 +90,10 @@ attempt. The
 Feishu JSON 2.0 card uses a valid Chinese translation as its plain-text header
 and shows the original visibly in the body. Chinese input bypasses translation;
 failure or overlong input uses the original header and a visible fallback note. Its
-live-alert admission requires the selected Item to be newer than the
-first-enable baseline and no more than 15 minutes old; stale recovery data is
+live-alert admission requires both the selected Item's provider article clock
+and its dedicated provider score/assets eligibility-evidence clock to be newer than the
+first-enable baseline and the article to be no more than 15 minutes old; this
+prevents a future-skewed provider clock from replaying baseline evidence. Stale recovery data is
 recorded as suppressed and is never sent. Every frozen retry rechecks that age
 immediately before network submission and becomes suppressed once the deadline
 passes. The selected Item must also contain at least one non-empty

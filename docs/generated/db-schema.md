@@ -677,6 +677,7 @@
 | `provider_metadata` | `JSONB` | False | `'{}'::jsonb` |
 | `provider_score_updated_at_ms` | `BIGINT` | True | `None` |
 | `source_position` | `SMALLINT` | True | `None` |
+| `push_eligibility_updated_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_projection_summary`
 
@@ -742,6 +743,7 @@
 | `latest_sent_at_ms` | `BIGINT` | True | `None` |
 | `latest_error` | `TEXT` | True | `None` |
 | `latest_error_at_ms` | `BIGINT` | True | `None` |
+| `reconcile_cursor_story_id` | `TEXT` | True | `None` |
 
 ## `news_sources`
 

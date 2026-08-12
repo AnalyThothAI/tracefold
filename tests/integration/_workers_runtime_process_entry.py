@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import threading
+import time
 from typing import Any
 
 
@@ -47,6 +48,7 @@ def _arguments() -> argparse.Namespace:
             "finite_never_returns",
             "model_overrun",
             "control_overrun",
+            "control_transient_startup",
             "provider_publication",
             "news_bounded_recovery",
         ),
@@ -106,6 +108,27 @@ async def _main() -> None:
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1
 
+    if arguments.mode == "control_transient_startup":
+        from psycopg import OperationalError
+
+        original_runtime_heartbeat = workers._runtime_heartbeat
+        transient_failures = 0
+        transient_lock = threading.Lock()
+
+        def transient_runtime_heartbeat(*args: Any, **kwargs: Any) -> None:
+            nonlocal transient_failures
+            with transient_lock:
+                transient_failures += 1
+                current = transient_failures
+            if current == 1:
+                time.sleep(1.25)
+            if current <= 4:
+                print("CONTROL_TRANSIENT", flush=True)
+                raise OperationalError("test transient pooled heartbeat connection")
+            original_runtime_heartbeat(*args, **kwargs)
+
+        workers._runtime_heartbeat = transient_runtime_heartbeat
+
     if arguments.mode == "control_overrun":
         control_never_release = threading.Event()
 
@@ -116,7 +139,7 @@ async def _main() -> None:
         workers._runtime_heartbeat = control_never_returns
 
     async def wire_components(**kwargs: Any) -> workers._Components:
-        if arguments.mode == "inert":
+        if arguments.mode in {"inert", "control_transient_startup"}:
             return _components(workers, market_providers_module, due_turns=())
 
         if arguments.mode == "child_failure":

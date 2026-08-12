@@ -1709,7 +1709,18 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
 
         with write_repositories() as repos, repos.transaction():
             repos.conn.execute("DELETE FROM workers_runtime")
-            evidence = next(iter(repos.news.story_push_contexts().values()))
+            story = repos.conn.execute(
+                """
+                SELECT member.story_id
+                  FROM news_story_members member
+                  JOIN news_items item ON item.item_id = member.item_id
+                 WHERE jsonb_typeof(item.provider_metadata -> 'score') = 'number'
+                 ORDER BY member.story_id
+                 LIMIT 1
+                """
+            ).fetchone()
+            assert story is not None
+            evidence = repos.news.story_push_contexts(story_ids=(str(story["story_id"]),))[str(story["story_id"])]
             selected = evidence["provider_evidence"]
             for index, duration_ms in enumerate((1_000, 4_000), start=1):
                 story_id = f"{index:x}" * 64

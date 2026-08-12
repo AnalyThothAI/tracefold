@@ -330,6 +330,22 @@ def test_real_workers_process_gracefully_stops_and_closes_probe() -> None:
         _ensure_process_stopped(process)
 
 
+def test_real_workers_startup_recovers_transient_pooled_heartbeat_failures() -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    process = _start_workers_process("control_transient_startup", port)
+    try:
+        _wait_ready(process, port)
+        _wait_for_output(process, "CONTROL_TRANSIENT")
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "running"
+        assert row["fatal_code"] is None
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+    finally:
+        _ensure_process_stopped(process)
+
+
 def test_real_workers_child_failure_is_fatal_within_five_seconds() -> None:
     prepare_postgres_database()
     port = _free_port()
@@ -428,7 +444,9 @@ def test_real_workers_never_returning_control_operation_is_fatal() -> None:
     process = _start_workers_process("control_overrun", port)
     try:
         _wait_for_output(process, "CONTROL_STARTED", timeout_seconds=15.0)
-        assert process.wait(timeout=6.0) != 0
+        # The code-owned control envelope is 1 s of native work plus 5 s of
+        # bounded completion grace; leave process-exit scheduling headroom.
+        assert process.wait(timeout=9.0) != 0
         _assert_probe_closed(port)
         row = _runtime_row()
         # The only control executor is the failed capability, so the process

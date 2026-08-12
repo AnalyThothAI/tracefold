@@ -106,6 +106,7 @@ _NEWS_QUERY_NAMES = (
     "news_feed_focus_rows",
     "news_feed_focus_facets",
     "news_feed_push_contexts",
+    "news_push_reconcile_page",
     "news_story",
     "news_story_members",
     "news_brief",
@@ -414,32 +415,34 @@ def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_his
               0, 0, 'opennews', false
             );
 
-            INSERT INTO news_items(
-              item_id, source_id, source_item_key, provider_record_id,
-              provider_metadata, reporting_origin, title, description, lang,
+                INSERT INTO news_items(
+                  item_id, source_id, source_item_key, provider_record_id,
+                  provider_metadata, push_eligibility_updated_at_ms,
+                  reporting_origin, title, description, lang,
               published_at_ms, first_observed_at_ms, last_observed_at_ms,
               content_fingerprint, level, category, classification_source,
               classification_confidence, importance_score, importance_factors,
               active, created_at_ms, updated_at_ms
             )
-            SELECT 'history-' || value, 'audit-source', 'history-' || value,
-                   'history-' || value, jsonb_build_object('score', 90),
+                SELECT 'history-' || value, 'audit-source', 'history-' || value,
+                       'history-' || value, jsonb_build_object('score', 90), value,
                    'History Wire', 'Historical report ' || value, '', 'en',
                    value, value, value, 'history-fingerprint-' || value,
                    'info', 'general', 'keyword', 1, 1, '{}'::jsonb,
                    false, value, value
               FROM generate_series(1, 12000) value;
 
-            INSERT INTO news_items(
-              item_id, source_id, source_item_key, provider_record_id,
-              provider_metadata, reporting_origin, title, description, lang,
+                INSERT INTO news_items(
+                  item_id, source_id, source_item_key, provider_record_id,
+                  provider_metadata, push_eligibility_updated_at_ms,
+                  reporting_origin, title, description, lang,
               published_at_ms, first_observed_at_ms, last_observed_at_ms,
               content_fingerprint, level, category, classification_source,
               classification_confidence, importance_score, importance_factors,
               active, created_at_ms, updated_at_ms
             )
-            SELECT 'member-' || value, 'audit-source', 'member-' || value,
-                   'member-' || value, jsonb_build_object('score', 80),
+                SELECT 'member-' || value, 'audit-source', 'member-' || value,
+                       'member-' || value, jsonb_build_object('score', 80), 20000 + value,
                    'Audit Wire', 'Current report ' || value, '', 'en',
                    20000 + value, 20000 + value, 20000 + value,
                    'member-fingerprint-' || value,

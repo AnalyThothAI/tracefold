@@ -114,6 +114,15 @@ frontier. There is no
 generic scheduler, database wake plane, startup rebuild, phased load shifting,
 or configurable concurrency.
 
+The control child distinguishes the pinned singleton session from its pooled
+heartbeat write. Loss of the pinned advisory-lock session remains immediately
+fatal. A precise transient PostgreSQL admission, timeout, pool-checkout, or
+connection error from the idempotent heartbeat write is retried after 250 ms;
+the independent 15-second heartbeat watchdog is the bounded failure authority
+if recovery does not occur. Invariant failures and an unfinished native control
+future remain process-fatal. This retry does not apply to general control
+writes whose commit outcome could be ambiguous.
+
 Resolution performs one external lookup per durable turn and reprocesses at
 most 10 affected intents in each publication transaction. Larger closures use
 the persisted keyset continuation and repoll after the fixed 250 ms cadence
@@ -147,7 +156,10 @@ JIT, parallel-gather, and work-memory policy for that transaction. PostgreSQL
 restores those settings when the transaction exits, so pooling needs no reset
 round trip. Every SQL statement and multi-statement repository operation is
 therefore covered by the native database deadline; the async caller adds only a
-bounded completion grace before treating an unfinished future as fatal.
+bounded completion grace before treating an unfinished future as fatal. The
+default transaction deadline is the statement deadline plus five seconds so a
+native statement cancellation has the same bounded cleanup allowance as the
+Worker future; explicit per-operation transaction deadlines remain authoritative.
 
 Token Radar is one fixed-period 30-second reducer turn outside the EDF
 coordinator. One turn streams only the typed Event and resolution-revision
@@ -319,7 +331,8 @@ UTC half-hour slot
   -> whole sealed English Insights payload or whole LKG
   -> /api/news/brief
 
-Every 10 seconds, current Story with max persisted OpenNews provider score > 70
+Every 2.5 seconds, at most 1,000 current Stories by durable primary-key cursor
+  -> select max persisted OpenNews provider score > 70
   -> require non-empty provider assets and exclude CL-family-only sets
   -> News-owned durable push candidate
   -> suppress first-enable/pre-baseline/stale (>15 minute) evidence
@@ -391,8 +404,9 @@ diagnose `news_story_input_row_cap`, `news_story_input_byte_cap`, or
 `news_story_operation_timeout` against the RSS 96-hour and OpenNews 12-hour
 populations.
 
-The push reconciler independently scans persisted current Story evidence every
-10 seconds. It performs no clustering or provider call and writes zero delivery
+The push reconciler independently reads one durable 1,000-Story primary-key
+page every 2.5 seconds. At the 10,000-Story input cap the nominal complete
+revisit ring is 25 seconds. It performs no clustering or provider call and writes zero delivery
 rows for already-seen Stories or already-ledgered selected Items, including
 when cluster membership changes the current Story ID. A newly ingested report must still
 enter a Story through the 60-second projection before it can qualify; a later
@@ -820,7 +834,7 @@ fingerprint. The next normal Story turn recomputes the new state fingerprints;
 material Items, Story IDs/memberships, Brief state, and Push ledgers remain
 intact.
 
-Current migration `20260813_0257` installs narrow covering and
+Migration `20260813_0257` installs narrow covering and
 partial-expression indexes for membership-first numeric provider-score
 qualification and bounded Push-health reads. It extends the existing
 `news_push_state` singleton with exact lifetime status counts plus latest
@@ -838,6 +852,29 @@ will still perform heap fetches even when the lateral subquery selects a
 constant. Keep that INCLUDE as the measured expression-index visibility
 workaround; assess its deployed `pg_relation_size` against `news_items` before
 considering any broader covering payload.
+
+Migration `20260813_0258` keeps the same tables and writers. It adds a
+nullable durable cursor to `news_push_state` so push discovery reads at most
+one fixed 1,000-Story primary-key page per reconcile transaction and resumes the
+same scan after restart; reaching the end clears the cursor so later provider
+annotations are reconsidered on the next cycle. The dedicated provider
+score/assets eligibility clock is part of the first-enable fence on every page;
+Story projection and unrelated provider metadata cannot move it, so a
+future-skewed provider clock cannot turn baseline evidence into a notification.
+It also widens the existing
+`events(received_at_ms)` and current-resolution unique indexes with only the
+columns already needed by the market-target read. This avoids historical
+wide-heap reads while keeping append-hot heap visibility work bounded, without
+changing current-resolution uniqueness or target-selection semantics.
+Stop Serve and Workers before applying the index replacements, then verify the
+0258 index definitions before restoring the single writer. Current head
+`20260813_0259` additionally repairs any numeric-score Item missing its
+eligibility clock during a mixed-version cutover and enforces the clock as a
+database invariant. Keep Serve and Workers stopped through both revisions and
+verify the 0259 head before restoring the single writer. Once
+the writer is running, observe cursor advancement through one complete wrap and
+verify the Push latency/SLO snapshot; a pre-start wrap is impossible because
+the cursor has exactly one runtime writer.
 
 Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
 `20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to

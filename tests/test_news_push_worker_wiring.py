@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,6 +13,8 @@ from tracefold.app.market_providers import AssetMarketProviders
 from tracefold.macro import MacroProjectionCandidate
 from tracefold.news import NewsPushReceipt
 from tracefold.news.push import NewsStoryPush
+from tracefold.news.query_specs import story_push_reconcile_page_query
+from tracefold.news.story_store import NEWS_STORY_INPUT_ROW_CAP
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -33,7 +36,16 @@ def test_story_projection_and_push_reconcile_have_independent_periodic_samples()
 
     assert [name for name, _value in calls] == ["story", "push"]
     assert calls[1][1] is not None
-    assert workers._NEWS_PUSH_RECONCILE_SECONDS == 10.0
+    assert workers._NEWS_PUSH_RECONCILE_SECONDS == 2.5
+
+
+def test_push_reconcile_full_cursor_cycle_has_a_bounded_nominal_cadence() -> None:
+    page_query = story_push_reconcile_page_query()
+    probe_limit, page_size = page_query.params
+
+    assert probe_limit == page_size + 1
+    assert page_size <= 1_000
+    assert math.ceil(NEWS_STORY_INPUT_ROW_CAP / page_size) * workers._NEWS_PUSH_RECONCILE_SECONDS <= 25.0
 
 
 def test_push_periodic_sample_retries_after_database_admission_timeout() -> None:

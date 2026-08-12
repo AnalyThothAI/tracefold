@@ -164,9 +164,9 @@ before any RSS attempt. An empty Top Story selection is not claimable and does
 not complete or overwrite the current Brief slot; normal 60-second PostgreSQL
 polling makes a later non-empty selection in the same half hour eligible, with
 no wake service or compatibility path.
-Push is a separate News-owned delivery state machine with a code-owned 10-second
-persisted-evidence reconcile: initial
-enablement suppresses the current eligible baseline; later strict
+Push is a separate News-owned delivery state machine with a code-owned
+2.5-second, 1,000-Story cursor-paged persisted-evidence reconcile: initial
+enablement fences the current local evidence baseline on every page; later strict
 score-greater-than-70 crossings with at least one provider asset symbol, except
 CL-family-only sets, freeze one highest-scored Item and send one optionally
 signed Feishu card containing the selected Item's original OpenNews headline
@@ -333,13 +333,22 @@ membership, and invalidates the Story input fingerprint for one normal writer
 rebuild. It adds no News table and preserves every Item, Story identity,
 membership, Brief, and Push ledger row. Stop Serve and Workers while crossing
 the revision so no old writer can publish the pre-column shape.
-Current head `20260813_0257` adds narrow covering and partial-expression indexes
+Migration `20260813_0257` adds narrow covering and partial-expression indexes
 for the membership-first numeric News score read and bounded Push-health
 reads. It extends the existing Push singleton with transactionally maintained
 lifetime counts/latest event clocks and adds typed delivery telemetry for a
 capped 24-hour SLO sample. It adds no table, second writer, or `active` filter,
 and it does not relax Serve deadlines. Stop Serve and Workers while crossing
 the revision, then start both runtimes.
+Migration `20260813_0258` adds the News Push reconcile cursor plus the
+provider score/assets eligibility clock, and widens two existing market-read
+indexes in place. Stop Serve and Workers while crossing this revision and keep
+them stopped through the 0259 invariant repair.
+Current head `20260813_0259` repairs the eligibility clock of any numeric-score
+Item written during a mixed-version 0258 cutover and then enforces that clock
+as a database invariant. Keep Serve and Workers stopped while crossing the
+revision, then restore only the new single writer, observe one bounded cursor
+wrap, and verify Push latency plus Workers heartbeat stability.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile

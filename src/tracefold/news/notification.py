@@ -59,7 +59,14 @@ def evaluate_news_push_eligibility(
     published_at_ms = provider_evidence.get("published_at_ms")
     if not isinstance(published_at_ms, int) or isinstance(published_at_ms, bool):
         return _ineligible("stale")
-    if baseline_at_ms is None or published_at_ms <= baseline_at_ms:
+    eligibility_observed_at_ms = provider_evidence.get("eligibility_observed_at_ms")
+    if (
+        baseline_at_ms is None
+        or published_at_ms <= baseline_at_ms
+        or not isinstance(eligibility_observed_at_ms, int)
+        or isinstance(eligibility_observed_at_ms, bool)
+        or eligibility_observed_at_ms <= baseline_at_ms
+    ):
         return _ineligible("baseline")
     if published_at_ms < int(now_ms) - PUSH_SOURCE_FRESHNESS_MS:
         return _ineligible("stale")

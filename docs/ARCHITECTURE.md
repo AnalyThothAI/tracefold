@@ -242,7 +242,10 @@ its deadline. If an asyncio wrapper callback is delayed, an already-completed
 native future is consumed directly; a DB, model, CPU, cleanup, or otherwise
 unclassified native future that itself remains alive beyond that grace is
 fatal. A business-lane PostgreSQL idle-transaction disconnect is bounded
-admission failure, while the same control-lane failure remains fatal. Only an explicitly classified true
+admission failure. The idempotent runtime-heartbeat child retries only precise
+transient database failures under the independent 15-second stale-heartbeat
+watchdog; pinned-singleton loss, invariant failures, and an unfinished native
+control future remain fatal. Only an explicitly classified true
 external provider seam may translate a finite-operation overrun into its
 existing durable retry, degradation, or terminal policy; doing so never
 releases the shared capability permit before the underlying future actually
@@ -617,9 +620,13 @@ LKG without mixing Top Stories, prose, sources, or clocks. The public state is
 exactly `unavailable`, `current`, `degraded`, or `last_known_good`.
 
 `NewsStoryPush` is a News-owned durable outbound worker, not a model candidate
-or generic Notifications service. On first enablement it atomically suppresses
-every currently eligible Story and records the initialized baseline without
-network work. Later it qualifies a Story only when the maximum numeric
+or generic Notifications service. On first enablement it records one atomic
+local baseline without network work. Every page applies that same fence:
+selected evidence already persisted at the baseline is suppressed even when
+the provider article clock is future-skewed, while a later score or asset
+mutation can qualify on its newer dedicated eligibility clock. Story
+projection and unrelated provider metadata never move that clock. Later it qualifies a
+Story only when the maximum numeric
 OpenNews provider score among its current members is strictly greater than 70,
 the selected Item was published after the baseline and within the code-owned
 15-minute live-alert window, and that Item has a qualifying provider asset
@@ -630,8 +637,10 @@ News reads nor attempts to repair other provider mislabelling. Older Items
 discovered through REST overlap or a later Story identity are durably
 suppressed, never backfilled to Feishu. It chooses the
 highest-scored member with deterministic publication-time and Item-ID ties, and
-freezes that Story/Item evidence once. Its code-owned 10-second reconcile reads
-only persisted current Story membership and NewsItem metadata; it neither rebuilds
+freezes that Story/Item evidence once. Its code-owned 2.5-second reconcile reads
+at most 1,000 persisted current Stories by primary-key cursor per transaction;
+the 10,000-Story input cap therefore has a nominal 25-second complete revisit
+ring. It reads only current Story membership and NewsItem metadata; it neither rebuilds
 Stories nor adds another acquisition path. A private durable-due loop claims
 and delivers without occupying the serial model arbiter. For an unfrozen,
 non-Chinese title, the Feishu Adapter makes at most one request through the same
@@ -750,6 +759,22 @@ relation, score changes are visible immediately, and source/origin values
 remain the published Story snapshot. The score index includes
 `provider_metadata` only because PostgreSQL otherwise heap-fetches for the
 expression predicate; it is a covering-index workaround, not a second score.
+`20260813_0258` adds a nullable scan cursor to the existing Push singleton, a
+dedicated provider score/assets eligibility clock to existing News Items, and
+replaces two existing indexes in place. Push candidate discovery advances
+one deterministic 1,000-Story primary-key page in the same transaction as
+candidate creation and cursor publication; rollback advances neither, restart
+continues from the durable cursor, and end-of-scan clears it so later provider
+annotations are reconsidered. Every page uses the same local first-enable
+evidence-clock fence, so pagination cannot turn a future-skewed pre-baseline
+Item into a notification. The widened Event received-time index and
+current-resolution unique index cover columns already read by market-target
+selection while preserving its joins, ordering, and uniqueness semantics.
+There is still no News wake plane, per-candidate frontier, extra table, or
+second writer.
+`20260813_0259` repairs any numeric-score Item written without that eligibility
+clock during a mixed-version 0258 cutover and makes the clock mandatory for
+numeric provider scores. It adds no table, writer, or serving field.
 
 ### Macro
 
@@ -875,8 +900,9 @@ Historical migration `20260801_0237` introduced a persisted OpenNews recovery
 boundary; News migration `20260809_0247` removes that state in favor of
 newest-first 12-hour overlap. `20260801_0238` adds the two News-owned
 push-control tables with an
-uninitialized baseline, so the first enabled reconcile suppresses the current
-eligible set without a network call.
+uninitialized baseline. Runtime initialization records that fence once, and
+every bounded reconcile page suppresses selected evidence already persisted at
+the fence without a network call.
 Migration `20260810_0251` is the Rates v7 hard cut: it deletes the rebuildable
 v6 `rates_fed` current/frontier rows and changes the database schema invariant
 to v7. Typed Macro facts and immutable analyses are preserved and the sole

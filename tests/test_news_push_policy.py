@@ -8,10 +8,12 @@ def _evidence(
     score: object = 88,
     symbols: tuple[str, ...] = ("BTC",),
     published_at_ms: int = 1_000,
+    eligibility_observed_at_ms: object = 1_000,
 ) -> dict[str, object]:
     return {
         "provider_score": score,
         "published_at_ms": published_at_ms,
+        "eligibility_observed_at_ms": eligibility_observed_at_ms,
         "provider_metadata": {"coins": [{"symbol": symbol, "market_type": "spot"} for symbol in symbols]},
     }
 
@@ -28,6 +30,21 @@ def test_news_push_policy_admits_fresh_post_baseline_evidence() -> None:
     assert eligibility.ineligible_reason is None
 
 
+def test_news_push_policy_uses_local_evidence_clock_to_fence_provider_clock_skew() -> None:
+    evidence = _evidence(published_at_ms=10_000)
+    evidence["eligibility_observed_at_ms"] = 500
+
+    eligibility = evaluate_news_push_eligibility(
+        evidence,
+        enabled=True,
+        baseline_at_ms=500,
+        now_ms=1_100,
+    )
+
+    assert eligibility.eligible is False
+    assert eligibility.ineligible_reason == "baseline"
+
+
 @pytest.mark.parametrize(
     ("evidence", "enabled", "baseline_at_ms", "now_ms", "reason"),
     (
@@ -38,6 +55,7 @@ def test_news_push_policy_admits_fresh_post_baseline_evidence() -> None:
         (_evidence(), False, 500, 1_100, "disabled"),
         (_evidence(), True, None, 1_100, "baseline"),
         (_evidence(published_at_ms=500), True, 500, 1_100, "baseline"),
+        (_evidence(eligibility_observed_at_ms=None), True, 500, 1_100, "baseline"),
         (
             _evidence(published_at_ms=1_000),
             True,
