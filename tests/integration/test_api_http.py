@@ -1917,6 +1917,12 @@ def test_api_news_feed_priority_search_reporting_origin_and_cursor_filters_are_s
                 observed_at_ms=now_ms,
             )
             _rebuild_news_projection(repos, now_ms=now_ms)
+            # Feed filters bind to the published Story membership closure. An
+            # acquisition expiry can precede the next atomic Story rebuild.
+            repos.conn.execute("UPDATE news_items SET active=false WHERE provider_record_id='software'")
+            # A repeated provider report may also update an Item origin before
+            # the minute-cadence Story writer republishes that closure.
+            repos.conn.execute("UPDATE news_items SET reporting_origin='reuters' WHERE provider_record_id='software'")
 
         headers = {"Authorization": "Bearer secret"}
         complete = client.get("/api/news/feed", headers=headers)

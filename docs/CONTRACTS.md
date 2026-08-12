@@ -282,13 +282,19 @@ The News public surface is exactly five read-only routes:
   page size remains 50 by default and is capped at 100. Omitting filters returns
   the complete materialized Story population. `provider_score_gt` is a strict
   comparison against the backend-selected maximum numeric OpenNews score;
-  `reporting_origin` is a normalized exact
-  match. `q` is normalized server-side search over the canonical title and
-  description, reporting origin, provider source, and asset symbols. All search
-  and filters run before deterministic
-  keyset ordering and pagination. Every cursor and ETag binds the complete
+  `reporting_origin` is a normalized exact match against the published Story
+  closure. `q` is normalized server-side search over current member title and
+  description, the Story-snapshot reporting origin, provider source, and asset
+  symbols. All search and filters run before deterministic keyset ordering and
+  pagination. Every cursor and ETag binds the complete
   normalized filter identity. The response includes Stories, filtered facets
   including reporting origins, `next_cursor`, and `has_more`.
+  Source and reporting-origin facets expand deterministic dimensions stored in
+  the current Story read model; they preserve the same per-Story deduplication,
+  origin normalization, labels, and filtered counts without scanning member
+  Item history. Provider-score filtering still evaluates current persisted
+  metadata for the published Story membership closure; source/origin filters
+  and facets bind to the atomic Story snapshot until its next replacement.
 
   Each Story carries nullable `provider_evidence`, selected by the backend from
   the member with the maximum numeric OpenNews provider score and deterministic

@@ -787,6 +787,7 @@
 | `state_fingerprint` | `TEXT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `facet_facts` | `JSONB` | False | `None` |
 
 ## `news_story_members`
 

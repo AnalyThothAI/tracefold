@@ -155,10 +155,10 @@ def _feed_filter_where(
             """
             EXISTS (
               SELECT 1
-                FROM news_story_members fm
-                JOIN news_items fi ON fi.item_id = fm.item_id
-               WHERE fm.story_id = st.story_id
-                 AND fi.source_id = %s
+                FROM jsonb_array_elements_text(
+                  st.facet_facts -> 'source_ids'
+                ) source_facet(value)
+               WHERE source_facet.value = %s
             )
             """
         )
@@ -168,10 +168,10 @@ def _feed_filter_where(
             """
             EXISTS (
               SELECT 1
-                FROM news_story_members fm
-                JOIN news_items fi ON fi.item_id = fm.item_id
-               WHERE fm.story_id = st.story_id
-                 AND lower(btrim(fi.reporting_origin)) = %s
+                FROM jsonb_array_elements_text(
+                  st.facet_facts -> 'reporting_origins'
+                ) origin_facet(value)
+               WHERE lower(btrim(origin_facet.value)) = %s
             )
             """
         )
@@ -179,14 +179,19 @@ def _feed_filter_where(
     if provider_score_gt is not None:
         where.append(
             """
-            EXISTS (
-              SELECT 1
-                FROM news_story_members fm
-                JOIN news_items fi ON fi.item_id = fm.item_id
-               WHERE fm.story_id = st.story_id
-                 AND CASE
-                       WHEN jsonb_typeof(fi.provider_metadata -> 'score') = 'number'
-                         THEN (fi.provider_metadata ->> 'score')::numeric
+            st.story_id IN (
+              SELECT current_member.story_id
+                FROM (
+                  SELECT fm.story_id, fi.provider_metadata
+                    FROM news_story_members fm
+                    JOIN news_items fi ON fi.item_id = fm.item_id
+                   -- This planner fence keeps current membership as the
+                   -- bounded input before the outer score predicate.
+                   OFFSET 0
+                ) current_member
+               WHERE CASE
+                       WHEN jsonb_typeof(current_member.provider_metadata -> 'score') = 'number'
+                         THEN (current_member.provider_metadata ->> 'score')::numeric
                        ELSE NULL
                      END > %s
             )
@@ -205,7 +210,13 @@ def _feed_filter_where(
                    AND (
                      strpos(lower(fi.title), %s) > 0
                      OR strpos(lower(fi.description), %s) > 0
-                     OR strpos(lower(fi.reporting_origin), %s) > 0
+                     OR EXISTS (
+                       SELECT 1
+                         FROM jsonb_array_elements_text(
+                           st.facet_facts -> 'reporting_origins'
+                         ) origin_facet(value)
+                        WHERE strpos(lower(origin_facet.value), %s) > 0
+                     )
                      OR strpos(
                        lower(coalesce(fi.provider_metadata ->> 'source', '')),
                        %s
@@ -1227,10 +1238,30 @@ class NewsRepository:
                      st.source_count AS stored_source_count,
                      st.first_published_at_ms AS stored_first_at_ms,
                      st.last_published_at_ms AS stored_last_at_ms,
+                     st.facet_facts AS stored_facet_facts,
                      count(m.item_id) AS actual_item_count,
                      count(DISTINCT i.reporting_origin) AS actual_source_count,
                      min(i.published_at_ms) AS actual_first_at_ms,
                      max(i.published_at_ms) AS actual_last_at_ms,
+                     jsonb_build_object(
+                       'source_ids', coalesce(
+                         jsonb_agg(
+                           DISTINCT (i.source_id COLLATE "C")
+                           ORDER BY (i.source_id COLLATE "C")
+                         )
+                           FILTER (WHERE i.source_id IS NOT NULL),
+                         '[]'::jsonb
+                       ),
+                       'reporting_origins', coalesce(
+                         jsonb_agg(
+                           DISTINCT (btrim(i.reporting_origin) COLLATE "C")
+                           ORDER BY (btrim(i.reporting_origin) COLLATE "C")
+                         ) FILTER (
+                           WHERE nullif(btrim(i.reporting_origin), '') IS NOT NULL
+                         ),
+                         '[]'::jsonb
+                       )
+                     ) AS actual_facet_facts,
                      bool_or(m.item_id = st.representative_item_id)
                        AS representative_is_member,
                      bool_or(m.item_id = st.scoring_item_id)
@@ -1248,6 +1279,7 @@ class NewsRepository:
                   OR stored_source_count <> actual_source_count
                   OR stored_first_at_ms IS DISTINCT FROM actual_first_at_ms
                   OR stored_last_at_ms IS DISTINCT FROM actual_last_at_ms
+                  OR stored_facet_facts IS DISTINCT FROM actual_facet_facts
                   OR representative_is_member IS DISTINCT FROM true
                   OR scoring_item_is_member IS DISTINCT FROM true
             )
@@ -1451,15 +1483,24 @@ class NewsRepository:
         rows = self.conn.execute(
             f"""
             WITH filtered_stories AS MATERIALIZED (
-              SELECT st.story_id, st.category, st.level
+              SELECT st.story_id, st.category, st.level, st.facet_facts
                 FROM news_stories st
                WHERE {" AND ".join(where)}
             ),
-            member_facts AS MATERIALIZED (
-              SELECT filtered.story_id, item.source_id, item.reporting_origin
+            source_facts AS MATERIALIZED (
+              SELECT filtered.story_id, source_id.value AS source_id
                 FROM filtered_stories filtered
-                JOIN news_story_members member ON member.story_id = filtered.story_id
-                JOIN news_items item ON item.item_id = member.item_id
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                  filtered.facet_facts -> 'source_ids'
+                ) source_id(value)
+            ),
+            reporting_origin_facts AS MATERIALIZED (
+              SELECT filtered.story_id,
+                     reporting_origin.value AS reporting_origin
+                FROM filtered_stories filtered
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                  filtered.facet_facts -> 'reporting_origins'
+                ) reporting_origin(value)
             ),
             facet_rows AS (
               SELECT 'category'::text AS facet_type,
@@ -1479,18 +1520,18 @@ class NewsRepository:
               SELECT 'source'::text AS facet_type,
                      source.source_id AS value,
                      source.name AS label,
-                     count(DISTINCT member_facts.story_id)::integer AS count
-                FROM member_facts
-                JOIN news_sources source ON source.source_id = member_facts.source_id
+                     count(DISTINCT source_facts.story_id)::integer AS count
+                FROM source_facts
+                JOIN news_sources source ON source.source_id = source_facts.source_id
                GROUP BY source.source_id, source.name
               UNION ALL
               SELECT 'reporting_origin'::text AS facet_type,
-                     lower(btrim(member_facts.reporting_origin)) AS value,
-                     min(btrim(member_facts.reporting_origin)) AS label,
-                     count(DISTINCT member_facts.story_id)::integer AS count
-                FROM member_facts
-               WHERE nullif(btrim(member_facts.reporting_origin), '') IS NOT NULL
-               GROUP BY lower(btrim(member_facts.reporting_origin))
+                     lower(btrim(reporting_origin_facts.reporting_origin)) AS value,
+                     min(btrim(reporting_origin_facts.reporting_origin)) AS label,
+                     count(DISTINCT reporting_origin_facts.story_id)::integer AS count
+                FROM reporting_origin_facts
+               WHERE nullif(btrim(reporting_origin_facts.reporting_origin), '') IS NOT NULL
+               GROUP BY lower(btrim(reporting_origin_facts.reporting_origin))
             ),
             ranked AS (
               SELECT facet_rows.*,

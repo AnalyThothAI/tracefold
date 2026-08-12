@@ -216,6 +216,12 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
         )
         first_published_at_ms = min(int(member["published_at_ms"]) for member in members)
         last_published_at_ms = max(int(member["published_at_ms"]) for member in members)
+        facet_facts = {
+            "source_ids": sorted({str(member["source_id"]) for member in members}),
+            "reporting_origins": sorted(
+                {origin for member in members if (origin := str(member["reporting_origin"]).strip())}
+            ),
+        }
         story = {
             "story_id": story_id,
             "canonical_key": scored.story_canonical_keys[story_id],
@@ -230,6 +236,7 @@ def compute_news_story_projection(snapshot: NewsProjectionSnapshot) -> dict[str,
             "category": category,
             "importance_score": int(scoring["importance_score"]),
             "importance_factors": dict(scoring["importance_factors"]),
+            "facet_facts": facet_facts,
             "item_count": len(members),
             "source_count": source_count,
             "first_published_at_ms": first_published_at_ms,

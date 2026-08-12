@@ -145,9 +145,17 @@ def test_query_audit_public_news_views_read_only_bounded_models():
 
     assert all(item["name"] != "news_feed_story_facets" for item in HOT_QUERIES)
     assert all(item["name"] != "news_feed_source_facets" for item in HOT_QUERIES)
+    assert "current_member_scores AS MATERIALIZED" in filtered_facets["sql"]
+    assert "FROM news_story_members members" in filtered_facets["sql"]
+    assert "JOIN news_items items ON items.item_id = members.item_id" in filtered_facets["sql"]
+    assert "OFFSET 0" in filtered_facets["sql"]
     assert "news_story_members" in filtered_facets["sql"]
     assert "provider_metadata" in filtered_facets["sql"]
-    assert "reporting_origin" in filtered_facets["sql"]
+    assert "items.active" not in filtered_facets["sql"]
+    assert "facet_facts" in filtered_facets["sql"]
+    assert "source_ids" in filtered_facets["sql"]
+    assert "reporting_origins" in filtered_facets["sql"]
+    assert filtered_facets["amplification_basis"] == "aggregate_input"
     assert "LIMIT 101" in filtered_facets["sql"]
     assert "news_brief_current" in brief["sql"]
     assert "served_payload" in brief["sql"]
@@ -268,6 +276,32 @@ def test_analyzed_query_audit_counts_bitmap_heap_rows_not_index_candidates():
     assert payload["queries"][0]["metrics"]["read_return_amplification"] == 2.32
 
 
+def test_analyzed_query_audit_defaults_to_returned_rows_for_aggregate_amplification():
+    conn = RecordingJsonPlanConn(_aggregate_plan(input_rows=500, returned_rows=1))
+
+    payload = PostgresQueryAudit(conn).run(analyze=True)
+    readiness = next(item for item in payload["queries"] if item["name"] == "readiness_schema")
+
+    assert readiness["ok"] is False
+    assert readiness["metrics"]["amplification_basis"] == "returned_rows"
+    assert readiness["metrics"]["amplification_basis_rows"] == 1
+    assert readiness["metrics"]["read_return_amplification"] == 500.0
+    assert readiness["violations"] == ["read_return_amplification_exceeded"]
+
+
+def test_analyzed_query_audit_can_use_explicit_aggregate_input_amplification():
+    conn = RecordingJsonPlanConn(_aggregate_plan(input_rows=500, returned_rows=1))
+
+    payload = PostgresQueryAudit(conn).run(analyze=True)
+    facets = next(item for item in payload["queries"] if item["name"] == "news_feed_filtered_facets")
+
+    assert facets["ok"] is True
+    assert facets["metrics"]["amplification_basis"] == "aggregate_input"
+    assert facets["metrics"]["amplification_basis_rows"] == 500
+    assert facets["metrics"]["read_return_amplification"] == 1.0
+    assert facets["violations"] == []
+
+
 class RecordingExplainConn:
     def __init__(self):
         self.params_seen = []
@@ -290,3 +324,24 @@ class RecordingJsonPlanConn:
 
     def fetchall(self):
         return [{"QUERY PLAN": [self.statement]}]
+
+
+def _aggregate_plan(*, input_rows: int, returned_rows: int) -> dict:
+    return {
+        "Plan": {
+            "Node Type": "Aggregate",
+            "Actual Rows": returned_rows,
+            "Actual Loops": 1,
+            "Plans": [
+                {
+                    "Node Type": "Seq Scan",
+                    "Relation Name": "events",
+                    "Plan Rows": input_rows,
+                    "Actual Rows": input_rows,
+                    "Actual Loops": 1,
+                }
+            ],
+        },
+        "Planning Time": 0.5,
+        "Execution Time": 2.0,
+    }

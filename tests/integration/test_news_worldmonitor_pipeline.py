@@ -580,6 +580,57 @@ def test_item_classification_has_one_owner_in_story_projection() -> None:
         conn.close()
 
 
+def test_story_projection_persists_facet_facts_and_invariant_detects_drift() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _event(
+                        record_id="facet-owner",
+                        title="Central bank publishes emergency market policy",
+                        score=80,
+                    ),
+                ),
+                observed_at_ms=NOW_MS,
+            )
+            rebuild_news_projection(repository, now_ms=NOW_MS)
+
+        item_id = str(
+            conn.execute("SELECT item_id FROM news_items WHERE provider_record_id='facet-owner'").fetchone()["item_id"]
+        )
+        stored = conn.execute("SELECT facet_facts FROM news_stories").fetchone()
+        assert stored["facet_facts"] == {
+            "source_ids": [source.source_id],
+            "reporting_origins": ["reuters"],
+        }
+        assert repository._story_invariant_counts(item_ids=[item_id])["total"] == 0
+
+        with conn.transaction():
+            conn.execute(
+                """
+                UPDATE news_stories
+                   SET facet_facts=jsonb_build_object(
+                     'source_ids', jsonb_build_array(),
+                     'reporting_origins', jsonb_build_array()
+                   )
+                """
+            )
+
+        assert repository._story_invariant_counts(item_ids=[item_id]) == {
+            "invalid_owner_count": 0,
+            "invalid_story_aggregate_count": 1,
+            "total": 1,
+        }
+    finally:
+        conn.close()
+
+
 def test_story_projection_publishes_captured_input_and_rejects_older_publish_order() -> None:
     conn = connect_postgres_test(read_only=False)
     try:

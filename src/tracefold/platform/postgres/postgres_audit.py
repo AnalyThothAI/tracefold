@@ -197,31 +197,59 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "news_feed_filtered_facets",
+        "amplification_basis": "aggregate_input",
         "sql": """
-            WITH filtered_stories AS MATERIALIZED (
-              SELECT stories.story_id
+            WITH current_member_scores AS MATERIALIZED (
+              SELECT members.story_id,
+                     CASE
+                       WHEN jsonb_typeof(items.provider_metadata -> 'score') = 'number'
+                         THEN (items.provider_metadata ->> 'score')::numeric
+                       ELSE NULL
+                     END AS provider_score
+              FROM news_story_members members
+              JOIN news_items items ON items.item_id = members.item_id
+              OFFSET 0
+            ),
+            filtered_stories AS MATERIALIZED (
+              SELECT stories.story_id, stories.facet_facts
               FROM news_stories stories
               WHERE EXISTS (
                 SELECT 1
-                FROM news_story_members members
-                JOIN news_items items ON items.item_id = members.item_id
-                WHERE members.story_id = stories.story_id
-                  AND CASE
-                        WHEN jsonb_typeof(items.provider_metadata -> 'score') = 'number'
-                          THEN (items.provider_metadata ->> 'score')::numeric
-                        ELSE NULL
-                      END > 70
+                FROM current_member_scores scores
+                WHERE scores.story_id = stories.story_id
+                  AND scores.provider_score > 70
               )
+            ),
+            facet_rows AS (
+              SELECT filtered_stories.story_id,
+                     'source'::text AS facet_kind,
+                     source_value.value AS facet_value,
+                     sources.name AS facet_label
+              FROM filtered_stories
+              CROSS JOIN LATERAL jsonb_array_elements_text(
+                filtered_stories.facet_facts -> 'source_ids'
+              ) AS source_value(value)
+              JOIN news_sources sources ON sources.source_id = source_value.value
+
+              UNION ALL
+
+              SELECT filtered_stories.story_id,
+                     'reporting_origin'::text AS facet_kind,
+                     lower(btrim(origin_value.value)) AS facet_value,
+                     btrim(origin_value.value) AS facet_label
+              FROM filtered_stories
+              CROSS JOIN LATERAL jsonb_array_elements_text(
+                filtered_stories.facet_facts -> 'reporting_origins'
+              ) AS origin_value(value)
             )
-            SELECT lower(btrim(items.reporting_origin)) AS reporting_origin,
-                   count(DISTINCT filtered_stories.story_id)::integer AS story_count
-            FROM filtered_stories
-            JOIN news_story_members members
-              ON members.story_id = filtered_stories.story_id
-            JOIN news_items items ON items.item_id = members.item_id
-            WHERE nullif(btrim(items.reporting_origin), '') IS NOT NULL
-            GROUP BY lower(btrim(items.reporting_origin))
-            ORDER BY story_count DESC, reporting_origin
+            SELECT facet_kind,
+                   facet_value,
+                   min(facet_label) AS facet_label,
+                   count(DISTINCT story_id)::integer AS story_count
+            FROM facet_rows
+            WHERE nullif(btrim(facet_value), '') IS NOT NULL
+            GROUP BY facet_kind, facet_value
+            ORDER BY facet_kind, story_count DESC, facet_value
             LIMIT 101
         """,
         "params": (),
@@ -620,7 +648,14 @@ class PostgresQueryAudit:
         try:
             rows = self.conn.execute(f"{prefix} {item['sql']}", self._params(item["params"])).fetchall()
             plan = _json_plan(rows)
-            metrics = _plan_metrics(plan) if analyze else None
+            metrics = (
+                _plan_metrics(
+                    plan,
+                    amplification_basis=str(item.get("amplification_basis") or "returned_rows"),
+                )
+                if analyze
+                else None
+            )
             violations = _plan_violations(metrics) if metrics is not None else []
             return {
                 "ok": not violations,
@@ -805,7 +840,11 @@ def _json_plan(rows: list[Any]) -> Any:
     return value
 
 
-def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
+def _plan_metrics(
+    plan_payload: Any,
+    *,
+    amplification_basis: str = "returned_rows",
+) -> dict[str, Any]:
     statement = _plan_statement(plan_payload)
     root = statement.get("Plan")
     if not isinstance(root, dict):
@@ -815,6 +854,8 @@ def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
             "planning_time_ms": None,
             "returned_rows": 0,
             "read_rows": 0,
+            "amplification_basis": amplification_basis,
+            "amplification_basis_rows": 0,
             "read_return_amplification": 0.0,
             "temp_read_blocks": 0,
             "temp_written_blocks": 0,
@@ -826,7 +867,12 @@ def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
         node for node in nodes if node.get("Relation Name") and "Scan" in str(node.get("Node Type") or "")
     ]
     read_rows = sum(_executed_rows(node) for node in relation_scans)
-    denominator = max(1, returned_rows)
+    basis_rows = _amplification_basis_rows(
+        root,
+        nodes,
+        amplification_basis=amplification_basis,
+    )
+    denominator = max(1, basis_rows)
     amplification = read_rows / denominator
     large_seq_scans = [
         {
@@ -844,11 +890,35 @@ def _plan_metrics(plan_payload: Any) -> dict[str, Any]:
         "planning_time_ms": _optional_float(statement.get("Planning Time")),
         "returned_rows": returned_rows,
         "read_rows": read_rows,
+        "amplification_basis": amplification_basis,
+        "amplification_basis_rows": basis_rows,
         "read_return_amplification": round(amplification, 6),
         "temp_read_blocks": int(root.get("Temp Read Blocks") or 0),
         "temp_written_blocks": int(root.get("Temp Written Blocks") or 0),
         "large_seq_scans": large_seq_scans,
     }
+
+
+def _amplification_basis_rows(
+    root: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    *,
+    amplification_basis: str,
+) -> int:
+    returned_rows = _executed_rows(root)
+    if amplification_basis == "returned_rows":
+        return returned_rows
+    if amplification_basis != "aggregate_input":
+        raise ValueError(f"unsupported amplification basis: {amplification_basis}")
+    aggregate_input_rows = max(
+        (
+            sum(_executed_rows(child) for child in node.get("Plans") or () if isinstance(child, dict))
+            for node in nodes
+            if "Aggregate" in str(node.get("Node Type") or "")
+        ),
+        default=0,
+    )
+    return aggregate_input_rows or returned_rows
 
 
 def _plan_violations(metrics: dict[str, Any]) -> list[str]:

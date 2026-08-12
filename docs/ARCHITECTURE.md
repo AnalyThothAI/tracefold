@@ -730,6 +730,15 @@ persisted OpenNews gap columns and facet tables, replaces the former Brief
 run/publication tables with the two-singleton slot design, clears rebuildable
 Story/selection state, and deletes incompatible Push payload rows. It is
 irreversible and has no runtime compatibility lane.
+`20260813_0256` keeps that exact nine-table boundary and adds deterministic,
+rebuildable source/origin `facet_facts` to each `news_stories` row. The sole
+Story writer derives them from the same complete membership closure before the
+Story fingerprint; Feed facets expand this bounded Story-local dimension
+instead of rereading every member Item. Provider-score qualification remains a
+dynamic membership-bounded read, including the short interval after an Item
+expires and before the next atomic Story replacement. Source/origin filters
+and facets bind to that same published Story snapshot, so an Item correction
+cannot mix old facet counts with a new filter identity before replacement.
 
 ### Macro
 

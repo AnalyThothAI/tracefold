@@ -319,7 +319,7 @@ bounded source-time index/basic serving constraints. It preserved every
 material Event, intent, resolution revision, identity/profile fact, and market
 fact; its v3 runtime replayed a three-hour horizon for one-hour current/prior
 windows and a one-hour episode TTL.
-Current head `20260812_0255` hard-cuts only that rebuildable singleton to
+Migration `20260812_0255` hard-cuts only that rebuildable singleton to
 `token_radar_snapshot_v4` and initial `unavailable` state, and installs the
 bounded source-time index rebuilt as the narrow fingerprint covering index,
 plus the covering resolution index used by the optimized load SQL. It again
@@ -327,6 +327,12 @@ preserves every material fact. Stop Serve and Workers while an existing
 database crosses this revision; after migration, start only the v4 runtime and
 let its first successful twelve-hour bounded replay publish the single fixed
 four-hour product as `current`. A fresh database migrates directly to head.
+Current head `20260813_0256` adds deterministic `facet_facts` to the existing
+rebuildable `news_stories` read model, backfills it from current Story
+membership, and invalidates the Story input fingerprint for one normal writer
+rebuild. It adds no News table and preserves every Item, Story identity,
+membership, Brief, and Push ledger row. Stop Serve and Workers while crossing
+the revision so no old writer can publish the pre-column shape.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile

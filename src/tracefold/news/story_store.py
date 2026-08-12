@@ -16,7 +16,7 @@ SCORING_EPOCH_MS = 60 * 60 * 1000
 NEWS_STORY_INPUT_ROW_CAP = 10_000
 NEWS_STORY_INPUT_BYTES_CAP = 8 * 1024 * 1024
 STORY_PROJECTION_VERSION = (
-    f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:rss96h-membership-top20-opennews12h-v1"
+    f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:rss96h-membership-top20-opennews12h-facets-v2"
 )
 _PIPELINE_LOCK_KEY = 727_301_984
 
@@ -376,7 +376,8 @@ def _upsert_stories(conn: Any, *, stories: Sequence[Mapping[str, Any]], now_ms: 
                   representative_item_id, representative_source_id,
                   representative_title, representative_url,
                   representative_description, scoring_item_id, level, category,
-                  importance_score, importance_factors, item_count, source_count,
+                  importance_score, importance_factors, facet_facts,
+                  item_count, source_count,
                   first_published_at_ms, last_published_at_ms, state_fingerprint,
                   created_at_ms, updated_at_ms
                 ) VALUES (
@@ -385,7 +386,8 @@ def _upsert_stories(conn: Any, *, stories: Sequence[Mapping[str, Any]], now_ms: 
                   %(representative_title)s, %(representative_url)s,
                   %(representative_description)s, %(scoring_item_id)s,
                   %(level)s, %(category)s, %(importance_score)s,
-                  %(importance_factors)s, %(item_count)s, %(source_count)s,
+                  %(importance_factors)s, %(facet_facts)s,
+                  %(item_count)s, %(source_count)s,
                   %(first_published_at_ms)s, %(last_published_at_ms)s,
                   %(state_fingerprint)s, %(now_ms)s, %(now_ms)s
                 ) ON CONFLICT (story_id) DO UPDATE SET
@@ -400,6 +402,7 @@ def _upsert_stories(conn: Any, *, stories: Sequence[Mapping[str, Any]], now_ms: 
                   level=EXCLUDED.level, category=EXCLUDED.category,
                   importance_score=EXCLUDED.importance_score,
                   importance_factors=EXCLUDED.importance_factors,
+                  facet_facts=EXCLUDED.facet_facts,
                   item_count=EXCLUDED.item_count, source_count=EXCLUDED.source_count,
                   first_published_at_ms=EXCLUDED.first_published_at_ms,
                   last_published_at_ms=EXCLUDED.last_published_at_ms,
@@ -411,6 +414,7 @@ def _upsert_stories(conn: Any, *, stories: Sequence[Mapping[str, Any]], now_ms: 
                 {
                     **story,
                     "importance_factors": Jsonb(story["importance_factors"]),
+                    "facet_facts": Jsonb(story["facet_facts"]),
                     "now_ms": now_ms,
                 },
             ).rowcount

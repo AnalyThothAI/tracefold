@@ -320,7 +320,70 @@ def test_source_count_uses_reporting_origin_not_acquisition_source() -> None:
 
     assert projection["stories"][0]["item_count"] == 3
     assert projection["stories"][0]["source_count"] == 2
+    assert projection["stories"][0]["facet_facts"] == {
+        "source_ids": ["opennews", "rss"],
+        "reporting_origins": ["ap", "reuters"],
+    }
     assert projection["stories"][0]["importance_factors"]["reporting_origin_count"] == 2
+
+
+def test_story_facet_facts_trim_dedupe_and_sort_raw_labels_before_fingerprinting() -> None:
+    base = compute_news_story_projection(
+        _snapshot(
+            _row(
+                "wire-a",
+                "Major earthquake strikes coast",
+                published_at_ms=10,
+                reporting_origin=" Reuters ",
+                source_id="opennews",
+            ),
+            _row(
+                "wire-b",
+                "Major earthquake strikes coast",
+                published_at_ms=11,
+                reporting_origin="Reuters",
+                source_id="opennews",
+            ),
+            _row(
+                "rss",
+                "Major earthquake strikes coast",
+                published_at_ms=12,
+                reporting_origin="reuters",
+                source_id="rss",
+            ),
+        )
+    )["stories"][0]
+    changed = compute_news_story_projection(
+        _snapshot(
+            _row(
+                "wire-a",
+                "Major earthquake strikes coast",
+                published_at_ms=10,
+                reporting_origin=" Reuters ",
+                source_id="opennews",
+            ),
+            _row(
+                "wire-b",
+                "Major earthquake strikes coast",
+                published_at_ms=11,
+                reporting_origin="Reuters",
+                source_id="opennews",
+            ),
+            _row(
+                "rss",
+                "Major earthquake strikes coast",
+                published_at_ms=12,
+                reporting_origin="Associated Press",
+                source_id="rss",
+            ),
+        )
+    )["stories"][0]
+
+    assert base["facet_facts"] == {
+        "source_ids": ["opennews", "rss"],
+        "reporting_origins": ["Reuters", "reuters"],
+    }
+    assert base["state_fingerprint"] != changed["state_fingerprint"]
 
 
 def test_public_sources_use_pinned_javascript_locale_order_within_tier() -> None:

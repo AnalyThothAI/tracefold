@@ -519,7 +519,8 @@ Diagnose News in this order:
 2. `news_items`: source-local identity, source position, canonical
    headline/description/origin, bounded metadata, and content fingerprint;
 3. `news_story_members` and `news_stories`: current membership closure,
-   full-SHA Story ID, state fingerprint, reporting-origin count, score factors;
+   full-SHA Story ID, state fingerprint, reporting-origin count, deterministic
+   source/origin `facet_facts`, and score factors;
 4. `news_brief_selection_current`: singleton projection revision, complete
    Top Story evidence, selection fingerprints/statistics, and server order;
 5. `/api/news/feed`: flat global keyset order, server filters/search, and
@@ -722,6 +723,14 @@ amplification above 20:1. An empty development database proves only SQL and
 route coverage; production-scale output belongs in the real 30-minute
 acceptance bundle.
 
+Read/return amplification uses the root result-row count by default. The
+`news_feed_filtered_facets` grouping query explicitly uses the largest actual
+input-row count of its aggregate nodes instead, because its bounded public
+result intentionally reduces many matching Story facets into a few counters.
+That query-specific basis does not relax the 20:1 limit, temporary-block gate,
+or large sequential-scan gate, and every other hot query keeps the default
+result-row basis.
+
 Use ad hoc `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded
 query. Since `ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`,
 or `MERGE` in `BEGIN` and `ROLLBACK`.
@@ -786,7 +795,7 @@ successful sample reconstructed causal state from a three-hour fact horizon
 for one-hour current/prior windows and a one-hour episode TTL; it did not import
 v2 trigger values.
 
-Migration `20260812_0255` is the current one-time transactional v4 Radar reset.
+Migration `20260812_0255` is the one-time transactional v4 Radar reset.
 Stop Serve and Workers before applying it. It resets only the rebuildable
 singleton to an empty `token_radar_snapshot_v4` business payload and initial
 public `unavailable` state, rebuilds the bounded source-time index as the
@@ -800,6 +809,14 @@ four-hour product; it does not import v3 trigger values or the v3 LKG. There is
 no dual read/write, compatibility adapter, feature flag, v3
 fallback, episode, frontier, or history table, Gate audit, Stocks route,
 staging runtime, or history import.
+
+Current migration `20260813_0256` adds `news_stories.facet_facts` inside the
+existing nine-table News boundary. Stop Serve and Workers before applying it.
+The migration backfills exact source/origin dimensions from current Story
+members, makes the column required, and clears only the Story projection input
+fingerprint. The next normal Story turn recomputes the new state fingerprints;
+material Items, Story IDs/memberships, Brief state, and Push ledgers remain
+intact.
 
 Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
 `20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to
