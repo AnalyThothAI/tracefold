@@ -202,13 +202,17 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
             WITH current_member_scores AS MATERIALIZED (
               SELECT members.story_id,
                      CASE
-                       WHEN jsonb_typeof(items.provider_metadata -> 'score') = 'number'
-                         THEN (items.provider_metadata ->> 'score')::numeric
+                       WHEN jsonb_typeof(current_item.provider_metadata -> 'score') = 'number'
+                         THEN (current_item.provider_metadata ->> 'score')::numeric
                        ELSE NULL
                      END AS provider_score
               FROM news_story_members members
-              JOIN news_items items ON items.item_id = members.item_id
-              OFFSET 0
+              CROSS JOIN LATERAL (
+                SELECT items.provider_metadata
+                  FROM news_items items
+                 WHERE items.item_id = members.item_id
+                 OFFSET 0
+              ) current_item
             ),
             filtered_stories AS MATERIALIZED (
               SELECT stories.story_id, stories.facet_facts

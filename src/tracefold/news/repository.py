@@ -182,12 +182,16 @@ def _feed_filter_where(
             st.story_id IN (
               SELECT current_member.story_id
                 FROM (
-                  SELECT fm.story_id, fi.provider_metadata
+                  SELECT fm.story_id, current_item.provider_metadata
                     FROM news_story_members fm
-                    JOIN news_items fi ON fi.item_id = fm.item_id
-                   -- This planner fence keeps current membership as the
-                   -- bounded input before the outer score predicate.
-                   OFFSET 0
+                    CROSS JOIN LATERAL (
+                      SELECT fi.provider_metadata
+                        FROM news_items fi
+                       WHERE fi.item_id = fm.item_id
+                       -- The offset is a planner fence: membership stays the
+                       -- bounded outer relation and each Item is a PK lookup.
+                       OFFSET 0
+                    ) current_item
                 ) current_member
                WHERE CASE
                        WHEN jsonb_typeof(current_member.provider_metadata -> 'score') = 'number'
