@@ -313,13 +313,20 @@ acquisition state, official documents, jobs, and immutable analyses are
 preserved. Stop Serve and Workers, apply both migrations, then let the sole
 Macro projection writer reconcile all six frontiers and rebuild the three
 semantic-contract rows.
-Current head `20260811_0254` hard-cuts only the rebuildable Radar singleton to
-`token_radar_snapshot_v3`, initial `unavailable` state, and the bounded
-source-time index/basic serving constraints. It preserves every material Event,
-intent, resolution revision, identity/profile fact, and market fact. Stop Serve
-and Workers while an existing database crosses this revision; after migration,
-start only the v3 runtime and let its first successful three-hour bounded replay
-publish `current`. A fresh database migrates directly to head.
+Historical migration `20260811_0254` hard-cut only the rebuildable Radar
+singleton to `token_radar_snapshot_v3`, initial `unavailable` state, and the
+bounded source-time index/basic serving constraints. It preserved every
+material Event, intent, resolution revision, identity/profile fact, and market
+fact; its v3 runtime replayed a three-hour horizon for one-hour current/prior
+windows and a one-hour episode TTL.
+Current head `20260812_0255` hard-cuts only that rebuildable singleton to
+`token_radar_snapshot_v4` and initial `unavailable` state, and installs the
+bounded source-time index rebuilt as the narrow fingerprint covering index,
+plus the covering resolution index used by the optimized load SQL. It again
+preserves every material fact. Stop Serve and Workers while an existing
+database crosses this revision; after migration, start only the v4 runtime and
+let its first successful twelve-hour bounded replay publish the single fixed
+four-hour product as `current`. A fresh database migrates directly to head.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
@@ -360,24 +367,33 @@ It intentionally does not make business-data freshness part of readiness. Run
 current modules; use `make logs` for the bounded startup evidence named by a
 failure.
 
-### Token Radar v3 serving reset
+### Token Radar v4 serving reset
 
-For the one-time `0253` to `0254` transition, build the new image first, stop
+For the one-time `0254` to `0255` transition, build the new image first, stop
 Serve and Workers, run the ordinary one-shot migration service, and verify that
 material fact counts and identities are unchanged before starting the new
-runtime. The migration is transactional: failure leaves the v2 singleton in
-place. After it succeeds, fix forward with the v3 code; the v2 packet and any
+runtime. The migration is transactional: failure leaves the v3 singleton in
+place. After it succeeds, fix forward with the v4 code; the v3 packet and any
 compatibility reader/writer are not retained. The public state is
 `unavailable` until the first complete Worker sample, then `current`; a later
 known source or projection failure retains the complete LKG as `stale`, and the
 next complete sample restores `current`.
 
-The first v3 Worker turn replays only the bounded three-hour source-time and
-resolution-revision horizon, opens only on a positive full-Gate false-to-true
-transition, applies one-hour TTL suppression, selects Top 50, then performs one
-selected-target identity/market presentation batch read. Market facts do not
-participate in admission or order. The cut adds no episode, frontier, Gate audit,
-or history table and changes no WebSocket behavior.
+The first v4 Worker turn reads only the bounded twelve-hour source-time and
+resolution-revision horizon. It uses the first eight hours to seed adjacent
+prior/current state at `t-4h`, then replays the final four-hour transition to
+produce prior `(t-8h, t-4h)` and current `[t-4h, t]`. It opens only on a
+positive full-Gate false-to-true transition, applies four-hour TTL suppression,
+selects Top 50, then performs one selected-target identity/market presentation
+batch read. The input envelope is 20,000 rows/16 MiB and the output remains fifty
+Items/96 KiB. The whole-turn hard ceiling is 12.0 seconds. Base phase caps are
+9.0 seconds for load, 2.5 seconds for compute, and 0.25 seconds each for
+presentation and publication. Each phase gets the smaller of its absolute cap
+and the remaining whole-turn time after later fixed phases are reserved;
+earlier unused time remains slack and never raises a later phase's cap. Market
+facts do not participate in admission or order. The cut adds
+no episode, frontier, Gate audit, or history table, exposes no window control,
+and changes no WebSocket behavior.
 
 Use the ordinary lifecycle after the transition:
 

@@ -77,12 +77,12 @@ def run_token_radar_browser_release(
 
 
 def _reset_token_radar_current(postgres_dsn: str) -> None:
-    """Give this browser lane the same unavailable singleton as the v3 hard cut."""
+    """Give this browser lane the same unavailable singleton as the v4 hard cut."""
     with psycopg.connect(postgres_dsn) as connection, connection.transaction():
         connection.execute(
             """
             UPDATE token_radar_current
-               SET schema_version = 'token_radar_snapshot_v3',
+               SET schema_version = 'token_radar_snapshot_v4',
                    ruleset_version = NULL,
                    ruleset_fingerprint = NULL,
                    input_fingerprint = NULL,
@@ -96,7 +96,7 @@ def _reset_token_radar_current(postgres_dsn: str) -> None:
                    failure_count = 0,
                    state_changed_at_ms = 0,
                    served_payload = jsonb_build_object(
-                     'schema_version', 'token_radar_snapshot_v3',
+                     'schema_version', 'token_radar_snapshot_v4',
                      'social_evidence_as_of_ms', 0,
                      'eligible_total', 0,
                      'items', jsonb_build_array()

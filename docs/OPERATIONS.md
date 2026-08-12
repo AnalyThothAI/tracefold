@@ -151,17 +151,40 @@ bounded completion grace before treating an unfinished future as fatal.
 
 Token Radar is one fixed-period 30-second reducer turn outside the EDF
 coordinator. One turn streams only the typed Event and resolution-revision
-fields needed by the reducer from the bounded three-hour source-time horizon
-and closed action/provenance set. A `10001` sentinel and incremental byte count
-enforce the 10,000-row and 8 MiB envelopes before full materialization. The
-reducer replays source-time window boundaries and fact-availability changes,
-opens only on a positive full-Gate false-to-true transition, applies the
-one-hour episode TTL/suppression rule, and selects Top 50 by qualification time.
+fields needed by the reducer from the bounded twelve-hour source-time horizon
+and closed action/provenance set. The load SQL follows the partial source-time
+covering source-time index and covering resolution index in deterministic
+replay order. The source index carries only the narrow Event fields plus a
+fixed-width, non-security duplicate-text fingerprint; it never includes or
+transfers the wide Event text columns. A `20001` sentinel and incremental byte
+count enforce the 20,000-row and 16 MiB envelopes before full materialization.
+These limits cover a representative live twelve-hour observation of
+approximately 11,975 rows and 8.62 MiB before the fingerprint optimization,
+without turning the envelope into a dynamic window. The reducer uses the first
+eight hours to seed adjacent prior/current state at `t-4h`, replays the final
+four-hour transition to `t`,
+then compares prior `(t-8h, t-4h)` with current `[t-4h, t]`. It replays
+fact-availability changes, opens only on a positive full-Gate false-to-true
+transition, applies the four-hour episode TTL/suppression rule, and selects Top
+50 by qualification time.
+A production-distribution, session-local index rehearsal copied 50,941 matching
+source Events into temporary tables and produced 11,502 material revisions /
+7,476,901 canonical bytes (7.13 MiB) through the final v4 query and exact
+fingerprint-index shape. The real repository load, including server-cursor
+transfer, typed construction, and byte accounting, took 4.09 seconds on the
+first read and 3.73--3.79 seconds warm. This supports the 9.0-second load cap but
+does not replace the sealed post-deployment interval acceptance.
 A second bounded query batch-reads identity/profile, exact trigger anchor,
 current price, and recent market-cap presentation for only that selected set;
 query count does not grow with Item count. The complete turn must finish within
-a five-second hard budget, with measured P95 at or below two seconds. The
-complete public v3 snapshot is capped at fifty Items and 96 KiB uncompressed.
+a 12.0-second hard budget, with measured P95 at or below eight seconds. The base
+phase caps are 9.0 seconds for load, 2.5 seconds for compute, and 0.25 seconds
+each for presentation and publication. A phase gets the smaller of its absolute
+cap and the remaining whole-turn time after later fixed phases are reserved.
+Earlier unused time remains whole-turn slack; it never lets a later phase exceed
+its cap, and the whole turn never exceeds 12.0 seconds. The complete public v4
+snapshot is
+capped at fifty Items and 96 KiB uncompressed.
 Overflow or timeout fails the turn without sampling, truncation, partial
 publication, or widening the source interval; the last-good singleton remains
 unchanged. There is no Radar dirty frontier, claim, lease, episode table,
@@ -170,7 +193,7 @@ quarantine, rank closure, feature cache, or second publication-state machine.
 
 The reducer calculates outside its short publication transaction. Publication
 locks one stable singleton and writes the complete payload only when its
-business fingerprint changes. Before the first successful v3 sample, the public
+business fingerprint changes. Before the first successful v4 sample, the public
 state is `unavailable`. A complete sample publishes `current`; a known
 non-streaming source or bounded projection failure publishes one generic
 `stale` transition while retaining the complete LKG payload. Repeated identical
@@ -183,7 +206,7 @@ collision guard and owns no runtime Stocks loop.
 Profile and Macro projection claims retain their 30-second lease envelopes.
 The fixed-period News Story writer retains its 25-second operation budget. The
 long News compute runs in its own one-process lane; it cannot consume the
-admission permit used by the five-second Token Radar turn or the short
+admission permit used by the twelve-second Token Radar turn or the short
 Profile/Macro projections. Both lanes remain serial and code-owned. The
 high-churn `events`
 table uses a one-percent/10,000-row auto-analyze threshold so the 24-hour
@@ -243,11 +266,11 @@ Token Radar:
 
 ```text
 event -> intent -> resolution revisions
-  -> bounded three-hour source-time/revision read
-  -> availability-ordered adjacent-hour replay
-  -> negative close + positive false-to-true qualification + one-hour suppression
+  -> bounded twelve-hour source-time/revision read
+  -> seed at t-4h from eight hours + availability-ordered four-hour transition to t
+  -> negative close + positive false-to-true qualification + four-hour suppression
   -> Top 50 -> one bounded selected-target identity/market presentation read
-  -> one atomic token_radar_current v3 current/LKG snapshot
+  -> one atomic token_radar_current v4 current/LKG snapshot
 ```
 
 Market current is maintained transactionally with `market_ticks`; it has no
@@ -701,10 +724,11 @@ Frontier-backed hot paths claim narrow stable keys and hydrate wide JSONB only
 after selection. Partial indexes must match the real due/status predicate. An
 idle frontier worker must not scan broad facts merely to prove that no work is
 due. Token Radar is the explicit exception: its code-owned 30-second reducer
-performs one indexed, three-hour source-time/revision, row/byte-capped evidence
-read followed by one Top-50 batch presentation read and has no wake or due
-state. Both reads are bounded independently; there is no per-Item profile or
-market query. Use one representative `EXPLAIN (ANALYZE, BUFFERS)` for this
+performs one indexed, twelve-hour source-time/revision,
+row/byte-capped evidence read followed by one Top-50 batch presentation read
+and has no wake or due state. Both reads are bounded independently; there is no
+per-Item profile or market query. Use one representative
+`EXPLAIN (ANALYZE, BUFFERS)` for this
 bounded evidence path; do not create a second acceptance or planner-assertion
 control plane. Current models remain bounded by stable product keys; a
 latest-generation pointer is not a retention policy.
@@ -738,7 +762,7 @@ For an ordinary migration or production cutover:
    and unchanged-projection zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
 
-## Token Radar v3 hard cut and acceptance
+## Token Radar v4 hard cut and acceptance
 
 Historical migration `20260810_0249` removed the six pre-singleton Radar tables
 and installed the v1 singleton. Historical migration `20260810_0250` reset it
@@ -747,17 +771,29 @@ to `token_radar_snapshot_v2` and dropped `stock_attention_target_features`,
 material Events, intents, resolutions, identity/profile facts, market facts,
 and the internal `us_equity_symbols` collision guard.
 
-Migration `20260811_0254` is the current one-time transactional Radar reset.
-Stop Serve and Workers before applying it. It hard-cuts the singleton to an
-empty `token_radar_snapshot_v3` business payload and initial public
-`unavailable` state, adds the bounded source-time/action index and only basic
-singleton/schema/shape/size constraints, and preserves all material facts and
+Historical migration `20260811_0254` was the one-time transactional v3 Radar
+reset. It hard-cut the singleton to an empty `token_radar_snapshot_v3` business
+payload and initial public `unavailable` state, added the bounded
+source-time/action index and basic singleton/schema/shape/size constraints, and
+preserved all material facts and identity/profile/market evidence. Its first
+successful sample reconstructed causal state from a three-hour fact horizon
+for one-hour current/prior windows and a one-hour episode TTL; it did not import
+v2 trigger values.
+
+Migration `20260812_0255` is the current one-time transactional v4 Radar reset.
+Stop Serve and Workers before applying it. It resets only the rebuildable
+singleton to an empty `token_radar_snapshot_v4` business payload and initial
+public `unavailable` state, rebuilds the bounded source-time index as the
+narrow fingerprint covering index, installs the covering resolution index used
+by the optimized bounded load SQL, and preserves all material facts and
 identity/profile/market evidence. Verify fact counts and stable fact identities
-before and after the migration, then start only the v3 runtime. The first
-successful sample reconstructs causal state from the three-hour fact horizon;
-it does not import v2 trigger values. There is no dual read/write, compatibility
-adapter, feature flag, v2 fallback, episode, frontier, or history table, Gate
-audit, Stocks route, staging runtime, or history import.
+before and after the migration, then start only the v4 runtime. Its first
+successful sample reconstructs causal state from the twelve-hour fact horizon
+by seeding at `t-4h` and replaying the final four-hour transition for the fixed
+four-hour product; it does not import v3 trigger values or the v3 LKG. There is
+no dual read/write, compatibility adapter, feature flag, v3
+fallback, episode, frontier, or history table, Gate audit, Stocks route,
+staging runtime, or history import.
 
 Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
 `20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to
@@ -784,10 +820,10 @@ healthy.
 The independent performance bundle proves, on representative facts:
 
 - causal replay opens only on a positive complete-Gate false-to-true crossing;
-  source-time aging and removals never open or reorder a case, one-hour expiry
+  source-time aging and removals never open or reorder a case, four-hour expiry
   suppresses a continuously true target, and a later false state plus positive
   crossing permits re-entry;
-- reducer P95 at or below two seconds, no turn above five seconds, no overflow,
+- reducer P95 at or below eight seconds, no turn above twelve seconds, no overflow,
   and a continuous 30-minute interval with zero hard-budget misses or growing
   remaining-domain backlog;
 - `GET /api/token-radar` P95 at or below 100 ms for `200` and 50 ms for `304`;
@@ -889,14 +925,14 @@ processing observation with one terminal status. It requires non-empty material
 input on a counter-confirmed turn during the interval. Only samples whose
 processing counter advances contribute workload gauges, and every interval turn
 must have exactly one such observation. The bundle seals maximum
-input/eligible/public rows and input/output bytes while enforcing 10,000 rows,
-8 MiB input, fifty public Items, and 96 KiB output. It also requires no `failed`
+input/eligible/public rows and input/output bytes while enforcing 20,000 rows,
+16 MiB input, fifty public Items, and 96 KiB output. It also requires no `failed`
 or `stale_skipped` turns;
 single-writer clock regressions may remain observable as a terminal status but
 cannot count as release success. Processing histogram P95 must remain at or
-below two seconds, every observed turn at or below five seconds, with zero
+below eight seconds, every observed turn at or below twelve seconds, with zero
 Radar deadline-counter delta and the documented `200`/`304` API P95 limits. A
-Token Radar turn above five seconds is a hard-budget miss, preserves LKG, and
+Token Radar turn above twelve seconds is a hard-budget miss, preserves LKG, and
 fails both collection and release acceptance. Counter regression, unexpected
 cadence, or an invalid duration/workload metric shape also fails collection.
 
@@ -906,8 +942,8 @@ container memory at or above 2 GiB, PostgreSQL connection/lock/transaction
 violations, resource-cap violations, deadline/quarantine evidence, malformed
 field shapes, negative or non-finite (`NaN`/`Infinity`) measurements, any
 cumulative-counter regression, or a non-converging durable Frontier backlog.
-The transaction ceiling follows the longest active steady publication budget
-(currently the eight-second News Story publication). Database-wide temporary
+The transaction ceiling follows the longest active steady transaction budget
+(currently the nine-second Token Radar evidence load). Database-wide temporary
 file counters are recorded for review but are not attributed to Workers; the
 first-sample analyzed query audit remains the fail-closed temp-plan gate.
 Arrival and completion counters are emitted only after the PostgreSQL

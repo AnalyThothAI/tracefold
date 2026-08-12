@@ -25,7 +25,7 @@ from tracefold.app.workers_runtime_collector import (
     _validate_sample,
     validate_workers_runtime_collection,
 )
-from tracefold.market import TOKEN_RADAR_REFRESH_SECONDS
+from tracefold.market import TOKEN_RADAR_LOAD_BUDGET_SECONDS, TOKEN_RADAR_REFRESH_SECONDS
 from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
@@ -116,13 +116,13 @@ def test_token_radar_sampler_authenticates_200_then_revalidates_its_etag(monkeyp
 
 def test_token_radar_database_state_hashes_the_served_payload() -> None:
     payload = {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "social_evidence_as_of_ms": 1_800_000_000_000,
         "eligible_total": 1,
         "items": [{"target": {"symbol": "代币"}}],
     }
     public = {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "state": "stale",
         "stale_reason": "source_unavailable",
         "state_changed_at_ms": 1_800_000_000_001,
@@ -388,6 +388,8 @@ def test_prometheus_parser_preserves_required_families_and_separate_resource_evi
     assert {row["labels"]["le"] for row in parsed["processing_seconds"] if row["name"].endswith("_bucket")} >= {
         "2.0",
         "5.0",
+        "8.0",
+        "12.0",
         "+Inf",
     }
     assert parsed["jobs_total"] == [
@@ -668,15 +670,21 @@ def test_token_radar_api_payload_must_match_same_database_singleton() -> None:
             "token_radar_failed_turns_zero",
         ),
         (
-            lambda sample: _set_processing_bucket(sample, "2.0", 57.0),
-            "token_radar_processing_p95_at_most_2_seconds",
+            lambda sample: (
+                _set_processing_bucket(sample, "2.0", 57.0),
+                _set_processing_bucket(sample, "5.0", 57.0),
+                _set_processing_bucket(sample, "8.0", 57.0),
+            ),
+            "token_radar_processing_p95_at_most_8_seconds",
         ),
         (
             lambda sample: (
                 _set_processing_bucket(sample, "2.0", 60.0),
                 _set_processing_bucket(sample, "5.0", 60.0),
+                _set_processing_bucket(sample, "8.0", 60.0),
+                _set_processing_bucket(sample, "12.0", 60.0),
             ),
-            "token_radar_processing_all_at_most_5_seconds",
+            "token_radar_processing_all_at_most_12_seconds",
         ),
         (
             lambda sample: sample["telemetry"]["projection_deadline_misses_total"].update({"radar": 1.0}),
@@ -756,7 +764,7 @@ def test_collection_rejects_negative_restart_after_all_hashes_and_summary_are_re
         (("postgres", "worker_connections"), 5, "postgres_worker_connection_limit"),
         (
             ("postgres", "max_transaction_seconds"),
-            NEWS_STORY_PUBLISH_TIMEOUT_SECONDS + 0.1,
+            max(NEWS_STORY_PUBLISH_TIMEOUT_SECONDS, TOKEN_RADAR_LOAD_BUDGET_SECONDS) + 0.1,
             "postgres_transaction_duration",
         ),
         (("telemetry", "resource_active", "finite_operation"), 4.0, "worker_resource_active_limit"),
@@ -1030,7 +1038,7 @@ def _processing_rows(*, count: int) -> list[dict]:
             "labels": {"worker": "token_radar_current", "le": boundary},
             "value": float(count),
         }
-        for boundary in ("2.0", "5.0", "+Inf")
+        for boundary in ("2.0", "5.0", "8.0", "12.0", "+Inf")
     ] + [
         {
             "name": "tracefold_worker_processing_seconds_count",

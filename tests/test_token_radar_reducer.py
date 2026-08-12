@@ -14,19 +14,20 @@ from tracefold.market.radar.reducer import (
     TokenRadarInputOverflow,
     TokenRadarOutputOverflow,
     reduce_token_radar,
+    token_radar_text_fingerprint,
 )
 
 NOW_MS = 1_800_000_000_000
 MINUTE_MS = 60_000
 
 
-def test_reducer_emits_the_exact_compact_v3_evidence_packet() -> None:
+def test_reducer_emits_the_exact_compact_v4_evidence_packet() -> None:
     rows = [
-        _row(event_id="prior-a", author="alice", minutes_ago=90, text="old thesis"),
+        _row(event_id="prior-a", author="alice", minutes_ago=300, text="old thesis"),
         _row(
             event_id="prior-a-duplicate",
             author="alice",
-            minutes_ago=80,
+            minutes_ago=290,
             text="old thesis again",
         ),
         _row(event_id="current-a", author="alice", minutes_ago=30, text="first thesis"),
@@ -44,8 +45,8 @@ def test_reducer_emits_the_exact_compact_v3_evidence_packet() -> None:
 
     assert reduced.input_rows == len(rows)
     assert reduced.eligible_rows == 1
-    assert reduced.ruleset_version == "token_radar_rules_v1"
-    assert reduced.ruleset_fingerprint == ("sha256:dc9ba22158c5b9ff0dc0f6dfbf0a7d7eeb861c4ab02e91432778a36d6d6f221c")
+    assert reduced.ruleset_version == "token_radar_rules_v2"
+    assert reduced.ruleset_fingerprint == ("sha256:5e750d077f458bbfafd2a77b6083329ee70874e2c98a8de20e0315868620d1c6")
     assert reduced.output_bytes <= TOKEN_RADAR_OUTPUT_BYTE_CAP
     assert reduced.selected_keys == (
         RadarSelectionKey(
@@ -57,7 +58,7 @@ def test_reducer_emits_the_exact_compact_v3_evidence_packet() -> None:
         ),
     )
     assert reduced.snapshot == {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "social_evidence_as_of_ms": NOW_MS - 10 * MINUTE_MS,
         "eligible_total": 1,
         "items": [
@@ -104,7 +105,7 @@ def test_reducer_selects_the_exact_first_fifty_from_sixty_eligible_targets() -> 
 
     reduced = reduce_token_radar(rows, now_ms=NOW_MS)
 
-    assert reduced.snapshot["schema_version"] == "token_radar_snapshot_v3"
+    assert reduced.snapshot["schema_version"] == "token_radar_snapshot_v4"
     assert reduced.eligible_rows == 60
     assert reduced.snapshot["eligible_total"] == 60
     assert len(reduced.snapshot["items"]) == 50
@@ -119,7 +120,10 @@ def test_reducer_order_is_deterministic_and_fingerprint_tracks_fact_content() ->
         _row(event_id="event-b", author="bob", minutes_ago=40, text="two"),
         _row(event_id="event-c", author="carol", minutes_ago=30, text="three"),
     ]
-    changed_rows = [*rows[:-1], replace(rows[-1], text="changed fact")]
+    changed_rows = [
+        *rows[:-1],
+        replace(rows[-1], text_fingerprint=token_radar_text_fingerprint("changed fact")),
+    ]
 
     first = reduce_token_radar(rows, now_ms=NOW_MS)
     reordered = reduce_token_radar(list(reversed(rows)), now_ms=NOW_MS)
@@ -148,6 +152,9 @@ def test_first_positive_revision_where_all_gate_rules_pass_is_the_trigger() -> N
 
 
 def test_text_duplicate_normalization_has_one_reducer_owned_semantics() -> None:
+    assert token_radar_text_fingerprint("Hello\tWorld") == token_radar_text_fingerprint(" hello world ")
+    assert token_radar_text_fingerprint("Ä") != token_radar_text_fingerprint("ä")
+
     rows = [
         _row(event_id="event-a", author="alice", minutes_ago=30, text="Hello   World"),
         _row(event_id="event-b", author="bob", minutes_ago=20, text="  hello world  "),
@@ -159,7 +166,7 @@ def test_text_duplicate_normalization_has_one_reducer_owned_semantics() -> None:
     assert item["evidence"]["duplicate_share"] == pytest.approx(1 / 3)
 
 
-def test_late_trigger_scans_ten_thousand_rows_with_periodic_deadline_checks(
+def test_late_trigger_scans_twenty_thousand_rows_with_periodic_deadline_checks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rows = []
@@ -191,7 +198,7 @@ def test_late_trigger_scans_ten_thousand_rows_with_periodic_deadline_checks(
 
     reduced = reduce_token_radar(rows, now_ms=NOW_MS, deadline_monotonic=1.0)
 
-    assert reduced.snapshot["items"][0]["trigger_event_id"] == "event-09999"
+    assert reduced.snapshot["items"][0]["trigger_event_id"] == "event-19999"
     assert monotonic_calls >= 80
 
 
@@ -228,19 +235,19 @@ def test_social_freshness_advances_even_when_no_target_is_eligible() -> None:
     snapshot = reduce_token_radar([weak], now_ms=NOW_MS).snapshot
 
     assert snapshot == {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "social_evidence_as_of_ms": NOW_MS - 5 * MINUTE_MS,
         "eligible_total": 0,
         "items": [],
     }
 
 
-def test_exact_one_hour_boundary_belongs_only_to_the_current_window() -> None:
+def test_exact_four_hour_boundary_belongs_only_to_the_current_window() -> None:
     rows = [
-        _row(event_id="prior", author="prior", minutes_ago=61, text="prior"),
-        _row(event_id="boundary", author="alice", minutes_ago=60, text="one"),
-        _row(event_id="event-b", author="bob", minutes_ago=45, text="two"),
-        _row(event_id="event-c", author="carol", minutes_ago=35, text="three"),
+        _row(event_id="prior", author="prior", minutes_ago=241, text="prior"),
+        _row(event_id="boundary", author="alice", minutes_ago=240, text="one"),
+        _row(event_id="event-b", author="bob", minutes_ago=230, text="two"),
+        _row(event_id="event-c", author="carol", minutes_ago=220, text="three"),
     ]
 
     item = reduce_token_radar(rows, now_ms=NOW_MS).snapshot["items"][0]
@@ -252,12 +259,12 @@ def test_exact_one_hour_boundary_belongs_only_to_the_current_window() -> None:
     }
 
 
-def test_exact_two_hour_boundary_is_excluded_from_the_rolling_input() -> None:
+def test_exact_eight_hour_boundary_is_excluded_from_the_rolling_input() -> None:
     rows = [
-        _row(event_id="expired", author="prior", minutes_ago=120, text="expired"),
-        _row(event_id="event-a", author="alice", minutes_ago=50, text="one"),
-        _row(event_id="event-b", author="bob", minutes_ago=40, text="two"),
-        _row(event_id="event-c", author="carol", minutes_ago=30, text="three"),
+        _row(event_id="expired", author="prior", minutes_ago=480, text="expired"),
+        _row(event_id="event-a", author="alice", minutes_ago=220, text="one"),
+        _row(event_id="event-b", author="bob", minutes_ago=210, text="two"),
+        _row(event_id="event-c", author="carol", minutes_ago=200, text="three"),
     ]
 
     item = reduce_token_radar(rows, now_ms=NOW_MS).snapshot["items"][0]
@@ -274,7 +281,7 @@ def test_reducer_fails_closed_on_row_or_byte_overflow_without_truncation() -> No
     with pytest.raises(TokenRadarInputOverflow, match="token_radar_input_row_overflow"):
         reduce_token_radar([one_row] * (TOKEN_RADAR_INPUT_ROW_CAP + 1), now_ms=NOW_MS)
 
-    oversized = replace(one_row, text="x" * (TOKEN_RADAR_INPUT_BYTE_CAP + 1))
+    oversized = replace(one_row, target_id="x" * (TOKEN_RADAR_INPUT_BYTE_CAP + 1))
     with pytest.raises(TokenRadarInputOverflow, match="token_radar_input_byte_overflow"):
         reduce_token_radar([oversized], now_ms=NOW_MS)
 
@@ -316,7 +323,7 @@ def _row(
         event_created_at_ms=received_at_ms,
         action="tweet",
         author_key=author,
-        text=text,
+        text_fingerprint=token_radar_text_fingerprint(text),
         resolution_status="EXACT",
         target_type="Asset",
         target_id=target_id,

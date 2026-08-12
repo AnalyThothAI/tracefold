@@ -7,7 +7,11 @@ import pytest
 
 from tracefold.market import TokenRadarCurrentProjection
 from tracefold.market.radar.current_worker import _phase_timeout
-from tracefold.market.radar.reducer import RadarEvidenceRevision, reduce_token_radar
+from tracefold.market.radar.reducer import (
+    RadarEvidenceRevision,
+    reduce_token_radar,
+    token_radar_text_fingerprint,
+)
 from tracefold.platform.resource import ResourceOperationOverrun
 
 
@@ -291,7 +295,7 @@ def test_token_radar_projection_failure_gets_a_bounded_failure_write_budget() ->
     assert 0.49 < failure_timeout[0] <= 0.5
 
 
-def test_token_radar_allocates_its_five_second_budget_from_live_phase_costs() -> None:
+def test_token_radar_allocates_its_twelve_second_budget_from_live_phase_costs() -> None:
     timeouts: dict[str, float] = {}
 
     class _Database:
@@ -333,7 +337,7 @@ def test_token_radar_allocates_its_five_second_budget_from_live_phase_costs() ->
 
     asyncio.run(projection.sample())
 
-    assert 2.9 < timeouts["token_radar_current_load"] <= 3.0
+    assert 8.9 < timeouts["token_radar_current_load"] <= 9.0
     assert 2.4 < timeouts["token_radar_current_reduce"] <= 2.5
     assert 0.2 < timeouts["token_radar_current_present"] <= 0.25
     assert 0.2 < timeouts["token_radar_current_publish"] <= 0.25
@@ -383,7 +387,7 @@ def test_token_radar_enriches_selected_targets_before_publishing() -> None:
                             event_created_at_ms=source_event_at_ms + 2_000,
                             action="tweet",
                             author_key=f"author-{index}",
-                            text=f"independent-{index}",
+                            text_fingerprint=token_radar_text_fingerprint(f"independent-{index}"),
                             resolution_status="EXACT",
                             target_type="Asset",
                             target_id="asset-1",

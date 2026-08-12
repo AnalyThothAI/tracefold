@@ -712,7 +712,7 @@ def _processing_rows(*, count: int) -> list[dict]:
             "labels": {"worker": "token_radar_current", "le": boundary},
             "value": float(count),
         }
-        for boundary in ("2.0", "5.0", "+Inf")
+        for boundary in ("2.0", "5.0", "8.0", "12.0", "+Inf")
     ] + [
         {
             "name": "tracefold_worker_processing_seconds_count",

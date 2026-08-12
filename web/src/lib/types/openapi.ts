@@ -3657,7 +3657,7 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "token_radar_snapshot_v3";
+            schema_version: "token_radar_snapshot_v4";
             /** Social Evidence As Of Ms */
             social_evidence_as_of_ms: number;
             /** Stale Reason */

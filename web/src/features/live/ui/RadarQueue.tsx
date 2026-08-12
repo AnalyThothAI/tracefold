@@ -11,7 +11,11 @@ import { Button } from "@shared/ui/button";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { TokenRadarSnapshot, TokenRadarSnapshotItem } from "../model/tokenRadarSnapshot";
+import {
+  TOKEN_RADAR_WINDOW,
+  type TokenRadarSnapshot,
+  type TokenRadarSnapshotItem,
+} from "../model/tokenRadarSnapshot";
 
 import "./live.css";
 
@@ -150,7 +154,9 @@ function RadarHeader({ snapshot }: { snapshot: TokenRadarSnapshot | null }) {
   return (
     <header className="live-radar-header">
       <h1>Radar</h1>
-      <span className="live-radar-method">1h causal change · newest qualification first</span>
+      <span className="live-radar-method">
+        {TOKEN_RADAR_WINDOW} causal change · newest qualification first
+      </span>
       {snapshot ? (
         <span className="live-radar-count">
           {`${snapshot.eligible_total} eligible · showing ${snapshot.items.length} / ${TOKEN_RADAR_MAX_ITEMS}`}
@@ -196,7 +202,7 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
     ? tokenTargetPath({
         targetType: item.target.target_type,
         targetId: item.target.target_id,
-        window: "1h",
+        window: TOKEN_RADAR_WINDOW,
         focus: "trigger",
         triggerEventId: item.trigger_event_id,
       })

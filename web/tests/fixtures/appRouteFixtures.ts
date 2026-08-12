@@ -19,8 +19,8 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
       db: {
         ok: true,
         schema_ok: true,
-        current_revision: "20260811_0254",
-        expected_revision: "20260811_0254",
+        current_revision: "20260812_0255",
+        expected_revision: "20260812_0255",
         error_code: null,
       },
       workers_runtime: {
@@ -41,7 +41,7 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
 
 export function tokenRadarFixture(overrides: Partial<TokenRadarSnapshot> = {}): TokenRadarSnapshot {
   return {
-    schema_version: "token_radar_snapshot_v3",
+    schema_version: "token_radar_snapshot_v4",
     state: "current",
     stale_reason: null,
     state_changed_at_ms: NOW - 120_000,

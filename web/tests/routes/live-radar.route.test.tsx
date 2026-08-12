@@ -16,7 +16,7 @@ describe("live radar route", () => {
 
     expect(await screen.findByRole("heading", { name: "Radar" })).toBeInTheDocument();
     expect(await screen.findByText("1 eligible · showing 1 / 50")).toBeInTheDocument();
-    expect(screen.getByText("1h causal change · newest qualification first")).toBeInTheDocument();
+    expect(screen.getByText("4h causal change · newest qualification first")).toBeInTheDocument();
     expect(await screen.findByText(/\$UPEG/)).toBeInTheDocument();
     expect(screen.getByText(/\+5/)).toBeInTheDocument();
     expect(screen.queryByLabelText("radar window")).not.toBeInTheDocument();
@@ -25,7 +25,7 @@ describe("live radar route", () => {
 
     expect(screen.getByRole("link", { name: "Open Token Case" })).toHaveAttribute(
       "href",
-      expect.stringContaining("?window=1h&focus=trigger&trigger_event_id=event-upeg-1"),
+      expect.stringContaining("?window=4h&focus=trigger&trigger_event_id=event-upeg-1"),
     );
     const radarRequest = apiMock.getApi.mock.calls.find(([path]) => path === "/api/token-radar");
     expect(radarRequest?.[1]?.params).toBeUndefined();

@@ -10568,7 +10568,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "token_radar_snapshot_v3",
+            "const": "token_radar_snapshot_v4",
             "title": "Schema Version",
             "type": "string"
           },

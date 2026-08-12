@@ -6,7 +6,10 @@ from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
-from tracefold.market.radar.constants import TOKEN_RADAR_REDUCER_BUDGET_SECONDS
+from tracefold.market.radar.constants import (
+    TOKEN_RADAR_LOAD_BUDGET_SECONDS,
+    TOKEN_RADAR_TURN_BUDGET_SECONDS,
+)
 from tracefold.market.radar.reducer import (
     RadarEvidenceRevision,
     TokenRadarBudgetExceeded,
@@ -25,7 +28,7 @@ from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
 )
 
-_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS = 3.0
+_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS = TOKEN_RADAR_LOAD_BUDGET_SECONDS
 _TOKEN_RADAR_COMPUTE_TIMEOUT_SECONDS = 2.5
 _TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS = 0.25
 _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS = 0.25
@@ -114,12 +117,12 @@ class TokenRadarCurrentProjection:
 
     async def sample(self) -> None:
         started = time.monotonic()
-        deadline = time.monotonic() + TOKEN_RADAR_REDUCER_BUDGET_SECONDS
+        deadline = time.monotonic() + TOKEN_RADAR_TURN_BUDGET_SECONDS
         now_ms = int(self.clock())
         outcome: str | None = None
         deadline_missed = False
         try:
-            async with asyncio.timeout(TOKEN_RADAR_REDUCER_BUDGET_SECONDS):
+            async with asyncio.timeout(TOKEN_RADAR_TURN_BUDGET_SECONDS):
                 outcome, deadline_missed = await self._sample_with_deadline(
                     now_ms=now_ms,
                     deadline=deadline,

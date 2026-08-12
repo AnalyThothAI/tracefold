@@ -25,6 +25,7 @@ from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.market import (
     TOKEN_RADAR_INPUT_BYTE_CAP,
     TOKEN_RADAR_INPUT_ROW_CAP,
+    TOKEN_RADAR_LOAD_BUDGET_SECONDS,
     TOKEN_RADAR_MAX_ITEMS,
     TOKEN_RADAR_OUTPUT_BYTE_CAP,
 )
@@ -67,7 +68,10 @@ _TOKEN_RADAR_MAX_INTERVAL_TURNS = math.ceil(COLLECTION_DURATION_SECONDS / _TOKEN
 _TOKEN_RADAR_SUCCESS_STATUSES = frozenset({"published", "unchanged", "recovered"})
 _TOKEN_RADAR_JOB_STATUSES = _TOKEN_RADAR_SUCCESS_STATUSES | {"failed", "stale_skipped"}
 _MAX_RSS_BYTES = 2 * 1024 * 1024 * 1024
-_MAX_TRANSACTION_SECONDS = NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
+_MAX_TRANSACTION_SECONDS = max(
+    NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
+    TOKEN_RADAR_LOAD_BUDGET_SECONDS,
+)
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IPV4_ANY = ".".join(("0", "0", "0", "0"))
@@ -1348,7 +1352,7 @@ def _validate_token_radar_metric_presence(
     radar_processing = processing.get(_TOKEN_RADAR_WORKER)
     if radar_processing is None:
         raise _SampleFailure("token_radar_processing_required")
-    required_boundaries = {"2.0", "5.0", "+Inf"}
+    required_boundaries = {"2.0", "8.0", "12.0", "+Inf"}
     if not required_boundaries.issubset(radar_processing["buckets"]):
         raise _SampleFailure("token_radar_processing_boundaries")
     if any(worker == _TOKEN_RADAR_WORKER and status not in _TOKEN_RADAR_JOB_STATUSES for worker, status in jobs):
@@ -1631,8 +1635,8 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "token_radar_representative_input_observed": token_radar["max_input_rows"] > 0,
         "token_radar_failed_turns_zero": token_radar["failed_turn_count"] == 0,
         "token_radar_stale_skipped_turns_zero": token_radar["stale_skipped_turn_count"] == 0,
-        "token_radar_processing_p95_at_most_2_seconds": token_radar["processing_p95_upper_bound_seconds"] <= 2.0,
-        "token_radar_processing_all_at_most_5_seconds": token_radar["processing_maximum_upper_bound_seconds"] <= 5.0,
+        "token_radar_processing_p95_at_most_8_seconds": token_radar["processing_p95_upper_bound_seconds"] <= 8.0,
+        "token_radar_processing_all_at_most_12_seconds": token_radar["processing_maximum_upper_bound_seconds"] <= 12.0,
         "token_radar_deadline_delta_zero": token_radar["deadline_miss_delta"] == 0,
         "token_radar_api_unconditional_p95_at_most_100_ms": (
             token_radar_api["unconditional_p95_ms"] <= _TOKEN_RADAR_API_UNCONDITIONAL_P95_MS

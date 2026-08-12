@@ -1,6 +1,7 @@
 import type { components } from "@lib/types/openapi";
 
-export const TOKEN_RADAR_SNAPSHOT_SCHEMA = "token_radar_snapshot_v3" as const;
+export const TOKEN_RADAR_WINDOW = "4h" as const;
+export const TOKEN_RADAR_SNAPSHOT_SCHEMA = "token_radar_snapshot_v4" as const;
 
 export type TokenRadarSnapshotItem = components["schemas"]["TokenRadarItemData"];
 export type TokenRadarSnapshot = components["schemas"]["TokenRadarData"];

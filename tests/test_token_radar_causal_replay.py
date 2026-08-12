@@ -6,7 +6,12 @@ from dataclasses import replace
 
 import pytest
 
-from tracefold.market.radar.reducer import RadarEvidenceRevision, reduce_token_radar
+from tracefold.market.radar.reducer import (
+    TOKEN_RADAR_INPUT_ROW_CAP,
+    RadarEvidenceRevision,
+    reduce_token_radar,
+    token_radar_text_fingerprint,
+)
 
 NOW_MS = 1_800_000_000_000
 MINUTE_MS = 60_000
@@ -302,11 +307,11 @@ def test_one_event_with_multiple_intents_uses_a_target_binding_refcount() -> Non
 
 def test_same_millisecond_window_expiry_is_applied_before_positive_evidence() -> None:
     rows = [
-        _revision(event_id="old-expiring", author="old-a", source_minutes_ago=120),
-        _revision(event_id="old-staying", author="old-b", source_minutes_ago=100),
-        _revision(event_id="current-one", author="alice", source_minutes_ago=50),
-        _revision(event_id="current-two", author="bob", source_minutes_ago=40),
-        _revision(event_id="current-three", author="carol", source_minutes_ago=30),
+        _revision(event_id="old-expiring", author="old-a", source_minutes_ago=480),
+        _revision(event_id="old-staying", author="old-b", source_minutes_ago=460),
+        _revision(event_id="current-one", author="alice", source_minutes_ago=230),
+        _revision(event_id="current-two", author="bob", source_minutes_ago=220),
+        _revision(event_id="current-three", author="carol", source_minutes_ago=210),
         _revision(
             event_id="same-ms-positive",
             author="dave",
@@ -324,11 +329,11 @@ def test_same_millisecond_window_expiry_is_applied_before_positive_evidence() ->
 
 def test_advancing_the_clock_without_new_facts_cannot_open_an_episode() -> None:
     rows = [
-        _revision(event_id="old-expiring", author="old-a", source_minutes_ago=119),
-        _revision(event_id="old-staying", author="old-b", source_minutes_ago=100),
-        _revision(event_id="current-one", author="alice", source_minutes_ago=50),
-        _revision(event_id="current-two", author="bob", source_minutes_ago=40),
-        _revision(event_id="current-three", author="carol", source_minutes_ago=30),
+        _revision(event_id="old-expiring", author="old-a", source_minutes_ago=479),
+        _revision(event_id="old-staying", author="old-b", source_minutes_ago=460),
+        _revision(event_id="current-one", author="alice", source_minutes_ago=230),
+        _revision(event_id="current-two", author="bob", source_minutes_ago=220),
+        _revision(event_id="current-three", author="carol", source_minutes_ago=210),
     ]
 
     before_aging = reduce_token_radar(rows, now_ms=NOW_MS)
@@ -340,13 +345,13 @@ def test_advancing_the_clock_without_new_facts_cannot_open_an_episode() -> None:
 
 def test_expired_episode_stays_suppressed_while_the_gate_remains_true() -> None:
     rows = [
-        _revision(event_id="opening-one", author="alice", source_minutes_ago=80),
-        _revision(event_id="opening-two", author="bob", source_minutes_ago=70),
+        _revision(event_id="opening-one", author="alice", source_minutes_ago=260),
+        _revision(event_id="opening-two", author="bob", source_minutes_ago=250),
         _revision(
             event_id="opening-three",
             author="carol",
-            source_minutes_ago=61,
-            effective_at_ms=NOW_MS - 60 * MINUTE_MS,
+            source_minutes_ago=241,
+            effective_at_ms=NOW_MS - 240 * MINUTE_MS,
         ),
         *[
             _revision(
@@ -354,7 +359,7 @@ def test_expired_episode_stays_suppressed_while_the_gate_remains_true() -> None:
                 author=f"continuing-author-{index}",
                 source_minutes_ago=minutes_ago,
             )
-            for index, minutes_ago in enumerate((50, 40, 30, 20, 10))
+            for index, minutes_ago in enumerate((230, 220, 210, 200, 190))
         ],
     ]
 
@@ -372,7 +377,7 @@ def test_expired_episode_stays_suppressed_while_the_gate_remains_true() -> None:
         now_ms=NOW_MS + 5 * MINUTE_MS,
     )
 
-    assert just_before_expiry.snapshot["items"][0]["qualified_at_ms"] == NOW_MS - 60 * MINUTE_MS
+    assert just_before_expiry.snapshot["items"][0]["qualified_at_ms"] == NOW_MS - 240 * MINUTE_MS
     assert at_expiry.snapshot["items"] == []
     assert after_expiry_with_another_positive.snapshot["items"] == []
 
@@ -389,13 +394,13 @@ def test_expired_episode_reenters_after_false_then_a_new_positive_crossing() -> 
         source_minutes_ago=40,
     )
     rows = [
-        _revision(event_id="opening-one", author="alice", source_minutes_ago=80),
-        _revision(event_id="opening-two", author="bob", source_minutes_ago=70),
+        _revision(event_id="opening-one", author="alice", source_minutes_ago=260),
+        _revision(event_id="opening-two", author="bob", source_minutes_ago=250),
         _revision(
             event_id="opening-three",
             author="carol",
-            source_minutes_ago=61,
-            effective_at_ms=NOW_MS - 60 * MINUTE_MS,
+            source_minutes_ago=241,
+            effective_at_ms=NOW_MS - 240 * MINUTE_MS,
         ),
         continuing_early,
         continuing_second,
@@ -482,7 +487,7 @@ def test_input_permutations_produce_identical_causal_output() -> None:
         assert actual.input_fingerprint == expected.input_fingerprint
 
 
-def test_ten_thousand_revision_hot_target_stays_within_the_reducer_budget() -> None:
+def test_maximum_revision_hot_target_stays_within_the_reducer_budget() -> None:
     rows = [
         _revision(
             event_id=f"hot-{index:05d}",
@@ -491,7 +496,7 @@ def test_ten_thousand_revision_hot_target_stays_within_the_reducer_budget() -> N
             author=f"author-hot-{index:05d}",
             source_minutes_ago=10,
         )
-        for index in range(10_000)
+        for index in range(TOKEN_RADAR_INPUT_ROW_CAP)
     ]
 
     started_at = time.perf_counter()
@@ -499,12 +504,12 @@ def test_ten_thousand_revision_hot_target_stays_within_the_reducer_budget() -> N
     elapsed_seconds = time.perf_counter() - started_at
 
     assert len(reduced.snapshot["items"]) == 1
-    assert reduced.snapshot["items"][0]["why_now"]["current_mentions"] == 10_000
+    assert reduced.snapshot["items"][0]["why_now"]["current_mentions"] == TOKEN_RADAR_INPUT_ROW_CAP
     assert reduced.snapshot["items"][0]["trigger_event_id"] == "hot-00000"
-    assert elapsed_seconds <= 2.0
+    assert elapsed_seconds <= 2.5
 
 
-def test_ten_thousand_distinct_targets_stay_within_the_reducer_budget() -> None:
+def test_maximum_distinct_targets_stay_within_the_reducer_budget() -> None:
     rows = [
         _revision(
             event_id=f"distinct-{index:05d}",
@@ -512,7 +517,7 @@ def test_ten_thousand_distinct_targets_stay_within_the_reducer_budget() -> None:
             source_minutes_ago=10,
             target_id=f"asset-{index:05d}",
         )
-        for index in range(10_000)
+        for index in range(TOKEN_RADAR_INPUT_ROW_CAP)
     ]
 
     started_at = time.perf_counter()
@@ -520,11 +525,11 @@ def test_ten_thousand_distinct_targets_stay_within_the_reducer_budget() -> None:
     elapsed_seconds = time.perf_counter() - started_at
 
     assert reduced.snapshot["items"] == []
-    assert reduced.input_rows == 10_000
-    assert elapsed_seconds <= 2.0
+    assert reduced.input_rows == TOKEN_RADAR_INPUT_ROW_CAP
+    assert elapsed_seconds <= 2.5
 
 
-def test_ten_thousand_resolution_history_fanout_stays_within_the_reducer_budget() -> None:
+def test_maximum_resolution_history_fanout_stays_within_the_reducer_budget() -> None:
     initial = _revision(
         event_id="fanout",
         author="fanout-author",
@@ -539,7 +544,7 @@ def test_ten_thousand_resolution_history_fanout_stays_within_the_reducer_budget(
             resolution_decision_at_ms=initial.received_at_ms + index * 10,
             resolution_created_at_ms=initial.received_at_ms + index * 10,
         )
-        for index in range(10_000)
+        for index in range(TOKEN_RADAR_INPUT_ROW_CAP)
     ]
 
     started_at = time.perf_counter()
@@ -547,8 +552,8 @@ def test_ten_thousand_resolution_history_fanout_stays_within_the_reducer_budget(
     elapsed_seconds = time.perf_counter() - started_at
 
     assert reduced.snapshot["items"] == []
-    assert reduced.input_rows == 10_000
-    assert elapsed_seconds <= 2.0
+    assert reduced.input_rows == TOKEN_RADAR_INPUT_ROW_CAP
+    assert elapsed_seconds <= 2.5
 
 
 def _revision(
@@ -579,7 +584,7 @@ def _revision(
         event_created_at_ms=event_created_at_ms,
         action="tweet",
         author_key=author,
-        text=text or f"text-{event_id}",
+        text_fingerprint=token_radar_text_fingerprint(text or f"text-{event_id}"),
         resolution_status=resolution_status,
         target_type=target_type,
         target_id=target_id,

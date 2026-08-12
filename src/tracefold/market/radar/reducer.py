@@ -30,7 +30,13 @@ from tracefold.market.radar.constants import (
 )
 
 _SPACE_RE = re.compile(r"\s+")
+_FINGERPRINT_SPACE_RE = re.compile(r"[ \t\n\r\f]+")
+_ASCII_LOWER_TRANSLATION = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyz",
+)
 _LOCAL_TOKEN_IMAGE_RE = re.compile(r"^/api/token-images/[0-9a-f]{64}$")
+_TEXT_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{32}$")
 _MISSING_TEXT_KEY = "<missing>"
 
 TargetKey = tuple[str, str]
@@ -63,7 +69,7 @@ class RadarEvidenceRevision:
     event_created_at_ms: int
     action: str
     author_key: str | None
-    text: str | None
+    text_fingerprint: str | None
     resolution_status: str
     target_type: str | None
     target_id: str | None
@@ -90,7 +96,10 @@ class RadarEvidenceRevision:
         for field_name, error_code in required_clocks.items():
             object.__setattr__(self, field_name, _nonnegative_int(getattr(self, field_name), error_code))
         object.__setattr__(self, "author_key", _normalized_author(self.author_key))
-        object.__setattr__(self, "text", _text(self.text))
+        fingerprint = _text(self.text_fingerprint)
+        if fingerprint is not None and _TEXT_FINGERPRINT_RE.fullmatch(fingerprint) is None:
+            raise TokenRadarInvariantViolation("token_radar_text_fingerprint_invalid")
+        object.__setattr__(self, "text_fingerprint", fingerprint)
         object.__setattr__(self, "target_type", _text(self.target_type))
         object.__setattr__(self, "target_id", _text(self.target_id))
 
@@ -283,7 +292,7 @@ def reduce_token_radar(
     now_ms: int,
     deadline_monotonic: float | None = None,
 ) -> ReducedTokenRadar:
-    """Replay bounded resolution-aware facts into causal one-hour Radar episodes."""
+    """Replay bounded resolution-aware facts into causal four-hour Radar episodes."""
 
     parsed_now_ms = _nonnegative_int(now_ms, "token_radar_now_ms_invalid")
     input_rows = len(revisions)
@@ -516,7 +525,7 @@ def _events(revisions: Sequence[RadarEvidenceRevision]) -> dict[str, _EvidenceEv
             event_id=revision.event_id,
             source_event_at_ms=revision.source_event_at_ms,
             author_key=revision.author_key,
-            text_key=_text_key(revision.text),
+            text_key=revision.text_fingerprint or _MISSING_TEXT_KEY,
         )
         existing = events.setdefault(revision.event_id, event)
         if existing != event:
@@ -542,7 +551,7 @@ def _binding_changes(revisions: Sequence[RadarEvidenceRevision]) -> list[_Bindin
                 event_id=revision.event_id,
                 source_event_at_ms=revision.source_event_at_ms,
                 author_key=revision.author_key,
-                text_key=_text_key(revision.text),
+                text_key=revision.text_fingerprint or _MISSING_TEXT_KEY,
             )
             if active_target is not None:
                 changes.append(
@@ -833,11 +842,16 @@ def _canonical_revision_sort_key(revision: RadarEvidenceRevision) -> tuple[Any, 
     )
 
 
-def _text_key(value: str | None) -> str:
+def token_radar_text_fingerprint(value: str | None) -> str | None:
     if value is None:
-        return _MISSING_TEXT_KEY
-    normalized = _SPACE_RE.sub(" ", value.casefold()).strip()
-    return f"text:{normalized}" if normalized else _MISSING_TEXT_KEY
+        return None
+    normalized = _FINGERPRINT_SPACE_RE.sub(
+        " ",
+        value.translate(_ASCII_LOWER_TRANSLATION),
+    ).strip(" ")
+    if not normalized:
+        return None
+    return hashlib.md5(normalized.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _fingerprint(value: Any) -> str:
@@ -932,4 +946,5 @@ __all__ = [
     "reduce_token_radar",
     "token_radar_input_row_size",
     "token_radar_input_size",
+    "token_radar_text_fingerprint",
 ]

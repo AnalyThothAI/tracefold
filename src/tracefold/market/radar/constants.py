@@ -4,20 +4,22 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 
-TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION = "token_radar_snapshot_v3"
-TOKEN_RADAR_CURRENT_WINDOW_MS = 60 * 60 * 1000
-TOKEN_RADAR_PRIOR_WINDOW_MS = 60 * 60 * 1000
-TOKEN_RADAR_REPLAY_TRANSITION_MS = 60 * 60 * 1000
+TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION = "token_radar_snapshot_v4"
+TOKEN_RADAR_PERIOD_MS = 4 * 60 * 60 * 1000
+TOKEN_RADAR_CURRENT_WINDOW_MS = TOKEN_RADAR_PERIOD_MS
+TOKEN_RADAR_PRIOR_WINDOW_MS = TOKEN_RADAR_PERIOD_MS
+TOKEN_RADAR_REPLAY_TRANSITION_MS = TOKEN_RADAR_PERIOD_MS
 TOKEN_RADAR_SOURCE_HORIZON_MS = (
     TOKEN_RADAR_REPLAY_TRANSITION_MS + TOKEN_RADAR_CURRENT_WINDOW_MS + TOKEN_RADAR_PRIOR_WINDOW_MS
 )
-TOKEN_RADAR_EPISODE_TTL_MS = 60 * 60 * 1000
+TOKEN_RADAR_EPISODE_TTL_MS = TOKEN_RADAR_PERIOD_MS
 TOKEN_RADAR_LIVE_LAG_MS = 2 * 60 * 1000
 TOKEN_RADAR_MAX_ITEMS = 50
-TOKEN_RADAR_INPUT_ROW_CAP = 10_000
-TOKEN_RADAR_INPUT_BYTE_CAP = 8 * 1024 * 1024
+TOKEN_RADAR_INPUT_ROW_CAP = 20_000
+TOKEN_RADAR_INPUT_BYTE_CAP = 16 * 1024 * 1024
 TOKEN_RADAR_OUTPUT_BYTE_CAP = 96 * 1024
-TOKEN_RADAR_REDUCER_BUDGET_SECONDS = 5.0
+TOKEN_RADAR_TURN_BUDGET_SECONDS = 12.0
+TOKEN_RADAR_LOAD_BUDGET_SECONDS = 9.0
 TOKEN_RADAR_REFRESH_SECONDS = 30.0
 TOKEN_RADAR_SOURCE_PROVIDER = "gmgn"
 TOKEN_RADAR_SOURCE_TRANSPORT = "direct_ws"
@@ -48,6 +50,7 @@ class _TokenRadarSemantics:
     resolution_statuses: tuple[str, ...]
     target_types: tuple[str, ...]
     maximum_live_lag_ms: int
+    duplicate_text_fingerprint_version: str
     replay_transition_ms: int
     current_window_ms: int
     prior_window_ms: int
@@ -61,8 +64,8 @@ class _TokenRadarSemantics:
 
 
 TOKEN_RADAR_SEMANTICS = _TokenRadarSemantics(
-    version="token_radar_rules_v1",
-    replay_semantics_version="token_radar_causal_replay_v3",
+    version="token_radar_rules_v2",
+    replay_semantics_version="token_radar_causal_replay_v4",
     snapshot_schema_version=TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
     source_provider=TOKEN_RADAR_SOURCE_PROVIDER,
     source_transport=TOKEN_RADAR_SOURCE_TRANSPORT,
@@ -72,6 +75,7 @@ TOKEN_RADAR_SEMANTICS = _TokenRadarSemantics(
     resolution_statuses=TOKEN_RADAR_RESOLVED_STATUSES,
     target_types=TOKEN_RADAR_RESOLVED_TARGET_TYPES,
     maximum_live_lag_ms=TOKEN_RADAR_LIVE_LAG_MS,
+    duplicate_text_fingerprint_version="postgres_md5_ascii_lower_space_v1",
     replay_transition_ms=TOKEN_RADAR_REPLAY_TRANSITION_MS,
     current_window_ms=TOKEN_RADAR_CURRENT_WINDOW_MS,
     prior_window_ms=TOKEN_RADAR_PRIOR_WINDOW_MS,

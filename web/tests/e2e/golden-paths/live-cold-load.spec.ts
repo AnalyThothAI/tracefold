@@ -18,7 +18,7 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
 
   await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
   await expect(page.getByText("1 eligible · showing 1 / 50")).toBeVisible();
-  await expect(page.getByText("1h causal change · newest qualification first")).toBeVisible();
+  await expect(page.getByText("4h causal change · newest qualification first")).toBeVisible();
   const item = page.locator(".live-radar-item").first();
   await expect(item.getByText("$UPEG", { exact: true })).toBeVisible();
   await expect(item.getByRole("img", { name: "Unpegged Token icon" })).toBeVisible();
@@ -44,7 +44,7 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
   await expect(page.getByRole("button", { name: /sort/i })).toHaveCount(0);
   await expect(item.getByRole("link", { name: "Open Token Case" })).toHaveAttribute(
     "href",
-    /\?window=1h&focus=trigger&trigger_event_id=event-upeg-1$/,
+    /\?window=4h&focus=trigger&trigger_event_id=event-upeg-1$/,
   );
   expect(radarRequests).toEqual([""]);
   await expectNoDocumentHorizontalOverflow(page);
@@ -60,7 +60,7 @@ test("Radar's single action opens a Case focused on the trigger", async ({ page 
   await item.getByRole("link", { name: "Open Token Case" }).click();
 
   await expect(page).toHaveURL(
-    /\/token\/Asset\/asset%3Adex%3Aeth%3A.*\?window=1h&focus=trigger&trigger_event_id=event-upeg-1$/,
+    /\/token\/Asset\/asset%3Adex%3Aeth%3A.*\?window=4h&focus=trigger&trigger_event_id=event-upeg-1$/,
   );
   await expect(page.getByRole("article", { name: "Trigger evidence" })).toBeVisible();
   await expectNoUnhandledApiRequests(page);

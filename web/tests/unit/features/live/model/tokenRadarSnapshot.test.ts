@@ -1,24 +1,26 @@
 import {
   parseTokenRadarSnapshot,
   TOKEN_RADAR_SNAPSHOT_SCHEMA,
+  TOKEN_RADAR_WINDOW,
 } from "@features/live/model/tokenRadarSnapshot";
 import { describe, expect, it } from "vitest";
 
 describe("parseTokenRadarSnapshot", () => {
-  it("accepts one exact v3 current snapshot with causal and independent market clocks", () => {
-    const value = v3Snapshot();
+  it("accepts one exact v4 current snapshot with causal and independent market clocks", () => {
+    const value = v4Snapshot();
 
     expect(parseTokenRadarSnapshot(value)).toEqual(value);
+    expect(TOKEN_RADAR_WINDOW).toBe("4h");
   });
 
   it("enforces the server-owned state and stale-reason combinations", () => {
     const stale = {
-      ...v3Snapshot(),
+      ...v4Snapshot(),
       state: "stale",
       stale_reason: "source_unavailable",
     } as const;
     const currentWithReason = {
-      ...v3Snapshot(),
+      ...v4Snapshot(),
       stale_reason: "projection_failed",
     } as const;
 
@@ -29,7 +31,7 @@ describe("parseTokenRadarSnapshot", () => {
   });
 
   it("requires the public rows to exactly represent the capped eligible total", () => {
-    const underfilled = { ...v3Snapshot(), eligible_total: 2 };
+    const underfilled = { ...v4Snapshot(), eligible_total: 2 };
 
     expect(() => parseTokenRadarSnapshot(underfilled)).toThrow(
       /token_radar_snapshot_contract:snapshot.eligible_total/,
@@ -38,14 +40,14 @@ describe("parseTokenRadarSnapshot", () => {
 
   it("accepts only an empty unavailable snapshot", () => {
     const unavailable = {
-      ...v3Snapshot(),
+      ...v4Snapshot(),
       state: "unavailable",
       state_changed_at_ms: 0,
       social_evidence_as_of_ms: 0,
       eligible_total: 0,
       items: [],
     } as const;
-    const unavailableWithLkg = { ...v3Snapshot(), state: "unavailable" } as const;
+    const unavailableWithLkg = { ...v4Snapshot(), state: "unavailable" } as const;
 
     expect(parseTokenRadarSnapshot(unavailable)).toEqual(unavailable);
     expect(() => parseTokenRadarSnapshot(unavailableWithLkg)).toThrow(
@@ -54,7 +56,7 @@ describe("parseTokenRadarSnapshot", () => {
   });
 
   it("rejects duplicate or out-of-order server target rows", () => {
-    const first = structuredClone(v3Snapshot().items[0]);
+    const first = structuredClone(v4Snapshot().items[0]);
     const newer = structuredClone(first);
     newer.target.target_id = "asset:solana:token:token-2";
     newer.target.symbol = "TOKEN2";
@@ -63,12 +65,12 @@ describe("parseTokenRadarSnapshot", () => {
     newer.trigger_event_id = "event-token-2";
     newer.qualified_at_ms += 1_000;
     const outOfOrder = {
-      ...v3Snapshot(),
+      ...v4Snapshot(),
       eligible_total: 2,
       items: [first, newer],
     };
     const duplicate = {
-      ...v3Snapshot(),
+      ...v4Snapshot(),
       eligible_total: 2,
       items: [first, structuredClone(first)],
     };
@@ -82,7 +84,7 @@ describe("parseTokenRadarSnapshot", () => {
   });
 
   it("rejects a qualification that predates its causal trigger", () => {
-    const invalid = structuredClone(v3Snapshot());
+    const invalid = structuredClone(v4Snapshot());
     invalid.items[0].qualified_at_ms = invalid.items[0].trigger_source_event_at_ms - 1;
 
     expect(() => parseTokenRadarSnapshot(invalid)).toThrow(
@@ -91,7 +93,7 @@ describe("parseTokenRadarSnapshot", () => {
   });
 
   it("rejects a qualification newer than the represented social evidence", () => {
-    const invalid = structuredClone(v3Snapshot());
+    const invalid = structuredClone(v4Snapshot());
     invalid.items[0].qualified_at_ms = invalid.social_evidence_as_of_ms + 1;
 
     expect(() => parseTokenRadarSnapshot(invalid)).toThrow(
@@ -100,7 +102,7 @@ describe("parseTokenRadarSnapshot", () => {
   });
 
   it("rejects a since-signal change backed by a pre-trigger price observation", () => {
-    const invalid = structuredClone(v3Snapshot());
+    const invalid = structuredClone(v4Snapshot());
     invalid.items[0].market.price_observed_at_ms = invalid.items[0].trigger_source_event_at_ms - 1;
 
     expect(() => parseTokenRadarSnapshot(invalid)).toThrow(
@@ -108,7 +110,7 @@ describe("parseTokenRadarSnapshot", () => {
     );
   });
 
-  it("preserves all fifty exact server-prioritized v3 rows", () => {
+  it("preserves all fifty exact server-prioritized v4 rows", () => {
     const value = snapshot(50);
     expect(parseTokenRadarSnapshot(value)).toEqual(value);
     expect(parseTokenRadarSnapshot(value).items.map((item) => item.target.symbol)).toEqual(
@@ -118,6 +120,7 @@ describe("parseTokenRadarSnapshot", () => {
 
   it.each([
     ["wrong schema", () => ({ ...snapshot(), schema_version: "legacy" })],
+    ["retired v3 snapshot", () => ({ ...snapshot(), schema_version: "token_radar_snapshot_v3" })],
     [
       "retired v2 snapshot",
       () => ({
@@ -243,7 +246,7 @@ describe("parseTokenRadarSnapshot", () => {
   });
 });
 
-function v3Snapshot() {
+function v4Snapshot() {
   return snapshot(1);
 }
 

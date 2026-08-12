@@ -240,8 +240,10 @@ remains alive beyond that grace is fatal. Only an explicitly classified true
 external provider seam may translate a finite-operation overrun into its
 existing durable retry, degradation, or terminal policy; doing so never
 releases the shared capability permit before the underlying future actually
-finishes. Projection turns therefore have phase-native deadlines and no
-aggregate fatal watchdog.
+finishes. Frontier-backed projection turns therefore have phase-native
+deadlines and no aggregate fatal watchdog. The fixed-period Token Radar sample
+is the explicit exception: it has the code-owned 12.0-second whole-turn ceiling
+described below in addition to its phase deadlines.
 
 Projection claim leases cover the complete legal phase envelope: Profile and
 Macro use 30 seconds each. The fixed-period Token Radar and News
@@ -258,27 +260,47 @@ fact replay rebuilds it. The bounded market poll reserves its first batch slots
 for the current Radar target keys and fills the remainder by 24-hour activity.
 This is acquisition scheduling only: market presentation facts do not affect
 Radar admission or order, so the dependency cannot feed a market result back
-into queue membership.
+into queue membership. It does not create a 24-hour Radar window; the sole
+Radar product remains the fixed four-hour causal comparison.
 
 ```text
 events + intent resolution revisions
-  -> bounded three-hour source-time/revision evidence read
-  -> replay availability-ordered changes over adjacent source-time hours
+  -> bounded twelve-hour source-time/revision evidence read
+  -> seed adjacent four-hour prior/current state at t-4h from the first eight hours
+  -> replay availability-ordered changes over the final four-hour transition to t
   -> boundaries/removals may close; positive additions may open only on Gate false -> true
-  -> one-hour episode TTL and suppression until a later positive false -> true crossing
+  -> four-hour episode TTL and suppression until a later positive false -> true crossing
   -> qualified_at descending + stable target-key ties -> Top 50
   -> bounded selected-target identity and market-presentation hydration
-  -> atomic token_radar_current v3 current/LKG singleton (maximum 50 Items / 96 KiB)
+  -> atomic token_radar_current v4 current/LKG singleton (maximum 50 Items / 96 KiB)
   -> Token Radar -> focused Token Case evidence
 ```
 
 Token Radar is a change-first research queue, not a score, trading action,
 market screener, security audit, or operational monitor. Every 30 seconds its
-sole writer streams at most 10,000 typed Event/resolution-revision rows and 8
-MiB from a three-hour source-time horizon, then runs one deterministic reducer
-with a five-second hard ceiling. Source event time defines current
-`[t-1h, t]` and prior `(t-2h, t-1h)` windows. A fact becomes available at the
-later of the Event creation clock and its eligible resolution creation clock;
+sole writer streams at most 20,000 typed Event/resolution-revision rows and 16
+MiB from a twelve-hour source-time horizon, then runs one deterministic reducer
+with a twelve-second whole-turn hard ceiling. The evidence load selects only
+reducer fields in stable replay order against a source-time covering index and
+the covering resolution index. The source index stores a fixed-width,
+non-security duplicate-text fingerprint instead of wide Event text, so the
+bounded read does not fetch or transfer the raw text payload. The base phase
+caps are 9.0 seconds for load, 2.5 seconds for compute,
+and 0.25 seconds each for presentation and publication. Every phase is bounded
+by the smaller of its absolute cap and the remaining whole-turn time after
+reserving later fixed phases; unused earlier time remains whole-turn slack but
+never raises a later phase's cap. Source event time defines current `[t-4h, t]`
+and prior
+`(t-8h, t-4h)` windows. Replay starts at `t-4h`: the first eight hours of the
+source horizon seed the adjacent prior/current state at that boundary, and the
+last four hours are the replay transition to `t`. This causal reconstruction
+does not create a third public comparison window. A representative live
+twelve-hour raw-text read measured approximately 11,975 rows and 8.62 MiB;
+that observation motivated both the fixed-width fingerprint load and the
+increase of the code-owned input envelope to 20,000 rows and 16 MiB from the
+retired v3 envelope. A fact becomes available at the later of the Event
+creation clock
+and its eligible resolution creation clock;
 `evidence_available_at_ms = max(event.created_at_ms,
 eligible_resolution.created_at_ms)`, and that clock determines `qualified_at`.
 Received time is used only for the live boundary:
@@ -288,6 +310,15 @@ replayed directly: a timely retarget removes the old binding and may add the
 new one, a late retarget only removes, and a same-target refresh preserves an
 already timely binding. There is no second availability ledger.
 
+The fixed four-hour period is product semantics, not configuration. The retired
+one-hour period made short sparse bursts and boundary movement too dominant and
+expired an episode before a slower operator investigation could finish; a
+twenty-four-hour comparison would mix old attention into `why_now` and weaken
+the false-to-true causal interpretation. Selectable periods would also require
+independent replay, Gate, episode-TTL, and serving identity per period rather
+than a harmless frontend filter. Tracefold therefore owns exactly one four-hour
+Radar product; longer-horizon fact inspection remains in Search and Token Case.
+
 The code-owned Gate remains four equal-weight Boolean rules: minimum attention
 delta, minimum independent authors, maximum duplicate-text share, and maximum
 time to the required author. At one effective millisecond, window boundaries
@@ -296,7 +327,7 @@ then apply atomically and can qualify only when the complete Gate changes from
 false to true. When multiple additions share that millisecond, the stable
 Event/intent/resolution/target fact-key order chooses the representative
 trigger. A qualified episode leaves immediately when the Gate becomes false and
-expires one hour after qualification. Expiry while the Gate remains true
+expires four hours after qualification. Expiry while the Gate remains true
 suppresses the target until a later false state and new positive false-to-true
 crossing. This episode is reconstructed on each bounded replay;
 there is no episode, frontier, rejected-candidate, Gate-audit, or history table.
@@ -311,7 +342,7 @@ and recent market capitalization; it never performs one query per Item. Market
 values and their independent observation clocks are nullable presentation
 facts and cannot change membership or order. The compact public Item contains
 the causal trigger Event ID, trigger source-event time, qualification time,
-current/prior mention change, actual independent-author/text counts,
+current/prior four-hour mention change, actual independent-author/text counts,
 propagation time, duplicate share, and that presentation packet. It contains
 no rank, decision, score, per-rule evaluation history, rejected candidates,
 source-event list, window, venue, pagination, archive, or user-adjustable
@@ -322,7 +353,7 @@ private PostgreSQL Adapter seams.
 Publication locks the one stable product row and replaces the complete compact
 payload atomically. Public state is `current` after a complete sample, `stale`
 with the full last-known-good payload after a known source or projection
-failure, and `unavailable` before any v3 last-known-good payload exists. Stale
+failure, and `unavailable` before any v4 last-known-good payload exists. Stale
 reasons are a small generic enum; they never contain provider or internal error
 detail. A business-identical payload or repeated identical stale observation
 writes zero serving state. Oversized input, timeout, calculation failure, or a
@@ -330,7 +361,7 @@ known non-streaming source never samples, truncates, or publishes an apparently
 healthy empty queue. The next complete successful sample restores `current`.
 Restart recovery is the next bounded PostgreSQL replay. Search and Token Case
 read their owning facts directly and never use Radar current state as evidence
-authority. Radar v3 changes no WebSocket route, message, or subscription
+authority. Radar v4 changes no WebSocket route, message, or subscription
 behavior. There is no Stocks product, route, public read model, or writer.
 `us_equity_symbols` remains only an identity-collision guard for token
 resolution and does not constitute a Stocks surface. General cross-asset Market
@@ -354,14 +385,27 @@ resolutions, identities, profile facts, and market facts, including the
 `us_equity_symbols` collision guard. No v1 or Stocks compatibility interface
 was retained.
 
-Migration `20260811_0254` supersedes that serving contract with one irreversible
-v3 hard cut. It resets only the rebuildable singleton to initial
-`unavailable`, adds the bounded source-time evidence index and v3 basic-shape
-constraints, and preserves Events, intents, all resolution revisions,
-identities, profiles, and market facts. The first successful Worker sample
-reconstructs causal state from the bounded three-hour horizon. No v2 trigger is
+Historical migration `20260811_0254` superseded that serving contract with one
+irreversible v3 hard cut. It reset only the rebuildable singleton to initial
+`unavailable`, added the bounded source-time evidence index and v3 basic-shape
+constraints, and preserved Events, intents, all resolution revisions,
+identities, profiles, and market facts. At that revision the first successful
+Worker sample reconstructed causal state from a bounded three-hour horizon for
+one-hour current/prior windows and a one-hour episode TTL. No v2 trigger was
 imported, and no dual reader/writer, episode/frontier/history table, Gate audit,
-or compatibility path is installed.
+or compatibility path was installed.
+
+Migration `20260812_0255` is the irreversible v4 hard cut. It resets only the
+rebuildable singleton to initial `unavailable` with
+`token_radar_snapshot_v4`, rebuilds the bounded source-time index as the narrow
+fingerprint covering index, installs the covering resolution index for the
+optimized bounded load, and preserves all material Events, intents,
+resolution revisions, identities, profile facts, and market facts. The v4
+runtime has exactly one fixed four-hour causal product and no window query or
+control. Its first successful sample reconstructs state from the twelve-hour
+fact horizon by seeding at `t-4h` and replaying the final four-hour transition;
+it imports no v3 trigger or LKG payload. There is no dual reader/writer,
+feature flag, compatibility adapter, staging runtime, or history import.
 
 Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
 error outcomes back off exponentially to a bounded terminal state, and only a

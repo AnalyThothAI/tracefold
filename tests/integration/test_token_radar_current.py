@@ -13,6 +13,7 @@ from tracefold.market.radar.reducer import (
     RadarSelectionKey,
     enrich_token_radar,
     reduce_token_radar,
+    token_radar_text_fingerprint,
 )
 from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 
@@ -80,7 +81,7 @@ def test_singleton_publish_is_state_idempotent_and_failure_preserves_lkg(tmp_pat
     assert initial_failure["latest_attempt_status"] == "failed"
     assert initial_failure["ruleset_version"] is None
     assert _served_payload(initial_failure) == {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "social_evidence_as_of_ms": 0,
         "eligible_total": 0,
         "items": [],
@@ -157,13 +158,19 @@ def test_persistence_seam_replays_resolution_history_and_uses_only_selected_trig
             for index, source_at_ms in enumerate(source_times, start=1):
                 event_id = f"radar-history-event-{index}"
                 intent_id = f"radar-history-intent-{index}"
+                event_text = (
+                    "$RADAR Straße independent evidence 1" if index == 1 else f"$RADAR independent evidence {index}"
+                )
                 event = make_event(
                     event_id,
                     author_handle=f"radar-author-{index}",
-                    text=f"$RADAR independent evidence {index}",
+                    text=event_text,
                     received_at_ms=source_at_ms,
                 )
-                assert repos.evidence.insert_event_row(event_to_row(event, now_ms=source_at_ms + 1_000))
+                event_row = event_to_row(event, now_ms=source_at_ms + 1_000)
+                if index == 1:
+                    event_row["text_clean"] = "$RADAR\tStraße\nindependent\revidence\f1"
+                assert repos.evidence.insert_event_row(event_row)
                 repos.token_intents.insert(
                     {
                         "intent_id": intent_id,
@@ -243,6 +250,9 @@ def test_persistence_seam_replays_resolution_history_and_uses_only_selected_trig
         enriched = enrich_token_radar(reduced, presentation, now_ms=NOW_MS)
 
         third_event_history = [revision for revision in material_inputs if revision.event_id == "radar-history-event-3"]
+        assert material_inputs[0].text_fingerprint == token_radar_text_fingerprint(
+            "$RADAR\tStraße\nindependent\revidence\f1"
+        )
         assert [(revision.resolution_id, revision.target_id) for revision in third_event_history] == [
             (superseded_resolution["resolution_id"], superseded_asset["asset_id"]),
             (selected_resolution_ids[-1], selected_asset["asset_id"]),
@@ -538,7 +548,7 @@ def _eligible_rows() -> list[RadarEvidenceRevision]:
                 event_created_at_ms=source_event_at_ms + 2_000,
                 action="tweet",
                 author_key=f"author-{index}",
-                text=f"independent text {index}",
+                text_fingerprint=token_radar_text_fingerprint(f"independent text {index}"),
                 resolution_decision_at_ms=source_event_at_ms + 2_000,
                 resolution_created_at_ms=source_event_at_ms + 3_000,
             )

@@ -48,7 +48,7 @@ describe("RadarQueue", () => {
     const rows = screen.getAllByRole("listitem");
 
     expect(screen.getByRole("heading", { name: "Radar" })).toBeInTheDocument();
-    expect(screen.getByText("1h causal change · newest qualification first")).toBeInTheDocument();
+    expect(screen.getByText("4h causal change · newest qualification first")).toBeInTheDocument();
     expect(screen.getByText("63 eligible · showing 50 / 50")).toBeInTheDocument();
     expect(screen.getByText(/Social evidence through/)).toBeInTheDocument();
     expect(rows).toHaveLength(50);
@@ -65,7 +65,7 @@ describe("RadarQueue", () => {
     expect(actions).toHaveLength(50);
     expect(actions[0]).toHaveAttribute(
       "href",
-      "/token/Asset/asset%3Asolana%3Atoken%3Atoken-1?window=1h&focus=trigger&trigger_event_id=event-token-1",
+      "/token/Asset/asset%3Asolana%3Atoken%3Atoken-1?window=4h&focus=trigger&trigger_event_id=event-token-1",
     );
     expect(actions[49]).toBeVisible();
     expect(container.querySelector(".live-radar-queue")).not.toHaveClass(
@@ -366,7 +366,7 @@ function renderQueue(snapshot: TokenRadarSnapshot, error: Error | null = null) {
 
 function fixture(count = 50): TokenRadarSnapshot {
   return {
-    schema_version: "token_radar_snapshot_v3",
+    schema_version: "token_radar_snapshot_v4",
     state: "current",
     stale_reason: null,
     state_changed_at_ms: 1_778_426_420_000,

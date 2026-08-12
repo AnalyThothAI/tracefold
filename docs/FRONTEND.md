@@ -51,7 +51,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   business inference.
 - **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads/writes. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, `postApi`, or `queryClient.set*` directly. `frontendDataOwnership.test.ts` enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
 - **URL state.** Shareable Search and Token Case options live in their owning route-state helpers. Token Radar has no filter, window, venue, sort, selection, or pagination state. Local stores are only for interaction state that should not survive hard reloads.
-- **Socket lifecycle.** `shared/socket` owns authentication, Token Case live-market cache patches, and ref-counted market-target subscriptions. The React client sends `replay: 0` and does not retain public `event` messages; backend event/replay remains a public evidence contract for other consumers. Token Radar registers no market target and is never patched from WebSocket state. Token Case subscribes only its active target. Stream/poll workers emit live market messages only after durable current-row persistence; those messages remain a cache enhancement, not a second source of truth. The Radar v3 hard cut changes no WebSocket route, message, replay, or subscription behavior.
+- **Socket lifecycle.** `shared/socket` owns authentication, Token Case live-market cache patches, and ref-counted market-target subscriptions. The React client sends `replay: 0` and does not retain public `event` messages; backend event/replay remains a public evidence contract for other consumers. Token Radar registers no market target and is never patched from WebSocket state. Token Case subscribes only its active target. Stream/poll workers emit live market messages only after durable current-row persistence; those messages remain a cache enhancement, not a second source of truth. The Radar v4 hard cut changes no WebSocket route, message, replay, or subscription behavior.
 - **Search route.** `/search` reuses the cockpit topbar but owns its
   search-local rail, filters, resolver candidates, and selected result. Topbar
   submit navigates to `/search?q=<query>`. Token search results render the
@@ -64,7 +64,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `/api/target-posts` from the dossier's first page, and subscribes only the
   active target for live market updates. The dossier renders profile/market
   facts and raw posts without synthesizing prose or per-post conclusions. A
-  Radar link carries `window=1h`, `focus=trigger`, and the canonical
+  Radar link carries `window=4h`, `focus=trigger`, and the canonical
   `trigger_event_id`; the route locates and visually focuses that exact Event
   or states that it is unavailable. It does not reconstruct a retired Radar
   rank, lane, decision, or score.
@@ -75,7 +75,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   keeps the server order and never scores, filters, admits, fills, or reorders
   Items.
 - **Token Radar currentness.** `/` is one full-height, maximum-fifty rich
-  research queue over `token_radar_snapshot_v3`. The browser renders the
+  research queue over `token_radar_snapshot_v4`. The browser renders the
   server-owned `current|stale|unavailable` state rather than inferring
   projection health from HTTP success. `current` renders the queue; `stale`
   retains every LKG row and shows one bounded source/projection banner;
@@ -87,7 +87,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   Identity uses one primary symbol/name line plus one canonical identity line;
   canonical chain identifiers are rendered as human-readable network names and
   supported addresses expose an explicit GMGN destination. The header states
-  that the queue is one-hour causal change, preserves newest-qualification
+  that the queue is four-hour causal change, preserves newest-qualification
   order, and caps the public result at fifty. The exact trigger source-event
   time and qualification time are distinct semantic `<time>` values. Evidence
   labels the actual independent-author count rather than a prior-relative
@@ -257,7 +257,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
 - **Score display.** Any displayed ranking score includes its component breakdown from the API. The UI does not recompute ranking facts locally.
 - **Token images.** Token Case/profile surfaces render
-  `profile.identity.logo_url` directly, and Radar renders the v3 Item
+  `profile.identity.logo_url` directly, and Radar renders the v4 Item
   `target.logo_url` directly. The API contract guarantees either value is
   `null` or a same-origin `/api/token-images/{image_id}` path; DB
   constraints reject remote provider URLs before they reach the frontend. Do
@@ -301,7 +301,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 
 1. Hard-reload `/`, `/search`, `/news`, `/news/brief`,
    `/news/status`, `/news/sources`, `/news/stories/:storyId`, `/macro`, and
-   `/token/:targetType/:targetId?window=1h` with representative query
+   `/token/:targetType/:targetId?window=4h` with representative query
    params.
 2. Submit the topbar search and confirm the URL becomes `/search?q=<submitted-query>`.
 3. Verify visible loading/empty/error states are structured, labelled, and non-overlapping.

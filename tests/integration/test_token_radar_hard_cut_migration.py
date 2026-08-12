@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 from decimal import Decimal
@@ -464,6 +465,232 @@ def test_0254_downgrade_is_explicitly_irreversible() -> None:
     )
 
     with pytest.raises(RuntimeError, match="irreversible Token Radar v3 hard cut"):
+        migration.downgrade()
+
+
+def test_upgrade_from_0254_hard_cuts_v3_current_to_v4_with_covering_indexes() -> None:
+    config, conn = _reset_to_0248()
+    try:
+        _seed_nonempty_0248_state(conn)
+        command.upgrade(config, "20260811_0254")
+        wide_text = "".join(hashlib.sha256(f"radar-wide-{index}".encode()).hexdigest() for index in range(600))
+        wide_event = make_event(
+            "event-radar-wide-index-safety",
+            text=wide_text,
+            received_at_ms=1_778_100_000_001,
+        )
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            repos.evidence.insert_event_row(event_to_row(wide_event, now_ms=1_778_100_000_001))
+        assert (
+            conn.execute(
+                "SELECT pg_column_size(search_text) AS bytes FROM events WHERE event_id = %s",
+                (wide_event.event_id,),
+            ).fetchone()["bytes"]
+            > 8_191
+        )
+        fingerprint = "sha256:" + ("4" * 64)
+        conn.execute(
+            """
+            UPDATE token_radar_current
+               SET ruleset_version = 'token_radar_rules_v3',
+                   ruleset_fingerprint = %s,
+                   input_fingerprint = %s,
+                   state_fingerprint = %s,
+                   evidence_as_of_ms = 30,
+                   evaluation_at_ms = 31,
+                   input_rows = 32,
+                   input_bytes = 33,
+                   latest_attempt_status = 'failed',
+                   latest_error_code = 'old_v3_failure',
+                   failure_count = 4,
+                   served_payload = %s::jsonb,
+                   state_changed_at_ms = 29,
+                   created_at_ms = 10,
+                   updated_at_ms = 31
+             WHERE singleton_key = true
+            """,
+            (
+                fingerprint,
+                fingerprint,
+                fingerprint,
+                '{"schema_version":"token_radar_snapshot_v3","social_evidence_as_of_ms":30,'
+                '"eligible_total":1,"items":[{}]}',
+            ),
+        )
+        conn.commit()
+        before_facts = _fact_identities(conn)
+        before_tables = _public_tables(conn)
+        before_columns = _table_columns(conn, "token_radar_current")
+
+        command.upgrade(config, "20260812_0255")
+
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260812_0255"}
+        assert _fact_identities(conn) == before_facts
+        assert _public_tables(conn) == before_tables
+        assert _table_columns(conn, "token_radar_current") == before_columns
+        assert conn.execute(
+            """
+            SELECT schema_version, ruleset_version, ruleset_fingerprint,
+                   input_fingerprint, state_fingerprint, evidence_as_of_ms,
+                   evaluation_at_ms, input_rows, input_bytes,
+                   latest_attempt_status, latest_error_code, failure_count,
+                   served_payload, state_changed_at_ms,
+                   created_at_ms, updated_at_ms
+              FROM token_radar_current
+             WHERE singleton_key = true
+            """
+        ).fetchone() == {
+            "schema_version": "token_radar_snapshot_v4",
+            "ruleset_version": None,
+            "ruleset_fingerprint": None,
+            "input_fingerprint": None,
+            "state_fingerprint": None,
+            "evidence_as_of_ms": 0,
+            "evaluation_at_ms": 0,
+            "input_rows": 0,
+            "input_bytes": 0,
+            "latest_attempt_status": "never",
+            "latest_error_code": None,
+            "failure_count": 0,
+            "served_payload": {
+                "schema_version": "token_radar_snapshot_v4",
+                "social_evidence_as_of_ms": 0,
+                "eligible_total": 0,
+                "items": [],
+            },
+            "state_changed_at_ms": 0,
+            "created_at_ms": 0,
+            "updated_at_ms": 0,
+        }
+
+        event_index = conn.execute(
+            """
+            SELECT pg_get_indexdef(indexrelid) AS definition,
+                   pg_get_expr(indpred, indrelid) AS predicate
+              FROM pg_index
+             WHERE indexrelid = 'idx_events_token_radar_source_time'::regclass
+            """
+        ).fetchone()
+        assert event_index is not None
+        assert "USING btree (timestamp_ms, event_id, md5" in event_index["definition"]
+        assert "regexp_replace" in event_index["definition"]
+        assert "translate" in event_index["definition"]
+        assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ" in event_index["definition"]
+        assert "INCLUDE (received_at_ms, created_at_ms, action, author_handle)" in event_index["definition"]
+        event_predicate = str(event_index["predicate"])
+        for required in (
+            "source_provider = 'gmgn'::text",
+            "source_transport = 'direct_ws'::text",
+            "coverage = 'public_stream'::text",
+            "twitter_monitor_basic",
+            "twitter_monitor_token",
+            "twitter_monitor_translation",
+            "twitter_monitor_express",
+            "'tweet'::text",
+            "'quote'::text",
+            "'reply'::text",
+            "'repost'::text",
+        ):
+            assert required in event_predicate
+
+        resolution_index = conn.execute(
+            """
+            SELECT pg_get_indexdef(indexrelid) AS definition
+              FROM pg_index
+             WHERE indexrelid =
+                   'idx_token_intent_resolutions_token_radar_material'::regclass
+            """
+        ).fetchone()
+        assert resolution_index is not None
+        assert (
+            "USING btree (event_id, intent_id, decision_time_ms, created_at_ms, resolution_id)"
+            in resolution_index["definition"]
+        )
+        assert "INCLUDE (resolution_status, target_type, target_id)" in resolution_index["definition"]
+
+        current_constraint = conn.execute(
+            """
+            SELECT pg_get_constraintdef(oid) AS definition
+              FROM pg_constraint
+             WHERE conrelid = 'token_radar_current'::regclass
+               AND conname = 'token_radar_current_schema_check'
+            """
+        ).fetchone()
+        assert current_constraint is not None
+        constraint_definition = str(current_constraint["definition"])
+        assert "token_radar_snapshot_v4" in constraint_definition
+        assert "token_radar_snapshot_v3" not in constraint_definition
+        assert "131072" in constraint_definition
+
+        counts_constraint = conn.execute(
+            """
+            SELECT pg_get_constraintdef(oid) AS definition
+              FROM pg_constraint
+             WHERE conrelid = 'token_radar_current'::regclass
+               AND conname = 'token_radar_current_counts_check'
+            """
+        ).fetchone()
+        assert counts_constraint is not None
+        counts_definition = str(counts_constraint["definition"])
+        assert "input_rows >= 0" in counts_definition
+        assert "input_rows <= 20000" in counts_definition
+        assert "input_bytes >= 0" in counts_definition
+        assert "input_bytes <= 16777216" in counts_definition
+
+        conn.execute(
+            """
+            UPDATE token_radar_current
+               SET input_rows = 20000,
+                   input_bytes = 16777216
+             WHERE singleton_key = true
+            """
+        )
+        conn.rollback()
+
+        with pytest.raises(CheckViolation):
+            conn.execute(
+                """
+                UPDATE token_radar_current
+                   SET input_rows = 20001
+                 WHERE singleton_key = true
+                """
+            )
+        conn.rollback()
+
+        with pytest.raises(CheckViolation):
+            conn.execute(
+                """
+                UPDATE token_radar_current
+                   SET input_bytes = 16777217
+                 WHERE singleton_key = true
+                """
+            )
+        conn.rollback()
+
+        with pytest.raises(CheckViolation):
+            conn.execute(
+                """
+                UPDATE token_radar_current
+                   SET schema_version = 'token_radar_snapshot_v3',
+                       served_payload =
+                         '{"schema_version":"token_radar_snapshot_v3",'
+                         '"social_evidence_as_of_ms":0,"eligible_total":0,"items":[]}'::jsonb
+                 WHERE singleton_key = true
+                """
+            )
+        conn.rollback()
+    finally:
+        reset_postgres_schema(conn)
+        conn.close()
+
+
+def test_0255_downgrade_is_explicitly_irreversible() -> None:
+    migration = importlib.import_module(
+        "tracefold.platform.postgres.alembic.versions.20260812_0255_token_radar_v4_four_hour_hard_cut"
+    )
+
+    with pytest.raises(RuntimeError, match="irreversible Token Radar v4 hard cut"):
         migration.downgrade()
 
 

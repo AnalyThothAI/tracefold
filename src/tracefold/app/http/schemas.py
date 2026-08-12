@@ -1677,7 +1677,7 @@ class TokenRadarItemData(ExactApiSchema):
 
 
 class TokenRadarData(ExactApiSchema):
-    schema_version: Literal["token_radar_snapshot_v3"]
+    schema_version: Literal["token_radar_snapshot_v4"]
     state: Literal["current", "stale", "unavailable"]
     stale_reason: Literal["source_unavailable", "projection_failed"] | None
     state_changed_at_ms: int = Field(ge=0)

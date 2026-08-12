@@ -9,8 +9,8 @@ from pydantic import ValidationError
 from tracefold.app.http.schemas import TokenRadarData
 
 
-def test_token_radar_schema_accepts_exact_v3_packet_with_independent_market_clocks() -> None:
-    packet = _v3_packet()
+def test_token_radar_schema_accepts_exact_v4_packet_with_independent_market_clocks() -> None:
+    packet = _v4_packet()
 
     validated = TokenRadarData.model_validate(packet)
 
@@ -29,7 +29,7 @@ def test_token_radar_schema_rejects_incoherent_public_state(
     state: str,
     stale_reason: str | None,
 ) -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet["state"] = state
     packet["stale_reason"] = stale_reason
 
@@ -38,7 +38,7 @@ def test_token_radar_schema_rejects_incoherent_public_state(
 
 
 def test_token_radar_schema_rejects_unavailable_state_with_business_payload() -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet["state"] = "unavailable"
 
     with pytest.raises(ValidationError, match="token_radar_unavailable_payload_invalid"):
@@ -46,7 +46,7 @@ def test_token_radar_schema_rejects_unavailable_state_with_business_payload() ->
 
 
 def test_token_radar_schema_rejects_unavailable_state_with_change_clock() -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet.update(
         {
             "state": "unavailable",
@@ -74,7 +74,7 @@ def test_token_radar_schema_rejects_market_value_without_its_own_clock(
     field: str,
     value: object,
 ) -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet["items"][0]["market"][field] = value
 
     with pytest.raises(ValidationError, match="token_radar_market_clock_invalid"):
@@ -82,7 +82,7 @@ def test_token_radar_schema_rejects_market_value_without_its_own_clock(
 
 
 def test_token_radar_schema_rejects_price_change_before_trigger_source_time() -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet["items"][0]["market"]["price_observed_at_ms"] = 79
 
     with pytest.raises(ValidationError, match="token_radar_price_change_clock_invalid"):
@@ -97,7 +97,7 @@ def test_token_radar_schema_rejects_price_change_before_trigger_source_time() ->
     ],
 )
 def test_token_radar_schema_rejects_incoherent_causal_times(field: str, value: int) -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet["items"][0][field] = value
 
     with pytest.raises(ValidationError, match="token_radar_causal_time_invalid"):
@@ -105,7 +105,7 @@ def test_token_radar_schema_rejects_incoherent_causal_times(field: str, value: i
 
 
 def test_token_radar_schema_rejects_duplicate_target_keys() -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet["eligible_total"] = 2
     packet["items"].append(deepcopy(packet["items"][0]))
 
@@ -124,7 +124,7 @@ def test_token_radar_schema_rejects_non_server_ordered_items(
     qualified_at_ms: int,
     target_id: str,
 ) -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     second = deepcopy(packet["items"][0])
     second["target"]["target_id"] = target_id
     second["qualified_at_ms"] = qualified_at_ms
@@ -149,7 +149,7 @@ def test_token_radar_schema_rejects_non_server_ordered_items(
     ],
 )
 def test_token_radar_schema_rejects_blank_public_identifiers(field: str, value: str) -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     item = packet["items"][0]
     if field == "trigger_event_id":
         item[field] = value
@@ -174,7 +174,7 @@ def test_token_radar_schema_rejects_nonpositive_or_nonfinite_market_metrics(
     field: str,
     value: float,
 ) -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet["items"][0]["market"][field] = value
 
     with pytest.raises(ValidationError):
@@ -182,7 +182,7 @@ def test_token_radar_schema_rejects_nonpositive_or_nonfinite_market_metrics(
 
 
 def test_token_radar_schema_rejects_remote_logo() -> None:
-    remote_logo = _v3_packet()
+    remote_logo = _v4_packet()
     remote_logo["items"][0]["target"]["logo_url"] = "https://remote.example/token.png"
 
     with pytest.raises(ValidationError, match="token_radar_logo_url_invalid"):
@@ -190,29 +190,29 @@ def test_token_radar_schema_rejects_remote_logo() -> None:
 
 
 def test_token_radar_schema_rejects_incoherent_counts() -> None:
-    invalid_selection = _v3_packet()
+    invalid_selection = _v4_packet()
     invalid_selection["eligible_total"] = 0
     with pytest.raises(ValidationError, match="token_radar_eligible_total_invalid"):
         TokenRadarData.model_validate(invalid_selection)
 
-    underfilled_selection = _v3_packet()
+    underfilled_selection = _v4_packet()
     underfilled_selection["eligible_total"] = 2
     with pytest.raises(ValidationError, match="token_radar_eligible_total_invalid"):
         TokenRadarData.model_validate(underfilled_selection)
 
-    invalid_delta = _v3_packet()
+    invalid_delta = _v4_packet()
     invalid_delta["items"][0]["why_now"]["mention_delta"] = 1
     with pytest.raises(ValidationError, match="token_radar_mention_delta_invalid"):
         TokenRadarData.model_validate(invalid_delta)
 
 
 def test_token_radar_schema_rejects_removed_v2_fields() -> None:
-    old_market_status = _v3_packet()
+    old_market_status = _v4_packet()
     old_market_status["items"][0]["market"]["status"] = "confirmed"
     with pytest.raises(ValidationError):
         TokenRadarData.model_validate(old_market_status)
 
-    old_counter = _v3_packet()
+    old_counter = _v4_packet()
     old_counter["items"][0]["counter_evidence"] = "market_confirmation_unavailable"
     with pytest.raises(ValidationError):
         TokenRadarData.model_validate(old_counter)
@@ -264,16 +264,16 @@ def test_token_radar_schema_rejects_removed_v2_fields() -> None:
     ],
 )
 def test_token_radar_schema_rejects_ambiguous_target_identity(target: dict[str, object]) -> None:
-    packet = _v3_packet()
+    packet = _v4_packet()
     packet["items"][0]["target"] = target
 
     with pytest.raises(ValidationError, match="token_radar_target_identity_invalid"):
         TokenRadarData.model_validate(packet)
 
 
-def _v3_packet() -> dict[str, object]:
+def _v4_packet() -> dict[str, object]:
     return {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "state": "current",
         "stale_reason": None,
         "state_changed_at_ms": 120,

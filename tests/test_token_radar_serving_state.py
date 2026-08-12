@@ -5,7 +5,7 @@ import pytest
 from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 
 BUSINESS_PAYLOAD = {
-    "schema_version": "token_radar_snapshot_v3",
+    "schema_version": "token_radar_snapshot_v4",
     "social_evidence_as_of_ms": 1_800_000_000_000,
     "eligible_total": 0,
     "items": [],
@@ -67,7 +67,7 @@ def test_served_snapshot_constructs_minimal_public_state_from_singleton(
     snapshot = TokenRadarCurrentRepository(connection).served_snapshot()
 
     assert snapshot == {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "state": expected_state,
         "stale_reason": expected_reason,
         "state_changed_at_ms": row["state_changed_at_ms"],

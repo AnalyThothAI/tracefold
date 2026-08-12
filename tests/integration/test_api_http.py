@@ -28,7 +28,12 @@ from tracefold.market import (
     market_tick_id,
     parse_gmgn_token_payload,
 )
-from tracefold.market.radar.reducer import RadarEvidenceRevision, enrich_token_radar, reduce_token_radar
+from tracefold.market.radar.reducer import (
+    RadarEvidenceRevision,
+    enrich_token_radar,
+    reduce_token_radar,
+    token_radar_text_fingerprint,
+)
 from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 from tracefold.news import (
     NewsBriefSource,
@@ -454,7 +459,7 @@ def token_radar_revision(*, target_id: str, event_index: int, now_ms: int) -> Ra
         event_created_at_ms=source_event_at_ms + 2_000,
         action="tweet",
         author_key=f"author-{target_id}-{event_index}",
-        text=f"independent text {target_id} {event_index}",
+        text_fingerprint=token_radar_text_fingerprint(f"independent text {target_id} {event_index}"),
         resolution_status="EXACT",
         target_type="Asset",
         target_id=target_id,
@@ -1967,7 +1972,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
 
     assert radar.status_code == 200
     assert radar.json()["data"] == {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "state": "current",
         "stale_reason": None,
         "state_changed_at_ms": rebuild_now_ms,
@@ -2011,7 +2016,7 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
     assert response.status_code == 200
     data = response.json()["data"]
     assert data == {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "state": "current",
         "stale_reason": None,
         "state_changed_at_ms": rebuild_now_ms,
@@ -2142,7 +2147,7 @@ def test_api_token_radar_rejects_all_product_queries_but_keeps_auth_token(tmp_pa
     ]
     assert auth_query.status_code == 200
     assert auth_query.json()["data"] == {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "state": "unavailable",
         "stale_reason": None,
         "state_changed_at_ms": 0,
@@ -2242,7 +2247,7 @@ def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
     assert current.json() == {
         "ok": True,
         "data": {
-            "schema_version": "token_radar_snapshot_v3",
+            "schema_version": "token_radar_snapshot_v4",
             "state": "current",
             "stale_reason": None,
             "state_changed_at_ms": now_ms,

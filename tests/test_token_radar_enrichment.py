@@ -4,12 +4,13 @@ import math
 
 import pytest
 
-from tracefold.market.radar.constants import TOKEN_RADAR_INPUT_BYTE_CAP
+from tracefold.market.radar.constants import TOKEN_RADAR_INPUT_BYTE_CAP, TOKEN_RADAR_INPUT_ROW_CAP
 from tracefold.market.radar.reducer import (
     RadarEvidenceRevision,
     TokenRadarInputOverflow,
     enrich_token_radar,
     reduce_token_radar,
+    token_radar_text_fingerprint,
 )
 from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 
@@ -17,7 +18,7 @@ NOW_MS = 1_800_000_000_000
 MINUTE_MS = 60_000
 
 
-def test_v3_enrichment_adds_identity_exact_signal_price_and_independent_market_clocks() -> None:
+def test_v4_enrichment_adds_identity_exact_signal_price_and_independent_market_clocks() -> None:
     reduced = reduce_token_radar(_eligible_revisions(), now_ms=NOW_MS)
 
     enriched = enrich_token_radar(
@@ -35,7 +36,7 @@ def test_v3_enrichment_adds_identity_exact_signal_price_and_independent_market_c
     )
 
     assert enriched.snapshot == {
-        "schema_version": "token_radar_snapshot_v3",
+        "schema_version": "token_radar_snapshot_v4",
         "social_evidence_as_of_ms": NOW_MS - 10 * MINUTE_MS + 3_000,
         "eligible_total": 1,
         "items": [
@@ -77,7 +78,7 @@ def test_v3_enrichment_adds_identity_exact_signal_price_and_independent_market_c
     assert enriched.state_fingerprint != reduced.state_fingerprint
 
 
-def test_v3_enrichment_drops_invalid_or_stale_presentation_fields_independently() -> None:
+def test_v4_enrichment_drops_invalid_or_stale_presentation_fields_independently() -> None:
     reduced = reduce_token_radar(_eligible_revisions(), now_ms=NOW_MS)
 
     invalid = enrich_token_radar(
@@ -125,7 +126,7 @@ def test_v3_enrichment_drops_invalid_or_stale_presentation_fields_independently(
     }
 
 
-def test_v3_enrichment_keeps_an_exact_asset_address_without_inventing_a_symbol() -> None:
+def test_v4_enrichment_keeps_an_exact_asset_address_without_inventing_a_symbol() -> None:
     address = "J7o48eA9qftqHpod2CsUbBH4q1Tzq3doTRXFDA4wpump"
     reduced = reduce_token_radar(_eligible_revisions(), now_ms=NOW_MS)
 
@@ -162,7 +163,7 @@ def test_reducer_selects_exact_first_fifty_before_presentation_hydration() -> No
 
     reduced = reduce_token_radar(rows, now_ms=NOW_MS)
 
-    assert reduced.snapshot["schema_version"] == "token_radar_snapshot_v3"
+    assert reduced.snapshot["schema_version"] == "token_radar_snapshot_v4"
     assert reduced.eligible_rows == 60
     assert reduced.snapshot["eligible_total"] == 60
     assert len(reduced.snapshot["items"]) == 50
@@ -185,7 +186,7 @@ def test_material_input_repository_returns_typed_evidence_revisions() -> None:
                 "event_created_at_ms": source_event_at_ms + 2_000,
                 "action": "tweet",
                 "author_handle": "@Alice",
-                "text": " evidence ",
+                "text_fingerprint": token_radar_text_fingerprint(" evidence "),
                 "resolution_status": "EXACT",
                 "target_type": "Asset",
                 "target_id": "asset-1",
@@ -207,7 +208,7 @@ def test_material_input_repository_returns_typed_evidence_revisions() -> None:
             event_created_at_ms=source_event_at_ms + 2_000,
             action="tweet",
             author_key="alice",
-            text="evidence",
+            text_fingerprint=token_radar_text_fingerprint("evidence"),
             resolution_status="EXACT",
             target_type="Asset",
             target_id="asset-1",
@@ -220,9 +221,11 @@ def test_material_input_repository_returns_typed_evidence_revisions() -> None:
 def test_material_input_enforces_row_and_byte_caps_while_streaming() -> None:
     valid_row = _material_row()
     with pytest.raises(TokenRadarInputOverflow, match="row_overflow"):
-        TokenRadarCurrentRepository(_Connection([valid_row] * 10_001)).load_material_inputs(now_ms=NOW_MS)
+        TokenRadarCurrentRepository(_Connection([valid_row] * (TOKEN_RADAR_INPUT_ROW_CAP + 1))).load_material_inputs(
+            now_ms=NOW_MS
+        )
 
-    oversized = {**valid_row, "text": "x" * TOKEN_RADAR_INPUT_BYTE_CAP}
+    oversized = {**valid_row, "target_id": "x" * TOKEN_RADAR_INPUT_BYTE_CAP}
     with pytest.raises(TokenRadarInputOverflow, match="byte_overflow"):
         TokenRadarCurrentRepository(_Connection([oversized])).load_material_inputs(now_ms=NOW_MS)
 
@@ -278,7 +281,7 @@ def _revision(
         event_created_at_ms=source_event_at_ms + 2_000,
         action="tweet",
         author_key=author,
-        text=f"independent {event_id}",
+        text_fingerprint=token_radar_text_fingerprint(f"independent {event_id}"),
         resolution_status="EXACT",
         target_type="Asset",
         target_id=target_id,
@@ -298,7 +301,7 @@ def _material_row(**overrides: object) -> dict[str, object]:
         "event_created_at_ms": source_event_at_ms + 2_000,
         "action": "tweet",
         "author_handle": "alice",
-        "text": "evidence",
+        "text_fingerprint": token_radar_text_fingerprint("evidence"),
         "resolution_status": "EXACT",
         "target_type": "Asset",
         "target_id": "asset-1",

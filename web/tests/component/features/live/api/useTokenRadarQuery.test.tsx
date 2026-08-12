@@ -70,7 +70,7 @@ function snapshot() {
   return {
     ok: true,
     data: {
-      schema_version: "token_radar_snapshot_v3",
+      schema_version: "token_radar_snapshot_v4",
       state: "current",
       stale_reason: null,
       state_changed_at_ms: 1_778_426_420_000,
