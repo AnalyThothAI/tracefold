@@ -9,6 +9,8 @@ from tracefold.app.http.schemas import (
     NewsBriefRunData,
     NewsBriefStatusData,
     NewsIngestStatusData,
+    NewsPushDelivery24hData,
+    NewsPushTranslation24hData,
     NewsRssStatusData,
     NewsSourceData,
     NewsStoryData,
@@ -135,3 +137,22 @@ def test_news_health_contract_has_public_rss_without_retired_gap_or_projection_b
         "last_items_accepted",
     } <= source_fields
     assert {"gap_unclosed", "gap_version"}.isdisjoint(source_fields)
+
+
+def test_news_push_slo_contract_reports_the_24h_sample_complete_flag() -> None:
+    assert set(NewsPushTranslation24hData.model_fields) == {
+        "attempted",
+        "succeeded",
+        "success_ratio",
+        "latency_p95_ms",
+        "failure_counts",
+        "slo_met",
+        "sample_complete",
+    }
+    assert set(NewsPushDelivery24hData.model_fields) == {
+        "completed",
+        "latency_p95_ms",
+        "over_120s",
+        "slo_met",
+        "sample_complete",
+    }

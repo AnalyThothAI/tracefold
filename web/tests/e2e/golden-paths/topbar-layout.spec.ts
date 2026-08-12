@@ -68,6 +68,95 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   expect(fullyVisible).toBeGreaterThanOrEqual(4);
 });
 
+test("News notification reasons and missing assets remain readable at AA contrast", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1366, height: 720 });
+  await installMockApi(page);
+  const feed = newsFeedFixture();
+  const baseStory = feed.stories[0];
+  feed.stories = [
+    {
+      ...baseStory,
+      notification: {
+        delivery_state: "not_created",
+        eligible: false,
+        ineligible_reason: "no_asset",
+      },
+      provider_evidence: {
+        ...baseStory.provider_evidence!,
+        provider_metadata: {
+          ...baseStory.provider_evidence!.provider_metadata,
+          assets: null,
+        },
+      },
+      story_id: "news-assetless-contrast",
+      title: "News Story without upstream assets",
+    },
+    {
+      ...baseStory,
+      notification: {
+        delivery_state: "not_created",
+        eligible: false,
+        ineligible_reason: "cl_family_only",
+      },
+      provider_evidence: {
+        ...baseStory.provider_evidence!,
+        provider_metadata: {
+          ...baseStory.provider_evidence!.provider_metadata,
+          assets: [{ market_type: "futures", match: "Crude oil", symbol: "CL" }],
+        },
+      },
+      story_id: "news-cl-only-contrast",
+      title: "News Story with only CL-family assets",
+    },
+  ];
+  await page.route("**/api/news/feed*", (route) =>
+    route.fulfill({
+      body: JSON.stringify({ data: feed, ok: true }),
+      contentType: "application/json",
+      status: 200,
+    }),
+  );
+  await page.goto("/news");
+
+  const reasons = page.locator(".news-related-assets-empty, .news-notification-detail");
+  await expect(reasons).toHaveCount(3);
+  const contrastRatios = await reasons.evaluateAll((elements) => {
+    const probe = document.createElement("span");
+    document.body.append(probe);
+    const parseColor = (value: string) => {
+      probe.style.color = value;
+      const normalized = getComputedStyle(probe).color;
+      const channels = normalized
+        .match(/[\d.]+/g)
+        ?.slice(0, 3)
+        .map(Number);
+      if (!channels || channels.length !== 3) throw new Error(`Unsupported color: ${value}`);
+      return channels;
+    };
+    const luminance = (channels: number[]) => {
+      const linear = channels.map((channel) => {
+        const value = channel / 255;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    };
+    const surface = getComputedStyle(document.documentElement).getPropertyValue("--surface-panel");
+    const surfaceLuminance = luminance(parseColor(surface));
+    const ratios = elements.map((element) => {
+      const textLuminance = luminance(parseColor(getComputedStyle(element).color));
+      const lighter = Math.max(textLuminance, surfaceLuminance);
+      const darker = Math.min(textLuminance, surfaceLuminance);
+      return (lighter + 0.05) / (darker + 0.05);
+    });
+    probe.remove();
+    return ratios;
+  });
+
+  for (const ratio of contrastRatios) expect(ratio).toBeGreaterThanOrEqual(4.5);
+});
+
 test("desktop News detail keeps navigation adjacent to the story", async ({ page }) => {
   await installMockApi(page);
   await page.goto("/news/stories/story-global-policy");

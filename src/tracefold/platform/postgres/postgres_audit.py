@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import time
 from collections.abc import Iterator
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 from tracefold.platform.validation import require_nonnegative_int
@@ -11,6 +11,39 @@ SEARCH_CUTOFF_AT_MS_PARAM = "search_cutoff_at_ms"
 SEARCH_AUDIT_WINDOW_MS = 24 * 60 * 60 * 1000
 MAX_READ_RETURN_AMPLIFICATION = 20.0
 LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
+
+AmplificationBasis = Literal["returned_rows", "aggregate_input"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReadQuerySpec:
+    """One already-bound read statement owned by a runtime query module."""
+
+    name: str
+    sql: str
+    params: Any = ()
+    amplification_basis: AmplificationBasis = "returned_rows"
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("query audit name must not be empty")
+        if not self.sql.strip():
+            raise ValueError(f"query audit SQL must not be empty: {self.name}")
+
+
+@dataclass(frozen=True, slots=True)
+class QueryAuditCatalog:
+    """The complete query and public-route manifest supplied by app composition."""
+
+    queries: tuple[ReadQuerySpec, ...]
+    query_routes: dict[str, tuple[str, ...]]
+    no_sql_routes: frozenset[str]
+
+    def __post_init__(self) -> None:
+        names = [query.name for query in self.queries]
+        if len(names) != len(set(names)):
+            raise ValueError("query audit names must be unique")
+
 
 CORE_TABLES = (
     "raw_frames",
@@ -56,7 +89,7 @@ FOREIGN_KEY_CONSTRAINTS = {
         "token_intent_resolutions_intent_id_fkey",
     ),
 }
-HOT_QUERIES: tuple[dict[str, Any], ...] = (
+_POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
         "name": "readiness_schema",
         "sql": "SELECT version_num FROM alembic_version LIMIT 1",
@@ -182,146 +215,6 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
         "params": ("Asset", "audit-missing-target"),
     },
     {
-        "name": "news_feed",
-        "sql": """
-            SELECT stories.story_id
-            FROM news_stories stories
-            JOIN news_items representative
-              ON representative.item_id = stories.representative_item_id
-            ORDER BY stories.importance_score DESC,
-                     stories.last_published_at_ms DESC,
-                     stories.story_id
-            LIMIT 101
-        """,
-        "params": (),
-    },
-    {
-        "name": "news_feed_filtered_facets",
-        "amplification_basis": "aggregate_input",
-        "sql": """
-            WITH current_member_scores AS MATERIALIZED (
-              SELECT members.story_id,
-                     CASE
-                       WHEN jsonb_typeof(current_item.provider_metadata -> 'score') = 'number'
-                         THEN (current_item.provider_metadata ->> 'score')::numeric
-                       ELSE NULL
-                     END AS provider_score
-              FROM news_story_members members
-              CROSS JOIN LATERAL (
-                SELECT items.provider_metadata
-                  FROM news_items items
-                 WHERE items.item_id = members.item_id
-                 OFFSET 0
-              ) current_item
-            ),
-            filtered_stories AS MATERIALIZED (
-              SELECT stories.story_id, stories.facet_facts
-              FROM news_stories stories
-              WHERE EXISTS (
-                SELECT 1
-                FROM current_member_scores scores
-                WHERE scores.story_id = stories.story_id
-                  AND scores.provider_score > 70
-              )
-            ),
-            facet_rows AS (
-              SELECT filtered_stories.story_id,
-                     'source'::text AS facet_kind,
-                     source_value.value AS facet_value,
-                     sources.name AS facet_label
-              FROM filtered_stories
-              CROSS JOIN LATERAL jsonb_array_elements_text(
-                filtered_stories.facet_facts -> 'source_ids'
-              ) AS source_value(value)
-              JOIN news_sources sources ON sources.source_id = source_value.value
-
-              UNION ALL
-
-              SELECT filtered_stories.story_id,
-                     'reporting_origin'::text AS facet_kind,
-                     lower(btrim(origin_value.value)) AS facet_value,
-                     btrim(origin_value.value) AS facet_label
-              FROM filtered_stories
-              CROSS JOIN LATERAL jsonb_array_elements_text(
-                filtered_stories.facet_facts -> 'reporting_origins'
-              ) AS origin_value(value)
-            )
-            SELECT facet_kind,
-                   facet_value,
-                   min(facet_label) AS facet_label,
-                   count(DISTINCT story_id)::integer AS story_count
-            FROM facet_rows
-            WHERE nullif(btrim(facet_value), '') IS NOT NULL
-            GROUP BY facet_kind, facet_value
-            ORDER BY facet_kind, story_count DESC, facet_value
-            LIMIT 101
-        """,
-        "params": (),
-    },
-    {
-        "name": "news_story",
-        "sql": """
-            SELECT stories.story_id
-            FROM news_stories stories
-            JOIN news_sources sources
-              ON sources.source_id = stories.representative_source_id
-            WHERE stories.story_id = %s
-            LIMIT 1
-        """,
-        "params": ("audit-missing-story",),
-    },
-    {
-        "name": "news_story_members",
-        "sql": """
-            SELECT members.item_id
-            FROM news_story_members members
-            JOIN news_items items ON items.item_id = members.item_id
-            JOIN news_sources sources ON sources.source_id = items.source_id
-            WHERE members.story_id = %s
-            ORDER BY items.published_at_ms DESC,
-                     items.item_id
-            LIMIT 101
-        """,
-        "params": ("audit-missing-story",),
-    },
-    {
-        "name": "news_brief",
-        "sql": """
-            SELECT current.slot_at_ms, current.slot_status,
-                   current.next_due_at_ms, current.model_outcome,
-                   current.pointer_action, current.served_payload,
-                   current.updated_at_ms
-              FROM news_brief_current current
-             WHERE current.singleton_key
-             LIMIT 1
-        """,
-        "params": (),
-    },
-    {
-        "name": "news_sources",
-        "sql": """
-            SELECT source_id, source_kind, tier, name,
-                   live_connected, last_recovery_at_ms,
-                   next_fetch_at_ms, claim_lease_expires_at_ms,
-                   last_outcome, last_error
-            FROM news_sources
-            WHERE enabled
-            ORDER BY tier, name, source_id
-            LIMIT 101
-        """,
-        "params": (),
-    },
-    {
-        "name": "news_status",
-        "sql": """
-            SELECT active_story_count AS active_count,
-                   newest_story_at_ms
-            FROM news_projection_summary
-            WHERE singleton_key = 'current'
-        """,
-        "params": (),
-    },
-    {
         "name": "macro_modules_current",
         "sql": """
             SELECT module_id, payload_hash
@@ -340,15 +233,6 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
             LIMIT 1
         """,
         "params": ("rates_fed",),
-    },
-    {
-        "name": "workers_runtime",
-        "sql": """
-            SELECT runtime_id, lifecycle_state, heartbeat_at_ms
-            FROM workers_runtime
-            WHERE singleton_key
-        """,
-        "params": (),
     },
     {
         "name": "provider_gmgn_freshness",
@@ -438,74 +322,25 @@ HOT_QUERIES: tuple[dict[str, Any], ...] = (
 )
 
 
-PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
-    "/readyz": ("readiness_schema",),
-    "/ws": ("persisted_live_after_cursor",),
-    "/api/status": (
-        "readiness_schema",
-        "workers_runtime",
-        "provider_gmgn_freshness",
-        "provider_circuits",
-        "provider_backlogs",
-    ),
-    "/api/recent": ("recent_all", "events_by_ids"),
-    "/api/events/by-ids": ("events_by_ids",),
-    "/api/token-radar": ("token_radar_latest",),
-    "/api/live-market": ("live_market_current",),
-    "/api/search": ("search_v2_lexical", "search_v2_substring"),
-    "/api/search/inspect": (
-        "search_v2_lexical",
-        "search_v2_substring",
-        "token_profile_target",
-    ),
-    "/api/token-case": (
-        "token_profile_target",
-        "target_posts_recent",
-    ),
-    "/api/target-posts": ("target_posts_recent",),
-    "/api/target-social-timeline": ("target_posts_recent",),
-    "/api/news/feed": (
-        "news_feed",
-        "news_feed_filtered_facets",
-    ),
-    "/api/news/stories/{story_id}": ("news_story", "news_story_members"),
-    "/api/news/brief": ("news_brief",),
-    "/api/news/sources": ("news_sources",),
-    "/api/news/status": ("news_status", "news_brief"),
-    "/api/macro/overview": ("macro_modules_current",),
-    "/api/macro/rates-fed": (
-        "macro_module_current",
-        "macro_modules_current",
-    ),
-    "/api/macro/economy-inflation": (
-        "macro_module_current",
-        "macro_modules_current",
-    ),
-    "/api/macro/liquidity-funding": (
-        "macro_module_current",
-        "macro_modules_current",
-    ),
-    "/api/macro/credit": (
-        "macro_module_current",
-        "macro_modules_current",
-    ),
-    "/api/macro/volatility": (
-        "macro_module_current",
-        "macro_modules_current",
-    ),
-    "/api/macro/cross-asset": (
-        "macro_module_current",
-        "macro_modules_current",
-    ),
-}
+def postgres_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
+    """Return platform-owned reads with all clock parameters already bound."""
 
-PUBLIC_NO_SQL_ROUTES = frozenset(
-    {
-        "/healthz",
-        "/metrics",
-        "/api/bootstrap",
-    }
-)
+    search_cutoff_at_ms = int(now_ms) - SEARCH_AUDIT_WINDOW_MS
+    specs: list[ReadQuerySpec] = []
+    for template in _POSTGRES_QUERY_TEMPLATES:
+        params = template["params"]
+        if isinstance(params, dict):
+            params = dict(params)
+            if SEARCH_CUTOFF_AT_MS_PARAM in params:
+                params[SEARCH_CUTOFF_AT_MS_PARAM] = search_cutoff_at_ms
+        specs.append(
+            ReadQuerySpec(
+                name=str(template["name"]),
+                sql=str(template["sql"]),
+                params=params,
+            )
+        )
+    return tuple(specs)
 
 
 class PostgresOperationalAudit:
@@ -613,19 +448,18 @@ class PostgresQueryAudit:
         self,
         conn: Any,
         *,
-        now_ms: int | None = None,
+        catalog: QueryAuditCatalog,
     ):
         self.conn = conn
-        resolved_now_ms = int(now_ms if now_ms is not None else time.time() * 1_000)
-        self.search_cutoff_at_ms = resolved_now_ms - SEARCH_AUDIT_WINDOW_MS
+        self.catalog = catalog
 
     def run(self, *, analyze: bool = False) -> dict[str, Any]:
-        queries = [self._explain(item, analyze=analyze) for item in HOT_QUERIES]
-        audited_names = {str(item["name"]) for item in HOT_QUERIES}
+        queries = [self._explain(query, analyze=analyze) for query in self.catalog.queries]
+        audited_names = {query.name for query in self.catalog.queries}
         missing_query_names = sorted(
             {
                 query_name
-                for query_names in PUBLIC_ROUTE_QUERY_COVERAGE.values()
+                for query_names in self.catalog.query_routes.values()
                 for query_name in query_names
                 if query_name not in audited_names
             }
@@ -640,22 +474,22 @@ class PostgresQueryAudit:
                 "temp_blocks": 0,
             },
             "route_coverage": {
-                "query_routes": PUBLIC_ROUTE_QUERY_COVERAGE,
-                "no_sql_routes": sorted(PUBLIC_NO_SQL_ROUTES),
+                "query_routes": self.catalog.query_routes,
+                "no_sql_routes": sorted(self.catalog.no_sql_routes),
                 "missing_query_names": missing_query_names,
             },
             "queries": queries,
         }
 
-    def _explain(self, item: dict[str, Any], *, analyze: bool) -> dict[str, Any]:
+    def _explain(self, query: ReadQuerySpec, *, analyze: bool) -> dict[str, Any]:
         prefix = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" if analyze else "EXPLAIN (FORMAT JSON)"
         try:
-            rows = self.conn.execute(f"{prefix} {item['sql']}", self._params(item["params"])).fetchall()
+            rows = self.conn.execute(f"{prefix} {query.sql}", query.params).fetchall()
             plan = _json_plan(rows)
             metrics = (
                 _plan_metrics(
                     plan,
-                    amplification_basis=str(item.get("amplification_basis") or "returned_rows"),
+                    amplification_basis=query.amplification_basis,
                 )
                 if analyze
                 else None
@@ -663,7 +497,7 @@ class PostgresQueryAudit:
             violations = _plan_violations(metrics) if metrics is not None else []
             return {
                 "ok": not violations,
-                "name": item["name"],
+                "name": query.name,
                 "plan": plan,
                 "metrics": metrics,
                 "violations": violations,
@@ -671,21 +505,13 @@ class PostgresQueryAudit:
         except Exception as exc:
             return {
                 "ok": False,
-                "name": item["name"],
+                "name": query.name,
                 "error": type(exc).__name__,
                 "detail": str(exc),
                 "plan": [],
                 "metrics": None,
                 "violations": ["explain_failed"],
             }
-
-    def _params(self, params: Any) -> Any:
-        if not isinstance(params, dict):
-            return params
-        bound = dict(params)
-        if SEARCH_CUTOFF_AT_MS_PARAM in bound:
-            bound[SEARCH_CUTOFF_AT_MS_PARAM] = self.search_cutoff_at_ms
-        return bound
 
 
 class ProjectionValidationAudit:

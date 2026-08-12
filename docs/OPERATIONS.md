@@ -721,10 +721,12 @@ queries with JSON `EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated
 large-table sequential scan, any temporary read/write blocks, or read/return
 amplification above 20:1. An empty development database proves only SQL and
 route coverage; production-scale output belongs in the real 30-minute
-acceptance bundle.
+acceptance bundle. Each runtime owner supplies the same bound statement builder
+used by its serving read; the App layer only composes those specs with route
+coverage, so an audit-only SQL approximation is not accepted.
 
 Read/return amplification uses the root result-row count by default. The
-`news_feed_filtered_facets` grouping query explicitly uses the largest actual
+`news_feed_focus_facets` grouping query explicitly uses the largest actual
 input-row count of its aggregate nodes instead, because its bounded public
 result intentionally reduces many matching Story facets into a few counters.
 That query-specific basis does not relax the 20:1 limit, temporary-block gate,
@@ -810,13 +812,32 @@ no dual read/write, compatibility adapter, feature flag, v3
 fallback, episode, frontier, or history table, Gate audit, Stocks route,
 staging runtime, or history import.
 
-Current migration `20260813_0256` adds `news_stories.facet_facts` inside the
+Migration `20260813_0256` adds `news_stories.facet_facts` inside the
 existing nine-table News boundary. Stop Serve and Workers before applying it.
 The migration backfills exact source/origin dimensions from current Story
 members, makes the column required, and clears only the Story projection input
 fingerprint. The next normal Story turn recomputes the new state fingerprints;
 material Items, Story IDs/memberships, Brief state, and Push ledgers remain
 intact.
+
+Current migration `20260813_0257` installs narrow covering and
+partial-expression indexes for membership-first numeric provider-score
+qualification and bounded Push-health reads. It extends the existing
+`news_push_state` singleton with exact lifetime status counts plus latest
+sanitized sent/error events, backfills them from the ledger, and adds typed
+translation clocks to each delivery. Repository transitions update the ledger
+and singleton under one state-first transaction lock. The two 24-hour SLO
+reads select at most 5,001 indexed rows and aggregate only a complete population
+of at most 5,000; overflow is explicit and fail-closed. Feed probes only current
+Story members, keeps dynamic score and published source/origin snapshot
+semantics, and does not use `active`. No new table or second writer is added,
+and the one-second Serve query deadline is unchanged.
+The score index intentionally includes `provider_metadata`: PostgreSQL does
+not otherwise treat the expression key alone as covering this predicate and
+will still perform heap fetches even when the lateral subquery selects a
+constant. Keep that INCLUDE as the measured expression-index visibility
+workaround; assess its deployed `pg_relation_size` against `news_items` before
+considering any broader covering payload.
 
 Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
 `20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to

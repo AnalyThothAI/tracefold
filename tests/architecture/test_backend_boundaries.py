@@ -16,6 +16,9 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # implementation collaborators of the three public News capabilities, not
 # product callers or compatibility interfaces; every new edge must be named.
 ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
+    "src/tracefold/app/query_audit.py": {
+        "tracefold.news.query_specs",
+    },
     "src/tracefold/app/repositories.py": {
         "tracefold.market.radar.snapshot_repository",
         "tracefold.news.repository",

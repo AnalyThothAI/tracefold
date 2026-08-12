@@ -8363,6 +8363,10 @@
             "title": "Over 120S",
             "type": "integer"
           },
+          "sample_complete": {
+            "title": "Sample Complete",
+            "type": "boolean"
+          },
           "slo_met": {
             "anyOf": [
               {
@@ -8379,7 +8383,8 @@
           "completed",
           "latency_p95_ms",
           "over_120s",
-          "slo_met"
+          "slo_met",
+          "sample_complete"
         ],
         "title": "NewsPushDelivery24hData",
         "type": "object"
@@ -8560,6 +8565,10 @@
             ],
             "title": "Latency P95 Ms"
           },
+          "sample_complete": {
+            "title": "Sample Complete",
+            "type": "boolean"
+          },
           "slo_met": {
             "anyOf": [
               {
@@ -8593,7 +8602,8 @@
           "success_ratio",
           "latency_p95_ms",
           "failure_counts",
-          "slo_met"
+          "slo_met",
+          "sample_complete"
         ],
         "title": "NewsPushTranslation24hData",
         "type": "object"

@@ -327,12 +327,19 @@ preserves every material fact. Stop Serve and Workers while an existing
 database crosses this revision; after migration, start only the v4 runtime and
 let its first successful twelve-hour bounded replay publish the single fixed
 four-hour product as `current`. A fresh database migrates directly to head.
-Current head `20260813_0256` adds deterministic `facet_facts` to the existing
+Migration `20260813_0256` adds deterministic `facet_facts` to the existing
 rebuildable `news_stories` read model, backfills it from current Story
 membership, and invalidates the Story input fingerprint for one normal writer
 rebuild. It adds no News table and preserves every Item, Story identity,
 membership, Brief, and Push ledger row. Stop Serve and Workers while crossing
 the revision so no old writer can publish the pre-column shape.
+Current head `20260813_0257` adds narrow covering and partial-expression indexes
+for the membership-first numeric News score read and bounded Push-health
+reads. It extends the existing Push singleton with transactionally maintained
+lifetime counts/latest event clocks and adds typed delivery telemetry for a
+capped 24-hour SLO sample. It adds no table, second writer, or `active` filter,
+and it does not relax Serve deadlines. Stop Serve and Workers while crossing
+the revision, then start both runtimes.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile

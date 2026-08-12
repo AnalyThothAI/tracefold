@@ -134,11 +134,19 @@ function StatusDocument({ status }: { status: NewsStatus }) {
           <StatusFact label="重试中" value={String(push.retry_count)} />
           <StatusFact
             label="24 小时发送时延 P95"
-            value={optionalDuration(push.delivery_24h.latency_p95_ms)}
+            value={
+              push.delivery_24h.sample_complete
+                ? optionalDuration(push.delivery_24h.latency_p95_ms)
+                : "超过采样上限"
+            }
           />
           <StatusFact
             label="24 小时翻译成功"
-            value={`${push.translation_24h.succeeded}/${push.translation_24h.attempted}`}
+            value={
+              push.translation_24h.sample_complete
+                ? `${push.translation_24h.succeeded}/${push.translation_24h.attempted}`
+                : "超过采样上限"
+            }
           />
         </StatusLayer>
       </div>

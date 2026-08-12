@@ -463,9 +463,17 @@ error evidence without exposing secrets or card content. Its nested
 `translation_24h` reports durably fenced v2 attempts, including conservatively
 counted ambiguous interrupted dispatches, successes, success ratio, P95
 latency, failure-code counts, and SLO result; pre-fence skips are not attempts.
+Its exact `sample_complete` flag is `false` when the 24-hour population exceeds
+the bounded read sample; in that state numeric fields are neutral zero/null
+placeholders rather than partial metrics, status includes
+`push_translation_sample_overflow`, and operators must not treat them as the
+whole-window SLO. A complete empty window reports `sample_complete=true`.
 `delivery_24h` reports clean v2 sent/terminal completion count, P95 from the
 persisted numeric-score fact clock, completed samples whose latency exceeded
 120 seconds, and the 90-second P95 SLO result.
+It uses the same exact `sample_complete` semantics and reports
+`push_delivery_sample_overflow` when the bounded sample does not cover the
+whole 24-hour population.
 Deterministic Story
 cards remain readable while Brief or push is unavailable.
 

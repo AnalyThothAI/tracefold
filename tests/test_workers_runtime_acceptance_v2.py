@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tracefold.app.query_audit import query_audit_catalog
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.app.workers_runtime_acceptance_v2 import (
     EVIDENCE_SCHEMA_VERSION,
@@ -23,11 +24,6 @@ from tracefold.app.workers_runtime_collector import (
     _collect_fixed_interval,
     _CollectorDependencies,
     _summarize,
-)
-from tracefold.platform.postgres.postgres_audit import (
-    HOT_QUERIES,
-    PUBLIC_NO_SQL_ROUTES,
-    PUBLIC_ROUTE_QUERY_COVERAGE,
 )
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
@@ -741,6 +737,7 @@ def _resource_rows(kind: str, *, count: int, seconds: float) -> list[dict]:
 
 
 def _query_audit() -> dict:
+    catalog = query_audit_catalog(now_ms=0)
     metrics = {
         "plan_json_valid": True,
         "execution_time_ms": 0.1,
@@ -762,19 +759,19 @@ def _query_audit() -> dict:
             "temp_blocks": 0,
         },
         "route_coverage": {
-            "query_routes": json.loads(json.dumps(PUBLIC_ROUTE_QUERY_COVERAGE)),
-            "no_sql_routes": sorted(PUBLIC_NO_SQL_ROUTES),
+            "query_routes": json.loads(json.dumps(catalog.query_routes)),
+            "no_sql_routes": sorted(catalog.no_sql_routes),
             "missing_query_names": [],
         },
         "queries": [
             {
                 "ok": True,
-                "name": str(query["name"]),
+                "name": query.name,
                 "plan": [{"Plan": {"Node Type": "Result"}}],
                 "metrics": dict(metrics),
                 "violations": [],
             }
-            for query in HOT_QUERIES
+            for query in catalog.queries
         ],
     }
 

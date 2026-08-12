@@ -720,6 +720,10 @@
 | `sent_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `translation_prompt_version` | `TEXT` | True | `None` |
+| `translation_attempted_at_ms` | `BIGINT` | True | `None` |
+| `translation_duration_ms` | `BIGINT` | True | `None` |
+| `translation_fallback_code` | `TEXT` | True | `None` |
 
 ## `news_push_state`
 
@@ -729,6 +733,15 @@
 | `baseline_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `total_count` | `BIGINT` | False | `0` |
+| `suppressed_count` | `BIGINT` | False | `0` |
+| `pending_count` | `BIGINT` | False | `0` |
+| `retry_count` | `BIGINT` | False | `0` |
+| `sent_count` | `BIGINT` | False | `0` |
+| `terminal_count` | `BIGINT` | False | `0` |
+| `latest_sent_at_ms` | `BIGINT` | True | `None` |
+| `latest_error` | `TEXT` | True | `None` |
+| `latest_error_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_sources`
 

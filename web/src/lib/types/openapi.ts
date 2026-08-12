@@ -2979,6 +2979,8 @@ export interface components {
             latency_p95_ms: number | null;
             /** Over 120S */
             over_120s: number;
+            /** Sample Complete */
+            sample_complete: boolean;
             /** Slo Met */
             slo_met: boolean | null;
         };
@@ -3036,6 +3038,8 @@ export interface components {
             };
             /** Latency P95 Ms */
             latency_p95_ms: number | null;
+            /** Sample Complete */
+            sample_complete: boolean;
             /** Slo Met */
             slo_met: boolean | null;
             /** Succeeded */

@@ -567,6 +567,7 @@ class NewsPushTranslation24hData(ExactApiSchema):
     latency_p95_ms: int | None
     failure_counts: dict[str, int]
     slo_met: bool | None
+    sample_complete: bool
 
 
 class NewsPushDelivery24hData(ExactApiSchema):
@@ -574,6 +575,7 @@ class NewsPushDelivery24hData(ExactApiSchema):
     latency_p95_ms: int | None
     over_120s: int
     slo_met: bool | None
+    sample_complete: bool
 
 
 class NewsPushStatusData(ExactApiSchema):

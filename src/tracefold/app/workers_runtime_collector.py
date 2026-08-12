@@ -21,6 +21,7 @@ from psycopg import conninfo
 
 from tracefold.app.database import WORKER_DATABASE_LOCK_TIMEOUT_SECONDS
 from tracefold.app.provider_ownership import gmgn_stream_enabled
+from tracefold.app.query_audit import query_audit_catalog, query_audit_for_connection
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
 from tracefold.market import (
     TOKEN_RADAR_INPUT_BYTE_CAP,
@@ -31,12 +32,6 @@ from tracefold.market import (
 )
 from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
-from tracefold.platform.postgres.postgres_audit import (
-    HOT_QUERIES,
-    PUBLIC_NO_SQL_ROUTES,
-    PUBLIC_ROUTE_QUERY_COVERAGE,
-    PostgresQueryAudit,
-)
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
     with_password_from_file,
@@ -716,7 +711,7 @@ class _ProductionSampler:
             ).fetchone()
             frontier_rows = self._conn.execute(_frontier_snapshot_sql(), {"now_ms": int(now_ms)}).fetchall()
             query_audit = (
-                PostgresQueryAudit(
+                query_audit_for_connection(
                     self._conn,
                     now_ms=now_ms,
                 ).run(analyze=True)
@@ -1029,11 +1024,12 @@ def _validate_query_audit(audit: dict[str, Any]) -> None:
         _nonnegative_float(value, stage=f"postgres_query_audit_threshold:{name}")
 
     coverage = _mapping(audit, "route_coverage", stage="postgres_query_audit_route_coverage")
-    expected_routes = json.loads(json.dumps(PUBLIC_ROUTE_QUERY_COVERAGE, sort_keys=True))
+    catalog = query_audit_catalog(now_ms=0)
+    expected_routes = json.loads(json.dumps(catalog.query_routes, sort_keys=True))
     observed_routes = json.loads(json.dumps(coverage.get("query_routes"), sort_keys=True))
     if observed_routes != expected_routes:
         raise _SampleFailure("postgres_query_audit_route_coverage")
-    if coverage.get("no_sql_routes") != sorted(PUBLIC_NO_SQL_ROUTES):
+    if coverage.get("no_sql_routes") != sorted(catalog.no_sql_routes):
         raise _SampleFailure("postgres_query_audit_no_sql_routes")
     if coverage.get("missing_query_names") != []:
         raise _SampleFailure("postgres_query_audit_route_gap")
@@ -1041,7 +1037,7 @@ def _validate_query_audit(audit: dict[str, Any]) -> None:
     queries = audit.get("queries")
     if not isinstance(queries, list) or not queries:
         raise _SampleFailure("postgres_query_audit_queries")
-    expected_names = {str(item["name"]) for item in HOT_QUERIES}
+    expected_names = {query.name for query in catalog.queries}
     observed_names: set[str] = set()
     for raw in queries:
         if not isinstance(raw, Mapping):

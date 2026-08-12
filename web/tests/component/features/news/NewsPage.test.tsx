@@ -654,6 +654,23 @@ describe("NewsPage", () => {
     expect(within(push!).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("does not present capped 24-hour push samples as complete SLO evidence", async () => {
+    const status = newsStatusFixture();
+    status.layers.push.delivery_24h.sample_complete = false;
+    status.layers.push.translation_24h.sample_complete = false;
+    server.use(
+      http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
+    );
+
+    renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
+
+    const push = (await screen.findByRole("heading", { name: "新闻推送" })).closest("article");
+    expect(push).not.toBeNull();
+    expect(within(push!).getAllByText("超过采样上限")).toHaveLength(2);
+    expect(within(push!).queryByText("30.0 秒")).not.toBeInTheDocument();
+    expect(within(push!).queryByText("1/1")).not.toBeInTheDocument();
+  });
+
   it("renders Sources in exact server page order and loads the next cursor explicitly", async () => {
     const cursors: Array<string | null> = [];
     server.use(

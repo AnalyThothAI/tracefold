@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from tracefold.app.query_audit import query_audit_for_connection
 from tracefold.app.repositories import postgres_connection
 from tracefold.platform.config.settings import load_settings
-from tracefold.platform.postgres.postgres_audit import PostgresOperationalAudit, PostgresQueryAudit
+from tracefold.platform.postgres.postgres_audit import PostgresOperationalAudit
 from tracefold.platform.postgres.postgres_client import (
     local_docker_host_dsn,
     postgres_health_check,
@@ -37,7 +38,7 @@ def handle_db(args: object) -> tuple[int, dict[str, Any]]:
 
     if args.db_command == "query-audit":
         with postgres_connection(settings, role="serve") as conn:
-            audit = PostgresQueryAudit(conn).run(analyze=bool(args.analyze))
+            audit = query_audit_for_connection(conn).run(analyze=bool(args.analyze))
         return (0 if audit.get("ok") else 1), {"ok": bool(audit.get("ok")), "data": audit}
 
     return 2, {"ok": False, "error": f"unknown db command: {args.db_command}"}

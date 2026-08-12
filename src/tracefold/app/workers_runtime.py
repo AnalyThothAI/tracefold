@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from typing import Any, Literal, cast
 from uuid import UUID
 
+from tracefold.platform.postgres.postgres_audit import ReadQuerySpec
+
 WORKERS_RUNTIME_STALE_AFTER_MS = 15_000
 WORKERS_RUNTIME_VERSION = "2"
 
@@ -124,15 +126,21 @@ class WorkersRuntimeRepository:
             raise RuntimeError("workers_runtime_identity_lost")
 
     def read(self) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
+        query = workers_runtime_read_query()
+        row = self.conn.execute(query.sql, query.params).fetchone()
+        return dict(row) if row is not None else None
+
+
+def workers_runtime_read_query() -> ReadQuerySpec:
+    return ReadQuerySpec(
+        name="workers_runtime",
+        sql="""
             SELECT runtime_id::text AS runtime_id, runtime_version,
                    lifecycle_state, started_at_ms, heartbeat_at_ms, fatal_code
               FROM workers_runtime
              WHERE singleton_key
-            """
-        ).fetchone()
-        return dict(row) if row is not None else None
+        """,
+    )
 
 
 def workers_runtime_status(
@@ -207,5 +215,6 @@ __all__ = [
     "FatalCode",
     "LifecycleState",
     "WorkersRuntimeRepository",
+    "workers_runtime_read_query",
     "workers_runtime_status",
 ]

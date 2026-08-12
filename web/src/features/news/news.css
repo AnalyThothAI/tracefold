@@ -100,7 +100,7 @@
   }
 
   .news-related-assets > .news-related-assets-empty {
-    color: var(--text-subtle);
+    color: var(--text-muted);
     font-weight: 500;
   }
 
@@ -147,7 +147,7 @@
   }
 
   .news-notification-detail {
-    color: var(--text-subtle);
+    color: var(--text-muted);
     font-weight: 500;
   }
 

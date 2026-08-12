@@ -1234,6 +1234,23 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
                     now_ms + 4,
                 ),
             )
+            repos.conn.execute(
+                """
+                UPDATE news_push_state
+                   SET total_count = 4,
+                       suppressed_count = 0,
+                       pending_count = 1,
+                       retry_count = 1,
+                       sent_count = 1,
+                       terminal_count = 1,
+                       latest_sent_at_ms = %s,
+                       latest_error = 'news_story_push_delivery_error',
+                       latest_error_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE singleton_key = 'current'
+                """,
+                (now_ms + 3, now_ms + 5, now_ms + 5),
+            )
 
         degraded_response = client.get("/api/news/status", headers=headers)
         settings.news.push.enabled = False
@@ -1258,12 +1275,14 @@ def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_pa
         "latency_p95_ms": None,
         "failure_counts": {},
         "slo_met": None,
+        "sample_complete": True,
     }
     assert warming["layers"]["push"]["delivery_24h"] == {
         "completed": 0,
         "latency_p95_ms": None,
         "over_120s": 0,
         "slo_met": None,
+        "sample_complete": True,
     }
 
     assert unsigned_ready_response.status_code == 200
@@ -1708,6 +1727,10 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
                     UPDATE news_push_deliveries
                        SET status = %s,
                            translation_status = %s,
+                           translation_prompt_version = 'title_zh_v2',
+                           translation_attempted_at_ms = %s,
+                           translation_duration_ms = %s,
+                           translation_fallback_code = %s,
                            next_attempt_at_ms = NULL,
                            sent_at_ms = %s,
                            updated_at_ms = %s,
@@ -1726,6 +1749,9 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
                     (
                         "sent" if index == 1 else "terminal",
                         "translated" if index == 1 else "unavailable",
+                        now_ms - 1_000,
+                        duration_ms,
+                        None if index == 1 else "news_push_translation_rate_limited",
                         now_ms - 500 if index == 1 else None,
                         now_ms - 500,
                         "translated" if index == 1 else "fallback_original",
@@ -1736,6 +1762,21 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
                         story_id,
                     ),
                 )
+            repos.conn.execute(
+                """
+                UPDATE news_push_state
+                   SET total_count = 2,
+                       suppressed_count = 0,
+                       pending_count = 0,
+                       retry_count = 0,
+                       sent_count = 1,
+                       terminal_count = 1,
+                       latest_sent_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE singleton_key = 'current'
+                """,
+                (now_ms - 500, now_ms - 500),
+            )
 
         translation = client.get("/api/news/status", headers=headers).json()["data"]
 
@@ -1748,12 +1789,14 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
         "latency_p95_ms": 3850,
         "failure_counts": {"news_push_translation_rate_limited": 1},
         "slo_met": False,
+        "sample_complete": True,
     }
     assert push["delivery_24h"] == {
         "completed": 2,
         "latency_p95_ms": 129500,
         "over_120s": 2,
         "slo_met": False,
+        "sample_complete": True,
     }
     assert "push_translation_success_slo_breached" in push["reasons"]
     assert "push_translation_latency_slo_breached" in push["reasons"]
@@ -1771,6 +1814,16 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
             WHERE story_id = %s
             """,
             (now_ms + 3_600_000, "1" * 64),
+        )
+        repos.conn.execute(
+            """
+            UPDATE news_push_state
+               SET pending_count = 1,
+                   sent_count = 0,
+                   updated_at_ms = %s
+             WHERE singleton_key = 'current'
+            """,
+            (now_ms,),
         )
     with TestClient(app) as client:
         overdue = client.get(
@@ -2007,6 +2060,38 @@ def test_api_news_feed_priority_search_reporting_origin_and_cursor_filters_are_s
                 headers=headers,
             ),
         )
+        with write_repositories() as repos, repos.transaction():
+            repos.conn.execute(
+                """
+                UPDATE news_items
+                   SET provider_metadata = jsonb_set(
+                         provider_metadata,
+                         '{score}',
+                         '69'::jsonb
+                       ),
+                       provider_score_updated_at_ms = %s
+                 WHERE provider_record_id = 'software'
+                """,
+                (now_ms + 1,),
+            )
+            repos.conn.execute(
+                """
+                UPDATE news_items
+                   SET provider_metadata = jsonb_set(
+                         provider_metadata,
+                         '{score}',
+                         '83'::jsonb
+                       ),
+                       provider_score_updated_at_ms = %s
+                 WHERE provider_record_id = 'threshold'
+                """,
+                (now_ms + 1,),
+            )
+        priority_after_score_update = client.get(
+            "/api/news/feed",
+            params={"provider_score_gt": 70, "sort": "latest"},
+            headers=headers,
+        )
 
     assert complete.status_code == 200
     complete_data = complete.json()["data"]
@@ -2038,6 +2123,17 @@ def test_api_news_feed_priority_search_reporting_origin_and_cursor_filters_are_s
     assert {facet["value"] for facet in priority_data["facets"]["reporting_origins"]} == {
         "bloomberg",
         "reuters",
+    }
+    assert priority_after_score_update.status_code == 200
+    updated_priority = priority_after_score_update.json()["data"]
+    assert [story["provider_evidence"]["provider_metadata"]["score"] for story in updated_priority["stories"]] == [
+        83,
+        71,
+    ]
+    assert {facet["value"] for facet in updated_priority["facets"]["reporting_origins"]} == {
+        "bloomberg",
+        "reuters",
+        "utility times",
     }
 
     expected_policy_title = "Bitcoin reserve policy approved by central bank"

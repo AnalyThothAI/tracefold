@@ -739,6 +739,17 @@ dynamic membership-bounded read, including the short interval after an Item
 expires and before the next atomic Story replacement. Source/origin filters
 and facets bind to that same published Story snapshot, so an Item correction
 cannot mix old facet counts with a new filter identity before replacement.
+`20260813_0257` adds narrow covering and partial-expression indexes used by
+that dynamic numeric score test and bounded Push-health reads. The existing
+`news_push_state` singleton now also carries exact lifetime delivery counts and
+the latest sanitized sent/error events; every ledger transition maintains it
+in the same repository transaction and lock order. Typed translation clocks on
+the ledger support a capped 24-hour row sample aggregated in Python. This adds
+no table or second writer: current membership remains the bounded outer
+relation, score changes are visible immediately, and source/origin values
+remain the published Story snapshot. The score index includes
+`provider_metadata` only because PostgreSQL otherwise heap-fetches for the
+expression predicate; it is a covering-index workaround, not a second score.
 
 ### Macro
 

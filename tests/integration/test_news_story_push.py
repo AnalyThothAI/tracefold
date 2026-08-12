@@ -12,6 +12,7 @@ from tests.postgres_test_utils import connect_postgres_test, reset_postgres_sche
 from tests.support.news import rebuild_news_projection
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.news import push as push_module
+from tracefold.news import query_specs as query_specs_module
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.push import (
     NewsPushDeliveryError,
@@ -92,6 +93,457 @@ def _seed_source(conn: Any) -> NewsRepository:
 
 def _push_health(conn: Any, *, now_ms: int) -> dict[str, Any]:
     return NewsRepository(conn).push_health_snapshot(now_ms=now_ms)
+
+
+def _assert_push_summary_matches_ledger(conn: Any) -> None:
+    state = conn.execute(
+        """
+        SELECT total_count, suppressed_count, pending_count, retry_count,
+               sent_count, terminal_count, latest_sent_at_ms
+          FROM news_push_state
+         WHERE singleton_key = 'current'
+        """
+    ).fetchone()
+    ledger = conn.execute(
+        """
+        SELECT count(*) AS total_count,
+               count(*) FILTER (WHERE status = 'suppressed') AS suppressed_count,
+               count(*) FILTER (
+                 WHERE status IN ('pending_translation', 'pending_delivery')
+               ) AS pending_count,
+               count(*) FILTER (WHERE status = 'retry_wait') AS retry_count,
+               count(*) FILTER (WHERE status = 'sent') AS sent_count,
+               count(*) FILTER (WHERE status = 'terminal') AS terminal_count,
+               max(sent_at_ms) AS latest_sent_at_ms
+          FROM news_push_deliveries
+        """
+    ).fetchone()
+    assert state == ledger
+
+
+def test_push_health_sample_overflow_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = _seed_source(conn)
+        monkeypatch.setattr(query_specs_module, "SLO_SAMPLE_LIMIT", 2)
+        with conn.transaction():
+            repository.initialize_push_baseline(now_ms=BASE_MS - 200_000)
+            for index in range(3):
+                story_id = f"{index + 1:x}" * 64
+                assert repository.insert_push_candidate(
+                    story_id=story_id,
+                    selected_item_id=f"overflow-item-{index}",
+                    provider_score=88,
+                    threshold_observed_at_ms=BASE_MS - 130_000,
+                    source_payload={},
+                    suppressed=False,
+                    now_ms=BASE_MS - 130_000,
+                )
+            conn.execute(
+                """
+                UPDATE news_push_deliveries
+                   SET status = 'sent',
+                       translation_status = 'unavailable',
+                       translation_prompt_version = 'title_zh_v2',
+                       translation_attempted_at_ms = %s + ascii(left(story_id, 1)),
+                       translation_duration_ms = 1_000,
+                       translation_fallback_code = 'news_push_translation_timeout',
+                       delivery_payload = '{}'::jsonb,
+                       payload_fingerprint = repeat('a', 64),
+                       next_attempt_at_ms = NULL,
+                       sent_at_ms = %s + ascii(left(story_id, 1)),
+                       updated_at_ms = %s + ascii(left(story_id, 1))
+                """,
+                (BASE_MS - 1_000, BASE_MS - 500, BASE_MS - 500),
+            )
+            conn.execute(
+                """
+                UPDATE news_push_state
+                   SET total_count = 3,
+                       pending_count = 0,
+                       sent_count = 3,
+                       latest_sent_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE singleton_key = 'current'
+                """,
+                (BASE_MS - 449, BASE_MS),
+            )
+
+        health = repository.push_health_snapshot(now_ms=BASE_MS)
+
+        assert health["status"] == "degraded"
+        assert health["translation_24h"] == {
+            "attempted": 0,
+            "succeeded": 0,
+            "success_ratio": None,
+            "latency_p95_ms": None,
+            "failure_counts": {},
+            "slo_met": None,
+            "sample_complete": False,
+        }
+        assert health["delivery_24h"] == {
+            "completed": 0,
+            "latency_p95_ms": None,
+            "over_120s": 0,
+            "slo_met": None,
+            "sample_complete": False,
+        }
+        public_health = repository.health_snapshot(
+            now_ms=BASE_MS,
+            rss_enabled=False,
+            push_enabled=True,
+            feishu_webhook_url_configured=True,
+        )
+        assert public_health["layers"]["push"]["status"] == "degraded"
+        assert public_health["layers"]["push"]["reasons"] == [
+            "push_translation_sample_overflow",
+            "push_delivery_sample_overflow",
+        ]
+    finally:
+        conn.close()
+
+
+def test_push_candidate_summary_updates_only_for_committed_insertions() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+
+        with conn.transaction():
+            assert repository.insert_push_candidate(
+                story_id="1" * 64,
+                selected_item_id="summary-item-1",
+                provider_score=90,
+                threshold_observed_at_ms=BASE_MS,
+                source_payload={},
+                suppressed=False,
+                now_ms=BASE_MS,
+            )
+        _assert_push_summary_matches_ledger(conn)
+        assert _push_health(conn, now_ms=BASE_MS)["pending_count"] == 1
+
+        with conn.transaction():
+            assert not repository.insert_push_candidate(
+                story_id="1" * 64,
+                selected_item_id="summary-item-1",
+                provider_score=90,
+                threshold_observed_at_ms=BASE_MS,
+                source_payload={},
+                suppressed=False,
+                now_ms=BASE_MS + 1,
+            )
+        _assert_push_summary_matches_ledger(conn)
+
+        with pytest.raises(RuntimeError, match="rollback-summary"), conn.transaction():
+            assert repository.insert_push_candidate(
+                story_id="2" * 64,
+                selected_item_id="summary-item-2",
+                provider_score=90,
+                threshold_observed_at_ms=BASE_MS + 2,
+                source_payload={},
+                suppressed=True,
+                now_ms=BASE_MS + 2,
+            )
+            raise RuntimeError("rollback-summary")
+
+        _assert_push_summary_matches_ledger(conn)
+        assert _push_health(conn, now_ms=BASE_MS + 2)["total_count"] == 1
+    finally:
+        conn.close()
+
+
+def test_initialized_push_baseline_is_a_lock_free_steady_read() -> None:
+    lock_holder = connect_postgres_test(read_only=False)
+    reader = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(lock_holder)
+        repository = NewsRepository(lock_holder)
+        with lock_holder.transaction():
+            assert repository.initialize_push_baseline(now_ms=BASE_MS) == (BASE_MS, True)
+
+        reader.execute("SET lock_timeout = '100ms'")
+        reader.commit()
+        with lock_holder.transaction():
+            lock_holder.execute(
+                """
+                SELECT singleton_key
+                  FROM news_push_state
+                 WHERE singleton_key = 'current'
+                 FOR UPDATE
+                """
+            ).fetchone()
+            assert NewsRepository(reader).initialize_push_baseline(now_ms=BASE_MS + 1) == (BASE_MS, False)
+            reader.commit()
+    finally:
+        reader.close()
+        lock_holder.close()
+
+
+def test_push_summary_tracks_suppress_retry_sent_terminal_and_bulk_transitions() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+
+        def insert(story_char: str, *, now_ms: int) -> str:
+            story_id = story_char * 64
+            assert repository.insert_push_candidate(
+                story_id=story_id,
+                selected_item_id=f"summary-item-{story_char}",
+                provider_score=90,
+                threshold_observed_at_ms=now_ms,
+                source_payload={},
+                suppressed=False,
+                now_ms=now_ms,
+            )
+            return story_id
+
+        def claim(story_id: str, token: str, *, now_ms: int) -> None:
+            assert (
+                repository.claim_push_delivery(
+                    story_id=story_id,
+                    now_ms=now_ms,
+                    max_attempts=6,
+                    lease_owner="summary-test",
+                    lease_token=token,
+                    lease_expires_at_ms=now_ms + 10,
+                )
+                is not None
+            )
+
+        payload = {
+            "presentation": {
+                "prompt_version": "title_zh_v2",
+                "fallback_code": None,
+                "translation_attempted_at_ms": BASE_MS + 2,
+                "translation_duration_ms": 1250,
+            }
+        }
+
+        with conn.transaction():
+            sent_story = insert("3", now_ms=BASE_MS)
+            claim(sent_story, "sent-token", now_ms=BASE_MS + 1)
+            assert (
+                repository.freeze_push_delivery_payload(
+                    story_id=sent_story,
+                    lease_token="sent-token",
+                    translation_status="translated",
+                    delivery_payload=payload,
+                    payload_fingerprint="3" * 64,
+                    now_ms=BASE_MS + 3,
+                )
+                is not None
+            )
+            _assert_push_summary_matches_ledger(conn)
+            assert (
+                repository.start_push_delivery_attempt(
+                    story_id=sent_story,
+                    lease_token="sent-token",
+                    now_ms=BASE_MS + 4,
+                )
+                is not None
+            )
+            assert not repository.complete_push_delivery(
+                story_id=sent_story,
+                lease_token="wrong-token",
+                receipt={},
+                now_ms=BASE_MS + 5,
+            )
+            assert repository.complete_push_delivery(
+                story_id=sent_story,
+                lease_token="sent-token",
+                receipt={},
+                now_ms=BASE_MS + 6,
+            )
+            _assert_push_summary_matches_ledger(conn)
+
+            retry_story = insert("4", now_ms=BASE_MS + 10)
+            claim(retry_story, "retry-token-1", now_ms=BASE_MS + 11)
+            assert (
+                repository.freeze_push_delivery_payload(
+                    story_id=retry_story,
+                    lease_token="retry-token-1",
+                    translation_status="unavailable",
+                    delivery_payload=payload,
+                    payload_fingerprint="4" * 64,
+                    now_ms=BASE_MS + 12,
+                )
+                is not None
+            )
+            assert (
+                repository.start_push_delivery_attempt(
+                    story_id=retry_story,
+                    lease_token="retry-token-1",
+                    now_ms=BASE_MS + 13,
+                )
+                is not None
+            )
+            assert (
+                repository.fail_push_delivery(
+                    story_id=retry_story,
+                    lease_token="retry-token-1",
+                    error_code="feishu_503",
+                    retryable=True,
+                    next_attempt_at_ms=BASE_MS + 20,
+                    max_attempts=6,
+                    now_ms=BASE_MS + 14,
+                )
+                == "retry_wait"
+            )
+            _assert_push_summary_matches_ledger(conn)
+            claim(retry_story, "retry-token-2", now_ms=BASE_MS + 20)
+            assert (
+                repository.start_push_delivery_attempt(
+                    story_id=retry_story,
+                    lease_token="retry-token-2",
+                    now_ms=BASE_MS + 21,
+                )
+                is not None
+            )
+            assert (
+                repository.fail_push_delivery(
+                    story_id=retry_story,
+                    lease_token="retry-token-2",
+                    error_code="Secret URL https://example.test",
+                    retryable=False,
+                    next_attempt_at_ms=BASE_MS + 30,
+                    max_attempts=6,
+                    now_ms=BASE_MS + 22,
+                )
+                == "terminal"
+            )
+            _assert_push_summary_matches_ledger(conn)
+
+            claimed_story = insert("5", now_ms=BASE_MS + 30)
+            claim(claimed_story, "claimed-token", now_ms=BASE_MS + 31)
+            assert repository.suppress_claimed_push_delivery(
+                story_id=claimed_story,
+                lease_token="claimed-token",
+                now_ms=BASE_MS + 32,
+            )
+            _assert_push_summary_matches_ledger(conn)
+
+            prepared_story = insert("6", now_ms=BASE_MS + 40)
+            claim(prepared_story, "prepared-token", now_ms=BASE_MS + 41)
+            assert repository.mark_push_translation_attempted(
+                story_id=prepared_story,
+                lease_token="prepared-token",
+                attempted_at_ms=BASE_MS + 42,
+            )
+            assert repository.suppress_prepared_push_delivery(
+                story_id=prepared_story,
+                lease_token="prepared-token",
+                translation_status="translated",
+                delivery_payload=payload,
+                payload_fingerprint="6" * 64,
+                now_ms=BASE_MS + 43,
+            )
+            _assert_push_summary_matches_ledger(conn)
+
+            unsubmitted_story = insert("7", now_ms=BASE_MS + 50)
+            claim(unsubmitted_story, "unsubmitted-token", now_ms=BASE_MS + 51)
+            assert (
+                repository.freeze_push_delivery_payload(
+                    story_id=unsubmitted_story,
+                    lease_token="unsubmitted-token",
+                    translation_status="not_needed",
+                    delivery_payload=payload,
+                    payload_fingerprint="7" * 64,
+                    now_ms=BASE_MS + 52,
+                )
+                is not None
+            )
+            assert (
+                repository.start_push_delivery_attempt(
+                    story_id=unsubmitted_story,
+                    lease_token="unsubmitted-token",
+                    now_ms=BASE_MS + 53,
+                )
+                is not None
+            )
+            assert repository.suppress_unsubmitted_push_delivery(
+                story_id=unsubmitted_story,
+                lease_token="unsubmitted-token",
+                now_ms=BASE_MS + 54,
+            )
+            _assert_push_summary_matches_ledger(conn)
+
+            render_story = insert("8", now_ms=BASE_MS + 60)
+            claim(render_story, "render-token", now_ms=BASE_MS + 61)
+            assert repository.record_push_render_failure(
+                story_id=render_story,
+                lease_token="render-token",
+                translation_status="not_needed",
+                delivery_payload={"terminal_error": "render"},
+                payload_fingerprint="8" * 64,
+                error_code="news_push_render_failed",
+                now_ms=BASE_MS + 62,
+            )
+            _assert_push_summary_matches_ledger(conn)
+
+            for offset, story_char in enumerate(("9", "a"), start=70):
+                exhausted_story = insert(story_char, now_ms=BASE_MS + offset)
+                token = f"exhausted-token-{story_char}"
+                claim(exhausted_story, token, now_ms=BASE_MS + offset + 1)
+                assert (
+                    repository.freeze_push_delivery_payload(
+                        story_id=exhausted_story,
+                        lease_token=token,
+                        translation_status="not_needed",
+                        delivery_payload=payload,
+                        payload_fingerprint=story_char * 64,
+                        now_ms=BASE_MS + offset + 2,
+                    )
+                    is not None
+                )
+                for attempt in range(6):
+                    assert (
+                        repository.start_push_delivery_attempt(
+                            story_id=exhausted_story,
+                            lease_token=token,
+                            now_ms=BASE_MS + offset + 3 + attempt,
+                        )
+                        is not None
+                    )
+            assert (
+                repository.terminalize_exhausted_push_deliveries(
+                    now_ms=BASE_MS + 100,
+                    max_attempts=6,
+                )
+                == 2
+            )
+            _assert_push_summary_matches_ledger(conn)
+
+        state = _push_health(conn, now_ms=BASE_MS + 100)
+        assert state["total_count"] == 8
+        assert state["suppressed_count"] == 3
+        assert state["pending_count"] == 0
+        assert state["retry_count"] == 0
+        assert state["sent_count"] == 1
+        assert state["terminal_count"] == 4
+        assert state["latest_sent_at_ms"] == BASE_MS + 6
+        assert state["latest_error"] == "delivery_attempt_limit_exhausted"
+        assert state["latest_error_at_ms"] == BASE_MS + 100
+        typed = conn.execute(
+            """
+            SELECT translation_prompt_version, translation_attempted_at_ms,
+                   translation_duration_ms, translation_fallback_code
+              FROM news_push_deliveries
+             WHERE story_id = %s
+            """,
+            (prepared_story,),
+        ).fetchone()
+        assert typed == {
+            "translation_prompt_version": "title_zh_v2",
+            "translation_attempted_at_ms": BASE_MS + 2,
+            "translation_duration_ms": 1250,
+            "translation_fallback_code": None,
+        }
+    finally:
+        conn.close()
 
 
 def test_story_push_contexts_select_numeric_max_then_newest_then_item_id() -> None:
@@ -1071,6 +1523,7 @@ def test_cancelled_translation_dispatch_is_fenced_and_restart_uses_original(
             "latency_p95_ms": None,
             "failure_counts": {"news_push_translation_interrupted_after_dispatch": 1},
             "slo_met": False,
+            "sample_complete": True,
         }
     finally:
         conn.close()
@@ -1142,33 +1595,30 @@ def test_restart_reconcile_releases_an_old_fenced_translation_lease() -> None:
     attempted_at_ms = BASE_MS + 100
     try:
         reset_postgres_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO news_push_deliveries (
-              story_id, selected_item_id, provider_score,
-              threshold_observed_at_ms, source_payload, delivery_payload,
-              payload_fingerprint, translation_status, status,
-              delivery_attempts, next_attempt_at_ms, lease_owner,
-              lease_token, lease_expires_at_ms, receipt, last_error,
-              sent_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (
-              %s, 'old-runtime-item', 88, %s, '{}'::jsonb, NULL,
-              NULL, 'attempted', 'pending_translation',
-              0, %s, 'news_story_push:old-runtime',
-              'old-lease-token', %s, NULL, NULL,
-              NULL, %s, %s
+        repository = NewsRepository(conn)
+        with conn.transaction():
+            assert repository.insert_push_candidate(
+                story_id="a" * 64,
+                selected_item_id="old-runtime-item",
+                provider_score=88,
+                threshold_observed_at_ms=BASE_MS,
+                source_payload={},
+                suppressed=False,
+                now_ms=BASE_MS,
             )
-            """,
-            (
-                "a" * 64,
-                BASE_MS,
-                attempted_at_ms,
-                attempted_at_ms + 60_000,
-                BASE_MS,
-                attempted_at_ms,
-            ),
-        )
-        conn.commit()
+            conn.execute(
+                """
+                UPDATE news_push_deliveries
+                   SET translation_status = 'attempted',
+                       next_attempt_at_ms = %s,
+                       lease_owner = 'news_story_push:old-runtime',
+                       lease_token = 'old-lease-token',
+                       lease_expires_at_ms = %s,
+                       updated_at_ms = %s
+                 WHERE story_id = %s
+                """,
+                (attempted_at_ms, attempted_at_ms + 60_000, attempted_at_ms, "a" * 64),
+            )
         runtime = _runtime(conn, delivery=_Delivery(), runtime_id="new-runtime")
 
         assert asyncio.run(runtime.reconcile(now_ms=attempted_at_ms + 1)) == {

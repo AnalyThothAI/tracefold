@@ -18,6 +18,7 @@ from .models import (
     NEWS_LOCALE,
     NewsBriefSynthesisResult,
 )
+from .query_specs import brief_query
 
 BRIEF_SLOT_MS = 30 * 60 * 1_000
 BRIEF_LEASE_MS = 120 * 1_000
@@ -295,7 +296,8 @@ def get_brief(repository: Any, *, now_ms: int) -> dict[str, Any]:
 
 def _current(conn: Any, *, lock: str | None = None) -> Mapping[str, Any]:
     if lock is None:
-        row = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true").fetchone()
+        query = brief_query()
+        row = conn.execute(query.sql).fetchone()
     elif lock == "UPDATE":
         row = conn.execute("SELECT * FROM news_brief_current WHERE singleton_key = true FOR UPDATE").fetchone()
     else:
