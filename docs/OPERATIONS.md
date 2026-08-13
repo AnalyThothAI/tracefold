@@ -581,7 +581,7 @@ The live News schema is exactly ten tables: `news_sources`, `news_items`,
 
 Diagnose News in this order:
 
-1. `/api/news/status` `realtime`: current WSS state and connect/disconnect
+1. `/api/news/status?view=realtime`: shallow current WSS state and connect/disconnect
    clocks, then one-hour inbound and Story-visible P50/P95;
 2. `/api/news/sources`: last accepted configured trigger, redacted Strategy
    count, official history status, and typed incidents, then any enabled RSS

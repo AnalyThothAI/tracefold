@@ -500,6 +500,16 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
+        /** ApiEnvelope[NewsRealtimeStatusResponseData] */
+        ApiEnvelope_NewsRealtimeStatusResponseData_: {
+            data?: components["schemas"]["NewsRealtimeStatusResponseData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
         /** ApiEnvelope[NewsSourcesData] */
         ApiEnvelope_NewsSourcesData_: {
             data?: components["schemas"]["NewsSourcesData"] | null;
@@ -3122,6 +3132,12 @@ export interface components {
              */
             wss_state: "connected" | "reconnecting" | "unavailable";
         };
+        /** NewsRealtimeStatusResponseData */
+        NewsRealtimeStatusResponseData: {
+            /** Measured At Ms */
+            measured_at_ms: number;
+            realtime: components["schemas"]["NewsRealtimeStatusData"];
+        };
         /** NewsRssStatusData */
         NewsRssStatusData: {
             /** Claimed Source Count */
@@ -4308,7 +4324,9 @@ export interface operations {
     };
     get_news_status_api_news_status_get: {
         parameters: {
-            query?: never;
+            query?: {
+                view?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4321,7 +4339,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NewsStatusData_"];
+                    "application/json": components["schemas"]["ApiEnvelope_NewsStatusData_"] | components["schemas"]["ApiEnvelope_NewsRealtimeStatusResponseData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

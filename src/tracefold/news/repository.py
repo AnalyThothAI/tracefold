@@ -2728,6 +2728,25 @@ class NewsRepository:
 
     # Health -------------------------------------------------------------------
 
+    def realtime_status_snapshot(
+        self,
+        *,
+        now_ms: int,
+        configured_strategy_count: int,
+    ) -> dict[str, Any]:
+        if configured_strategy_count < 0:
+            raise ValueError("news_configured_strategy_count_invalid")
+        opennews_query = query_specs.status_opennews_query()
+        opennews = self.conn.execute(
+            opennews_query.sql,
+            opennews_query.params,
+        ).fetchone()
+        return self._realtime_status_from_opennews(
+            opennews,
+            now_ms=now_ms,
+            configured_strategy_count=configured_strategy_count,
+        )
+
     def health_snapshot(
         self,
         *,
@@ -2754,13 +2773,10 @@ class NewsRepository:
             incidents_query.sql,
             incidents_query.params,
         ).fetchall()
-        inbound_latency = self._realtime_latency_snapshot(
-            query_specs.status_inbound_latency_query(now_ms=now_ms),
+        realtime = self._realtime_status_from_opennews(
+            opennews,
             now_ms=now_ms,
-        )
-        story_visible_latency = self._realtime_latency_snapshot(
-            query_specs.status_story_latency_query(now_ms=now_ms),
-            now_ms=now_ms,
+            configured_strategy_count=configured_strategy_count,
         )
         rss_query = query_specs.status_rss_query()
         rss_rows = self.conn.execute(rss_query.sql, rss_query.params).fetchall()
@@ -2989,28 +3005,43 @@ class NewsRepository:
             "operating_state": operating_state,
             "last_success_at_ms": story_last_success_at_ms,
             "reasons": [f"{name}:{reason}" for name, details in layers.items() for reason in details["reasons"]],
-            "realtime": {
-                "wss_state": (
-                    "unavailable"
-                    if (
-                        opennews_payload is None
-                        or configured_strategy_count == 0
-                        or opennews_payload.get("last_error")
-                        in {"opennews_authentication_failed", "opennews_token_missing"}
-                    )
-                    else "connected"
-                    if bool(opennews_payload["live_connected"])
-                    else "reconnecting"
-                ),
-                "connected_at_ms": (opennews_payload["last_connected_at_ms"] if opennews_payload is not None else None),
-                "disconnected_at_ms": (
-                    opennews_payload["last_disconnected_at_ms"] if opennews_payload is not None else None
-                ),
-                "inbound_latency": inbound_latency,
-                "story_visible_latency": story_visible_latency,
-            },
+            "realtime": realtime,
             "layers": layers,
             "measured_at_ms": now_ms,
+        }
+
+    def _realtime_status_from_opennews(
+        self,
+        opennews: Any,
+        *,
+        now_ms: int,
+        configured_strategy_count: int,
+    ) -> dict[str, Any]:
+        inbound_latency = self._realtime_latency_snapshot(
+            query_specs.status_inbound_latency_query(now_ms=now_ms),
+            now_ms=now_ms,
+        )
+        story_visible_latency = self._realtime_latency_snapshot(
+            query_specs.status_story_latency_query(now_ms=now_ms),
+            now_ms=now_ms,
+        )
+        return {
+            "wss_state": (
+                "unavailable"
+                if (
+                    opennews is None
+                    or configured_strategy_count == 0
+                    or opennews["last_error"]
+                    in {"opennews_authentication_failed", "opennews_token_missing"}
+                )
+                else "connected"
+                if bool(opennews["live_connected"])
+                else "reconnecting"
+            ),
+            "connected_at_ms": opennews["last_connected_at_ms"] if opennews is not None else None,
+            "disconnected_at_ms": opennews["last_disconnected_at_ms"] if opennews is not None else None,
+            "inbound_latency": inbound_latency,
+            "story_visible_latency": story_visible_latency,
         }
 
     def _realtime_latency_snapshot(

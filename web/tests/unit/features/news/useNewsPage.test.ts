@@ -1,4 +1,8 @@
-import { useNewsFeedWithToken, useNewsSourcesWithToken } from "@features/news/useNewsPage";
+import {
+  useNewsFeedWithToken,
+  useNewsRealtimeStatusWithToken,
+  useNewsSourcesWithToken,
+} from "@features/news/useNewsPage";
 import { queryKeys } from "@shared/query/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
@@ -98,6 +102,46 @@ describe("useNewsFeedWithToken", () => {
     expect(
       result.current.data?.pages.flatMap((page) => page.items.map((item) => item.name)),
     ).toEqual(["First", "Second", "Third"]);
+  });
+
+  it("reads only shallow realtime status for the Feed header", async () => {
+    let view: string | null = null;
+    server.use(
+      http.get(/.*\/api\/news\/status$/, ({ request }) => {
+        view = new URL(request.url).searchParams.get("view");
+        return HttpResponse.json({
+          ok: true,
+          data: {
+            measured_at_ms: 1,
+            realtime: {
+              connected_at_ms: 1,
+              disconnected_at_ms: null,
+              inbound_latency: {
+                measured_at_ms: 1,
+                p50_ms: 100,
+                p95_ms: 200,
+                sample_count: 2,
+                window_started_at_ms: 0,
+              },
+              story_visible_latency: {
+                measured_at_ms: 1,
+                p50_ms: 300,
+                p95_ms: 400,
+                sample_count: 2,
+                window_started_at_ms: 0,
+              },
+              wss_state: "connected",
+            },
+          },
+        });
+      }),
+    );
+    const { result } = renderHook(() => useNewsRealtimeStatusWithToken("token"), {
+      wrapper: wrapper(),
+    });
+
+    await waitFor(() => expect(result.current.data?.realtime.wss_state).toBe("connected"));
+    expect(view).toBe("realtime");
   });
 });
 

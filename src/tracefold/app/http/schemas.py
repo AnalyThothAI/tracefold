@@ -660,6 +660,11 @@ class NewsRealtimeStatusData(ExactApiSchema):
     story_visible_latency: NewsRealtimeLatencyData
 
 
+class NewsRealtimeStatusResponseData(ExactApiSchema):
+    realtime: NewsRealtimeStatusData
+    measured_at_ms: int
+
+
 class NewsStatusData(ExactApiSchema):
     status: NewsHealthStatus
     operating_state: Literal["live", "recovering", "stalled"]

@@ -832,6 +832,19 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         detail_response = client.get(f"/api/news/stories/{story_id}", headers=headers)
         brief_response = client.get("/api/news/brief", headers=headers)
         status_response = client.get("/api/news/status", headers=headers)
+        realtime_status_response = client.get(
+            "/api/news/status",
+            params={"view": "realtime"},
+            headers=headers,
+        )
+        unchanged_realtime_status = client.get(
+            "/api/news/status",
+            params={"view": "realtime"},
+            headers={
+                **headers,
+                "If-None-Match": realtime_status_response.headers["etag"],
+            },
+        )
         unchanged_status = client.get(
             "/api/news/status",
             headers={**headers, "If-None-Match": status_response.headers["etag"]},
@@ -981,6 +994,29 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     assert status_layers["ingest"]["opennews"]["source_id"] == "news-opennews"
     assert status_response.headers["etag"].startswith('W/"')
     assert unchanged_status.status_code == 304
+    assert realtime_status_response.status_code == 200
+    realtime_status = realtime_status_response.json()["data"]
+    assert set(realtime_status) == {"realtime", "measured_at_ms"}
+    assert {
+        key: value
+        for key, value in realtime_status["realtime"].items()
+        if key not in {"inbound_latency", "story_visible_latency"}
+    } == {
+        key: value
+        for key, value in status_response.json()["data"]["realtime"].items()
+        if key not in {"inbound_latency", "story_visible_latency"}
+    }
+    for latency_key in ("inbound_latency", "story_visible_latency"):
+        assert {
+            key: value
+            for key, value in realtime_status["realtime"][latency_key].items()
+            if key not in {"measured_at_ms", "window_started_at_ms"}
+        } == {
+            key: value
+            for key, value in status_response.json()["data"]["realtime"][latency_key].items()
+            if key not in {"measured_at_ms", "window_started_at_ms"}
+        }
+    assert unchanged_realtime_status.status_code == 304
     disabled_push = status_layers["push"]
     assert {
         key: disabled_push[key]

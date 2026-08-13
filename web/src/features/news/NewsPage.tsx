@@ -26,7 +26,7 @@ import {
   useNewsBriefWithToken,
   useNewsFeedHistoryWithToken,
   useNewsFeedWithToken,
-  useNewsStatusWithToken,
+  useNewsRealtimeStatusWithToken,
   useNewsStoryWithToken,
 } from "./useNewsPage";
 
@@ -96,7 +96,7 @@ function FeedRoute({ token }: { token: string }) {
     reportingOrigin,
     sort,
   });
-  const statusQuery = useNewsStatusWithToken(token);
+  const statusQuery = useNewsRealtimeStatusWithToken(token);
   const feedIdentity = [mode, q, category ?? "", level ?? "", reportingOrigin ?? "", sort].join(
     "\u001f",
   );
@@ -461,7 +461,7 @@ function NewsInlineStatus({
 }: {
   error: boolean;
   fetching: boolean;
-  status?: NewsStatus;
+  status?: { realtime: NewsStatus["realtime"] };
 }) {
   const readerStatus = readerFacingNewsStatus(error, status);
   const realtime = status?.realtime;
@@ -1335,7 +1335,7 @@ function appendNonDeferredTail(
 
 function readerFacingNewsStatus(
   error: boolean,
-  status: NewsStatus | undefined,
+  status: { realtime: NewsStatus["realtime"] } | undefined,
 ): { label: string; state: "live" | "recovering" | "stalled" } {
   if (error) return { label: "状态暂不可用", state: "stalled" };
   if (!status) return { label: "正在检查 WSS", state: "recovering" };

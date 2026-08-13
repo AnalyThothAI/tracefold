@@ -182,12 +182,16 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   displays `未启用` when the server reports its default-off configuration; zero
   enabled sources is not presented as warming or failure. The Feed
   also renders compact reader-facing News health in its header.
+  That compact header alone requests `/api/news/status?view=realtime` every
+  three seconds; it does not poll the complete Operations document or its
+  24-hour Push diagnostics.
   `/news/sources` reads `/api/news/sources`, preserves its OpenNews-first server
   cursor order across enabled sources, exposes current Strategy/fetch outcome evidence, and never introduces
   client-side source ranking or enablement. The OpenNews inventory card says
   Strategy automatic push rather than displaying its reporting-origin tier as
   an acquisition priority. Reconnect changes current WSS state independently of
-  historical incident recovery. Feed and Status poll every 3 seconds; Brief and
+  historical incident recovery. Feed and its shallow realtime status poll every
+  3 seconds; the Operations Status, Brief, and
   Sources poll every 60 seconds. Feed, Brief, and Status retain ETag
   revalidation and a `304` reuses the cached body.
   There is no archive, revision timeline, read state, favorites, subscriptions,

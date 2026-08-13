@@ -231,6 +231,52 @@
         "title": "ApiEnvelope[NewsFeedData]",
         "type": "object"
       },
+      "ApiEnvelope_NewsRealtimeStatusResponseData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsRealtimeStatusResponseData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsRealtimeStatusResponseData]",
+        "type": "object"
+      },
       "ApiEnvelope_NewsSourcesData_": {
         "additionalProperties": false,
         "properties": {
@@ -8882,6 +8928,24 @@
         "title": "NewsRealtimeStatusData",
         "type": "object"
       },
+      "NewsRealtimeStatusResponseData": {
+        "additionalProperties": false,
+        "properties": {
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "realtime": {
+            "$ref": "#/components/schemas/NewsRealtimeStatusData"
+          }
+        },
+        "required": [
+          "realtime",
+          "measured_at_ms"
+        ],
+        "title": "NewsRealtimeStatusResponseData",
+        "type": "object"
+      },
       "NewsRssStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -12142,16 +12206,47 @@
     "/api/news/status": {
       "get": {
         "operationId": "get_news_status_api_news_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "operations",
+              "pattern": "^(operations|realtime)$",
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NewsStatusData_"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiEnvelope_NewsStatusData_"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiEnvelope_NewsRealtimeStatusResponseData_"
+                    }
+                  ],
+                  "title": "Response Get News Status Api News Status Get"
                 }
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get News Status",

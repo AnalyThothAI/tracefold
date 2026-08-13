@@ -371,6 +371,10 @@ The News public surface is exactly five read-only routes:
   additional evidence; Story health reports only projection clocks, counts, and
   invariant failures. Historical incidents do not turn a currently connected
   WSS red; only unresolved recovery state remains visible in the ledger.
+  `view=realtime` is the shallow reader form of the same route. It returns only
+  `realtime` and its measurement clock, so the three-second Feed poll never runs
+  Story, Brief, Push, incident, or 24-hour delivery diagnostics. Omitting `view`
+  retains the complete Operations document.
 
 `/api/news/feed` and `/api/news/brief` emit an ETag, honor
 `If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.

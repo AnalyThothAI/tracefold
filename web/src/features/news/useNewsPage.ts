@@ -15,6 +15,7 @@ export type BriefPublication = NewsSchemas["NewsBriefPublicationData"];
 export type BriefTopStory = NewsSchemas["NewsBriefTopStoryData"];
 export type NewsBrief = NewsSchemas["NewsBriefData"];
 export type NewsStatus = NewsSchemas["NewsStatusData"];
+export type NewsRealtimeStatus = NewsSchemas["NewsRealtimeStatusResponseData"];
 export type NewsSource = NewsSchemas["NewsSourceData"];
 export type NewsSources = NewsSchemas["NewsSourcesData"];
 
@@ -132,6 +133,22 @@ export const useNewsStatusWithToken = (token: string) =>
       (
         await getApi<NewsStatus>("/api/news/status", {
           etagKey: "news-status",
+          token,
+        })
+      ).data,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+
+export const useNewsRealtimeStatusWithToken = (token: string) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.newsRealtimeStatus(),
+    queryFn: async () =>
+      (
+        await getApi<NewsRealtimeStatus>("/api/news/status", {
+          etagKey: "news-realtime-status",
+          params: { view: "realtime" },
           token,
         })
       ).data,

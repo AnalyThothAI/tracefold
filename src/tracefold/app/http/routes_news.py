@@ -19,6 +19,7 @@ _StoryEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsStoryDetailData]
 _BriefEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsBriefData]
 _SourcesEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsSourcesData]
 _StatusEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsStatusData]
+_RealtimeStatusEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsRealtimeStatusResponseData]
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)
@@ -138,13 +139,32 @@ def get_news_sources(
     return _validated_json(_SourcesEnvelope, {"ok": True, "data": data})
 
 
-@router.get("/news/status", response_model=_StatusEnvelope)
-def get_news_status(request: Request) -> Response:
-    _validate_query_params(request, supported={"token"})
+@router.get("/news/status", response_model=_StatusEnvelope | _RealtimeStatusEnvelope)
+def get_news_status(
+    request: Request,
+    view: Annotated[str, Query(pattern="^(operations|realtime)$")] = "operations",
+) -> Response:
+    _validate_query_params(request, supported={"token", "view"})
     runtime = _authenticated_runtime(request)
     push_settings = runtime.settings.news.push
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
+        if view == "realtime":
+            data = {
+                "realtime": repos.news.realtime_status_snapshot(
+                    now_ms=now_ms,
+                    configured_strategy_count=len(runtime.settings.news.opennews_strategy_ids),
+                ),
+                "measured_at_ms": now_ms,
+            }
+            return _validated_etag_json(
+                _RealtimeStatusEnvelope,
+                {"ok": True, "data": data},
+                data=data,
+                etag_data=_status_etag_basis(data),
+                request=request,
+                weak=True,
+            )
         workers_state, workers_reason = _news_workers_observation(
             repos.conn,
             now_ms=now_ms,
