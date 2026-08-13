@@ -27,7 +27,7 @@ from tracefold.news.projection import NewsProjectionSnapshot
 from tracefold.news.ranking import score_public_cluster
 from tracefold.news.repository import NewsRepository
 from tracefold.news.sources import _PINNED_SOURCE_TIERS, opennews_source
-from tracefold.platform.config.settings import NewsSettings, Settings
+from tracefold.platform.config.settings import NewsPushSettings, NewsSettings, Settings
 
 PINNED_WORLDMONITOR_HEAD = "0e8785c43e6a693990a14181ae0a16066c15fc8c"
 NOW_MS = 1_786_082_400_000
@@ -750,6 +750,211 @@ def _compute_current_public_clusters(repository: NewsRepository, *, now_ms: int)
         )
     )
     return public_clusters
+
+
+def test_scoreless_1019_market_strategy_reaches_brief_and_http_but_not_push(
+    tmp_path: Path,
+) -> None:
+    prepare_postgres_database()
+    title = "BTC open interest surges 3.4% in 3 minutes across major exchanges"
+    frames: list[dict[str, Any]] = []
+    for record_id, source, offset_minutes in (
+        ("oi-1019-binance", "binance", 0),
+        ("oi-1019-okx", "okx", 1),
+    ):
+        frame = _frame(
+            record_id,
+            title,
+            "strategy",
+            offset_minutes,
+            link=None,
+            author=source,
+        )
+        frame["params"].update(
+            {
+                "engineType": "market",
+                "description": '{"open_interest_change":{"value":3.4,"unit":"%"}}',
+                "coins": [{"symbol": "BTC", "market_type": "cex"}],
+                "strategy": {
+                    "id": "1019",
+                    "name": "OI Event Monitor",
+                    "sourceType": "market",
+                },
+            }
+        )
+        frames.append(frame)
+
+    events = tuple(parse_opennews_message(frame, strategy_ids=OPENNEWS_STRATEGY_IDS) for frame in frames)
+    assert all(event is not None and event.entry is not None for event in events)
+    typed_events = tuple(event for event in events if event is not None)
+    assert [event.provider_record_id for event in typed_events] == ["oi-1019-binance", "oi-1019-okx"]
+    assert all(event.observation_kind == "report" for event in typed_events)
+    assert all(event.entry.link is None for event in typed_events)
+    assert [event.entry.reporting_origin for event in typed_events] == ["binance", "okx"]
+    assert all("score" not in event.provider_metadata for event in typed_events)
+    assert all(
+        [strategy["id"] for strategy in event.provider_metadata["strategies"]] == ["1019"] for event in typed_events
+    )
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS - 2)
+            assert repository.initialize_push_baseline(now_ms=NOW_MS - 1) == (NOW_MS - 1, True)
+            written = repository.record_opennews_events(
+                source=source,
+                events=typed_events,
+                observed_at_ms=NOW_MS,
+            )
+            projection = rebuild_news_projection(repository, now_ms=NOW_MS)
+
+        assert written["items_inserted"] == 2
+        assert projection["projection_status"] == "rebuilt"
+        items = conn.execute(
+            """
+            SELECT provider_record_id, canonical_url, provider_metadata
+              FROM news_items
+             ORDER BY provider_record_id
+            """
+        ).fetchall()
+        assert [item["provider_record_id"] for item in items] == ["oi-1019-binance", "oi-1019-okx"]
+        assert all(item["canonical_url"] is None for item in items)
+        assert all("score" not in item["provider_metadata"] for item in items)
+        assert all(item["provider_metadata"]["coins"] == [{"symbol": "BTC", "market_type": "cex"}] for item in items)
+        assert all(
+            [strategy["id"] for strategy in item["provider_metadata"]["strategies"]] == ["1019"] for item in items
+        )
+        story = conn.execute(
+            """
+            SELECT story_id, item_count, source_count
+              FROM news_stories
+            """
+        ).fetchone()
+        assert story is not None
+        assert story["item_count"] == 2
+        assert story["source_count"] == 2
+
+        with conn.transaction():
+            candidate = repository.peek_brief_candidate(now_ms=NOW_MS)
+            assert candidate is not None
+            prepared = repository.prepare_brief_run(
+                slot_at_ms=int(candidate["slot_at_ms"]),
+                lease_owner="oi-1019-acceptance",
+                lease_token="healthy",
+                now_ms=NOW_MS,
+            )
+        assert prepared is not None and not prepared["completed_without_model"]
+        stories = tuple(NewsBriefStory.model_validate(value) for value in prepared["top_stories"])
+        assert len(stories) == 1
+        assert stories[0].primary_title == title
+        assert stories[0].unique_source_count == 2
+
+        raw_brief = json.dumps(
+            {
+                "lead": f"{title} [1].",
+                "lines": [{"n": 1, "text": f"{title} [1]."}],
+            }
+        )
+        requests: list[dict[str, Any]] = []
+
+        def healthy_handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={"model": "fixture-model", "choices": [{"message": {"content": raw_brief}}]},
+            )
+
+        publisher = ProviderChainNewsBriefPublisher(
+            ollama_base_url="https://ollama.test/v1",
+            groq_api_key=None,
+            transport=httpx.MockTransport(healthy_handler),
+        )
+        try:
+            result = publisher.publish(stories, date_iso="2026-08-07")
+        finally:
+            publisher.close()
+        assert len(requests) == 1
+        assert result.brief_kind == "l1"
+        assert result.quality == "ok"
+
+        with conn.transaction():
+            assert repository.start_brief_model(
+                slot_at_ms=int(prepared["claim"]["slot_at_ms"]),
+                lease_owner="oi-1019-acceptance",
+                lease_token="healthy",
+                now_ms=NOW_MS + 1,
+            )
+            publication_id = repository.publish_brief(
+                claim=prepared["claim"],
+                result=result,
+                now_ms=NOW_MS + 2,
+            )
+            push_candidates, next_cursor = repository.story_push_reconcile_page()
+        assert publication_id is not None
+        assert push_candidates == {}
+        assert next_cursor is None
+        assert conn.execute("SELECT count(*) AS count FROM news_push_deliveries").fetchone()["count"] == 0
+
+        settings = Settings(
+            ws_token="secret",
+            news=NewsSettings(
+                opennews_strategy_ids=("1018", "1019"),
+                push=NewsPushSettings(
+                    enabled=True,
+                    feishu_webhook_url=("https://open.feishu.cn/open-apis/bot/v2/hook/oi-1019-acceptance"),
+                ),
+            ),
+            storage=postgres_settings_storage(),
+        )
+        settings.set_config_dir(tmp_path / "app-home")
+        app = create_app(settings=settings)
+        headers = {"Authorization": "Bearer secret"}
+        with TestClient(app) as client:
+            unauthorized = client.get("/api/news/brief")
+            feed = client.get("/api/news/feed", headers=headers)
+            priority_feed = client.get(
+                "/api/news/feed",
+                params={"provider_score_gt": 70},
+                headers=headers,
+            )
+            detail = client.get(
+                f"/api/news/stories/{story['story_id']}",
+                headers=headers,
+            )
+            brief = client.get("/api/news/brief", headers=headers)
+
+        assert unauthorized.status_code == 401
+        assert feed.status_code == 200
+        assert priority_feed.status_code == 200
+        assert detail.status_code == 200
+        assert brief.status_code == 200
+        feed_stories = feed.json()["data"]["stories"]
+        assert len(feed_stories) == 1
+        assert feed_stories[0]["title"] == title
+        assert feed_stories[0]["notification"] == {
+            "eligible": False,
+            "ineligible_reason": "score_threshold",
+            "delivery_state": "not_created",
+        }
+        assert priority_feed.json()["data"]["stories"] == []
+        detail_data = detail.json()["data"]
+        assert detail_data["story_id"] == story["story_id"]
+        assert len(detail_data["members"]) == 2
+        assert {member["provider_record_id"] for member in detail_data["members"]} == {
+            "oi-1019-binance",
+            "oi-1019-okx",
+        }
+        brief_data = brief.json()["data"]
+        assert brief_data["state"] == "current"
+        assert brief_data["publication"]["publication_id"] == publication_id
+        assert brief_data["publication"]["brief_kind"] == "l1"
+        assert brief_data["publication"]["quality"] == "ok"
+        assert brief_data["publication"]["top_stories"][0]["primary_title"] == title
+    finally:
+        conn.close()
 
 
 def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_path: Path) -> None:
