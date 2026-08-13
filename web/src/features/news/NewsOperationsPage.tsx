@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import "./newsOperations.css";
 import { NewsSectionTabs } from "./NewsSectionTabs";
+import { formatNewsLocalTimestamp } from "./newsTime";
 import {
   type NewsSource,
   type NewsStatus,
@@ -73,9 +74,18 @@ function StatusDocument({ status }: { status: NewsStatus }) {
         <StatusLayer title="公开采集" status={ingest.status} reasons={ingest.reasons}>
           {opennews ? (
             <>
+              <StatusFact label="WSS 当前状态" value={wssStateLabel(status.realtime.wss_state)} />
               <StatusFact
-                label="OpenNews Strategy 连接"
-                value={opennews.live_connected ? "正常" : "未连接"}
+                label="WSS 连接时间"
+                value={optionalTime(status.realtime.connected_at_ms)}
+              />
+              <StatusFact
+                label="入站延迟 P95"
+                value={optionalDuration(status.realtime.inbound_latency.p95_ms)}
+              />
+              <StatusFact
+                label="Story 可见 P95"
+                value={optionalDuration(status.realtime.story_visible_latency.p95_ms)}
               />
               <StatusFact
                 label="配置 Strategy"
@@ -90,10 +100,14 @@ function StatusDocument({ status }: { status: NewsStatus }) {
                 value={optionalTime(opennews.last_accepted_strategy_trigger_at_ms)}
               />
               <StatusFact
-                label="不可回放缺口起点"
-                value={optionalTime(opennews.coverage_unknown_since_at_ms)}
+                label="历史校验"
+                value={historyStatusLabel(opennews.strategy_history_status)}
               />
-              <StatusFact label="历史回放" value="不支持" />
+              <StatusFact
+                label="最近历史校验"
+                value={optionalTime(opennews.last_history_check_at_ms)}
+              />
+              <StatusFact label="未结事故" value={String(opennews.unresolved_incident_count)} />
               <StatusFact
                 label="最近批次接收"
                 value={`${opennews.last_items_accepted}/${opennews.last_items_seen}`}
@@ -160,7 +174,29 @@ function StatusDocument({ status }: { status: NewsStatus }) {
           />
         </StatusLayer>
       </div>
+      {opennews?.incidents.length ? <IncidentLedger incidents={opennews.incidents} /> : null}
     </div>
+  );
+}
+
+function IncidentLedger({
+  incidents,
+}: {
+  incidents: NonNullable<NewsStatus["layers"]["ingest"]["opennews"]>["incidents"];
+}) {
+  return (
+    <details className="news-incident-ledger">
+      <summary>历史 WSS 事故 · {incidents.length}</summary>
+      <ol>
+        {incidents.map((incident) => (
+          <li key={incident.incident_id}>
+            <b>{incidentCauseLabel(incident.cause_class)}</b>
+            <span>{absoluteTime(incident.opened_at_ms)}</span>
+            <span>{incidentRecoveryLabel(incident.recovery_status)}</span>
+          </li>
+        ))}
+      </ol>
+    </details>
   );
 }
 
@@ -222,7 +258,7 @@ export function NewsSourcesRoute({ token }: { token: string }) {
       <header className="news-operations-header">
         <div>
           <span className="news-eyebrow">NEWS SOURCES</span>
-          <h1>新闻来源</h1>
+          <h1>公开新闻来源</h1>
           <p>OpenNews 账户 Strategy 自动推送；公共 RSS 覆盖与交叉印证链可由配置启用。</p>
         </div>
         {sources.length ? <span className="news-source-count">已加载 {sources.length}</span> : null}
@@ -292,9 +328,10 @@ function SourceCard({ source }: { source: NewsSource }) {
               value={optionalTime(source.last_accepted_strategy_trigger_at_ms)}
             />
             <StatusFact
-              label="不可回放缺口起点"
-              value={optionalTime(source.coverage_unknown_since_at_ms)}
+              label="Strategy 历史校验"
+              value={historyStatusLabel(source.strategy_history_status)}
             />
+            <StatusFact label="最近校验" value={optionalTime(source.last_history_check_at_ms)} />
           </>
         ) : null}
       </dl>
@@ -305,6 +342,7 @@ function SourceCard({ source }: { source: NewsSource }) {
         </a>
       ) : null}
       {source.last_error ? <p className="news-source-error">{source.last_error}</p> : null}
+      {source.incidents.length ? <IncidentLedger incidents={source.incidents} /> : null}
       {rejectionEntries.length ? (
         <details className="news-source-rejections">
           <summary>最近剔除原因</summary>
@@ -328,10 +366,59 @@ function getSourceState(source: NewsSource): { label: string; state: string } {
   if (source.source_kind === "opennews" && !source.live_connected) {
     return { label: "Strategy 连接异常", state: "degraded" };
   }
-  if (source.source_kind === "opennews" && source.coverage_unknown_since_at_ms != null) {
-    return { label: "历史覆盖未知", state: "degraded" };
-  }
   return { label: "采集正常", state: "ready" };
+}
+
+function wssStateLabel(state: NewsStatus["realtime"]["wss_state"]): string {
+  if (state === "connected") return "已连接";
+  if (state === "reconnecting") return "重连中";
+  return "不可用";
+}
+
+function historyStatusLabel(
+  status: NonNullable<NewsStatus["layers"]["ingest"]["opennews"]>["strategy_history_status"],
+): string {
+  if (status === "available") return "可用";
+  if (status === "partial") return "部分恢复";
+  if (status === "unavailable") return "官方接口不可用";
+  return "待校验";
+}
+
+function incidentCauseLabel(
+  cause: NonNullable<
+    NewsStatus["layers"]["ingest"]["opennews"]
+  >["incidents"][number]["cause_class"],
+): string {
+  const labels: Record<typeof cause, string> = {
+    authentication: "认证失败",
+    buffer_overflow: "本地缓冲溢出",
+    database_backpressure: "数据库背压",
+    network_connect: "网络连接",
+    idle_timeout: "空闲超时",
+    legacy_unknown: "历史原因未知",
+    planned_shutdown: "计划内停机",
+    process_outage: "进程中断",
+    protocol_error: "协议错误",
+    provider_close: "上游关闭",
+    unknown: "未知",
+  };
+  return labels[cause];
+}
+
+function incidentRecoveryLabel(
+  state: NonNullable<
+    NewsStatus["layers"]["ingest"]["opennews"]
+  >["incidents"][number]["recovery_status"],
+): string {
+  const labels: Record<typeof state, string> = {
+    not_required: "无需恢复",
+    partial: "部分恢复",
+    pending: "待恢复",
+    recovered: "已恢复",
+    running: "恢复中",
+    unavailable: "官方历史不可用",
+  };
+  return labels[state];
 }
 
 function operatingStateLabel(state: NewsStatus["operating_state"]): string {
@@ -365,7 +452,7 @@ function optionalTime(value: number | null): string {
 }
 
 function absoluteTime(value: number): string {
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+  return formatNewsLocalTimestamp(value);
 }
 
 function optionalDuration(value: number | null): string {

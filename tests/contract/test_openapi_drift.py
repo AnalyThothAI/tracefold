@@ -210,11 +210,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     }
     assert notification["properties"]["ineligible_reason"]["anyOf"][0]["enum"] == [
         "disabled",
-        "score_threshold",
-        "no_asset",
-        "cl_family_only",
-        "baseline",
-        "stale",
+        "recovery_only",
+        "before_enablement",
     ]
     assert notification["properties"]["delivery_state"]["enum"] == [
         "not_created",

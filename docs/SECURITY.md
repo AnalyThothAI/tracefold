@@ -77,7 +77,10 @@ admitted. A future addition requires an explicit reviewed configuration change.
 The authenticated WSS automatically sends the account owner's
 `strategy.triggered` notifications. Tracefold sends no application subscription
 request and performs no Strategy CRUD, account-page scraping, cookie/session
-extraction, private webpage API call, or ordinary-news REST replay. Strategy
+extraction, private webpage API call, or ordinary-news Search replay. On Worker
+startup and WSS reconnect, the same token may call only the official bounded
+`/open/strategy_list` and `/open/strategy_hits` interfaces to verify the exact
+configured allowlist and repair audited coverage intervals. Strategy
 definitions and provider-side enablement remain account authority. A successful
 handshake proves authentication/connectivity only; it does not prove Strategy
 existence, enablement, delivery completeness, or lossless history.
@@ -88,8 +91,10 @@ provenance union. The full Strategy definition and metrics payload are never
 copied into public data. Provider ratings and provenance are descriptive
 NewsItem metadata after admission and cannot change fact identity, Story
 membership, importance, or Brief ordering. Disconnect, overflow, outage, and
-provider non-delivery are recorded as unknown coverage; reconnect must not
-misrepresent them as recovered or expose secrets while reporting the gap.
+provider non-delivery create sanitized typed incidents with bounded cause,
+close-code, interval, and recovery state. Reconnect restores current WSS health
+but never marks an interval recovered without official Strategy-hit evidence;
+the ledger stores no token, raw exception, payload, or provider reason text.
 
 `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret` are operator-owned secrets. They are reported

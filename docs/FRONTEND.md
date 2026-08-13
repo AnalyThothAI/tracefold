@@ -119,10 +119,9 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   operator-bound product and no reader-personalized or user-adjustable score threshold.
   OpenNews admission is the exact configured account Strategy allowlist; the
   browser neither displays the private Strategy IDs nor reimplements their
-  provider-owned rules. The default
-  `重点` mode requests the current server population with the fixed strict
-  `provider_score_gt=70`, `sort=latest`, and `limit=25`; URL-owned `view=all`
-  exposes the complete population without that threshold. Tracefold importance
+  provider-owned rules. The default `全部` mode requests the complete current
+  server population with `sort=latest` and `limit=25`; only URL-owned
+  `view=focus` adds the fixed strict `provider_score_gt=70`. Tracefold importance
   remains an optional server sort. `/news/brief` renders one whole atomic
   current/LKG snapshot, never publication history or a personalized variant.
   Its server-ordered Top Stories are the primary document; L1 or degraded L2
@@ -141,7 +140,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   affordance that returns to the top.
 
   Feed rows are compact reading cards. Deterministic severity, actual reporting
-  origin, relative time, and independent-origin count provide context. The
+  origin, exact local date/time plus relative time, and independent-origin count provide context. The
   canonical persisted headline is primary; the browser makes no model call.
   Only a valid safe plain-text description is shown, clamped to two lines.
   The backend-selected numeric OpenNews score is the first compact metadata
@@ -174,9 +173,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   remain inside audit disclosures. Linkless evidence remains valid; unavailable
   original-link actions are omitted from the reading layer.
 
-  `/news/status` reads `/api/news/status` and presents the OpenNews Strategy
-  connection, configured/observed counts, last accepted trigger, and durable
-  no-replay coverage-gap boundary
+  `/news/status` reads `/api/news/status` and presents the current OpenNews WSS
+  state, connected/disconnected clocks, inbound and Story-visible P50/P95,
+  configured/observed counts, last accepted trigger, official Strategy-history
+  status, and the typed incident ledger
   before public RSS breadth/corroboration, followed by Story, Brief, Push, and
   translation evidence without creating a second health calculation. RSS
   displays `未启用` when the server reports its default-off configuration; zero
@@ -186,10 +186,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   cursor order across enabled sources, exposes current Strategy/fetch outcome evidence, and never introduces
   client-side source ranking or enablement. The OpenNews inventory card says
   Strategy automatic push rather than displaying its reporting-origin tier as
-  an acquisition priority. A reconnect never labels a prior uncovered interval
-  recovered because the provider publishes no Strategy replay contract. Feed,
-  Brief, Status, and Sources poll every 60 seconds; Feed and
-  Brief retain ETag revalidation and a `304` reuses the cached body.
+  an acquisition priority. Reconnect changes current WSS state independently of
+  historical incident recovery. Feed and Status poll every 3 seconds; Brief and
+  Sources poll every 60 seconds. Feed, Brief, and Status retain ETag
+  revalidation and a `304` reuses the cached body.
   There is no archive, revision timeline, read state, favorites, subscriptions,
   per-Story AI panel, push inbox, notification settings, browser model call, or
   adjustable score threshold.
@@ -325,12 +325,13 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    GMGN `external-res`.
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, the full-height Radar shows its static social-evidence timestamp and independent Item clocks, no filter/Tape/task bar exists, each Case action is reachable, and the final Radar Item is visible without overlap.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the Radar title, labelled market/evidence groups, full-height list, and no-overflow contract remain intact.
-9. At `1920px`, `1366px`, `834px`, and `390px`, verify the News Feed requests
-   latest 25-row pages with strict `provider_score_gt=70` in the default `重点`
-   mode; `全部` removes only that fixed threshold; search and origin filters
+9. At `1920px`, `1366px`, `834px`, and `390px`, verify the default News Feed
+   requests complete latest 25-row pages; explicit `重点` adds only the fixed
+   strict `provider_score_gt=70`; search and origin filters
    survive mode changes and alter server results; canonical-headline rows remain
-   readable; the selected OpenNews score is visible while provider signal,
-   grade, and Push decoration remain absent; Feed health is inline; and Story
+   readable; the selected OpenNews score and signal plus the server-owned Push
+   lifecycle are visible while grade remains absent; exact date/time remains visible;
+   current WSS state and latency are inline; and Story
    audit evidence starts collapsed. On
    `/news/brief`, verify Top Stories stay in exact server order, citation links
    open the matching Story, linkless evidence remains visible, L1/L2 is labelled

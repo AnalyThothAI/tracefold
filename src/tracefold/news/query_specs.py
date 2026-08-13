@@ -10,8 +10,7 @@ from tracefold.platform.postgres.postgres_audit import ReadQuerySpec
 PUBLIC_LIST_LIMIT = 100
 _SLO_WINDOW_MS = 24 * 60 * 60 * 1000
 SLO_SAMPLE_LIMIT = 5_000
-_PUSH_RECONCILE_PAGE_SIZE = 1_000
-_PUSH_RECONCILE_PROBE_LIMIT = _PUSH_RECONCILE_PAGE_SIZE + 1
+_REALTIME_WINDOW_MS = 60 * 60 * 1_000
 
 
 def feed_rows_query(
@@ -209,10 +208,8 @@ def story_push_contexts_query(
                    selected.description,
                    selected.lang,
                    selected.published_at_ms,
-                   selected.eligibility_observed_at_ms,
-                   selected.threshold_observed_at_ms,
-                   selected.provider_score,
-                   state.baseline_at_ms AS push_baseline_at_ms,
+                   selected.live_observed_at_ms,
+                   state.enablement_epoch_at_ms,
                    delivery.status AS push_delivery_status
               FROM requested
               LEFT JOIN LATERAL (
@@ -229,23 +226,37 @@ def story_push_contexts_query(
                      item.description,
                      item.lang,
                      item.published_at_ms,
-                     item.push_eligibility_updated_at_ms AS eligibility_observed_at_ms,
-                     coalesce(
-                       item.provider_score_updated_at_ms,
-                       item.updated_at_ms
-                     ) AS threshold_observed_at_ms,
-                     (item.provider_metadata ->> 'score')::numeric
-                       AS provider_score
+                     live_member.live_observed_at_ms
                 FROM news_stories story
-                JOIN news_story_members member
-                  ON member.story_id = story.story_id
-                JOIN news_items item ON item.item_id = member.item_id
+                LEFT JOIN LATERAL (
+                  SELECT scored_item.item_id
+                    FROM news_story_members scored_membership
+                    JOIN news_items scored_item
+                      ON scored_item.item_id = scored_membership.item_id
+                   WHERE scored_membership.story_id = story.story_id
+                     AND jsonb_typeof(
+                           scored_item.provider_metadata -> 'score'
+                         ) = 'number'
+                   ORDER BY
+                         (scored_item.provider_metadata ->> 'score')::numeric DESC,
+                         scored_item.published_at_ms DESC,
+                         scored_item.item_id ASC
+                   LIMIT 1
+                ) provider_scoring ON true
+                JOIN news_items item
+                  ON item.item_id = coalesce(
+                       provider_scoring.item_id,
+                       story.representative_item_id
+                     )
+                LEFT JOIN LATERAL (
+                  SELECT min(live_item.first_observed_at_ms) AS live_observed_at_ms
+                    FROM news_story_members live_membership
+                    JOIN news_items live_item
+                      ON live_item.item_id = live_membership.item_id
+                   WHERE live_membership.story_id = story.story_id
+                     AND live_item.first_ingest_mode = 'live'
+                ) live_member ON true
                WHERE story.story_id = requested.story_id
-                 AND jsonb_typeof(item.provider_metadata -> 'score') = 'number'
-               ORDER BY (item.provider_metadata ->> 'score')::numeric DESC,
-                        item.published_at_ms DESC,
-                        item.item_id
-               LIMIT 1
               ) selected ON true
               LEFT JOIN news_push_state state
                 ON state.singleton_key = 'current'
@@ -253,17 +264,17 @@ def story_push_contexts_query(
                 SELECT delivery.status
                   FROM (
                     SELECT requested.story_id, 0 AS priority
-                  UNION ALL
-                  SELECT selected_delivery.story_id, 1 AS priority
-                    FROM news_push_deliveries selected_delivery
-                   WHERE selected.item_id IS NOT NULL
-                     AND selected_delivery.selected_item_id = selected.item_id
-                  UNION ALL
-                  SELECT member_delivery.story_id, 2 AS priority
-                    FROM news_story_members ledger_member
-                    JOIN news_push_deliveries member_delivery
-                      ON member_delivery.selected_item_id = ledger_member.item_id
-                   WHERE ledger_member.story_id = requested.story_id
+                    UNION ALL
+                    SELECT selected_delivery.story_id, 1 AS priority
+                      FROM news_push_deliveries selected_delivery
+                     WHERE selected.item_id IS NOT NULL
+                       AND selected_delivery.selected_item_id = selected.item_id
+                    UNION ALL
+                    SELECT member_delivery.story_id, 2 AS priority
+                      FROM news_story_members ledger_member
+                      JOIN news_push_deliveries member_delivery
+                        ON member_delivery.selected_item_id = ledger_member.item_id
+                     WHERE ledger_member.story_id = requested.story_id
                   ) matched
                   JOIN news_push_deliveries delivery
                     ON delivery.story_id = matched.story_id
@@ -275,125 +286,6 @@ def story_push_contexts_query(
              ORDER BY requested.story_id
         """,
         params=(values,),
-    )
-
-
-def story_push_reconcile_page_query() -> ReadQuerySpec:
-    """Read one exact Story-id page for the durable push discovery loop."""
-
-    return ReadQuerySpec(
-        name="news_push_reconcile_page",
-        sql="""
-            WITH push_state AS MATERIALIZED (
-              SELECT baseline_at_ms, reconcile_cursor_story_id
-                FROM news_push_state
-               WHERE singleton_key = 'current'
-            ),
-            page_scan AS MATERIALIZED (
-              SELECT story.story_id,
-                     story.importance_score,
-                     story.item_count,
-                     story.source_count,
-                     story.first_published_at_ms,
-                     story.last_published_at_ms
-                FROM news_stories story
-               WHERE story.story_id > coalesce(
-                       (SELECT reconcile_cursor_story_id FROM push_state),
-                       ''
-                     )
-               ORDER BY story_id
-               LIMIT %s
-            ),
-            page AS MATERIALIZED (
-              SELECT page_scan.*
-                FROM page_scan
-               ORDER BY page_scan.story_id
-               LIMIT %s
-            ),
-            selected AS (
-              SELECT page.story_id,
-                     page.importance_score,
-                     page.item_count,
-                     page.source_count,
-                     page.first_published_at_ms,
-                     page.last_published_at_ms,
-                     evidence.*
-                FROM page
-                JOIN LATERAL (
-                  SELECT item.item_id,
-                         item.canonical_url,
-                         item.provider_metadata,
-                         item.reporting_origin,
-                         item.title,
-                         item.description,
-                         item.lang,
-                         item.published_at_ms,
-                         item.push_eligibility_updated_at_ms AS eligibility_observed_at_ms,
-                         coalesce(
-                           item.provider_score_updated_at_ms,
-                           item.updated_at_ms
-                         ) AS threshold_observed_at_ms,
-                         (item.provider_metadata ->> 'score')::numeric
-                           AS provider_score
-                    FROM news_story_members member
-                    JOIN news_items item ON item.item_id = member.item_id
-                   WHERE member.story_id = page.story_id
-                     AND jsonb_typeof(item.provider_metadata -> 'score') = 'number'
-                   ORDER BY (item.provider_metadata ->> 'score')::numeric DESC,
-                            item.published_at_ms DESC,
-                            item.item_id
-                   LIMIT 1
-                ) evidence ON true
-            )
-            SELECT page.story_id AS page_story_id,
-                   EXISTS (
-                     SELECT 1
-                       FROM page_scan extra
-                       LEFT JOIN page current
-                         ON current.story_id = extra.story_id
-                      WHERE current.story_id IS NULL
-                   ) AS has_more,
-                   selected.importance_score,
-                   selected.item_count,
-                   selected.source_count,
-                   selected.first_published_at_ms,
-                   selected.last_published_at_ms,
-                   selected.item_id,
-                   selected.canonical_url,
-                   selected.provider_metadata,
-                   selected.reporting_origin,
-                   selected.title,
-                   selected.description,
-                   selected.lang,
-                   selected.published_at_ms,
-                   selected.eligibility_observed_at_ms,
-                   selected.threshold_observed_at_ms,
-                   selected.provider_score,
-                   state.baseline_at_ms AS push_baseline_at_ms,
-                   delivery.status AS push_delivery_status
-              FROM page
-              CROSS JOIN push_state state
-              LEFT JOIN selected ON selected.story_id = page.story_id
-              LEFT JOIN LATERAL (
-                SELECT delivery.status
-                  FROM (
-                    SELECT page.story_id, 0 AS priority
-                    UNION ALL
-                    SELECT selected_delivery.story_id, 1 AS priority
-                      FROM news_push_deliveries selected_delivery
-                     WHERE selected.item_id IS NOT NULL
-                       AND selected_delivery.selected_item_id = selected.item_id
-                  ) matched
-                  JOIN news_push_deliveries delivery
-                    ON delivery.story_id = matched.story_id
-                 ORDER BY matched.priority,
-                          delivery.updated_at_ms DESC,
-                          delivery.story_id
-                 LIMIT 1
-              ) delivery ON true
-             ORDER BY page.story_id
-        """,
-        params=(_PUSH_RECONCILE_PROBE_LIMIT, _PUSH_RECONCILE_PAGE_SIZE),
     )
 
 
@@ -485,10 +377,8 @@ def sources_query(
                    s.last_fetch_started_at_ms, s.last_fetch_finished_at_ms,
                    s.live_connected,
                    s.last_connected_at_ms, s.last_disconnected_at_ms,
-                   s.last_overflow_at_ms, s.strategy_coverage_started_at_ms,
-                   s.coverage_unknown_since_at_ms,
                    s.last_accepted_strategy_trigger_at_ms,
-                   false AS replay_supported,
+                   s.strategy_history_status, s.last_history_check_at_ms,
                    jsonb_array_length(s.observed_strategy_provenance)
                      AS observed_strategy_count,
                    s.last_success_at_ms, s.last_http_status,
@@ -511,10 +401,8 @@ def status_opennews_query() -> ReadQuerySpec:
         sql="""
             SELECT source_id, name, live_connected,
                    last_connected_at_ms, last_disconnected_at_ms,
-                   last_overflow_at_ms, strategy_coverage_started_at_ms,
-                   coverage_unknown_since_at_ms,
                    last_accepted_strategy_trigger_at_ms,
-                   false AS replay_supported,
+                   strategy_history_status, last_history_check_at_ms,
                    jsonb_array_length(observed_strategy_provenance)
                      AS observed_strategy_count,
                    last_error, last_outcome, last_success_at_ms,
@@ -525,6 +413,57 @@ def status_opennews_query() -> ReadQuerySpec:
              ORDER BY source_id
              LIMIT 1
         """,
+    )
+
+
+def status_opennews_incidents_query() -> ReadQuerySpec:
+    return ReadQuerySpec(
+        name="news_status_opennews_incidents",
+        sql="""
+            SELECT incident_id, cause_class, opened_at_ms, reconnected_at_ms,
+                   closed_at_ms, planned, close_code, recovery_status,
+                   recovery_from_at_ms, recovery_to_at_ms, recovered_count,
+                   last_error_code
+              FROM news_opennews_incidents
+             ORDER BY opened_at_ms DESC, incident_id DESC
+             LIMIT 50
+        """,
+    )
+
+
+def status_inbound_latency_query(*, now_ms: int) -> ReadQuerySpec:
+    return ReadQuerySpec(
+        name="news_status_inbound_latency",
+        sql="""
+            SELECT first_observed_at_ms - published_at_ms AS latency_ms
+              FROM news_items
+             WHERE source_id = 'news-opennews'
+               AND first_ingest_mode = 'live'
+               AND first_observed_at_ms BETWEEN %s AND %s
+               AND first_observed_at_ms >= published_at_ms
+             ORDER BY first_observed_at_ms DESC, item_id DESC
+             LIMIT %s
+        """,
+        params=(int(now_ms) - _REALTIME_WINDOW_MS, int(now_ms), SLO_SAMPLE_LIMIT + 1),
+    )
+
+
+def status_story_latency_query(*, now_ms: int) -> ReadQuerySpec:
+    return ReadQuerySpec(
+        name="news_status_story_latency",
+        sql="""
+            SELECT story.created_at_ms - min(item.first_observed_at_ms) AS latency_ms
+              FROM news_stories story
+              JOIN news_story_members member ON member.story_id = story.story_id
+              JOIN news_items item ON item.item_id = member.item_id
+             WHERE story.created_at_ms BETWEEN %s AND %s
+               AND item.first_ingest_mode = 'live'
+             GROUP BY story.story_id, story.created_at_ms
+            HAVING story.created_at_ms >= min(item.first_observed_at_ms)
+             ORDER BY story.created_at_ms DESC, story.story_id DESC
+             LIMIT %s
+        """,
+        params=(int(now_ms) - _REALTIME_WINDOW_MS, int(now_ms), SLO_SAMPLE_LIMIT + 1),
     )
 
 
@@ -584,21 +523,6 @@ def push_oldest_due_query() -> ReadQuerySpec:
     )
 
 
-def push_oldest_waiting_query() -> ReadQuerySpec:
-    return ReadQuerySpec(
-        name="news_push_oldest_waiting",
-        sql="""
-            SELECT threshold_observed_at_ms
-              FROM news_push_deliveries
-             WHERE status IN (
-                     'pending_translation', 'pending_delivery', 'retry_wait'
-                   )
-             ORDER BY threshold_observed_at_ms, story_id
-             LIMIT 1
-        """,
-    )
-
-
 def push_translation_samples_query(*, now_ms: int) -> ReadQuerySpec:
     return ReadQuerySpec(
         name="news_push_translation_24h",
@@ -625,7 +549,7 @@ def push_delivery_samples_query(*, now_ms: int) -> ReadQuerySpec:
                        WHEN status = 'sent' THEN sent_at_ms
                        ELSE updated_at_ms
                      END
-                   ) - threshold_observed_at_ms AS latency_ms
+                   ) - live_observed_at_ms AS latency_ms
               FROM news_push_deliveries
              WHERE translation_prompt_version = 'title_zh_v2'
                AND status IN ('sent', 'terminal')
@@ -664,17 +588,18 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             q=None,
         ),
         story_push_contexts_query(story_ids=audit_story_ids),
-        story_push_reconcile_page_query(),
         story_query(story_id="audit-missing-story"),
         story_members_query(story_id="audit-missing-story", limit=100),
         brief_query(),
         sources_query(limit=100),
         status_opennews_query(),
+        status_opennews_incidents_query(),
+        status_inbound_latency_query(now_ms=now_ms),
+        status_story_latency_query(now_ms=now_ms),
         status_rss_query(),
         status_projection_query(),
         push_state_query(),
         push_oldest_due_query(),
-        push_oldest_waiting_query(),
         push_translation_samples_query(now_ms=now_ms),
         push_delivery_samples_query(now_ms=now_ms),
     )
@@ -796,13 +721,15 @@ __all__ = [
     "news_query_specs",
     "push_delivery_samples_query",
     "push_oldest_due_query",
-    "push_oldest_waiting_query",
     "push_state_query",
     "push_translation_samples_query",
     "sources_query",
+    "status_inbound_latency_query",
+    "status_opennews_incidents_query",
     "status_opennews_query",
     "status_projection_query",
     "status_rss_query",
+    "status_story_latency_query",
     "story_members_query",
     "story_push_contexts_query",
     "story_query",

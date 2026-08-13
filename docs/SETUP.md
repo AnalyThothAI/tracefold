@@ -171,36 +171,34 @@ Strategy IDs in the exact configured allowlist, including configured NEWS and
 MARKET/OI events regardless of `engineType`. It does not send
 `news.subscribe`, `strategy.subscribe`, or `strategy.triggered`, does not call
 ordinary `/open/news_search` for recovery, and does not use private webpage APIs.
-A disconnect, queue overflow, process outage, or provider non-delivery creates
-an unknown coverage interval that reconnect cannot erase. RSS provides public
-breadth and independent corroboration; Strategy admission does not change the
-deterministic Story/Brief algorithms.
-A fixed 60-second writer owns the membership-expanded RSS Top-20-per-category
-plus OpenNews physical Story/selection projection,
+A disconnect, queue overflow, or process outage creates a typed incident.
+Reconnect restores current WSS independently; the official authenticated
+Strategy list/hits endpoints perform bounded idempotent incident recovery, while
+partial provider retention stays visible. Search is never used for recovery.
+RSS provides public breadth and independent corroboration; Strategy admission
+does not change the deterministic Story/Brief algorithms.
+A dirty-triggered writer owns the membership-expanded RSS Top-20-per-category
+plus OpenNews physical Story/selection projection. It coalesces accepted-fact
+bursts for one second and retains a five-minute safety pass,
 and the single-capacity native-state model arbiter owns World Brief. On the
 first post-migration start, the Story writer can publish current
 Strategy-admitted OpenNews facts before any RSS attempt. An empty Top Story
 selection is not claimable and does
-not complete or overwrite the current Brief slot; normal 60-second PostgreSQL
-polling makes a later non-empty selection in the same half hour eligible, with
-no wake service or compatibility path.
-Push is a separate News-owned delivery state machine with a code-owned
-2.5-second, 1,000-Story cursor-paged persisted-evidence reconcile: initial
-enablement fences the current local evidence baseline on every page; later strict
-score-greater-than-70 crossings with at least one provider asset symbol, except
-CL-family-only sets, freeze one highest-scored Item and send one optionally
-signed Feishu card containing the selected Item's original OpenNews headline
-plus a compact body with its `关联资产`, provider score, and optional
+not complete or overwrite the current Brief slot; a later dirty Story turn in
+the same half hour makes a non-empty selection eligible.
+Push is a separate News-owned delivery state machine. Initial enablement records
+one no-backfill epoch. The Story writer atomically inserts one outbox row for
+each Story containing a live fact first observed after that epoch. Scoreless,
+assetless, linkless, and CL-labelled Stories remain eligible; recovery-first and
+pre-enablement facts never backfill. The delivery worker sends one optionally
+signed Feishu card containing the representative Story headline plus a compact
+body with any available `关联资产`, provider score, and optional
 original-link button, with durable at-least-once retries. It is not a
 generic Notifications product or item-level analysis path.
-An accepted Strategy trigger may therefore appear in Story while remaining
-ineligible for Focus or Push; scoreless MARKET/OI and exact-score-70 Items still
-face the unchanged strict provider-score `>70`, asset, baseline, and time gates.
-Each complete Push reconcile ring starts no sooner than 25 seconds after the
-prior ring started. Its clock and cursor survive restart, preventing a small
-Story set from being rescanned every few pages without delaying the capped
-10,000-Story ring beyond its nominal 25-second interval when each page remains
-inside the code-owned 2.5-second cadence.
+An accepted Strategy trigger may appear outside explicit Focus when it lacks a
+score above 70, while still creating Story and Push. The due worker never scans
+Stories to discover candidates; it only claims existing transactional outbox
+rows.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 
@@ -330,6 +328,13 @@ incompatible Brief current/LKG state, cancels obsolete pending/retry Push work,
 preserves sent-delivery audit plus Push baseline/dedup evidence, and resets old
 REST-recovery telemetry. Start only the new writer after the exact non-empty
 allowlist is configured; never overlap old and new acquisition.
+Stop Serve and Workers before applying `20260813_0266`. It adds
+`news_opennews_incidents`, replaces legacy coverage columns with official
+Strategy-history status, and marks every OpenNews fact's immutable first ingest
+mode. It removes the Push eligibility clocks/cursor/ring, renames the baseline
+to the enablement epoch, terminalizes incompatible unsent v1 rows, and installs
+the live-only v2 Story outbox contract. After restart, current WSS state and
+latency are independent of incident recovery.
 Token Radar migration `20260810_0249` removed the retired Radar projection
 tables and temporary replay-only schema, then installed the compact singleton.
 It preserved material Events, intents, resolutions, identities, and market
@@ -391,11 +396,11 @@ index while preserving all facts/current payload. Keep Serve and Workers
 stopped while crossing these revisions, then restore only the new single
 writer, observe one bounded cursor wrap, and verify Push latency plus Workers
 heartbeat stability.
-`20260801_0238` adds the News push baseline/delivery ledger. Push remains
+`20260801_0238` historically adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
-explicitly configured; signing remains optional. The first enabled reconcile
-records a no-backfill baseline; the code-owned 15-minute live-alert window also
-prevents a later accepted Strategy update from sending stale articles.
+explicitly configured; signing remains optional. Current migration 0266 uses a
+no-backfill enablement epoch and admits every live Story observed after it,
+without score, asset, or age gates.
 Enable the Macro workers only after the migration is current.
 
 The overview and six typed module reads are persisted-only and never trigger a

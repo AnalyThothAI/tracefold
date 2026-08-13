@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import math
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,8 +13,6 @@ from tracefold.macro import MacroProjectionCandidate
 from tracefold.news import NewsPushReceipt, NewsStoryProjection
 from tracefold.news.projection import NewsProjectionSnapshot
 from tracefold.news.push import NewsStoryPush
-from tracefold.news.query_specs import story_push_reconcile_page_query
-from tracefold.news.story_store import NEWS_STORY_INPUT_ROW_CAP
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -28,24 +25,36 @@ class _WiringDatabase:
         return self.heavy
 
 
-def test_story_projection_and_push_reconcile_have_independent_periodic_samples() -> None:
-    calls: list[tuple[str, int | None]] = []
+def test_story_projection_coalesces_a_dirty_burst_into_one_additional_sample() -> None:
+    async def scenario() -> int:
+        dirty = asyncio.Event()
+        stop = asyncio.Event()
+        projection = NewsStoryProjection(
+            db=object(),
+            heavy_db=object(),
+            cpu=object(),
+            dirty=dirty,
+            debounce_seconds=0.010,
+            safety_seconds=10.0,
+        )
+        samples = 0
 
-    class _Story:
-        async def sample(self) -> None:
-            calls.append(("story", None))
+        async def sample() -> None:
+            nonlocal samples
+            samples += 1
+            if samples == 2:
+                stop.set()
 
-    class _Push:
-        async def reconcile(self, *, now_ms: int) -> dict[str, int]:
-            calls.append(("push", now_ms))
-            return {"inserted": 0}
+        projection.sample = sample  # type: ignore[method-assign]
+        task = asyncio.create_task(projection.run(stop_event=stop))
+        await asyncio.sleep(0)
+        dirty.set()
+        await asyncio.sleep(0.002)
+        dirty.set()
+        await task
+        return samples
 
-    asyncio.run(workers._sample_news_story(news_story=_Story()))  # type: ignore[arg-type]
-    asyncio.run(workers._sample_news_push(news_push=_Push()))  # type: ignore[arg-type]
-
-    assert [name for name, _value in calls] == ["story", "push"]
-    assert calls[1][1] is not None
-    assert workers._NEWS_PUSH_RECONCILE_SECONDS == 2.5
+    assert asyncio.run(scenario()) == 2
 
 
 def test_unchanged_story_sample_refreshes_only_the_projection_clock() -> None:
@@ -70,22 +79,15 @@ def test_unchanged_story_sample_refreshes_only_the_projection_clock() -> None:
     assert operations[1][1] == (snapshot, {})
 
 
-def test_push_reconcile_full_cursor_cycle_has_a_bounded_nominal_cadence() -> None:
-    page_query = story_push_reconcile_page_query()
-    probe_limit, page_size = page_query.params
-
-    assert probe_limit == page_size + 1
-    assert page_size <= 1_000
-    assert math.ceil(NEWS_STORY_INPUT_ROW_CAP / page_size) * workers._NEWS_PUSH_RECONCILE_SECONDS <= 25.0
-
-
 def test_push_periodic_sample_retries_after_database_admission_timeout() -> None:
     class _Push:
         async def reconcile(self, *, now_ms: int) -> dict[str, int]:
             assert now_ms > 0
             raise ResourceAdmissionTimeout("test_news_push_reconcile_admission_timeout")
 
-    asyncio.run(workers._sample_news_push(news_push=_Push()))  # type: ignore[arg-type]
+    push = _Push()
+    with pytest.raises(ResourceAdmissionTimeout):
+        asyncio.run(push.reconcile(now_ms=1))
 
 
 def test_push_due_turn_retries_after_database_admission_timeout() -> None:
@@ -113,14 +115,12 @@ def test_push_due_turn_retries_after_database_admission_timeout() -> None:
     assert asyncio.run(push.turn()) is None
 
 
-def test_worker_root_wires_exactly_one_dedicated_push_reconcile_task() -> None:
+def test_worker_root_has_no_push_reconcile_ring() -> None:
     source = inspect.getsource(workers.run_workers)
 
-    assert source.count('name="news-push-reconcile"') == 1
-    assert source.count("lambda: _sample_news_push") == 1
-    assert "if components.news_push is not None:" in source
-    assert "period_seconds=_NEWS_PUSH_RECONCILE_SECONDS" in source
-    assert "news_push" not in inspect.getsource(workers._sample_news_story)
+    assert 'name="news-push-reconcile"' not in source
+    assert "_NEWS_PUSH_RECONCILE_SECONDS" not in source
+    assert "story_push_reconcile_page" not in source
 
 
 def test_news_push_composition_has_no_llm_or_title_translator_dependency() -> None:

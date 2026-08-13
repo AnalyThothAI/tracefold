@@ -55,7 +55,7 @@ describe("useNewsFeedWithToken", () => {
         }),
       { wrapper: wrapper() },
     );
-    await waitFor(() => expect(result.current.data?.pages[0].stories).toHaveLength(1));
+    await waitFor(() => expect(result.current.data?.stories).toHaveLength(1));
     expect(category).toBe("economic");
     expect(level).toBe("high");
     expect(limit).toBe("25");
@@ -63,7 +63,7 @@ describe("useNewsFeedWithToken", () => {
     expect(reportingOrigin).toBe("reuters");
     expect(providerScoreGt).toBe("70");
     expect(sort).toBe("latest");
-    expect(result.current.data?.pages[0].stories[0].importance_score).toBe(83);
+    expect(result.current.data?.stories[0].importance_score).toBe(83);
   });
 
   it("appends public Sources pages in exact server order", async () => {

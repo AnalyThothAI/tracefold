@@ -179,9 +179,6 @@
   .news-inline-status {
     position: relative;
     z-index: 4;
-  }
-
-  .news-inline-status > summary {
     display: flex;
     gap: 0.55rem;
     align-items: center;
@@ -190,24 +187,18 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: color-mix(in srgb, var(--card) 92%, transparent);
-    cursor: pointer;
-    list-style: none;
   }
 
-  .news-inline-status > summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .news-inline-status > summary > span:last-child {
+  .news-inline-status > span:last-child {
     display: grid;
     gap: 0.12rem;
   }
 
-  .news-inline-status > summary b {
+  .news-inline-status > span:last-child b {
     font-size: 0.75rem;
   }
 
-  .news-inline-status > summary small {
+  .news-inline-status > span:last-child small {
     color: var(--muted-foreground);
     font-size: 0.66rem;
   }
@@ -228,66 +219,6 @@
   .news-inline-status[data-state="stalled"] .news-status-dot {
     background: var(--destructive);
     box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--destructive) 14%, transparent);
-  }
-
-  .news-status-diagnostics {
-    position: absolute;
-    top: calc(100% + 0.4rem);
-    right: 0;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: min(36rem, calc(100vw - 3rem));
-    gap: 0.65rem;
-    padding: 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    background: color-mix(in srgb, var(--popover) 97%, transparent);
-    box-shadow: 0 1rem 2.5rem color-mix(in srgb, black 35%, transparent);
-  }
-
-  .news-status-diagnostics section {
-    min-width: 0;
-    padding: 0.65rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-  }
-
-  .news-status-diagnostics h2 {
-    margin: 0 0 0.5rem;
-    font-size: 0.77rem;
-  }
-
-  .news-status-diagnostics dl {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.4rem;
-    margin: 0;
-  }
-
-  .news-status-diagnostics dl div {
-    min-width: 0;
-  }
-
-  .news-status-diagnostics dt,
-  .news-status-diagnostics p {
-    color: var(--muted-foreground);
-    font-size: 0.65rem;
-  }
-
-  .news-status-diagnostics dd {
-    overflow-wrap: anywhere;
-    margin: 0.18rem 0 0;
-    font: 650 0.7rem var(--font-mono);
-  }
-
-  .news-status-diagnostics p {
-    margin: 0.55rem 0 0;
-    line-height: 1.45;
-  }
-
-  .news-status-warning {
-    grid-column: 1 / -1;
-    color: var(--warning) !important;
   }
 
   .news-view-tabs {

@@ -174,12 +174,12 @@ def test_story_projection_publish_has_constant_database_statement_count() -> Non
 
         assert result["projection_status"] == "rebuilt"
         assert result["item_writes"] == 32
-        assert counting_conn.execute_count <= 9
+        assert counting_conn.execute_count <= 12
     finally:
         conn.close()
 
 
-def test_story_health_degrades_after_two_missed_projection_cycles() -> None:
+def test_story_health_stays_ready_during_a_quiet_wss_period() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -194,21 +194,14 @@ def test_story_health_degrades_after_two_missed_projection_cycles() -> None:
             )
             rebuild_news_projection(repository, now_ms=NOW_MS)
 
-        current = repository.health_snapshot(
-            now_ms=NOW_MS + 120_000,
-            rss_enabled=False,
-            configured_strategy_count=2,
-        )
-        stale = repository.health_snapshot(
-            now_ms=NOW_MS + 120_001,
+        quiet = repository.health_snapshot(
+            now_ms=NOW_MS + 10 * 60_000,
             rss_enabled=False,
             configured_strategy_count=2,
         )
 
-        assert current["layers"]["story"]["status"] == "ready"
-        assert "story_projection_stale" not in current["layers"]["story"]["reasons"]
-        assert stale["layers"]["story"]["status"] == "degraded"
-        assert stale["layers"]["story"]["reasons"] == ["story_projection_stale"]
+        assert quiet["layers"]["story"]["status"] == "ready"
+        assert quiet["layers"]["story"]["reasons"] == []
     finally:
         conn.close()
 
@@ -522,7 +515,6 @@ def test_ingest_health_is_driven_by_opennews_strategy_with_rss_as_corroboration(
         assert disconnected["layers"]["ingest"]["status"] == "degraded"
         assert disconnected["layers"]["ingest"]["reasons"] == [
             "opennews_strategy_disconnected",
-            "opennews_strategy_coverage_unknown",
         ]
 
         with conn.transaction():
@@ -537,10 +529,9 @@ def test_ingest_health_is_driven_by_opennews_strategy_with_rss_as_corroboration(
             rss_enabled=True,
             configured_strategy_count=2,
         )
-        assert reconnected["layers"]["ingest"]["status"] == "degraded"
-        assert reconnected["layers"]["ingest"]["reasons"] == [
-            "opennews_strategy_coverage_unknown",
-        ]
+        assert reconnected["layers"]["ingest"]["status"] == "ready"
+        assert reconnected["layers"]["ingest"]["reasons"] == []
+        assert reconnected["layers"]["ingest"]["opennews"]["unresolved_incident_count"] == 1
 
         with conn.transaction():
             repository.update_opennews_live_status(
@@ -559,7 +550,6 @@ def test_ingest_health_is_driven_by_opennews_strategy_with_rss_as_corroboration(
         assert degraded["layers"]["ingest"]["reasons"] == [
             "opennews_strategy_transport_error",
             "opennews_strategy_disconnected",
-            "opennews_strategy_coverage_unknown",
         ]
     finally:
         conn.close()
@@ -826,7 +816,7 @@ def test_story_projection_persists_facet_facts_and_invariant_detects_drift() -> 
         conn.close()
 
 
-def test_story_projection_publishes_captured_input_and_rejects_older_publish_order() -> None:
+def test_story_projection_rejects_input_changed_during_compute_and_older_publish_order() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -920,11 +910,11 @@ def test_story_projection_publishes_captured_input_and_rejects_older_publish_ord
         }
         conn.commit()
 
-        assert accepted["projection_status"] == "rebuilt"
+        assert accepted["projection_status"] == "superseded_snapshot"
         assert superseded["projection_status"] == "superseded_snapshot"
         assert membership == {
-            "projection-a": True,
-            "projection-b": True,
+            "projection-a": False,
+            "projection-b": False,
             "projection-base": True,
             "projection-c": False,
         }

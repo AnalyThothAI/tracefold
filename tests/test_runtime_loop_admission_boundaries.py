@@ -803,7 +803,7 @@ def test_macro_malformed_success_json_is_published_as_a_source_failure() -> None
 
 
 def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_claim() -> None:
-    payload = {"schema_version": "news_story_push_v1", "story_id": "story-1"}
+    payload = {"schema_version": "news_story_push_v2", "story_id": "story-1"}
 
     class _Database:
         def __init__(self) -> None:
@@ -821,16 +821,6 @@ def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_
                     },
                     "delivery_payload": payload,
                     "payload_fingerprint": _payload_fingerprint(payload),
-                    "push_baseline_at_ms": 0,
-                }
-            if operation_name == "news_story_push_current_eligibility":
-                return {
-                    "provider_score": 90,
-                    "provider_metadata": {
-                        "coins": [{"symbol": "BTC", "market_type": "spot"}],
-                    },
-                    "published_at_ms": 9_000_000_000_000,
-                    "eligibility_observed_at_ms": 1,
                 }
             if operation_name == "news_story_push_start_delivery":
                 return {"delivery_attempts": 1}
@@ -854,75 +844,13 @@ def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_
     assert asyncio.run(push._execute_story("story-1", now_ms=1_000)) is True
     assert database.operations == [
         "news_story_push_claim",
-        "news_story_push_current_eligibility",
         "news_story_push_start_delivery",
-        "news_story_push_current_eligibility",
     ]
     assert len(failures) == 1
     error = failures[0]["error"]
     assert isinstance(error, NewsPushDeliveryError)
     assert error.code == "news_story_push_delivery_timeout"
     assert error.retryable is True
-
-
-def test_news_push_database_overrun_before_delivery_submit_is_not_counted_as_delivery_attempt_failure() -> None:
-    payload = {"schema_version": "news_story_push_v1", "story_id": "story-1"}
-    database_overrun = ResourceOperationOverrun(
-        capability=ResourceCapability.DATABASE_BUSINESS,
-        operation_name="news_story_push_current_eligibility",
-    )
-
-    class _Database:
-        def __init__(self) -> None:
-            self.eligibility_reads = 0
-
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            if operation_name == "news_story_push_claim":
-                return {
-                    "selected_item_id": "item-1",
-                    "source_payload": {"provider_evidence": {"published_at_ms": 9_000_000_000_000}},
-                    "delivery_payload": payload,
-                    "payload_fingerprint": _payload_fingerprint(payload),
-                    "push_baseline_at_ms": 0,
-                }
-            if operation_name == "news_story_push_current_eligibility":
-                self.eligibility_reads += 1
-                if self.eligibility_reads == 2:
-                    raise database_overrun
-                return {
-                    "provider_score": 90,
-                    "provider_metadata": {"coins": [{"symbol": "BTC", "market_type": "spot"}]},
-                    "published_at_ms": 9_000_000_000_000,
-                    "eligibility_observed_at_ms": 1,
-                }
-            if operation_name == "news_story_push_start_delivery":
-                return {"delivery_attempts": 1}
-            raise AssertionError(operation_name)
-
-    class _BeforeSubmitFiniteOperations:
-        async def run(self, _operation_name, _function, /, *_args, **kwargs):
-            await kwargs["before_submit"]()
-            raise AssertionError("delivery must not submit after the database fence overruns")
-
-    push = NewsStoryPush(
-        db=_Database(),
-        finite_operations=_BeforeSubmitFiniteOperations(),
-        delivery=SimpleNamespace(deliver=lambda *_args, **_kwargs: None),
-        runtime_id="runtime",
-    )
-    failures: list[dict[str, object]] = []
-
-    async def record_failure(**kwargs):
-        failures.append(kwargs)
-        return "retry"
-
-    push._record_delivery_failure = record_failure  # type: ignore[method-assign]
-
-    with pytest.raises(ResourceOperationOverrun) as caught:
-        asyncio.run(push._execute_story("story-1", now_ms=1_000))
-
-    assert caught.value is database_overrun
-    assert failures == []
 
 
 @pytest.mark.parametrize(

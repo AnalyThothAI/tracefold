@@ -98,25 +98,18 @@ non-Chinese title it sends only that title in at most one request to the
 configured direct DeepSeek provider and never switches providers or retries. After
 resource admission, a durable `attempted` fence is committed immediately before
 submission. If the process stops before the outcome is frozen, recovery sends
-the original-title fallback (or suppresses it when stale) without another model
+the original-title fallback without another model
 request; this uncertain dispatch is conservatively counted as an interrupted
 attempt. The
 Feishu JSON 2.0 card uses a valid Chinese translation as its plain-text header
 and shows the original visibly in the body. Chinese input bypasses translation;
-failure or overlong input uses the original header and a visible fallback note. Its
-live-alert admission requires both the selected Item's provider article clock
-and its dedicated provider score/assets eligibility-evidence clock to be newer than the
-first-enable baseline and the article to be no more than 15 minutes old; this
-prevents a future-skewed provider clock from replaying baseline evidence. Stale late-arriving data is
-recorded as suppressed and is never sent. Every frozen retry rechecks that age
-immediately before network submission and becomes suppressed once the deadline
-passes. The selected Item must also contain at least one non-empty
-provider-labelled asset symbol; a normalized symbol set contained entirely in
-`CL` and `XYZ-CL` is excluded as CL-family-only noise. Mixed sets such as `CL`
-plus `BTC` remain eligible. This asset qualification is Push-only and does not
-hide the Story from News reads. Its compact body shows only the selected
-highest-score Item's OpenNews asset symbols and provider score under the
-generic `关联资产` label. Asset symbols preserve provider order after
+failure or overlong input uses the original header and a visible fallback note.
+Push admission requires only a live OpenNews fact first observed after the
+current enablement epoch. Recovery-first or pre-enablement facts never backfill.
+Provider score, assets, CL-family labels, and publication age are optional
+presentation evidence, not gates. Its compact body shows the representative
+Item's available OpenNews asset symbols and provider score under the generic
+`关联资产` label. Asset symbols preserve provider order after
 case-insensitive deduplication. A canonical
 HTTP(S) Item URL adds one `查看原文` button; a missing URL omits the button. The
 card has no subtitle, summary, signal, grade, Story score, source, or publication
@@ -320,7 +313,8 @@ The News public surface is exactly five read-only routes:
 
   Each Story carries nullable `provider_evidence`, selected by the backend from
   the member with the maximum numeric OpenNews provider score and deterministic
-  publication-time/Item-ID ties. It binds that Item ID, URL, and bounded
+  publication-time/Item-ID ties, or from the representative Item when no member
+  has a numeric score. It binds that Item ID, URL, and bounded
   provider metadata together. Public provider metadata exposes the upstream
   labels as `assets`; it never exposes the provider's misleadingly named raw
   `coins` field. An asset is a provider label and may name crypto, an equity,
@@ -329,15 +323,15 @@ The News public surface is exactly five read-only routes:
   reorder them.
   Each Story carries an exact `notification` object. `eligible` is the current
   Story Push qualification, and `ineligible_reason` is null when eligible or
-  exactly `disabled|score_threshold|no_asset|cl_family_only|baseline|stale`.
-  The reason precedence is score threshold, asset presence, CL-family-only
-  noise, runtime enablement, durable first-enable baseline, then the 15-minute
-  Article deadline; an Article exactly 15 minutes old is still eligible.
+  exactly `disabled|recovery_only|before_enablement`. Push admits every Story
+  containing a first-live OpenNews fact observed at or after the current
+  enablement epoch. Provider score, assets, labels, publication time, Brief,
+  and translation are not admission gates; recovery-first facts never push.
   `delivery_state` is independently and exclusively derived from the durable
   ledger as `not_created|pending|sent|suppressed|failed`. Thus an ineligible
   Story may still be `sent`, `suppressed`, `failed`, or `pending`; a later
-  score change, missing current provider evidence, expiry, or disabled runtime
-  never erases a historical delivery fact. Current membership also resolves
+  later Story or configuration change never erases a historical delivery fact.
+  Current membership also resolves
   the existing selected-Item ledger after a Story-ID change. The object is a
   read-time Story Push projection, not a generic Notifications product, and
   the browser does not reproduce its policy.
@@ -359,21 +353,24 @@ The News public surface is exactly five read-only routes:
 - `GET /api/news/sources` returns operator-bound OpenNews first, followed by the
   enabled code-owned public RSS breadth/corroboration sources, with source kind, feed
   schedule/claim state, latest outcome, bounded rejection/item counts, and
-  OpenNews connection, accepted-trigger, and unknown-coverage status. Its opaque
+  OpenNews connection, accepted-trigger, Strategy-history status, and recent
+  typed incident ledger. Its opaque
   cursor is bound to that server order. Configured Strategy IDs are never listed.
 - `GET /api/news/status` derives warming/ready/degraded News health from
   PostgreSQL source, Story-invariant, public Brief, and outbound push state. It also
   exposes the operator-facing `live`, `recovering`, or `stalled` state and the
   last successfully verified Story-closure clock. Ingest health is driven by the
-  OpenNews Strategy lane and reports current WSS connected/disconnected, last
+  OpenNews Strategy lane and reports current WSS
+  `connected|reconnecting|unavailable`, last
   accepted configured trigger, configured Strategy count/boolean, bounded
-  observed Strategy names/types, last disconnect/overflow, uncovered-gap start,
-  and explicit no-replay/coverage-unknown state. A reconnect clears a current
-  transport error but never erases a prior unknown interval. RSS
+  observed Strategy names/types, last connect/disconnect, official history
+  check, and unresolved incidents. It separately reports one-hour P50/P95
+  provider-to-ingest and provider-to-Story-visible latency. Reconnect clears a
+  current transport error; incident recovery remains independently auditable. RSS
   breadth/corroboration enablement plus totals/success/failure/claims remain
   additional evidence; Story health reports only projection clocks, counts, and
-  invariant failures. The overall `recovering` label denotes a non-ready product
-  layer; it never claims that OpenNews history is being replayed or a gap closed.
+  invariant failures. Historical incidents do not turn a currently connected
+  WSS red; only unresolved recovery state remains visible in the ledger.
 
 `/api/news/feed` and `/api/news/brief` emit an ETag, honor
 `If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.
@@ -381,8 +378,9 @@ Every read is PostgreSQL-only: it never fetches a source, calls a model,
 reclusters, or repairs state.
 
 The React `/news` primary reading modes are public Feed plus Brief, alongside
-the Status and Sources evidence pages. The default `重点` Feed uses the fixed
-strict `provider_score_gt=70`; URL-owned `view=all` removes that read filter.
+the Status and Sources evidence pages. The default Feed is the complete Story
+population; only explicit URL-owned `view=focus` applies fixed strict
+`provider_score_gt=70`.
 Both keep server order, and neither adds personalization or a user-adjustable
 threshold.
 
@@ -415,12 +413,10 @@ Different event IDs remain different material facts.
 `news.update`, `news.ai_update`, acknowledgements, malformed frames, and
 unconfigured Strategy frames are discarded. Provider
 metadata is descriptive and does not affect Story identity, classification,
-importance, Feed ordering, or Brief. A numeric provider score may qualify the
-already projected Story for a read-time `provider_score_gt` filter or the
-separate outbound push state machine; neither changes the materialized Story
-population. The timestamp at which the current numeric score value changed is
-persisted separately from Story-owned
-`updated_at_ms` and becomes the delivery ledger's SLO clock. Story identity is
+importance, Feed ordering, Brief, or Push admission. A numeric provider score
+may qualify the already projected Story only for a read-time
+`provider_score_gt` filter; it does not change the materialized Story
+population. Story identity is
 the full SHA-256 of the earliest normalized title in the selected physical
 RSS/OpenNews component using WorldMonitor-compatible identity.
 Story IDs identify the exact shared lexical components; `canonical_key` keeps
@@ -495,8 +491,9 @@ compatibility reader.
 
 `/api/news/status` exposes four independent News health layers: `ingest`,
 `story`, `brief`, and `push`. Brief reports the same public state, current
-slot/publication identity, and bounded latest-run telemetry. Push reports
-disabled/configured, baseline,
+slot/publication identity, and bounded latest-run telemetry. Its top-level
+`realtime` object reports current WSS state plus one-hour inbound and
+Story-visible latency samples. Push reports disabled/configured, enablement epoch,
 pending/retry/terminal counts, latest explicit delivery, and bounded sanitized
 error evidence without exposing secrets or card content. Its nested
 `translation_24h` reports durably fenced v2 attempts, including conservatively
@@ -508,7 +505,7 @@ placeholders rather than partial metrics, status includes
 `push_translation_sample_overflow`, and operators must not treat them as the
 whole-window SLO. A complete empty window reports `sample_complete=true`.
 `delivery_24h` reports clean v2 sent/terminal completion count, P95 from the
-persisted numeric-score fact clock, completed samples whose latency exceeded
+persisted first-live observation clock, completed samples whose latency exceeded
 120 seconds, and the 90-second P95 SLO result.
 It uses the same exact `sample_complete` semantics and reports
 `push_delivery_sample_overflow` when the bounded sample does not cover the
@@ -528,14 +525,16 @@ nested Strategy ID in `news.opennews_strategy_ids`. Matching NEWS, MARKET, meme,
 and listing frames share the same path; `engineType` does not exclude an
 allowlisted Strategy.
 
-There is no ordinary `/open/news_search` production call, Strategy-history REST
-pull, cursor, replay, or disconnect backfill. Public advanced news search is
-filtered ordinary news search and cannot reproduce Strategy trigger history,
-especially MARKET/OI events. A disconnect, queue overflow, process outage, or
-provider-side non-delivery creates a durable unknown-coverage interval. A later
-handshake or trigger may restore current transport/fact freshness but cannot
-rename that interval recovered. A successful handshake also does not prove that
-configured Strategies exist, remain enabled, or will trigger.
+There is no ordinary `/open/news_search` production call. Public advanced News
+Search is filtered ordinary news search and cannot reproduce Strategy trigger
+history, especially MARKET/OI events. Disconnect, queue overflow, and process
+outage create typed incident intervals. After reconnect, Tracefold verifies the
+exact allowlist through authenticated `/open/strategy_list` and reads bounded
+pages from `/open/strategy_hits` for each incident interval with a fixed overlap.
+Recovered writes are idempotent and marked `first_ingest_mode=recovery`; they
+can repair Story/Brief but cannot push. Missing endpoints, provider retention,
+or request failures remain explicit as partial/unavailable rather than being
+called recovered.
 
 The sole RSS switch is `news.rss_enabled`; it defaults to `false`, and only
 `true` schedules the exact code-owned public RSS breadth/corroboration catalog.
@@ -720,9 +719,14 @@ preserves immutable sent-delivery audit plus Push baseline/dedup evidence, and
 replaces obsolete recovery telemetry with unknown-coverage state. It has no
 dual writer or compatibility mode. `20260801_0238` adds the News push baseline
 and delivery ledger.
-Applying these migrations does not send a message; delivery begins only after an explicit
-webhook-backed push configuration and the first enabled reconcile establishes
-its baseline. Signing is optional. `20260807_0246` is the irreversible public
+`20260813_0266` adds the typed incident ledger and official Strategy-history
+recovery, persists immutable live/recovery ingest origin, and replaces Push's
+score/assets/freshness policy plus reconcile ring with one enablement epoch and
+same-transaction Story outbox. It terminalizes incompatible unsent v1 rows and
+preserves immutable sent audit. Applying these migrations does not send a
+message; delivery begins only after explicit webhook-backed Push configuration,
+then only for live facts observed after enablement. Signing is optional.
+`20260807_0246` is the irreversible public
 World Brief hard cut: it canonicalizes retained OpenNews facts, drops the
 retired Story display-title translation table and incompatible Brief state,
 removes `normalized_title`/`brief_excluded`, rebuilds Story state, and installs
@@ -732,7 +736,7 @@ freshness fences. `20260809_0247` installs the pinned public RSS source state,
 removes the facet and former Brief run/publication tables, creates the
 half-hour `news_brief_current` singleton, clears rebuildable Story/selection
 state, and deletes incompatible Push payload rows. The live News schema is
-exactly nine tables and has no mixed-schema reader or compatibility view.
+exactly ten tables and has no mixed-schema reader or compatibility view.
 
 ### Token images
 

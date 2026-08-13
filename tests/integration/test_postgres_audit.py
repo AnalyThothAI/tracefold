@@ -68,12 +68,14 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert catalog.query_routes["/api/news/status"] == (
         "workers_runtime",
         "news_status_opennews",
+        "news_status_opennews_incidents",
+        "news_status_inbound_latency",
+        "news_status_story_latency",
         "news_status_rss",
         "news_status_projection",
         "news_brief",
         "news_push_state",
         "news_push_oldest_due",
-        "news_push_oldest_waiting",
         "news_push_translation_24h",
         "news_push_delivery_24h",
     )
@@ -106,7 +108,6 @@ _NEWS_QUERY_NAMES = (
     "news_feed_focus_rows",
     "news_feed_focus_facets",
     "news_feed_push_contexts",
-    "news_push_reconcile_page",
     "news_story",
     "news_story_members",
     "news_brief",
@@ -116,7 +117,9 @@ _NEWS_QUERY_NAMES = (
     "news_status_projection",
     "news_push_state",
     "news_push_oldest_due",
-    "news_push_oldest_waiting",
+    "news_status_opennews_incidents",
+    "news_status_inbound_latency",
+    "news_status_story_latency",
     "news_push_translation_24h",
     "news_push_delivery_24h",
 )
@@ -157,7 +160,7 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert len(payload["news_schema"]["actual_tables"]) == 9
+    assert len(payload["news_schema"]["actual_tables"]) == 10
     assert "news_story_title_translations" not in payload["projection_schema"]
     assert "projection_offsets" not in payload["projection_schema"]
     assert "projection_runs" not in payload["projection_schema"]
@@ -417,7 +420,7 @@ def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_his
 
                 INSERT INTO news_items(
                   item_id, source_id, source_item_key, provider_record_id,
-                  provider_metadata, push_eligibility_updated_at_ms,
+                  provider_metadata, first_ingest_mode,
                   reporting_origin, title, description, lang,
               published_at_ms, first_observed_at_ms, last_observed_at_ms,
               content_fingerprint, level, category, classification_source,
@@ -425,7 +428,7 @@ def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_his
               active, created_at_ms, updated_at_ms
             )
                 SELECT 'history-' || value, 'audit-source', 'history-' || value,
-                       'history-' || value, jsonb_build_object('score', 90), value,
+                       'history-' || value, jsonb_build_object('score', 90), 'live',
                    'History Wire', 'Historical report ' || value, '', 'en',
                    value, value, value, 'history-fingerprint-' || value,
                    'info', 'general', 'keyword', 1, 1, '{}'::jsonb,
@@ -434,7 +437,7 @@ def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_his
 
                 INSERT INTO news_items(
                   item_id, source_id, source_item_key, provider_record_id,
-                  provider_metadata, push_eligibility_updated_at_ms,
+                  provider_metadata, first_ingest_mode,
                   reporting_origin, title, description, lang,
               published_at_ms, first_observed_at_ms, last_observed_at_ms,
               content_fingerprint, level, category, classification_source,
@@ -442,7 +445,7 @@ def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_his
               active, created_at_ms, updated_at_ms
             )
                 SELECT 'member-' || value, 'audit-source', 'member-' || value,
-                       'member-' || value, jsonb_build_object('score', 80), 20000 + value,
+                       'member-' || value, jsonb_build_object('score', 80), 'live',
                    'Audit Wire', 'Current report ' || value, '', 'en',
                    20000 + value, 20000 + value, 20000 + value,
                    'member-fingerprint-' || value,
@@ -501,7 +504,8 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
         conn.execute(
             """
             UPDATE news_push_state
-               SET baseline_at_ms = %s,
+               SET enablement_epoch_at_ms = %s,
+                   enabled = true,
                    updated_at_ms = %s
              WHERE singleton_key = 'current'
             """,
@@ -510,15 +514,14 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
         conn.execute(
             """
             INSERT INTO news_push_deliveries(
-              story_id, selected_item_id, provider_score,
-              threshold_observed_at_ms, source_payload, delivery_payload,
+              story_id, selected_item_id, live_observed_at_ms,
+              source_payload, delivery_payload,
               payload_fingerprint, translation_status, status,
               delivery_attempts, next_attempt_at_ms, sent_at_ms,
               created_at_ms, updated_at_ms
             )
             SELECT lpad(to_hex(value), 64, '0'),
                    'selected-' || value,
-                   90,
                    %s - 60000,
                    '{}'::jsonb,
                    jsonb_build_object(
@@ -611,7 +614,6 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
     for query_name in (
         "news_push_state",
         "news_push_oldest_due",
-        "news_push_oldest_waiting",
         "news_push_translation_24h",
         "news_push_delivery_24h",
     ):

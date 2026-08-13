@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
 from websockets.exceptions import ConcurrencyError, ProtocolError
 
 import tracefold.news.runtime as news_runtime
 from tracefold.integrations.news_feeds import NewsFeedAcquisitionError, NewsFeedWire, parse_rss_feed_wire
 from tracefold.integrations.opennews import client as opennews_client
-from tracefold.news import NewsAcquisition, OpenNewsExpectedError
+from tracefold.news import NewsAcquisition, OpenNewsExpectedError, OpenNewsHistoryError
 from tracefold.news.models import NewsSourceDefinition
-from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.opennews import (
+    parse_opennews_message,
+    parse_opennews_strategy_hits,
+    parse_opennews_strategy_list,
+)
 from tracefold.news.sources import OPENNEWS_SOURCE_ID, opennews_source
 from tracefold.platform.config.settings import NewsSettings
-from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceCapability, ResourceOperationOverrun
 
 
 def test_opennews_source_is_the_production_source() -> None:
@@ -186,6 +191,99 @@ def test_allowlisted_market_strategy_is_normalized_as_a_linkless_report() -> Non
             }
         ],
     }
+
+
+def test_official_strategy_history_adapter_uses_exact_authenticated_endpoints() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/open/strategy_list":
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": [
+                        {"id": 1018, "name": "News Score >70", "enabled": True},
+                        {"id": 1019, "name": "OI Event Monitor", "enabled": True},
+                    ],
+                    "page": 1,
+                    "limit": 100,
+                    "total": 2,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": [
+                    {
+                        "id": 3_568_500,
+                        "engineType": "market",
+                        "text": "BTC open interest increased 3.4%",
+                        "source": "binance",
+                        "ts": "2026-08-13T03:00:00Z",
+                        "strategy": {"id": 1019, "name": "OI Event Monitor"},
+                    }
+                ],
+                "page": 2,
+                "limit": 100,
+                "total": 101,
+            },
+        )
+
+    async def scenario() -> tuple[object, object]:
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            strategy_list = await client.get_strategy_list(limit=100, page=1)
+            strategy_hits = await client.get_strategy_hits(strategy_id="1019", limit=100, page=2)
+            return strategy_list, strategy_hits
+        finally:
+            await client.close()
+
+    strategy_list, strategy_hits = asyncio.run(scenario())
+
+    assert parse_opennews_strategy_list(
+        strategy_list,
+        strategy_ids=frozenset({"1018", "1019"}),
+    ) == (
+        {"id": "1018", "name": "News Score >70", "enabled": True},
+        {"id": "1019", "name": "OI Event Monitor", "enabled": True},
+    )
+    parsed_hits = parse_opennews_strategy_hits(
+        strategy_hits,
+        strategy_ids=frozenset({"1018", "1019"}),
+    )
+    assert [event.provider_record_id for event in parsed_hits.events] == ["3568500"]
+    assert parsed_hits.has_more is False
+    assert [request.url.path for request in requests] == [
+        "/open/strategy_list",
+        "/open/strategy_hits",
+    ]
+    assert dict(requests[1].url.params) == {
+        "strategyId": "1019",
+        "limit": "100",
+        "page": "2",
+    }
+    assert all(request.headers["authorization"] == "Bearer history-token" for request in requests)
+
+
+def test_official_strategy_history_adapter_classifies_unavailable_endpoint() -> None:
+    async def scenario() -> None:
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(404)),
+        )
+        try:
+            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_unavailable$"):
+                await client.get_strategy_list(limit=100, page=1)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(
@@ -379,7 +477,7 @@ def test_websocket_receive_classifies_protocol_disconnect() -> None:
     client = opennews_client.OpenNewsWebSocketClient(token="test-token")
     client._websocket = _WebSocket()
 
-    with pytest.raises(OpenNewsExpectedError, match="opennews_receive_failed"):
+    with pytest.raises(OpenNewsExpectedError, match="opennews_protocol_error"):
         asyncio.run(client.receive())
 
 
@@ -394,8 +492,7 @@ def test_websocket_receive_classifies_invalid_provider_frames() -> None:
     for frame in (b"\xff\xfe", "[" * 10_000 + "]" * 10_000):
         client = opennews_client.OpenNewsWebSocketClient(token="test-token")
         client._websocket = _WebSocket(frame)
-        with pytest.raises(OpenNewsExpectedError, match="opennews_frame_invalid"):
-            asyncio.run(client.receive())
+        assert asyncio.run(client.receive()) == {}
 
 
 def test_websocket_receive_does_not_hide_concurrent_use_errors() -> None:
@@ -695,12 +792,141 @@ def _acquisition(
     )
 
 
-def test_ws_only_runtime_is_disabled_without_a_websocket_adapter() -> None:
+def test_opennews_runtime_is_disabled_without_a_websocket_adapter() -> None:
     acquisition = _acquisition(db=object())
 
     assert acquisition.opennews_enabled is False
     assert not hasattr(acquisition, "opennews_rest_client")
-    assert not any("recovery" in name for name in vars(acquisition))
+    assert acquisition.opennews_history_client is None
+
+
+def test_status_publisher_preserves_disconnect_reconnect_order_and_close_code() -> None:
+    class _Database:
+        def __init__(self) -> None:
+            self.statuses: list[tuple[bool, str | None, bool, int | None]] = []
+
+        async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+            assert operation_name == "opennews_status"
+            self.statuses.append((args[1], args[3], args[5], args[6]))
+            return True
+
+    async def scenario() -> list[tuple[bool, str | None, bool, int | None]]:
+        database = _Database()
+        acquisition = _acquisition(db=database, websocket_client=object())
+        acquisition._queue_opennews_status(
+            connected=False,
+            error_code="opennews_receive_failed",
+            close_code=1011,
+        )
+        acquisition._queue_opennews_status(connected=True, error_code=None)
+        acquisition._opennews_intake_done.set()
+        await acquisition._opennews_status_loop()
+        return database.statuses
+
+    assert asyncio.run(scenario()) == [
+        (False, "opennews_receive_failed", False, 1011),
+        (True, None, False, None),
+    ]
+
+
+def test_closed_incident_recovers_only_allowlisted_hits_from_official_history() -> None:
+    boundary_ms = 1_775_195_200_000
+
+    class _HistoryClient:
+        def __init__(self) -> None:
+            self.hit_calls: list[str] = []
+
+        async def get_strategy_list(self, *, limit: int, page: int):
+            assert (limit, page) == (100, 1)
+            return {
+                "success": True,
+                "data": [
+                    {"id": 1018, "name": "News Score >70", "enabled": True},
+                    {"id": 1019, "name": "OI Event Monitor", "enabled": True},
+                ],
+            }
+
+        async def get_strategy_hits(self, *, strategy_id: str, limit: int, page: int):
+            assert (limit, page) == (100, 1)
+            self.hit_calls.append(strategy_id)
+            if strategy_id == "1019":
+                return {"success": True, "data": [], "page": 1, "limit": 100, "total": 0}
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "id": "inside-gap",
+                        "engineType": "news",
+                        "text": "Strategy hit inside the disconnect interval",
+                        "ts": boundary_ms,
+                        "strategy": {"id": 1018, "name": "News Score >70"},
+                    },
+                    {
+                        "id": "overlap-boundary",
+                        "engineType": "news",
+                        "text": "Older overlap proves the retained boundary",
+                        "ts": boundary_ms - 40_000,
+                        "strategy": {"id": 1018, "name": "News Score >70"},
+                    },
+                ],
+                "page": 1,
+                "limit": 100,
+                "total": 2,
+            }
+
+        async def close(self) -> None:
+            return None
+
+    class _Database:
+        def __init__(self) -> None:
+            self.claimed = False
+            self.recovered_ids: list[str] = []
+            self.results: list[tuple[int | None, str, int, str | None]] = []
+
+        async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+            if operation_name == "opennews_recovery_claim":
+                if self.claimed:
+                    return None
+                self.claimed = True
+                return {
+                    "incident_id": 7,
+                    "opened_at_ms": boundary_ms - 1_000,
+                    "closed_at_ms": boundary_ms + 1_000,
+                    "recovery_from_at_ms": boundary_ms - 1_000,
+                    "recovery_to_at_ms": boundary_ms + 1_000,
+                }
+            if operation_name == "opennews_recovery_publish":
+                self.recovered_ids.extend(event.provider_record_id for event in args[0])
+                return {"items_inserted": len(args[0]), "items_updated": 0}
+            if operation_name == "opennews_recovery_result":
+                self.results.append((args[0], args[1], args[2], args[3]))
+                return None
+            raise AssertionError(operation_name)
+
+    async def scenario() -> tuple[_Database, _HistoryClient]:
+        database = _Database()
+        history = _HistoryClient()
+        acquisition = NewsAcquisition(
+            db=database,
+            finite_operations=_InlineFiniteOperations(),
+            rss_sources=(),
+            rss_feed_reader=_FeedReader(_rss_wire()),
+            rss_feed_parser=parse_rss_feed_wire,
+            opennews_source=opennews_source(),
+            opennews_strategy_ids=("1018", "1019"),
+            opennews_history_client=history,
+        )
+        await acquisition._recover_opennews_incidents()
+        return database, history
+
+    database, history = asyncio.run(scenario())
+
+    assert history.hit_calls == ["1018", "1019"]
+    assert database.recovered_ids == ["inside-gap"]
+    assert database.results == [
+        (7, "recovered", 1, None),
+        (None, "recovered", 0, None),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -721,48 +947,236 @@ def test_ws_runtime_rejects_noncanonical_strategy_ids(strategy_ids: tuple[object
         )
 
 
-def test_opennews_business_database_overrun_restarts_the_existing_stream_group(
+def test_opennews_business_database_overrun_keeps_the_connected_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def scenario() -> int:
+    async def scenario() -> tuple[int, int, list[tuple[str, ...]], list[int], list[bool]]:
+        stop_event = asyncio.Event()
+        clock = {"now_ms": 1_000}
+
+        class _Database:
+            def __init__(self) -> None:
+                self.publish_attempts: list[tuple[str, ...]] = []
+                self.publish_clocks: list[int] = []
+                self.coverage_gaps: list[bool] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_status":
+                    self.coverage_gaps.append(bool(args[4]))
+                    return True
+                if operation_name == "opennews_live_publish":
+                    provider_ids = tuple(event.provider_record_id for event in args[0])
+                    self.publish_attempts.append(provider_ids)
+                    self.publish_clocks.append(int(args[1]))
+                    if len(self.publish_attempts) == 1:
+                        clock["now_ms"] = 2_000
+                        raise ResourceOperationOverrun(
+                            capability=ResourceCapability.DATABASE_BUSINESS,
+                            operation_name="opennews_live_publish",
+                        )
+                    stop_event.set()
+                    return {"items_inserted": len(provider_ids)}
+                raise AssertionError(operation_name)
+
+        class _WebSocketClient:
+            def __init__(self) -> None:
+                self.connect_calls = 0
+                self.receive_calls = 0
+                self.close_calls = 0
+
+            async def connect(self) -> None:
+                self.connect_calls += 1
+
+            async def receive(self):
+                self.receive_calls += 1
+                if self.receive_calls == 1:
+                    return {
+                        "method": "strategy.triggered",
+                        "params": {
+                            "id": 3_568_500,
+                            "engineType": "news",
+                            "text": "Database pressure must not close this socket",
+                            "ts": 1_775_195_200_000,
+                            "strategy": {"id": "strategy-test", "name": "Test Strategy"},
+                        },
+                    }
+                await stop_event.wait()
+                return None
+
+            async def close(self) -> None:
+                self.close_calls += 1
+
+        database = _Database()
+        websocket = _WebSocketClient()
+        acquisition = _acquisition(
+            db=database,
+            websocket_client=websocket,
+        )
+        await acquisition.run_opennews(stop_event=stop_event)
+        return (
+            websocket.connect_calls,
+            websocket.close_calls,
+            database.publish_attempts,
+            database.publish_clocks,
+            database.coverage_gaps,
+        )
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.0)
+    monkeypatch.setattr(news_runtime, "_now_ms", lambda: 1_000)
+
+    connect_calls, close_calls, publish_attempts, publish_clocks, coverage_gaps = asyncio.run(scenario())
+    assert connect_calls == 1
+    assert close_calls == 1
+    assert publish_attempts == [("3568500",), ("3568500",)]
+    assert publish_clocks == [1_000, 1_000]
+    assert coverage_gaps and not any(coverage_gaps)
+
+
+def test_opennews_status_database_timeout_does_not_block_live_intake() -> None:
+    async def scenario() -> tuple[int, int, tuple[str, ...]]:
         stop_event = asyncio.Event()
 
         class _Database:
-            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-                assert operation_name == "opennews_status"
-                return True
+            def __init__(self) -> None:
+                self.status_attempts = 0
+                self.provider_ids: tuple[str, ...] = ()
 
-        acquisition = _acquisition(
-            db=_Database(),
-            websocket_client=object(),
-        )
-        attempts = 0
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_status":
+                    self.status_attempts += 1
+                    if self.status_attempts == 1:
+                        raise ResourceAdmissionTimeout("opennews_status_busy")
+                    return True
+                if operation_name == "opennews_live_publish":
+                    self.provider_ids = tuple(event.provider_record_id for event in args[0])
+                    stop_event.set()
+                    return {"items_inserted": len(self.provider_ids)}
+                raise AssertionError(operation_name)
 
-        async def receive(_stop_event: asyncio.Event) -> None:
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise ResourceOperationOverrun(
-                    capability=ResourceCapability.DATABASE_BUSINESS,
-                    operation_name="opennews_live_publish",
-                )
-            stop_event.set()
+        class _WebSocketClient:
+            def __init__(self) -> None:
+                self.receive_calls = 0
 
-        async def idle(_stop_event: asyncio.Event) -> None:
-            await stop_event.wait()
+            async def connect(self) -> None:
+                return None
 
-        acquisition._opennews_receive_loop = receive  # type: ignore[method-assign]
-        acquisition._opennews_publish_loop = idle  # type: ignore[method-assign]
+            async def receive(self):
+                self.receive_calls += 1
+                if self.receive_calls == 1:
+                    return {
+                        "method": "strategy.triggered",
+                        "params": {
+                            "id": 3_568_501,
+                            "engineType": "market",
+                            "text": "Status persistence cannot block intake",
+                            "ts": 1_775_195_200_000,
+                            "strategy": {"id": "strategy-test", "name": "Test Strategy"},
+                        },
+                    }
+                await stop_event.wait()
+                return None
 
+            async def close(self) -> None:
+                return None
+
+        database = _Database()
+        websocket = _WebSocketClient()
+        acquisition = _acquisition(db=database, websocket_client=websocket)
         await acquisition.run_opennews(stop_event=stop_event)
-        return attempts
+        return websocket.receive_calls, database.status_attempts, database.provider_ids
 
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.0)
+    receive_calls, status_attempts, provider_ids = asyncio.run(scenario())
+    assert receive_calls >= 1
+    assert status_attempts >= 2
+    assert provider_ids == ("3568501",)
 
-    assert asyncio.run(scenario()) == 2
+
+def test_opennews_buffer_overflow_keeps_the_connected_socket() -> None:
+    async def scenario() -> tuple[int, int, int, int, list[tuple[str, ...]]]:
+        stop_event = asyncio.Event()
+        first_publish_started = asyncio.Event()
+        release_first_publish = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.publish_attempts: list[tuple[str, ...]] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_status":
+                    return True
+                if operation_name == "opennews_live_publish":
+                    provider_ids = tuple(event.provider_record_id for event in args[0])
+                    self.publish_attempts.append(provider_ids)
+                    if len(self.publish_attempts) == 1:
+                        first_publish_started.set()
+                        await release_first_publish.wait()
+                    else:
+                        await asyncio.sleep(0.050)
+                        stop_event.set()
+                    return {"items_inserted": len(provider_ids)}
+                raise AssertionError(operation_name)
+
+        class _WebSocketClient:
+            def __init__(self) -> None:
+                self.connect_calls = 0
+                self.receive_calls = 0
+                self.close_calls = 0
+                self.close_before_stop_calls = 0
+
+            async def connect(self) -> None:
+                self.connect_calls += 1
+
+            async def receive(self):
+                self.receive_calls += 1
+                if self.receive_calls == 1:
+                    event_id = 3_568_510
+                elif self.receive_calls == 2:
+                    await first_publish_started.wait()
+                    event_id = 3_568_511
+                elif self.receive_calls == 3:
+                    asyncio.get_running_loop().call_later(0.010, release_first_publish.set)
+                    event_id = 3_568_512
+                else:
+                    await stop_event.wait()
+                    return None
+                return {
+                    "method": "strategy.triggered",
+                    "params": {
+                        "id": event_id,
+                        "engineType": "news",
+                        "text": f"Overflow fixture {event_id}",
+                        "ts": 1_775_195_200_000,
+                        "strategy": {"id": "strategy-test", "name": "Test Strategy"},
+                    },
+                }
+
+            async def close(self) -> None:
+                self.close_calls += 1
+                if not stop_event.is_set():
+                    self.close_before_stop_calls += 1
+
+        database = _Database()
+        websocket = _WebSocketClient()
+        acquisition = _acquisition(db=database, websocket_client=websocket)
+        acquisition._opennews_queue = asyncio.Queue(maxsize=1)
+        await asyncio.wait_for(acquisition.run_opennews(stop_event=stop_event), timeout=1.0)
+        return (
+            websocket.connect_calls,
+            websocket.receive_calls,
+            websocket.close_calls,
+            websocket.close_before_stop_calls,
+            database.publish_attempts,
+        )
+
+    connect_calls, receive_calls, close_calls, close_before_stop_calls, publish_attempts = asyncio.run(scenario())
+    assert connect_calls == 1
+    assert receive_calls >= 3
+    assert close_calls == 1
+    assert close_before_stop_calls == 0
+    assert publish_attempts == [("3568510",), ("3568511",)]
 
 
-def test_opennews_database_overrun_retries_the_pending_batch_with_original_clock_and_marks_unknown_coverage(
+def test_opennews_database_overrun_retries_the_pending_batch_without_marking_a_transport_gap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = {"now_ms": 1_000}
@@ -818,8 +1232,7 @@ def test_opennews_database_overrun_retries_the_pending_batch_with_original_clock
     attempts, publish_clocks, coverage_gaps = asyncio.run(scenario())
     assert attempts == [("3568500",), ("3568500",)]
     assert publish_clocks == [1_000, 1_000]
-    assert coverage_gaps[0] is False
-    assert True in coverage_gaps[1:]
+    assert coverage_gaps and not any(coverage_gaps)
 
 
 def test_opennews_non_database_overrun_remains_fatal() -> None:

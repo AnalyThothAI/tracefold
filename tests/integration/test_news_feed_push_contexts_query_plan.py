@@ -82,8 +82,7 @@ def _insert_production_shaped_news(conn: Any) -> None:
           published_at_ms, first_observed_at_ms, last_observed_at_ms,
           content_fingerprint, level, category, classification_source,
           classification_confidence, importance_score, importance_factors,
-          active, created_at_ms, updated_at_ms,
-          provider_score_updated_at_ms, push_eligibility_updated_at_ms
+          active, first_ingest_mode, created_at_ms, updated_at_ms
         )
         SELECT 'item-' || lpad(series_no::text, 5, '0'),
                'feed-plan-source',
@@ -110,8 +109,7 @@ def _insert_production_shaped_news(conn: Any) -> None:
                90,
                '{}'::jsonb,
                true,
-               series_no,
-               series_no,
+               'live',
                series_no,
                series_no
           FROM generate_series(1, %s::integer) series_no

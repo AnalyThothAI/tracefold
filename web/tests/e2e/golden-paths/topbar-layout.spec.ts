@@ -81,7 +81,7 @@ test("News notification reasons and missing assets remain readable at AA contras
       notification: {
         delivery_state: "not_created",
         eligible: false,
-        ineligible_reason: "no_asset",
+        ineligible_reason: "recovery_only",
       },
       provider_evidence: {
         ...baseStory.provider_evidence!,
@@ -98,7 +98,7 @@ test("News notification reasons and missing assets remain readable at AA contras
       notification: {
         delivery_state: "not_created",
         eligible: false,
-        ineligible_reason: "cl_family_only",
+        ineligible_reason: "disabled",
       },
       provider_evidence: {
         ...baseStory.provider_evidence!,

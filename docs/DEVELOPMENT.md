@@ -123,9 +123,9 @@ keeps valid feed snapshots for 96 hours, scores membership-expanded RSS rows
 before the stable Top 20 per category, and unions the selected physical Items
 with the current 12-hour Strategy-admitted OpenNews facts. Strategy admission is
 the material-input gate; bounded provider score, assets, and Strategy provenance
-cannot affect Story identity, public scoring, ordering, or Brief after admission.
-A selected numeric OpenNews score may qualify outbound Push and the downstream
-fixed `>70` reader focus filter; neither changes the materialized Story
+cannot affect Story identity, public scoring, ordering, Brief, or Push admission
+after admission. A selected numeric OpenNews score may qualify only the
+downstream fixed `>70` reader focus filter; it does not change the materialized Story
 population. The public seed applies the pinned
 JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items with the
 same identity kernel before selection. The public selector is one global
@@ -175,16 +175,17 @@ singleton/multi-member, reporting-origin, and category counts; every materially
 large cluster; highest-similarity non-merges; selected Top Story evidence and
 drop distribution; and both pinned commits. This is a distribution and parity
 review, not a compression target. The Story turn must remain inside the
-10,000-row, 8 MiB, 25-second, and 60-second freshness boundaries without
+10,000-row, 8 MiB, and 25-second calculation boundaries; a 1-second dirty
+debounce plus 5-minute safety pass must not lose an accepted fact without
 sampling or widening either source window.
 
-`20260813_0265` cutover acceptance requires one atomic hard cut: exactly nine
+`20260813_0266` cutover acceptance requires one atomic hard cut: exactly ten
 News tables, five public News routes, and one zero-send authenticated OpenNews
 WSS consuming automatic account `strategy.triggered` pushes for the exact
 two-ID allowlist `1018`/`1019`, the exact
 opt-in 179-feed public RSS breadth/corroboration catalog, one acquisition module,
-one fixed-period Story/selection writer, one native model seam, and no ordinary
-`news.subscribe`, `/open/news_search` recovery, dual writer, old payload,
+one dirty-triggered Story/selection writer, one native model seam, and no ordinary
+`news.subscribe`, `/open/news_search` recovery, dual writer, old Push policy,
 personalized, or compatibility path. The primary maintained seam sends
 representative RSS responses plus configured NEWS and MARKET/OI Strategy
 frames through real PostgreSQL, the production complete Story projection and
@@ -209,15 +210,15 @@ transaction; all five endpoints; generated contracts; and the responsive real
 labels L1/L2 as an enhancement, preserves linkless evidence, and exposes no
 publication history or personalized ranking.
 
-When Push is enabled, acceptance still proves first-enable zero-send baseline
-suppression, strict score greater than 70 after Strategy admission, the
-15-minute Article deadline,
-selected-Item ledger deduplication across Story-ID changes, frozen at-least-once
+When Push is enabled, acceptance proves one no-backfill enablement epoch,
+same-transaction outbox creation for live scoreless/assetless Stories,
+recovery-only exclusion, selected-Item ledger deduplication across Story-ID
+changes, frozen at-least-once
 delivery, optional one-shot presentation-only title translation with immediate
 original fallback, exact signed/unsigned Feishu shapes, bounded retry/terminal
 classification, and no dependency on the serial model arbiter. The hard cut
-cancels legacy pending/retry rows that no longer have current eligibility while
-preserving immutable sent-delivery audit plus the Push baseline/dedup fence;
+terminalizes incompatible v1 pending/retry rows while preserving immutable sent
+delivery audit plus the Push enablement/dedup fence;
 absence of a signing secret is an explicit unsigned mode, never a fallback
 after a signed attempt fails.
 
@@ -225,16 +226,17 @@ Production cutover review records exactly `1018` (News Score > 70) and `1019`
 (OI Event Monitor), a redacted configured count of `2`, one redacted real
 MARKET/OI frame and one redacted NEWS frame, the deterministic provenance-union
 result for a same-event multi-Strategy match, and explicit confirmation that a
-scoreless MARKET/OI event remains subject to the unchanged downstream Push
-gates. Listing and Delisting Announcements and Storage News may remain enabled
+scoreless MARKET/OI live event creates Story and Push without a score/asset gate.
+Listing and Delisting Announcements and Storage News may remain enabled
 provider-side but are explicitly outside this cutover. Any future addition is a
 reviewed configuration change, never implicit provider-side enablement.
 
-Transport/status acceptance records disconnect, overflow, and process-outage
-intervals as unknown coverage. Reconnect may restore current connectivity but
-must not clear the prior interval or claim replay. The public advanced news
-search is valid only for manual diagnostics/parity sampling and must never
-appear in a production recovery seam.
+Transport/status acceptance records disconnect, overflow, process outage, and
+planned shutdown with distinct causes. Database backpressure must retain WSS;
+overflow records an incident without falsely disconnecting it. Reconnect
+restores current state independently of bounded official Strategy list/hits
+recovery. Tests prove overlap idempotency, complete/partial/unavailable status,
+and that Search never appears in the production recovery seam.
 
 ## Generated contracts
 

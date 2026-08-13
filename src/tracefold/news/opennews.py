@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from math import isfinite
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .identity import (
@@ -47,12 +47,113 @@ class OpenNewsExpectedError(RuntimeError):
         self.status_code = status_code
 
 
+class OpenNewsHistoryError(RuntimeError):
+    """A bounded, sanitized Strategy-history outcome."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class OpenNewsStrategyHistory(Protocol):
+    async def get_strategy_list(self, *, limit: int, page: int) -> Mapping[str, Any]: ...
+
+    async def get_strategy_hits(
+        self,
+        *,
+        strategy_id: str,
+        limit: int,
+        page: int,
+    ) -> Mapping[str, Any]: ...
+
+    async def close(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class OpenNewsEvent:
     provider_record_id: str
     observation_kind: Literal["report"]
     provider_metadata: dict[str, Any]
     entry: NewsFeedEntry
+
+
+@dataclass(frozen=True, slots=True)
+class OpenNewsStrategyHitPage:
+    events: tuple[OpenNewsEvent, ...]
+    page: int
+    total: int
+    has_more: bool
+
+
+def parse_opennews_strategy_list(
+    payload: object,
+    *,
+    strategy_ids: frozenset[str],
+) -> tuple[dict[str, Any], ...]:
+    data = _history_data(payload)
+    strategies: list[dict[str, Any]] = []
+    for value in data:
+        if not isinstance(value, Mapping):
+            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+        strategy_id = _wire_strategy_id(value.get("id"))
+        enabled = value.get("enabled")
+        if not strategy_id or not isinstance(enabled, bool):
+            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+        if strategy_id not in strategy_ids:
+            continue
+        strategies.append(
+            {
+                "id": strategy_id,
+                "name": _text(value.get("name"))[:128],
+                "enabled": enabled,
+            }
+        )
+    return tuple(sorted(strategies, key=lambda row: row["id"]))
+
+
+def parse_opennews_strategy_hits(
+    payload: object,
+    *,
+    strategy_ids: frozenset[str],
+) -> OpenNewsStrategyHitPage:
+    if not isinstance(payload, Mapping):
+        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+    data = _history_data(payload)
+    page = _history_nonnegative_int(payload.get("page"), minimum=1)
+    total = _history_nonnegative_int(payload.get("total"), minimum=0)
+    limit = _history_nonnegative_int(payload.get("limit"), minimum=1)
+    events: list[OpenNewsEvent] = []
+    for value in data:
+        if not isinstance(value, Mapping):
+            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+        event = parse_opennews_message(
+            {"method": "strategy.triggered", "params": value},
+            strategy_ids=strategy_ids,
+        )
+        if event is None:
+            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+        events.append(event)
+    return OpenNewsStrategyHitPage(
+        events=tuple(events),
+        page=page,
+        total=total,
+        has_more=(page * limit) < total,
+    )
+
+
+def _history_data(payload: object) -> list[Any]:
+    if not isinstance(payload, Mapping) or payload.get("success") is not True:
+        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+    return data
+
+
+def _history_nonnegative_int(value: object, *, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+    return int(value)
 
 
 def parse_opennews_message(
@@ -303,5 +404,10 @@ def _content_text(value: object) -> str:
 __all__ = [
     "OpenNewsEvent",
     "OpenNewsExpectedError",
+    "OpenNewsHistoryError",
+    "OpenNewsStrategyHistory",
+    "OpenNewsStrategyHitPage",
     "parse_opennews_message",
+    "parse_opennews_strategy_hits",
+    "parse_opennews_strategy_list",
 ]

@@ -12,6 +12,7 @@ import "./newsDetailResponsive.css";
 import "./newsFeed.css";
 import { NewsSourcesRoute, NewsStatusRoute } from "./NewsOperationsPage";
 import { NewsSectionTabs } from "./NewsSectionTabs";
+import { formatNewsLocalTimestamp } from "./newsTime";
 import {
   type BriefPublication,
   type BriefTopStory,
@@ -23,6 +24,7 @@ import {
   type NewsStoryDetail,
   type NewsStoryMember,
   useNewsBriefWithToken,
+  useNewsFeedHistoryWithToken,
   useNewsFeedWithToken,
   useNewsStatusWithToken,
   useNewsStoryWithToken,
@@ -73,7 +75,7 @@ export function NewsPage(props: NewsPageProps) {
 
 function FeedRoute({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const mode: FeedMode = searchParams.get("view") === "all" ? "all" : "focus";
+  const mode: FeedMode = searchParams.get("view") === "focus" ? "focus" : "all";
   const q = searchParams.get("q")?.trim() ?? "";
   const category = searchParams.get("category") || null;
   const level = parseLevel(searchParams.get("level"));
@@ -95,18 +97,46 @@ function FeedRoute({ token }: { token: string }) {
     sort,
   });
   const statusQuery = useNewsStatusWithToken(token);
-  const pages = query.data?.pages ?? [];
-  const serverStories = Array.from(
-    new Map(pages.flatMap((page) => page.stories).map((story) => [story.story_id, story])).values(),
+  const feedIdentity = [mode, q, category ?? "", level ?? "", reportingOrigin ?? "", sort].join(
+    "\u001f",
   );
-  const firstPage = pages[0];
+  const [historyAnchor, setHistoryAnchor] = useState<{
+    cursor: string | null;
+    feedIdentity: string;
+  } | null>(null);
+  const [historyRequested, setHistoryRequested] = useState(false);
+  const firstPage = query.data;
+  useEffect(() => {
+    if (!firstPage || historyAnchor?.feedIdentity === feedIdentity) return;
+    setHistoryAnchor({ cursor: firstPage.next_cursor, feedIdentity });
+    setHistoryRequested(false);
+  }, [feedIdentity, firstPage, historyAnchor?.feedIdentity]);
+  const historyCursor = historyAnchor?.feedIdentity === feedIdentity ? historyAnchor.cursor : null;
+  const historyQuery = useNewsFeedHistoryWithToken(
+    token,
+    {
+      category,
+      level,
+      providerScoreGt,
+      q,
+      reportingOrigin,
+      sort,
+    },
+    historyCursor,
+    historyRequested,
+  );
+  const pages = historyQuery.data?.pages ?? [];
+  const serverStories = Array.from(
+    new Map(
+      [firstPage?.stories ?? [], ...pages.map((page) => page.stories)]
+        .flat()
+        .map((story) => [story.story_id, story]),
+    ).values(),
+  );
   const categoryFacets = firstPage?.facets.categories ?? [];
   const originFacets = firstPage?.facets.reporting_origins ?? [];
   const hasActiveFilters = Boolean(q || category || level || reportingOrigin);
   const storyListRef = useRef<HTMLDivElement>(null);
-  const feedIdentity = [mode, q, category ?? "", level ?? "", reportingOrigin ?? "", sort].join(
-    "\u001f",
-  );
   const storyFeed = useAnchoredStoryFeed(
     storyListRef,
     serverStories,
@@ -157,7 +187,7 @@ function FeedRoute({ token }: { token: string }) {
           <p>
             {mode === "focus"
               ? `OpenNews > ${HIGH_SIGNAL_THRESHOLD} · 高信号动态`
-              : "账户策略命中的新闻事件"}
+              : "账户 Strategy 命中的新闻事件"}
           </p>
         </div>
         <NewsInlineStatus
@@ -228,14 +258,17 @@ function FeedRoute({ token }: { token: string }) {
                 <StoryCard key={story.story_id} story={story} />
               ))}
             </div>
-            {query.hasNextPage ? (
+            {historyQuery.hasNextPage || (!historyRequested && historyCursor) ? (
               <button
                 className="news-load-more"
-                disabled={query.isFetchingNextPage}
-                onClick={() => void query.fetchNextPage()}
+                disabled={historyQuery.isFetchingNextPage}
+                onClick={() => {
+                  if (!historyRequested) setHistoryRequested(true);
+                  else void historyQuery.fetchNextPage();
+                }}
                 type="button"
               >
-                {query.isFetchingNextPage ? "正在加载" : "加载更多新闻"}
+                {historyQuery.isFetchingNextPage ? "正在加载" : "加载更多新闻"}
               </button>
             ) : null}
           </div>
@@ -430,94 +463,16 @@ function NewsInlineStatus({
   fetching: boolean;
   status?: NewsStatus;
 }) {
-  const source = status?.layers.ingest.opennews ?? null;
-  const rss = status?.layers.ingest.rss ?? null;
   const readerStatus = readerFacingNewsStatus(error, status);
-  const lastSuccessAt = readerLastSuccessAt(status);
-  const hasIngestWarning = status?.layers.ingest.status === "degraded";
+  const realtime = status?.realtime;
   return (
-    <details className="news-inline-status" data-state={readerStatus.state}>
-      <summary>
-        <span aria-hidden className="news-status-dot" />
-        <span>
-          <b>{readerStatus.label}</b>
-          <small>
-            {fetching
-              ? "正在检查"
-              : lastSuccessAt != null
-                ? `最近同步 ${relativeTime(lastSuccessAt)}`
-                : "等待首次同步"}
-          </small>
-        </span>
-      </summary>
-      <div className="news-status-diagnostics">
-        {source ? (
-          <section>
-            <h2>OpenNews Strategy 自动推送</h2>
-            <dl>
-              <div>
-                <dt>实时连接</dt>
-                <dd>{source.live_connected ? "正常" : "未连接"}</dd>
-              </div>
-              <div>
-                <dt>配置策略</dt>
-                <dd>{source.configured_strategy_count}</dd>
-              </div>
-              <div>
-                <dt>最近触发</dt>
-                <dd>
-                  {source.last_accepted_strategy_trigger_at_ms == null
-                    ? "等待首次触发"
-                    : relativeTime(source.last_accepted_strategy_trigger_at_ms)}
-                </dd>
-              </div>
-              <div>
-                <dt>历史缺口</dt>
-                <dd>
-                  {source.coverage_unknown_since_at_ms == null
-                    ? "当前未记录"
-                    : `${relativeTime(source.coverage_unknown_since_at_ms)}起不可回放`}
-                </dd>
-              </div>
-              <div>
-                <dt>连续失败</dt>
-                <dd>{source.consecutive_failures}</dd>
-              </div>
-            </dl>
-          </section>
-        ) : null}
-        {rss ? (
-          <section>
-            <h2>公共 RSS 覆盖与交叉印证</h2>
-            {rss.enabled ? (
-              <dl>
-                <div>
-                  <dt>已成功来源</dt>
-                  <dd>
-                    {rss.successful_source_count}/{rss.source_count}
-                  </dd>
-                </div>
-                <div>
-                  <dt>当前失败</dt>
-                  <dd>{rss.failed_source_count}</dd>
-                </div>
-                <div>
-                  <dt>正在采集</dt>
-                  <dd>{rss.claimed_source_count}</dd>
-                </div>
-              </dl>
-            ) : (
-              <p>未启用</p>
-            )}
-          </section>
-        ) : null}
-        {error || source?.last_error || hasIngestWarning || status?.layers.story.reasons.length ? (
-          <p className="news-status-warning">
-            数据更新遇到异常，系统正在自动恢复。必要时请通过 CLI 查看诊断代码。
-          </p>
-        ) : null}
-      </div>
-    </details>
+    <div className="news-inline-status" data-state={readerStatus.state} role="status">
+      <span aria-hidden className="news-status-dot" />
+      <span>
+        <b>{readerStatus.label}</b>
+        <small>{realtimeLatencySummary(realtime, fetching)}</small>
+      </span>
+    </div>
   );
 }
 
@@ -559,7 +514,7 @@ function StoryCard({ story }: { story: NewsStory }) {
           <span className="news-story-context">
             <span>{story.source_name}</span>
             <time dateTime={new Date(story.last_published_at_ms).toISOString()}>
-              {relativeTime(story.last_published_at_ms)}
+              {displayTime(story.last_published_at_ms)}
             </time>
             <span>{story.source_count} 家独立来源</span>
           </span>
@@ -762,7 +717,10 @@ function StoryHero({ story }: { story: NewsStory }) {
             <b>{story.item_count}</b>相关报道
           </span>
           <span>
-            <b>{relativeTime(story.last_published_at_ms)}</b>最后报道
+            <time dateTime={new Date(story.last_published_at_ms).toISOString()}>
+              <b>{displayTime(story.last_published_at_ms)}</b>
+            </time>
+            最后报道
           </span>
         </div>
         {originalUrl ? (
@@ -895,12 +853,9 @@ function notificationIneligibleDetail(
 ): string | null {
   if (!reason) return null;
   const detailByReason: Record<NonNullable<NewsNotification["ineligible_reason"]>, string> = {
-    baseline: "基线前",
-    cl_family_only: "仅 CL 资产",
+    before_enablement: "启用前事件",
     disabled: "通知关闭",
-    no_asset: "无关联资产",
-    score_threshold: "分数未达阈值",
-    stale: "已过通知时限",
+    recovery_only: "仅恢复历史",
   };
   return detailByReason[reason];
 }
@@ -1106,9 +1061,9 @@ function BriefTopStoryCard({ index, story }: { index: number; story: BriefTopSto
         <div className="news-brief-story-meta">
           <b>{story.primary_source}</b>
           <time dateTime={new Date(story.primary_published_at_ms).toISOString()}>
-            主要来源 {relativeTime(story.primary_published_at_ms)}
+            主要来源 {displayTime(story.primary_published_at_ms)}
           </time>
-          <span>来源更新 {relativeTime(story.last_updated_ms)}</span>
+          <span>来源更新 {displayTime(story.last_updated_ms)}</span>
           <span>{story.source_count} 条报道</span>
           <span>{story.unique_source_count} 家独立来源</span>
         </div>
@@ -1219,7 +1174,7 @@ function setOptionalParam(params: URLSearchParams, name: string, value: string |
 function feedModeSearch(searchParams: URLSearchParams, mode: FeedMode): string {
   const params = new URLSearchParams(searchParams);
   params.delete("provider_score_gt");
-  if (mode === "all") params.set("view", "all");
+  if (mode === "focus") params.set("view", "focus");
   else params.delete("view");
   const value = params.toString();
   return value ? `?${value}` : "";
@@ -1383,18 +1338,14 @@ function readerFacingNewsStatus(
   status: NewsStatus | undefined,
 ): { label: string; state: "live" | "recovering" | "stalled" } {
   if (error) return { label: "状态暂不可用", state: "stalled" };
-  if (!status) return { label: "正在检查新闻", state: "recovering" };
-  if (status.layers.story.status === "degraded") {
-    return { label: "新闻更新异常", state: "stalled" };
+  if (!status) return { label: "正在检查 WSS", state: "recovering" };
+  if (status.realtime.wss_state === "connected") {
+    return { label: "WSS 已连接", state: "live" };
   }
-  if (status.layers.ingest.status === "degraded") {
-    return { label: "新闻更新异常", state: "stalled" };
+  if (status.realtime.wss_state === "reconnecting") {
+    return { label: "WSS 重连中", state: "recovering" };
   }
-  const factStates = [status.layers.ingest.status, status.layers.story.status];
-  if (factStates.includes("warming")) {
-    return { label: "等待首次 Strategy 触发", state: "recovering" };
-  }
-  return { label: "新闻已同步", state: "live" };
+  return { label: "WSS 不可用", state: "stalled" };
 }
 
 function useTitleOverflow(ref: RefObject<HTMLElement | null>, value: string): boolean {
@@ -1417,15 +1368,6 @@ function useTitleOverflow(ref: RefObject<HTMLElement | null>, value: string): bo
   }, [ref, value]);
 
   return overflowing;
-}
-
-function readerLastSuccessAt(status?: NewsStatus): number | null {
-  if (!status) return null;
-  const candidates = [
-    status.layers.ingest.opennews?.last_success_at_ms,
-    status.layers.story.last_success_at_ms,
-  ].filter((value): value is number => value != null);
-  return candidates.length ? Math.min(...candidates) : null;
 }
 
 function briefStateLabel(state?: NewsBrief["state"]): string {
@@ -1474,8 +1416,26 @@ function relativeTime(value: number): string {
   return hours < 48 ? `${hours} 小时前` : `${Math.floor(hours / 24)} 天前`;
 }
 
+function displayTime(value: number): string {
+  return `${absoluteTime(value)} · ${relativeTime(value)}`;
+}
+
+function realtimeLatencySummary(
+  realtime: NewsStatus["realtime"] | undefined,
+  fetching: boolean,
+): string {
+  if (!realtime) return fetching ? "正在检查" : "等待首次状态";
+  const prefix = fetching ? "刷新中 · " : "";
+  return `${prefix}入站 P50/P95 ${optionalDuration(realtime.inbound_latency.p50_ms)}/${optionalDuration(realtime.inbound_latency.p95_ms)} · Story P50/P95 ${optionalDuration(realtime.story_visible_latency.p50_ms)}/${optionalDuration(realtime.story_visible_latency.p95_ms)}`;
+}
+
+function optionalDuration(value: number | null): string {
+  if (value == null) return "尚无样本";
+  return value < 1_000 ? `${value} ms` : `${(value / 1_000).toFixed(1)} s`;
+}
+
 function absoluteTime(value: number): string {
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+  return formatNewsLocalTimestamp(value);
 }
 
 function formatPoints(value: number): string {

@@ -8035,11 +8035,8 @@
               {
                 "enum": [
                   "disabled",
-                  "score_threshold",
-                  "no_asset",
-                  "cl_family_only",
-                  "baseline",
-                  "stale"
+                  "recovery_only",
+                  "before_enablement"
                 ],
                 "type": "string"
               },
@@ -8058,6 +8055,138 @@
         "title": "NewsNotificationData",
         "type": "object"
       },
+      "NewsOpenNewsIncidentData": {
+        "additionalProperties": false,
+        "properties": {
+          "cause_class": {
+            "enum": [
+              "planned_shutdown",
+              "network_connect",
+              "authentication",
+              "provider_close",
+              "protocol_error",
+              "idle_timeout",
+              "database_backpressure",
+              "buffer_overflow",
+              "process_outage",
+              "legacy_unknown",
+              "unknown"
+            ],
+            "title": "Cause Class",
+            "type": "string"
+          },
+          "close_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close Code"
+          },
+          "closed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At Ms"
+          },
+          "incident_id": {
+            "title": "Incident Id",
+            "type": "integer"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "opened_at_ms": {
+            "title": "Opened At Ms",
+            "type": "integer"
+          },
+          "planned": {
+            "title": "Planned",
+            "type": "boolean"
+          },
+          "reconnected_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconnected At Ms"
+          },
+          "recovered_count": {
+            "title": "Recovered Count",
+            "type": "integer"
+          },
+          "recovery_from_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery From At Ms"
+          },
+          "recovery_status": {
+            "enum": [
+              "pending",
+              "running",
+              "recovered",
+              "partial",
+              "unavailable",
+              "not_required"
+            ],
+            "title": "Recovery Status",
+            "type": "string"
+          },
+          "recovery_to_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery To At Ms"
+          }
+        },
+        "required": [
+          "incident_id",
+          "cause_class",
+          "opened_at_ms",
+          "reconnected_at_ms",
+          "closed_at_ms",
+          "planned",
+          "close_code",
+          "recovery_status",
+          "recovery_from_at_ms",
+          "recovery_to_at_ms",
+          "recovered_count",
+          "last_error_code"
+        ],
+        "title": "NewsOpenNewsIncidentData",
+        "type": "object"
+      },
       "NewsOpenNewsStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -8069,16 +8198,12 @@
             "title": "Consecutive Failures",
             "type": "integer"
           },
-          "coverage_unknown_since_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Coverage Unknown Since At Ms"
+          "incidents": {
+            "items": {
+              "$ref": "#/components/schemas/NewsOpenNewsIncidentData"
+            },
+            "title": "Incidents",
+            "type": "array"
           },
           "last_accepted_strategy_trigger_at_ms": {
             "anyOf": [
@@ -8124,6 +8249,17 @@
             ],
             "title": "Last Error"
           },
+          "last_history_check_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last History Check At Ms"
+          },
           "last_items_accepted": {
             "title": "Last Items Accepted",
             "type": "integer"
@@ -8142,17 +8278,6 @@
               }
             ],
             "title": "Last Outcome"
-          },
-          "last_overflow_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Overflow At Ms"
           },
           "last_rejection_counts": {
             "additionalProperties": {
@@ -8184,25 +8309,23 @@
             "title": "Observed Strategy Count",
             "type": "integer"
           },
-          "replay_supported": {
-            "const": false,
-            "title": "Replay Supported",
-            "type": "boolean"
-          },
           "source_id": {
             "title": "Source Id",
             "type": "string"
           },
-          "strategy_coverage_started_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
+          "strategy_history_status": {
+            "enum": [
+              "unknown",
+              "available",
+              "unavailable",
+              "partial"
             ],
-            "title": "Strategy Coverage Started At Ms"
+            "title": "Strategy History Status",
+            "type": "string"
+          },
+          "unresolved_incident_count": {
+            "title": "Unresolved Incident Count",
+            "type": "integer"
           }
         },
         "required": [
@@ -8213,18 +8336,18 @@
           "observed_strategy_count",
           "last_connected_at_ms",
           "last_disconnected_at_ms",
-          "last_overflow_at_ms",
-          "strategy_coverage_started_at_ms",
-          "coverage_unknown_since_at_ms",
           "last_accepted_strategy_trigger_at_ms",
-          "replay_supported",
+          "strategy_history_status",
+          "last_history_check_at_ms",
           "last_outcome",
           "last_error",
           "last_success_at_ms",
           "consecutive_failures",
           "last_rejection_counts",
           "last_items_seen",
-          "last_items_accepted"
+          "last_items_accepted",
+          "unresolved_incident_count",
+          "incidents"
         ],
         "title": "NewsOpenNewsStatusData",
         "type": "object"
@@ -8444,7 +8567,14 @@
       "NewsPushStatusData": {
         "additionalProperties": false,
         "properties": {
-          "baseline_at_ms": {
+          "delivery_24h": {
+            "$ref": "#/components/schemas/NewsPushDelivery24hData"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "enablement_epoch_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -8453,14 +8583,7 @@
                 "type": "null"
               }
             ],
-            "title": "Baseline At Ms"
-          },
-          "delivery_24h": {
-            "$ref": "#/components/schemas/NewsPushDelivery24hData"
-          },
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
+            "title": "Enablement Epoch At Ms"
           },
           "feishu_signing_secret_configured": {
             "title": "Feishu Signing Secret Configured",
@@ -8574,7 +8697,7 @@
           "feishu_webhook_url_configured",
           "feishu_signing_secret_configured",
           "initialized",
-          "baseline_at_ms",
+          "enablement_epoch_at_ms",
           "total_count",
           "suppressed_count",
           "pending_count",
@@ -8660,6 +8783,105 @@
         "title": "NewsPushTranslation24hData",
         "type": "object"
       },
+      "NewsRealtimeLatencyData": {
+        "additionalProperties": false,
+        "properties": {
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "p50_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50 Ms"
+          },
+          "p95_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Ms"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "window_started_at_ms": {
+            "title": "Window Started At Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "p50_ms",
+          "p95_ms",
+          "sample_count",
+          "window_started_at_ms",
+          "measured_at_ms"
+        ],
+        "title": "NewsRealtimeLatencyData",
+        "type": "object"
+      },
+      "NewsRealtimeStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "connected_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At Ms"
+          },
+          "disconnected_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disconnected At Ms"
+          },
+          "inbound_latency": {
+            "$ref": "#/components/schemas/NewsRealtimeLatencyData"
+          },
+          "story_visible_latency": {
+            "$ref": "#/components/schemas/NewsRealtimeLatencyData"
+          },
+          "wss_state": {
+            "enum": [
+              "connected",
+              "reconnecting",
+              "unavailable"
+            ],
+            "title": "Wss State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wss_state",
+          "connected_at_ms",
+          "disconnected_at_ms",
+          "inbound_latency",
+          "story_visible_latency"
+        ],
+        "title": "NewsRealtimeStatusData",
+        "type": "object"
+      },
       "NewsRssStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -8736,17 +8958,6 @@
             "title": "Consecutive Failures",
             "type": "integer"
           },
-          "coverage_unknown_since_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Coverage Unknown Since At Ms"
-          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
@@ -8761,6 +8972,13 @@
               }
             ],
             "title": "Feed Url"
+          },
+          "incidents": {
+            "items": {
+              "$ref": "#/components/schemas/NewsOpenNewsIncidentData"
+            },
+            "title": "Incidents",
+            "type": "array"
           },
           "last_accepted_strategy_trigger_at_ms": {
             "anyOf": [
@@ -8828,6 +9046,17 @@
             ],
             "title": "Last Fetch Started At Ms"
           },
+          "last_history_check_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last History Check At Ms"
+          },
           "last_http_status": {
             "anyOf": [
               {
@@ -8857,17 +9086,6 @@
               }
             ],
             "title": "Last Outcome"
-          },
-          "last_overflow_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Overflow At Ms"
           },
           "last_rejection_counts": {
             "additionalProperties": {
@@ -8921,10 +9139,6 @@
             ],
             "title": "Refresh Interval Seconds"
           },
-          "replay_supported": {
-            "title": "Replay Supported",
-            "type": "boolean"
-          },
           "source_id": {
             "title": "Source Id",
             "type": "string"
@@ -8937,19 +9151,22 @@
             "title": "Source Kind",
             "type": "string"
           },
-          "strategy_coverage_started_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
+          "strategy_history_status": {
+            "enum": [
+              "unknown",
+              "available",
+              "unavailable",
+              "partial"
             ],
-            "title": "Strategy Coverage Started At Ms"
+            "title": "Strategy History Status",
+            "type": "string"
           },
           "tier": {
             "title": "Tier",
+            "type": "integer"
+          },
+          "unresolved_incident_count": {
+            "title": "Unresolved Incident Count",
             "type": "integer"
           }
         },
@@ -8968,11 +9185,9 @@
           "live_connected",
           "last_connected_at_ms",
           "last_disconnected_at_ms",
-          "last_overflow_at_ms",
-          "strategy_coverage_started_at_ms",
-          "coverage_unknown_since_at_ms",
           "last_accepted_strategy_trigger_at_ms",
-          "replay_supported",
+          "strategy_history_status",
+          "last_history_check_at_ms",
           "observed_strategy_count",
           "last_success_at_ms",
           "last_http_status",
@@ -8981,7 +9196,9 @@
           "last_error",
           "last_rejection_counts",
           "last_items_seen",
-          "last_items_accepted"
+          "last_items_accepted",
+          "unresolved_incident_count",
+          "incidents"
         ],
         "title": "NewsSourceData",
         "type": "object"
@@ -9068,6 +9285,9 @@
             "title": "Operating State",
             "type": "string"
           },
+          "realtime": {
+            "$ref": "#/components/schemas/NewsRealtimeStatusData"
+          },
           "reasons": {
             "items": {
               "type": "string"
@@ -9090,6 +9310,7 @@
           "operating_state",
           "last_success_at_ms",
           "reasons",
+          "realtime",
           "layers",
           "measured_at_ms"
         ],

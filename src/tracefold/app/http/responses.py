@@ -35,6 +35,7 @@ def _validated_etag_json(
     payload: Mapping[str, Any],
     *,
     data: Mapping[str, Any],
+    etag_data: Mapping[str, Any] | None = None,
     request: Request,
     weak: bool = False,
 ) -> JSONResponse | Response:
@@ -48,7 +49,7 @@ def _validated_etag_json(
     if validated_data != _finite_json(jsonable_encoder(data)):
         raise ValueError("etag_representation_data_mismatch")
     encoded = json.dumps(
-        validated_data,
+        _finite_json(jsonable_encoder(etag_data)) if etag_data is not None else validated_data,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

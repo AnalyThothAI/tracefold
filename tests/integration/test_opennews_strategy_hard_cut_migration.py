@@ -226,13 +226,13 @@ def test_0265_hard_cuts_legacy_opennews_state_without_erasing_push_audit() -> No
     ]
 
 
-def test_0265_rejects_an_active_opennews_item_without_strategy_provenance() -> None:
+def test_current_head_rejects_an_active_opennews_item_without_strategy_provenance() -> None:
     config = alembic_config()
     config.attributes["database_url"] = _test_postgres_dsn()
     conn = connect_postgres_test(read_only=False)
     try:
         _reset_to_0264(conn, config)
-        command.upgrade(config, "20260813_0265")
+        command.upgrade(config, "head")
         with conn.transaction():
             NewsRepository(conn).sync_sources((opennews_source(),), now_ms=100)
 
@@ -251,14 +251,14 @@ def test_0265_rejects_an_active_opennews_item_without_strategy_provenance() -> N
                     """
                     INSERT INTO news_items(
                       item_id, source_id, source_item_key, provider_record_id,
-                      provider_metadata, canonical_url, reporting_origin,
+                      provider_metadata, first_ingest_mode, canonical_url, reporting_origin,
                       title, description, lang, published_at_ms,
                       first_observed_at_ms, last_observed_at_ms,
                       content_fingerprint, importance_factors,
                       active, created_at_ms, updated_at_ms
                     ) VALUES (
                       %(item_id)s, 'news-opennews', %(item_id)s,
-                      %(item_id)s, %(provider_metadata)s, NULL, 'opennews',
+                      %(item_id)s, %(provider_metadata)s, 'live', NULL, 'opennews',
                       'Active item without Strategy provenance', '', 'en',
                       100, 100, 100, 'missing-strategy-fingerprint',
                       '{}'::jsonb, true, 100, 100
@@ -583,6 +583,8 @@ def _cancelled_delivery_hashes_from_rows(expected: dict[str, str]) -> dict[str, 
 def _news_state_snapshot(conn) -> dict[str, dict[str, object]]:
     snapshot: dict[str, dict[str, object]] = {}
     for table_name in NEWS_TABLES:
+        if table_name == "news_opennews_incidents":
+            continue
         row = conn.execute(
             f"""
             SELECT count(*) AS row_count,

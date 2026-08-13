@@ -12,7 +12,12 @@ from tracefold.news.projection import (
 from tracefold.news.ranking import select_top_stories
 
 
-def rebuild_news_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
+def rebuild_news_projection(
+    repository: Any,
+    *,
+    now_ms: int,
+    push_enabled: bool | None = None,
+) -> dict[str, Any]:
     """Run the maintained Story load/compute/publish seam in one test transaction."""
 
     payload = repository.load_story_projection(now_ms=now_ms)
@@ -31,6 +36,7 @@ def rebuild_news_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
             snapshot=snapshot,
             projection=projection,
             now_ms=now_ms,
+            push_enabled=push_enabled,
         ),
     )
 

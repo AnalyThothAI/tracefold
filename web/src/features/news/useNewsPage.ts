@@ -27,8 +27,34 @@ export type NewsFeedFilters = {
   sort: "importance" | "latest";
 };
 
+const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
+  (
+    await getApi<NewsFeed>("/api/news/feed", {
+      etagKey: `news-feed:${JSON.stringify([
+        filters.q,
+        filters.category,
+        filters.level,
+        filters.reportingOrigin,
+        filters.providerScoreGt,
+        filters.sort,
+        cursor ?? "first",
+      ])}`,
+      params: {
+        category: filters.category,
+        cursor,
+        level: filters.level,
+        limit: 25,
+        provider_score_gt: filters.providerScoreGt,
+        q: filters.q,
+        reporting_origin: filters.reportingOrigin,
+        sort: filters.sort,
+      },
+      token,
+    })
+  ).data;
+
 export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
-  useInfiniteQuery({
+  useQuery({
     enabled: Boolean(token),
     queryKey: queryKeys.newsFeed(
       filters.q,
@@ -38,35 +64,32 @@ export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
       filters.providerScoreGt,
       filters.sort,
     ),
-    queryFn: async ({ pageParam }) =>
-      (
-        await getApi<NewsFeed>("/api/news/feed", {
-          etagKey: `news-feed:${JSON.stringify([
-            filters.q,
-            filters.category,
-            filters.level,
-            filters.reportingOrigin,
-            filters.providerScoreGt,
-            filters.sort,
-            pageParam ?? "first",
-          ])}`,
-          params: {
-            category: filters.category,
-            cursor: pageParam,
-            level: filters.level,
-            limit: 25,
-            provider_score_gt: filters.providerScoreGt,
-            q: filters.q,
-            reporting_origin: filters.reportingOrigin,
-            sort: filters.sort,
-          },
-          token,
-        })
-      ).data,
-    initialPageParam: null as string | null,
+    queryFn: () => fetchNewsFeed(token, filters, null),
+    refetchInterval: 3_000,
+    staleTime: 2_000,
+  });
+
+export const useNewsFeedHistoryWithToken = (
+  token: string,
+  filters: NewsFeedFilters,
+  firstCursor: string | null,
+  enabled: boolean,
+) =>
+  useInfiniteQuery({
+    enabled: Boolean(token && firstCursor && enabled),
+    queryKey: queryKeys.newsFeedHistory(
+      filters.q,
+      filters.category,
+      filters.level,
+      filters.reportingOrigin,
+      filters.providerScoreGt,
+      filters.sort,
+      firstCursor ?? "",
+    ),
+    queryFn: ({ pageParam }) => fetchNewsFeed(token, filters, pageParam),
+    initialPageParam: firstCursor ?? "",
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    staleTime: Number.POSITIVE_INFINITY,
   });
 
 export const useNewsStoryWithToken = (token: string, storyId?: string | null) =>
@@ -108,11 +131,12 @@ export const useNewsStatusWithToken = (token: string) =>
     queryFn: async () =>
       (
         await getApi<NewsStatus>("/api/news/status", {
+          etagKey: "news-status",
           token,
         })
       ).data,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: 3_000,
+    staleTime: 2_000,
   });
 
 export const useNewsSourcesWithToken = (token: string) =>

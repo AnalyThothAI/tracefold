@@ -201,11 +201,8 @@ class NewsNotificationData(ExactApiSchema):
     ineligible_reason: (
         Literal[
             "disabled",
-            "score_threshold",
-            "no_asset",
-            "cl_family_only",
-            "baseline",
-            "stale",
+            "recovery_only",
+            "before_enablement",
         ]
         | None
     )
@@ -477,11 +474,9 @@ class NewsSourceData(ExactApiSchema):
     live_connected: bool
     last_connected_at_ms: int | None
     last_disconnected_at_ms: int | None
-    last_overflow_at_ms: int | None
-    strategy_coverage_started_at_ms: int | None
-    coverage_unknown_since_at_ms: int | None
     last_accepted_strategy_trigger_at_ms: int | None
-    replay_supported: bool
+    strategy_history_status: Literal["unknown", "available", "unavailable", "partial"]
+    last_history_check_at_ms: int | None
     observed_strategy_count: int
     last_success_at_ms: int | None
     last_http_status: int | None
@@ -491,6 +486,8 @@ class NewsSourceData(ExactApiSchema):
     last_rejection_counts: dict[str, int]
     last_items_seen: int
     last_items_accepted: int
+    unresolved_incident_count: int
+    incidents: list[NewsOpenNewsIncidentData]
 
 
 class NewsSourcesPageData(ExactApiSchema):
@@ -512,11 +509,9 @@ class NewsOpenNewsStatusData(ExactApiSchema):
     observed_strategy_count: int
     last_connected_at_ms: int | None
     last_disconnected_at_ms: int | None
-    last_overflow_at_ms: int | None
-    strategy_coverage_started_at_ms: int | None
-    coverage_unknown_since_at_ms: int | None
     last_accepted_strategy_trigger_at_ms: int | None
-    replay_supported: Literal[False]
+    strategy_history_status: Literal["unknown", "available", "unavailable", "partial"]
+    last_history_check_at_ms: int | None
     last_outcome: str | None
     last_error: str | None
     last_success_at_ms: int | None
@@ -524,6 +519,35 @@ class NewsOpenNewsStatusData(ExactApiSchema):
     last_rejection_counts: dict[str, int]
     last_items_seen: int
     last_items_accepted: int
+    unresolved_incident_count: int
+    incidents: list[NewsOpenNewsIncidentData]
+
+
+class NewsOpenNewsIncidentData(ExactApiSchema):
+    incident_id: int
+    cause_class: Literal[
+        "planned_shutdown",
+        "network_connect",
+        "authentication",
+        "provider_close",
+        "protocol_error",
+        "idle_timeout",
+        "database_backpressure",
+        "buffer_overflow",
+        "process_outage",
+        "legacy_unknown",
+        "unknown",
+    ]
+    opened_at_ms: int
+    reconnected_at_ms: int | None
+    closed_at_ms: int | None
+    planned: bool
+    close_code: int | None
+    recovery_status: Literal["pending", "running", "recovered", "partial", "unavailable", "not_required"]
+    recovery_from_at_ms: int | None
+    recovery_to_at_ms: int | None
+    recovered_count: int
+    last_error_code: str | None
 
 
 class NewsRssStatusData(ExactApiSchema):
@@ -597,7 +621,7 @@ class NewsPushStatusData(ExactApiSchema):
     feishu_webhook_url_configured: bool
     feishu_signing_secret_configured: bool
     initialized: bool
-    baseline_at_ms: int | None
+    enablement_epoch_at_ms: int | None
     total_count: int
     suppressed_count: int
     pending_count: int
@@ -620,11 +644,28 @@ class NewsStatusLayersData(ExactApiSchema):
     push: NewsPushStatusData
 
 
+class NewsRealtimeLatencyData(ExactApiSchema):
+    p50_ms: int | None
+    p95_ms: int | None
+    sample_count: int
+    window_started_at_ms: int
+    measured_at_ms: int
+
+
+class NewsRealtimeStatusData(ExactApiSchema):
+    wss_state: Literal["connected", "reconnecting", "unavailable"]
+    connected_at_ms: int | None
+    disconnected_at_ms: int | None
+    inbound_latency: NewsRealtimeLatencyData
+    story_visible_latency: NewsRealtimeLatencyData
+
+
 class NewsStatusData(ExactApiSchema):
     status: NewsHealthStatus
     operating_state: Literal["live", "recovering", "stalled"]
     last_success_at_ms: int | None
     reasons: list[str]
+    realtime: NewsRealtimeStatusData
     layers: NewsStatusLayersData
     measured_at_ms: int
 

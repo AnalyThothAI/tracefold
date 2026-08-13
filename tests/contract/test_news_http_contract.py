@@ -53,7 +53,7 @@ def test_news_story_notification_contract_separates_eligibility_from_delivery() 
         notification.model_validate(
             {
                 "eligible": True,
-                "ineligible_reason": "stale",
+                "ineligible_reason": "recovery_only",
                 "delivery_state": "sent",
             }
         )
@@ -107,7 +107,7 @@ def test_news_brief_http_contract_is_one_slot_and_one_sealed_payload() -> None:
     }.isdisjoint(publication_fields)
 
 
-def test_news_health_contract_exposes_strategy_coverage_without_rest_recovery() -> None:
+def test_news_health_contract_separates_current_wss_from_strategy_history() -> None:
     assert set(NewsIngestStatusData.model_fields) == {
         "status",
         "reasons",
@@ -140,12 +140,12 @@ def test_news_health_contract_exposes_strategy_coverage_without_rest_recovery() 
     assert {
         "last_connected_at_ms",
         "last_disconnected_at_ms",
-        "last_overflow_at_ms",
-        "strategy_coverage_started_at_ms",
-        "coverage_unknown_since_at_ms",
         "last_accepted_strategy_trigger_at_ms",
-        "replay_supported",
+        "strategy_history_status",
+        "last_history_check_at_ms",
         "observed_strategy_count",
+        "unresolved_incident_count",
+        "incidents",
     } <= source_fields
     assert {"last_live_at_ms", "last_recovery_at_ms"}.isdisjoint(source_fields)
     assert set(NewsOpenNewsStatusData.model_fields) == {
@@ -156,11 +156,9 @@ def test_news_health_contract_exposes_strategy_coverage_without_rest_recovery() 
         "observed_strategy_count",
         "last_connected_at_ms",
         "last_disconnected_at_ms",
-        "last_overflow_at_ms",
-        "strategy_coverage_started_at_ms",
-        "coverage_unknown_since_at_ms",
         "last_accepted_strategy_trigger_at_ms",
-        "replay_supported",
+        "strategy_history_status",
+        "last_history_check_at_ms",
         "last_outcome",
         "last_error",
         "last_success_at_ms",
@@ -168,6 +166,8 @@ def test_news_health_contract_exposes_strategy_coverage_without_rest_recovery() 
         "last_rejection_counts",
         "last_items_seen",
         "last_items_accepted",
+        "unresolved_incident_count",
+        "incidents",
     }
 
 

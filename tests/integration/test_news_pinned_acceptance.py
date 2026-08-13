@@ -752,7 +752,7 @@ def _compute_current_public_clusters(repository: NewsRepository, *, now_ms: int)
     return public_clusters
 
 
-def test_scoreless_1019_market_strategy_reaches_brief_and_http_but_not_push(
+def test_scoreless_1019_market_strategy_reaches_story_brief_http_and_push(
     tmp_path: Path,
 ) -> None:
     prepare_postgres_database()
@@ -803,13 +803,13 @@ def test_scoreless_1019_market_strategy_reaches_brief_and_http_but_not_push(
         source = opennews_source()
         with conn.transaction():
             repository.sync_sources((source,), now_ms=NOW_MS - 2)
-            assert repository.initialize_push_baseline(now_ms=NOW_MS - 1) == (NOW_MS - 1, True)
+            assert repository.set_push_enabled(enabled=True, now_ms=NOW_MS - 1) == (NOW_MS - 1, True)
             written = repository.record_opennews_events(
                 source=source,
                 events=typed_events,
                 observed_at_ms=NOW_MS,
             )
-            projection = rebuild_news_projection(repository, now_ms=NOW_MS)
+            projection = rebuild_news_projection(repository, now_ms=NOW_MS, push_enabled=True)
 
         assert written["items_inserted"] == 2
         assert projection["projection_status"] == "rebuilt"
@@ -892,11 +892,14 @@ def test_scoreless_1019_market_strategy_reaches_brief_and_http_but_not_push(
                 result=result,
                 now_ms=NOW_MS + 2,
             )
-            push_candidates, next_cursor = repository.story_push_reconcile_page()
         assert publication_id is not None
-        assert push_candidates == {}
-        assert next_cursor is None
-        assert conn.execute("SELECT count(*) AS count FROM news_push_deliveries").fetchone()["count"] == 0
+        delivery = conn.execute("SELECT status, source_payload FROM news_push_deliveries").fetchone()
+        assert delivery is not None
+        assert delivery["status"] == "pending_translation"
+        assert [
+            strategy["id"]
+            for strategy in delivery["source_payload"]["provider_evidence"]["provider_metadata"]["strategies"]
+        ] == ["1019"]
 
         settings = Settings(
             ws_token="secret",
@@ -935,9 +938,9 @@ def test_scoreless_1019_market_strategy_reaches_brief_and_http_but_not_push(
         assert len(feed_stories) == 1
         assert feed_stories[0]["title"] == title
         assert feed_stories[0]["notification"] == {
-            "eligible": False,
-            "ineligible_reason": "score_threshold",
-            "delivery_state": "not_created",
+            "eligible": True,
+            "ineligible_reason": None,
+            "delivery_state": "pending",
         }
         assert priority_feed.json()["data"]["stories"] == []
         detail_data = detail.json()["data"]

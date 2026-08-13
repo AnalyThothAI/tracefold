@@ -676,9 +676,28 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `provider_record_id` | `TEXT` | True | `None` |
 | `provider_metadata` | `JSONB` | False | `'{}'::jsonb` |
-| `provider_score_updated_at_ms` | `BIGINT` | True | `None` |
 | `source_position` | `SMALLINT` | True | `None` |
-| `push_eligibility_updated_at_ms` | `BIGINT` | True | `None` |
+| `first_ingest_mode` | `TEXT` | True | `None` |
+
+## `news_opennews_incidents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `incident_id` | `BIGINT` | False | `None` |
+| `source_id` | `TEXT` | False | `None` |
+| `cause_class` | `TEXT` | False | `None` |
+| `opened_at_ms` | `BIGINT` | False | `None` |
+| `reconnected_at_ms` | `BIGINT` | True | `None` |
+| `closed_at_ms` | `BIGINT` | True | `None` |
+| `planned` | `BOOLEAN` | False | `false` |
+| `close_code` | `INTEGER` | True | `None` |
+| `recovery_status` | `TEXT` | False | `'pending'::text` |
+| `recovery_from_at_ms` | `BIGINT` | True | `None` |
+| `recovery_to_at_ms` | `BIGINT` | True | `None` |
+| `recovered_count` | `INTEGER` | False | `0` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_projection_summary`
 
@@ -705,8 +724,6 @@
 |--------|------|----------|---------|
 | `story_id` | `TEXT` | False | `None` |
 | `selected_item_id` | `TEXT` | False | `None` |
-| `provider_score` | `DOUBLE PRECISION` | False | `None` |
-| `threshold_observed_at_ms` | `BIGINT` | False | `None` |
 | `source_payload` | `JSONB` | False | `None` |
 | `delivery_payload` | `JSONB` | True | `None` |
 | `payload_fingerprint` | `TEXT` | True | `None` |
@@ -726,13 +743,14 @@
 | `translation_attempted_at_ms` | `BIGINT` | True | `None` |
 | `translation_duration_ms` | `BIGINT` | True | `None` |
 | `translation_fallback_code` | `TEXT` | True | `None` |
+| `live_observed_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_push_state`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `singleton_key` | `TEXT` | False | `None` |
-| `baseline_at_ms` | `BIGINT` | True | `None` |
+| `enablement_epoch_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `total_count` | `BIGINT` | False | `0` |
@@ -744,8 +762,7 @@
 | `latest_sent_at_ms` | `BIGINT` | True | `None` |
 | `latest_error` | `TEXT` | True | `None` |
 | `latest_error_at_ms` | `BIGINT` | True | `None` |
-| `reconcile_cursor_story_id` | `TEXT` | True | `None` |
-| `reconcile_cycle_started_at_ms` | `BIGINT` | True | `None` |
+| `enabled` | `BOOLEAN` | False | `false` |
 
 ## `news_sources`
 
@@ -779,11 +796,10 @@
 | `last_items_accepted` | `INTEGER` | False | `0` |
 | `last_connected_at_ms` | `BIGINT` | True | `None` |
 | `last_disconnected_at_ms` | `BIGINT` | True | `None` |
-| `last_overflow_at_ms` | `BIGINT` | True | `None` |
-| `strategy_coverage_started_at_ms` | `BIGINT` | True | `None` |
-| `coverage_unknown_since_at_ms` | `BIGINT` | True | `None` |
 | `last_accepted_strategy_trigger_at_ms` | `BIGINT` | True | `None` |
 | `observed_strategy_provenance` | `JSONB` | False | `'[]'::jsonb` |
+| `strategy_history_status` | `TEXT` | False | `'unknown'::text` |
+| `last_history_check_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_stories`
 

@@ -55,11 +55,38 @@
 
   .news-status-overview,
   .news-status-layer,
-  .news-source-card {
+  .news-source-card,
+  .news-incident-ledger {
     min-width: 0;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--card) 88%, transparent);
+  }
+
+  .news-incident-ledger {
+    padding: 0.7rem 0.8rem;
+  }
+
+  .news-incident-ledger summary {
+    cursor: pointer;
+    color: var(--muted-foreground);
+    font: 650 0.7rem var(--font-mono);
+  }
+
+  .news-incident-ledger ol {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0.55rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-incident-ledger li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.6rem;
+    color: var(--muted-foreground);
+    font: 0.64rem/1.4 var(--font-mono);
   }
 
   .news-status-overview {

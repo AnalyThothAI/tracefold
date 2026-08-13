@@ -38,7 +38,7 @@ describe("NewsPage", () => {
 
   afterEach(cleanup);
 
-  it("defaults to the latest OpenNews >70 feed with 25 rows", async () => {
+  it("defaults to the complete latest Strategy Story feed with 25 rows", async () => {
     const observed = {
       limit: null as string | null,
       providerScoreGt: null as string | null,
@@ -57,15 +57,15 @@ describe("NewsPage", () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
     expect(await screen.findByRole("heading", { name: "全球新闻" })).toBeInTheDocument();
-    expect(screen.getByText("OpenNews > 70 · 高信号动态")).toBeInTheDocument();
+    expect(screen.getByText("账户 Strategy 命中的新闻事件")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "全球新闻" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: /重点/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "全部" })).toHaveAttribute("aria-current", "page");
     expect(observed.sort).toBe("latest");
     expect(observed.limit).toBe("25");
-    expect(observed.providerScoreGt).toBe("70");
+    expect(observed.providerScoreGt).toBeNull();
   });
 
-  it("keeps the complete Feed reachable through a URL-owned all mode", async () => {
+  it("keeps the score panel reachable through a URL-owned focus mode", async () => {
     let providerScoreGt: string | null = "unobserved";
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
@@ -74,13 +74,16 @@ describe("NewsPage", () => {
       }),
     );
 
-    renderNews(<NewsPage token="test-token" view="feed" />, "/news?view=all&provider_score_gt=70");
+    renderNews(
+      <NewsPage token="test-token" view="feed" />,
+      "/news?view=focus&provider_score_gt=12",
+    );
 
-    expect(await screen.findByRole("link", { name: "全部" })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: /重点/ })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(providerScoreGt).toBeNull();
+    expect(providerScoreGt).toBe("70");
     await waitFor(() =>
       expect(screen.getByTestId("location")).not.toHaveTextContent("provider_score_gt"),
     );
@@ -89,14 +92,14 @@ describe("NewsPage", () => {
   it("preserves active filters when switching from all News to focus", async () => {
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?view=all&sort=importance&q=bitcoin&category=economic&level=high&reporting_origin=reuters",
+      "/news?sort=importance&q=bitcoin&category=economic&level=high&reporting_origin=reuters",
     );
 
     const focusLink = await screen.findByRole("link", { name: /重点/ });
     const href = focusLink.getAttribute("href");
     expect(href).not.toBeNull();
     const params = new URL(href!, "https://tracefold.local").searchParams;
-    expect(params.get("view")).toBeNull();
+    expect(params.get("view")).toBe("focus");
     expect(params.get("sort")).toBe("importance");
     expect(params.get("q")).toBe("bitcoin");
     expect(params.get("category")).toBe("economic");
@@ -182,6 +185,11 @@ describe("NewsPage", () => {
     expect(within(row!).getByText("多个央行正在重新评估政策路径。")).toBeInTheDocument();
     expect(within(row!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
     expect(within(row!).getByText(story.source_name)).toBeInTheDocument();
+    expect(
+      within(row!).getByText(String(new Date(story.last_published_at_ms).getFullYear()), {
+        exact: false,
+      }),
+    ).toBeInTheDocument();
     expect(within(row!).getByText("4 家独立来源")).toBeInTheDocument();
     const whySummary = within(row!).getByText("为什么重要").closest("summary");
     const whyDisclosure = whySummary?.closest("details");
@@ -249,9 +257,9 @@ describe("NewsPage", () => {
     const cases = [
       {
         delivery_state: "sent",
-        detail: "当前已过通知时限",
+        detail: "当前启用前事件",
         eligible: false,
-        ineligible_reason: "stale",
+        ineligible_reason: "before_enablement",
         label: "已通知",
         title: "A Story that was already notified",
         tone: "success",
@@ -267,20 +275,20 @@ describe("NewsPage", () => {
       },
       {
         delivery_state: "not_created",
-        detail: "无关联资产",
+        detail: "仅恢复历史",
         eligible: false,
-        ineligible_reason: "no_asset",
+        ineligible_reason: "recovery_only",
         label: "不通知",
-        title: "A Story without notification assets",
+        title: "A recovery-only Story",
         tone: "neutral",
       },
       {
         delivery_state: "not_created",
-        detail: "仅 CL 资产",
+        detail: "通知关闭",
         eligible: false,
-        ineligible_reason: "cl_family_only",
+        ineligible_reason: "disabled",
         label: "不通知",
-        title: "A CL-only Story",
+        title: "A Story observed while Push is disabled",
         tone: "neutral",
       },
       {
@@ -530,18 +538,16 @@ describe("NewsPage", () => {
     expect(screen.queryByRole("button", { name: /条新新闻/ })).not.toBeInTheDocument();
   });
 
-  it("keeps fact health inline without a retired title-translation layer", async () => {
+  it("keeps only current WSS and both latency pairs inline", async () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const state = await screen.findByText("新闻已同步");
-    const summary = state.closest("summary");
-    expect(summary).not.toBeNull();
-    fireEvent.click(summary!);
-    expect(screen.getByText("OpenNews Strategy 自动推送")).toBeInTheDocument();
-    expect(screen.getByText("公共 RSS 覆盖与交叉印证")).toBeInTheDocument();
+    const state = await screen.findByText("WSS 已连接");
+    expect(state.closest('[role="status"]')).toHaveAttribute("data-state", "live");
+    expect(screen.getByText(/入站 P50\/P95/)).toBeInTheDocument();
+    expect(screen.getByText(/Story P50\/P95/)).toBeInTheDocument();
+    expect(screen.queryByText("公共 RSS 覆盖与交叉印证")).not.toBeInTheDocument();
     expect(screen.queryByText("中文标题翻译")).not.toBeInTheDocument();
     expect(screen.queryByText("暂无译文")).not.toBeInTheDocument();
-    expect(screen.queryByText(/WSS|REST/)).not.toBeInTheDocument();
   });
 
   it("ignores Brief or Push overall state when reader-facing News layers are ready", async () => {
@@ -556,23 +562,20 @@ describe("NewsPage", () => {
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    expect(await screen.findByText("新闻已同步")).toBeInTheDocument();
+    expect(await screen.findByText("WSS 已连接")).toBeInTheDocument();
   });
 
-  it("distinguishes first Strategy warming from a degraded fact layer", async () => {
+  it("keeps current WSS health separate from Story projection health", async () => {
     const status = newsStatusFixture();
-    status.layers.ingest.status = "warming";
+    status.layers.story.status = "degraded";
     server.use(
       http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
     );
-    const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    expect(await screen.findByText("等待首次 Strategy 触发")).toBeInTheDocument();
+    renderNews(<NewsPage token="test-token" view="feed" />);
 
-    status.layers.ingest.status = "ready";
-    status.layers.story.status = "degraded";
-    await rendered.queryClient.invalidateQueries({ queryKey: ["news-status"] });
-    const degraded = await screen.findByText("新闻更新异常");
-    expect(degraded.closest("details")).toHaveAttribute("data-state", "stalled");
+    const connected = await screen.findByText("WSS 已连接");
+    expect(connected.closest('[role="status"]')).toHaveAttribute("data-state", "live");
+    expect(screen.queryByText(/Story 投影需要恢复/)).not.toBeInTheDocument();
   });
 
   it("presents an OpenNews Strategy transport failure as a degraded fact layer", async () => {
@@ -580,15 +583,15 @@ describe("NewsPage", () => {
     status.layers.ingest.status = "degraded";
     status.layers.ingest.opennews!.last_error = "opennews_live_disconnected";
     status.layers.ingest.reasons = ["opennews_strategy_transport_error"];
+    status.realtime.wss_state = "unavailable";
     server.use(
       http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
     );
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const degraded = await screen.findByText("新闻更新异常");
-    expect(degraded.closest("details")).toHaveAttribute("data-state", "stalled");
-    expect(screen.getByText(/数据更新遇到异常/)).toBeInTheDocument();
+    const degraded = await screen.findByText("WSS 不可用");
+    expect(degraded.closest('[role="status"]')).toHaveAttribute("data-state", "stalled");
   });
 
   it("keeps a healthy OpenNews primary readable while RSS corroboration warms", async () => {
@@ -601,9 +604,9 @@ describe("NewsPage", () => {
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const ready = await screen.findByText("新闻已同步");
-    fireEvent.click(ready.closest("summary")!);
-    expect(screen.queryByText(/数据更新遇到异常/)).not.toBeInTheDocument();
+    const ready = await screen.findByText("WSS 已连接");
+    expect(ready.closest('[role="status"]')).toHaveAttribute("data-state", "live");
+    expect(screen.queryByText("公共 RSS 覆盖与交叉印证")).not.toBeInTheDocument();
   });
 
   it("shows intentionally disabled RSS without treating it as an ingest failure", async () => {
@@ -622,11 +625,9 @@ describe("NewsPage", () => {
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const ready = await screen.findByText("新闻已同步");
-    fireEvent.click(ready.closest("summary")!);
-    expect(screen.getByRole("heading", { name: "公共 RSS 覆盖与交叉印证" })).toBeInTheDocument();
-    expect(screen.getByText("未启用")).toBeInTheDocument();
-    expect(screen.queryByText(/数据更新遇到异常/)).not.toBeInTheDocument();
+    const ready = await screen.findByText("WSS 已连接");
+    expect(ready.closest('[role="status"]')).toHaveAttribute("data-state", "live");
+    expect(screen.queryByText("公共 RSS 覆盖与交叉印证")).not.toBeInTheDocument();
   });
 
   it("renders the four public News layers on the standalone Status view", async () => {
@@ -642,7 +643,7 @@ describe("NewsPage", () => {
     expect(story).not.toBeNull();
     expect(brief).not.toBeNull();
     expect(push).not.toBeNull();
-    const primaryFact = within(ingest!).getByText("OpenNews Strategy 连接");
+    const primaryFact = within(ingest!).getByText("WSS 当前状态");
     const corroborationFact = within(ingest!).getByText("RSS 印证成功来源");
     expect(
       primaryFact.compareDocumentPosition(corroborationFact) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -710,7 +711,7 @@ describe("NewsPage", () => {
     );
     renderNews(<NewsPage token="test-token" view="sources" />, "/news/sources");
 
-    expect(await screen.findByRole("heading", { name: "新闻来源" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "公开新闻来源" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "来源" })).toHaveAttribute("aria-current", "page");
     const first = await screen.findByRole("heading", { name: "First Source" });
     const second = screen.getByRole("heading", { name: "Second Source" });
@@ -748,7 +749,7 @@ describe("NewsPage", () => {
     expect(within(card!).queryByText(/TIER 4/)).not.toBeInTheDocument();
   });
 
-  it("keeps a prior Strategy coverage gap visible after reconnect", async () => {
+  it("keeps historical recovery evidence separate from current source health", async () => {
     const primary = newsSourcesFixture().items.find((source) => source.source_kind === "opennews");
     if (!primary) throw new Error("OpenNews source fixture required");
     server.use(
@@ -759,8 +760,8 @@ describe("NewsPage", () => {
             items: [
               {
                 ...primary,
-                coverage_unknown_since_at_ms: NEWS_NOW_MS - 120_000,
                 live_connected: true,
+                strategy_history_status: "partial",
               },
             ],
             page: { has_more: false, next_cursor: null, returned_count: 1 },
@@ -773,8 +774,10 @@ describe("NewsPage", () => {
 
     const card = (await screen.findByRole("heading", { name: "OpenNews" })).closest("article");
     expect(card).not.toBeNull();
-    expect(within(card!).getByText("历史覆盖未知")).toBeInTheDocument();
-    expect(within(card!).getByText("不可回放缺口起点")).toBeInTheDocument();
+    expect(within(card!).getByText("采集正常")).toBeInTheDocument();
+    expect(within(card!).getByText("Strategy 历史校验").parentElement).toHaveTextContent(
+      "部分恢复",
+    );
   });
 
   it("makes Story detail reading-first and keeps scoring internals in a disclosure", async () => {
@@ -784,7 +787,7 @@ describe("NewsPage", () => {
     detail.notification = {
       delivery_state: "sent",
       eligible: false,
-      ineligible_reason: "stale",
+      ineligible_reason: "before_enablement",
     };
     server.use(
       http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
@@ -807,7 +810,7 @@ describe("NewsPage", () => {
     expect(hero).not.toBeNull();
     expect(within(hero!).getByText(detail.source_name)).toBeInTheDocument();
     expect(within(hero!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
-    expect(within(hero!).getByLabelText("通知状态 已通知；当前已过通知时限")).toBeInTheDocument();
+    expect(within(hero!).getByLabelText("通知状态 已通知；当前启用前事件")).toBeInTheDocument();
     const auditSummary = screen.getByText("查看 Tracefold 评分与新闻事件审计");
     expect(title.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(

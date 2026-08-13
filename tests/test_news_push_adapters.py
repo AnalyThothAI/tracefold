@@ -413,7 +413,10 @@ def test_feishu_news_push_renders_compact_evidence_v2_card() -> None:
                     "tag": "div",
                     "text": {
                         "tag": "plain_text",
-                        "content": "关联资产：BTC · ETH\nOpenNews 评分：91",
+                        "content": (
+                            "命中策略：1018 News Score > 70 · 1019 OI Event Monitor\n"
+                            "关联资产：BTC · ETH\nOpenNews 评分：91"
+                        ),
                     },
                     "margin": "0px 0px 0px 0px",
                 },
@@ -505,7 +508,7 @@ def test_feishu_news_push_translates_once_and_keeps_original_visible() -> None:
     body_text = [element["text"]["content"] for element in card["body"]["elements"] if element.get("tag") == "div"]
     assert body_text == [
         "自动翻译，仅供参考\n原文：Bitcoin ETF records 10% inflows",
-        "关联资产：BTC · ETH\nOpenNews 评分：91",
+        "命中策略：1018 News Score > 70 · 1019 OI Event Monitor\n关联资产：BTC · ETH\nOpenNews 评分：91",
     ]
     assert len(translation_requests) == 1
     request_payload = json.loads(translation_requests[0].content)
@@ -970,7 +973,9 @@ def test_feishu_news_push_uses_english_original_without_model_work() -> None:
             "tag": "div",
             "text": {
                 "tag": "plain_text",
-                "content": "关联资产：BTC · ETH\nOpenNews 评分：91",
+                "content": (
+                    "命中策略：1018 News Score > 70 · 1019 OI Event Monitor\n关联资产：BTC · ETH\nOpenNews 评分：91"
+                ),
             },
             "margin": "0px 0px 0px 0px",
         },
@@ -990,7 +995,9 @@ def test_feishu_news_push_uses_chinese_original_unchanged() -> None:
 
     card = rendered["card"]
     assert card["header"]["title"]["content"] == "比特币 ETF 录得资金流入"
-    assert card["body"]["elements"][0]["text"]["content"] == ("关联资产：BTC · ETH\nOpenNews 评分：91")
+    assert card["body"]["elements"][0]["text"]["content"] == (
+        "命中策略：1018 News Score > 70 · 1019 OI Event Monitor\n关联资产：BTC · ETH\nOpenNews 评分：91"
+    )
 
 
 def test_feishu_news_push_asset_body_preserves_order_and_deduplicates() -> None:
@@ -1014,7 +1021,9 @@ def test_feishu_news_push_asset_body_preserves_order_and_deduplicates() -> None:
         delivery.close()
 
     assert rendered["card"]["header"]["title"]["content"] == "Bitcoin ETF records inflows"
-    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("关联资产：NEAR · BTC\nOpenNews 评分：91")
+    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == (
+        "命中策略：1018 News Score > 70 · 1019 OI Event Monitor\n关联资产：NEAR · BTC\nOpenNews 评分：91"
+    )
 
 
 @pytest.mark.parametrize("coins", (None, [], "BTC", [{"market_type": "spot"}]))
@@ -1031,28 +1040,27 @@ def test_feishu_news_push_without_valid_assets_marks_them_unavailable(coins: obj
         delivery.close()
 
     assert rendered["card"]["header"]["title"]["content"] == "Bitcoin ETF records inflows"
-    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == ("关联资产：未提供\nOpenNews 评分：91")
+    assert rendered["card"]["body"]["elements"][0]["text"]["content"] == (
+        "命中策略：1018 News Score > 70 · 1019 OI Event Monitor\n关联资产：未提供\nOpenNews 评分：91"
+    )
 
 
 @pytest.mark.parametrize(
     "score",
     (None, True, "91", -1, 101, float("nan"), float("inf")),
 )
-def test_feishu_news_push_rejects_invalid_provider_score(score: object) -> None:
+def test_feishu_news_push_ignores_invalid_optional_provider_score(score: object) -> None:
     delivery = FeishuNewsPushDelivery(
         _FEISHU_TEST_URL,
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"code": 0})),
     )
     source = _news_push_source_payload()
-    source["provider_evidence"]["provider_score"] = score
+    source["provider_evidence"]["provider_metadata"]["score"] = score
     try:
-        with pytest.raises(
-            NewsPushDeliveryError,
-            match="news_push_feishu_render_payload_invalid",
-        ):
-            _prepare_payload(delivery, source)
+        rendered = _prepare_payload(delivery, source)
     finally:
         delivery.close()
+    assert "OpenNews 评分" not in rendered["card"]["body"]["elements"][0]["text"]["content"]
 
 
 @pytest.mark.parametrize("url", ("javascript:alert(1)", "//example.com/story", "not-a-url"))
@@ -1108,7 +1116,8 @@ def test_feishu_news_push_delivers_the_frozen_card_without_rerendering() -> None
     assert sent_cards == [frozen["card"], frozen["card"]]
     assert all(card["header"]["title"]["content"] == "Bitcoin ETF records inflows" for card in sent_cards)
     assert all(
-        card["body"]["elements"][0]["text"]["content"] == "关联资产：BTC · ETH\nOpenNews 评分：91"
+        card["body"]["elements"][0]["text"]["content"]
+        == "命中策略：1018 News Score > 70 · 1019 OI Event Monitor\n关联资产：BTC · ETH\nOpenNews 评分：91"
         for card in sent_cards
     )
     assert all("MUTATED SOURCE" not in json.dumps(card) for card in sent_cards)
@@ -1347,7 +1356,7 @@ def _news_push_source_payload(
     symbols: tuple[str, ...] = ("BTC", "ETH"),
 ) -> dict[str, object]:
     return {
-        "schema_version": "news_story_push_v1",
+        "schema_version": "news_story_push_v2",
         "story_id": "story-1",
         "provider_evidence": {
             "item_id": "item-1",
@@ -1358,13 +1367,16 @@ def _news_push_source_payload(
                 "signal": "long",
                 "grade": "A+",
                 "coins": [{"symbol": symbol, "market_type": "spot"} for symbol in symbols],
+                "strategies": [
+                    {"id": "1018", "name": "News Score > 70"},
+                    {"id": "1019", "name": "OI Event Monitor"},
+                ],
             },
             "reporting_origin": "reuters",
             "title": title,
             "description": "Provider description is not rendered.",
             "lang": "en",
             "published_at_ms": 1_785_542_400_000,
-            "provider_score": 91,
         },
         "tracefold_story": {
             "importance_score": 64,

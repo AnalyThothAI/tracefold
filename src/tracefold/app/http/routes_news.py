@@ -139,7 +139,7 @@ def get_news_sources(
 
 
 @router.get("/news/status", response_model=_StatusEnvelope)
-def get_news_status(request: Request) -> JSONResponse:
+def get_news_status(request: Request) -> Response:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     push_settings = runtime.settings.news.push
@@ -159,7 +159,14 @@ def get_news_status(request: Request) -> JSONResponse:
             workers_state=workers_state,
             workers_reason=workers_reason,
         )
-    return _validated_json(_StatusEnvelope, {"ok": True, "data": data})
+    return _validated_etag_json(
+        _StatusEnvelope,
+        {"ok": True, "data": data},
+        data=data,
+        etag_data=_status_etag_basis(data),
+        request=request,
+        weak=True,
+    )
 
 
 def _news_workers_observation(conn: Any, *, now_ms: int) -> tuple[str | None, str | None]:
@@ -201,6 +208,21 @@ def _validate_query_params(request: Request, *, supported: set[str]) -> None:
     for name in request.query_params:
         if name not in supported:
             raise ApiBadRequest("unsupported_query_param", field=name)
+
+
+def _status_etag_basis(data: dict[str, Any]) -> dict[str, Any]:
+    def stable(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: stable(item)
+                for key, item in value.items()
+                if key not in {"measured_at_ms", "window_started_at_ms"}
+            }
+        if isinstance(value, list):
+            return [stable(item) for item in value]
+        return value
+
+    return stable(data)
 
 
 __all__ = ["router"]

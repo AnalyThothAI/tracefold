@@ -15,24 +15,12 @@ from tracefold.platform.resource import (
     ResourceOperationOverrun,
 )
 
-from .notification import (
-    PUSH_PROVIDER_SCORE_THRESHOLD,
-    PUSH_SOURCE_FRESHNESS_MS,
-    NewsPushEligibility,
-    evaluate_news_push_eligibility,
-)
-
-PUSH_PAYLOAD_SCHEMA_VERSION = "news_story_push_v1"
+PUSH_PAYLOAD_SCHEMA_VERSION = "news_story_push_v2"
 
 _DELIVERY_MAX_ATTEMPTS = 6
 _DELIVERY_RETRY_DELAYS_MS = (5_000, 30_000, 120_000, 600_000, 1_800_000)
 _LEASE_MS = 60_000
 _DELIVERY_TIMEOUT_SECONDS = 12.0
-_RECONCILE_MINIMUM_CYCLE_MS = 25_000
-
-
-class _NewsPushDeliverySuppressed(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,15 +90,11 @@ class NewsStoryPush:
         finite_operations: Any,
         delivery: NewsPushDelivery,
         runtime_id: str,
-        reconcile_cycle_ms: int = _RECONCILE_MINIMUM_CYCLE_MS,
     ) -> None:
-        if reconcile_cycle_ms < 0:
-            raise ValueError("news_push_reconcile_cycle_ms_invalid")
         self.db = db
         self.finite_operations = finite_operations
         self.delivery = delivery
         self.lease_owner = f"news_story_push:{runtime_id}"
-        self.reconcile_cycle_ms = int(reconcile_cycle_ms)
 
     async def reconcile(self, *, now_ms: int) -> dict[str, int]:
         return cast(
@@ -164,55 +148,11 @@ class NewsStoryPush:
             return False
 
         source_payload = dict(claim["source_payload"])
-        provider_evidence = dict(source_payload["provider_evidence"])
-        published_at_ms = int(provider_evidence["published_at_ms"])
         translation_attempted_at_ms = (
             int(claim["updated_at_ms"]) if claim.get("translation_status") == "attempted" else None
         )
-        push_baseline_at_ms = (
-            int(claim["push_baseline_at_ms"]) if claim.get("push_baseline_at_ms") is not None else None
-        )
-        eligibility = await self._current_eligibility(
-            selected_item_id=str(claim["selected_item_id"]),
-            baseline_at_ms=push_baseline_at_ms,
-            now_ms=now_ms,
-        )
-        if not eligibility.eligible and (
-            claim.get("delivery_payload") is not None
-            or translation_attempted_at_ms is None
-            or eligibility.ineligible_reason != "stale"
-        ):
-            if claim.get("delivery_payload") is None:
-                suppressed = await self.db.run_business(
-                    "news_story_push_suppress_filtered",
-                    self._suppress_claimed_sync,
-                    story_id,
-                    lease_token,
-                    now_ms,
-                    operation_timeout_seconds=1.0,
-                )
-            else:
-                attempt = await self.db.run_business(
-                    "news_story_push_start_filtered_suppression",
-                    self._start_delivery_sync,
-                    story_id,
-                    lease_token,
-                    now_ms,
-                    operation_timeout_seconds=0.5,
-                )
-                if attempt is None:
-                    return False
-                suppressed = await self.db.run_business(
-                    "news_story_push_suppress_filtered",
-                    self._suppress_unsubmitted_sync,
-                    story_id,
-                    lease_token,
-                    now_ms,
-                    operation_timeout_seconds=0.5,
-                )
-            return bool(suppressed)
         if claim.get("delivery_payload") is None:
-            deadline_ms = published_at_ms + PUSH_SOURCE_FRESHNESS_MS
+            deadline_ms = _now_ms() + 10_000
 
             async def fence_translation_dispatch() -> None:
                 nonlocal translation_attempted_at_ms
@@ -305,34 +245,6 @@ class NewsStoryPush:
                 )
                 return bool(terminalized)
             prepared_at_ms = _now_ms()
-            prepared_eligibility = await self._current_eligibility(
-                selected_item_id=str(claim["selected_item_id"]),
-                baseline_at_ms=push_baseline_at_ms,
-                now_ms=prepared_at_ms,
-            )
-            if not prepared_eligibility.eligible:
-                if translation_attempted_at_ms is not None:
-                    suppressed = await self.db.run_business(
-                        "news_story_push_suppress_prepared_stale",
-                        self._suppress_prepared_sync,
-                        story_id,
-                        lease_token,
-                        prepared.translation_status,
-                        delivery_payload,
-                        payload_fingerprint,
-                        prepared_at_ms,
-                        operation_timeout_seconds=1.0,
-                    )
-                else:
-                    suppressed = await self.db.run_business(
-                        "news_story_push_suppress_stale",
-                        self._suppress_claimed_sync,
-                        story_id,
-                        lease_token,
-                        prepared_at_ms,
-                        operation_timeout_seconds=1.0,
-                    )
-                return bool(suppressed)
             claim = await self.db.run_business(
                 "news_story_push_freeze_payload",
                 self._freeze_payload_sync,
@@ -379,27 +291,6 @@ class NewsStoryPush:
             nonlocal submitted
             submitted = True
 
-        async def suppress_if_stale_before_submit() -> None:
-            submitted_at_ms = _now_ms()
-            submission_eligibility = await self._current_eligibility(
-                selected_item_id=str(claim["selected_item_id"]),
-                baseline_at_ms=push_baseline_at_ms,
-                now_ms=submitted_at_ms,
-            )
-            if submission_eligibility.eligible:
-                return
-            suppressed = await self.db.run_business(
-                "news_story_push_suppress_unsubmitted_stale",
-                self._suppress_unsubmitted_sync,
-                story_id,
-                lease_token,
-                submitted_at_ms,
-                operation_timeout_seconds=0.5,
-            )
-            if not suppressed:
-                raise RuntimeError("news_story_push_stale_suppression_lost")
-            raise _NewsPushDeliverySuppressed
-
         try:
             receipt = await self.finite_operations.run(
                 "news_story_push_delivery",
@@ -407,7 +298,6 @@ class NewsStoryPush:
                 delivery_payload,
                 idempotency_key=story_id,
                 timeout_seconds=_DELIVERY_TIMEOUT_SECONDS,
-                before_submit=suppress_if_stale_before_submit,
                 on_submitted=mark_submitted,
             )
             if not isinstance(receipt, NewsPushReceipt) or not receipt.provider.strip():
@@ -415,8 +305,6 @@ class NewsStoryPush:
                     "news_story_push_receipt_invalid",
                     retryable=False,
                 )
-        except _NewsPushDeliverySuppressed:
-            return True
         except asyncio.CancelledError:
             if not submitted:
                 await asyncio.shield(
@@ -475,26 +363,6 @@ class NewsStoryPush:
         )
         return bool(completed)
 
-    async def _current_eligibility(
-        self,
-        *,
-        selected_item_id: str,
-        baseline_at_ms: int | None,
-        now_ms: int,
-    ) -> NewsPushEligibility:
-        evidence = await self.db.run_business(
-            "news_story_push_current_eligibility",
-            self._current_eligibility_sync,
-            selected_item_id,
-            operation_timeout_seconds=0.5,
-        )
-        return evaluate_news_push_eligibility(
-            evidence if isinstance(evidence, Mapping) else None,
-            enabled=True,
-            baseline_at_ms=baseline_at_ms,
-            now_ms=now_ms,
-        )
-
     async def _record_delivery_failure(
         self,
         *,
@@ -525,76 +393,15 @@ class NewsStoryPush:
                 active_lease_owner=self.lease_owner,
                 now_ms=now_ms,
             )
-            baseline_at_ms, _initialized = repos.news.initialize_push_baseline(now_ms=now_ms)
-            inserted = 0
-            suppressed = 0
-            page_due, cycle_started_at_ms = repos.news.push_reconcile_page_schedule(
-                now_ms=now_ms,
-                minimum_cycle_ms=self.reconcile_cycle_ms,
-            )
-            if page_due:
-                candidates, next_cursor = repos.news.story_push_reconcile_page()
-                for candidate in candidates.values():
-                    # The evidence query resolves the same Story/Item identity fences
-                    # enforced by insert_push_candidate. Avoid issuing a guaranteed
-                    # no-op INSERT for ledgered Stories on every reconcile turn.
-                    if candidate.get("push_delivery_status") is not None:
-                        continue
-                    raw_evidence = candidate.get("provider_evidence")
-                    if not isinstance(raw_evidence, Mapping):
-                        continue
-                    evidence = dict(raw_evidence)
-                    eligibility = evaluate_news_push_eligibility(
-                        evidence,
-                        enabled=True,
-                        baseline_at_ms=baseline_at_ms,
-                        now_ms=now_ms,
-                    )
-                    if eligibility.ineligible_reason in {
-                        "score_threshold",
-                        "no_asset",
-                        "cl_family_only",
-                    }:
-                        continue
-                    score = float(evidence["provider_score"])
-                    # Push is a live alert, not a recovery backfill. Suppress both
-                    # the enablement snapshot and any provider score that arrives
-                    # later for an old Item.
-                    should_suppress = not eligibility.eligible
-                    created = repos.news.insert_push_candidate(
-                        story_id=str(candidate["story_id"]),
-                        selected_item_id=str(evidence["item_id"]),
-                        provider_score=score,
-                        threshold_observed_at_ms=int(evidence["threshold_observed_at_ms"]),
-                        source_payload=_source_payload(candidate),
-                        suppressed=should_suppress,
-                        now_ms=now_ms,
-                    )
-                    inserted += int(created)
-                    suppressed += int(created and should_suppress)
-                repos.news.advance_push_reconcile_cursor(
-                    story_id=next_cursor,
-                    cycle_started_at_ms=cycle_started_at_ms,
-                    now_ms=now_ms,
-                )
+            _epoch, initialized = repos.news.set_push_enabled(enabled=True, now_ms=now_ms)
             terminalized = repos.news.terminalize_exhausted_push_deliveries(
                 now_ms=now_ms,
                 max_attempts=_DELIVERY_MAX_ATTEMPTS,
             )
         return {
-            "inserted": inserted,
-            "suppressed": suppressed,
+            "initialized": int(initialized),
             "terminalized": terminalized,
         }
-
-    def _current_eligibility_sync(self, selected_item_id: str) -> dict[str, Any] | None:
-        with self.db.worker_session("news_story_push_current_eligibility", 0.5) as repos:
-            return cast(
-                dict[str, Any] | None,
-                repos.news.current_push_eligibility_evidence(
-                    selected_item_id=selected_item_id,
-                ),
-            )
 
     def _peek_sync(self, now_ms: int) -> dict[str, Any] | None:
         with self.db.worker_session("news_story_push_peek", 0.5) as repos:
@@ -659,57 +466,6 @@ class NewsStoryPush:
                     story_id=story_id,
                     lease_token=lease_token,
                     attempted_at_ms=attempted_at_ms,
-                )
-            )
-
-    def _suppress_claimed_sync(
-        self,
-        story_id: str,
-        lease_token: str,
-        now_ms: int,
-    ) -> bool:
-        with self.db.worker_session("news_story_push_suppress_stale", 1.0) as repos, repos.transaction():
-            return bool(
-                repos.news.suppress_claimed_push_delivery(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    now_ms=now_ms,
-                )
-            )
-
-    def _suppress_prepared_sync(
-        self,
-        story_id: str,
-        lease_token: str,
-        translation_status: str,
-        delivery_payload: Mapping[str, Any],
-        payload_fingerprint: str,
-        now_ms: int,
-    ) -> bool:
-        with self.db.worker_session("news_story_push_suppress_prepared_stale", 1.0) as repos, repos.transaction():
-            return bool(
-                repos.news.suppress_prepared_push_delivery(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    translation_status=translation_status,
-                    delivery_payload=delivery_payload,
-                    payload_fingerprint=payload_fingerprint,
-                    now_ms=now_ms,
-                )
-            )
-
-    def _suppress_unsubmitted_sync(
-        self,
-        story_id: str,
-        lease_token: str,
-        now_ms: int,
-    ) -> bool:
-        with self.db.worker_session("news_story_push_suppress_unsubmitted_stale", 0.5) as repos, repos.transaction():
-            return bool(
-                repos.news.suppress_unsubmitted_push_delivery(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    now_ms=now_ms,
                 )
             )
 
@@ -823,33 +579,6 @@ class NewsStoryPush:
             )
 
 
-def _source_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
-    evidence = dict(candidate["provider_evidence"])
-    metadata = dict(evidence["provider_metadata"])
-    return {
-        "schema_version": PUSH_PAYLOAD_SCHEMA_VERSION,
-        "story_id": str(candidate["story_id"]),
-        "provider_evidence": {
-            "item_id": str(evidence["item_id"]),
-            "url": evidence["url"],
-            "provider_metadata": metadata,
-            "reporting_origin": str(evidence["reporting_origin"]),
-            "title": str(evidence["title"]),
-            "description": str(evidence["description"]),
-            "lang": str(evidence["lang"]),
-            "published_at_ms": int(evidence["published_at_ms"]),
-            "provider_score": _json_number(float(evidence["provider_score"])),
-        },
-        "tracefold_story": {
-            "importance_score": int(candidate["importance_score"]),
-            "item_count": int(candidate["item_count"]),
-            "source_count": int(candidate["source_count"]),
-            "first_published_at_ms": int(candidate["first_published_at_ms"]),
-            "last_published_at_ms": int(candidate["last_published_at_ms"]),
-        },
-    }
-
-
 def _receipt_payload(receipt: NewsPushReceipt) -> dict[str, Any]:
     return {
         "provider": receipt.provider,
@@ -868,10 +597,6 @@ def _payload_fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _json_number(value: float) -> int | float:
-    return int(value) if value.is_integer() else value
-
-
 def _retry_delay_ms(attempt_count: int) -> int:
     index = max(0, min(int(attempt_count) - 1, len(_DELIVERY_RETRY_DELAYS_MS) - 1))
     return _DELIVERY_RETRY_DELAYS_MS[index]
@@ -883,8 +608,6 @@ def _now_ms() -> int:
 
 __all__ = [
     "PUSH_PAYLOAD_SCHEMA_VERSION",
-    "PUSH_PROVIDER_SCORE_THRESHOLD",
-    "PUSH_SOURCE_FRESHNESS_MS",
     "NewsPushDelivery",
     "NewsPushDeliveryError",
     "NewsPushReceipt",

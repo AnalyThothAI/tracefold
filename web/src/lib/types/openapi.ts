@@ -2902,7 +2902,40 @@ export interface components {
             /** Eligible */
             eligible: boolean;
             /** Ineligible Reason */
-            ineligible_reason: ("disabled" | "score_threshold" | "no_asset" | "cl_family_only" | "baseline" | "stale") | null;
+            ineligible_reason: ("disabled" | "recovery_only" | "before_enablement") | null;
+        };
+        /** NewsOpenNewsIncidentData */
+        NewsOpenNewsIncidentData: {
+            /**
+             * Cause Class
+             * @enum {string}
+             */
+            cause_class: "planned_shutdown" | "network_connect" | "authentication" | "provider_close" | "protocol_error" | "idle_timeout" | "database_backpressure" | "buffer_overflow" | "process_outage" | "legacy_unknown" | "unknown";
+            /** Close Code */
+            close_code: number | null;
+            /** Closed At Ms */
+            closed_at_ms: number | null;
+            /** Incident Id */
+            incident_id: number;
+            /** Last Error Code */
+            last_error_code: string | null;
+            /** Opened At Ms */
+            opened_at_ms: number;
+            /** Planned */
+            planned: boolean;
+            /** Reconnected At Ms */
+            reconnected_at_ms: number | null;
+            /** Recovered Count */
+            recovered_count: number;
+            /** Recovery From At Ms */
+            recovery_from_at_ms: number | null;
+            /**
+             * Recovery Status
+             * @enum {string}
+             */
+            recovery_status: "pending" | "running" | "recovered" | "partial" | "unavailable" | "not_required";
+            /** Recovery To At Ms */
+            recovery_to_at_ms: number | null;
         };
         /** NewsOpenNewsStatusData */
         NewsOpenNewsStatusData: {
@@ -2910,8 +2943,8 @@ export interface components {
             configured_strategy_count: number;
             /** Consecutive Failures */
             consecutive_failures: number;
-            /** Coverage Unknown Since At Ms */
-            coverage_unknown_since_at_ms: number | null;
+            /** Incidents */
+            incidents: components["schemas"]["NewsOpenNewsIncidentData"][];
             /** Last Accepted Strategy Trigger At Ms */
             last_accepted_strategy_trigger_at_ms: number | null;
             /** Last Connected At Ms */
@@ -2920,14 +2953,14 @@ export interface components {
             last_disconnected_at_ms: number | null;
             /** Last Error */
             last_error: string | null;
+            /** Last History Check At Ms */
+            last_history_check_at_ms: number | null;
             /** Last Items Accepted */
             last_items_accepted: number;
             /** Last Items Seen */
             last_items_seen: number;
             /** Last Outcome */
             last_outcome: string | null;
-            /** Last Overflow At Ms */
-            last_overflow_at_ms: number | null;
             /** Last Rejection Counts */
             last_rejection_counts: {
                 [key: string]: number;
@@ -2940,15 +2973,15 @@ export interface components {
             name: string;
             /** Observed Strategy Count */
             observed_strategy_count: number;
-            /**
-             * Replay Supported
-             * @constant
-             */
-            replay_supported: false;
             /** Source Id */
             source_id: string;
-            /** Strategy Coverage Started At Ms */
-            strategy_coverage_started_at_ms: number | null;
+            /**
+             * Strategy History Status
+             * @enum {string}
+             */
+            strategy_history_status: "unknown" | "available" | "unavailable" | "partial";
+            /** Unresolved Incident Count */
+            unresolved_incident_count: number;
         };
         /** NewsProviderAssetData */
         NewsProviderAssetData: {
@@ -3001,11 +3034,11 @@ export interface components {
         };
         /** NewsPushStatusData */
         NewsPushStatusData: {
-            /** Baseline At Ms */
-            baseline_at_ms: number | null;
             delivery_24h: components["schemas"]["NewsPushDelivery24hData"];
             /** Enabled */
             enabled: boolean;
+            /** Enablement Epoch At Ms */
+            enablement_epoch_at_ms: number | null;
             /** Feishu Signing Secret Configured */
             feishu_signing_secret_configured: boolean;
             /** Feishu Webhook Url Configured */
@@ -3062,6 +3095,33 @@ export interface components {
             /** Success Ratio */
             success_ratio: number | null;
         };
+        /** NewsRealtimeLatencyData */
+        NewsRealtimeLatencyData: {
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** P50 Ms */
+            p50_ms: number | null;
+            /** P95 Ms */
+            p95_ms: number | null;
+            /** Sample Count */
+            sample_count: number;
+            /** Window Started At Ms */
+            window_started_at_ms: number;
+        };
+        /** NewsRealtimeStatusData */
+        NewsRealtimeStatusData: {
+            /** Connected At Ms */
+            connected_at_ms: number | null;
+            /** Disconnected At Ms */
+            disconnected_at_ms: number | null;
+            inbound_latency: components["schemas"]["NewsRealtimeLatencyData"];
+            story_visible_latency: components["schemas"]["NewsRealtimeLatencyData"];
+            /**
+             * Wss State
+             * @enum {string}
+             */
+            wss_state: "connected" | "reconnecting" | "unavailable";
+        };
         /** NewsRssStatusData */
         NewsRssStatusData: {
             /** Claimed Source Count */
@@ -3085,12 +3145,12 @@ export interface components {
             claim_lease_expires_at_ms: number | null;
             /** Consecutive Failures */
             consecutive_failures: number;
-            /** Coverage Unknown Since At Ms */
-            coverage_unknown_since_at_ms: number | null;
             /** Enabled */
             enabled: boolean;
             /** Feed Url */
             feed_url: string | null;
+            /** Incidents */
+            incidents: components["schemas"]["NewsOpenNewsIncidentData"][];
             /** Last Accepted Strategy Trigger At Ms */
             last_accepted_strategy_trigger_at_ms: number | null;
             /** Last Connected At Ms */
@@ -3103,6 +3163,8 @@ export interface components {
             last_fetch_finished_at_ms: number | null;
             /** Last Fetch Started At Ms */
             last_fetch_started_at_ms: number | null;
+            /** Last History Check At Ms */
+            last_history_check_at_ms: number | null;
             /** Last Http Status */
             last_http_status: number | null;
             /** Last Items Accepted */
@@ -3111,8 +3173,6 @@ export interface components {
             last_items_seen: number;
             /** Last Outcome */
             last_outcome: string | null;
-            /** Last Overflow At Ms */
-            last_overflow_at_ms: number | null;
             /** Last Rejection Counts */
             last_rejection_counts: {
                 [key: string]: number;
@@ -3129,8 +3189,6 @@ export interface components {
             observed_strategy_count: number;
             /** Refresh Interval Seconds */
             refresh_interval_seconds: number | null;
-            /** Replay Supported */
-            replay_supported: boolean;
             /** Source Id */
             source_id: string;
             /**
@@ -3138,10 +3196,15 @@ export interface components {
              * @enum {string}
              */
             source_kind: "rss" | "opennews";
-            /** Strategy Coverage Started At Ms */
-            strategy_coverage_started_at_ms: number | null;
+            /**
+             * Strategy History Status
+             * @enum {string}
+             */
+            strategy_history_status: "unknown" | "available" | "unavailable" | "partial";
             /** Tier */
             tier: number;
+            /** Unresolved Incident Count */
+            unresolved_incident_count: number;
         };
         /** NewsSourcesData */
         NewsSourcesData: {
@@ -3170,6 +3233,7 @@ export interface components {
              * @enum {string}
              */
             operating_state: "live" | "recovering" | "stalled";
+            realtime: components["schemas"]["NewsRealtimeStatusData"];
             /** Reasons */
             reasons: string[];
             /**

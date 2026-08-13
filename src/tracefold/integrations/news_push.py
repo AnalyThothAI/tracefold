@@ -216,6 +216,7 @@ class FeishuNewsPushDelivery:
             source_url = _optional_http_url(evidence_value.get("url"))
             symbols = _provider_asset_symbols(evidence_value)
             score = _provider_score_text(evidence_value)
+            strategies = _provider_strategy_labels(evidence_value)
         except (KeyError, TypeError, ValueError, OverflowError, OSError):
             raise NewsPushDeliveryError(
                 "news_push_feishu_render_payload_invalid",
@@ -264,6 +265,7 @@ class FeishuNewsPushDelivery:
             fallback_code=fallback_code,
             symbols=symbols,
             score=score,
+            strategies=strategies,
             source_url=source_url,
         )
         presentation: dict[str, Any] = {
@@ -479,7 +481,8 @@ def _news_story_card(
     translation_status: str,
     fallback_code: str | None,
     symbols: tuple[str, ...],
-    score: str,
+    score: str | None,
+    strategies: tuple[str, ...],
     source_url: str | None,
 ) -> dict[str, Any]:
     headline = translated_title or original_title
@@ -506,8 +509,13 @@ def _news_story_card(
     elif headline_clipped:
         elements.append(_plain_div(f"原文节选：{original_preview}"))
 
-    assets_text = " · ".join(symbols) if symbols else "未提供"
-    elements.append(_plain_div(f"关联资产：{assets_text}\nOpenNews 评分：{score}"))
+    facts = []
+    if strategies:
+        facts.append(f"命中策略：{' · '.join(strategies)}")
+    facts.append(f"关联资产：{' · '.join(symbols) if symbols else '未提供'}")
+    if score is not None:
+        facts.append(f"OpenNews 评分：{score}")
+    elements.append(_plain_div("\n".join(facts)))
     if source_url is not None:
         elements.append(
             {
@@ -629,14 +637,34 @@ def _provider_asset_symbols(evidence: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(symbols)
 
 
-def _provider_score_text(evidence: Mapping[str, Any]) -> str:
-    value = evidence.get("provider_score")
+def _provider_score_text(evidence: Mapping[str, Any]) -> str | None:
+    metadata = evidence.get("provider_metadata")
+    value = metadata.get("score") if isinstance(metadata, Mapping) else None
+    if value is None:
+        return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("news_push_provider_score_invalid")
+        return None
     score = float(value)
     if not isfinite(score) or score < 0 or score > 100:
-        raise ValueError("news_push_provider_score_invalid")
+        return None
     return f"{score:g}"
+
+
+def _provider_strategy_labels(evidence: Mapping[str, Any]) -> tuple[str, ...]:
+    metadata = evidence.get("provider_metadata")
+    raw = metadata.get("strategies") if isinstance(metadata, Mapping) else None
+    if not isinstance(raw, list):
+        return ()
+    labels: dict[str, str] = {}
+    for value in raw:
+        if not isinstance(value, Mapping):
+            continue
+        strategy_id = str(value.get("id") or "").strip()
+        if not strategy_id:
+            continue
+        name = str(value.get("name") or "").strip()
+        labels[strategy_id] = f"{strategy_id} {name}".strip()
+    return tuple(labels[key] for key in sorted(labels))
 
 
 def _optional_http_url(value: Any) -> str | None:

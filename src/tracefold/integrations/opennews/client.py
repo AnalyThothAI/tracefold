@@ -6,12 +6,21 @@ from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
 
+import httpx
 import websockets
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, PayloadTooBig, ProtocolError
+from websockets.exceptions import (
+    ConnectionClosed,
+    InvalidHandshake,
+    InvalidStatus,
+    PayloadTooBig,
+    ProtocolError,
+)
 
 from tracefold.news import OpenNewsExpectedError
+from tracefold.news.opennews import OpenNewsHistoryError
 
 OPENNEWS_WSS_URL = "wss://ai.6551.io/open/news_wss"
+OPENNEWS_HTTP_BASE_URL = "https://ai.6551.io/open"
 OPENNEWS_MAX_FRAME_BYTES = 1 * 1024 * 1024
 OPENNEWS_WS_IDLE_SECONDS = 45.0
 _EXPECTED_WEBSOCKET_FAILURES = (
@@ -48,7 +57,18 @@ class OpenNewsWebSocketClient:
         except asyncio.CancelledError:
             await self.close()
             raise
-        except _EXPECTED_WEBSOCKET_FAILURES:
+        except InvalidStatus as exc:
+            await self.close()
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            code = "opennews_authentication_failed" if status_code in {401, 403} else "opennews_handshake_failed"
+            raise OpenNewsExpectedError(code, status_code=status_code) from None
+        except InvalidHandshake:
+            await self.close()
+            raise OpenNewsExpectedError("opennews_handshake_failed") from None
+        except (PayloadTooBig, ProtocolError):
+            await self.close()
+            raise OpenNewsExpectedError("opennews_protocol_error") from None
+        except (OSError, TimeoutError, ConnectionClosed):
             await self.close()
             raise OpenNewsExpectedError("opennews_connect_failed") from None
 
@@ -61,10 +81,22 @@ class OpenNewsWebSocketClient:
             if raw == "ping":
                 await websocket.send("pong")
                 return "ping"
-            return _json_object(raw)
+            try:
+                return _json_object(raw)
+            except OpenNewsExpectedError as exc:
+                if exc.code != "opennews_frame_invalid":
+                    raise
+                return {}
         except OpenNewsExpectedError:
             raise
-        except _EXPECTED_WEBSOCKET_FAILURES:
+        except ConnectionClosed as exc:
+            raise OpenNewsExpectedError(
+                "opennews_receive_failed",
+                status_code=getattr(exc, "code", None),
+            ) from None
+        except (PayloadTooBig, ProtocolError):
+            raise OpenNewsExpectedError("opennews_protocol_error") from None
+        except (OSError, TimeoutError, InvalidHandshake):
             raise OpenNewsExpectedError("opennews_receive_failed") from None
 
     async def close(self) -> None:
@@ -73,6 +105,65 @@ class OpenNewsWebSocketClient:
         if websocket is not None:
             with suppress(*_EXPECTED_WEBSOCKET_FAILURES):
                 await websocket.close()
+
+
+class OpenNewsStrategyHistoryClient:
+    """Official authenticated Strategy list/history adapter; never News Search."""
+
+    def __init__(
+        self,
+        *,
+        token: str,
+        base_url: str = OPENNEWS_HTTP_BASE_URL,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._client = httpx.AsyncClient(
+            base_url=str(base_url).rstrip("/"),
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=httpx.Timeout(10.0),
+            follow_redirects=False,
+            transport=transport,
+        )
+
+    async def get_strategy_list(self, *, limit: int, page: int) -> Mapping[str, Any]:
+        return await self._get("/strategy_list", params={"limit": int(limit), "page": int(page)})
+
+    async def get_strategy_hits(
+        self,
+        *,
+        strategy_id: str,
+        limit: int,
+        page: int,
+    ) -> Mapping[str, Any]:
+        return await self._get(
+            "/strategy_hits",
+            params={"strategyId": str(strategy_id), "limit": int(limit), "page": int(page)},
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def _get(self, path: str, *, params: Mapping[str, Any]) -> Mapping[str, Any]:
+        try:
+            response = await self._client.get(path, params=params)
+        except httpx.TimeoutException:
+            raise OpenNewsHistoryError("opennews_history_timeout") from None
+        except httpx.HTTPError:
+            raise OpenNewsHistoryError("opennews_history_http_error") from None
+        if response.status_code == 404:
+            raise OpenNewsHistoryError("opennews_history_unavailable")
+        if response.status_code in {401, 403}:
+            raise OpenNewsHistoryError("opennews_history_authentication")
+        if response.status_code == 429:
+            raise OpenNewsHistoryError("opennews_history_rate_limited")
+        try:
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPStatusError, ValueError):
+            raise OpenNewsHistoryError("opennews_history_http_error") from None
+        if not isinstance(payload, Mapping):
+            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+        return payload
 
 
 async def _bounded_recv(websocket: Any) -> Any:
@@ -100,6 +191,8 @@ def _json_object(raw: object) -> Mapping[str, Any]:
 
 
 __all__ = [
+    "OPENNEWS_HTTP_BASE_URL",
     "OPENNEWS_WSS_URL",
+    "OpenNewsStrategyHistoryClient",
     "OpenNewsWebSocketClient",
 ]

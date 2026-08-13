@@ -36,7 +36,7 @@ from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.integrations.news_feeds import RssFeedReader, parse_rss_feed_wire
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
-from tracefold.integrations.opennews import OpenNewsWebSocketClient
+from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
     FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
@@ -93,10 +93,8 @@ _NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS = 60.0
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
 _MARKET_TICK_POLL_SECONDS = 35.0
-_NEWS_STORY_REFRESH_SECONDS = 60.0
 _NEWS_PUSH_IDLE_SECONDS = 5.0
 _NEWS_RSS_IDLE_SECONDS = 30.0
-_NEWS_PUSH_RECONCILE_SECONDS = 2.5
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
     ("macro_settlements", "daily_settlement"),
@@ -370,28 +368,10 @@ async def run_workers(settings: Settings) -> None:
                 business_tasks.append(
                     group.create_task(
                         _guard_child(
-                            _run_periodic(
-                                lambda: _sample_news_story(news_story=components.news_story),
-                                period_seconds=_NEWS_STORY_REFRESH_SECONDS,
-                                stop_event=work_stop_event,
-                            ),
+                            components.news_story.run(stop_event=work_stop_event),
                             on_fatal=enter_fatal,
                         ),
                         name="news-story-projection",
-                    )
-                )
-            if components.news_push is not None:
-                business_tasks.append(
-                    group.create_task(
-                        _guard_child(
-                            _run_periodic(
-                                lambda: _sample_news_push(news_push=components.news_push),
-                                period_seconds=_NEWS_PUSH_RECONCILE_SECONDS,
-                                stop_event=work_stop_event,
-                            ),
-                            on_fatal=enter_fatal,
-                        ),
-                        name="news-push-reconcile",
                     )
                 )
             business_tasks.append(
@@ -689,24 +669,6 @@ def _log_recurring_database_overrun(worker: str, exc: ResourceOperationOverrun) 
     ).warning("Recurring database operation outlived its wrapper; native capability remains authoritative")
 
 
-async def _sample_news_story(
-    *,
-    news_story: NewsStoryProjection,
-) -> None:
-    """Project the complete Story closure on its fixed 60-second cadence."""
-
-    await news_story.sample()
-
-
-async def _sample_news_push(*, news_push: NewsStoryPush) -> None:
-    """Discover score-qualified Stories without rebuilding the Story closure."""
-
-    try:
-        await news_push.reconcile(now_ms=_now_ms())
-    except ResourceAdmissionTimeout:
-        return
-
-
 async def _run_control(
     *,
     db: WorkerDatabase,
@@ -866,10 +828,14 @@ async def _wire_components(
     news_push: NewsStoryPush | None = None
     model_candidates: list[Any] = []
     if settings.news.enabled:
+        story_dirty = asyncio.Event()
         source = opennews_source()
         rss_sources = public_rss_sources() if settings.news.rss_enabled else ()
         opennews_ws = (
             OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
+        )
+        opennews_history = (
+            OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
         )
         news = NewsAcquisition(
             db=db,
@@ -880,10 +846,18 @@ async def _wire_components(
             opennews_source=source,
             opennews_strategy_ids=settings.news.opennews_strategy_ids,
             opennews_ws_client=opennews_ws,
+            opennews_history_client=opennews_history,
+            story_dirty=story_dirty,
         )
         if news_cpu is None:
             raise RuntimeError("news_cpu_missing")
-        news_story = NewsStoryProjection(db=db, heavy_db=heavy_db, cpu=news_cpu)
+        news_story = NewsStoryProjection(
+            db=db,
+            heavy_db=heavy_db,
+            cpu=news_cpu,
+            dirty=story_dirty,
+            push_enabled=settings.news.push.enabled,
+        )
         news_brief = NewsBriefCandidate(
             db=db,
             model_adapter=model_adapter,
