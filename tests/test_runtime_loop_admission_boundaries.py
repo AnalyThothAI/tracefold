@@ -130,6 +130,33 @@ def test_periodic_loop_can_defer_its_first_sample_without_changing_cadence(
     assert waits[0] == 30.0
 
 
+def test_recurring_database_overruns_wait_for_each_loops_normal_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+
+    async def wait(stop_event: asyncio.Event, seconds: float) -> None:
+        waits.append(seconds)
+        stop_event.set()
+
+    async def due_turn() -> bool:
+        raise ResourceOperationOverrun("resource_operation_overrun:db:due")
+
+    async def periodic_sample() -> None:
+        raise ResourceOperationOverrun("resource_operation_overrun:db:periodic")
+
+    async def scenario() -> None:
+        due_stop = asyncio.Event()
+        await _run_due(due_turn, idle_seconds=7.0, stop_event=due_stop)
+        periodic_stop = asyncio.Event()
+        await _run_periodic(periodic_sample, period_seconds=11.0, stop_event=periodic_stop)
+
+    monkeypatch.setattr(workers_module, "_wait_or_stop", wait)
+    asyncio.run(scenario())
+
+    assert waits == [7.0, 11.0]
+
+
 def test_control_loop_retries_a_transient_pooled_heartbeat_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -172,7 +199,7 @@ def test_control_loop_retries_a_transient_pooled_heartbeat_failure(
     assert probe_state.heartbeat_at_ms == 2_000
 
 
-def test_persistent_transient_heartbeat_failures_remain_bounded_by_watchdog(
+def test_persistent_transient_heartbeat_failures_degrade_readiness_until_stopped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def heartbeat(**_kwargs: object) -> int:
@@ -185,6 +212,10 @@ def test_persistent_transient_heartbeat_failures_remain_bounded_by_watchdog(
             runtime_version="v2",
             started_at_ms=1_000,
             clock_ms=lambda: 2_000,
+            lifecycle_state="running",
+            heartbeat_at_ms=1_000,
+            ready=True,
+            unavailable_reason="",
         )
         control = asyncio.create_task(
             workers_module._run_control(
@@ -195,24 +226,17 @@ def test_persistent_transient_heartbeat_failures_remain_bounded_by_watchdog(
                 stop_event=stop_event,
             )
         )
-        try:
-            await asyncio.wait_for(
-                workers_module._run_control_watchdog(
-                    probe_state=probe_state,
-                    stop_event=stop_event,
-                ),
-                timeout=0.5,
-            )
-        finally:
-            stop_event.set()
-            await control
+        await asyncio.sleep(0.05)
+        assert not control.done()
+        assert probe_state.payload()["unavailable_reason"] == "runtime_heartbeat_stale"
+        stop_event.set()
+        await control
 
     monkeypatch.setattr(workers_module, "_control_liveness_and_heartbeat", heartbeat)
     monkeypatch.setattr(workers_module, "_CONTROL_RETRY_SECONDS", 0.05)
     monkeypatch.setattr(workers_module, "_CONTROL_HEARTBEAT_STALE_SECONDS", 0.01)
 
-    with pytest.raises(workers_module._ControlFailure, match="workers_control_heartbeat_stale"):
-        asyncio.run(scenario())
+    asyncio.run(scenario())
 
 
 def test_productive_model_candidate_has_a_minimum_repoll_cadence() -> None:

@@ -49,6 +49,133 @@ def test_loopback_probe_never_uses_operator_system_proxy() -> None:
     assert _LOOPBACK_PROXY.proxies == {}
 
 
+def test_public_collector_survives_one_metrics_timeout_and_records_the_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    clock = _VirtualClock()
+    current: dict[str, dict] = {}
+    probe_calls = 0
+    metrics_calls = 0
+    metrics_payload = b"#" + b"x" * (535 * 1024 - 1)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        @staticmethod
+        def read(limit: int) -> bytes:
+            assert limit == collector_module._MAX_METRICS_BYTES + 1
+            return metrics_payload
+
+    class Opener:
+        @staticmethod
+        def open(url: str, *, timeout: float):
+            nonlocal metrics_calls
+            assert url == "http://127.0.0.1:8766/metrics"
+            assert timeout == 1.0
+            metrics_calls += 1
+            if metrics_calls == 91:
+                clock.sleep(1.0)
+                raise TimeoutError("one loopback metrics read stalled")
+            return Response()
+
+    def sampler_init(self, _settings, *, repository_root: Path) -> None:
+        self._repository_root = repository_root
+        self._workers_runtime_url = "http://127.0.0.1:8766"
+
+    def read_probe(_self):
+        nonlocal probe_calls
+        sample = _sample(probe_calls, clock=clock)
+        current["sample"] = sample
+        probe_calls += 1
+        return sample["probe"], 1.0
+
+    monkeypatch.setattr(collector_module, "_require_clean_checkout", lambda _root: None)
+    monkeypatch.setattr(collector_module, "_collection_metadata", lambda _settings, *, repository_root: _metadata())
+    monkeypatch.setattr(collector_module, "_git_head", lambda _root: "a" * 40)
+    monkeypatch.setattr(collector_module, "_repository_is_clean", lambda _root: True)
+    monkeypatch.setattr(collector_module._ProductionSampler, "__init__", sampler_init)
+    monkeypatch.setattr(collector_module._ProductionSampler, "close", lambda _self: None)
+    monkeypatch.setattr(collector_module._ProductionSampler, "_read_probe", read_probe)
+    monkeypatch.setattr(
+        collector_module._ProductionSampler,
+        "_read_token_radar_database_state",
+        lambda _self: current["sample"]["token_radar_database"]["before"],
+    )
+    monkeypatch.setattr(
+        collector_module._ProductionSampler,
+        "_read_token_radar_api",
+        lambda _self: current["sample"]["token_radar_api"],
+    )
+    monkeypatch.setattr(
+        collector_module._ProductionSampler,
+        "_read_container",
+        lambda _self, *, probe_process_id: current["sample"]["container"],
+    )
+    monkeypatch.setattr(
+        collector_module._ProductionSampler,
+        "_read_serve_container",
+        lambda _self: current["sample"]["serve_container"],
+    )
+    monkeypatch.setattr(
+        collector_module._ProductionSampler,
+        "_read_postgres",
+        lambda _self, *, now_ms, include_query_audit: current["sample"]["postgres"],
+    )
+    monkeypatch.setattr(
+        collector_module,
+        "_parse_worker_metrics",
+        lambda _payload: current["sample"]["telemetry"],
+    )
+    monkeypatch.setattr(collector_module, "_LOOPBACK_HTTP", Opener())
+    monkeypatch.setattr(collector_module.time, "time", lambda: clock.clock_ms() / 1_000)
+    monkeypatch.setattr(collector_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(collector_module.time, "sleep", clock.sleep)
+
+    result = collector_module.collect_workers_runtime_acceptance(
+        tmp_path / "metrics-retry-bundle",
+        Settings(),
+    )
+
+    assert result["status"] == "passed"
+    assert result["sample_count"] == EXPECTED_SAMPLE_COUNT
+    assert result["summary"]["max_sample_gap_ms"] == 11_000
+    assert result["summary"]["max_sample_gap_ms"] <= collector_module.MAX_SAMPLE_GAP_SECONDS * 1_000
+    assert metrics_calls == EXPECTED_SAMPLE_COUNT + 1
+    samples = [json.loads(line) for line in (tmp_path / "metrics-retry-bundle" / SAMPLES_FILE).read_text().splitlines()]
+    assert samples[90]["collector_observation"]["worker_metrics_attempts"] == 2
+    assert all(
+        sample["collector_observation"]["worker_metrics_attempts"] == 1
+        for sequence, sample in enumerate(samples)
+        if sequence != 90
+    )
+
+
+def test_metrics_retry_is_finite_and_preserves_the_failure_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    sampler = object.__new__(collector_module._ProductionSampler)
+    sampler._workers_runtime_url = "http://127.0.0.1:8766"
+    calls = 0
+
+    def fail(_url: str, *, max_bytes: int, stage: str) -> str:
+        nonlocal calls
+        assert max_bytes == collector_module._MAX_METRICS_BYTES
+        assert stage == "worker_metrics"
+        calls += 1
+        raise _SampleFailure(stage, TimeoutError("loopback metrics stayed unavailable"))
+
+    monkeypatch.setattr(sampler, "_read_http_text", fail)
+
+    with pytest.raises(_SampleFailure, match="worker_metrics") as failure:
+        sampler._read_worker_metrics()
+
+    assert calls == 2
+    assert failure.value.cause_type == "TimeoutError"
+
+
 def test_token_radar_sampler_authenticates_200_then_revalidates_its_etag(monkeypatch) -> None:
     requests = []
     data = {"items": [{}]}

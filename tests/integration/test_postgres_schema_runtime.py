@@ -359,6 +359,14 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
               AND indexname = 'idx_events_token_radar_source_time'
             """
         ).fetchone()
+        macro_market_projection_index = conn.execute(
+            """
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND indexname = 'idx_market_observations_projection_history'
+            """
+        ).fetchone()
         radar_fingerprint_column = conn.execute(
             """
             SELECT is_generated, generation_expression
@@ -585,6 +593,15 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         in radar_event_index["indexdef"]
     )
     assert "md5" not in radar_event_index["indexdef"]
+    assert macro_market_projection_index is not None
+    assert (
+        "(dataset_id, ((observed_at_ms / 86400000)) DESC, observed_at_ms DESC, "
+        "received_at_ms DESC, observation_id DESC)" in macro_market_projection_index["indexdef"]
+    )
+    assert (
+        "INCLUDE (instrument_id, source_id, field_name, value_numeric, unit, "
+        "published_at_ms, trust_tier, source_url, fact_hash)" in macro_market_projection_index["indexdef"]
+    )
     assert radar_fingerprint_column is not None
     assert radar_fingerprint_column["is_generated"] == "ALWAYS"
     assert "md5" in radar_fingerprint_column["generation_expression"]
@@ -622,7 +639,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260813_0261"
+    assert version == latest_migration_version() == "20260813_0263"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -647,7 +664,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260813_0261"
+    assert version == latest_migration_version() == "20260813_0263"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -1099,7 +1116,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260813_0261"
+        assert version == latest_migration_version() == "20260813_0263"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from pebble import CONSTS as PEBBLE_CONSTS
 
+from tracefold.app import database as database_module
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
 from tracefold.app.worker_cpu_prewarm import (
@@ -389,6 +390,103 @@ def test_database_has_two_business_slots_and_an_independent_control_slot() -> No
             database.close_executors()
 
     asyncio.run(scenario())
+
+
+def test_database_native_transaction_timeout_precedes_outer_overrun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _NativeTransactionTimeout(RuntimeError):
+        pass
+
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=object(), telemetry=None)
+
+        def native_timeout() -> None:
+            time.sleep(0.02)
+            raise _NativeTransactionTimeout("native transaction timeout")
+
+        try:
+            with pytest.raises(_NativeTransactionTimeout, match="native transaction timeout"):
+                await database.run_business(
+                    "native_timeout_precedes_outer",
+                    native_timeout,
+                    operation_timeout_seconds=0.01,
+                )
+        finally:
+            database.close_executors()
+
+    monkeypatch.setattr(
+        database_module,
+        "_WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS",
+        0.02,
+    )
+    asyncio.run(scenario())
+
+
+def test_database_outer_grace_exceeds_worker_transaction_timeout_margin() -> None:
+    assert (
+        database_module._WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS
+        > database_module._WORKER_TRANSACTION_TIMEOUT_MARGIN_SECONDS
+    )
+    assert (
+        database_module._WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS
+        > database_module._WORKER_TRANSACTION_TIMEOUT_MARGIN_SECONDS
+    )
+
+
+def test_late_wrapped_failure_after_overrun_is_retrieved() -> None:
+    async def scenario() -> list[dict[str, object]]:
+        loop = asyncio.get_running_loop()
+        underlying: Future[int] = Future()
+        wrapped = asyncio.wrap_future(underlying)
+        unhandled: list[dict[str, object]] = []
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+
+        with pytest.raises(ResourceOperationOverrun, match="late_native_failure"):
+            await await_concurrent_future(
+                underlying,
+                wrapped,
+                timeout_seconds=0.001,
+                overrun_code="resource_operation_overrun:late_native_failure",
+            )
+        underlying.set_exception(_ExpectedNativeFailure("late native failure"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        del wrapped
+        await asyncio.sleep(0)
+        return unhandled
+
+    assert asyncio.run(scenario()) == []
+
+
+def test_late_wrapped_failure_after_caller_cancellation_is_retrieved() -> None:
+    async def scenario() -> list[dict[str, object]]:
+        loop = asyncio.get_running_loop()
+        underlying: Future[int] = Future()
+        wrapped = asyncio.wrap_future(underlying)
+        unhandled: list[dict[str, object]] = []
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        waiting = asyncio.create_task(
+            await_concurrent_future(
+                underlying,
+                wrapped,
+                timeout_seconds=1.0,
+                overrun_code="resource_operation_overrun:cancelled_caller",
+            )
+        )
+
+        await asyncio.sleep(0)
+        waiting.cancel()
+        with suppress(asyncio.CancelledError):
+            await waiting
+        underlying.set_exception(_ExpectedNativeFailure("late native failure"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        del wrapped
+        await asyncio.sleep(0)
+        return unhandled
+
+    assert asyncio.run(scenario()) == []
 
 
 def test_cpu_process_is_spawn_only_and_serial_across_caller_cancellation() -> None:

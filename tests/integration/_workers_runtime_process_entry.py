@@ -28,10 +28,27 @@ def _native_news_push_timeout(db: Any) -> None:
         repos.conn.execute("SELECT pg_sleep(0.2)")
 
 
+def _native_transaction_timeout(db: Any) -> None:
+    with db.worker_session(
+        "test_native_transaction_timeout",
+        statement_timeout_seconds=1.0,
+    ) as repos:
+        repos.conn.execute("SELECT 1")
+        time.sleep(0.12)
+        repos.conn.execute("SELECT 1")
+
+
 def _news_push_liveness(db: Any) -> int:
     with db.worker_session("test_news_push_recovery") as repos:
         row = repos.conn.execute("SELECT 1 AS ok").fetchone()
         return int(row["ok"])
+
+
+def _slow_business_completion(delay_seconds: float) -> int:
+    print("BUSINESS_NATIVE_STARTED", flush=True)
+    time.sleep(delay_seconds)
+    print("BUSINESS_NATIVE_COMPLETED", flush=True)
+    return 1
 
 
 def _arguments() -> argparse.Namespace:
@@ -48,9 +65,14 @@ def _arguments() -> argparse.Namespace:
             "finite_never_returns",
             "model_overrun",
             "control_overrun",
+            "control_native_timeout",
             "control_transient_startup",
+            "control_transient_startup_persistent",
+            "control_transient_runtime",
+            "shutdown_stopping_control_never_returns",
             "provider_publication",
             "news_bounded_recovery",
+            "periodic_business_overrun_recovery",
         ),
     )
     return parser.parse_args()
@@ -108,22 +130,35 @@ async def _main() -> None:
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1
 
-    if arguments.mode == "control_transient_startup":
+    if arguments.mode == "periodic_business_overrun_recovery":
+        from tracefold.app import database as database_module
+
+        database_module._WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS = 0.1
+        database_module._WORKER_TRANSACTION_TIMEOUT_MARGIN_SECONDS = -0.9
+
+    if arguments.mode in {
+        "control_transient_startup",
+        "control_transient_startup_persistent",
+    }:
         from psycopg import OperationalError
 
         original_runtime_heartbeat = workers._runtime_heartbeat
         transient_failures = 0
         transient_lock = threading.Lock()
+        persistent = arguments.mode == "control_transient_startup_persistent"
+        if persistent:
+            workers._CONTROL_RETRY_SECONDS = 0.05
 
         def transient_runtime_heartbeat(*args: Any, **kwargs: Any) -> None:
             nonlocal transient_failures
             with transient_lock:
                 transient_failures += 1
                 current = transient_failures
-            if current == 1:
+            if current == 1 and not persistent:
                 time.sleep(1.25)
-            if current <= 4:
-                print("CONTROL_TRANSIENT", flush=True)
+            if persistent or current <= 4:
+                marker = "CONTROL_TRANSIENT_PERSISTENT" if persistent else "CONTROL_TRANSIENT"
+                print(marker, flush=True)
                 raise OperationalError("test transient pooled heartbeat connection")
             original_runtime_heartbeat(*args, **kwargs)
 
@@ -138,8 +173,89 @@ async def _main() -> None:
 
         workers._runtime_heartbeat = control_never_returns
 
+    if arguments.mode == "shutdown_stopping_control_never_returns":
+        original_runtime_transition = workers._runtime_transition
+        stopping_never_release = threading.Event()
+        workers.GRACEFUL_DRAIN_TIMEOUT_SECONDS = 1.0
+
+        def shutdown_runtime_transition(
+            db: Any,
+            runtime_id: str,
+            lifecycle_state: Any,
+            fatal_code: Any,
+        ) -> None:
+            if lifecycle_state == "stopping":
+                print("SHUTDOWN_STOPPING_CONTROL_STARTED", flush=True)
+                stopping_never_release.wait()
+            original_runtime_transition(db, runtime_id, lifecycle_state, fatal_code)
+
+        workers._runtime_transition = shutdown_runtime_transition
+
+    if arguments.mode == "control_native_timeout":
+        from tracefold.app import database as database_module
+
+        database_module._WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS = 0.1
+        database_module._WORKER_TRANSACTION_TIMEOUT_MARGIN_SECONDS = -0.9
+        original_runtime_heartbeat = workers._runtime_heartbeat
+        native_timeout_calls = 0
+        native_timeout_lock = threading.Lock()
+        workers._CONTROL_HEARTBEAT_STALE_SECONDS = 0.25
+        workers._CONTROL_RETRY_SECONDS = 0.02
+
+        def native_timeout_runtime_heartbeat(
+            db: Any,
+            runtime_id: str,
+            heartbeat_at_ms: int,
+        ) -> None:
+            nonlocal native_timeout_calls
+            with native_timeout_lock:
+                native_timeout_calls += 1
+                current = native_timeout_calls
+            if current <= 4:
+                try:
+                    _native_transaction_timeout(db)
+                except Exception:
+                    print(f"CONTROL_NATIVE_TIMEOUT_{current}", flush=True)
+                    raise
+                raise AssertionError("native transaction timeout missing")
+            print("CONTROL_NATIVE_TIMEOUT_RECOVERED", flush=True)
+            original_runtime_heartbeat(db, runtime_id, heartbeat_at_ms)
+
+        workers._runtime_heartbeat = native_timeout_runtime_heartbeat
+
+    if arguments.mode == "control_transient_runtime":
+        from psycopg import OperationalError
+
+        original_runtime_heartbeat = workers._runtime_heartbeat
+        heartbeat_calls = 0
+        heartbeat_lock = threading.Lock()
+        workers._CONTROL_HEARTBEAT_STALE_SECONDS = 0.25
+        workers._CONTROL_RETRY_SECONDS = 0.05
+
+        def transient_runtime_heartbeat(*args: Any, **kwargs: Any) -> None:
+            nonlocal heartbeat_calls
+            with heartbeat_lock:
+                heartbeat_calls += 1
+                current = heartbeat_calls
+            if 6 <= current <= 25:
+                if current == 6:
+                    print("CONTROL_RUNTIME_TRANSIENT_BEGIN", flush=True)
+                raise OperationalError("test transient runtime heartbeat connection")
+            if current == 26:
+                print("CONTROL_RUNTIME_TRANSIENT_RECOVERED", flush=True)
+            original_runtime_heartbeat(*args, **kwargs)
+
+        workers._runtime_heartbeat = transient_runtime_heartbeat
+
     async def wire_components(**kwargs: Any) -> workers._Components:
-        if arguments.mode in {"inert", "control_transient_startup"}:
+        if arguments.mode in {
+            "inert",
+            "control_transient_startup",
+            "control_transient_startup_persistent",
+            "control_transient_runtime",
+            "control_native_timeout",
+            "shutdown_stopping_control_never_returns",
+        }:
             return _components(workers, market_providers_module, due_turns=())
 
         if arguments.mode == "child_failure":
@@ -275,6 +391,67 @@ async def _main() -> None:
             components = _components(workers, market_providers_module, due_turns=())
             components.news_story = RecoveringNewsStory()
             components.news_push = RecoveringNewsPush()
+            return components
+
+        if arguments.mode == "periodic_business_overrun_recovery":
+            db = kwargs["db"]
+            workers._NEWS_PUSH_RECONCILE_SECONDS = 0.05
+
+            class RecoveringPeriodicBusinessOperation:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                async def reconcile(self, *, now_ms: int) -> dict[str, int]:
+                    del now_ms
+                    self.calls += 1
+                    if self.calls == 1:
+                        # Startup reconciliation is deliberately inert; the
+                        # runtime periodic child owns the overrun seam.
+                        return {}
+                    if self.calls == 2:
+                        try:
+                            await db.run_business(
+                                "test_native_transaction_timeout",
+                                _native_transaction_timeout,
+                                db,
+                                operation_timeout_seconds=0.06,
+                            )
+                        except Exception as exc:
+                            from tracefold.platform.resource import ResourceAdmissionTimeout
+
+                            assert isinstance(exc, ResourceAdmissionTimeout)
+                            assert "worker_database_transaction_timeout" in str(exc)
+                            print("NATIVE_TRANSACTION_TIMEOUT_FIRST", flush=True)
+                        else:
+                            raise AssertionError("native transaction timeout missing")
+                    if self.calls == 3:
+                        try:
+                            await db.run_business(
+                                "test_periodic_business_overrun",
+                                _slow_business_completion,
+                                0.5,
+                                operation_timeout_seconds=0.01,
+                            )
+                        finally:
+                            print("BUSINESS_OPERATION_OVERRUN", flush=True)
+                    if self.calls == 4:
+                        assert (
+                            await db.run_business(
+                                "test_periodic_business_recovery",
+                                _news_push_liveness,
+                                db,
+                                operation_timeout_seconds=1.0,
+                            )
+                            == 1
+                        )
+                        print("BUSINESS_OPERATION_RECOVERED", flush=True)
+                    return {}
+
+                async def close(self) -> None:
+                    return None
+
+            components = _components(workers, market_providers_module, due_turns=())
+            components.news_push = RecoveringPeriodicBusinessOperation()
             return components
 
         db = kwargs["db"]

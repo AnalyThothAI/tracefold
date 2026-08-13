@@ -14,14 +14,11 @@ from tests.postgres_test_utils import (
 from tracefold.market import RegistryRepository
 from tracefold.platform.postgres.postgres_migrations import alembic_config
 
-_SCHEMA_REVISION = "20260813_0258"
+_SCHEMA_REVISION = "20260813_0263"
 _SINCE_MS = 2_000_000
-_NOISE_EVENT_COUNT = 8_000
-_RECENT_NOISE_EVENT_COUNT = 200
+_NOISE_EVENT_COUNT = 40_000
+_RECENT_NOISE_EVENT_COUNT = 10_000
 _HOT_RECENT_NOISE_EVENT_COUNT = _RECENT_NOISE_EVENT_COUNT // 10
-_HOT_TAIL_EVENT_COUNT = _HOT_RECENT_NOISE_EVENT_COUNT + 1
-_HOT_TAIL_HEAP_FETCH_MARGIN = 8
-_EVENT_INDEX_BUFFER_BLOCK_LIMIT = _HOT_TAIL_EVENT_COUNT * 2 + 16
 _HISTORICAL_RESOLUTIONS_PER_INTENT = 3
 
 
@@ -77,44 +74,18 @@ def test_ranked_market_targets_bounds_hot_tail_reads_without_changing_intent_joi
     assert explain is not None
 
     nodes = list(_plan_nodes(explain["Plan"]))
-    event_index_nodes = [
-        node
-        for node in nodes
-        if node.get("Relation Name") == "events"
-        and node.get("Node Type") == "Index Only Scan"
-        and node.get("Index Name") == "idx_events_received"
+    event_nodes = [node for node in nodes if node.get("Relation Name") == "events"]
+    intent_seq_scans = [
+        node for node in nodes if node.get("Relation Name") == "token_intents" and node.get("Node Type") == "Seq Scan"
     ]
-    resolution_index_nodes = [
-        node
-        for node in nodes
-        if node.get("Relation Name") == "token_intent_resolutions"
-        and node.get("Node Type") == "Index Only Scan"
-        and node.get("Index Name") == "ux_token_intent_current_resolution"
+    intent_clock_nodes = [
+        node for node in nodes if node.get("Index Name") == "idx_token_intents_market_targets_created"
     ]
-    resolution_seq_scans = [
-        node
-        for node in nodes
-        if node.get("Relation Name") == "token_intent_resolutions" and node.get("Node Type") == "Seq Scan"
-    ]
-    other_event_scans = [
-        node for node in nodes if node.get("Relation Name") == "events" and node not in event_index_nodes
-    ]
-
     summary = _plan_summary(nodes)
-    assert event_index_nodes, summary
-    assert resolution_index_nodes, summary
-    assert not other_event_scans, summary
-    assert not resolution_seq_scans, summary
-
-    event_heap_fetches = max(int(node.get("Heap Fetches", 0)) for node in event_index_nodes)
-    resolution_heap_fetches = max(int(node.get("Heap Fetches", 0)) for node in resolution_index_nodes)
-    heap_fetch_limit = _HOT_TAIL_EVENT_COUNT + _HOT_TAIL_HEAP_FETCH_MARGIN
-    assert _HOT_TAIL_EVENT_COUNT <= event_heap_fetches <= heap_fetch_limit, summary
-    assert _HOT_TAIL_EVENT_COUNT <= resolution_heap_fetches <= heap_fetch_limit, summary
-    assert max(int(node["Actual Rows"]) for node in event_index_nodes) >= (
-        _RECENT_NOISE_EVENT_COUNT + _HOT_TAIL_EVENT_COUNT
-    ), summary
-    assert max(_shared_buffer_blocks(node) for node in event_index_nodes) <= _EVENT_INDEX_BUFFER_BLOCK_LIMIT, summary
+    assert not event_nodes, summary
+    assert not intent_seq_scans, summary
+    assert intent_clock_nodes, summary
+    assert _shared_buffer_blocks(explain["Plan"]) < _NOISE_EVENT_COUNT // 2, summary
     assert sum(int(node.get("Temp Read Blocks", 0)) for node in nodes) == 0, summary
     assert sum(int(node.get("Temp Written Blocks", 0)) for node in nodes) == 0, summary
     assert all(node.get("Sort Space Type") != "Disk" for node in nodes), summary
@@ -184,10 +155,25 @@ def _seed_market_target_plan_fixture(conn: Any) -> None:
               'noise-intent-' || series_no,
               'noise-event-' || series_no,
               'noise-key-' || series_no,
-              'fixture', 'NOISE', 'resolved', 1.0, %s, %s
-            FROM generate_series(1, %s) AS series_no
+              'fixture', 'NOISE', 'resolved', 1.0,
+              received_at_ms, received_at_ms
+            FROM (
+              SELECT
+                series_no,
+                CASE
+                  WHEN series_no > %s - %s THEN %s + series_no
+                  ELSE %s - series_no
+                END AS received_at_ms
+              FROM generate_series(1, %s) AS series_no
+            ) fixture_intents
             """,
-            (_SINCE_MS, _SINCE_MS, _NOISE_EVENT_COUNT),
+            (
+                _NOISE_EVENT_COUNT,
+                _RECENT_NOISE_EVENT_COUNT,
+                _SINCE_MS,
+                _SINCE_MS - 100_000,
+                _NOISE_EVENT_COUNT,
+            ),
         )
         conn.execute(
             """
@@ -299,7 +285,16 @@ def _seed_market_target_plan_fixture(conn: Any) -> None:
                'fixture-resolution-event-only-key', 'fixture', 'RESOLUTIONEVENT',
                'resolved', 1.0, %s, %s)
             """,
-            (_SINCE_MS,) * 8,
+            (
+                _SINCE_MS + 90_000,
+                _SINCE_MS + 90_000,
+                _SINCE_MS + 80_000,
+                _SINCE_MS + 80_000,
+                _SINCE_MS + 70_000,
+                _SINCE_MS + 70_000,
+                _SINCE_MS - 20_000,
+                _SINCE_MS - 20_000,
+            ),
         )
         conn.execute(
             """
@@ -373,7 +368,8 @@ def _append_market_target_hot_tail(conn: Any) -> None:
               'hot-noise-intent-' || series_no,
               'hot-noise-event-' || series_no,
               'hot-noise-key-' || series_no,
-              'fixture', 'HOTNOISE', 'resolved', 1.0, %s, %s
+              'fixture', 'HOTNOISE', 'resolved', 1.0,
+              %s + series_no, %s + series_no
             FROM generate_series(1, %s) AS series_no
             """,
             (_SINCE_MS + 100_000, _SINCE_MS + 100_000, _HOT_RECENT_NOISE_EVENT_COUNT),

@@ -346,6 +346,78 @@ def test_real_workers_startup_recovers_transient_pooled_heartbeat_failures() -> 
         _ensure_process_stopped(process)
 
 
+def test_sigterm_interrupts_persistent_startup_heartbeat_retries() -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    process = _start_workers_process("control_transient_startup_persistent", port)
+    try:
+        _wait_for_output(process, "CONTROL_TRANSIENT_PERSISTENT", timeout_seconds=20.0)
+        _wait_probe_status(process, port, path="/readyz", expected_status=503)
+        starting = _runtime_row()
+        assert starting["lifecycle_state"] == "starting"
+        assert starting["fatal_code"] is None
+
+        started = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+        assert time.monotonic() - started < 5.0
+        _assert_probe_closed(port)
+        stopped = _runtime_row()
+        assert stopped["runtime_id"] == starting["runtime_id"]
+        assert stopped["lifecycle_state"] == "stopped"
+        assert stopped["fatal_code"] is None
+    finally:
+        _ensure_process_stopped(process)
+
+
+def test_real_workers_startup_native_control_timeouts_recover_in_the_same_runtime() -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    process = _start_workers_process("control_native_timeout", port)
+    try:
+        _wait_probe_status(process, port, path="/readyz", expected_status=503)
+        starting = _runtime_row()
+        assert starting["lifecycle_state"] == "starting"
+        assert starting["fatal_code"] is None
+        process_id = process.pid
+        runtime_id = starting["runtime_id"]
+
+        _wait_ready(process, port)
+        _wait_for_output(process, "CONTROL_NATIVE_TIMEOUT_RECOVERED")
+        assert process.poll() is None
+        running = _runtime_row()
+        assert process.pid == process_id
+        assert running["runtime_id"] == runtime_id
+        assert running["lifecycle_state"] == "running"
+        assert running["fatal_code"] is None
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+    finally:
+        _ensure_process_stopped(process)
+
+
+def test_real_workers_runtime_heartbeat_stale_degrades_readiness_without_killing_root() -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    process = _start_workers_process("control_transient_runtime", port)
+    try:
+        _wait_ready(process, port)
+        _wait_probe_status(process, port, path="/readyz", expected_status=503)
+        _wait_probe_status(process, port, path="/healthz", expected_status=200)
+        assert process.poll() is None
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "running"
+        assert row["fatal_code"] is None
+
+        _wait_ready(process, port)
+        assert process.poll() is None
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+    finally:
+        _ensure_process_stopped(process)
+
+
 def test_real_workers_child_failure_is_fatal_within_five_seconds() -> None:
     prepare_postgres_database()
     port = _free_port()
@@ -444,7 +516,7 @@ def test_real_workers_never_returning_control_operation_is_fatal() -> None:
     process = _start_workers_process("control_overrun", port)
     try:
         _wait_for_output(process, "CONTROL_STARTED", timeout_seconds=15.0)
-        # The code-owned control envelope is 1 s of native work plus 5 s of
+        # The code-owned control envelope is 1 s of native work plus 6 s of
         # bounded completion grace; leave process-exit scheduling headroom.
         assert process.wait(timeout=9.0) != 0
         _assert_probe_closed(port)
@@ -485,6 +557,44 @@ def test_real_workers_news_native_timeouts_recover_without_root_restart() -> Non
         row = _runtime_row()
         assert row["lifecycle_state"] == "stopped"
         assert row["fatal_code"] is None
+    finally:
+        _ensure_process_stopped(process)
+
+
+def test_real_workers_periodic_database_overrun_recovers_after_native_completion() -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    process = _start_workers_process("periodic_business_overrun_recovery", port)
+    try:
+        _wait_ready(process, port)
+        _wait_for_outputs(
+            process,
+            (
+                "NATIVE_TRANSACTION_TIMEOUT_FIRST",
+                "BUSINESS_OPERATION_OVERRUN",
+                "BUSINESS_OPERATION_RECOVERED",
+                "BUSINESS_NATIVE_COMPLETED",
+            ),
+            timeout_seconds=5.0,
+        )
+        _wait_metrics(
+            process,
+            port,
+            (
+                'tracefold_worker_resource_active{capability="database_business"} 0.0',
+                (
+                    'tracefold_worker_resource_service_seconds_count{capability="database_business",'
+                    'operation="test_periodic_business_overrun",outcome="success"} 1.0'
+                ),
+            ),
+        )
+        assert process.poll() is None
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "running"
+        assert row["fatal_code"] is None
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
     finally:
         _ensure_process_stopped(process)
 
@@ -535,6 +645,23 @@ def test_real_workers_absolute_graceful_deadline_covers_never_returning_future()
         row = _runtime_row()
         assert row["lifecycle_state"] == "failed"
         assert row["fatal_code"] == "graceful_deadline_exceeded"
+    finally:
+        _ensure_process_stopped(process)
+
+
+def test_shutdown_never_returning_control_write_obeys_absolute_graceful_deadline() -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    process = _start_workers_process("shutdown_stopping_control_never_returns", port)
+    try:
+        _wait_ready(process, port)
+        started = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        _wait_for_output(process, "SHUTDOWN_STOPPING_CONTROL_STARTED")
+        assert process.wait(timeout=3.0) != 0
+        elapsed = time.monotonic() - started
+        assert 0.8 <= elapsed <= 3.0
+        _assert_probe_closed(port)
     finally:
         _ensure_process_stopped(process)
 
@@ -594,6 +721,60 @@ def _wait_ready(
         process.kill()
         output, _ = process.communicate(timeout=2.0)
     raise AssertionError(f"workers process did not become ready; output={output!r}")
+
+
+def _wait_probe_status(
+    process: subprocess.Popen[str],
+    port: int,
+    *,
+    path: str,
+    expected_status: int,
+    timeout_seconds: float = 5.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    url = f"http://127.0.0.1:{port}{path}"
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            output = process.stdout.read() if process.stdout is not None else ""
+            raise AssertionError(
+                f"workers process exited before {path}={expected_status}: code={process.returncode}; output={output!r}"
+            )
+        try:
+            with _LOCAL_HTTP.open(url, timeout=0.1) as response:
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except OSError:
+            status = None
+        if status == expected_status:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"workers probe {path} did not return {expected_status}")
+
+
+def _wait_metrics(
+    process: subprocess.Popen[str],
+    port: int,
+    expected: tuple[str, ...],
+    *,
+    timeout_seconds: float = 3.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    url = f"http://127.0.0.1:{port}/metrics"
+    last_metrics = ""
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise AssertionError(f"workers process exited while waiting for metrics: code={process.returncode}")
+        try:
+            with _LOCAL_HTTP.open(url, timeout=0.2) as response:
+                last_metrics = response.read().decode("utf-8")
+        except OSError:
+            time.sleep(0.02)
+            continue
+        if all(value in last_metrics for value in expected):
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"workers metrics missing {expected!r}; metrics={last_metrics!r}")
 
 
 def _wait_for_output(
@@ -664,7 +845,9 @@ def _assert_probe_closed(port: int) -> None:
 def _runtime_row() -> dict[str, object]:
     conn = connect_postgres_test(read_only=False)
     try:
-        row = conn.execute("SELECT lifecycle_state, fatal_code FROM workers_runtime WHERE singleton_key").fetchone()
+        row = conn.execute(
+            "SELECT runtime_id, lifecycle_state, fatal_code FROM workers_runtime WHERE singleton_key"
+        ).fetchone()
         assert row is not None
         return dict(row)
     finally:

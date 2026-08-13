@@ -292,6 +292,7 @@ async def run_workers(settings: Settings) -> None:
 
         async with asyncio.TaskGroup() as group:
             business_tasks: list[asyncio.Task[Any]] = []
+            control_task: asyncio.Task[Any] | None = None
             probe_task = group.create_task(
                 _guard_child(
                     _run_probe(server, stop_event=probe_stop_event),
@@ -392,10 +393,14 @@ async def run_workers(settings: Settings) -> None:
             business_tasks.append(
                 group.create_task(
                     _guard_child(
-                        run_projection_edf(
-                            components.projections,
+                        _run_recurring_database_overrun_boundary(
+                            lambda: run_projection_edf(
+                                components.projections,
+                                stop_event=work_stop_event,
+                                telemetry=telemetry,
+                            ),
                             stop_event=work_stop_event,
-                            telemetry=telemetry,
+                            worker="projection-edf",
                         ),
                         on_fatal=enter_fatal,
                     ),
@@ -405,7 +410,14 @@ async def run_workers(settings: Settings) -> None:
             business_tasks.append(
                 group.create_task(
                     _guard_child(
-                        run_model_arbiter(components.models, stop_event=work_stop_event),
+                        _run_recurring_database_overrun_boundary(
+                            lambda: run_model_arbiter(
+                                components.models,
+                                stop_event=work_stop_event,
+                            ),
+                            stop_event=work_stop_event,
+                            worker="model-arbiter",
+                        ),
                         on_fatal=enter_fatal,
                     ),
                     name="model-arbiter",
@@ -416,61 +428,46 @@ async def run_workers(settings: Settings) -> None:
                 _wait_for_probe_start(server),
                 on_fatal=enter_fatal,
             )
-            try:
-                async with asyncio.timeout(_CONTROL_HEARTBEAT_STALE_SECONDS):
-                    initial_heartbeat_at_ms = await _guard_child(
-                        _control_heartbeat_with_retry(
-                            db=db,
-                            lock_conn=lock_conn,
-                            runtime_id=runtime_id,
-                            stop_event=control_stop_event,
-                        ),
-                        on_fatal=enter_fatal,
-                    )
-            except TimeoutError as exc:
-                raise _ControlFailure("workers_control_heartbeat_stale") from exc
-            if initial_heartbeat_at_ms is None:
-                raise asyncio.CancelledError
-            probe_state.heartbeat_at_ms = initial_heartbeat_at_ms
-            await _guard_child(
-                db.run_control(
-                    "workers_runtime_running",
-                    _runtime_transition,
-                    db,
-                    runtime_id,
-                    "running",
-                    None,
-                    operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
+            initial_heartbeat_at_ms = await _guard_child(
+                _control_heartbeat_with_retry(
+                    db=db,
+                    lock_conn=lock_conn,
+                    runtime_id=runtime_id,
+                    stop_event=shutdown_requested,
                 ),
                 on_fatal=enter_fatal,
             )
-            probe_state.ready = True
-            probe_state.lifecycle_state = "running"
-            probe_state.unavailable_reason = ""
-            control_task = group.create_task(
-                _guard_child(
-                    _run_control(
-                        db=db,
-                        lock_conn=lock_conn,
-                        runtime_id=runtime_id,
-                        probe_state=probe_state,
-                        stop_event=control_stop_event,
+            if initial_heartbeat_at_ms is not None and not shutdown_requested.is_set():
+                probe_state.heartbeat_at_ms = initial_heartbeat_at_ms
+                await _guard_child(
+                    db.run_control(
+                        "workers_runtime_running",
+                        _runtime_transition,
+                        db,
+                        runtime_id,
+                        "running",
+                        None,
+                        operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
                     ),
                     on_fatal=enter_fatal,
-                ),
-                name="workers-control",
-            )
-            control_watchdog_task = group.create_task(
-                _guard_child(
-                    _run_control_watchdog(
-                        probe_state=probe_state,
-                        stop_event=control_stop_event,
+                )
+                probe_state.ready = True
+                probe_state.lifecycle_state = "running"
+                probe_state.unavailable_reason = ""
+                control_task = group.create_task(
+                    _guard_child(
+                        _run_control(
+                            db=db,
+                            lock_conn=lock_conn,
+                            runtime_id=runtime_id,
+                            probe_state=probe_state,
+                            stop_event=control_stop_event,
+                        ),
+                        on_fatal=enter_fatal,
                     ),
-                    on_fatal=enter_fatal,
-                ),
-                name="workers-control-watchdog",
-            )
-            phase = "runtime"
+                    name="workers-control",
+                )
+                phase = "runtime"
 
             await shutdown_requested.wait()
             shutdown_started = signal_loop.time()
@@ -478,14 +475,20 @@ async def run_workers(settings: Settings) -> None:
             probe_state.lifecycle_state = "stopping"
             probe_state.unavailable_reason = "runtime_stopping"
             await _guard_child(
-                db.run_control(
-                    "workers_runtime_stopping",
-                    _runtime_transition,
-                    db,
-                    runtime_id,
-                    "stopping",
-                    None,
-                    operation_timeout_seconds=_remaining(shutdown_started),
+                _within_graceful_deadline(
+                    db.run_control(
+                        "workers_runtime_stopping",
+                        _runtime_transition,
+                        db,
+                        runtime_id,
+                        "stopping",
+                        None,
+                        operation_timeout_seconds=min(
+                            _CONTROL_TIMEOUT_SECONDS,
+                            _remaining(shutdown_started),
+                        ),
+                    ),
+                    shutdown_started,
                 ),
                 on_fatal=enter_fatal,
             )
@@ -512,19 +515,23 @@ async def run_workers(settings: Settings) -> None:
                 on_fatal=enter_fatal,
             )
             control_stop_event.set()
-            await _within(
-                asyncio.gather(control_task, control_watchdog_task),
+            if control_task is not None:
+                await _within(control_task, shutdown_started)
+            await _within_graceful_deadline(
+                db.run_control(
+                    "workers_runtime_stopped",
+                    _runtime_transition,
+                    db,
+                    runtime_id,
+                    "stopped",
+                    None,
+                    operation_timeout_seconds=min(
+                        _CONTROL_TIMEOUT_SECONDS,
+                        _remaining(shutdown_started),
+                    ),
+                    allow_shutdown=True,
+                ),
                 shutdown_started,
-            )
-            await db.run_control(
-                "workers_runtime_stopped",
-                _runtime_transition,
-                db,
-                runtime_id,
-                "stopped",
-                None,
-                operation_timeout_seconds=_remaining(shutdown_started),
-                allow_shutdown=True,
             )
             db.close_control_admission()
             if not await db.drain_control(timeout_seconds=_remaining(shutdown_started)):
@@ -601,7 +608,14 @@ async def _run_due(
     stop_event: asyncio.Event,
 ) -> None:
     while not stop_event.is_set():
-        value = await turn()
+        try:
+            value = await turn()
+        except ResourceOperationOverrun as exc:
+            if not _is_recurring_database_overrun(exc):
+                raise
+            _log_recurring_database_overrun("durable-due", exc)
+            await _wait_or_stop(stop_event, float(idle_seconds))
+            continue
         disposition = (
             _Disposition.PROGRESSED
             if value is True or value in {"processed", "failed", "terminal"}
@@ -631,11 +645,46 @@ async def _run_periodic(
     loop = asyncio.get_running_loop()
     deadline = loop.time()
     while not stop_event.is_set():
-        await sample()
+        try:
+            await sample()
+        except ResourceOperationOverrun as exc:
+            if not _is_recurring_database_overrun(exc):
+                raise
+            _log_recurring_database_overrun("periodic", exc)
+            deadline = loop.time() + float(period_seconds)
+            await _wait_or_stop(stop_event, float(period_seconds))
+            continue
         deadline += float(period_seconds)
         if deadline <= loop.time():
             deadline = loop.time() + float(period_seconds)
         await _wait_or_stop(stop_event, deadline - loop.time())
+
+
+async def _run_recurring_database_overrun_boundary(
+    start: Callable[[], Awaitable[None]],
+    *,
+    stop_event: asyncio.Event,
+    worker: str,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            await start()
+            return
+        except ResourceOperationOverrun as exc:
+            if not _is_recurring_database_overrun(exc):
+                raise
+            _log_recurring_database_overrun(worker, exc)
+            await _wait_or_stop(stop_event, _PRODUCTIVE_REPOLL_SECONDS)
+
+
+def _is_recurring_database_overrun(exc: ResourceOperationOverrun) -> bool:
+    return str(exc).startswith("resource_operation_overrun:db:")
+
+
+def _log_recurring_database_overrun(worker: str, exc: ResourceOperationOverrun) -> None:
+    logger.bind(worker=worker, error=str(exc)).warning(
+        "Recurring database operation outlived its wrapper; native capability remains authoritative"
+    )
 
 
 async def _sample_news_story(
@@ -715,23 +764,6 @@ async def _control_heartbeat_with_retry(
             await _wait_or_stop(stop_event, _CONTROL_RETRY_SECONDS)
             if stop_event.is_set():
                 return None
-
-
-async def _run_control_watchdog(
-    *,
-    probe_state: _ProbeState,
-    stop_event: asyncio.Event,
-) -> None:
-    loop = asyncio.get_running_loop()
-    last_heartbeat_at_ms = probe_state.heartbeat_at_ms
-    last_success_at = loop.time()
-    while not stop_event.is_set():
-        if probe_state.heartbeat_at_ms != last_heartbeat_at_ms:
-            last_heartbeat_at_ms = probe_state.heartbeat_at_ms
-            last_success_at = loop.time()
-        if loop.time() - last_success_at > _CONTROL_HEARTBEAT_STALE_SECONDS:
-            raise _ControlFailure("workers_control_heartbeat_stale")
-        await _wait_or_stop(stop_event, 0.250)
 
 
 async def _control_liveness_and_heartbeat(
@@ -1336,6 +1368,13 @@ def _ingest_service_for_repos(repos: Any, *, event_anchor_active_window_ms: int)
 
 async def _within(awaitable: Awaitable[Any], started_at: float) -> Any:
     return await asyncio.wait_for(awaitable, timeout=_remaining(started_at))
+
+
+async def _within_graceful_deadline(awaitable: Awaitable[Any], started_at: float) -> Any:
+    try:
+        return await _within(awaitable, started_at)
+    except TimeoutError as exc:
+        raise RuntimeError("graceful_deadline_exceeded") from exc
 
 
 def _remaining(started_at: float) -> float:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
+from typing import Any
 
 
 class ResourceAdmissionTimeout(TimeoutError):
@@ -30,6 +31,7 @@ async def await_concurrent_future[T](
 ) -> T:
     """Let an already-finished native future win over a delayed asyncio callback."""
 
+    wrapped.add_done_callback(_retrieve_future_exception)
     done, _ = await asyncio.wait(
         {wrapped},
         timeout=max(0.001, float(timeout_seconds)),
@@ -40,6 +42,13 @@ async def await_concurrent_future[T](
         wrapped.cancel()
         return underlying.result()
     raise ResourceOperationOverrun(overrun_code)
+
+
+def _retrieve_future_exception(future: asyncio.Future[Any]) -> None:
+    """Retrieve a late native failure after its caller has left the envelope."""
+
+    if not future.cancelled():
+        future.exception()
 
 
 class ResourceSubmissionTracker:

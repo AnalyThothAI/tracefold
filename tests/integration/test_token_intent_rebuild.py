@@ -44,6 +44,7 @@ def test_rebuild_recent_token_intents_uses_current_builder_policy():
             "symbol:NOTHING",
             "ca:solana:F7pB3ZdfBnyFw2LRHydWEn9BmhEa5XihXLjhySFRpump".lower(),
         }
+        assert {intent["created_at_ms"] for intent in intents} == {event.received_at_ms}
     finally:
         conn.close()
 

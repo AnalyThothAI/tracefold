@@ -400,11 +400,7 @@ class _ProductionSampler:
         token_radar_database_before = self._read_token_radar_database_state()
         token_radar_api = self._read_token_radar_api()
         token_radar_database_after = self._read_token_radar_database_state()
-        metrics_text = self._read_http_text(
-            f"{self._workers_runtime_url}/metrics",
-            max_bytes=_MAX_METRICS_BYTES,
-            stage="worker_metrics",
-        )
+        metrics_text, metrics_attempts = self._read_worker_metrics()
         container = self._read_container(probe_process_id=int(probe.get("process_id") or 0))
         serve_container = self._read_serve_container()
         at_ms = int(time.time() * 1_000)
@@ -418,6 +414,9 @@ class _ProductionSampler:
             "scheduled_offset_seconds": int(sequence) * SAMPLE_INTERVAL_SECONDS,
             "at_ms": at_ms,
             "status": "passed",
+            "collector_observation": {
+                "worker_metrics_attempts": metrics_attempts,
+            },
             "checkout": {
                 "commit_sha": _git_head(self._repository_root),
                 "clean": _repository_is_clean(self._repository_root),
@@ -439,6 +438,23 @@ class _ProductionSampler:
                 **_parse_worker_metrics(metrics_text),
             },
         }
+
+    def _read_worker_metrics(self) -> tuple[str, int]:
+        url = f"{self._workers_runtime_url}/metrics"
+        try:
+            return self._read_http_text(
+                url,
+                max_bytes=_MAX_METRICS_BYTES,
+                stage="worker_metrics",
+            ), 1
+        except _SampleFailure as exc:
+            if exc.stage != "worker_metrics":
+                raise
+        return self._read_http_text(
+            url,
+            max_bytes=_MAX_METRICS_BYTES,
+            stage="worker_metrics",
+        ), 2
 
     def _read_probe(self) -> tuple[dict[str, Any], float]:
         started = time.monotonic()

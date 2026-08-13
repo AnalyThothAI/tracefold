@@ -444,8 +444,8 @@ class RegistryRepository:
               SELECT DISTINCT ON (resolution.target_type, resolution.target_id)
                 resolution.target_type,
                 resolution.target_id,
-                event.received_at_ms AS computed_at_ms,
-                event.received_at_ms::double precision AS score,
+                intent.created_at_ms AS computed_at_ms,
+                intent.created_at_ms::double precision AS score,
                 EXISTS (
                   SELECT 1
                   FROM unnest(%s::text[], %s::text[])
@@ -453,19 +453,19 @@ class RegistryRepository:
                   WHERE priority.target_type = resolution.target_type
                     AND priority.target_id = resolution.target_id
                 ) AS radar_priority
-              FROM token_intent_resolutions resolution
-              JOIN token_intents intent ON intent.intent_id = resolution.intent_id
-              JOIN events event ON event.event_id = intent.event_id
-              WHERE resolution.is_current = true
+              FROM token_intents intent
+              JOIN token_intent_resolutions resolution
+                ON resolution.intent_id = intent.intent_id
+              WHERE intent.created_at_ms >= %s
+                AND resolution.is_current = true
                 AND resolution.resolution_status IN ('EXACT', 'UNIQUE_BY_CONTEXT')
                 AND resolution.target_type IN ('Asset', 'CexToken')
                 AND resolution.target_id IS NOT NULL
-                AND event.received_at_ms >= %s
               ORDER BY
                 resolution.target_type,
                 resolution.target_id,
-                event.received_at_ms DESC,
-                event.event_id ASC
+                intent.created_at_ms DESC,
+                intent.event_id ASC
             ),
             live_targets AS (
               SELECT

@@ -50,13 +50,15 @@ def open_ingest(tmp_path):
 
 def test_ingest_mirror_writes_unresolved_token_intent(tmp_path):
     conn, _, ingest = open_ingest(tmp_path)
+    event = make_event("event-1", text="$mirror is moving")
     try:
-        result = ingest.ingest_event(make_event("event-1", text="$mirror is moving"))
+        result = ingest.ingest_event(event)
     finally:
         conn.close()
 
     assert result.inserted is True
     assert result.token_intents[0]["display_symbol"] == "MIRROR"
+    assert result.token_intents[0]["created_at_ms"] == event.received_at_ms
     assert result.token_resolutions[0]["resolution_status"] == "NIL"
     assert result.token_resolutions[0]["target_id"] is None
 
