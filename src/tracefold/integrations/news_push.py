@@ -18,7 +18,11 @@ from tracefold.news import (
     NewsPushReceipt,
     PreparedNewsPush,
 )
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 from .feishu import (
     FEISHU_AUTH_MODE_SIGNED,
@@ -347,7 +351,9 @@ class FeishuNewsPushDelivery:
             raise
         except ResourceAdmissionTimeout:
             return outcome(None, "news_push_translation_admission_timeout")
-        except ResourceOperationOverrun:
+        except ResourceOperationOverrun as exc:
+            if exc.capability is not ResourceCapability.FINITE_OPERATION:
+                raise
             return outcome(None, "news_push_translation_timeout")
         except TimeoutError:
             return outcome(None, "news_push_translation_total_timeout")

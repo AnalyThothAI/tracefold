@@ -1409,6 +1409,26 @@ def test_disabled_yfinance_source_is_explicitly_unavailable() -> None:
         client.close()
 
 
+def test_source_client_exposes_the_exact_enabled_adapter_set_for_startup_reconciliation() -> None:
+    client = MacroSourceClient(
+        fred_enabled=False,
+        cboe_enabled=False,
+        cftc_enabled=False,
+        nasdaq_daily_enabled=False,
+        yfinance_enabled=False,
+    )
+    try:
+        assert client.enabled_adapter_ids == MACRO_ACQUISITION_ADAPTER_IDS - {
+            "fred_csv",
+            "cfe_settlement",
+            "cftc_tff",
+            "nasdaq_history",
+            "yfinance_history",
+        }
+    finally:
+        client.close()
+
+
 def _yahoo_chart_response(
     request: httpx.Request,
     *,

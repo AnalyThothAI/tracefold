@@ -20,6 +20,7 @@ from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import create_pool, with_password_from_file
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
+    ResourceCapability,
     await_concurrent_future,
 )
 from tracefold.platform.validation import require_nonnegative_float
@@ -50,6 +51,10 @@ _SERVE_PERMIT_TIMEOUT_SECONDS = 0.050
 _WORKER_CHECKOUT_TIMEOUT_SECONDS = 0.250
 WORKER_DATABASE_LOCK_TIMEOUT_SECONDS = 0.250
 _WORKER_ADMISSION_TIMEOUT_SECONDS = 1.0
+# One bounded heavy DB operation may legitimately consume its full native
+# transaction envelope. Wait for that physical slot before competing for one
+# of the two general business slots.
+_WORKER_HEAVY_ADMISSION_TIMEOUT_SECONDS = 16.0
 # Stay beyond worker_session's transaction deadline so PostgreSQL's native
 # timeout classification wins before the outer executor envelope.
 _WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS = 6.0
@@ -162,6 +167,7 @@ class WorkerDatabase:
         )
     )
     _business_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(2))
+    _heavy_business_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
     _control_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
     _pending_business: set[asyncio.Future[Any]] = field(default_factory=set)
     _pending_control: set[asyncio.Future[Any]] = field(default_factory=set)
@@ -218,9 +224,42 @@ class WorkerDatabase:
             args,
             kwargs,
             executor=self._business_executor,
-            gate=self._business_gate,
+            gates=((self._business_gate, _WORKER_ADMISSION_TIMEOUT_SECONDS),),
             pending=self._pending_business,
-            capability="database_business",
+            capability=ResourceCapability.DATABASE_BUSINESS,
+            operation_timeout_seconds=operation_timeout_seconds,
+            on_submitted=on_submitted,
+        )
+
+    def heavy_business(self) -> _HeavyBusinessDatabase:
+        """Share the business pool while limiting measured heavy DB work to one slot."""
+
+        return _HeavyBusinessDatabase(self)
+
+    async def _run_heavy_business[T](
+        self,
+        operation_name: str,
+        function: Callable[..., T],
+        /,
+        *args: Any,
+        operation_timeout_seconds: float,
+        on_submitted: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> T:
+        if not self._accepting_business or self._executors_closed:
+            raise RuntimeError("worker_database_business_closed")
+        return await self._run_executor(
+            operation_name,
+            function,
+            args,
+            kwargs,
+            executor=self._business_executor,
+            gates=(
+                (self._heavy_business_gate, _WORKER_HEAVY_ADMISSION_TIMEOUT_SECONDS),
+                (self._business_gate, _WORKER_ADMISSION_TIMEOUT_SECONDS),
+            ),
+            pending=self._pending_business,
+            capability=ResourceCapability.DATABASE_BUSINESS,
             operation_timeout_seconds=operation_timeout_seconds,
             on_submitted=on_submitted,
         )
@@ -244,9 +283,9 @@ class WorkerDatabase:
             args,
             kwargs,
             executor=self._control_executor,
-            gate=self._control_gate,
+            gates=((self._control_gate, _WORKER_ADMISSION_TIMEOUT_SECONDS),),
             pending=self._pending_control,
-            capability="database_control",
+            capability=ResourceCapability.DATABASE_CONTROL,
             operation_timeout_seconds=operation_timeout_seconds,
             on_submitted=on_submitted,
         )
@@ -259,18 +298,15 @@ class WorkerDatabase:
         kwargs: dict[str, Any],
         *,
         executor: ThreadPoolExecutor,
-        gate: asyncio.BoundedSemaphore,
+        gates: tuple[tuple[asyncio.BoundedSemaphore, float], ...],
         pending: set[asyncio.Future[Any]],
-        capability: str,
+        capability: ResourceCapability,
         operation_timeout_seconds: float,
         on_submitted: Callable[[], None] | None,
     ) -> T:
         started = time.perf_counter()
         try:
-            await asyncio.wait_for(
-                gate.acquire(),
-                timeout=_WORKER_ADMISSION_TIMEOUT_SECONDS,
-            )
+            acquired_gates = await _acquire_db_gates(gates)
         except TimeoutError as exc:
             self._record_pool_wait(
                 "worker_db_admission",
@@ -300,7 +336,7 @@ class WorkerDatabase:
         try:
             underlying = executor.submit(partial(function, *args, **kwargs))
         except BaseException:
-            gate.release()
+            _release_db_gates(acquired_gates)
             raise
         wrapped = asyncio.wrap_future(underlying)
         pending.add(wrapped)
@@ -310,7 +346,7 @@ class WorkerDatabase:
             loop=loop,
             wrapped=wrapped,
             pending=pending,
-            gate=gate,
+            gates=acquired_gates,
             completed=lambda future: self._record_resource_completion(
                 capability,
                 operation_name,
@@ -328,11 +364,12 @@ class WorkerDatabase:
                     float(operation_timeout_seconds)
                     + (
                         _WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS
-                        if capability == "database_business"
+                        if capability is ResourceCapability.DATABASE_BUSINESS
                         else _WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS
                     )
                 ),
-                overrun_code=f"resource_operation_overrun:db:{_normalize_operation_name(operation_name)}",
+                capability=capability,
+                operation_name=_normalize_operation_name(operation_name),
             )
         except LockNotAvailable as exc:
             raise ResourceAdmissionTimeout(
@@ -347,19 +384,19 @@ class WorkerDatabase:
                 f"worker_database_transaction_timeout:{_normalize_operation_name(operation_name)}"
             ) from exc
         except IdleInTransactionSessionTimeout as exc:
-            if capability != "database_business":
+            if capability is not ResourceCapability.DATABASE_BUSINESS:
                 raise
             raise ResourceAdmissionTimeout(
                 f"worker_database_idle_transaction_timeout:{_normalize_operation_name(operation_name)}"
             ) from exc
         except PoolTimeout as exc:
-            if capability != "database_business":
+            if capability is not ResourceCapability.DATABASE_BUSINESS:
                 raise
             raise ResourceAdmissionTimeout(
                 f"worker_database_pool_timeout:{_normalize_operation_name(operation_name)}"
             ) from exc
         except OperationalError as exc:
-            if capability != "database_business":
+            if capability is not ResourceCapability.DATABASE_BUSINESS:
                 raise
             raise ResourceAdmissionTimeout(
                 f"worker_database_connection_lost:{_normalize_operation_name(operation_name)}"
@@ -531,14 +568,14 @@ class WorkerDatabase:
 
     def _record_resource_admission(
         self,
-        capability: str,
+        capability: ResourceCapability,
         operation_name: str,
         outcome: str,
         seconds: float,
     ) -> None:
         if self.telemetry is not None:
             self.telemetry.record_resource_admission(
-                capability,
+                capability.value,
                 _normalize_operation_name(operation_name),
                 outcome,
                 seconds,
@@ -546,7 +583,7 @@ class WorkerDatabase:
 
     def _record_resource_completion(
         self,
-        capability: str,
+        capability: ResourceCapability,
         operation_name: str,
         submitted_at: float,
         future: Future[Any],
@@ -555,16 +592,42 @@ class WorkerDatabase:
             return
         outcome = "cancelled" if future.cancelled() else "error" if future.exception() is not None else "success"
         self.telemetry.record_resource_service(
-            capability,
+            capability.value,
             _normalize_operation_name(operation_name),
             outcome,
             max(0.0, time.perf_counter() - submitted_at),
         )
-        self.telemetry.change_resource_active(capability, -1)
+        self.telemetry.change_resource_active(capability.value, -1)
 
-    def _change_resource_active(self, capability: str, delta: int) -> None:
+    def _change_resource_active(self, capability: ResourceCapability, delta: int) -> None:
         if self.telemetry is not None:
-            self.telemetry.change_resource_active(capability, delta)
+            self.telemetry.change_resource_active(capability.value, delta)
+
+
+@dataclass(frozen=True, slots=True)
+class _HeavyBusinessDatabase:
+    """Internal adapter for DB work proven capable of monopolizing a slot."""
+
+    database: WorkerDatabase
+
+    async def run_business[T](
+        self,
+        operation_name: str,
+        function: Callable[..., T],
+        /,
+        *args: Any,
+        operation_timeout_seconds: float,
+        on_submitted: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> T:
+        return await self.database._run_heavy_business(
+            operation_name,
+            function,
+            *args,
+            operation_timeout_seconds=operation_timeout_seconds,
+            on_submitted=on_submitted,
+            **kwargs,
+        )
 
 
 def _normalize_operation_name(name: str) -> str:
@@ -668,19 +731,38 @@ async def _close_pool(pool: Any) -> None:
         raise RuntimeError("db_pool_close_must_be_sync")
 
 
+async def _acquire_db_gates(
+    gates: tuple[tuple[asyncio.BoundedSemaphore, float], ...],
+) -> tuple[asyncio.BoundedSemaphore, ...]:
+    acquired: list[asyncio.BoundedSemaphore] = []
+    try:
+        for gate, timeout_seconds in gates:
+            await asyncio.wait_for(gate.acquire(), timeout=float(timeout_seconds))
+            acquired.append(gate)
+    except BaseException:
+        _release_db_gates(tuple(acquired))
+        raise
+    return tuple(acquired)
+
+
+def _release_db_gates(gates: tuple[asyncio.BoundedSemaphore, ...]) -> None:
+    for gate in reversed(gates):
+        gate.release()
+
+
 def _release_db_permit_on_completion(
     underlying: Future[Any],
     *,
     loop: asyncio.AbstractEventLoop,
     wrapped: asyncio.Future[Any],
     pending: set[asyncio.Future[Any]],
-    gate: asyncio.BoundedSemaphore,
+    gates: tuple[asyncio.BoundedSemaphore, ...],
     completed: Callable[[Future[Any]], None] | None = None,
 ) -> None:
     def on_done(future: Future[Any]) -> None:
         def finalize() -> None:
             pending.discard(wrapped)
-            gate.release()
+            _release_db_gates(gates)
             if completed is not None:
                 completed(future)
 

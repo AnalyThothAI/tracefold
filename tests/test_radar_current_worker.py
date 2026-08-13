@@ -2,22 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import time
+from threading import Event
 
 import pytest
 
+from tracefold.app import database as database_module
+from tracefold.app.database import WorkerDatabase
 from tracefold.market import TokenRadarCurrentProjection
+from tracefold.market.radar import current_worker as radar_worker_module
 from tracefold.market.radar.current_worker import _phase_timeout
 from tracefold.market.radar.reducer import (
     RadarEvidenceRevision,
     reduce_token_radar,
     token_radar_text_fingerprint,
 )
-from tracefold.platform.resource import ResourceOperationOverrun
+from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
 
 
 def test_resource_operation_overrun_is_fatal() -> None:
     projection = TokenRadarCurrentProjection(
         db=_OverrunningDatabase(),
+        heavy_db=_OverrunningDatabase(),
         cpu=object(),
         source_is_streaming=lambda: True,
         clock=lambda: 1_800_000_000_000,
@@ -30,6 +35,7 @@ def test_resource_operation_overrun_is_fatal() -> None:
 def test_token_radar_outer_timeout_records_operational_failure() -> None:
     projection = TokenRadarCurrentProjection(
         db=object(),
+        heavy_db=object(),
         cpu=object(),
         source_is_streaming=lambda: True,
         clock=lambda: 1_800_000_000_000,
@@ -50,6 +56,60 @@ def test_token_radar_outer_timeout_records_operational_failure() -> None:
     asyncio.run(projection.sample())
 
     assert failures == [("token_radar_sample_budget_exceeded", 1_800_000_000_000)]
+
+
+def test_token_radar_absolute_deadline_does_not_wait_for_an_owned_heavy_future(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=object(), telemetry=None)
+        heavy = database.heavy_business()
+        release = Event()
+        started = Event()
+        failures: list[str] = []
+
+        def blocking_heavy() -> None:
+            started.set()
+            release.wait(timeout=2.0)
+
+        try:
+            with pytest.raises(ResourceOperationOverrun):
+                await heavy.run_business(
+                    "already_owned_heavy",
+                    blocking_heavy,
+                    operation_timeout_seconds=0.001,
+                )
+            assert started.wait(timeout=1.0)
+
+            projection = TokenRadarCurrentProjection(
+                db=database,
+                heavy_db=heavy,
+                cpu=object(),
+                source_is_streaming=lambda: True,
+                clock=lambda: 1_800_000_000_000,
+            )
+            projection.service.mark_failed = (  # type: ignore[method-assign]
+                lambda **kwargs: failures.append(str(kwargs["error_code"])) or 1
+            )
+
+            turn_started = time.monotonic()
+            await projection.sample()
+            elapsed = time.monotonic() - turn_started
+
+            assert 0.035 <= elapsed <= 0.08
+            assert failures == ["token_radar_sample_budget_exceeded"]
+        finally:
+            release.set()
+            await database.drain_business(timeout_seconds=1.0)
+            database.close_executors()
+
+    monkeypatch.setattr(radar_worker_module, "TOKEN_RADAR_TURN_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(radar_worker_module, "_TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(radar_worker_module, "_TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(radar_worker_module, "_TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(database_module, "_WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS", 0.001)
+    monkeypatch.setattr(database_module, "_WORKER_HEAVY_ADMISSION_TIMEOUT_SECONDS", 0.2)
+    asyncio.run(scenario())
 
 
 def test_token_radar_disconnected_at_sample_start_marks_source_stale_without_loading() -> None:
@@ -80,6 +140,7 @@ def test_token_radar_disconnected_at_sample_start_marks_source_stale_without_loa
 
     projection = TokenRadarCurrentProjection(
         db=_Database(),
+        heavy_db=_Database(),
         cpu=object(),
         clock=lambda: now_ms,
         source_is_streaming=lambda: False,
@@ -136,6 +197,7 @@ def test_token_radar_disconnect_before_publish_discards_computed_snapshot() -> N
 
     projection = TokenRadarCurrentProjection(
         db=_Database(),
+        heavy_db=_Database(),
         cpu=_Cpu(),
         clock=lambda: now_ms,
         source_is_streaming=lambda: next(streaming),
@@ -200,6 +262,7 @@ def test_token_radar_ordinary_projection_failure_marks_stale_then_remains_fatal(
 
     projection = TokenRadarCurrentProjection(
         db=_Database(),
+        heavy_db=_Database(),
         cpu=_Cpu(),
         clock=lambda: now_ms,
         source_is_streaming=lambda: True,
@@ -234,6 +297,7 @@ def test_token_radar_failure_recording_cannot_replace_the_fatal_projection_error
 
     projection = TokenRadarCurrentProjection(
         db=_Database(),
+        heavy_db=_Database(),
         cpu=object(),
         clock=lambda: 1_800_000_000_000,
         source_is_streaming=lambda: True,
@@ -282,6 +346,7 @@ def test_token_radar_projection_failure_gets_a_bounded_failure_write_budget() ->
 
     projection = TokenRadarCurrentProjection(
         db=_Database(),
+        heavy_db=_Database(),
         cpu=_Cpu(),
         clock=lambda: 1_800_000_000_000,
         source_is_streaming=lambda: True,
@@ -330,6 +395,7 @@ def test_token_radar_allocates_its_twelve_second_budget_from_live_phase_costs() 
 
     projection = TokenRadarCurrentProjection(
         db=_Database(),
+        heavy_db=_Database(),
         cpu=_Cpu(),
         clock=lambda: 1_800_000_000_000,
         source_is_streaming=lambda: True,
@@ -435,6 +501,7 @@ def test_token_radar_enriches_selected_targets_before_publishing() -> None:
 
     projection = TokenRadarCurrentProjection(
         db=_Database(),
+        heavy_db=_Database(),
         cpu=_Cpu(),
         clock=lambda: now_ms,
         source_is_streaming=lambda: True,
@@ -456,4 +523,7 @@ def test_token_radar_enriches_selected_targets_before_publishing() -> None:
 
 class _OverrunningDatabase:
     async def run_business(self, *_args, **_kwargs):
-        raise ResourceOperationOverrun("operation_overrun")
+        raise ResourceOperationOverrun(
+            capability=ResourceCapability.DATABASE_BUSINESS,
+            operation_name="operation_overrun",
+        )

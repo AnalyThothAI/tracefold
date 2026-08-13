@@ -13,7 +13,14 @@ from tests.postgres_test_utils import (
     reset_postgres_schema,
 )
 from tracefold.integrations.macro_sources import MacroSourceClient
-from tracefold.macro import FetchBatch, MacroSourceError, ReleaseFact, SeriesFact, require_dataset
+from tracefold.macro import (
+    MACRO_ACQUISITION_ADAPTER_IDS,
+    FetchBatch,
+    MacroSourceError,
+    ReleaseFact,
+    SeriesFact,
+    require_dataset,
+)
 from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.market import MarketObservationFact, MarketSettlementFact
 
@@ -203,6 +210,7 @@ def test_official_fomc_schedule_and_treasury_auctions_flow_through_one_fact_pipe
             worker_name="macro_official_state",
             clock_kind="official_state",
             source_client=client,
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=lambda: now_ms,
             target_keys=("federal_reserve.fomc.schedule:latest",),
         )
@@ -211,6 +219,7 @@ def test_official_fomc_schedule_and_treasury_auctions_flow_through_one_fact_pipe
             worker_name="macro_scheduled_release",
             clock_kind="scheduled_release",
             source_client=client,
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=lambda: now_ms,
             target_keys=("treasury.auction.results:latest",),
         )
@@ -285,6 +294,7 @@ def test_explicit_backfill_claims_only_requested_target_keys(tmp_path) -> None:
             worker_name="macro_backfill",
             clock_kind="backfill",
             source_client=_EmptyCompletedBackfillClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=lambda: 2_000,
             target_keys=(str(requested["target_key"]),),
         )
@@ -321,6 +331,7 @@ def test_acquisition_replay_writes_one_fact_and_keeps_current_cursor(
             worker_name="macro_official_state",
             clock_kind="official_state",
             source_client=_FixedFredClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=clock,
         )
         service.ensure_targets()
@@ -425,6 +436,7 @@ def test_acquisition_failure_does_not_replace_the_material_fingerprint(
             worker_name="macro_official_state",
             clock_kind="official_state",
             source_client=_FixedFredClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=clock,
             target_keys=("fred.dgs10:latest",),
         )
@@ -433,6 +445,7 @@ def test_acquisition_failure_does_not_replace_the_material_fingerprint(
             worker_name="macro_official_state",
             clock_kind="official_state",
             source_client=_FailingClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=clock,
             target_keys=("fred.dgs10:latest",),
         )
@@ -500,6 +513,7 @@ def test_acquisition_lost_claim_does_not_publish_facts(tmp_path) -> None:
             worker_name="macro_official_state",
             clock_kind="official_state",
             source_client=_FixedFredClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=lambda: 3_000,
             target_keys=("fred.dgs10:latest",),
         )
@@ -544,6 +558,7 @@ def test_yfinance_intraday_acquisition_persists_market_fact_and_cursor(
             worker_name="macro_intraday_market",
             clock_kind="intraday_market",
             source_client=_FixedYFinanceClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=clock,
         )
         assert service.ensure_targets() > 0
@@ -842,6 +857,7 @@ def test_empty_bounded_backfill_finishes_current_with_its_cursor(tmp_path) -> No
             worker_name="macro_backfill",
             clock_kind="backfill",
             source_client=_EmptyCompletedBackfillClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=clock,
         )
 
@@ -962,6 +978,7 @@ def test_acquisition_stops_claiming_after_max_attempts(tmp_path) -> None:
             worker_name="macro_backfill",
             clock_kind="backfill",
             source_client=_FailingClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=clock,
         )
 
@@ -990,6 +1007,34 @@ def test_acquisition_stops_claiming_after_max_attempts(tmp_path) -> None:
     }
 
 
+def test_operational_target_status_reads_every_explicit_backfill(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("fred.dgs10")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            first = repos.macro.enqueue_backfill_target(
+                spec,
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 12, 31),
+                now_ms=1_000,
+                max_attempts=3,
+            )
+            second = repos.macro.enqueue_backfill_target(
+                spec,
+                start_date=date(2025, 1, 1),
+                end_date=date(2025, 12, 31),
+                now_ms=2_000,
+                max_attempts=3,
+            )
+            operational = repos.macro.all_acquisition_target_states()
+        keys = {str(row["target_key"]) for row in operational if row["clock_kind"] == "backfill"}
+    finally:
+        conn.close()
+
+    assert keys == {str(first["target_key"]), str(second["target_key"])}
+
+
 def test_steady_acquisition_keeps_retrying_transport_failures(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
@@ -997,12 +1042,18 @@ def test_steady_acquisition_keeps_retrying_transport_failures(tmp_path) -> None:
         clock = _Clock()
         spec = require_dataset("fred.dgs10")
         with repository_session_for_connection(conn) as repos, repos.transaction():
-            repos.macro.ensure_target(spec, now_ms=clock(), max_attempts=2)
+            repos.macro.ensure_target(
+                spec,
+                now_ms=clock(),
+                max_attempts=2,
+                reactivate_unavailable=False,
+            )
         service = MacroAcquisitionService(
             db=_TestDb(conn),
             worker_name="macro_daily_settlement",
             clock_kind=spec.clock_kind,
             source_client=_CodedFailingClient(),
+            enabled_adapter_ids=MACRO_ACQUISITION_ADAPTER_IDS,
             clock_ms=clock,
         )
 
@@ -1038,7 +1089,12 @@ def test_ensure_target_does_not_rewrite_a_terminal_steady_target(tmp_path) -> No
         reset_postgres_schema(conn)
         spec = require_dataset("fred.dgs10")
         with repository_session_for_connection(conn) as repos, repos.transaction():
-            repos.macro.ensure_target(spec, now_ms=1_000, max_attempts=2)
+            repos.macro.ensure_target(
+                spec,
+                now_ms=1_000,
+                max_attempts=2,
+                reactivate_unavailable=False,
+            )
             conn.execute(
                 """
                 UPDATE macro_acquisition_targets
@@ -1047,7 +1103,12 @@ def test_ensure_target_does_not_rewrite_a_terminal_steady_target(tmp_path) -> No
                 """,
                 (spec.target_key,),
             )
-            repos.macro.ensure_target(spec, now_ms=2_000, max_attempts=2)
+            repos.macro.ensure_target(
+                spec,
+                now_ms=2_000,
+                max_attempts=2,
+                reactivate_unavailable=False,
+            )
         stored = conn.execute(
             """
             SELECT status, attempt_count, next_due_at_ms
@@ -1063,4 +1124,106 @@ def test_ensure_target_does_not_rewrite_a_terminal_steady_target(tmp_path) -> No
         "status": "stale",
         "attempt_count": 2,
         "next_due_at_ms": 9_000,
+    }
+
+
+def test_ensure_target_reactivates_a_previously_unavailable_provider(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("fred.dgs10")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            repos.macro.ensure_target(
+                spec,
+                now_ms=1_000,
+                max_attempts=2,
+                reactivate_unavailable=False,
+            )
+            conn.execute(
+                """
+                UPDATE macro_acquisition_targets
+                SET status = 'unavailable',
+                    attempt_count = 4,
+                    next_due_at_ms = 9_000,
+                    last_error_code = 'fred_disabled'
+                WHERE target_key = %s
+                """,
+                (spec.target_key,),
+            )
+            assert (
+                repos.macro.ensure_target(
+                    spec,
+                    now_ms=2_000,
+                    max_attempts=2,
+                    reactivate_unavailable=True,
+                )
+                == 1
+            )
+        stored = conn.execute(
+            """
+            SELECT status, attempt_count, next_due_at_ms, last_error_code
+            FROM macro_acquisition_targets
+            WHERE target_key = %s
+            """,
+            (spec.target_key,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert dict(stored) == {
+        "status": "pending",
+        "attempt_count": 0,
+        "next_due_at_ms": 2_000,
+        "last_error_code": None,
+    }
+
+
+def test_ensure_target_keeps_an_unavailable_provider_disabled_at_startup(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        spec = require_dataset("fred.dgs10")
+        with repository_session_for_connection(conn) as repos, repos.transaction():
+            repos.macro.ensure_target(
+                spec,
+                now_ms=1_000,
+                max_attempts=2,
+                reactivate_unavailable=False,
+            )
+            conn.execute(
+                """
+                UPDATE macro_acquisition_targets
+                SET status = 'unavailable',
+                    attempt_count = 4,
+                    next_due_at_ms = 9_000,
+                    last_error_code = 'fred_disabled'
+                WHERE target_key = %s
+                """,
+                (spec.target_key,),
+            )
+            assert (
+                repos.macro.ensure_target(
+                    spec,
+                    now_ms=2_000,
+                    max_attempts=2,
+                    reactivate_unavailable=False,
+                )
+                == 0
+            )
+        stored = conn.execute(
+            """
+            SELECT status, attempt_count, next_due_at_ms, last_error_code
+            FROM macro_acquisition_targets
+            WHERE target_key = %s
+            """,
+            (spec.target_key,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert dict(stored) == {
+        "status": "unavailable",
+        "attempt_count": 4,
+        "next_due_at_ms": 9_000,
+        "last_error_code": "fred_disabled",
     }

@@ -165,7 +165,12 @@ def test_terminal_required_target_reason_reaches_module_and_overview_http(
         with write_repositories() as repos, repos.transaction():
             _insert_modules(repos)
             spec = DATASET_REGISTRY["fred.effr"]
-            repos.macro.ensure_target(spec, now_ms=CUTOFF_MS - 2_000, max_attempts=1)
+            repos.macro.ensure_target(
+                spec,
+                now_ms=CUTOFF_MS - 2_000,
+                max_attempts=1,
+                reactivate_unavailable=False,
+            )
             target = repos.macro.claim_target(
                 clock_kind=spec.clock_kind,
                 lease_owner="macro-api-stale",
@@ -232,7 +237,12 @@ def test_claimable_required_targets_publish_automatic_next_check_over_http(
                 if DATASET_REGISTRY[dataset_id].clock_kind != "derived"
             )
             for spec in acquired_specs:
-                repos.macro.ensure_target(spec, now_ms=CUTOFF_MS - 2_000, max_attempts=2)
+                repos.macro.ensure_target(
+                    spec,
+                    now_ms=CUTOFF_MS - 2_000,
+                    max_attempts=2,
+                    reactivate_unavailable=False,
+                )
             repos.macro.conn.execute(
                 """
                 UPDATE macro_acquisition_targets

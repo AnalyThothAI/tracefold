@@ -7,7 +7,11 @@ from typing import Any, cast
 from uuid import uuid4
 
 from tracefold.platform.model_candidate import ModelCandidate
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 from .models import (
     NewsBriefPublisher,
@@ -175,6 +179,13 @@ class NewsAcquisition:
                     group.create_task(self._opennews_recovery_loop(stop_event), name="opennews-recovery")
             except* ResourceAdmissionTimeout:
                 pass
+            except* ResourceOperationOverrun as group:
+                non_database = group.subgroup(
+                    lambda exc: isinstance(exc, ResourceOperationOverrun)
+                    and exc.capability is not ResourceCapability.DATABASE_BUSINESS
+                )
+                if non_database is not None:
+                    raise non_database
             if not stop_event.is_set():
                 await _wait_or_stop(stop_event, _OPENNEWS_RECONNECT_SECONDS)
 

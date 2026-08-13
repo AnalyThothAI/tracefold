@@ -69,6 +69,16 @@ def _projection_snapshot(payload: dict[str, Any]) -> NewsProjectionSnapshot:
     )
 
 
+class _CountingConnection:
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self.execute_count = 0
+
+    def execute(self, sql: str, params: object = None) -> Any:
+        self.execute_count += 1
+        return self._conn.execute(sql, params)
+
+
 def test_opennews_primary_story_projects_before_any_rss_attempt() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
@@ -100,6 +110,119 @@ def test_opennews_primary_story_projects_before_any_rss_attempt() -> None:
             """
         ).fetchone()
         assert rss_attempts["attempts"] == 0
+    finally:
+        conn.close()
+
+
+def test_story_projection_publish_has_constant_database_statement_count() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=tuple(
+                    _event(
+                        record_id=f"set-publish-{index}",
+                        title=f"Regional infrastructure policy report number {index} changes markets",
+                        score=50 + index,
+                        published_at_ms=NOW_MS - index,
+                    )
+                    for index in range(32)
+                ),
+                observed_at_ms=NOW_MS,
+            )
+
+        snapshot = _projection_snapshot(repository.load_story_projection(now_ms=NOW_MS))
+        projection = compute_news_story_projection(snapshot)
+        assert len(projection["item_updates"]) == 32
+
+        counting_conn = _CountingConnection(conn)
+        publishing_repository = NewsRepository(counting_conn)
+        with conn.transaction():
+            result = publishing_repository.publish_story_projection(
+                snapshot=snapshot,
+                projection=projection,
+                now_ms=NOW_MS + 1,
+            )
+
+        assert result["projection_status"] == "rebuilt"
+        assert result["item_writes"] == 32
+        assert counting_conn.execute_count <= 9
+    finally:
+        conn.close()
+
+
+def test_story_health_degrades_after_two_missed_projection_cycles() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(_event(record_id="story-health", title="Regional policy outlook changes", score=75),),
+                observed_at_ms=NOW_MS,
+            )
+            rebuild_news_projection(repository, now_ms=NOW_MS)
+
+        current = repository.health_snapshot(now_ms=NOW_MS + 120_000, rss_enabled=False)
+        stale = repository.health_snapshot(now_ms=NOW_MS + 120_001, rss_enabled=False)
+
+        assert current["layers"]["story"]["status"] == "ready"
+        assert "story_projection_stale" not in current["layers"]["story"]["reasons"]
+        assert stale["layers"]["story"]["status"] == "degraded"
+        assert stale["layers"]["story"]["reasons"] == ["story_projection_stale"]
+    finally:
+        conn.close()
+
+
+def test_unchanged_story_sample_refreshes_success_clock_without_serving_writes() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(_event(record_id="unchanged-story", title="Regional policy outlook remains stable", score=75),),
+                observed_at_ms=NOW_MS,
+            )
+            rebuild_news_projection(repository, now_ms=NOW_MS)
+
+        snapshot = _projection_snapshot(repository.load_story_projection(now_ms=NOW_MS + 60_000))
+        assert snapshot.unchanged is True
+        before = conn.execute(
+            "SELECT input_fingerprint, last_success_at_ms FROM news_projection_summary WHERE singleton_key='current'"
+        ).fetchone()
+
+        with conn.transaction():
+            result = repository.publish_story_projection(
+                snapshot=snapshot,
+                projection={},
+                now_ms=NOW_MS + 60_000,
+            )
+
+        after = conn.execute(
+            "SELECT input_fingerprint, last_success_at_ms FROM news_projection_summary WHERE singleton_key='current'"
+        ).fetchone()
+        assert result == {
+            "projection_status": "unchanged_input",
+            "items": 1,
+            "stories": 0,
+            "rows_written": 0,
+        }
+        assert after == {
+            "input_fingerprint": before["input_fingerprint"],
+            "last_success_at_ms": NOW_MS + 60_000,
+        }
     finally:
         conn.close()
 

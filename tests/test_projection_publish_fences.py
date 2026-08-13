@@ -83,12 +83,8 @@ def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: An
             "rows": [],
         },
     )
-    for helper in (
-        "_publish_items",
-        "_upsert_stories",
-        "_replace_memberships",
-        "_delete_absent_stories",
-    ):
+    monkeypatch.setattr(story_store, "_publish_materialized_rows", lambda *_args, **_kwargs: (0, 0))
+    for helper in ("_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
 
     snapshot = NewsProjectionSnapshot(
@@ -192,12 +188,8 @@ def test_news_story_publish_does_not_require_a_quiet_ingest_window(monkeypatch: 
         raise AssertionError("publication must not re-read the moving input window")
 
     monkeypatch.setattr(story_store, "load_story_projection", moving_window_read)
-    for helper in (
-        "_publish_items",
-        "_upsert_stories",
-        "_replace_memberships",
-        "_delete_absent_stories",
-    ):
+    monkeypatch.setattr(story_store, "_publish_materialized_rows", lambda *_args, **_kwargs: (0, 0))
+    for helper in ("_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
 
     snapshot = NewsProjectionSnapshot(
@@ -229,12 +221,7 @@ def test_news_story_publish_rejects_a_superseded_snapshot(monkeypatch: Any) -> N
     def unexpected_write(*_args: Any, **_kwargs: Any) -> int:
         raise AssertionError("a superseded snapshot must not write")
 
-    for helper in (
-        "_publish_items",
-        "_upsert_stories",
-        "_replace_memberships",
-        "_delete_absent_stories",
-    ):
+    for helper in ("_publish_materialized_rows", "_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, unexpected_write)
 
     snapshot = NewsProjectionSnapshot(
@@ -262,12 +249,8 @@ def test_news_story_publish_rejects_a_superseded_snapshot(monkeypatch: Any) -> N
 def test_news_story_invariant_failure_is_not_hidden_as_a_moving_snapshot(monkeypatch: Any) -> None:
     conn = _NewsConnection(invariant_total=1)
     repository = NewsRepository(conn)
-    for helper in (
-        "_publish_items",
-        "_upsert_stories",
-        "_replace_memberships",
-        "_delete_absent_stories",
-    ):
+    monkeypatch.setattr(story_store, "_publish_materialized_rows", lambda *_args, **_kwargs: (0, 0))
+    for helper in ("_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="snapshot-fingerprint",

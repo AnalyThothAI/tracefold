@@ -2727,6 +2727,9 @@ class NewsRepository:
         invalid_aggregates = int(story["invalid_story_aggregate_count"] or 0)
         active_stories = int(story["active_count"] or 0)
         story_last_success_at_ms = int(story["last_success_at_ms"] or 0) or None
+        story_projection_stale = bool(
+            story_last_success_at_ms is not None and int(now_ms) - story_last_success_at_ms > _NEWS_STALL_AFTER_MS
+        )
         story_reasons: list[str] = []
         if invalid_owners:
             story_reasons.append("current_item_owner_invalid")
@@ -2734,13 +2737,21 @@ class NewsRepository:
             story_reasons.append("story_aggregate_invalid")
         if story["last_error"] is not None:
             story_reasons.append(str(story["last_error"]))
+        if story_projection_stale:
+            story_reasons.append("story_projection_stale")
 
         runtime_stalled = workers_state == "stalled"
         runtime_recovering = workers_state == "recovering"
         if workers_reason is not None and workers_state in {"recovering", "stalled"}:
             story_reasons.append(str(workers_reason))
 
-        if runtime_stalled or invalid_owners or invalid_aggregates or story["last_error"] is not None:
+        if (
+            runtime_stalled
+            or invalid_owners
+            or invalid_aggregates
+            or story["last_error"] is not None
+            or story_projection_stale
+        ):
             story_status = "degraded"
         elif runtime_recovering or active_stories == 0:
             story_status = "warming"

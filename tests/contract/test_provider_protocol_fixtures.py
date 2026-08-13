@@ -14,13 +14,18 @@ from tracefold.integrations.okx.providers import OkxDexDiscoveryProvider, OkxDex
 from tracefold.market import (
     CollectorService,
     DexTokenQuoteRequest,
+    GmgnStreamExpectedError,
     IngestedEvent,
     materialize_event,
     normalize_gmgn_payload,
     parse_gmgn_frame,
     parse_gmgn_token_payload,
 )
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "provider_frames"
 
@@ -80,6 +85,48 @@ def test_gmgn_complete_public_tw_fixture_parses_persists_and_extracts_token_iden
     assert token_snapshot.symbol == "MIRROR"
     assert events[0].raw["providerOptionalNote"] == "retained-in-event-raw-only"
     assert "providerOptionalNote" not in events[0].token_snapshot.raw
+
+
+def test_gmgn_business_database_overrun_uses_the_existing_stream_reconnect() -> None:
+    overrun = ResourceOperationOverrun(
+        capability=ResourceCapability.DATABASE_BUSINESS,
+        operation_name="gmgn_raw_frame_publish",
+    )
+
+    class _OverrunningResources:
+        async def run_business(self, *_args, **_kwargs):
+            raise overrun
+
+    service = CollectorService(
+        store=MemoryStore(),
+        upstream_client=None,
+        db=_OverrunningResources(),
+    )
+
+    with pytest.raises(GmgnStreamExpectedError, match="gmgn_database_operation_overrun"):
+        asyncio.run(service.handle_frame(_load_json("gmgn_public_tw_complete.json")))
+
+
+def test_gmgn_non_database_overrun_remains_fatal() -> None:
+    overrun = ResourceOperationOverrun(
+        capability=ResourceCapability.FINITE_OPERATION,
+        operation_name="gmgn_raw_frame_publish",
+    )
+
+    class _OverrunningResources:
+        async def run_business(self, *_args, **_kwargs):
+            raise overrun
+
+    service = CollectorService(
+        store=MemoryStore(),
+        upstream_client=None,
+        db=_OverrunningResources(),
+    )
+
+    with pytest.raises(ResourceOperationOverrun) as caught:
+        asyncio.run(service.handle_frame(_load_json("gmgn_public_tw_complete.json")))
+
+    assert caught.value is overrun
 
 
 def test_gmgn_partial_then_complete_fixture_debounces_and_ingests_only_complete_event() -> None:

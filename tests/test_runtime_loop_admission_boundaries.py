@@ -36,7 +36,11 @@ from tracefold.market.provider_contracts import (
 from tracefold.news.push import NewsPushDeliveryError, NewsStoryPush, _payload_fingerprint
 from tracefold.news.runtime import NewsBriefCandidate
 from tracefold.platform.model_candidate import ModelCandidate
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 
 class _SubmittedOverrunFiniteOperations:
@@ -47,7 +51,10 @@ class _SubmittedOverrunFiniteOperations:
         on_submitted = kwargs.get("on_submitted")
         if on_submitted is not None:
             on_submitted()
-        raise ResourceOperationOverrun(f"resource_operation_overrun:{operation_name}")
+        raise ResourceOperationOverrun(
+            capability=ResourceCapability.FINITE_OPERATION,
+            operation_name=operation_name,
+        )
 
 
 def test_macro_projection_candidate_runs_bounded_startup_reconciliation() -> None:
@@ -140,10 +147,16 @@ def test_recurring_database_overruns_wait_for_each_loops_normal_cadence(
         stop_event.set()
 
     async def due_turn() -> bool:
-        raise ResourceOperationOverrun("resource_operation_overrun:db:due")
+        raise ResourceOperationOverrun(
+            capability=ResourceCapability.DATABASE_BUSINESS,
+            operation_name="due-without-a-db-prefix",
+        )
 
     async def periodic_sample() -> None:
-        raise ResourceOperationOverrun("resource_operation_overrun:db:periodic")
+        raise ResourceOperationOverrun(
+            capability=ResourceCapability.DATABASE_BUSINESS,
+            operation_name="periodic-without-a-db-prefix",
+        )
 
     async def scenario() -> None:
         due_stop = asyncio.Event()
@@ -155,6 +168,39 @@ def test_recurring_database_overruns_wait_for_each_loops_normal_cadence(
     asyncio.run(scenario())
 
     assert waits == [7.0, 11.0]
+
+
+def test_recurring_loop_does_not_recover_non_database_overrun_with_db_like_text() -> None:
+    async def due_turn() -> bool:
+        raise ResourceOperationOverrun(
+            capability=ResourceCapability.FINITE_OPERATION,
+            operation_name="db:misleading-operation-name",
+        )
+
+    with pytest.raises(ResourceOperationOverrun) as raised:
+        asyncio.run(_run_due(due_turn, idle_seconds=1.0, stop_event=asyncio.Event()))
+
+    assert raised.value.capability is ResourceCapability.FINITE_OPERATION
+
+
+def test_fatal_code_uses_typed_overrun_instead_of_error_text() -> None:
+    assert (
+        workers_module._fatal_code(
+            RuntimeError("resource_operation_overrun:database_business:forged"),
+            phase="runtime",
+        )
+        == "child_failed"
+    )
+    assert (
+        workers_module._fatal_code(
+            ResourceOperationOverrun(
+                capability=ResourceCapability.CPU_PROCESS,
+                operation_name="typed",
+            ),
+            phase="runtime",
+        )
+        == "resource_operation_overrun"
+    )
 
 
 def test_control_loop_retries_a_transient_pooled_heartbeat_failure(
@@ -197,6 +243,40 @@ def test_control_loop_retries_a_transient_pooled_heartbeat_failure(
     assert calls == 2
     assert waits == [workers_module._CONTROL_RETRY_SECONDS, workers_module._HEARTBEAT_SECONDS]
     assert probe_state.heartbeat_at_ms == 2_000
+
+
+def test_control_typed_overrun_reaches_the_root_without_control_wrapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    overrun = ResourceOperationOverrun(
+        capability=ResourceCapability.DATABASE_CONTROL,
+        operation_name="workers_runtime_heartbeat",
+    )
+
+    async def heartbeat(**_kwargs: object) -> int:
+        raise overrun
+
+    monkeypatch.setattr(workers_module, "_control_liveness_and_heartbeat", heartbeat)
+    probe_state = workers_module._ProbeState(
+        runtime_id="runtime-control-overrun",
+        runtime_version="v2",
+        started_at_ms=1_000,
+        clock_ms=lambda: 2_000,
+    )
+
+    with pytest.raises(ResourceOperationOverrun) as caught:
+        asyncio.run(
+            workers_module._run_control(
+                db=object(),  # type: ignore[arg-type]
+                lock_conn=object(),
+                runtime_id=probe_state.runtime_id,
+                probe_state=probe_state,
+                stop_event=asyncio.Event(),
+            )
+        )
+
+    assert caught.value is overrun
+    assert workers_module._fatal_code(caught.value, phase="runtime") == "resource_operation_overrun"
 
 
 def test_persistent_transient_heartbeat_failures_degrade_readiness_until_stopped(
@@ -437,7 +517,10 @@ def test_news_brief_model_operation_overrun_propagates_to_the_workers_root() -> 
         async def run(self, _operation_name, _function, /, *_args, **kwargs):
             await kwargs["before_submit"]()
             kwargs["on_submitted"]()
-            raise ResourceOperationOverrun("resource_operation_overrun:news_brief_inference")
+            raise ResourceOperationOverrun(
+                capability=ResourceCapability.MODEL_ADAPTER,
+                operation_name="news_brief_inference",
+            )
 
     async def scenario(database: _Database) -> None:
         candidate = NewsBriefCandidate(
@@ -578,7 +661,10 @@ def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() ->
 def test_market_poll_provider_overrun_stays_inside_the_poll_lane() -> None:
     class _OverrunFiniteOperations:
         async def run(self, *_args, **_kwargs):
-            raise ResourceOperationOverrun("resource_operation_overrun:market_tick_poll_dex")
+            raise ResourceOperationOverrun(
+                capability=ResourceCapability.FINITE_OPERATION,
+                operation_name="market_tick_poll_dex",
+            )
 
     poll = object.__new__(MarketTickPoll)
     poll.dex_quote_market = SimpleNamespace(token_quotes=lambda _requests: ())
@@ -603,7 +689,10 @@ def test_market_poll_provider_overrun_stays_inside_the_poll_lane() -> None:
 def test_market_cex_poll_provider_overrun_stays_inside_the_poll_lane() -> None:
     class _OverrunFiniteOperations:
         async def run(self, *_args, **_kwargs):
-            raise ResourceOperationOverrun("resource_operation_overrun:market_tick_poll_cex")
+            raise ResourceOperationOverrun(
+                capability=ResourceCapability.FINITE_OPERATION,
+                operation_name="market_tick_poll_cex",
+            )
 
     poll = object.__new__(MarketTickPoll)
     poll.cex_market = SimpleNamespace(tickers=lambda **_kwargs: ())
@@ -774,6 +863,66 @@ def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_
     assert isinstance(error, NewsPushDeliveryError)
     assert error.code == "news_story_push_delivery_timeout"
     assert error.retryable is True
+
+
+def test_news_push_database_overrun_before_delivery_submit_is_not_counted_as_delivery_attempt_failure() -> None:
+    payload = {"schema_version": "news_story_push_v1", "story_id": "story-1"}
+    database_overrun = ResourceOperationOverrun(
+        capability=ResourceCapability.DATABASE_BUSINESS,
+        operation_name="news_story_push_current_eligibility",
+    )
+
+    class _Database:
+        def __init__(self) -> None:
+            self.eligibility_reads = 0
+
+        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+            if operation_name == "news_story_push_claim":
+                return {
+                    "selected_item_id": "item-1",
+                    "source_payload": {"provider_evidence": {"published_at_ms": 9_000_000_000_000}},
+                    "delivery_payload": payload,
+                    "payload_fingerprint": _payload_fingerprint(payload),
+                    "push_baseline_at_ms": 0,
+                }
+            if operation_name == "news_story_push_current_eligibility":
+                self.eligibility_reads += 1
+                if self.eligibility_reads == 2:
+                    raise database_overrun
+                return {
+                    "provider_score": 90,
+                    "provider_metadata": {"coins": [{"symbol": "BTC", "market_type": "spot"}]},
+                    "published_at_ms": 9_000_000_000_000,
+                    "eligibility_observed_at_ms": 1,
+                }
+            if operation_name == "news_story_push_start_delivery":
+                return {"delivery_attempts": 1}
+            raise AssertionError(operation_name)
+
+    class _BeforeSubmitFiniteOperations:
+        async def run(self, _operation_name, _function, /, *_args, **kwargs):
+            await kwargs["before_submit"]()
+            raise AssertionError("delivery must not submit after the database fence overruns")
+
+    push = NewsStoryPush(
+        db=_Database(),
+        finite_operations=_BeforeSubmitFiniteOperations(),
+        delivery=SimpleNamespace(deliver=lambda *_args, **_kwargs: None),
+        runtime_id="runtime",
+    )
+    failures: list[dict[str, object]] = []
+
+    async def record_failure(**kwargs):
+        failures.append(kwargs)
+        return "retry"
+
+    push._record_delivery_failure = record_failure  # type: ignore[method-assign]
+
+    with pytest.raises(ResourceOperationOverrun) as caught:
+        asyncio.run(push._execute_story("story-1", now_ms=1_000))
+
+    assert caught.value is database_overrun
+    assert failures == []
 
 
 @pytest.mark.parametrize(

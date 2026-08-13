@@ -62,6 +62,7 @@ class MacroAcquisitionService:
         worker_name: str,
         clock_kind: str,
         source_client: MacroSourceClientProtocol,
+        enabled_adapter_ids: frozenset[str],
         lease_owner: str | None = None,
         clock_ms: Callable[[], int] | None = None,
         target_keys: tuple[str, ...] = (),
@@ -79,6 +80,7 @@ class MacroAcquisitionService:
             raise ValueError(f"macro_acquisition_clock_invalid:{clock_kind}")
         self.retry_ms = _ACQUISITION_POLICY[clock_kind][2]
         self.source_client = source_client
+        self.enabled_adapter_ids = frozenset(enabled_adapter_ids)
         self.clock_ms = clock_ms or _now_ms
         self.target_keys = tuple(sorted(set(target_keys)))
         self.document_analysis_model_name = str(document_analysis_model_name or "").strip() or None
@@ -98,6 +100,7 @@ class MacroAcquisitionService:
                     spec,
                     now_ms=now,
                     max_attempts=_MAX_ATTEMPTS,
+                    reactivate_unavailable=(spec.adapter_id in self.enabled_adapter_ids),
                 )
                 if spec.instrument_id is not None:
                     written += repos.macro_market.ensure_instrument(spec, now_ms=now)

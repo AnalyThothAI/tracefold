@@ -31,6 +31,7 @@ async def _sample(postgres_dsn: str) -> None:
         await cpu.prewarm()
         await TokenRadarCurrentProjection(
             db=database,
+            heavy_db=database.heavy_business(),
             cpu=cpu,
             source_is_streaming=lambda: True,
         ).sample()

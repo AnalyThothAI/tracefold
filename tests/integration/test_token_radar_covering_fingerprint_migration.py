@@ -81,12 +81,148 @@ def test_0261_downgrade_is_explicitly_irreversible() -> None:
         migration.downgrade()
 
 
+def test_0264_keeps_the_source_time_index_and_restores_heap_visibility() -> None:
+    config = alembic_config()
+    config.attributes["database_url"] = _test_postgres_dsn()
+    conn = connect_postgres_test(read_only=False)
+    try:
+        _reset_schema(config, conn, revision="20260813_0263")
+        _insert_preexisting_events(conn)
+        conn.commit()
+
+        before = conn.execute(
+            """
+            SELECT relpages, relallvisible
+              FROM pg_class
+             WHERE oid = 'events'::regclass
+            """
+        ).fetchone()
+        assert before is not None
+        assert int(before["relallvisible"]) == 0
+
+        command.upgrade(config, "20260813_0264")
+
+        version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        assert version == {"version_num": "20260813_0264"}
+        assert conn.execute("SELECT count(*) AS count FROM events").fetchone() == {"count": _PREEXISTING_EVENT_COUNT}
+
+        indexes = {
+            str(row["indexname"]): str(row["indexdef"])
+            for row in conn.execute(
+                """
+                SELECT indexname, indexdef
+                  FROM pg_indexes
+                 WHERE schemaname = 'public'
+                   AND indexname LIKE 'idx_events_token_radar_%'
+                """
+            ).fetchall()
+        }
+        assert set(indexes) == {"idx_events_token_radar_source_time"}
+        assert "USING btree (timestamp_ms, event_id)" in indexes["idx_events_token_radar_source_time"]
+        assert (
+            "INCLUDE (token_radar_text_fingerprint, received_at_ms, created_at_ms, "
+            "action, author_handle)" in indexes["idx_events_token_radar_source_time"]
+        )
+
+        reloptions = {
+            str(row["option"])
+            for row in conn.execute(
+                """
+                SELECT unnest(reloptions) AS option
+                  FROM pg_class
+                 WHERE oid = 'events'::regclass
+                """
+            ).fetchall()
+        }
+        assert reloptions == {
+            "autovacuum_analyze_scale_factor=0.01",
+            "autovacuum_analyze_threshold=10000",
+            "autovacuum_vacuum_insert_scale_factor=0.01",
+            "autovacuum_vacuum_insert_threshold=10000",
+            "autovacuum_vacuum_scale_factor=0.01",
+            "autovacuum_vacuum_threshold=10000",
+        }
+
+        visibility = conn.execute(
+            """
+            SELECT relpages, relallvisible
+              FROM pg_class
+             WHERE oid = 'events'::regclass
+            """
+        ).fetchone()
+        assert visibility is not None
+        assert int(visibility["relpages"]) > 0
+        assert int(visibility["relallvisible"]) == int(visibility["relpages"])
+    finally:
+        reset_postgres_schema(conn)
+        conn.close()
+
+
+def test_0264_downgrade_is_explicitly_irreversible() -> None:
+    migration = importlib.import_module(
+        "tracefold.platform.postgres.alembic.versions.20260813_0264_token_radar_source_visibility"
+    )
+
+    with pytest.raises(RuntimeError, match="irreversible Token Radar visibility cut"):
+        migration.downgrade()
+
+
+def test_0264_recovers_already_committed_vacuum_policy_before_vacuum() -> None:
+    config = alembic_config()
+    config.attributes["database_url"] = _test_postgres_dsn()
+    conn = connect_postgres_test(read_only=False)
+    try:
+        _reset_schema(config, conn, revision="20260813_0263")
+        _insert_preexisting_events(conn)
+        conn.commit()
+        _commit_0264_pre_vacuum_state(conn)
+
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260813_0263"}
+        assert conn.execute("SELECT to_regclass('idx_events_token_radar_source_time') AS index_name").fetchone() == {
+            "index_name": "idx_events_token_radar_source_time"
+        }
+
+        command.upgrade(config, "20260813_0264")
+
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260813_0264"}
+        assert conn.execute("SELECT to_regclass('idx_events_token_radar_source_time') AS index_name").fetchone() == {
+            "index_name": "idx_events_token_radar_source_time"
+        }
+        visibility = conn.execute(
+            """
+            SELECT relpages, relallvisible
+              FROM pg_class
+             WHERE oid = 'events'::regclass
+            """
+        ).fetchone()
+        assert visibility is not None
+        assert int(visibility["relpages"]) > 0
+        assert int(visibility["relallvisible"]) == int(visibility["relpages"])
+    finally:
+        reset_postgres_schema(conn)
+        conn.close()
+
+
 def _reset_schema(config: Any, conn: Any, *, revision: str) -> None:
     conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
     conn.execute("CREATE SCHEMA public")
     conn.execute("GRANT ALL ON SCHEMA public TO public")
     conn.commit()
     command.upgrade(config, revision)
+
+
+def _commit_0264_pre_vacuum_state(conn: Any) -> None:
+    conn.execute(
+        """
+        ALTER TABLE events SET (
+          autovacuum_vacuum_scale_factor = 0.01,
+          autovacuum_vacuum_threshold = 10000,
+          autovacuum_vacuum_insert_scale_factor = 0.01,
+          autovacuum_vacuum_insert_threshold = 10000
+        );
+        """
+    )
+    conn.commit()
 
 
 def _insert_preexisting_events(conn: Any) -> None:

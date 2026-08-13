@@ -77,8 +77,9 @@ operator diagnostics.
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 It wires one root `TaskGroup`; its due/periodic loops and dispositions are
 private implementation details. Configuration cannot invent workers, owners,
-resource lanes, or concurrency. A child exception is a process failure, not an
-individual-worker degraded state.
+resource lanes, or concurrency. An unknown child exception is a process
+failure, not an individual-worker degraded state. The typed recurring
+business-DB overrun below is the one resource-specific local recovery rule.
 
 ```text
 tracefold serve
@@ -88,6 +89,9 @@ tracefold workers
   -> one singleton advisory lock and runtime_id
   -> one DB pool min 1 / max 4 / max_waiting 3
   -> one pinned singleton session / business DB executor 2 / control DB executor 1
+  -> one heavy-DB admission slot shared by measured long Radar load and News
+     Story load/full-publication work before they compete for a business
+     executor slot; no extra pool or executor
   -> finite external-operation executor 3 / synchronous model adapter 1
   -> spawn-only Pebble ProcessPool 1 for Token Radar / Profile / Macro
   -> when News is enabled, spawn-only Pebble ProcessPool 1 for News Story
@@ -118,10 +122,10 @@ The control child distinguishes the pinned singleton session from its pooled
 heartbeat write. Loss of the pinned advisory-lock session remains immediately
 fatal. A precise transient PostgreSQL admission, timeout, pool-checkout, or
 connection error from the idempotent heartbeat write is retried after 250 ms;
-the independent 15-second heartbeat watchdog is the bounded failure authority
-if recovery does not occur. Invariant failures and an unfinished native control
-future remain process-fatal. This retry does not apply to general control
-writes whose commit outcome could be ambiguous.
+after 15 seconds the stale heartbeat makes readiness false without killing the
+root, and recovery restores readiness. Invariant failures and an unfinished
+native control future remain process-fatal. This retry does not apply to
+general control writes whose commit outcome could be ambiguous.
 
 Resolution performs one external lookup per durable turn and reprocesses at
 most 10 affected intents in each publication transaction. Larger closures use
@@ -135,13 +139,18 @@ pool/lane topology above. Finite provider/filesystem operations share the
 three-slot external capability; stream sockets remain long-lived async root
 children outside it. A provider-wide failure opens durable circuit state and
 consumes no target attempt. Only the owning provider seam may map an outer
-finite-operation overrun into its existing durable failure policy. Database,
-model, CPU, cleanup, and unclassified overruns remain process-fatal. A caller
-timeout never releases a resource permit before the underlying future actually
+finite-operation overrun into its existing durable failure policy. A typed
+recurring business-DB overrun remains local to its natural loop; its occupied
+permit remains bound to the native future and the loop retries on its normal
+cadence. Control-DB, model, CPU, cleanup, and unclassified overruns remain
+process-fatal. Classification uses the typed physical capability carried by
+the exception, never an operation-name or error-string prefix. A caller timeout
+never releases a resource permit before the underlying future actually
 completes; three stuck provider futures therefore exhaust the shared external
 capability even though the root heartbeat can remain healthy. Diagnose that
 state from the resource-active/admission metrics and domain status. If an
-underlying thread never returns, process exit is the only release authority.
+underlying thread never returns, process exit is the only universal release
+authority.
 
 The anonymous GMGN direct WebSocket treats `upstream.reconnect_delay` as its
 initial retry delay and doubles consecutive connection failures to a code-owned
@@ -156,10 +165,24 @@ JIT, parallel-gather, and work-memory policy for that transaction. PostgreSQL
 restores those settings when the transaction exits, so pooling needs no reset
 round trip. Every SQL statement and multi-statement repository operation is
 therefore covered by the native database deadline; the async caller adds only a
-bounded completion grace before treating an unfinished future as fatal. The
-default transaction deadline is the statement deadline plus five seconds so a
-native statement cancellation has the same bounded cleanup allowance as the
-Worker future; explicit per-operation transaction deadlines remain authoritative.
+bounded completion grace. An unfinished recurring business future is reported
+to its loop as the typed local overrun above; every other unfinished capability
+keeps the fatal policy. The default transaction deadline is the statement
+deadline plus five seconds so a native statement cancellation has the same
+bounded cleanup allowance as the Worker future; explicit per-operation
+transaction deadlines remain authoritative.
+
+Measured long Radar load and News Story load/full-publication work share one
+additional code-owned heavy-DB permit before the two ordinary business permits.
+Heavy admission waits up to 16 seconds for the previous bounded native
+transaction, then uses the unchanged one-second business admission. Waiting for
+the heavy permit consumes no business slot, so the two measured heavy phases do
+not fill both slots together. Short presentation, status, failure and unchanged
+clock writes use ordinary business admission. The permit follows the native
+future after wrapper timeout or cancellation. This is one physical bulkhead over
+the existing pool and executor, not a product lane, priority scheduler,
+configurable topology, or reserved PostgreSQL connection; all non-heavy work
+can still use both business slots.
 
 Token Radar is one fixed-period 30-second reducer turn outside the EDF
 coordinator. One turn streams only the typed Event and resolution-revision
@@ -569,7 +592,7 @@ News health has four layers:
 | Layer | Healthy evidence | Degradation signal |
 |---|---|---|
 | ingest | primary OpenNews has a successful fact/overlap, a live WSS connection, and no unresolved error; RSS reports explicit enablement and, when enabled, breadth/corroboration counters | missing OpenNews is degraded, no primary success yet is warming, and a disconnected or errored primary is degraded; enabled empty/warming/unavailable/partially failed RSS is reported as corroboration evidence without masking or overriding primary readiness; disabled RSS adds no degradation reason |
-| story | the selected RSS/OpenNews population closes into coherent current Story aggregates | missing/duplicate ownership, aggregate mismatch, projection failure, Workers failure, or no current Stories yet |
+| story | the selected RSS/OpenNews population closes into coherent current Story aggregates and a successful verification cycle completed within 120 seconds | missing/duplicate ownership, aggregate mismatch, projection failure, Workers failure, no current Stories yet, or no successful verification cycle for more than 120 seconds |
 | brief | the current half-hour slot completed with healthy output | no payload is `warming`; degraded output or a whole last-known-good fallback is `degraded`, with bounded slot reason/next due visible |
 | push | disabled, or webhook-configured with initialized baseline, no retry/terminal delivery, and healthy rolling translation/delivery SLOs | missing required webhook, uninitialized enabled state, any retry/terminal delivery, an SLO breach, or a wait over 120 seconds |
 
@@ -647,13 +670,20 @@ payloads read only `macro_module_current`; Rates additionally exposes the
 secret-free optional-analysis runtime state. They never call a provider/model
 or repair state.
 
-`uv run tracefold macro status` reports acquisition target counts/statuses,
+`uv run tracefold macro status` reports actionable steady acquisition and
+explicit maintenance backfills separately, including active and expired claims.
+A historical backfill state is
+therefore never counted as live Worker backlog. The same response includes
 each module's current health, history depth, fact cutoff and update time, Fed
 document-analysis job counts, and whether the optional analysis worker
 configuration is `disabled`, `unconfigured`, or active. Active means its
 configuration admission conditions are satisfied, not that a worker process
 heartbeat was observed. The command performs no provider call and no write.
-`uv run tracefold config` exposes the same secret-free booleans.
+Reconciliation reactivates an `unavailable` steady target on process startup
+only when its adapter is currently enabled, so enabling a previously disabled
+source requires no repair command while a still-disabled source creates no
+restart burst. The
+`uv run tracefold config` command exposes the same secret-free booleans.
 
 Migrations `20260801_0235` and `20260801_0236` are irreversible. They delete
 the retired News acquisition history and Macro publication, per-attempt, and
@@ -887,13 +917,17 @@ eligibility clock during a mixed-version cutover and enforces the clock as a
 database invariant. Migration `20260813_0260` adds the same Push singleton's
 durable 25-second reconcile-ring clock; an active cursor is backfilled with its
 last durable update time. Migration `20260813_0261` replaces the Radar
-expression index with the STORED generated fingerprint and narrow covering
-index, preserving every fact/current payload with no dual path. Keep Serve and
-Workers stopped through the current head and verify 0261 before restoring the
-single writer. Once
-the writer is running, observe cursor advancement through one complete wrap and
-verify the Push latency/SLO snapshot; a pre-start wrap is impossible because
-the cursor has exactly one runtime writer.
+expression index with the STORED generated fingerprint, preserving every
+fact/current payload with no dual path. Keep Serve and Workers stopped through
+the current head. Migration `20260813_0264` keeps the source-time partial
+covering read, sets the append-heavy Events vacuum policy, and restores the
+visibility map after the 0261 heap rewrite. This avoids coupling Radar work to
+unrelated global Intent volume. Verify the source-time index, Events reloptions,
+and full heap visibility before restoring the single writer. Separately, once
+the News Push writer is running, observe its
+cursor advancement through one complete wrap and verify the Push latency/SLO
+snapshot; a pre-start wrap is impossible because that cursor has exactly one
+runtime writer.
 
 Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
 `20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to

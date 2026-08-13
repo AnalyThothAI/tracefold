@@ -103,12 +103,14 @@ class TokenRadarCurrentProjection:
         self,
         *,
         db: Any,
+        heavy_db: Any,
         cpu: Any,
         source_is_streaming: Callable[[], bool],
         telemetry: Any | None = None,
         clock: Any | None = None,
     ) -> None:
         self.db = db
+        self.heavy_db = heavy_db
         self.cpu = cpu
         self.clock = clock or _now_ms
         self.source_is_streaming = source_is_streaming
@@ -118,14 +120,15 @@ class TokenRadarCurrentProjection:
     async def sample(self) -> None:
         started = time.monotonic()
         deadline = time.monotonic() + TOKEN_RADAR_TURN_BUDGET_SECONDS
+        work_deadline = deadline - _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS
         now_ms = int(self.clock())
         outcome: str | None = None
         deadline_missed = False
         try:
-            async with asyncio.timeout(TOKEN_RADAR_TURN_BUDGET_SECONDS):
+            async with asyncio.timeout_at(work_deadline):
                 outcome, deadline_missed = await self._sample_with_deadline(
                     now_ms=now_ms,
-                    deadline=deadline,
+                    deadline=work_deadline,
                 )
         except TimeoutError:
             outcome = outcome or "deadline_miss"
@@ -133,7 +136,7 @@ class TokenRadarCurrentProjection:
             await self._mark_failed(
                 "token_radar_sample_budget_exceeded",
                 now_ms=now_ms,
-                deadline=time.monotonic() + _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS,
+                deadline=deadline,
             )
         except Exception:
             outcome = outcome or "failed"
@@ -141,7 +144,7 @@ class TokenRadarCurrentProjection:
                 await self._mark_failed(
                     "token_radar_projection_failed",
                     now_ms=now_ms,
-                    deadline=time.monotonic() + _TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS,
+                    deadline=deadline,
                 )
             raise
         finally:
@@ -167,7 +170,7 @@ class TokenRadarCurrentProjection:
                 cap=_TOKEN_RADAR_LOAD_TIMEOUT_SECONDS,
                 reserve_seconds=(_TOKEN_RADAR_PRESENT_TIMEOUT_SECONDS + _TOKEN_RADAR_PUBLISH_TIMEOUT_SECONDS),
             )
-            rows = await self.db.run_business(
+            rows = await self.heavy_db.run_business(
                 "token_radar_current_load",
                 self.service.load,
                 operation_timeout_seconds=load_timeout,
@@ -245,15 +248,16 @@ class TokenRadarCurrentProjection:
                 deadline,
                 cap=_TOKEN_RADAR_FAILURE_TIMEOUT_SECONDS,
             )
-            await self.db.run_business(
-                "token_radar_current_fail",
-                self.service.mark_failed,
-                operation_timeout_seconds=timeout,
-                now_ms=now_ms,
-                error_code=error_code,
-                session_timeout_seconds=timeout,
-            )
-        except (ResourceAdmissionTimeout, TokenRadarBudgetExceeded):
+            async with asyncio.timeout_at(deadline):
+                await self.db.run_business(
+                    "token_radar_current_fail",
+                    self.service.mark_failed,
+                    operation_timeout_seconds=timeout,
+                    now_ms=now_ms,
+                    error_code=error_code,
+                    session_timeout_seconds=timeout,
+                )
+        except (TimeoutError, ResourceAdmissionTimeout, TokenRadarBudgetExceeded):
             return
 
     def _set_rows(self, stage: str, rows: int) -> None:

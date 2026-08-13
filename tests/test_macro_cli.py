@@ -8,8 +8,53 @@ from tracefold.app.cli.commands import macro as macro_cli
 
 
 class _FakeMacroRepository:
-    def target_states(self):
-        return []
+    def all_acquisition_target_states(self):
+        return [
+            {
+                "target_key": "steady-current",
+                "clock_kind": "intraday",
+                "status": "current",
+                "next_due_at_ms": 2_000,
+                "last_error_code": None,
+            },
+            {
+                "target_key": "steady-due",
+                "clock_kind": "daily",
+                "status": "delayed",
+                "next_due_at_ms": 900,
+                "last_error_code": "upstream_403",
+            },
+            {
+                "target_key": "steady-future",
+                "clock_kind": "weekly",
+                "status": "delayed",
+                "next_due_at_ms": 3_000,
+                "last_error_code": "upstream_403",
+            },
+            {
+                "target_key": "maintenance",
+                "clock_kind": "backfill",
+                "status": "stale",
+                "next_due_at_ms": 800,
+                "last_error_code": "history_failed",
+            },
+            {
+                "target_key": "steady-active-claim",
+                "clock_kind": "daily",
+                "status": "claimed",
+                "next_due_at_ms": 800,
+                "leased_until_ms": 1_100,
+                "last_error_code": None,
+            },
+            {
+                "target_key": "steady-expired-claim",
+                "clock_kind": "daily",
+                "status": "claimed",
+                "next_due_at_ms": 700,
+                "leased_until_ms": 950,
+                "last_error_code": None,
+            },
+        ]
 
     def all_modules_current(self):
         return [
@@ -108,10 +153,33 @@ def test_macro_status_reports_targets_modules_and_document_analysis(monkeypatch)
 
     monkeypatch.setattr(macro_cli, "load_settings", lambda **_kwargs: settings)
     monkeypatch.setattr(macro_cli, "repositories", fake_repositories)
+    monkeypatch.setattr(macro_cli, "_now_ms", lambda: 1_000)
     exit_code, payload = macro_cli._handle_status()
 
     assert exit_code == 0
-    assert payload["data"]["dataset_target_count"] == 0
+    assert "dataset_target_count" not in payload["data"]
+    assert "target_status_counts" not in payload["data"]
+    assert payload["data"]["acquisition"] == {
+        "steady": {
+            "target_count": 5,
+            "actionable_due_count": 2,
+            "oldest_actionable_due_at_ms": 900,
+            "scheduled_future_count": 2,
+            "in_progress_count": 1,
+            "expired_claim_count": 1,
+            "oldest_expired_claim_at_ms": 950,
+            "status_counts": {"current": 1, "delayed": 2, "claimed": 2},
+            "error_code_counts": {"upstream_403": 2},
+        },
+        "maintenance": {
+            "target_count": 1,
+            "in_progress_count": 0,
+            "expired_claim_count": 0,
+            "oldest_expired_claim_at_ms": None,
+            "status_counts": {"stale": 1},
+            "error_code_counts": {"history_failed": 1},
+        },
+    }
     assert payload["data"]["modules"] == [
         {
             "module_id": "rates_fed",

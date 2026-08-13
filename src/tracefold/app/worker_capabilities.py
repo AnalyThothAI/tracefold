@@ -16,6 +16,7 @@ from tracefold.platform.resource import (
     CpuTaskProcessExpired,
     CpuTaskTimeout,
     ResourceAdmissionTimeout,
+    ResourceCapability,
     ResourceOperationOverrun,
     await_concurrent_future,
 )
@@ -129,7 +130,8 @@ class FiniteOperations:
             underlying,
             wrapped,
             timeout_seconds=float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS,
-            overrun_code=f"resource_operation_overrun:{_operation_name(operation_name)}",
+            capability=ResourceCapability.FINITE_OPERATION,
+            operation_name=_operation_name(operation_name),
         )
 
     def close_admission(self) -> None:
@@ -215,7 +217,8 @@ class ModelAdapter:
             underlying,
             wrapped,
             timeout_seconds=float(timeout_seconds) + _THREAD_FUTURE_COMPLETION_GRACE_SECONDS,
-            overrun_code=f"resource_operation_overrun:{_operation_name(operation_name)}",
+            capability=ResourceCapability.MODEL_ADAPTER,
+            operation_name=_operation_name(operation_name),
         )
 
     def close_admission(self) -> None:
@@ -338,7 +341,8 @@ class CpuProcess:
                     + float(PEBBLE_CONSTS.term_timeout)
                     + _CPU_FUTURE_COMPLETION_SCHEDULING_GRACE_SECONDS
                 ),
-                overrun_code=f"resource_operation_overrun:{_operation_name(operation_name)}",
+                capability=ResourceCapability.CPU_PROCESS,
+                operation_name=_operation_name(operation_name),
             )
         except FutureTimeoutError as exc:
             raise CpuTaskTimeout(f"cpu_task_timeout:{_operation_name(operation_name)}:{service_timeout:g}s") from exc

@@ -173,6 +173,15 @@ def publish_story_projection(
     ).fetchone()
     published_fingerprint = summary["input_fingerprint"] if summary is not None else None
     if published_fingerprint == snapshot.input_fingerprint:
+        conn.execute(
+            """
+            UPDATE news_projection_summary
+               SET last_attempt_at_ms=%s, last_success_at_ms=%s,
+                   last_error=NULL, updated_at_ms=%s
+             WHERE singleton_key='current'
+            """,
+            (now_ms, now_ms, now_ms),
+        )
         return {
             "projection_status": "unchanged_input",
             "items": len(snapshot.rows),
@@ -194,12 +203,12 @@ def publish_story_projection(
     stories = [dict(row) for row in projection.get("stories", [])]
     memberships = [dict(row) for row in projection.get("memberships", [])]
     item_updates = [dict(row) for row in projection.get("item_updates", [])]
-    item_writes = _publish_items(
+    item_writes, story_writes = _publish_materialized_rows(
         conn,
         item_updates=item_updates,
+        stories=stories,
         now_ms=now_ms,
     )
-    story_writes = _upsert_stories(conn, stories=stories, now_ms=now_ms)
     membership_writes = _replace_memberships(conn, memberships=memberships)
     story_writes += _delete_absent_stories(conn, stories=stories)
     invariants = repository._story_invariant_counts(
@@ -327,51 +336,72 @@ def _replace_brief_selection(
     return int(cursor.rowcount or 0)
 
 
-def _publish_items(
+def _publish_materialized_rows(
     conn: Any,
     *,
     item_updates: Sequence[Mapping[str, Any]],
+    stories: Sequence[Mapping[str, Any]],
     now_ms: int,
-) -> int:
-    writes = 0
-    for item in item_updates:
-        writes += int(
-            conn.execute(
-                """
-                UPDATE news_items
-                   SET importance_score=%(importance_score)s,
-                       importance_factors=%(importance_factors)s,
-                       level=%(level)s, category=%(category)s,
-                       classification_source=%(classification_source)s,
-                       classification_confidence=%(classification_confidence)s,
-                       updated_at_ms=%(now_ms)s
-                 WHERE item_id=%(item_id)s AND (
-                   importance_score IS DISTINCT FROM %(importance_score)s OR
-                   importance_factors IS DISTINCT FROM %(importance_factors)s OR
-                   level IS DISTINCT FROM %(level)s OR
-                   category IS DISTINCT FROM %(category)s OR
-                   classification_source IS DISTINCT FROM %(classification_source)s OR
-                   classification_confidence IS DISTINCT FROM %(classification_confidence)s
-                 )
-                """,
-                {
-                    **item,
-                    "importance_factors": Jsonb(item["importance_factors"]),
-                    "now_ms": now_ms,
-                },
-            ).rowcount
-            or 0
-        )
-    return writes
-
-
-def _upsert_stories(conn: Any, *, stories: Sequence[Mapping[str, Any]], now_ms: int) -> int:
-    writes = 0
-    for story in stories:
-        writes += int(
-            conn.execute(
-                """
-                INSERT INTO news_stories(
+) -> tuple[int, int]:
+    row = conn.execute(
+        """
+        WITH desired_items AS MATERIALIZED (
+          SELECT * FROM jsonb_to_recordset(%s::jsonb) AS desired(
+            item_id text,
+            importance_score integer,
+            importance_factors jsonb,
+            level text,
+            category text,
+            classification_source text,
+            classification_confidence double precision
+          )
+        ),
+        updated_items AS (
+          UPDATE news_items existing
+             SET importance_score=desired.importance_score,
+                 importance_factors=desired.importance_factors,
+                 level=desired.level,
+                 category=desired.category,
+                 classification_source=desired.classification_source,
+                 classification_confidence=desired.classification_confidence,
+                 updated_at_ms=%s
+            FROM desired_items desired
+           WHERE existing.item_id=desired.item_id
+             AND (
+               existing.importance_score IS DISTINCT FROM desired.importance_score OR
+               existing.importance_factors IS DISTINCT FROM desired.importance_factors OR
+               existing.level IS DISTINCT FROM desired.level OR
+               existing.category IS DISTINCT FROM desired.category OR
+               existing.classification_source IS DISTINCT FROM desired.classification_source OR
+               existing.classification_confidence IS DISTINCT FROM desired.classification_confidence
+             )
+          RETURNING 1
+        ),
+        desired_stories AS MATERIALIZED (
+          SELECT * FROM jsonb_to_recordset(%s::jsonb) AS desired(
+            story_id text,
+            canonical_key text,
+            canonical_title text,
+            representative_item_id text,
+            representative_source_id text,
+            representative_title text,
+            representative_url text,
+            representative_description text,
+            scoring_item_id text,
+            level text,
+            category text,
+            importance_score integer,
+            importance_factors jsonb,
+            facet_facts jsonb,
+            item_count integer,
+            source_count integer,
+            first_published_at_ms bigint,
+            last_published_at_ms bigint,
+            state_fingerprint text
+          )
+        ),
+        upserted_stories AS (
+          INSERT INTO news_stories(
                   story_id, canonical_key, canonical_title,
                   representative_item_id, representative_source_id,
                   representative_title, representative_url,
@@ -380,17 +410,18 @@ def _upsert_stories(conn: Any, *, stories: Sequence[Mapping[str, Any]], now_ms: 
                   item_count, source_count,
                   first_published_at_ms, last_published_at_ms, state_fingerprint,
                   created_at_ms, updated_at_ms
-                ) VALUES (
-                  %(story_id)s, %(canonical_key)s, %(canonical_title)s,
-                  %(representative_item_id)s, %(representative_source_id)s,
-                  %(representative_title)s, %(representative_url)s,
-                  %(representative_description)s, %(scoring_item_id)s,
-                  %(level)s, %(category)s, %(importance_score)s,
-                  %(importance_factors)s, %(facet_facts)s,
-                  %(item_count)s, %(source_count)s,
-                  %(first_published_at_ms)s, %(last_published_at_ms)s,
-                  %(state_fingerprint)s, %(now_ms)s, %(now_ms)s
-                ) ON CONFLICT (story_id) DO UPDATE SET
+          )
+          SELECT story_id, canonical_key, canonical_title,
+                 representative_item_id, representative_source_id,
+                 representative_title, representative_url,
+                 representative_description, scoring_item_id,
+                 level, category, importance_score,
+                 importance_factors, facet_facts,
+                 item_count, source_count,
+                 first_published_at_ms, last_published_at_ms, state_fingerprint,
+                 %s, %s
+            FROM desired_stories
+          ON CONFLICT (story_id) DO UPDATE SET
                   canonical_key=EXCLUDED.canonical_key,
                   canonical_title=EXCLUDED.canonical_title,
                   representative_item_id=EXCLUDED.representative_item_id,
@@ -408,19 +439,24 @@ def _upsert_stories(conn: Any, *, stories: Sequence[Mapping[str, Any]], now_ms: 
                   last_published_at_ms=EXCLUDED.last_published_at_ms,
                   state_fingerprint=EXCLUDED.state_fingerprint,
                   updated_at_ms=EXCLUDED.updated_at_ms
-                WHERE news_stories.state_fingerprint IS DISTINCT FROM
-                      EXCLUDED.state_fingerprint
-                """,
-                {
-                    **story,
-                    "importance_factors": Jsonb(story["importance_factors"]),
-                    "facet_facts": Jsonb(story["facet_facts"]),
-                    "now_ms": now_ms,
-                },
-            ).rowcount
-            or 0
+           WHERE news_stories.state_fingerprint IS DISTINCT FROM
+                 EXCLUDED.state_fingerprint
+          RETURNING 1
         )
-    return writes
+        SELECT (SELECT count(*) FROM updated_items) AS item_writes,
+               (SELECT count(*) FROM upserted_stories) AS story_writes
+        """,
+        (
+            Jsonb([dict(item) for item in item_updates]),
+            int(now_ms),
+            Jsonb([dict(story) for story in stories]),
+            int(now_ms),
+            int(now_ms),
+        ),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("news_story_materialized_publish_missing_result")
+    return int(row["item_writes"]), int(row["story_writes"])
 
 
 def _replace_memberships(conn: Any, *, memberships: Sequence[Mapping[str, Any]]) -> int:

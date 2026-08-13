@@ -15,7 +15,7 @@ from tracefold.news.models import NewsSourceDefinition
 from tracefold.news.opennews import OpenNewsOverlapPage, parse_opennews_message, parse_opennews_rest_response
 from tracefold.news.sources import OPENNEWS_SOURCE_ID, opennews_source
 from tracefold.platform.config.settings import NewsSettings
-from tracefold.platform.resource import ResourceOperationOverrun
+from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
 
 
 def test_opennews_source_is_the_production_source() -> None:
@@ -837,6 +837,71 @@ def test_opennews_receive_failure_does_not_duplicate_connection_recovery() -> No
     assert asyncio.run(scenario()) == 1
 
 
+def test_opennews_business_database_overrun_restarts_the_existing_stream_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> int:
+        stop_event = asyncio.Event()
+        acquisition = _acquisition(
+            db=object(),
+            rest_client=object(),
+            websocket_client=object(),
+        )
+        attempts = 0
+
+        async def receive(_stop_event: asyncio.Event) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ResourceOperationOverrun(
+                    capability=ResourceCapability.DATABASE_BUSINESS,
+                    operation_name="opennews_live_publish",
+                )
+            stop_event.set()
+
+        async def idle(_stop_event: asyncio.Event) -> None:
+            await stop_event.wait()
+
+        acquisition._opennews_receive_loop = receive  # type: ignore[method-assign]
+        acquisition._opennews_publish_loop = idle  # type: ignore[method-assign]
+        acquisition._opennews_recovery_loop = idle  # type: ignore[method-assign]
+
+        await acquisition.run_opennews(stop_event=stop_event)
+        return attempts
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.0)
+
+    assert asyncio.run(scenario()) == 2
+
+
+def test_opennews_non_database_overrun_remains_fatal() -> None:
+    async def scenario() -> None:
+        stop_event = asyncio.Event()
+        acquisition = _acquisition(
+            db=object(),
+            rest_client=object(),
+            websocket_client=object(),
+        )
+
+        async def receive(_stop_event: asyncio.Event) -> None:
+            raise ResourceOperationOverrun(
+                capability=ResourceCapability.FINITE_OPERATION,
+                operation_name="opennews_live_publish",
+            )
+
+        async def idle(_stop_event: asyncio.Event) -> None:
+            await stop_event.wait()
+
+        acquisition._opennews_receive_loop = receive  # type: ignore[method-assign]
+        acquisition._opennews_publish_loop = idle  # type: ignore[method-assign]
+        acquisition._opennews_recovery_loop = idle  # type: ignore[method-assign]
+
+        await acquisition.run_opennews(stop_event=stop_event)
+
+    with pytest.raises(ExceptionGroup, match="opennews_live_publish"):
+        asyncio.run(scenario())
+
+
 def test_opennews_queue_overflow_reconnects_before_requesting_overlap() -> None:
     async def scenario() -> tuple[int, list[str | None]]:
         stop_event = asyncio.Event()
@@ -1192,7 +1257,10 @@ def test_opennews_recovery_failure_stays_durable_without_a_status_clear(monkeypa
 
         class _OverrunFinite:
             async def run(self, *_args, **_kwargs):
-                raise ResourceOperationOverrun("resource_operation_overrun:opennews_rest_recovery")
+                raise ResourceOperationOverrun(
+                    capability=ResourceCapability.FINITE_OPERATION,
+                    operation_name="opennews_rest_recovery",
+                )
 
         class _RestClient:
             def fetch_overlap_page(self, _page):

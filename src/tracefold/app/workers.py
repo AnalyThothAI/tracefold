@@ -72,7 +72,11 @@ from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
 FATAL_EXIT_TIMEOUT_SECONDS = 5.0
@@ -611,7 +615,7 @@ async def _run_due(
         try:
             value = await turn()
         except ResourceOperationOverrun as exc:
-            if not _is_recurring_database_overrun(exc):
+            if exc.capability is not ResourceCapability.DATABASE_BUSINESS:
                 raise
             _log_recurring_database_overrun("durable-due", exc)
             await _wait_or_stop(stop_event, float(idle_seconds))
@@ -648,7 +652,7 @@ async def _run_periodic(
         try:
             await sample()
         except ResourceOperationOverrun as exc:
-            if not _is_recurring_database_overrun(exc):
+            if exc.capability is not ResourceCapability.DATABASE_BUSINESS:
                 raise
             _log_recurring_database_overrun("periodic", exc)
             deadline = loop.time() + float(period_seconds)
@@ -671,20 +675,18 @@ async def _run_recurring_database_overrun_boundary(
             await start()
             return
         except ResourceOperationOverrun as exc:
-            if not _is_recurring_database_overrun(exc):
+            if exc.capability is not ResourceCapability.DATABASE_BUSINESS:
                 raise
             _log_recurring_database_overrun(worker, exc)
             await _wait_or_stop(stop_event, _PRODUCTIVE_REPOLL_SECONDS)
 
 
-def _is_recurring_database_overrun(exc: ResourceOperationOverrun) -> bool:
-    return str(exc).startswith("resource_operation_overrun:db:")
-
-
 def _log_recurring_database_overrun(worker: str, exc: ResourceOperationOverrun) -> None:
-    logger.bind(worker=worker, error=str(exc)).warning(
-        "Recurring database operation outlived its wrapper; native capability remains authoritative"
-    )
+    logger.bind(
+        worker=worker,
+        capability=exc.capability.value,
+        operation_name=exc.operation_name,
+    ).warning("Recurring database operation outlived its wrapper; native capability remains authoritative")
 
 
 async def _sample_news_story(
@@ -726,6 +728,8 @@ async def _run_control(
             probe_state.heartbeat_at_ms = heartbeat_at_ms
             await _wait_or_stop(stop_event, _HEARTBEAT_SECONDS)
     except asyncio.CancelledError:
+        raise
+    except ResourceOperationOverrun:
         raise
     except RuntimeError as exc:
         if "singleton_lost" in str(exc):
@@ -841,6 +845,7 @@ async def _wire_components(
     runtime_id: str,
 ) -> _Components:
     providers = wire_asset_market(settings)
+    heavy_db = db.heavy_business()
     ingest = _PooledIngestStore(
         db,
         providers=providers,
@@ -879,7 +884,7 @@ async def _wire_components(
         )
         if news_cpu is None:
             raise RuntimeError("news_cpu_missing")
-        news_story = NewsStoryProjection(db=db, cpu=news_cpu)
+        news_story = NewsStoryProjection(db=db, heavy_db=heavy_db, cpu=news_cpu)
         news_brief = NewsBriefCandidate(
             db=db,
             model_adapter=model_adapter,
@@ -966,6 +971,7 @@ async def _wire_components(
                     worker_name=worker_name,
                     clock_kind=clock_kind,
                     source_client=macro_source,
+                    enabled_adapter_ids=macro_source.enabled_adapter_ids,
                     lease_owner=f"{worker_name}:{runtime_id}",
                     document_analysis_model_name=document_analysis_model_name,
                     document_analysis_prompt_version=(
@@ -1022,6 +1028,7 @@ async def _wire_components(
         raise RuntimeError("profile_provider_wiring_mismatch")
     token_radar_current = TokenRadarCurrentProjection(
         db=db,
+        heavy_db=heavy_db,
         cpu=projection_cpu,
         telemetry=telemetry,
         source_is_streaming=collector.source_is_streaming if collector is not None else lambda: False,
@@ -1197,7 +1204,7 @@ async def _fatal_exit(
 def _fatal_code(exc: BaseException, *, phase: str) -> str:
     leaves = _leaf_exceptions(exc)
     messages = ":".join(str(item) for item in _leaf_exceptions(exc)).lower()
-    if isinstance(exc, ResourceOperationOverrun) or "resource_operation_overrun" in messages:
+    if any(isinstance(item, ResourceOperationOverrun) for item in leaves):
         return "resource_operation_overrun"
     if "singleton_lost" in messages:
         return "singleton_lost"

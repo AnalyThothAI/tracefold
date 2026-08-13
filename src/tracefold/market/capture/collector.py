@@ -14,7 +14,11 @@ from tracefold.market.capture.provider_contracts import (
     IngestStoreProtocol,
     UpstreamClientProtocol,
 )
-from tracefold.platform.resource import ResourceAdmissionTimeout
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 _GMGN_FRAME_MAX_BYTES = 1 * 1024 * 1024
 _GMGN_FRAME_MAX_ITEMS = 500
@@ -167,6 +171,10 @@ class CollectorService:
             )
         except ResourceAdmissionTimeout as exc:
             raise GmgnStreamExpectedError("gmgn_database_admission_timeout") from exc
+        except ResourceOperationOverrun as exc:
+            if exc.capability is not ResourceCapability.DATABASE_BUSINESS:
+                raise
+            raise GmgnStreamExpectedError("gmgn_database_operation_overrun") from exc
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -238,6 +246,10 @@ class CollectorService:
                     )
                 except ResourceAdmissionTimeout as exc:
                     raise GmgnStreamExpectedError("gmgn_database_admission_timeout") from exc
+                except ResourceOperationOverrun as exc:
+                    if exc.capability is not ResourceCapability.DATABASE_BUSINESS:
+                        raise
+                    raise GmgnStreamExpectedError("gmgn_database_operation_overrun") from exc
                 if ingested.inserted:
                     self.status.twitter_events += 1
                     self.status.last_event_at_ms = received_at_ms
