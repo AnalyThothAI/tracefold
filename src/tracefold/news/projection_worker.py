@@ -95,6 +95,7 @@ class NewsStoryProjection:
                 push_enabled=self.push_enabled,
             )
         except ResourceAdmissionTimeout:
+            self.dirty.set()
             return
         except (CpuTaskTimeout, NewsProjectionInputExceeded) as exc:
             error_code = "operation_timeout" if isinstance(exc, CpuTaskTimeout) else str(exc)

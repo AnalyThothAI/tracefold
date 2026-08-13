@@ -79,6 +79,48 @@ def test_unchanged_story_sample_refreshes_only_the_projection_clock() -> None:
     assert operations[1][1] == (snapshot, {})
 
 
+def test_story_projection_retries_after_database_admission_timeout() -> None:
+    async def scenario() -> tuple[int, int]:
+        dirty = asyncio.Event()
+        stop = asyncio.Event()
+        snapshot = NewsProjectionSnapshot(
+            input_fingerprint="same",
+            scoring_epoch_ms=0,
+            current_input_fingerprint="same",
+            rows=(),
+        )
+
+        class _Database:
+            def __init__(self) -> None:
+                self.loads = 0
+                self.publishes = 0
+
+            async def run_business(self, operation_name, function, /, *args, **kwargs):
+                del function, args, kwargs
+                if operation_name == "news_story_load":
+                    self.loads += 1
+                    if self.loads == 1:
+                        raise ResourceAdmissionTimeout("news_story_load_busy")
+                    return snapshot
+                self.publishes += 1
+                stop.set()
+                return {"projection_status": "unchanged_input"}
+
+        database = _Database()
+        projection = NewsStoryProjection(
+            db=database,
+            heavy_db=database,
+            cpu=object(),
+            dirty=dirty,
+            debounce_seconds=0.001,
+            safety_seconds=10.0,
+        )
+        await projection.run(stop_event=stop)
+        return database.loads, database.publishes
+
+    assert asyncio.run(scenario()) == (2, 1)
+
+
 def test_push_periodic_sample_retries_after_database_admission_timeout() -> None:
     class _Push:
         async def reconcile(self, *, now_ms: int) -> dict[str, int]:
