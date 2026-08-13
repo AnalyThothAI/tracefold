@@ -173,6 +173,11 @@ signed Feishu card containing the selected Item's original OpenNews headline
 plus a compact body with its `关联资产`, provider score, and optional
 original-link button, with durable at-least-once retries. It is not a
 generic Notifications product or item-level analysis path.
+Each complete Push reconcile ring starts no sooner than 25 seconds after the
+prior ring started. Its clock and cursor survive restart, preventing a small
+Story set from being rescanned every few pages without delaying the capped
+10,000-Story ring beyond its nominal 25-second interval when each page remains
+inside the code-owned 2.5-second cadence.
 Changing cadence does not repair source admission, Story identity, or Brief
 fingerprint errors.
 
@@ -344,11 +349,15 @@ Migration `20260813_0258` adds the News Push reconcile cursor plus the
 provider score/assets eligibility clock, and widens two existing market-read
 indexes in place. Stop Serve and Workers while crossing this revision and keep
 them stopped through the 0259 invariant repair.
-Current head `20260813_0259` repairs the eligibility clock of any numeric-score
+Migration `20260813_0259` repairs the eligibility clock of any numeric-score
 Item written during a mixed-version 0258 cutover and then enforces that clock
-as a database invariant. Keep Serve and Workers stopped while crossing the
-revision, then restore only the new single writer, observe one bounded cursor
-wrap, and verify Push latency plus Workers heartbeat stability.
+as a database invariant. Migration `20260813_0260` adds the durable 25-second
+Push reconcile-ring clock. Current head `20260813_0261` replaces Radar's old
+expression index with a STORED generated text fingerprint and narrow covering
+index while preserving all facts/current payload. Keep Serve and Workers
+stopped while crossing these revisions, then restore only the new single
+writer, observe one bounded cursor wrap, and verify Push latency plus Workers
+heartbeat stability.
 `20260801_0238` adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
@@ -416,6 +425,13 @@ earlier unused time remains slack and never raises a later phase's cap. Market
 facts do not participate in admission or order. The cut adds
 no episode, frontier, Gate audit, or history table, exposes no window control,
 and changes no WebSocket behavior.
+
+Current migration `20260813_0261` materializes the exact ASCII-lower,
+whitespace-normalized MD5 duplicate-text fingerprint as a STORED Event column
+and INCLUDEs it in the partial source-time index, allowing vacuum-visible
+history to remain Index Only without fetching wide Event text. Presentation
+uses at most one target-index LATERAL probe per selected market key for recent
+positive market cap, never a global recent-tick scan.
 
 Use the ordinary lifecycle after the transition:
 

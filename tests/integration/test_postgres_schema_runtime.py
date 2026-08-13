@@ -359,6 +359,15 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
               AND indexname = 'idx_events_token_radar_source_time'
             """
         ).fetchone()
+        radar_fingerprint_column = conn.execute(
+            """
+            SELECT is_generated, generation_expression
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'events'
+              AND column_name = 'token_radar_text_fingerprint'
+            """
+        ).fetchone()
         radar_resolution_index = conn.execute(
             """
             SELECT indexdef
@@ -570,11 +579,18 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert resolution_lookup_index is not None
     assert "INCLUDE (event_id)" in resolution_lookup_index["indexdef"]
     assert radar_event_index is not None
-    assert "(timestamp_ms, event_id, md5" in radar_event_index["indexdef"]
-    assert "regexp_replace" in radar_event_index["indexdef"]
-    assert "translate" in radar_event_index["indexdef"]
-    assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ" in radar_event_index["indexdef"]
-    assert "INCLUDE (received_at_ms, created_at_ms, action, author_handle)" in radar_event_index["indexdef"]
+    assert "(timestamp_ms, event_id)" in radar_event_index["indexdef"]
+    assert (
+        "INCLUDE (token_radar_text_fingerprint, received_at_ms, created_at_ms, action, author_handle)"
+        in radar_event_index["indexdef"]
+    )
+    assert "md5" not in radar_event_index["indexdef"]
+    assert radar_fingerprint_column is not None
+    assert radar_fingerprint_column["is_generated"] == "ALWAYS"
+    assert "md5" in radar_fingerprint_column["generation_expression"]
+    assert "regexp_replace" in radar_fingerprint_column["generation_expression"]
+    assert "translate" in radar_fingerprint_column["generation_expression"]
+    assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ" in radar_fingerprint_column["generation_expression"]
     assert radar_resolution_index is not None
     assert "(event_id, intent_id, decision_time_ms, created_at_ms, resolution_id)" in radar_resolution_index["indexdef"]
     assert "INCLUDE (resolution_status, target_type, target_id)" in radar_resolution_index["indexdef"]
@@ -606,7 +622,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260813_0259"
+    assert version == latest_migration_version() == "20260813_0261"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -631,7 +647,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260813_0259"
+    assert version == latest_migration_version() == "20260813_0261"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -1083,7 +1099,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260813_0259"
+        assert version == latest_migration_version() == "20260813_0261"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

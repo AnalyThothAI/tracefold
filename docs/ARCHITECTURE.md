@@ -291,9 +291,12 @@ sole writer streams at most 20,000 typed Event/resolution-revision rows and 16
 MiB from a twelve-hour source-time horizon, then runs one deterministic reducer
 with a twelve-second whole-turn hard ceiling. The evidence load selects only
 reducer fields in stable replay order against a source-time covering index and
-the covering resolution index. The source index stores a fixed-width,
-non-security duplicate-text fingerprint instead of wide Event text, so the
-bounded read does not fetch or transfer the raw text payload. The base phase
+the covering resolution index. The material read selects the STORED generated
+`events.token_radar_text_fingerprint` column with the exact ASCII-lower,
+whitespace-normalization, and MD5 semantics of its fixed-width, non-security
+duplicate-text fingerprint. The partial source-time index INCLUDEs that column,
+so vacuum-visible history can remain an Index Only read without fetching or
+transferring the wide Event text payload. The base phase
 caps are 9.0 seconds for load, 2.5 seconds for compute,
 and 0.25 seconds each for presentation and publication. Every phase is bounded
 by the smaller of its absolute cap and the remaining whole-turn time after
@@ -347,7 +350,9 @@ composite scores, fuzzy similarity, model output, or market facts.
 Items are ordered by `qualified_at` descending with stable target-key ties.
 Only after Top-50 selection does one bounded batch read load canonical identity,
 the exact trigger price anchor, optional profile presentation, current price,
-and recent market capitalization; it never performs one query per Item. Market
+and recent market capitalization. The recent positive market-cap lookup makes
+at most one target-index LATERAL probe for each selected market key rather than
+a global recent-tick scan; it never performs one query per Item. Market
 values and their independent observation clocks are nullable presentation
 facts and cannot change membership or order. The compact public Item contains
 the causal trigger Event ID, trigger source-event time, qualification time,
@@ -639,8 +644,12 @@ suppressed, never backfilled to Feishu. It chooses the
 highest-scored member with deterministic publication-time and Item-ID ties, and
 freezes that Story/Item evidence once. Its code-owned 2.5-second reconcile reads
 at most 1,000 persisted current Stories by primary-key cursor per transaction;
-the 10,000-Story input cap therefore has a nominal 25-second complete revisit
-ring. It reads only current Story membership and NewsItem metadata; it neither rebuilds
+each complete revisit ring starts no sooner than 25 seconds after the prior
+ring started. Small current populations therefore cannot hot-loop, while the
+10,000-Story cap retains a nominal 25-second ten-page revisit interval when
+each bounded page finishes within its 2.5-second cadence. The ring
+clock and cursor are durable and advance with candidate writes in one
+transaction. It reads only current Story membership and NewsItem metadata; it neither rebuilds
 Stories nor adds another acquisition path. A private durable-due loop claims
 and delivers without occupying the serial model arbiter. For an unfrozen,
 non-Chinese title, the Feishu Adapter makes at most one request through the same
@@ -775,6 +784,13 @@ second writer.
 `20260813_0259` repairs any numeric-score Item written without that eligibility
 clock during a mixed-version 0258 cutover and makes the clock mandatory for
 numeric provider scores. It adds no table, writer, or serving field.
+`20260813_0260` adds the durable Push reconcile-ring start clock to the same
+singleton. A completed short ring waits until its 25-second start boundary;
+an unfinished ring and clock survive restart, while the capped ten-page ring
+retains its nominal 25-second interval. It adds no table, wake plane, or writer.
+`20260813_0261` replaces Radar's expression index with the STORED generated
+fingerprint and its narrow covering index, preserving all facts and the current
+payload with no dual path.
 
 ### Macro
 

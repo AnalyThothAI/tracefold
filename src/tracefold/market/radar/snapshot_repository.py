@@ -284,15 +284,6 @@ def _code_owned_sql_literals(values: tuple[str, ...]) -> str:
     return ",\n    ".join(f"'{value}'" for value in values)
 
 
-def _token_radar_text_fingerprint_sql(alias: str) -> str:
-    return (
-        "md5(NULLIF(btrim(regexp_replace(translate(COALESCE("
-        f"{alias}.text_clean, {alias}.search_text, {alias}.text, '')"
-        ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
-        ", E'[ \\t\\n\\r\\f]+', ' ', 'g')), ''))"
-    )
-
-
 _TOKEN_RADAR_INPUT_SQL = rf"""
 SELECT
   candidate.event_id,
@@ -317,7 +308,7 @@ FROM (
     source.created_at_ms,
     source.action,
     source.author_handle,
-    {_token_radar_text_fingerprint_sql("source")} AS text_fingerprint
+    source.token_radar_text_fingerprint AS text_fingerprint
     FROM events source
    WHERE source.timestamp_ms > %s
      AND source.timestamp_ms <= %s
@@ -434,31 +425,6 @@ market_keys AS (
        price_feed.pricefeed_id ASC
      LIMIT 1
   ) preferred_price_feed ON true
-),
-recent_market_caps AS (
-  SELECT DISTINCT ON (
-    market_keys.market_target_type,
-    market_keys.market_target_id
-  )
-    market_keys.market_target_type,
-    market_keys.market_target_id,
-    market_ticks.market_cap_usd,
-    market_ticks.observed_at_ms AS market_cap_observed_at_ms
-  FROM market_keys
-  JOIN market_ticks
-    ON market_ticks.target_type = market_keys.market_target_type
-   AND market_ticks.target_id = market_keys.market_target_id
-  WHERE market_keys.market_target_type IS NOT NULL
-    AND market_keys.market_target_id IS NOT NULL
-    AND market_ticks.market_cap_usd > 0
-    AND market_ticks.observed_at_ms >= %s
-    AND market_ticks.observed_at_ms <= %s
-  ORDER BY
-    market_keys.market_target_type,
-    market_keys.market_target_id,
-    market_ticks.observed_at_ms DESC,
-    market_ticks.received_at_ms DESC,
-    market_ticks.tick_id DESC
 )
 SELECT
   market_keys.target_type,
@@ -498,9 +464,22 @@ LEFT JOIN market_ticks signal_tick
 LEFT JOIN market_tick_current
   ON market_tick_current.target_type = market_keys.market_target_type
  AND market_tick_current.target_id = market_keys.market_target_id
-LEFT JOIN recent_market_caps
-  ON recent_market_caps.market_target_type = market_keys.market_target_type
- AND recent_market_caps.market_target_id = market_keys.market_target_id
+LEFT JOIN LATERAL (
+  SELECT
+    recent_cap_tick.market_cap_usd,
+    recent_cap_tick.observed_at_ms AS market_cap_observed_at_ms
+  FROM market_ticks AS recent_cap_tick
+  WHERE recent_cap_tick.target_type = market_keys.market_target_type
+    AND recent_cap_tick.target_id = market_keys.market_target_id
+    AND recent_cap_tick.market_cap_usd > 0
+    AND recent_cap_tick.observed_at_ms >= %s
+    AND recent_cap_tick.observed_at_ms <= %s
+  ORDER BY
+    recent_cap_tick.observed_at_ms DESC,
+    recent_cap_tick.received_at_ms DESC,
+    recent_cap_tick.tick_id DESC
+  LIMIT 1
+) recent_market_caps ON true
 ORDER BY market_keys.ordinality
 """
 

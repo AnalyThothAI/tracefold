@@ -1665,21 +1665,63 @@ class NewsRepository:
         next_cursor = str(rows[-1]["page_story_id"]) if rows and bool(rows[0]["has_more"]) else None
         return candidates, next_cursor
 
+    def push_reconcile_page_schedule(
+        self,
+        *,
+        now_ms: int,
+        minimum_cycle_ms: int,
+    ) -> tuple[bool, int | None]:
+        """Admit one page and return a new cycle clock when the ring wraps."""
+
+        row = self.conn.execute(
+            """
+            SELECT reconcile_cursor_story_id, reconcile_cycle_started_at_ms
+              FROM news_push_state
+             WHERE singleton_key = 'current'
+            """
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("news_push_state_missing")
+        if row["reconcile_cursor_story_id"] is not None:
+            return True, None
+        cycle_started_at_ms = row["reconcile_cycle_started_at_ms"]
+        if cycle_started_at_ms is not None and int(now_ms) < (int(cycle_started_at_ms) + int(minimum_cycle_ms)):
+            return False, None
+        return True, int(now_ms)
+
     def advance_push_reconcile_cursor(
         self,
         *,
         story_id: str | None,
+        cycle_started_at_ms: int | None,
         now_ms: int,
     ) -> None:
         self.conn.execute(
             """
             UPDATE news_push_state
                SET reconcile_cursor_story_id = %s,
+                   reconcile_cycle_started_at_ms = coalesce(
+                     %s::bigint,
+                     reconcile_cycle_started_at_ms
+                   ),
                    updated_at_ms = greatest(updated_at_ms, %s)
              WHERE singleton_key = 'current'
-               AND reconcile_cursor_story_id IS DISTINCT FROM %s
+               AND (
+                 reconcile_cursor_story_id IS DISTINCT FROM %s
+                 OR (
+                   %s::bigint IS NOT NULL
+                   AND reconcile_cycle_started_at_ms IS DISTINCT FROM %s::bigint
+                 )
+               )
             """,
-            (story_id, int(now_ms), story_id),
+            (
+                story_id,
+                cycle_started_at_ms,
+                int(now_ms),
+                story_id,
+                cycle_started_at_ms,
+                cycle_started_at_ms,
+            ),
         )
 
     def initialize_push_baseline(self, *, now_ms: int) -> tuple[int, bool]:

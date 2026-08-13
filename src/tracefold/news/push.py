@@ -24,6 +24,7 @@ _DELIVERY_MAX_ATTEMPTS = 6
 _DELIVERY_RETRY_DELAYS_MS = (5_000, 30_000, 120_000, 600_000, 1_800_000)
 _LEASE_MS = 60_000
 _DELIVERY_TIMEOUT_SECONDS = 12.0
+_RECONCILE_MINIMUM_CYCLE_MS = 25_000
 
 
 class _NewsPushDeliverySuppressed(RuntimeError):
@@ -97,11 +98,15 @@ class NewsStoryPush:
         finite_operations: Any,
         delivery: NewsPushDelivery,
         runtime_id: str,
+        reconcile_cycle_ms: int = _RECONCILE_MINIMUM_CYCLE_MS,
     ) -> None:
+        if reconcile_cycle_ms < 0:
+            raise ValueError("news_push_reconcile_cycle_ms_invalid")
         self.db = db
         self.finite_operations = finite_operations
         self.delivery = delivery
         self.lease_owner = f"news_story_push:{runtime_id}"
+        self.reconcile_cycle_ms = int(reconcile_cycle_ms)
 
     async def reconcile(self, *, now_ms: int) -> dict[str, int]:
         return cast(
@@ -513,54 +518,60 @@ class NewsStoryPush:
                 now_ms=now_ms,
             )
             baseline_at_ms, _initialized = repos.news.initialize_push_baseline(now_ms=now_ms)
-            candidates, next_cursor = repos.news.story_push_reconcile_page()
             inserted = 0
             suppressed = 0
-            for candidate in candidates.values():
-                # The evidence query resolves the same Story/Item identity fences
-                # enforced by insert_push_candidate. Avoid issuing a guaranteed
-                # no-op INSERT for ledgered Stories on every reconcile turn.
-                if candidate.get("push_delivery_status") is not None:
-                    continue
-                raw_evidence = candidate.get("provider_evidence")
-                if not isinstance(raw_evidence, Mapping):
-                    continue
-                evidence = dict(raw_evidence)
-                eligibility = evaluate_news_push_eligibility(
-                    evidence,
-                    enabled=True,
-                    baseline_at_ms=baseline_at_ms,
+            page_due, cycle_started_at_ms = repos.news.push_reconcile_page_schedule(
+                now_ms=now_ms,
+                minimum_cycle_ms=self.reconcile_cycle_ms,
+            )
+            if page_due:
+                candidates, next_cursor = repos.news.story_push_reconcile_page()
+                for candidate in candidates.values():
+                    # The evidence query resolves the same Story/Item identity fences
+                    # enforced by insert_push_candidate. Avoid issuing a guaranteed
+                    # no-op INSERT for ledgered Stories on every reconcile turn.
+                    if candidate.get("push_delivery_status") is not None:
+                        continue
+                    raw_evidence = candidate.get("provider_evidence")
+                    if not isinstance(raw_evidence, Mapping):
+                        continue
+                    evidence = dict(raw_evidence)
+                    eligibility = evaluate_news_push_eligibility(
+                        evidence,
+                        enabled=True,
+                        baseline_at_ms=baseline_at_ms,
+                        now_ms=now_ms,
+                    )
+                    if eligibility.ineligible_reason in {
+                        "score_threshold",
+                        "no_asset",
+                        "cl_family_only",
+                    }:
+                        continue
+                    score = float(evidence["provider_score"])
+                    # Push is a live alert, not a recovery backfill. Suppress both
+                    # the enablement snapshot and any provider score that arrives
+                    # later for an old Item (for example through REST recovery).
+                    should_suppress = not eligibility.eligible
+                    created = repos.news.insert_push_candidate(
+                        story_id=str(candidate["story_id"]),
+                        selected_item_id=str(evidence["item_id"]),
+                        provider_score=score,
+                        threshold_observed_at_ms=int(evidence["threshold_observed_at_ms"]),
+                        source_payload=_source_payload(candidate),
+                        suppressed=should_suppress,
+                        now_ms=now_ms,
+                    )
+                    inserted += int(created)
+                    suppressed += int(created and should_suppress)
+                repos.news.advance_push_reconcile_cursor(
+                    story_id=next_cursor,
+                    cycle_started_at_ms=cycle_started_at_ms,
                     now_ms=now_ms,
                 )
-                if eligibility.ineligible_reason in {
-                    "score_threshold",
-                    "no_asset",
-                    "cl_family_only",
-                }:
-                    continue
-                score = float(evidence["provider_score"])
-                # Push is a live alert, not a recovery backfill. Suppress both
-                # the enablement snapshot and any provider score that arrives
-                # later for an old Item (for example through REST recovery).
-                should_suppress = not eligibility.eligible
-                created = repos.news.insert_push_candidate(
-                    story_id=str(candidate["story_id"]),
-                    selected_item_id=str(evidence["item_id"]),
-                    provider_score=score,
-                    threshold_observed_at_ms=int(evidence["threshold_observed_at_ms"]),
-                    source_payload=_source_payload(candidate),
-                    suppressed=should_suppress,
-                    now_ms=now_ms,
-                )
-                inserted += int(created)
-                suppressed += int(created and should_suppress)
             terminalized = repos.news.terminalize_exhausted_push_deliveries(
                 now_ms=now_ms,
                 max_attempts=_DELIVERY_MAX_ATTEMPTS,
-            )
-            repos.news.advance_push_reconcile_cursor(
-                story_id=next_cursor,
-                now_ms=now_ms,
             )
         return {
             "inserted": inserted,

@@ -166,9 +166,11 @@ coordinator. One turn streams only the typed Event and resolution-revision
 fields needed by the reducer from the bounded twelve-hour source-time horizon
 and closed action/provenance set. The load SQL follows the partial source-time
 covering source-time index and covering resolution index in deterministic
-replay order. The source index carries only the narrow Event fields plus a
-fixed-width, non-security duplicate-text fingerprint; it never includes or
-transfers the wide Event text columns. A `20001` sentinel and incremental byte
+replay order. The read selects the STORED generated
+`events.token_radar_text_fingerprint` with its exact ASCII-lower,
+whitespace-normalization, and MD5 semantics; the partial source-time index
+INCLUDEs that fixed-width, non-security fingerprint so vacuum-visible history
+can remain Index Only and never transfer the wide Event text columns. A `20001` sentinel and incremental byte
 count enforce the 20,000-row and 16 MiB envelopes before full materialization.
 These limits cover a representative live twelve-hour observation of
 approximately 11,975 rows and 8.62 MiB before the fingerprint optimization,
@@ -179,15 +181,18 @@ then compares prior `(t-8h, t-4h)` with current `[t-4h, t]`. It replays
 fact-availability changes, opens only on a positive full-Gate false-to-true
 transition, applies the four-hour episode TTL/suppression rule, and selects Top
 50 by qualification time.
-A production-distribution, session-local index rehearsal copied 50,941 matching
-source Events into temporary tables and produced 11,502 material revisions /
-7,476,901 canonical bytes (7.13 MiB) through the final v4 query and exact
-fingerprint-index shape. The real repository load, including server-cursor
-transfer, typed construction, and byte accounting, took 4.09 seconds on the
-first read and 3.73--3.79 seconds warm. This supports the 9.0-second load cap but
-does not replace the sealed post-deployment interval acceptance.
+A pre-0261 production-distribution rehearsal produced 11,502 material revisions
+and 7,476,901 canonical bytes (7.13 MiB), with repository load at 4.09 seconds
+on its first read and 3.73--3.79 seconds warm. That evidence is superseded: under
+later cold pressure the expression-index plan fetched the wide Event heap and a
+server-cursor transaction reached 14.079 seconds, missing the twelve-second
+whole-turn ceiling. Migration 0261 removes that heap-read shape. Only the sealed
+post-0261 deployment interval may establish the P95 and maximum release limits;
+the earlier warm rehearsal is not acceptance evidence.
 A second bounded query batch-reads identity/profile, exact trigger anchor,
-current price, and recent market-cap presentation for only that selected set;
+current price, and recent market-cap presentation for only that selected set.
+Recent positive market cap uses at most one target-index LATERAL probe for each
+of the at most fifty selected market keys, never a global recent-tick scan;
 query count does not grow with Item count. The complete turn must finish within
 a 12.0-second hard budget, with measured P95 at or below eight seconds. The base
 phase caps are 9.0 seconds for load, 2.5 seconds for compute, and 0.25 seconds
@@ -409,8 +414,13 @@ diagnose `news_story_input_row_cap`, `news_story_input_byte_cap`, or
 populations.
 
 The push reconciler independently reads one durable 1,000-Story primary-key
-page every 2.5 seconds. At the 10,000-Story input cap the nominal complete
-revisit ring is 25 seconds. It performs no clustering or provider call and writes zero delivery
+page every 2.5 seconds. Each complete ring starts no sooner than 25 seconds
+after its prior start. Thus a small Story population cannot repeat every few
+pages, while the 10,000-Story cap retains a nominal 25-second ten-page interval
+when every bounded page completes within its 2.5-second cadence. An over-budget
+page delays the next turn instead of weakening the database bound. The durable
+ring clock and cursor preserve this boundary across restart and advance
+atomically with candidate writes. It performs no clustering or provider call and writes zero delivery
 rows for already-seen Stories or already-ledgered selected Items, including
 when cluster membership changes the current Story ID. A newly ingested report must still
 enter a Story through the 60-second projection before it can qualify; a later
@@ -871,11 +881,16 @@ columns already needed by the market-target read. This avoids historical
 wide-heap reads while keeping append-hot heap visibility work bounded, without
 changing current-resolution uniqueness or target-selection semantics.
 Stop Serve and Workers before applying the index replacements, then verify the
-0258 index definitions before restoring the single writer. Current head
+0258 index definitions before restoring the single writer.
 `20260813_0259` additionally repairs any numeric-score Item missing its
 eligibility clock during a mixed-version cutover and enforces the clock as a
-database invariant. Keep Serve and Workers stopped through both revisions and
-verify the 0259 head before restoring the single writer. Once
+database invariant. Migration `20260813_0260` adds the same Push singleton's
+durable 25-second reconcile-ring clock; an active cursor is backfilled with its
+last durable update time. Migration `20260813_0261` replaces the Radar
+expression index with the STORED generated fingerprint and narrow covering
+index, preserving every fact/current payload with no dual path. Keep Serve and
+Workers stopped through the current head and verify 0261 before restoring the
+single writer. Once
 the writer is running, observe cursor advancement through one complete wrap and
 verify the Push latency/SLO snapshot; a pre-start wrap is impossible because
 the cursor has exactly one runtime writer.

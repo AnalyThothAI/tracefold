@@ -283,6 +283,7 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `search_tsv` | `TSVECTOR` | True | `None` |
+| `token_radar_text_fingerprint` | `TEXT` | True | `None` |
 
 ## `macro_acquisition_targets`
 
@@ -744,6 +745,7 @@
 | `latest_error` | `TEXT` | True | `None` |
 | `latest_error_at_ms` | `BIGINT` | True | `None` |
 | `reconcile_cursor_story_id` | `TEXT` | True | `None` |
+| `reconcile_cycle_started_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_sources`
 

@@ -220,10 +220,11 @@ def test_push_reconcile_baseline_fences_a_preexisting_future_clock_story_after_r
                 UPDATE news_push_state
                    SET baseline_at_ms = %s,
                        reconcile_cursor_story_id = %s,
+                       reconcile_cycle_started_at_ms = %s,
                        updated_at_ms = %s
                  WHERE singleton_key = 'current'
                 """,
-                (BASE_MS, "0" * 64, BASE_MS),
+                (BASE_MS, "0" * 64, BASE_MS, BASE_MS),
             )
 
         assert asyncio.run(runtime.reconcile(now_ms=BASE_MS + 1)) == {
@@ -2595,4 +2596,5 @@ def _runtime(
         finite_operations=capability,
         delivery=delivery,
         runtime_id=runtime_id,
+        reconcile_cycle_ms=0,
     )

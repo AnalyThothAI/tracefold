@@ -44,10 +44,11 @@ def test_story_push_reconcile_page_stays_bounded_across_cold_and_hot_story_range
             conn.execute(
                 """
                 UPDATE news_push_state
-                   SET reconcile_cursor_story_id = %s
+                   SET reconcile_cursor_story_id = %s,
+                       reconcile_cycle_started_at_ms = %s
                  WHERE singleton_key = 'current'
                 """,
-                (cursor,),
+                (cursor, None if cursor is None else 0),
             )
             conn.commit()
             audits.append(
