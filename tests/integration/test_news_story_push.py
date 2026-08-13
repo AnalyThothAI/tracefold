@@ -363,9 +363,7 @@ def _strategy_refresh(
         },
     }
     if asset_symbols is not None:
-        params["coins"] = [
-            {"symbol": symbol, "market_type": "spot"} for symbol in asset_symbols
-        ]
+        params["coins"] = [{"symbol": symbol, "market_type": "spot"} for symbol in asset_symbols]
     _REPORT_PARAMS_BY_ID[record_id] = params
     event = _strategy_event(params)
     assert event is not None

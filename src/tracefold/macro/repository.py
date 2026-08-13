@@ -23,7 +23,14 @@ class MacroRepository:
     def __init__(self, conn: Any) -> None:
         self.conn = conn
 
-    def ensure_target(self, spec: DatasetSpec, *, now_ms: int, max_attempts: int) -> int:
+    def ensure_target(
+        self,
+        spec: DatasetSpec,
+        *,
+        now_ms: int,
+        max_attempts: int,
+        reactivate_unavailable: bool,
+    ) -> int:
         cursor = self.conn.execute(
             """
             INSERT INTO macro_acquisition_targets(
@@ -35,8 +42,26 @@ class MacroRepository:
             ON CONFLICT(target_key) DO UPDATE SET
               clock_kind = EXCLUDED.clock_kind,
               max_attempts = EXCLUDED.max_attempts,
+              status = CASE
+                WHEN macro_acquisition_targets.status = 'unavailable' AND %s THEN 'pending'
+                ELSE macro_acquisition_targets.status
+              END,
+              next_due_at_ms = CASE
+                WHEN macro_acquisition_targets.status = 'unavailable' AND %s
+                  THEN EXCLUDED.next_due_at_ms
+                ELSE macro_acquisition_targets.next_due_at_ms
+              END,
+              attempt_count = CASE
+                WHEN macro_acquisition_targets.status = 'unavailable' AND %s THEN 0
+                ELSE macro_acquisition_targets.attempt_count
+              END,
+              last_error_code = CASE
+                WHEN macro_acquisition_targets.status = 'unavailable' AND %s THEN NULL
+                ELSE macro_acquisition_targets.last_error_code
+              END,
               updated_at_ms = EXCLUDED.updated_at_ms
-            WHERE macro_acquisition_targets.clock_kind IS DISTINCT FROM EXCLUDED.clock_kind
+            WHERE (macro_acquisition_targets.status = 'unavailable' AND %s)
+               OR macro_acquisition_targets.clock_kind IS DISTINCT FROM EXCLUDED.clock_kind
                OR macro_acquisition_targets.max_attempts IS DISTINCT FROM EXCLUDED.max_attempts
             """,
             (
@@ -48,6 +73,11 @@ class MacroRepository:
                 int(max_attempts),
                 int(now_ms),
                 int(now_ms),
+                bool(reactivate_unavailable),
+                bool(reactivate_unavailable),
+                bool(reactivate_unavailable),
+                bool(reactivate_unavailable),
+                bool(reactivate_unavailable),
             ),
         )
         return int(cursor.rowcount)
@@ -603,6 +633,20 @@ class MacroRepository:
             ORDER BY dataset_id, partition_key
             """,
             (list(dataset_ids), list(dataset_ids)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def all_acquisition_target_states(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT
+              target_key, dataset_id, partition_key, clock_kind, cursor_json,
+              status, next_due_at_ms, priority, leased_until_ms, lease_owner,
+              attempt_count, max_attempts, last_success_at_ms, last_error_code,
+              created_at_ms, updated_at_ms
+            FROM macro_acquisition_targets
+            ORDER BY clock_kind, dataset_id, partition_key, target_key
+            """
         ).fetchall()
         return [dict(row) for row in rows]
 

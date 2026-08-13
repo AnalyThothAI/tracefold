@@ -575,11 +575,11 @@ describe("NewsPage", () => {
     expect(degraded.closest("details")).toHaveAttribute("data-state", "stalled");
   });
 
-  it("presents an OpenNews primary failure as a degraded fact layer", async () => {
+  it("presents an OpenNews Strategy transport failure as a degraded fact layer", async () => {
     const status = newsStatusFixture();
     status.layers.ingest.status = "degraded";
     status.layers.ingest.opennews!.last_error = "opennews_live_disconnected";
-    status.layers.ingest.reasons = ["opennews_primary_error"];
+    status.layers.ingest.reasons = ["opennews_strategy_transport_error"];
     server.use(
       http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
     );

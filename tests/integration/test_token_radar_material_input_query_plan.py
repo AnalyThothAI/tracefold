@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
+
+import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.market.radar.reducer import RadarSelectionKey, token_radar_text_fingerprint
+from tracefold.market.radar.constants import TOKEN_RADAR_INPUT_ROW_CAP
+from tracefold.market.radar.reducer import (
+    RadarSelectionKey,
+    TokenRadarInputOverflow,
+    token_radar_text_fingerprint,
+)
 from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 
 _NOW_MS = 1_800_000_000_000
@@ -13,7 +21,9 @@ _COLD_EVENT_COUNT = 10_000
 _HOT_EVENT_COUNT = 1_000
 _EVENT_COUNT = _COLD_EVENT_COUNT + _HOT_EVENT_COUNT
 _NOISE_EVENT_COUNT = 60_000
+_NON_RADAR_INTENT_COUNT = 25_000
 _HOT_TAIL_HEAP_FETCH_MARGIN = 32
+_EXPLAIN_AVERAGE_ROUNDING_MARGIN = 256
 _PRESENTATION_TARGET_COUNT = 50
 _PRESENTATION_NOISE_TICK_COUNT = 20_000
 
@@ -76,6 +86,7 @@ def test_material_input_repository_uses_covering_event_read_with_only_hot_tail_h
         migrate(conn)
         _insert_material_events(conn, start=1, stop=_COLD_EVENT_COUNT)
         _insert_noise_events(conn)
+        _insert_non_radar_intents(conn)
         conn.commit()
         for table_name in ("events", "token_intents", "token_intent_resolutions"):
             _vacuum_analyze(conn, table_name)
@@ -115,9 +126,64 @@ def test_material_input_repository_uses_covering_event_read_with_only_hot_tail_h
     diagnostic = _plan_summary(nodes)
     assert event_index_only_scans, diagnostic
     assert not other_event_scans, diagnostic
+    assert sum(_executed_rows(node) for node in event_index_only_scans) <= (
+        _EVENT_COUNT + _NOISE_EVENT_COUNT + _EXPLAIN_AVERAGE_ROUNDING_MARGIN
+    ), diagnostic
     assert max(int(node.get("Heap Fetches", 0)) for node in event_index_only_scans) <= (
         _HOT_EVENT_COUNT + _HOT_TAIL_HEAP_FETCH_MARGIN
     ), diagnostic
+    assert sum(int(node.get("Temp Read Blocks", 0)) for node in nodes) == 0, diagnostic
+    assert sum(int(node.get("Temp Written Blocks", 0)) for node in nodes) == 0, diagnostic
+
+
+def test_material_input_row_overflow_stops_the_source_time_plan_without_spilling(
+    tmp_path,
+) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        _insert_material_events(conn, start=1, stop=TOKEN_RADAR_INPUT_ROW_CAP + 5_000)
+        conn.commit()
+        for table_name in ("events", "token_intents", "token_intent_resolutions"):
+            _vacuum_analyze(conn, table_name)
+
+        captured_conn = _ExplainCaptureConnection(conn)
+        with (
+            conn.transaction(),
+            pytest.raises(
+                TokenRadarInputOverflow,
+                match="token_radar_input_row_overflow",
+            ),
+        ):
+            TokenRadarCurrentRepository(captured_conn).load_material_inputs(now_ms=_NOW_MS)
+        explain = captured_conn.explain
+    finally:
+        conn.close()
+
+    assert explain is not None
+    nodes = list(_plan_nodes(explain["Plan"]))
+    diagnostic = _plan_summary(nodes)
+    expected_indexes = {
+        "events": "idx_events_token_radar_source_time",
+        "token_intents": "idx_token_intents_event_intent",
+        "token_intent_resolutions": "idx_token_intent_resolutions_token_radar_material",
+    }
+    for relation_name, index_name in expected_indexes.items():
+        scans = [
+            node
+            for node in nodes
+            if node.get("Relation Name") == relation_name
+            and node.get("Index Name") == index_name
+            and node.get("Node Type") == "Index Only Scan"
+        ]
+        assert scans, diagnostic
+        assert max(int(node.get("Actual Loops", 0)) for node in scans) <= (
+            TOKEN_RADAR_INPUT_ROW_CAP + _HOT_TAIL_HEAP_FETCH_MARGIN
+        ), diagnostic
+        assert sum(_executed_rows(node) for node in scans) <= (
+            TOKEN_RADAR_INPUT_ROW_CAP + _HOT_TAIL_HEAP_FETCH_MARGIN
+        ), diagnostic
+
     assert sum(int(node.get("Temp Read Blocks", 0)) for node in nodes) == 0, diagnostic
     assert sum(int(node.get("Temp Written Blocks", 0)) for node in nodes) == 0, diagnostic
 
@@ -272,7 +338,7 @@ def _insert_noise_events(conn: Any) -> None:
         SELECT
           'radar-plan-noise-' || lpad(series_no::text, 5, '0'),
           'radar-plan-noise-dedup-' || lpad(series_no::text, 5, '0'),
-          'plan_noise', 'fixture', 'fixture', 'fixture', 'tweet',
+          'gmgn', 'direct_ws', 'public_stream', 'twitter_monitor_basic', 'tweet',
           %s - series_no,
           %s - series_no,
           'noise-author-' || series_no,
@@ -283,6 +349,66 @@ def _insert_noise_events(conn: Any) -> None:
         FROM generate_series(1, %s::integer) AS series_no
         """,
         (_NOW_MS, _NOW_MS, _NOW_MS, _NOW_MS, _NOISE_EVENT_COUNT),
+    )
+
+
+def _insert_non_radar_intents(conn: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO events(
+          event_id, logical_dedup_key, source_provider, source_transport,
+          coverage, channel, action, timestamp_ms, received_at_ms,
+          author_handle, text, raw_json, event_json, created_at_ms, updated_at_ms
+        )
+        SELECT
+          'radar-plan-other-event-' || lpad(series_no::text, 5, '0'),
+          'radar-plan-other-dedup-' || lpad(series_no::text, 5, '0'),
+          'other_provider', 'fixture', 'fixture', 'fixture', 'tweet',
+          %s - 30000000 + series_no,
+          %s - 30000000 + series_no,
+          'other-author-' || series_no,
+          'other evidence ' || series_no,
+          '{}'::jsonb, '{}'::jsonb,
+          %s - 30000000 + series_no,
+          %s - 30000000 + series_no
+        FROM generate_series(1, %s::integer) AS series_no
+        """,
+        (_NOW_MS, _NOW_MS, _NOW_MS, _NOW_MS, _NON_RADAR_INTENT_COUNT),
+    )
+    conn.execute(
+        """
+        INSERT INTO token_intents(
+          intent_id, event_id, intent_key, construction_policy,
+          intent_status, intent_confidence, created_at_ms, updated_at_ms
+        )
+        SELECT
+          'radar-plan-other-intent-' || lpad(series_no::text, 5, '0'),
+          'radar-plan-other-event-' || lpad(series_no::text, 5, '0'),
+          'radar-plan-other-key-' || lpad(series_no::text, 5, '0'),
+          'radar_plan_fixture', 'resolved', 1.0,
+          %s - 30000000 + series_no,
+          %s - 30000000 + series_no
+        FROM generate_series(1, %s::integer) AS series_no
+        """,
+        (_NOW_MS, _NOW_MS, _NON_RADAR_INTENT_COUNT),
+    )
+    conn.execute(
+        """
+        INSERT INTO token_intent_resolutions(
+          resolution_id, intent_id, event_id, resolution_status,
+          decision_time_ms, created_at_ms, target_type, target_id
+        )
+        SELECT
+          'radar-plan-other-resolution-' || lpad(series_no::text, 5, '0'),
+          'radar-plan-other-intent-' || lpad(series_no::text, 5, '0'),
+          'radar-plan-other-event-' || lpad(series_no::text, 5, '0'),
+          'EXACT',
+          %s - 30000000 + series_no,
+          %s - 30000000 + series_no,
+          'Asset', 'radar-plan-other-asset-' || series_no
+        FROM generate_series(1, %s::integer) AS series_no
+        """,
+        (_NOW_MS, _NOW_MS, _NON_RADAR_INTENT_COUNT),
     )
 
 
@@ -420,4 +546,4 @@ def _plan_summary(nodes: list[dict[str, Any]]) -> str:
 
 
 def _executed_rows(node: dict[str, Any]) -> int:
-    return int(node.get("Actual Rows") or 0) * int(node.get("Actual Loops") or 0)
+    return math.ceil(float(node.get("Actual Rows") or 0) * float(node.get("Actual Loops") or 0))

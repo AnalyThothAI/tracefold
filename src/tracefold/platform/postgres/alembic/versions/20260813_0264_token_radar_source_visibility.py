@@ -32,11 +32,13 @@ def upgrade() -> None:
         """
     )
 
-    # 0261 rewrote every Events heap page. Restore the visibility map before
-    # Workers resume the source-time index-only replay.
+    # 0261 rewrote every Events heap page. Restore only the main-heap visibility
+    # map before Workers resume the source-time index-only replay. Index cleanup,
+    # TOAST processing, and parallel vacuum are unrelated to that cutover and
+    # make this bounded maintenance step materially heavier.
     with op.get_context().autocommit_block():
         op.execute("SET statement_timeout = '120s'")
-        op.execute("VACUUM (ANALYZE) events")
+        op.execute("VACUUM (ANALYZE, INDEX_CLEANUP OFF, PROCESS_TOAST FALSE, PARALLEL 0) events")
         op.execute("RESET statement_timeout")
 
 

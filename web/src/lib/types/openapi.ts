@@ -3169,7 +3169,7 @@ export interface components {
              * Operating State
              * @enum {string}
              */
-            operating_state: "live" | "warming" | "stalled";
+            operating_state: "live" | "recovering" | "stalled";
             /** Reasons */
             reasons: string[];
             /**

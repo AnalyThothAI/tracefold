@@ -20,7 +20,11 @@ from tracefold.integrations.feishu import (
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
 from tracefold.news import NewsPushDeliveryError
 from tracefold.platform.config.settings import LlmConfig, NewsPushSettings, Settings, default_config_yaml
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
 _PREPARE_DEADLINE_MS = 4_102_444_800_000
@@ -779,7 +783,10 @@ def test_translation_operation_overrun_freezes_original_fallback_without_retry()
     class _OverrunFiniteOperations:
         async def run(self, operation_name, _function, /, *_args, **kwargs):
             kwargs["on_submitted"]()
-            raise ResourceOperationOverrun(f"resource_operation_overrun:{operation_name}")
+            raise ResourceOperationOverrun(
+                capability=ResourceCapability.FINITE_OPERATION,
+                operation_name=operation_name,
+            )
 
     delivery = _translation_delivery(
         lambda _request: _translation_response("比特币 ETF 录得资金流入"),
@@ -800,6 +807,39 @@ def test_translation_operation_overrun_freezes_original_fallback_without_retry()
     assert isinstance(prepared.payload["presentation"]["translation_attempted_at_ms"], int)
     assert isinstance(prepared.payload["presentation"]["translation_duration_ms"], int)
     assert prepared.payload["card"]["header"]["title"]["content"] == "Bitcoin ETF records inflows"
+
+
+def test_translation_database_fence_overrun_is_not_misreported_as_provider_timeout() -> None:
+    overrun = ResourceOperationOverrun(
+        capability=ResourceCapability.DATABASE_BUSINESS,
+        operation_name="news_story_push_fence_translation",
+    )
+
+    class _FenceOverrunFiniteOperations:
+        async def run(self, _operation_name, _function, /, *_args, **kwargs):
+            await kwargs["before_submit"]()
+            raise AssertionError("provider must not be submitted after a failed database fence")
+
+    async def failed_fence() -> None:
+        raise overrun
+
+    delivery = _translation_delivery(
+        lambda _request: _translation_response("比特币 ETF 录得资金流入"),
+        finite_operations=_FenceOverrunFiniteOperations(),
+    )
+    try:
+        with pytest.raises(ResourceOperationOverrun) as caught:
+            asyncio.run(
+                delivery.prepare(
+                    _news_push_source_payload(),
+                    deadline_ms=_PREPARE_DEADLINE_MS,
+                    before_translation_submit=failed_fence,
+                )
+            )
+    finally:
+        delivery.close()
+
+    assert caught.value is overrun
 
 
 def test_interrupted_translation_fallback_never_calls_the_provider_again() -> None:

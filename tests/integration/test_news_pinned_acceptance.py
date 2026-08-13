@@ -27,7 +27,7 @@ from tracefold.news.projection import NewsProjectionSnapshot
 from tracefold.news.ranking import score_public_cluster
 from tracefold.news.repository import NewsRepository
 from tracefold.news.sources import _PINNED_SOURCE_TIERS, opennews_source
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.settings import NewsSettings, Settings
 
 PINNED_WORLDMONITOR_HEAD = "0e8785c43e6a693990a14181ae0a16066c15fc8c"
 NOW_MS = 1_786_082_400_000
@@ -754,10 +754,7 @@ def _compute_current_public_clusters(repository: NewsRepository, *, now_ms: int)
 
 def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_path: Path) -> None:
     prepare_postgres_database()
-    events = tuple(
-        parse_opennews_message(frame, strategy_ids=OPENNEWS_STRATEGY_IDS)
-        for frame in OPENNEWS_FRAMES
-    )
+    events = tuple(parse_opennews_message(frame, strategy_ids=OPENNEWS_STRATEGY_IDS) for frame in OPENNEWS_FRAMES)
     assert all(event is not None and event.entry is not None for event in events)
     typed_events = tuple(event for event in events if event is not None)
     _assert_canonical_opennews(typed_events)
@@ -843,7 +840,11 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
             )
         assert publication_id is not None
 
-        settings = Settings(ws_token="secret", storage=postgres_settings_storage())
+        settings = Settings(
+            ws_token="secret",
+            news=NewsSettings(opennews_strategy_ids=("1018", "1019")),
+            storage=postgres_settings_storage(),
+        )
         settings.set_config_dir(tmp_path / "app-home")
         app = create_app(settings=settings)
         headers = {"Authorization": "Bearer secret"}

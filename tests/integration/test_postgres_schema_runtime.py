@@ -641,6 +641,10 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert event_reloptions == {
         "autovacuum_analyze_scale_factor=0.01",
         "autovacuum_analyze_threshold=10000",
+        "autovacuum_vacuum_insert_scale_factor=0.01",
+        "autovacuum_vacuum_insert_threshold=10000",
+        "autovacuum_vacuum_scale_factor=0.01",
+        "autovacuum_vacuum_threshold=10000",
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]

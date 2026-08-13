@@ -85,6 +85,14 @@ def test_0265_hard_cuts_legacy_opennews_state_without_erasing_push_audit() -> No
              WHERE source_id = 'news-opennews'
             """
         ).fetchone()
+        opennews_sources = conn.execute(
+            """
+            SELECT source_id, enabled
+              FROM news_sources
+             WHERE source_kind = 'opennews'
+             ORDER BY source_id
+            """
+        ).fetchall()
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     finally:
         conn.close()
@@ -212,6 +220,10 @@ def test_0265_hard_cuts_legacy_opennews_state_without_erasing_push_audit() -> No
         "last_items_seen": 0,
         "last_items_accepted": 0,
     }
+    assert opennews_sources == [
+        {"source_id": "legacy-opennews-secondary", "enabled": False},
+        {"source_id": "news-opennews", "enabled": True},
+    ]
 
 
 def test_0265_rejects_an_active_opennews_item_without_strategy_provenance() -> None:
@@ -226,6 +238,8 @@ def test_0265_rejects_an_active_opennews_item_without_strategy_provenance() -> N
 
         invalid_provenance = (
             {},
+            {"strategies": {}},
+            {"strategies": "not-an-array"},
             {"strategies": [42]},
             {"strategies": [{}]},
             {"strategies": [{"id": "   "}]},

@@ -1381,9 +1381,9 @@ function appendNonDeferredTail(
 function readerFacingNewsStatus(
   error: boolean,
   status: NewsStatus | undefined,
-): { label: string; state: "live" | "warming" | "stalled" } {
+): { label: string; state: "live" | "recovering" | "stalled" } {
   if (error) return { label: "状态暂不可用", state: "stalled" };
-  if (!status) return { label: "正在检查新闻", state: "warming" };
+  if (!status) return { label: "正在检查新闻", state: "recovering" };
   if (status.layers.story.status === "degraded") {
     return { label: "新闻更新异常", state: "stalled" };
   }
@@ -1392,7 +1392,7 @@ function readerFacingNewsStatus(
   }
   const factStates = [status.layers.ingest.status, status.layers.story.status];
   if (factStates.includes("warming")) {
-    return { label: "等待首次 Strategy 触发", state: "warming" };
+    return { label: "等待首次 Strategy 触发", state: "recovering" };
   }
   return { label: "新闻已同步", state: "live" };
 }

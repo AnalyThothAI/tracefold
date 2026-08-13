@@ -622,7 +622,7 @@ class NewsStatusLayersData(ExactApiSchema):
 
 class NewsStatusData(ExactApiSchema):
     status: NewsHealthStatus
-    operating_state: Literal["live", "warming", "stalled"]
+    operating_state: Literal["live", "recovering", "stalled"]
     last_success_at_ms: int | None
     reasons: list[str]
     layers: NewsStatusLayersData

@@ -9,7 +9,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 from .notification import (
     PUSH_PROVIDER_SCORE_THRESHOLD,
@@ -224,6 +228,8 @@ class NewsStoryPush:
                     )
                 except ResourceAdmissionTimeout:
                     raise
+                except ResourceOperationOverrun:
+                    raise
                 except Exception as exc:
                     raise RuntimeError("news_story_push_translation_fence_failed") from exc
                 if not fenced:
@@ -436,7 +442,9 @@ class NewsStoryPush:
                 operation_timeout_seconds=0.5,
             )
             return bool(released)
-        except ResourceOperationOverrun:
+        except ResourceOperationOverrun as exc:
+            if exc.capability is not ResourceCapability.FINITE_OPERATION:
+                raise
             await self._record_delivery_failure(
                 story_id=story_id,
                 lease_token=lease_token,
@@ -551,7 +559,7 @@ class NewsStoryPush:
                     score = float(evidence["provider_score"])
                     # Push is a live alert, not a recovery backfill. Suppress both
                     # the enablement snapshot and any provider score that arrives
-                    # later for an old Item (for example through REST recovery).
+                    # later for an old Item.
                     should_suppress = not eligibility.eligible
                     created = repos.news.insert_push_candidate(
                         story_id=str(candidate["story_id"]),

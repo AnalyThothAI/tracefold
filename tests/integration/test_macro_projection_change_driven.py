@@ -160,7 +160,15 @@ def test_rates_projection_uses_target_state_for_shared_sofr_dependency() -> None
         reset_postgres_schema(conn)
         spec = require_dataset("fred.sofr")
         with repository_session_for_connection(conn) as repos, repos.transaction():
-            assert repos.macro.ensure_target(spec, now_ms=NOW_MS, max_attempts=5) == 1
+            assert (
+                repos.macro.ensure_target(
+                    spec,
+                    now_ms=NOW_MS,
+                    max_attempts=5,
+                    reactivate_unavailable=False,
+                )
+                == 1
+            )
             target = repos.macro.claim_target(
                 clock_kind=spec.clock_kind,
                 lease_owner="sofr-fixture",

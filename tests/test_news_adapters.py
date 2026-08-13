@@ -366,6 +366,39 @@ def test_provider_json_rejects_nonstandard_nan_like_json_parse() -> None:
     assert result.provider == "deepseek"
 
 
+def test_oversized_provider_response_advances_the_public_chain() -> None:
+    hosts: list[str] = []
+    oversized = json.dumps(
+        {
+            "model": "llama3.1:8b",
+            "choices": [{"message": {"content": _valid_l1()}}],
+            "extra": "x" * (128 * 1024),
+        }
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        if request.url.host == "ollama.test":
+            return httpx.Response(200, content=oversized, headers={"Content-Type": "application/json"})
+        return _response(_valid_l1(), model="deepseek-chat")
+
+    publisher = ProviderChainNewsBriefPublisher(
+        ollama_base_url="https://ollama.test/v1",
+        configured_base_url="https://deepseek.test/v1",
+        configured_api_key="deepseek-secret",
+        configured_model="deepseek-chat",
+        groq_api_key=None,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = publisher.publish((_story(),), date_iso="2026-08-07")
+    finally:
+        publisher.close()
+
+    assert hosts == ["ollama.test", "deepseek.test"]
+    assert result.provider == "deepseek"
+
+
 def test_recursive_or_nul_provider_output_advances_the_public_chain() -> None:
     hosts: list[str] = []
     deeply_nested_index = ("[" * 1_200) + "1" + ("]" * 1_200)

@@ -262,8 +262,6 @@ def test_world_brief_hard_cut_has_one_thirteen_table_schema() -> None:
     assert brief_columns == BRIEF_TABLE_COLUMNS
 
 
-
-
 def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> None:
     config = alembic_config()
     config.attributes["database_url"] = _test_postgres_dsn()

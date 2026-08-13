@@ -11,12 +11,21 @@ import pytest
 from tracefold.app import workers
 from tracefold.app.market_providers import AssetMarketProviders
 from tracefold.macro import MacroProjectionCandidate
-from tracefold.news import NewsPushReceipt
+from tracefold.news import NewsPushReceipt, NewsStoryProjection
+from tracefold.news.projection import NewsProjectionSnapshot
 from tracefold.news.push import NewsStoryPush
 from tracefold.news.query_specs import story_push_reconcile_page_query
 from tracefold.news.story_store import NEWS_STORY_INPUT_ROW_CAP
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.resource import ResourceAdmissionTimeout
+
+
+class _WiringDatabase:
+    def __init__(self) -> None:
+        self.heavy = object()
+
+    def heavy_business(self) -> object:
+        return self.heavy
 
 
 def test_story_projection_and_push_reconcile_have_independent_periodic_samples() -> None:
@@ -37,6 +46,28 @@ def test_story_projection_and_push_reconcile_have_independent_periodic_samples()
     assert [name for name, _value in calls] == ["story", "push"]
     assert calls[1][1] is not None
     assert workers._NEWS_PUSH_RECONCILE_SECONDS == 2.5
+
+
+def test_unchanged_story_sample_refreshes_only_the_projection_clock() -> None:
+    operations: list[tuple[str, tuple[object, ...]]] = []
+    snapshot = NewsProjectionSnapshot(
+        input_fingerprint="same",
+        scoring_epoch_ms=0,
+        current_input_fingerprint="same",
+        rows=(),
+    )
+
+    class _Database:
+        async def run_business(self, operation_name, function, /, *args, **kwargs):
+            del function, kwargs
+            operations.append((operation_name, args))
+            return snapshot if operation_name == "news_story_load" else {"projection_status": "unchanged_input"}
+
+    projection = NewsStoryProjection(db=_Database(), heavy_db=_Database(), cpu=object())
+    asyncio.run(projection.sample())
+
+    assert [name for name, _args in operations] == ["news_story_load", "news_story_publish"]
+    assert operations[1][1] == (snapshot, {})
 
 
 def test_push_reconcile_full_cursor_cycle_has_a_bounded_nominal_cadence() -> None:
@@ -111,6 +142,7 @@ def test_news_story_uses_a_dedicated_cpu_lane() -> None:
 
     short_cpu = object()
     news_cpu = object()
+    database = _WiringDatabase()
     settings = Settings(
         upstream={"channels": []},
         news={"enabled": True},
@@ -123,7 +155,7 @@ def test_news_story_uses_a_dedicated_cpu_lane() -> None:
         components = asyncio.run(
             workers._wire_components(
                 settings=settings,
-                db=object(),  # type: ignore[arg-type]
+                db=database,  # type: ignore[arg-type]
                 telemetry=object(),  # type: ignore[arg-type]
                 finite=object(),  # type: ignore[arg-type]
                 model_adapter=object(),  # type: ignore[arg-type]
@@ -135,7 +167,11 @@ def test_news_story_uses_a_dedicated_cpu_lane() -> None:
 
     assert components.news_story is not None
     assert components.news_story.cpu is news_cpu
+    assert components.news_story.db is database
+    assert components.news_story.heavy_db is database.heavy
     assert components.radar_current.cpu is short_cpu
+    assert components.radar_current.db is database
+    assert components.radar_current.heavy_db is database.heavy
     assert all(projection.cpu is short_cpu for projection in components.projections)
 
 
@@ -168,7 +204,7 @@ def test_world_brief_wiring_uses_only_the_pinned_public_provider_chain(
     components = asyncio.run(
         workers._wire_components(
             settings=settings,
-            db=object(),  # type: ignore[arg-type]
+            db=_WiringDatabase(),  # type: ignore[arg-type]
             telemetry=object(),  # type: ignore[arg-type]
             finite=object(),  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]
@@ -215,7 +251,7 @@ def test_rss_catalog_is_wired_only_when_explicitly_enabled(
     components = asyncio.run(
         workers._wire_components(
             settings=settings,
-            db=object(),  # type: ignore[arg-type]
+            db=_WiringDatabase(),  # type: ignore[arg-type]
             telemetry=object(),  # type: ignore[arg-type]
             finite=object(),  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]
@@ -354,7 +390,7 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
     components = asyncio.run(
         workers._wire_components(
             settings=settings,
-            db=object(),  # type: ignore[arg-type]
+            db=_WiringDatabase(),  # type: ignore[arg-type]
             telemetry=object(),  # type: ignore[arg-type]
             finite=finite,  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]
@@ -403,7 +439,7 @@ def test_empty_gmgn_channels_do_not_construct_a_collector(monkeypatch: pytest.Mo
     components = asyncio.run(
         workers._wire_components(
             settings=settings,
-            db=object(),  # type: ignore[arg-type]
+            db=_WiringDatabase(),  # type: ignore[arg-type]
             telemetry=object(),  # type: ignore[arg-type]
             finite=object(),  # type: ignore[arg-type]
             model_adapter=object(),  # type: ignore[arg-type]

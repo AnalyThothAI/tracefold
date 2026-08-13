@@ -766,8 +766,6 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `source_kind` | `TEXT` | False | `'rss'::text` |
 | `live_connected` | `BOOLEAN` | False | `false` |
-| `last_live_at_ms` | `BIGINT` | True | `None` |
-| `last_recovery_at_ms` | `BIGINT` | True | `None` |
 | `feed_url` | `TEXT` | True | `None` |
 | `refresh_interval_seconds` | `INTEGER` | True | `None` |
 | `etag` | `TEXT` | True | `None` |
@@ -779,6 +777,13 @@
 | `last_rejection_counts` | `JSONB` | False | `'{}'::jsonb` |
 | `last_items_seen` | `INTEGER` | False | `0` |
 | `last_items_accepted` | `INTEGER` | False | `0` |
+| `last_connected_at_ms` | `BIGINT` | True | `None` |
+| `last_disconnected_at_ms` | `BIGINT` | True | `None` |
+| `last_overflow_at_ms` | `BIGINT` | True | `None` |
+| `strategy_coverage_started_at_ms` | `BIGINT` | True | `None` |
+| `coverage_unknown_since_at_ms` | `BIGINT` | True | `None` |
+| `last_accepted_strategy_trigger_at_ms` | `BIGINT` | True | `None` |
+| `observed_strategy_provenance` | `JSONB` | False | `'[]'::jsonb` |
 
 ## `news_stories`
 

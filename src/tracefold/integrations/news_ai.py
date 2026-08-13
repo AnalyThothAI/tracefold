@@ -38,6 +38,8 @@ from tracefold.news.models import (
     INSIGHTS_SYNTHESIS_PROVIDER,
 )
 
+_MAX_PROVIDER_RESPONSE_BYTES = 128 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class _BriefProvider:
@@ -289,6 +291,8 @@ class ProviderChainNewsBriefPublisher:
             wait = max(float(2**attempt), bounded_hint)
             self._sleep(wait)
         if response is None or not 200 <= response.status_code < 300:
+            return None
+        if len(response.content) > _MAX_PROVIDER_RESPONSE_BYTES:
             return None
         try:
             payload = json.loads(response.content, parse_constant=_reject_json_constant)

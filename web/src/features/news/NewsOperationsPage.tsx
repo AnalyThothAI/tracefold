@@ -98,10 +98,7 @@ function StatusDocument({ status }: { status: NewsStatus }) {
                 label="最近批次接收"
                 value={`${opennews.last_items_accepted}/${opennews.last_items_seen}`}
               />
-              <StatusFact
-                label="连续失败"
-                value={String(opennews.consecutive_failures)}
-              />
+              <StatusFact label="连续失败" value={String(opennews.consecutive_failures)} />
             </>
           ) : null}
           <StatusFact label="RSS 印证服务" value={ingest.rss.enabled ? "已启用" : "未启用"} />
@@ -339,7 +336,7 @@ function getSourceState(source: NewsSource): { label: string; state: string } {
 
 function operatingStateLabel(state: NewsStatus["operating_state"]): string {
   if (state === "live") return "运行正常";
-  if (state === "warming") return "准备中";
+  if (state === "recovering") return "准备中";
   return "运行受阻";
 }
 

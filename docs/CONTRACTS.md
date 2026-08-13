@@ -364,7 +364,7 @@ The News public surface is exactly five read-only routes:
 - `GET /api/news/status` derives warming/ready/degraded News health from
   PostgreSQL source, Story-invariant, public Brief, and outbound push state. It also
   exposes the operator-facing `live`, `recovering`, or `stalled` state and the
-  last successful Story publication clock. Ingest health is driven by the
+  last successfully verified Story-closure clock. Ingest health is driven by the
   OpenNews Strategy lane and reports current WSS connected/disconnected, last
   accepted configured trigger, configured Strategy count/boolean, bounded
   observed Strategy names/types, last disconnect/overflow, uncovered-gap start,
@@ -408,7 +408,10 @@ upstream raw `coins` member as source evidence, while every public News read
 maps it to `assets` and omits `coins`.
 Exact replay writes nothing. When the same `params.id` arrives under multiple
 configured Strategies, their provenance unions into the same Item without
-last-write erasure; different event IDs remain different material facts.
+last-write erasure. Conflicting wrappers use one complete deterministic winner,
+ordered by numeric provider score, non-empty asset evidence, then canonical
+payload; Tracefold never creates a hybrid fact from fields of several wrappers.
+Different event IDs remain different material facts.
 `news.update`, `news.ai_update`, acknowledgements, malformed frames, and
 unconfigured Strategy frames are discarded. Provider
 metadata is descriptive and does not affect Story identity, classification,
@@ -787,12 +790,17 @@ if any continuity, identity, capacity, PostgreSQL, resource, or query-plan gate
 fails. `ops seal-workers-runtime-acceptance` accepts that repository-owned
 collection only after the other typed gates and independent review are bound.
 
-`macro status` reports the bounded acquisition target count/statuses, each of
-the six module current rows with its health, history depth, fact cutoff, and
-update time, Fed document-analysis job counts, and the secret-free analysis
-runtime state (`enabled`, gateway `configured`, configuration-derived
-`worker_active`, and model name). It invokes no provider/model and writes
-nothing; `worker_active` is admission state, not observed process liveness.
+`macro status` separates steady acquisition from explicit maintenance. The
+steady summary reports actionable due work, future schedules, active and
+expired claims, status counts, and current error-code counts; maintenance
+reports every explicit backfill target and its claim state separately,
+so a stopped or failed historical backfill is never presented as live Worker
+backlog. It also reports each of the six module current rows with its health,
+history depth, fact cutoff, and update time, Fed document-analysis job counts,
+and the secret-free analysis runtime state (`enabled`, gateway `configured`,
+configuration-derived `worker_active`, and model name). It invokes no
+provider/model and writes nothing; `worker_active` is admission state, not
+observed process liveness.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.

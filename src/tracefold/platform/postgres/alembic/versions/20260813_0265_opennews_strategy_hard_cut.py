@@ -44,15 +44,17 @@ def upgrade() -> None:
         STRICT
         PARALLEL SAFE
         AS $function$
-          SELECT jsonb_typeof(value) = 'array'
-             AND NOT EXISTS (
-               SELECT 1
-                 FROM jsonb_array_elements(value) AS strategy(entry)
-                WHERE jsonb_typeof(strategy.entry) IS DISTINCT FROM 'object'
-                   OR jsonb_typeof(strategy.entry -> 'id') IS DISTINCT FROM 'string'
-                   OR btrim(strategy.entry ->> 'id') = ''
-                   OR char_length(strategy.entry ->> 'id') > 128
-             )
+          SELECT CASE jsonb_typeof(value)
+            WHEN 'array' THEN NOT EXISTS (
+              SELECT 1
+                FROM jsonb_array_elements(value) AS strategy(entry)
+               WHERE jsonb_typeof(strategy.entry) IS DISTINCT FROM 'object'
+                  OR jsonb_typeof(strategy.entry -> 'id') IS DISTINCT FROM 'string'
+                  OR btrim(strategy.entry ->> 'id') = ''
+                  OR char_length(strategy.entry ->> 'id') > 128
+            )
+            ELSE false
+          END
         $function$;
 
         ALTER TABLE news_sources
@@ -118,6 +120,11 @@ def upgrade() -> None:
                updated_at_ms = cutover.at_ms
           FROM cutover
          WHERE source.source_kind = 'opennews';
+
+        UPDATE news_sources
+           SET enabled = false
+         WHERE source_kind = 'opennews'
+           AND source_id <> 'news-opennews';
 
         ALTER TABLE news_sources
           ADD CONSTRAINT news_sources_strategy_coverage_check CHECK (

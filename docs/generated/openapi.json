@@ -9062,7 +9062,7 @@
           "operating_state": {
             "enum": [
               "live",
-              "warming",
+              "recovering",
               "stalled"
             ],
             "title": "Operating State",

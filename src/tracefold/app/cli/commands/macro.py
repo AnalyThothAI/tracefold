@@ -145,6 +145,7 @@ def _drain_backfills(
         worker_name="macro_backfill",
         clock_kind="backfill",
         source_client=client,
+        enabled_adapter_ids=client.enabled_adapter_ids,
         lease_owner="macro_backfill:cli",
         target_keys=target_keys,
     )
@@ -179,23 +180,21 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
     try:
         settings = load_settings(require_ws_token=False)
         with repositories(settings) as repos:
-            targets = repos.macro.target_states()
+            targets = repos.macro.all_acquisition_target_states()
             modules = repos.macro.all_modules_current()
             document_analysis_jobs = repos.macro.document_analysis_job_state()
     except Exception as exc:
         return 1, _error("macro_status_unavailable", exc)
-    status_counts: dict[str, int] = {}
-    for target in targets:
-        status = str(target["status"])
-        status_counts[status] = status_counts.get(status, 0) + 1
     return (
         0,
         {
             "ok": True,
             "data": _json_ready(
                 {
-                    "dataset_target_count": len(targets),
-                    "target_status_counts": status_counts,
+                    "acquisition": _summarize_acquisition_targets(
+                        targets,
+                        now_ms=_now_ms(),
+                    ),
                     "modules": [
                         {
                             "module_id": row["module_id"],
@@ -212,6 +211,81 @@ def _handle_status() -> tuple[int, dict[str, Any]]:
             ),
         },
     )
+
+
+def _summarize_acquisition_targets(
+    targets: Sequence[Mapping[str, Any]],
+    *,
+    now_ms: int,
+) -> dict[str, Any]:
+    steady = [row for row in targets if str(row["clock_kind"]) != "backfill"]
+    maintenance = [row for row in targets if str(row["clock_kind"]) == "backfill"]
+    claimable = {"pending", "current", "delayed", "backfilling"}
+    expired_claims = [
+        row for row in steady if str(row["status"]) == "claimed" and int(row.get("leased_until_ms") or 0) <= int(now_ms)
+    ]
+    active_claims = [
+        row for row in steady if str(row["status"]) == "claimed" and int(row.get("leased_until_ms") or 0) > int(now_ms)
+    ]
+    due = [row for row in steady if str(row["status"]) in claimable and int(row["next_due_at_ms"]) <= int(now_ms)]
+    scheduled = [row for row in steady if str(row["status"]) in claimable and int(row["next_due_at_ms"]) > int(now_ms)]
+    maintenance_claims = [row for row in maintenance if str(row["status"]) == "claimed"]
+    expired_maintenance = [row for row in maintenance_claims if int(row.get("leased_until_ms") or 0) <= int(now_ms)]
+    return {
+        "steady": {
+            "target_count": len(steady),
+            "actionable_due_count": len(due) + len(expired_claims),
+            "oldest_actionable_due_at_ms": min(
+                [int(row["next_due_at_ms"]) for row in due]
+                + [int(row.get("leased_until_ms") or 0) for row in expired_claims],
+                default=None,
+            ),
+            "scheduled_future_count": len(scheduled),
+            "in_progress_count": len(active_claims),
+            "expired_claim_count": len(expired_claims),
+            "oldest_expired_claim_at_ms": min(
+                (int(row.get("leased_until_ms") or 0) for row in expired_claims),
+                default=None,
+            ),
+            "status_counts": _count_target_values(steady, "status"),
+            "error_code_counts": _count_target_values(
+                steady,
+                "last_error_code",
+                omit_empty=True,
+            ),
+        },
+        "maintenance": {
+            "target_count": len(maintenance),
+            "in_progress_count": len(maintenance_claims) - len(expired_maintenance),
+            "expired_claim_count": len(expired_maintenance),
+            "oldest_expired_claim_at_ms": min(
+                (int(row.get("leased_until_ms") or 0) for row in expired_maintenance),
+                default=None,
+            ),
+            "status_counts": _count_target_values(maintenance, "status"),
+            "error_code_counts": _count_target_values(
+                maintenance,
+                "last_error_code",
+                omit_empty=True,
+            ),
+        },
+    }
+
+
+def _count_target_values(
+    targets: Sequence[Mapping[str, Any]],
+    key: str,
+    *,
+    omit_empty: bool = False,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for target in targets:
+        raw = target.get(key)
+        if omit_empty and raw in {None, ""}:
+            continue
+        value = str(raw)
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _parse_date(raw: str) -> date:

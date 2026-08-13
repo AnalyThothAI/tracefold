@@ -47,7 +47,7 @@ from tracefold.news import (
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.projection import NewsProjectionSnapshot, compute_news_story_projection
 from tracefold.news.sources import opennews_source, public_rss_sources
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.settings import NewsSettings, Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
 TOKEN_RADAR_TEST_REBUILD_OFFSET_MS = 60_000
@@ -365,6 +365,7 @@ def make_settings(tmp_path) -> Settings:
     prepare_postgres_database()
     settings = Settings(
         ws_token="secret",
+        news=NewsSettings(opennews_strategy_ids=("1018", "1019")),
         storage=postgres_settings_storage(),
     )
     settings.set_config_dir(tmp_path / "app-home")
@@ -1113,9 +1114,7 @@ def test_api_news_strips_wire_controls_and_bounds_strategy_text_description(tmp_
             "id": "wire-controls-and-description",
             "text": (
                 "Central bank approves policy\x00 today<br>"
-                "<p>Officials confirmed the decision &amp; published implementation details "
-                + ("x" * 500)
-                + "</p>"
+                "<p>Officials confirmed the decision &amp; published implementation details " + ("x" * 500) + "</p>"
             ),
             "source": "Reuters",
             "engineType": "news",

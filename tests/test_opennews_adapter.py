@@ -13,6 +13,7 @@ from tracefold.news.models import NewsSourceDefinition
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.sources import OPENNEWS_SOURCE_ID, opennews_source
 from tracefold.platform.config.settings import NewsSettings
+from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
 
 
 def test_opennews_source_is_the_production_source() -> None:
@@ -718,6 +719,136 @@ def test_ws_runtime_rejects_noncanonical_strategy_ids(strategy_ids: tuple[object
             opennews_strategy_ids=strategy_ids,
             opennews_ws_client=object(),
         )
+
+
+def test_opennews_business_database_overrun_restarts_the_existing_stream_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> int:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+                assert operation_name == "opennews_status"
+                return True
+
+        acquisition = _acquisition(
+            db=_Database(),
+            websocket_client=object(),
+        )
+        attempts = 0
+
+        async def receive(_stop_event: asyncio.Event) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ResourceOperationOverrun(
+                    capability=ResourceCapability.DATABASE_BUSINESS,
+                    operation_name="opennews_live_publish",
+                )
+            stop_event.set()
+
+        async def idle(_stop_event: asyncio.Event) -> None:
+            await stop_event.wait()
+
+        acquisition._opennews_receive_loop = receive  # type: ignore[method-assign]
+        acquisition._opennews_publish_loop = idle  # type: ignore[method-assign]
+
+        await acquisition.run_opennews(stop_event=stop_event)
+        return attempts
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.0)
+
+    assert asyncio.run(scenario()) == 2
+
+
+def test_opennews_database_overrun_retries_the_pending_batch_with_original_clock_and_marks_unknown_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now_ms": 1_000}
+
+    async def scenario() -> tuple[list[tuple[str, ...]], list[int], list[bool]]:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.publish_attempts: list[tuple[str, ...]] = []
+                self.publish_clocks: list[int] = []
+                self.coverage_gaps: list[bool] = []
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                if operation_name == "opennews_status":
+                    self.coverage_gaps.append(bool(args[4]))
+                    return True
+                if operation_name == "opennews_live_publish":
+                    ids = tuple(event.provider_record_id for event in args[0])
+                    self.publish_attempts.append(ids)
+                    self.publish_clocks.append(int(args[1]))
+                    if len(self.publish_attempts) == 1:
+                        clock["now_ms"] = 2_000
+                        raise ResourceOperationOverrun(
+                            capability=ResourceCapability.DATABASE_BUSINESS,
+                            operation_name="opennews_live_publish",
+                        )
+                    stop_event.set()
+                    return {"items_inserted": 1}
+                raise AssertionError(operation_name)
+
+        class _WebSocketClient:
+            async def connect(self) -> None:
+                return None
+
+            async def receive(self):
+                await stop_event.wait()
+
+            async def close(self) -> None:
+                return None
+
+        database = _Database()
+        acquisition = _acquisition(db=database, websocket_client=_WebSocketClient())
+        accepted = _strategy_event(id="3568500")
+        assert accepted is not None
+        acquisition._opennews_queue.put_nowait(accepted)
+        await acquisition.run_opennews(stop_event=stop_event)
+        return database.publish_attempts, database.publish_clocks, database.coverage_gaps
+
+    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECONNECT_SECONDS", 0.0)
+    monkeypatch.setattr(news_runtime, "_now_ms", lambda: clock["now_ms"])
+
+    attempts, publish_clocks, coverage_gaps = asyncio.run(scenario())
+    assert attempts == [("3568500",), ("3568500",)]
+    assert publish_clocks == [1_000, 1_000]
+    assert coverage_gaps[0] is False
+    assert True in coverage_gaps[1:]
+
+
+def test_opennews_non_database_overrun_remains_fatal() -> None:
+    async def scenario() -> None:
+        stop_event = asyncio.Event()
+        acquisition = _acquisition(
+            db=object(),
+            websocket_client=object(),
+        )
+
+        async def receive(_stop_event: asyncio.Event) -> None:
+            raise ResourceOperationOverrun(
+                capability=ResourceCapability.FINITE_OPERATION,
+                operation_name="opennews_live_publish",
+            )
+
+        async def idle(_stop_event: asyncio.Event) -> None:
+            await stop_event.wait()
+
+        acquisition._opennews_receive_loop = receive  # type: ignore[method-assign]
+        acquisition._opennews_publish_loop = idle  # type: ignore[method-assign]
+
+        await acquisition.run_opennews(stop_event=stop_event)
+
+    with pytest.raises(ExceptionGroup) as raised:
+        asyncio.run(scenario())
+    leaf = raised.value.exceptions[0]
+    assert isinstance(leaf, ResourceOperationOverrun)
+    assert leaf.operation_name == "opennews_live_publish"
 
 
 def test_rss_turn_claims_fetches_parses_and_publishes_one_due_source() -> None:

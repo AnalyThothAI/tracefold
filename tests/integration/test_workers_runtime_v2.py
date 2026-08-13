@@ -375,7 +375,13 @@ def test_real_workers_startup_native_control_timeouts_recover_in_the_same_runtim
     port = _free_port()
     process = _start_workers_process("control_native_timeout", port)
     try:
-        _wait_probe_status(process, port, path="/readyz", expected_status=503)
+        _wait_probe_status(
+            process,
+            port,
+            path="/readyz",
+            expected_status=503,
+            timeout_seconds=20.0,
+        )
         starting = _runtime_row()
         assert starting["lifecycle_state"] == "starting"
         assert starting["fatal_code"] is None
@@ -733,6 +739,7 @@ def _wait_probe_status(
 ) -> None:
     deadline = time.monotonic() + timeout_seconds
     url = f"http://127.0.0.1:{port}{path}"
+    last_status: int | None = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
             output = process.stdout.read() if process.stdout is not None else ""
@@ -746,10 +753,11 @@ def _wait_probe_status(
             status = exc.code
         except OSError:
             status = None
+        last_status = status
         if status == expected_status:
             return
         time.sleep(0.02)
-    raise AssertionError(f"workers probe {path} did not return {expected_status}")
+    raise AssertionError(f"workers probe {path} did not return {expected_status}; last_status={last_status}")
 
 
 def _wait_metrics(

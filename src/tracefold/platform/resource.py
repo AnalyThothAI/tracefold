@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
+from enum import StrEnum
 from typing import Any
 
 
@@ -10,8 +11,28 @@ class ResourceAdmissionTimeout(TimeoutError):
     """A bounded capability could not accept work before submission."""
 
 
+class ResourceCapability(StrEnum):
+    """The fixed physical capability that owns a submitted operation."""
+
+    DATABASE_BUSINESS = "database_business"
+    DATABASE_CONTROL = "database_control"
+    FINITE_OPERATION = "finite_operation"
+    MODEL_ADAPTER = "model_adapter"
+    CPU_PROCESS = "cpu_process"
+
+
 class ResourceOperationOverrun(RuntimeError):
-    """A synchronous operation outlived its code-owned outer deadline."""
+    """A submitted operation still owns its typed physical capability."""
+
+    def __init__(
+        self,
+        *,
+        capability: ResourceCapability,
+        operation_name: str,
+    ) -> None:
+        self.capability = capability
+        self.operation_name = str(operation_name).strip() or "unknown"
+        super().__init__(f"resource_operation_overrun:{self.capability.value}:{self.operation_name}")
 
 
 class CpuTaskTimeout(TimeoutError):
@@ -27,7 +48,8 @@ async def await_concurrent_future[T](
     wrapped: asyncio.Future[T],
     *,
     timeout_seconds: float,
-    overrun_code: str,
+    capability: ResourceCapability,
+    operation_name: str,
 ) -> T:
     """Let an already-finished native future win over a delayed asyncio callback."""
 
@@ -41,7 +63,10 @@ async def await_concurrent_future[T](
     if underlying.done():
         wrapped.cancel()
         return underlying.result()
-    raise ResourceOperationOverrun(overrun_code)
+    raise ResourceOperationOverrun(
+        capability=capability,
+        operation_name=operation_name,
+    )
 
 
 def _retrieve_future_exception(future: asyncio.Future[Any]) -> None:
@@ -84,6 +109,7 @@ __all__ = [
     "CpuTaskProcessExpired",
     "CpuTaskTimeout",
     "ResourceAdmissionTimeout",
+    "ResourceCapability",
     "ResourceOperationOverrun",
     "ResourceSubmissionTracker",
     "await_concurrent_future",

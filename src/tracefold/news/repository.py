@@ -8,7 +8,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from math import isfinite
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from psycopg.types.json import Jsonb
@@ -154,6 +154,21 @@ def _merged_strategy_provenance(*values: object) -> list[dict[str, str]]:
 
 def _stable_payload_order(value: Mapping[str, Any]) -> str:
     return json.dumps(dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _provider_payload_order(value: Mapping[str, Any]) -> tuple[float, bool, str, str]:
+    metadata = value.get("provider_metadata")
+    provider_metadata = metadata if isinstance(metadata, Mapping) else {}
+    raw_score = provider_metadata.get("score")
+    score = float(cast(int | float, raw_score)) if _numeric_provider_score(raw_score) else -1.0
+    coins = provider_metadata.get("coins")
+    bounded_coins = coins if isinstance(coins, list) else []
+    return (
+        score,
+        bool(bounded_coins),
+        json.dumps(bounded_coins, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        _stable_payload_order(value),
+    )
 
 
 def _cursor_encode(payload: Mapping[str, Any]) -> str:
@@ -738,10 +753,9 @@ class NewsRepository:
 
         if source.source_kind != "opennews":
             raise ValueError("opennews_source_required")
-        inserted = 0
-        updated = 0
         rejections: Counter[str] = Counter()
         observed_strategy_provenance: list[dict[str, str]] = []
+        candidates: dict[str, dict[str, Any]] = {}
         for event in events:
             incoming_metadata = {
                 key: value for key, value in event.provider_metadata.items() if value not in (None, "", [], {})
@@ -750,10 +764,6 @@ class NewsRepository:
             if not incoming_strategies:
                 rejections["strategy_provenance_missing"] += 1
                 continue
-            observed_strategy_provenance = _merged_strategy_provenance(
-                observed_strategy_provenance,
-                incoming_strategies,
-            )
             incoming_metadata["strategies"] = incoming_strategies
 
             entry = event.entry
@@ -773,7 +783,10 @@ class NewsRepository:
             if published_at_ms < observed_at_ms - _STORY_ACTIVE_WINDOW_MS:
                 rejections["stale_age"] += 1
                 continue
-
+            observed_strategy_provenance = _merged_strategy_provenance(
+                observed_strategy_provenance,
+                incoming_strategies,
+            )
             reporting_origin = str(entry.reporting_origin or source.name).strip().lower()
             description = str(entry.description or "").strip()
             language = entry.language or source.lang
@@ -785,37 +798,6 @@ class NewsRepository:
                 published_at_ms=published_at_ms,
                 language=language,
             )
-            item_id = deterministic_id("news_item", source.source_id, event.provider_record_id)
-            existing = self.conn.execute(
-                """
-                WITH lock_provider_record AS (
-                  SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))
-                )
-                SELECT item.provider_metadata, item.canonical_url,
-                       item.reporting_origin, item.title, item.description,
-                       item.lang, item.published_at_ms,
-                       item.content_fingerprint, item.active
-                  FROM lock_provider_record
-                  LEFT JOIN LATERAL (
-                    SELECT provider_metadata, canonical_url,
-                           reporting_origin, title, description, lang,
-                           published_at_ms, content_fingerprint, active
-                      FROM news_items
-                     WHERE source_id = %s AND provider_record_id = %s
-                     FOR UPDATE
-                  ) AS item ON true
-                """,
-                (
-                    f"news-opennews-provider-record:{source.source_id}:{event.provider_record_id}",
-                    source.source_id,
-                    event.provider_record_id,
-                ),
-            ).fetchone()
-            existing_metadata = dict(existing["provider_metadata"] or {}) if existing is not None else {}
-            merged_strategies = _merged_strategy_provenance(
-                existing_metadata.get("strategies"),
-                incoming_strategies,
-            )
             incoming_payload: dict[str, Any] = {
                 "provider_metadata": {key: value for key, value in incoming_metadata.items() if key != "strategies"},
                 "canonical_url": canonical_url,
@@ -826,8 +808,90 @@ class NewsRepository:
                 "published_at_ms": int(published_at_ms),
                 "content_fingerprint": content_fingerprint,
             }
-            existing_payload = (
-                {
+            current = candidates.get(event.provider_record_id)
+            if current is None:
+                candidates[event.provider_record_id] = {
+                    "payload": incoming_payload,
+                    "strategies": incoming_strategies,
+                    "frame_count": 1,
+                }
+            else:
+                current_payload = current["payload"]
+                current["payload"] = (
+                    current_payload
+                    if _provider_payload_order(current_payload) > _provider_payload_order(incoming_payload)
+                    else incoming_payload
+                )
+                current["strategies"] = _merged_strategy_provenance(
+                    current["strategies"],
+                    incoming_strategies,
+                )
+                current["frame_count"] += 1
+
+        inserted = 0
+        updated = 0
+        source_provenance: object = []
+        existing_by_record: dict[str, Mapping[str, Any]] = {}
+        if events:
+            self.conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"news-opennews-source:{source.source_id}",),
+            )
+            state_rows = self.conn.execute(
+                """
+                WITH source_state AS MATERIALIZED (
+                  SELECT source.observed_strategy_provenance
+                    FROM news_sources AS source
+                   WHERE source.source_id = %s
+                     AND source.source_kind = 'opennews'
+                   FOR UPDATE
+                ), item_state AS MATERIALIZED (
+                  SELECT item.provider_record_id, item.provider_metadata,
+                         item.provider_score_updated_at_ms,
+                         item.push_eligibility_updated_at_ms,
+                         item.canonical_url, item.reporting_origin,
+                         item.title, item.description, item.lang,
+                         item.published_at_ms, item.content_fingerprint,
+                         item.active
+                    FROM news_items AS item
+                   WHERE item.source_id = %s
+                     AND item.provider_record_id = ANY(%s)
+                   ORDER BY item.provider_record_id
+                   FOR UPDATE
+                )
+                SELECT source_state.observed_strategy_provenance AS source_provenance,
+                       item_state.*
+                  FROM source_state
+                  LEFT JOIN item_state ON true
+                 ORDER BY item_state.provider_record_id NULLS FIRST
+                """,
+                (
+                    source.source_id,
+                    source.source_id,
+                    sorted(candidates),
+                ),
+            ).fetchall()
+            if not state_rows:
+                raise RuntimeError("opennews_source_not_synced")
+            source_provenance = state_rows[0]["source_provenance"]
+            existing_by_record = {
+                str(row["provider_record_id"]): row for row in state_rows if row["provider_record_id"] is not None
+            }
+
+        write_rows: list[dict[str, Any]] = []
+        for provider_record_id in sorted(candidates):
+            candidate = candidates[provider_record_id]
+            incoming_payload = candidate["payload"]
+            incoming_strategies = candidate["strategies"]
+            existing = existing_by_record.get(provider_record_id)
+            existing_metadata = dict(existing["provider_metadata"] or {}) if existing is not None else {}
+            existing_payload: dict[str, Any] | None = None
+            if (
+                existing is not None
+                and existing["active"]
+                and _strategy_provenance(existing_metadata.get("strategies"))
+            ):
+                existing_payload = {
                     "provider_metadata": {
                         key: value for key, value in existing_metadata.items() if key != "strategies"
                     },
@@ -839,157 +903,168 @@ class NewsRepository:
                     "published_at_ms": int(existing["published_at_ms"]),
                     "content_fingerprint": existing["content_fingerprint"],
                 }
-                if existing is not None
-                and existing["provider_metadata"] is not None
-                and bool(existing["active"])
-                and _strategy_provenance(existing_metadata.get("strategies"))
-                else None
-            )
+            existing_is_strategy_fact = existing_payload is not None
             winner = (
                 existing_payload
                 if existing_payload is not None
-                and _stable_payload_order(existing_payload) > _stable_payload_order(incoming_payload)
+                and _provider_payload_order(existing_payload) > _provider_payload_order(incoming_payload)
                 else incoming_payload
             )
             winner_metadata = dict(winner["provider_metadata"])
-            winner_metadata["strategies"] = merged_strategies
-            values = {
-                "item_id": item_id,
-                "source_id": source.source_id,
-                "source_item_key": event.provider_record_id,
-                "provider_record_id": event.provider_record_id,
-                "provider_metadata": Jsonb(winner_metadata),
-                "provider_score_updated_at_ms": (
-                    observed_at_ms if _numeric_provider_score(winner_metadata.get("score")) else None
-                ),
-                "push_eligibility_updated_at_ms": (
-                    observed_at_ms if {"score", "coins", "strategies"}.intersection(winner_metadata) else None
-                ),
-                "canonical_url": winner["canonical_url"],
-                "reporting_origin": winner["reporting_origin"],
-                "title": winner["title"],
-                "description": winner["description"],
-                "lang": winner["lang"],
-                "published_at_ms": winner["published_at_ms"],
-                "observed_at_ms": observed_at_ms,
-                "content_fingerprint": winner["content_fingerprint"],
-            }
-            cursor = self.conn.execute(
-                """
-                INSERT INTO news_items AS current_item (
-                  item_id, source_id, source_item_key, provider_record_id,
-                  provider_metadata, provider_score_updated_at_ms,
-                  push_eligibility_updated_at_ms,
-                  canonical_url, reporting_origin, title,
-                  description, lang, published_at_ms,
-                  first_observed_at_ms, last_observed_at_ms,
-                  content_fingerprint, active, created_at_ms, updated_at_ms
-                ) VALUES (
-                  %(item_id)s, %(source_id)s, %(source_item_key)s,
-                  %(provider_record_id)s, %(provider_metadata)s,
-                  %(provider_score_updated_at_ms)s,
-                  %(push_eligibility_updated_at_ms)s,
-                  %(canonical_url)s, %(reporting_origin)s, %(title)s,
-                  %(description)s, %(lang)s,
-                  %(published_at_ms)s, %(observed_at_ms)s,
-                  %(observed_at_ms)s, %(content_fingerprint)s,
-                  true, %(observed_at_ms)s,
-                  %(observed_at_ms)s
-                )
-                ON CONFLICT (source_id, provider_record_id)
-                  WHERE provider_record_id IS NOT NULL
-                DO UPDATE SET
-                  source_item_key = EXCLUDED.source_item_key,
-                  push_eligibility_updated_at_ms = CASE
-                    WHEN (
-                      EXCLUDED.provider_metadata ? 'score'
-                      AND current_item.provider_metadata -> 'score' IS DISTINCT FROM
-                          EXCLUDED.provider_metadata -> 'score'
-                    ) OR (
-                      EXCLUDED.provider_metadata ? 'coins'
-                      AND current_item.provider_metadata -> 'coins' IS DISTINCT FROM
-                          EXCLUDED.provider_metadata -> 'coins'
-                    ) OR (
-                      current_item.provider_metadata -> 'strategies' IS DISTINCT FROM
-                          EXCLUDED.provider_metadata -> 'strategies'
-                    )
-                      THEN EXCLUDED.push_eligibility_updated_at_ms
-                    ELSE current_item.push_eligibility_updated_at_ms
-                  END,
-                  provider_score_updated_at_ms = CASE
-                    WHEN jsonb_typeof(EXCLUDED.provider_metadata -> 'score') = 'number'
-                     AND current_item.provider_metadata -> 'score' IS DISTINCT FROM
-                         EXCLUDED.provider_metadata -> 'score'
-                      THEN CASE
-                        WHEN current_item.active
-                          THEN current_item.first_observed_at_ms
-                        ELSE EXCLUDED.provider_score_updated_at_ms
-                      END
-                    ELSE current_item.provider_score_updated_at_ms
-                  END,
-                  provider_metadata = EXCLUDED.provider_metadata,
-                  canonical_url = EXCLUDED.canonical_url,
-                  reporting_origin = EXCLUDED.reporting_origin,
-                  title = EXCLUDED.title,
-                  description = EXCLUDED.description,
-                  lang = EXCLUDED.lang,
-                  published_at_ms = EXCLUDED.published_at_ms,
-                  last_observed_at_ms = EXCLUDED.last_observed_at_ms,
-                  content_fingerprint = EXCLUDED.content_fingerprint,
-                  level = CASE
-                    WHEN current_item.content_fingerprint
-                           IS DISTINCT FROM EXCLUDED.content_fingerprint
-                      THEN NULL ELSE current_item.level END,
-                  category = CASE
-                    WHEN current_item.content_fingerprint
-                           IS DISTINCT FROM EXCLUDED.content_fingerprint
-                      THEN NULL ELSE current_item.category END,
-                  classification_source = CASE
-                    WHEN current_item.content_fingerprint
-                           IS DISTINCT FROM EXCLUDED.content_fingerprint
-                      THEN NULL ELSE current_item.classification_source END,
-                  classification_confidence = CASE
-                    WHEN current_item.content_fingerprint
-                           IS DISTINCT FROM EXCLUDED.content_fingerprint
-                      THEN NULL ELSE current_item.classification_confidence END,
-                  importance_score = CASE
-                    WHEN current_item.content_fingerprint
-                           IS DISTINCT FROM EXCLUDED.content_fingerprint
-                      THEN 0 ELSE current_item.importance_score END,
-                  importance_factors = CASE
-                    WHEN current_item.content_fingerprint
-                           IS DISTINCT FROM EXCLUDED.content_fingerprint
-                      THEN '{}'::jsonb ELSE current_item.importance_factors END,
-                  active = true,
-                  updated_at_ms = EXCLUDED.updated_at_ms
-                WHERE current_item.content_fingerprint IS DISTINCT FROM EXCLUDED.content_fingerprint
-                   OR current_item.provider_metadata IS DISTINCT FROM EXCLUDED.provider_metadata
-                   OR NOT current_item.active
-                RETURNING (xmax = 0) AS inserted
-                """,
-                values,
+            winner_metadata["strategies"] = _merged_strategy_provenance(
+                existing_metadata.get("strategies") if existing_is_strategy_fact else None,
+                incoming_strategies,
             )
-            outcome = cursor.fetchone()
-            if outcome is None:
-                rejections["duplicate"] += 1
+            material_changed = bool(
+                existing is None
+                or not existing["active"]
+                or existing["content_fingerprint"] != winner["content_fingerprint"]
+                or existing_metadata != winner_metadata
+            )
+            if not material_changed:
+                rejections["duplicate"] += int(candidate["frame_count"])
                 continue
-            if bool(outcome["inserted"]):
-                inserted += 1
-            else:
-                updated += 1
+            rejections["duplicate"] += max(0, int(candidate["frame_count"]) - 1)
+            score_changed = bool(
+                existing is None
+                or not existing["active"]
+                or existing_metadata.get("score") != winner_metadata.get("score")
+            )
+            eligibility_changed = bool(
+                existing is None
+                or not existing["active"]
+                or any(
+                    existing_metadata.get(key) != winner_metadata.get(key) for key in ("score", "coins", "strategies")
+                )
+            )
+            write_rows.append(
+                {
+                    "item_id": deterministic_id("news_item", source.source_id, provider_record_id),
+                    "source_id": source.source_id,
+                    "source_item_key": provider_record_id,
+                    "provider_record_id": provider_record_id,
+                    "provider_metadata": winner_metadata,
+                    "provider_score_updated_at_ms": (
+                        int(observed_at_ms)
+                        if score_changed and _numeric_provider_score(winner_metadata.get("score"))
+                        else existing["provider_score_updated_at_ms"]
+                        if existing is not None
+                        else None
+                    ),
+                    "push_eligibility_updated_at_ms": (
+                        int(observed_at_ms)
+                        if eligibility_changed and {"score", "coins", "strategies"}.intersection(winner_metadata)
+                        else existing["push_eligibility_updated_at_ms"]
+                        if existing is not None
+                        else None
+                    ),
+                    "canonical_url": winner["canonical_url"],
+                    "reporting_origin": winner["reporting_origin"],
+                    "title": winner["title"],
+                    "description": winner["description"],
+                    "lang": winner["lang"],
+                    "published_at_ms": winner["published_at_ms"],
+                    "observed_at_ms": int(observed_at_ms),
+                    "content_fingerprint": winner["content_fingerprint"],
+                }
+            )
+
+        if write_rows:
+            outcome = self.conn.execute(
+                """
+                WITH incoming AS MATERIALIZED (
+                  SELECT *
+                    FROM jsonb_to_recordset(%s::jsonb) AS row(
+                      item_id text,
+                      source_id text,
+                      source_item_key text,
+                      provider_record_id text,
+                      provider_metadata jsonb,
+                      provider_score_updated_at_ms bigint,
+                      push_eligibility_updated_at_ms bigint,
+                      canonical_url text,
+                      reporting_origin text,
+                      title text,
+                      description text,
+                      lang text,
+                      published_at_ms bigint,
+                      observed_at_ms bigint,
+                      content_fingerprint text
+                    )
+                ), written AS (
+                  INSERT INTO news_items AS current_item (
+                    item_id, source_id, source_item_key, provider_record_id,
+                    provider_metadata, provider_score_updated_at_ms,
+                    push_eligibility_updated_at_ms,
+                    canonical_url, reporting_origin, title,
+                    description, lang, published_at_ms,
+                    first_observed_at_ms, last_observed_at_ms,
+                    content_fingerprint, active, created_at_ms, updated_at_ms
+                  )
+                  SELECT item_id, source_id, source_item_key, provider_record_id,
+                         provider_metadata, provider_score_updated_at_ms,
+                         push_eligibility_updated_at_ms,
+                         canonical_url, reporting_origin, title,
+                         description, lang, published_at_ms,
+                         observed_at_ms, observed_at_ms,
+                         content_fingerprint, true, observed_at_ms, observed_at_ms
+                    FROM incoming
+                   ORDER BY provider_record_id
+                  ON CONFLICT (source_id, provider_record_id)
+                    WHERE provider_record_id IS NOT NULL
+                  DO UPDATE SET
+                    source_item_key = EXCLUDED.source_item_key,
+                    provider_metadata = EXCLUDED.provider_metadata,
+                    provider_score_updated_at_ms = EXCLUDED.provider_score_updated_at_ms,
+                    push_eligibility_updated_at_ms = EXCLUDED.push_eligibility_updated_at_ms,
+                    canonical_url = EXCLUDED.canonical_url,
+                    reporting_origin = EXCLUDED.reporting_origin,
+                    title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    lang = EXCLUDED.lang,
+                    published_at_ms = EXCLUDED.published_at_ms,
+                    last_observed_at_ms = EXCLUDED.last_observed_at_ms,
+                    content_fingerprint = EXCLUDED.content_fingerprint,
+                    level = CASE
+                      WHEN current_item.content_fingerprint
+                             IS DISTINCT FROM EXCLUDED.content_fingerprint
+                        THEN NULL ELSE current_item.level END,
+                    category = CASE
+                      WHEN current_item.content_fingerprint
+                             IS DISTINCT FROM EXCLUDED.content_fingerprint
+                        THEN NULL ELSE current_item.category END,
+                    classification_source = CASE
+                      WHEN current_item.content_fingerprint
+                             IS DISTINCT FROM EXCLUDED.content_fingerprint
+                        THEN NULL ELSE current_item.classification_source END,
+                    classification_confidence = CASE
+                      WHEN current_item.content_fingerprint
+                             IS DISTINCT FROM EXCLUDED.content_fingerprint
+                        THEN NULL ELSE current_item.classification_confidence END,
+                    importance_score = CASE
+                      WHEN current_item.content_fingerprint
+                             IS DISTINCT FROM EXCLUDED.content_fingerprint
+                        THEN 0 ELSE current_item.importance_score END,
+                    importance_factors = CASE
+                      WHEN current_item.content_fingerprint
+                             IS DISTINCT FROM EXCLUDED.content_fingerprint
+                        THEN '{}'::jsonb ELSE current_item.importance_factors END,
+                    active = true,
+                    updated_at_ms = EXCLUDED.updated_at_ms
+                  RETURNING (xmax = 0) AS inserted
+                )
+                SELECT count(*) FILTER (WHERE inserted) AS inserted,
+                       count(*) FILTER (WHERE NOT inserted) AS updated
+                  FROM written
+                """,
+                (Jsonb(write_rows),),
+            ).fetchone()
+            inserted = int(outcome["inserted"] or 0)
+            updated = int(outcome["updated"] or 0)
 
         if events:
-            source_row = self.conn.execute(
-                """
-                SELECT observed_strategy_provenance
-                  FROM news_sources
-                 WHERE source_id = %s AND source_kind = 'opennews'
-                 FOR UPDATE
-                """,
-                (source.source_id,),
-            ).fetchone()
             durable_strategy_provenance = _merged_strategy_provenance(
-                source_row["observed_strategy_provenance"] if source_row is not None else None,
+                source_provenance,
                 observed_strategy_provenance,
             )
             self.conn.execute(
@@ -2697,10 +2772,7 @@ class NewsRepository:
             "next_due_at_ms": min(next_due_values, default=None),
             "latest_success_at_ms": max(success_values, default=None),
         }
-        if opennews_payload is None:
-            ingest_status = "degraded"
-            ingest_reasons.append("opennews_strategy_missing")
-        elif configured_strategy_count == 0:
+        if opennews_payload is None or configured_strategy_count == 0:
             ingest_status = "degraded"
             ingest_reasons.append("opennews_strategy_missing")
         else:
@@ -2742,6 +2814,9 @@ class NewsRepository:
         invalid_aggregates = int(story["invalid_story_aggregate_count"] or 0)
         active_stories = int(story["active_count"] or 0)
         story_last_success_at_ms = int(story["last_success_at_ms"] or 0) or None
+        story_projection_stale = bool(
+            story_last_success_at_ms is not None and int(now_ms) - story_last_success_at_ms > _NEWS_STALL_AFTER_MS
+        )
         story_reasons: list[str] = []
         if invalid_owners:
             story_reasons.append("current_item_owner_invalid")
@@ -2749,13 +2824,21 @@ class NewsRepository:
             story_reasons.append("story_aggregate_invalid")
         if story["last_error"] is not None:
             story_reasons.append(str(story["last_error"]))
+        if story_projection_stale:
+            story_reasons.append("story_projection_stale")
 
         runtime_stalled = workers_state == "stalled"
         runtime_recovering = workers_state == "recovering"
         if workers_reason is not None and workers_state in {"recovering", "stalled"}:
             story_reasons.append(str(workers_reason))
 
-        if runtime_stalled or invalid_owners or invalid_aggregates or story["last_error"] is not None:
+        if (
+            runtime_stalled
+            or invalid_owners
+            or invalid_aggregates
+            or story["last_error"] is not None
+            or story_projection_stale
+        ):
             story_status = "degraded"
         elif runtime_recovering or active_stories == 0:
             story_status = "warming"
@@ -2897,7 +2980,7 @@ class NewsRepository:
         operating_state = (
             "stalled"
             if runtime_stalled or push_stalled
-            else "warming"
+            else "recovering"
             if overall != "ready" or (push_enabled and (push_snapshot["pending_count"] or push_snapshot["retry_count"]))
             else "live"
         )

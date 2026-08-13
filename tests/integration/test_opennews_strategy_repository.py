@@ -7,6 +7,39 @@ from tracefold.news.repository import NewsRepository
 from tracefold.news.sources import opennews_source
 
 
+class _CountingConnection:
+    def __init__(self, conn) -> None:
+        self._conn = conn
+        self.execute_count = 0
+
+    def execute(self, sql: str, params=None):
+        self.execute_count += 1
+        return self._conn.execute(sql, params)
+
+
+def test_strategy_batch_publication_uses_constant_database_statements() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        source = opennews_source()
+        with conn.transaction():
+            NewsRepository(conn).sync_sources((source,), now_ms=900)
+
+        counting = _CountingConnection(conn)
+        repository = NewsRepository(counting)
+        with conn.transaction():
+            outcome = repository.record_opennews_events(
+                source=source,
+                events=tuple(_strategy_event(f"batch-{index:03d}", strategy_id="1018") for index in range(100)),
+                observed_at_ms=1_000,
+            )
+    finally:
+        conn.close()
+
+    assert outcome == _write_outcome(inserted=100, updated=0)
+    assert counting.execute_count <= 4
+
+
 def test_same_provider_event_unions_strategy_provenance_and_replays_without_material_writes() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
@@ -126,6 +159,72 @@ def test_same_provider_event_unions_strategy_provenance_and_replays_without_mate
     }
 
 
+def test_same_batch_multi_strategy_frames_coalesce_deterministically_and_replay_as_duplicates() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        frames = (
+            _strategy_event("batch-forward", strategy_id="1018"),
+            _strategy_event("batch-forward", strategy_id="1019"),
+            _strategy_event("batch-reverse", strategy_id="1019"),
+            _strategy_event("batch-reverse", strategy_id="1018"),
+        )
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=900)
+            initial = repository.record_opennews_events(
+                source=source,
+                events=frames,
+                observed_at_ms=1_000,
+            )
+            replay = repository.record_opennews_events(
+                source=source,
+                events=frames,
+                observed_at_ms=2_000,
+            )
+        rows = conn.execute(
+            """
+            SELECT provider_record_id, provider_metadata
+              FROM news_items
+             WHERE provider_record_id IN ('batch-forward', 'batch-reverse')
+             ORDER BY provider_record_id
+            """
+        ).fetchall()
+        source_status = conn.execute(
+            """
+            SELECT last_rejection_counts, last_items_seen, last_items_accepted
+              FROM news_sources
+             WHERE source_id = 'news-opennews'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert initial == {
+        "events_seen": 4,
+        "items_inserted": 2,
+        "items_updated": 0,
+        "metadata_updated": 0,
+        "rejected": 2,
+    }
+    assert replay == {
+        "events_seen": 4,
+        "items_inserted": 0,
+        "items_updated": 0,
+        "metadata_updated": 0,
+        "rejected": 4,
+    }
+    assert len(rows) == 2
+    assert rows[0]["provider_metadata"] == rows[1]["provider_metadata"]
+    assert [strategy["id"] for strategy in rows[0]["provider_metadata"]["strategies"]] == ["1018", "1019"]
+    assert source_status == {
+        "last_rejection_counts": {"duplicate": 4},
+        "last_items_seen": 4,
+        "last_items_accepted": 0,
+    }
+
+
 def test_same_provider_event_uses_an_order_independent_payload_winner() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
@@ -204,8 +303,14 @@ def test_same_provider_event_uses_an_order_independent_payload_winner() -> None:
         conn.close()
 
     assert len(rows) == 2
-    assert rows[0] == rows[1]
-    assert rows[0]["provider_metadata"]["strategies"] == [
+    forward = dict(rows[0])
+    reverse = dict(rows[1])
+    assert forward.pop("provider_score_updated_at_ms") == 2_000
+    assert reverse.pop("provider_score_updated_at_ms") == 1_000
+    assert forward.pop("push_eligibility_updated_at_ms") == 2_000
+    assert reverse.pop("push_eligibility_updated_at_ms") == 2_000
+    assert forward == reverse
+    assert forward["provider_metadata"]["strategies"] == [
         {
             "id": "1018",
             "name": "News Score > 70",
@@ -218,6 +323,188 @@ def test_same_provider_event_uses_an_order_independent_payload_winner() -> None:
             "source_type": "market",
             "engine_type": "market",
         },
+    ]
+
+
+def test_same_strategy_payload_winner_is_order_independent_with_causal_score_clocks() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=900)
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "same-strategy-forward",
+                        strategy_id="1018",
+                        score=71,
+                        provider_source="omega",
+                        title="Omega wrapper payload",
+                    ),
+                ),
+                observed_at_ms=1_000,
+            )
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "same-strategy-forward",
+                        strategy_id="1018",
+                        score=89,
+                        provider_source="alpha",
+                        title="Alpha wrapper payload",
+                    ),
+                ),
+                observed_at_ms=2_000,
+            )
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "same-strategy-reverse",
+                        strategy_id="1018",
+                        score=89,
+                        provider_source="alpha",
+                        title="Alpha wrapper payload",
+                    ),
+                ),
+                observed_at_ms=1_000,
+            )
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "same-strategy-reverse",
+                        strategy_id="1018",
+                        score=71,
+                        provider_source="omega",
+                        title="Omega wrapper payload",
+                    ),
+                ),
+                observed_at_ms=2_000,
+            )
+
+        rows = conn.execute(
+            """
+            SELECT provider_record_id, provider_metadata, canonical_url,
+                   reporting_origin, title, description, lang, published_at_ms,
+                   content_fingerprint, provider_score_updated_at_ms,
+                   push_eligibility_updated_at_ms
+              FROM news_items
+             WHERE provider_record_id IN (
+               'same-strategy-forward', 'same-strategy-reverse'
+             )
+             ORDER BY provider_record_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 2
+    forward = dict(rows[0])
+    reverse = dict(rows[1])
+    assert forward.pop("provider_record_id") == "same-strategy-forward"
+    assert reverse.pop("provider_record_id") == "same-strategy-reverse"
+    assert forward.pop("provider_score_updated_at_ms") == 2_000
+    assert reverse.pop("provider_score_updated_at_ms") == 1_000
+    assert forward.pop("push_eligibility_updated_at_ms") == 2_000
+    assert reverse.pop("push_eligibility_updated_at_ms") == 1_000
+    assert forward == reverse
+
+
+def test_same_strategy_asset_evidence_is_order_independent_and_old_wrapper_replay_is_a_noop() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=900)
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "asset-forward",
+                        strategy_id="1018",
+                        asset_symbols=("BTC",),
+                    ),
+                ),
+                observed_at_ms=1_000,
+            )
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "asset-forward",
+                        strategy_id="1018",
+                        asset_symbols=("CL", "XYZ-CL"),
+                    ),
+                ),
+                observed_at_ms=2_000,
+            )
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "asset-reverse",
+                        strategy_id="1018",
+                        asset_symbols=("CL", "XYZ-CL"),
+                    ),
+                ),
+                observed_at_ms=1_000,
+            )
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "asset-reverse",
+                        strategy_id="1018",
+                        asset_symbols=("BTC",),
+                    ),
+                ),
+                observed_at_ms=2_000,
+            )
+            replay = repository.record_opennews_events(
+                source=source,
+                events=(
+                    _strategy_event(
+                        "asset-forward",
+                        strategy_id="1018",
+                        asset_symbols=("BTC",),
+                    ),
+                ),
+                observed_at_ms=3_000,
+            )
+
+        rows = conn.execute(
+            """
+            SELECT provider_record_id, provider_metadata,
+                   push_eligibility_updated_at_ms, updated_at_ms
+              FROM news_items
+             WHERE provider_record_id IN ('asset-forward', 'asset-reverse')
+             ORDER BY provider_record_id
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert replay == _write_outcome(inserted=0, updated=0, rejected=1)
+    assert len(rows) == 2
+    forward = dict(rows[0])
+    reverse = dict(rows[1])
+    assert forward.pop("provider_record_id") == "asset-forward"
+    assert reverse.pop("provider_record_id") == "asset-reverse"
+    assert forward.pop("push_eligibility_updated_at_ms") == 2_000
+    assert reverse.pop("push_eligibility_updated_at_ms") == 1_000
+    assert forward.pop("updated_at_ms") == 2_000
+    assert reverse.pop("updated_at_ms") == 1_000
+    assert forward == reverse
+    assert forward["provider_metadata"]["coins"] == [
+        {"market_type": "cex", "symbol": "CL"},
+        {"market_type": "cex", "symbol": "XYZ-CL"},
     ]
 
 
@@ -253,6 +540,48 @@ def test_first_failed_connection_does_not_invent_strategy_coverage_or_a_gap() ->
         "coverage_unknown_since_at_ms": None,
         "last_disconnected_at_ms": 1_000,
         "last_error": "opennews_connect_failed",
+    }
+
+
+def test_rejected_strategy_frame_does_not_advance_accepted_trigger_health() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        rejected = _strategy_event(
+            "missing-title",
+            strategy_id="1018",
+            title="",
+        )
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=900)
+            outcome = repository.record_opennews_events(
+                source=source,
+                events=(rejected,),
+                observed_at_ms=1_000,
+            )
+        row = conn.execute(
+            """
+            SELECT last_success_at_ms, last_accepted_strategy_trigger_at_ms,
+                   observed_strategy_provenance, last_outcome,
+                   last_rejection_counts, last_items_seen, last_items_accepted
+              FROM news_sources
+             WHERE source_id = 'news-opennews'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert outcome == _write_outcome(inserted=0, updated=0, rejected=1)
+    assert row == {
+        "last_success_at_ms": None,
+        "last_accepted_strategy_trigger_at_ms": None,
+        "observed_strategy_provenance": [],
+        "last_outcome": "strategy_trigger_rejected",
+        "last_rejection_counts": {"missing_title": 1},
+        "last_items_seen": 1,
+        "last_items_accepted": 0,
     }
 
 
@@ -510,7 +839,7 @@ def test_strategy_health_exposes_counts_and_no_replay_without_provenance_values(
     warming_opennews = warming["layers"]["ingest"]["opennews"]
     assert warming["layers"]["ingest"]["status"] == "warming"
     assert "opennews_strategy_no_trigger_yet" in warming["layers"]["ingest"]["reasons"]
-    assert warming["operating_state"] == "warming"
+    assert warming["operating_state"] == "recovering"
     assert warming_opennews["configured_strategy_count"] == 2
     assert warming_opennews["observed_strategy_count"] == 0
     assert warming_opennews["replay_supported"] is False
@@ -535,6 +864,7 @@ def _strategy_event(
     score: int = 85,
     provider_source: str = "binance",
     title: str = "BTC market event",
+    asset_symbols: tuple[str, ...] = ("BTC",),
 ) -> OpenNewsEvent:
     strategy = (
         {
@@ -557,7 +887,7 @@ def _strategy_event(
         provider_metadata={
             "score": score,
             "source": provider_source,
-            "coins": [{"symbol": "BTC", "market_type": "cex"}],
+            "coins": [{"symbol": symbol, "market_type": "cex"} for symbol in asset_symbols],
             "strategies": [strategy],
         },
         entry=NewsFeedEntry(

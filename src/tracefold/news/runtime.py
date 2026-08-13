@@ -7,7 +7,11 @@ from typing import Any, cast
 from uuid import uuid4
 
 from tracefold.platform.model_candidate import ModelCandidate
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 from .models import (
     NewsBriefPublisher,
@@ -78,6 +82,9 @@ class NewsAcquisition:
             raise ValueError("opennews_strategy_ids_required")
         self._rss_sources_by_id = {source.source_id: source for source in self.rss_sources}
         self._opennews_queue: asyncio.Queue[OpenNewsEvent] = asyncio.Queue(maxsize=_OPENNEWS_BUFFER_CAPACITY)
+        self._opennews_pending_batch: tuple[OpenNewsEvent, ...] = ()
+        self._opennews_pending_observed_at_ms: int | None = None
+        self._opennews_publish_gap_pending = False
 
     @property
     def opennews_enabled(self) -> bool:
@@ -177,7 +184,35 @@ class NewsAcquisition:
                     group.create_task(self._opennews_receive_loop(stop_event), name="opennews-receiver")
                     group.create_task(self._opennews_publish_loop(stop_event), name="opennews-publisher")
             except* ResourceAdmissionTimeout:
-                pass
+                self._opennews_publish_gap_pending = True
+            except* ResourceOperationOverrun as group:
+                database = group.subgroup(
+                    lambda exc: (
+                        isinstance(exc, ResourceOperationOverrun)
+                        and exc.capability is ResourceCapability.DATABASE_BUSINESS
+                    )
+                )
+                if database is not None:
+                    self._opennews_publish_gap_pending = True
+                non_database = group.subgroup(
+                    lambda exc: (
+                        isinstance(exc, ResourceOperationOverrun)
+                        and exc.capability is not ResourceCapability.DATABASE_BUSINESS
+                    )
+                )
+                if non_database is not None:
+                    raise non_database from None
+            if self._opennews_publish_gap_pending:
+                try:
+                    recorded = await self._update_opennews_status(
+                        connected=False,
+                        error_code="opennews_publish_outcome_unknown",
+                        coverage_gap=True,
+                    )
+                except (ResourceAdmissionTimeout, ResourceOperationOverrun):
+                    recorded = False
+                if recorded:
+                    self._opennews_publish_gap_pending = False
             if not stop_event.is_set():
                 await _wait_or_stop(stop_event, _OPENNEWS_RECONNECT_SECONDS)
 
@@ -188,10 +223,13 @@ class NewsAcquisition:
         while not stop_event.is_set():
             try:
                 await client.connect()
-                await self._update_opennews_status(
+                recorded = await self._update_opennews_status(
                     connected=True,
                     error_code=None,
+                    coverage_gap=self._opennews_publish_gap_pending,
                 )
+                if recorded:
+                    self._opennews_publish_gap_pending = False
                 while not stop_event.is_set():
                     message = await _receive_or_stop(
                         client,
@@ -226,26 +264,33 @@ class NewsAcquisition:
         )
 
     async def _opennews_publish_loop(self, stop_event: asyncio.Event) -> None:
-        while not stop_event.is_set() or not self._opennews_queue.empty():
-            first = await _queue_get_or_stop(
-                self._opennews_queue,
-                stop_event=stop_event,
-            )
-            if first is None:
-                continue
-            events = [first]
-            while len(events) < 100:
-                try:
-                    events.append(self._opennews_queue.get_nowait())
-                except asyncio.QueueEmpty:
-                    break
+        while not stop_event.is_set() or not self._opennews_queue.empty() or self._opennews_pending_batch:
+            if not self._opennews_pending_batch:
+                first = await _queue_get_or_stop(
+                    self._opennews_queue,
+                    stop_event=stop_event,
+                )
+                if first is None:
+                    continue
+                events = [first]
+                while len(events) < 100:
+                    try:
+                        events.append(self._opennews_queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                self._opennews_pending_batch = tuple(events)
+                self._opennews_pending_observed_at_ms = _now_ms()
+            if self._opennews_pending_observed_at_ms is None:
+                raise RuntimeError("opennews_pending_observation_clock_missing")
             await self.db.run_business(
                 "opennews_live_publish",
                 self._record_opennews_events_sync,
-                tuple(events),
-                _now_ms(),
+                self._opennews_pending_batch,
+                self._opennews_pending_observed_at_ms,
                 operation_timeout_seconds=3.0,
             )
+            self._opennews_pending_batch = ()
+            self._opennews_pending_observed_at_ms = None
 
     async def close(self) -> None:
         await self.finite_operations.run(
@@ -359,6 +404,7 @@ class NewsAcquisition:
         *,
         connected: bool,
         error_code: str | None,
+        coverage_gap: bool = False,
     ) -> bool:
         return bool(
             await self.db.run_business(
@@ -368,6 +414,7 @@ class NewsAcquisition:
                 connected,
                 _now_ms(),
                 error_code,
+                coverage_gap,
                 operation_timeout_seconds=3.0,
             )
         )
@@ -378,6 +425,7 @@ class NewsAcquisition:
         connected: bool,
         now_ms: int,
         error_code: str | None,
+        coverage_gap: bool,
     ) -> bool:
         with self.db.worker_session("opennews_status", 3.0) as repos, repos.transaction():
             return bool(
@@ -386,6 +434,7 @@ class NewsAcquisition:
                     connected=connected,
                     now_ms=now_ms,
                     error_code=error_code,
+                    coverage_gap=coverage_gap,
                 ),
             )
 

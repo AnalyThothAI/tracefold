@@ -223,6 +223,18 @@ class MacroSourceClient:
         self._cftc_enabled = bool(cftc_enabled)
         self._nasdaq_daily_enabled = bool(nasdaq_daily_enabled)
         self._yfinance_enabled = bool(yfinance_enabled)
+        disabled = {
+            adapter_id
+            for adapter_id, enabled in (
+                ("fred_csv", self._fred_enabled),
+                ("cfe_settlement", self._cboe_enabled),
+                ("cftc_tff", self._cftc_enabled),
+                ("nasdaq_history", self._nasdaq_daily_enabled),
+                ("yfinance_history", self._yfinance_enabled),
+            )
+            if not enabled
+        }
+        self.enabled_adapter_ids = frozenset(self._adapters) - disabled
 
     def close(self) -> None:
         self._client.close()

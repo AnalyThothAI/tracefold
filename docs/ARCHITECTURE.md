@@ -22,7 +22,12 @@ repositories, and serve telemetry. `tracefold workers` initializes ingestion,
 acquisition, the bounded external/model capabilities, one short-projection CPU
 lane, an isolated News Story CPU lane when News is enabled, singleton runtime
 status, fixed-period News Story and Token Radar writers, and one
-EDF projection coordinator for the remaining frontier-backed domains. Workers
+EDF projection coordinator for the remaining frontier-backed domains. The
+measured long Radar load and News Story load/full-publication work shares one
+fixed heavy-operation permit before the unchanged two-slot business executor.
+Waiting for that permit consumes no business slot, so those heavy phases cannot
+run concurrently; this adds no pool, executor, connection reservation, scheduler, or
+configuration surface. Workers
 recover exclusively by re-reading PostgreSQL facts, typed Macro/Profile frontiers, native News
 Brief/Fed-document model state, the News Story-push state machine,
 and queues on bounded code-owned clocks.
@@ -242,13 +247,17 @@ SQL in that session. Transaction exit restores the connection automatically;
 there is no session reset round trip. Awaiting DB, CPU, finite-operation, and
 model work adds only a bounded completion grace so the native result wins at
 its deadline. If an asyncio wrapper callback is delayed, an already-completed
-native future is consumed directly; a DB, model, CPU, cleanup, or otherwise
-unclassified native future that itself remains alive beyond that grace is
-fatal. A business-lane PostgreSQL idle-transaction disconnect is bounded
-admission failure. The idempotent runtime-heartbeat child retries only precise
-transient database failures under the independent 15-second stale-heartbeat
-watchdog; pinned-singleton loss, invariant failures, and an unfinished native
-control future remain fatal. Only an explicitly classified true
+native future is consumed directly. A typed recurring business-DB future that
+remains alive beyond the grace is a local loop failure: its permit stays bound
+to native completion and the loop retries on its natural cadence. Control-DB,
+model, CPU, cleanup, and otherwise unclassified overruns remain fatal. This
+decision uses the exception's typed physical capability, never an error-string
+or operation-name prefix. A business-lane PostgreSQL idle-transaction
+disconnect is bounded admission failure. The idempotent runtime-heartbeat
+child retries only precise transient database failures; 15 seconds without a
+fresh heartbeat degrades readiness without killing the root, while recovery
+restores readiness. Pinned-singleton loss, invariant failures, and an unfinished
+native control future remain fatal. Only an explicitly classified true
 external provider seam may translate a finite-operation overrun into its
 existing durable retry, degradation, or terminal policy; doing so never
 releases the shared capability permit before the underlying future actually
@@ -515,6 +524,9 @@ not reproduce its score, OI, keyword, symbol, venue, or time-window rules.
 the same provider event writes one NewsItem. Exact replay writes nothing, while
 the same event observed under multiple configured Strategies merges a
 deterministic sorted-unique provenance union without last-write erasure.
+If wrappers for one provider event disagree, one complete wrapper wins by a
+deterministic provider-evidence order (numeric score, non-empty assets, then
+canonical payload); fields from different wrappers are never spliced together.
 Different provider event IDs remain distinct facts even when their text is
 similar. Linkless MARKET/OI reports are valid, and neither `newsType=strategy`
 nor the wrapper Strategy name becomes the reporting origin. Provider score,

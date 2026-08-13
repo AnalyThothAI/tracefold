@@ -20,7 +20,13 @@ from tracefold.app.worker_cpu_prewarm import (
     projection_cpu_modules_loaded,
 )
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.resource import CpuTaskTimeout, ResourceOperationOverrun, await_concurrent_future
+from tracefold.platform.resource import (
+    CpuTaskTimeout,
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+    await_concurrent_future,
+)
 
 
 def _sleep_and_return(delay_seconds: float, value: int) -> int:
@@ -81,7 +87,8 @@ def test_completed_native_future_wins_and_cancels_its_delayed_wrapper(outcome: s
                     underlying,
                     wrapped,
                     timeout_seconds=0.001,
-                    overrun_code="resource_operation_overrun:test",
+                    capability=ResourceCapability.FINITE_OPERATION,
+                    operation_name="test",
                 )
                 == 7
             )
@@ -92,7 +99,8 @@ def test_completed_native_future_wins_and_cancels_its_delayed_wrapper(outcome: s
                     underlying,
                     wrapped,
                     timeout_seconds=0.001,
-                    overrun_code="resource_operation_overrun:test",
+                    capability=ResourceCapability.FINITE_OPERATION,
+                    operation_name="test",
                 )
         assert wrapped.cancelled()
 
@@ -392,6 +400,137 @@ def test_database_has_two_business_slots_and_an_independent_control_slot() -> No
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "fact_operation",
+    ("gmgn_event_publish", "opennews_live_publish", "macro_publish_success"),
+)
+def test_coincident_heavy_database_operations_do_not_jointly_fill_both_business_slots(
+    fact_operation: str,
+) -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=object(), telemetry=None)
+        heavy = database.heavy_business()
+        release_first = Event()
+        first_submitted = asyncio.Event()
+        second_submitted = asyncio.Event()
+
+        def first_heavy() -> str:
+            release_first.wait(timeout=2.0)
+            return "radar"
+
+        def second_heavy() -> str:
+            return "story"
+
+        try:
+            first = asyncio.create_task(
+                heavy.run_business(
+                    "radar_load",
+                    first_heavy,
+                    operation_timeout_seconds=0.5,
+                    on_submitted=first_submitted.set,
+                )
+            )
+            await asyncio.wait_for(first_submitted.wait(), timeout=1.0)
+            second = asyncio.create_task(
+                heavy.run_business(
+                    "story_load",
+                    second_heavy,
+                    operation_timeout_seconds=0.5,
+                    on_submitted=second_submitted.set,
+                )
+            )
+            await asyncio.sleep(0.05)
+            assert not second_submitted.is_set()
+
+            fact = asyncio.create_task(
+                database.run_business(
+                    fact_operation,
+                    lambda: "fact-written",
+                    operation_timeout_seconds=0.5,
+                )
+            )
+            assert await asyncio.wait_for(fact, timeout=0.2) == "fact-written"
+
+            release_first.set()
+            assert await first == "radar"
+            assert await second == "story"
+            assert second_submitted.is_set()
+        finally:
+            release_first.set()
+            await database.drain_business(timeout_seconds=1.0)
+            database.close_executors()
+
+    asyncio.run(scenario())
+
+
+def test_hung_heavy_database_operation_keeps_bulkhead_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        database = WorkerDatabase(worker_pool=object(), telemetry=None)
+        heavy = database.heavy_business()
+        release = Event()
+        first_started = Event()
+        second_started = Event()
+
+        def first_heavy() -> None:
+            first_started.set()
+            release.wait(timeout=2.0)
+
+        def second_heavy() -> None:
+            second_started.set()
+            release.wait(timeout=2.0)
+
+        try:
+            first = asyncio.create_task(
+                heavy.run_business(
+                    "radar_load",
+                    first_heavy,
+                    operation_timeout_seconds=0.001,
+                )
+            )
+            with pytest.raises(ResourceOperationOverrun) as raised:
+                await first
+            assert raised.value.capability is ResourceCapability.DATABASE_BUSINESS
+            assert first_started.wait(timeout=1.0)
+
+            second = asyncio.create_task(
+                heavy.run_business(
+                    "story_load",
+                    second_heavy,
+                    operation_timeout_seconds=0.5,
+                )
+            )
+            with pytest.raises(ResourceAdmissionTimeout):
+                await second
+            assert not second_started.is_set()
+
+            assert (
+                await database.run_business(
+                    "gmgn_event_publish",
+                    lambda: "fact-written",
+                    operation_timeout_seconds=0.5,
+                )
+                == "fact-written"
+            )
+        finally:
+            release.set()
+            await database.drain_business(timeout_seconds=1.0)
+            database.close_executors()
+
+    monkeypatch.setattr(
+        database_module,
+        "_WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr(
+        database_module,
+        "_WORKER_HEAVY_ADMISSION_TIMEOUT_SECONDS",
+        0.05,
+    )
+    asyncio.run(scenario())
+
+
 def test_database_native_transaction_timeout_precedes_outer_overrun(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -447,7 +586,8 @@ def test_late_wrapped_failure_after_overrun_is_retrieved() -> None:
                 underlying,
                 wrapped,
                 timeout_seconds=0.001,
-                overrun_code="resource_operation_overrun:late_native_failure",
+                capability=ResourceCapability.FINITE_OPERATION,
+                operation_name="late_native_failure",
             )
         underlying.set_exception(_ExpectedNativeFailure("late native failure"))
         await asyncio.sleep(0)
@@ -471,7 +611,8 @@ def test_late_wrapped_failure_after_caller_cancellation_is_retrieved() -> None:
                 underlying,
                 wrapped,
                 timeout_seconds=1.0,
-                overrun_code="resource_operation_overrun:cancelled_caller",
+                capability=ResourceCapability.FINITE_OPERATION,
+                operation_name="cancelled_caller",
             )
         )
 
