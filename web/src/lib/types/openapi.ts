@@ -2906,22 +2906,28 @@ export interface components {
         };
         /** NewsOpenNewsStatusData */
         NewsOpenNewsStatusData: {
+            /** Configured Strategy Count */
+            configured_strategy_count: number;
             /** Consecutive Failures */
             consecutive_failures: number;
+            /** Coverage Unknown Since At Ms */
+            coverage_unknown_since_at_ms: number | null;
+            /** Last Accepted Strategy Trigger At Ms */
+            last_accepted_strategy_trigger_at_ms: number | null;
+            /** Last Connected At Ms */
+            last_connected_at_ms: number | null;
+            /** Last Disconnected At Ms */
+            last_disconnected_at_ms: number | null;
             /** Last Error */
             last_error: string | null;
-            /** Last Http Status */
-            last_http_status: number | null;
             /** Last Items Accepted */
             last_items_accepted: number;
             /** Last Items Seen */
             last_items_seen: number;
-            /** Last Live At Ms */
-            last_live_at_ms: number | null;
             /** Last Outcome */
             last_outcome: string | null;
-            /** Last Recovery At Ms */
-            last_recovery_at_ms: number | null;
+            /** Last Overflow At Ms */
+            last_overflow_at_ms: number | null;
             /** Last Rejection Counts */
             last_rejection_counts: {
                 [key: string]: number;
@@ -2932,8 +2938,17 @@ export interface components {
             live_connected: boolean;
             /** Name */
             name: string;
+            /** Observed Strategy Count */
+            observed_strategy_count: number;
+            /**
+             * Replay Supported
+             * @constant
+             */
+            replay_supported: false;
             /** Source Id */
             source_id: string;
+            /** Strategy Coverage Started At Ms */
+            strategy_coverage_started_at_ms: number | null;
         };
         /** NewsProviderAssetData */
         NewsProviderAssetData: {
@@ -3070,10 +3085,18 @@ export interface components {
             claim_lease_expires_at_ms: number | null;
             /** Consecutive Failures */
             consecutive_failures: number;
+            /** Coverage Unknown Since At Ms */
+            coverage_unknown_since_at_ms: number | null;
             /** Enabled */
             enabled: boolean;
             /** Feed Url */
             feed_url: string | null;
+            /** Last Accepted Strategy Trigger At Ms */
+            last_accepted_strategy_trigger_at_ms: number | null;
+            /** Last Connected At Ms */
+            last_connected_at_ms: number | null;
+            /** Last Disconnected At Ms */
+            last_disconnected_at_ms: number | null;
             /** Last Error */
             last_error: string | null;
             /** Last Fetch Finished At Ms */
@@ -3086,12 +3109,10 @@ export interface components {
             last_items_accepted: number;
             /** Last Items Seen */
             last_items_seen: number;
-            /** Last Live At Ms */
-            last_live_at_ms: number | null;
             /** Last Outcome */
             last_outcome: string | null;
-            /** Last Recovery At Ms */
-            last_recovery_at_ms: number | null;
+            /** Last Overflow At Ms */
+            last_overflow_at_ms: number | null;
             /** Last Rejection Counts */
             last_rejection_counts: {
                 [key: string]: number;
@@ -3104,8 +3125,12 @@ export interface components {
             name: string;
             /** Next Fetch At Ms */
             next_fetch_at_ms: number | null;
+            /** Observed Strategy Count */
+            observed_strategy_count: number;
             /** Refresh Interval Seconds */
             refresh_interval_seconds: number | null;
+            /** Replay Supported */
+            replay_supported: boolean;
             /** Source Id */
             source_id: string;
             /**
@@ -3113,6 +3138,8 @@ export interface components {
              * @enum {string}
              */
             source_kind: "rss" | "opennews";
+            /** Strategy Coverage Started At Ms */
+            strategy_coverage_started_at_ms: number | null;
             /** Tier */
             tier: number;
         };
@@ -3142,7 +3169,7 @@ export interface components {
              * Operating State
              * @enum {string}
              */
-            operating_state: "live" | "recovering" | "stalled";
+            operating_state: "live" | "warming" | "stalled";
             /** Reasons */
             reasons: string[];
             /**

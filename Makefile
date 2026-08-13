@@ -113,6 +113,7 @@ up: preflight init ## build, migrate, start, and verify the complete product
 		TRACEFOLD_BUILD_REVISION=$$(git rev-parse --verify HEAD); \
 		export GITHUB_TOKEN TRACEFOLD_BUILD_REVISION; \
 		if ! docker compose build migrate || \
+			! docker compose stop -t 40 workers serve || \
 			! docker compose up -d --no-build --force-recreate --wait \
 				--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers; then \
 			docker compose ps --all >&2 || true; \

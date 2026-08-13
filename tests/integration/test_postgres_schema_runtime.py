@@ -496,8 +496,13 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "consecutive_failures",
         "last_error",
         "live_connected",
-        "last_live_at_ms",
-        "last_recovery_at_ms",
+        "last_connected_at_ms",
+        "last_disconnected_at_ms",
+        "last_overflow_at_ms",
+        "strategy_coverage_started_at_ms",
+        "coverage_unknown_since_at_ms",
+        "last_accepted_strategy_trigger_at_ms",
+        "observed_strategy_provenance",
         "feed_url",
         "refresh_interval_seconds",
         "etag",
@@ -639,7 +644,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260813_0263"
+    assert version == latest_migration_version() == "20260813_0265"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -664,7 +669,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260813_0263"
+    assert version == latest_migration_version() == "20260813_0265"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -1116,7 +1121,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260813_0263"
+        assert version == latest_migration_version() == "20260813_0265"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

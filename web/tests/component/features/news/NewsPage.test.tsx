@@ -537,7 +537,7 @@ describe("NewsPage", () => {
     const summary = state.closest("summary");
     expect(summary).not.toBeNull();
     fireEvent.click(summary!);
-    expect(screen.getByText("OpenNews 低延迟主采集链")).toBeInTheDocument();
+    expect(screen.getByText("OpenNews Strategy 自动推送")).toBeInTheDocument();
     expect(screen.getByText("公共 RSS 覆盖与交叉印证")).toBeInTheDocument();
     expect(screen.queryByText("中文标题翻译")).not.toBeInTheDocument();
     expect(screen.queryByText("暂无译文")).not.toBeInTheDocument();
@@ -559,14 +559,14 @@ describe("NewsPage", () => {
     expect(await screen.findByText("新闻已同步")).toBeInTheDocument();
   });
 
-  it("distinguishes News fact recovery from a degraded fact layer", async () => {
+  it("distinguishes first Strategy warming from a degraded fact layer", async () => {
     const status = newsStatusFixture();
     status.layers.ingest.status = "warming";
     server.use(
       http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
     );
     const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    expect(await screen.findByText("新闻数据恢复中")).toBeInTheDocument();
+    expect(await screen.findByText("等待首次 Strategy 触发")).toBeInTheDocument();
 
     status.layers.ingest.status = "ready";
     status.layers.story.status = "degraded";
@@ -642,7 +642,7 @@ describe("NewsPage", () => {
     expect(story).not.toBeNull();
     expect(brief).not.toBeNull();
     expect(push).not.toBeNull();
-    const primaryFact = within(ingest!).getByText("OpenNews 主链实时连接");
+    const primaryFact = within(ingest!).getByText("OpenNews Strategy 连接");
     const corroborationFact = within(ingest!).getByText("RSS 印证成功来源");
     expect(
       primaryFact.compareDocumentPosition(corroborationFact) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -710,7 +710,7 @@ describe("NewsPage", () => {
     );
     renderNews(<NewsPage token="test-token" view="sources" />, "/news/sources");
 
-    expect(await screen.findByRole("heading", { name: "公开新闻来源" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "新闻来源" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "来源" })).toHaveAttribute("aria-current", "page");
     const first = await screen.findByRole("heading", { name: "First Source" });
     const second = screen.getByRole("heading", { name: "Second Source" });
@@ -723,7 +723,7 @@ describe("NewsPage", () => {
     expect(cursors).toEqual([null, "sources-2"]);
   });
 
-  it("labels OpenNews as the primary lane and reports a lost live connection", async () => {
+  it("labels OpenNews as Strategy-only and reports a lost live connection", async () => {
     const primary = newsSourcesFixture().items.find((source) => source.source_kind === "opennews");
     if (!primary) throw new Error("OpenNews source fixture required");
     server.use(
@@ -743,9 +743,38 @@ describe("NewsPage", () => {
     const heading = await screen.findByRole("heading", { name: "OpenNews" });
     const card = heading.closest("article");
     expect(card).not.toBeNull();
-    expect(within(card!).getByText("OPENNEWS · 主采集链")).toBeInTheDocument();
-    expect(within(card!).getByText("实时连接异常")).toBeInTheDocument();
+    expect(within(card!).getByText("OPENNEWS · STRATEGY 自动推送")).toBeInTheDocument();
+    expect(within(card!).getByText("Strategy 连接异常")).toBeInTheDocument();
     expect(within(card!).queryByText(/TIER 4/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a prior Strategy coverage gap visible after reconnect", async () => {
+    const primary = newsSourcesFixture().items.find((source) => source.source_kind === "opennews");
+    if (!primary) throw new Error("OpenNews source fixture required");
+    server.use(
+      http.get(/.*\/api\/news\/sources$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsSourcesFixture({
+            items: [
+              {
+                ...primary,
+                coverage_unknown_since_at_ms: NEWS_NOW_MS - 120_000,
+                live_connected: true,
+              },
+            ],
+            page: { has_more: false, next_cursor: null, returned_count: 1 },
+          }),
+        }),
+      ),
+    );
+
+    renderNews(<NewsPage token="test-token" view="sources" />, "/news/sources");
+
+    const card = (await screen.findByRole("heading", { name: "OpenNews" })).closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card!).getByText("历史覆盖未知")).toBeInTheDocument();
+    expect(within(card!).getByText("不可回放缺口起点")).toBeInTheDocument();
   });
 
   it("makes Story detail reading-first and keeps scoring internals in a disclosure", async () => {

@@ -71,6 +71,8 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                     "enabled": settings.news.enabled,
                     "rss_enabled": settings.news.rss_enabled,
                     "opennews_token_configured": bool(settings.news.opennews_token),
+                    "opennews_strategy_ids_configured": bool(settings.news.opennews_strategy_ids),
+                    "opennews_strategy_count": len(settings.news.opennews_strategy_ids),
                     "brief": {
                         "direct_configured": bool(settings.llm.api_key),
                         "groq_configured": bool(settings.llm.groq_api_key),

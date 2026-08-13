@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
-import httpx
 import pytest
 from websockets.exceptions import ConcurrencyError, ProtocolError
 
@@ -12,10 +10,9 @@ from tracefold.integrations.news_feeds import NewsFeedAcquisitionError, NewsFeed
 from tracefold.integrations.opennews import client as opennews_client
 from tracefold.news import NewsAcquisition, OpenNewsExpectedError
 from tracefold.news.models import NewsSourceDefinition
-from tracefold.news.opennews import OpenNewsOverlapPage, parse_opennews_message, parse_opennews_rest_response
+from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.sources import OPENNEWS_SOURCE_ID, opennews_source
 from tracefold.platform.config.settings import NewsSettings
-from tracefold.platform.resource import ResourceOperationOverrun
 
 
 def test_opennews_source_is_the_production_source() -> None:
@@ -36,24 +33,58 @@ def test_opennews_source_is_the_production_source() -> None:
     }
 
 
-def test_opennews_token_is_trimmed_and_optional() -> None:
+def test_opennews_strategy_configuration_is_normalized_and_fails_closed() -> None:
     assert NewsSettings().rss_enabled is False
     assert NewsSettings(rss_enabled=True).rss_enabled is True
-    assert NewsSettings(opennews_token="  secret  ").opennews_token == "secret"
+    configured = NewsSettings(
+        opennews_token="  secret  ",
+        opennews_strategy_ids=["1019", " 1018 ", "listing-private"],
+    )
+    assert configured.opennews_token == "secret"
+    assert configured.opennews_strategy_ids == ("1018", "1019", "listing-private")
     assert NewsSettings(opennews_token="  ").opennews_token is None
 
+    with pytest.raises(ValueError, match="opennews_strategy_ids_required"):
+        NewsSettings(opennews_token="secret")
+    with pytest.raises(ValueError, match="opennews_strategy_ids_duplicate"):
+        NewsSettings(opennews_token="secret", opennews_strategy_ids=["1018", " 1018 "])
 
-def test_websocket_handshake_owns_and_closes_partial_connection(monkeypatch) -> None:
+
+@pytest.mark.parametrize("strategy_id", [None, True, 1019, 10.19, "", "bad\x00id", "x" * 129])
+def test_opennews_strategy_ids_reject_invalid_values(strategy_id: object) -> None:
+    with pytest.raises(ValueError):
+        NewsSettings(opennews_token="secret", opennews_strategy_ids=[strategy_id])
+
+
+def test_opennews_strategy_configuration_is_bounded_to_32_ids() -> None:
+    boundary = NewsSettings(
+        opennews_token="secret",
+        opennews_strategy_ids=[f"strategy-{index:02d}" for index in range(32)],
+    )
+    assert len(boundary.opennews_strategy_ids) == 32
+
+    with pytest.raises(ValueError):
+        NewsSettings(
+            opennews_token="secret",
+            opennews_strategy_ids=[f"strategy-{index}" for index in range(33)],
+        )
+
+
+def test_websocket_connect_sends_nothing_and_preserves_the_first_strategy_frame(monkeypatch) -> None:
     class _WebSocket:
         def __init__(self) -> None:
-            self.owned_during_send = False
+            self.send_calls: list[str] = []
+            self.recv_calls = 0
             self.close_calls = 0
 
-        async def send(self, _payload: str) -> None:
-            self.owned_during_send = client._websocket is self
+        async def send(self, payload: str) -> None:
+            self.send_calls.append(payload)
 
         async def recv(self) -> str:
-            return "not-json"
+            self.recv_calls += 1
+            if self.recv_calls > 1:
+                raise AssertionError("unexpected second receive")
+            return '{"jsonrpc":"2.0","method":"strategy.triggered","params":{"id":3568500,"strategy":{"id":1018}}}'
 
         async def close(self) -> None:
             self.close_calls += 1
@@ -61,17 +92,23 @@ def test_websocket_handshake_owns_and_closes_partial_connection(monkeypatch) -> 
     async def connect(*_args, **_kwargs):
         return websocket
 
-    async def scenario() -> None:
-        with pytest.raises(OpenNewsExpectedError, match="opennews_frame_invalid"):
-            await client.connect()
+    async def scenario():
+        await client.connect()
+        assert websocket.send_calls == []
+        assert websocket.recv_calls == 0
+        first = await client.receive()
+        await client.close()
+        return first
 
     client = opennews_client.OpenNewsWebSocketClient(token="test-token")
     websocket = _WebSocket()
     monkeypatch.setattr(opennews_client.websockets, "connect", connect)
 
-    asyncio.run(scenario())
-
-    assert websocket.owned_during_send
+    assert asyncio.run(scenario()) == {
+        "jsonrpc": "2.0",
+        "method": "strategy.triggered",
+        "params": {"id": 3_568_500, "strategy": {"id": 1018}},
+    }
     assert websocket.close_calls == 1
     assert client._websocket is None
 
@@ -98,6 +135,241 @@ def test_websocket_connect_does_not_hide_programming_errors(monkeypatch) -> None
         asyncio.run(client.connect())
 
 
+def test_allowlisted_market_strategy_is_normalized_as_a_linkless_report() -> None:
+    event = parse_opennews_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "strategy.triggered",
+            "params": {
+                "id": 3_568_500,
+                "newsType": "strategy",
+                "engineType": "market",
+                "text": "BTC open interest increased 3.4% in 3 minutes",
+                "link": "",
+                "source": "binance",
+                "description": '{"open_interest_change":{"value":3.4,"unit":"%"}}',
+                "coins": [{"symbol": "BTC", "market_type": "cex"}],
+                "ts": "2026-08-13T03:00:00Z",
+                "strategy": {
+                    "id": 1019,
+                    "name": "OI Event Monitor",
+                    "sourceType": "market",
+                    "soundId": "alert-1",
+                    "bgColor": "#FF6B35",
+                    "metrics": {"open_interest_change": {"value": 3.4, "unit": "%"}},
+                },
+                "aiRating": {"score": 85},
+            },
+        },
+        strategy_ids=frozenset({"1019"}),
+    )
+
+    assert event is not None
+    assert event.provider_record_id == "3568500"
+    assert event.observation_kind == "report"
+    assert event.entry.title == "BTC open interest increased 3.4% in 3 minutes"
+    assert event.entry.description == ""
+    assert event.entry.link is None
+    assert event.entry.reporting_origin == "binance"
+    assert event.entry.published_at_ms == 1_786_590_000_000
+    assert event.provider_metadata == {
+        "score": 85,
+        "source": "binance",
+        "coins": [{"symbol": "BTC", "market_type": "cex"}],
+        "strategies": [
+            {
+                "id": "1019",
+                "name": "OI Event Monitor",
+                "source_type": "market",
+                "engine_type": "market",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("strategy_id", "engine_type"),
+    [
+        ("news-score", "NEWS"),
+        ("storage-news", "MEME"),
+        ("oi-monitor", "MARKET"),
+        ("listing-monitor", "listing"),
+    ],
+)
+def test_allowlist_is_the_only_strategy_admission_filter(strategy_id: str, engine_type: str) -> None:
+    event = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": {
+                "id": f"event-{strategy_id}",
+                "engineType": engine_type,
+                "text": f"Triggered {strategy_id}",
+                "ts": 1_775_195_200_000,
+                "strategy": {
+                    "id": strategy_id,
+                    "name": f"Strategy {strategy_id}",
+                    "sourceType": engine_type,
+                },
+            },
+        },
+        strategy_ids=frozenset({strategy_id}),
+    )
+
+    assert event is not None
+    assert event.provider_metadata["strategies"] == [
+        {
+            "id": strategy_id,
+            "name": f"Strategy {strategy_id}",
+            "source_type": engine_type.lower(),
+            "engine_type": engine_type.lower(),
+        }
+    ]
+
+
+def test_raw_news_and_unconfigured_strategy_frames_are_ignored() -> None:
+    base_params = {
+        "id": "provider-event-1",
+        "engineType": "news",
+        "text": "Provider report",
+        "ts": 1_775_195_200_000,
+        "strategy": {"id": "configured"},
+    }
+
+    for method in ("news.update", "news.ai_update"):
+        assert (
+            parse_opennews_message(
+                {"method": method, "params": base_params},
+                strategy_ids=frozenset({"configured"}),
+            )
+            is None
+        )
+    assert (
+        parse_opennews_message(
+            {
+                "method": "strategy.triggered",
+                "params": {**base_params, "strategy": {"id": "not-configured"}},
+            },
+            strategy_ids=frozenset({"configured"}),
+        )
+        is None
+    )
+
+
+def test_same_provider_event_keeps_each_strategy_as_mergeable_provenance_input() -> None:
+    events = [
+        parse_opennews_message(
+            {
+                "method": "strategy.triggered",
+                "params": {
+                    "id": 3_568_500,
+                    "engineType": engine_type,
+                    "text": "The same underlying provider event",
+                    "ts": 1_775_195_200_000,
+                    "strategy": {
+                        "id": strategy_id,
+                        "name": strategy_name,
+                        "sourceType": engine_type,
+                    },
+                },
+            },
+            strategy_ids=frozenset({"1018", "1019"}),
+        )
+        for strategy_id, strategy_name, engine_type in (
+            (1019, "OI Event Monitor", "market"),
+            (1018, "News Score >70", "news"),
+        )
+    ]
+
+    assert all(event is not None for event in events)
+    assert [event.provider_record_id for event in events if event is not None] == ["3568500", "3568500"]
+    assert [event.provider_metadata["strategies"] for event in events if event is not None] == [
+        [
+            {
+                "id": "1019",
+                "name": "OI Event Monitor",
+                "source_type": "market",
+                "engine_type": "market",
+            }
+        ],
+        [
+            {
+                "id": "1018",
+                "name": "News Score >70",
+                "source_type": "news",
+                "engine_type": "news",
+            }
+        ],
+    ]
+
+
+def test_ws_only_runtime_publishes_the_first_allowlisted_strategy_frame() -> None:
+    async def scenario() -> tuple[list[str], tuple[str, ...]]:
+        stop_event = asyncio.Event()
+
+        class _Database:
+            def __init__(self) -> None:
+                self.operations: list[str] = []
+                self.provider_ids: tuple[str, ...] = ()
+
+            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
+                self.operations.append(operation_name)
+                if operation_name == "opennews_live_publish":
+                    self.provider_ids = tuple(event.provider_record_id for event in args[0])
+                    stop_event.set()
+                    return {"items_inserted": len(self.provider_ids)}
+                return True
+
+        class _WebSocketClient:
+            def __init__(self) -> None:
+                self.receive_calls = 0
+
+            async def connect(self) -> None:
+                return None
+
+            async def receive(self):
+                self.receive_calls += 1
+                if self.receive_calls == 1:
+                    return {
+                        "method": "strategy.triggered",
+                        "params": {
+                            "id": 3_568_501,
+                            "engineType": "market",
+                            "text": "ETH open interest crossed USD 3M",
+                            "source": "hyperliquid",
+                            "ts": 1_775_195_200_000,
+                            "strategy": {
+                                "id": 1019,
+                                "name": "OI Event Monitor",
+                                "sourceType": "market",
+                            },
+                        },
+                    }
+                await stop_event.wait()
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        database = _Database()
+        acquisition = NewsAcquisition(
+            db=database,
+            finite_operations=_InlineFiniteOperations(),
+            rss_sources=(),
+            rss_feed_reader=_FeedReader(_rss_wire()),
+            rss_feed_parser=parse_rss_feed_wire,
+            opennews_source=opennews_source(),
+            opennews_strategy_ids=("1019",),
+            opennews_ws_client=_WebSocketClient(),
+        )
+        await asyncio.wait_for(acquisition.run_opennews(stop_event=stop_event), timeout=1.0)
+        return database.operations, database.provider_ids
+
+    operations, provider_ids = asyncio.run(scenario())
+    assert operations.count("opennews_live_publish") == 1
+    assert set(operations) == {"opennews_status", "opennews_live_publish"}
+    assert provider_ids == ("3568501",)
+
+
 def test_websocket_receive_classifies_protocol_disconnect() -> None:
     class _WebSocket:
         async def recv(self):
@@ -110,28 +382,19 @@ def test_websocket_receive_classifies_protocol_disconnect() -> None:
         asyncio.run(client.receive())
 
 
-def test_websocket_receive_classifies_invalid_utf8_provider_frame() -> None:
+def test_websocket_receive_classifies_invalid_provider_frames() -> None:
     class _WebSocket:
+        def __init__(self, frame: object) -> None:
+            self.frame = frame
+
         async def recv(self):
-            return b"\xff\xfe"
+            return self.frame
 
-    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
-    client._websocket = _WebSocket()
-
-    with pytest.raises(OpenNewsExpectedError, match="opennews_frame_invalid"):
-        asyncio.run(client.receive())
-
-
-def test_websocket_receive_classifies_pathologically_nested_provider_frame() -> None:
-    class _WebSocket:
-        async def recv(self):
-            return "[" * 10_000 + "]" * 10_000
-
-    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
-    client._websocket = _WebSocket()
-
-    with pytest.raises(OpenNewsExpectedError, match="opennews_frame_invalid"):
-        asyncio.run(client.receive())
+    for frame in (b"\xff\xfe", "[" * 10_000 + "]" * 10_000):
+        client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+        client._websocket = _WebSocket(frame)
+        with pytest.raises(OpenNewsExpectedError, match="opennews_frame_invalid"):
+            asyncio.run(client.receive())
 
 
 def test_websocket_receive_does_not_hide_concurrent_use_errors() -> None:
@@ -158,15 +421,33 @@ def test_websocket_close_does_not_hide_concurrent_use_errors() -> None:
         asyncio.run(client.close())
 
 
-def test_report_normalization_keeps_only_bounded_provider_metadata() -> None:
+def test_provider_ping_is_answered_without_entering_the_parser() -> None:
+    class _WebSocket:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def recv(self):
+            return "ping"
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(payload)
+
+    websocket = _WebSocket()
+    client = opennews_client.OpenNewsWebSocketClient(token="test-token")
+    client._websocket = websocket
+
+    assert asyncio.run(client.receive()) == "ping"
+    assert websocket.sent == ["pong"]
+
+
+def test_strategy_normalization_keeps_only_bounded_provider_metadata() -> None:
     event = parse_opennews_message(
         {
-            "method": "news.update",
+            "method": "strategy.triggered",
             "params": {
                 "id": "wire-1",
                 "text": "Fed holds rates steady",
-                "newsType": "Reuters",
-                "engineType": "news",
+                "engineType": "NEWS",
                 "link": "HTTPS://Example.COM/article/1/?utm_source=x&b=2&a=1#fragment",
                 "ts": "2026-08-01T05:00:00Z",
                 "received_at_ms": 123,
@@ -181,16 +462,22 @@ def test_report_normalization_keeps_only_bounded_provider_metadata() -> None:
                         "private": "must-not-survive",
                     }
                 ],
+                "strategy": {
+                    "id": "strategy-private",
+                    "name": "Storage News",
+                    "sourceType": "NEWS",
+                    "soundId": "must-not-survive",
+                    "bgColor": "must-not-survive",
+                    "metrics": {"must": "not-survive"},
+                },
             },
-        }
+        },
+        strategy_ids=frozenset({"strategy-private"}),
     )
 
     assert event is not None
-    assert event.observation_kind == "report"
-    assert event.provider_record_id == "wire-1"
-    assert event.entry is not None
     assert event.entry.link == "https://example.com/article/1?a=1&b=2"
-    assert event.entry.reporting_origin == "reuters"
+    assert event.entry.reporting_origin == "jin10"
     assert event.entry.published_at_ms == 1_785_560_400_000
     assert event.provider_metadata == {
         "score": 99,
@@ -198,57 +485,21 @@ def test_report_normalization_keeps_only_bounded_provider_metadata() -> None:
         "signal": "long",
         "grade": "A",
         "coins": [{"symbol": "BTC", "market_type": "spot", "match": "Bitcoin"}],
+        "strategies": [
+            {
+                "id": "strategy-private",
+                "name": "Storage News",
+                "source_type": "news",
+                "engine_type": "news",
+            }
+        ],
     }
 
 
-def test_rest_report_keeps_observed_top_level_numeric_score() -> None:
-    page = parse_opennews_rest_response(
-        {
-            "success": True,
-            "data": [
-                {
-                    "id": "wire-rest-score",
-                    "text": "Rated recovery report",
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": "2026-08-03T05:34:47.635316+08:00",
-                    "score": 75,
-                    "aiRating": {
-                        "score": 75,
-                        "signal": "long",
-                        "grade": "A",
-                        "status": "done",
-                    },
-                }
-            ],
-        }
-    )
+def test_malformed_article_url_keeps_strategy_report_linkless() -> None:
+    event = _strategy_event(link="https://[broken")
 
-    assert page.is_last_page is True
-    assert len(page.events) == 1
-    assert page.events[0].provider_metadata == {
-        "score": 75,
-        "signal": "long",
-        "grade": "A",
-    }
-
-
-def test_malformed_article_url_keeps_report_as_linkless() -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-malformed-url",
-                "text": "Provider supplied an invalid URL",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "link": "https://[broken",
-                "ts": 1_775_195_200_000,
-            },
-        }
-    )
-
-    assert event is not None and event.entry is not None
+    assert event is not None
     assert event.entry.link is None
 
 
@@ -260,48 +511,29 @@ def test_wire_text_strips_controls_and_rejects_non_utf8(
     invalid_text: str,
     expected_title: str | None,
 ) -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-invalid-text",
-                "text": invalid_text,
-                "description": invalid_text,
-                "newsType": "Reuters",
-                "engineType": "news",
-                "link": f"https://example.com/{invalid_text}",
-                "ts": 1_775_195_200_000,
-                "score": 75,
-                "source": invalid_text,
-                "signal": invalid_text,
-                "grade": invalid_text,
-                "coins": [{"symbol": invalid_text, "market_type": "spot"}],
-            },
-        }
+    event = _strategy_event(
+        text=invalid_text,
+        source=invalid_text,
+        signal=invalid_text,
+        grade=invalid_text,
+        coins=[{"symbol": invalid_text, "market_type": "spot"}],
+        score=75,
     )
 
-    assert event is not None and event.entry is not None
+    assert event is not None
     assert event.entry.title == expected_title
     assert event.entry.description == ""
     assert event.entry.link is None
-    assert event.provider_metadata == {"score": 75}
+    assert event.provider_metadata == {
+        "score": 75,
+        "strategies": [{"id": "strategy-test", "name": "Test Strategy", "engine_type": "news"}],
+    }
 
 
 def test_headline_clamp_uses_javascript_utf16_units_and_valid_utf8() -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-astral-clamp",
-                "text": "a" * 499 + "𝔸" + "z",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "ts": 1_775_195_200_000,
-            },
-        }
-    )
+    event = _strategy_event(text="a" * 499 + "𝔸" + "z")
 
-    assert event is not None and event.entry is not None
+    assert event is not None
     assert event.entry.title == "a" * 499 + "\ufffd"
     assert len(event.entry.title.encode("utf-16-le")) // 2 == 500
 
@@ -314,47 +546,14 @@ def test_headline_clamp_uses_javascript_utf16_units_and_valid_utf8() -> None:
         ("a" * 399 + "𝔸", "a" * 399 + "\ufffd"),
     ],
 )
-def test_description_bounds_use_javascript_utf16_units_and_valid_utf8(
-    description: str,
-    expected: str,
-) -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-description-clamp",
-                "text": "Canonical headline differs from the description evidence",
-                "description": description,
-                "newsType": "Reuters",
-                "engineType": "news",
-                "ts": 1_775_195_200_000,
-            },
-        }
+def test_multiline_strategy_text_keeps_a_bounded_description(description: str, expected: str) -> None:
+    event = _strategy_event(
+        text=f"Canonical headline differs from the description evidence\n{description}",
+        description='{"provider_control":"must-not-survive"}',
     )
 
-    assert event is not None and event.entry is not None
+    assert event is not None
     assert event.entry.description == expected
-
-
-def test_description_equality_uses_javascript_lowercase_not_casefold() -> None:
-    title = "Straße market update with enough context for the public evidence boundary"
-    description = "Strasse market update with enough context for the public evidence boundary"
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-description-case",
-                "text": title,
-                "description": description,
-                "newsType": "Reuters",
-                "engineType": "news",
-                "ts": 1_775_195_200_000,
-            },
-        }
-    )
-
-    assert event is not None and event.entry is not None
-    assert event.entry.description == description
 
 
 @pytest.mark.parametrize(
@@ -365,64 +564,27 @@ def test_description_equality_uses_javascript_lowercase_not_casefold() -> None:
     ],
 )
 def test_plaintext_blocks_use_javascript_whitespace(text: str, expected: str) -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-js-whitespace",
-                "text": text,
-                "newsType": "\ufeffReuters\ufeff",
-                "engineType": "\ufeffnews\ufeff",
-                "ts": 1_775_195_200_000,
-            },
-        }
-    )
+    event = _strategy_event(text=text, source="\ufeffReuters\ufeff", engineType="\ufeffNEWS\ufeff")
 
-    assert event is not None and event.entry is not None
+    assert event is not None
     assert event.entry.title == expected
     assert event.entry.reporting_origin == "reuters"
+    assert event.provider_metadata["strategies"][0]["engine_type"] == "news"
 
 
 @pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_timestamp_becomes_missing_date(timestamp: float) -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-invalid-time",
-                "text": "Provider supplied an invalid timestamp",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "ts": timestamp,
-            },
-        }
-    )
+    event = _strategy_event(ts=timestamp)
 
-    assert event is not None and event.entry is not None
+    assert event is not None
     assert event.entry.published_at_ms is None
 
 
 @pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf"), -1, 101])
 def test_non_finite_or_out_of_range_scores_are_discarded(score: float) -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-invalid-score",
-                "text": "Provider supplied an invalid score",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "ts": 1_775_195_200_000,
-                "score": score,
-                "coins": [
-                    {
-                        "symbol": "BTC",
-                        "market_type": "spot",
-                        "score": score,
-                    }
-                ],
-            },
-        }
+    event = _strategy_event(
+        score=score,
+        coins=[{"symbol": "BTC", "market_type": "spot", "score": score}],
     )
 
     assert event is not None
@@ -430,279 +592,34 @@ def test_non_finite_or_out_of_range_scores_are_discarded(score: float) -> None:
     assert event.provider_metadata["coins"] == [{"symbol": "BTC", "market_type": "spot"}]
 
 
-@pytest.mark.parametrize("link", [None, "#fragment", "https://reuters.com", "https://reuters.com/"])
-def test_linkless_or_homepage_wire_keeps_provider_identity(link: str | None) -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-2",
-                "text": "Linkless wire",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "link": link,
-                "ts": 1_775_195_200_000,
-            },
-        }
-    )
-
-    assert event is not None
-    assert event.provider_record_id == "wire-2"
-    assert event.entry is not None
-    assert event.entry.link is None
-
-
-def test_translation_is_discardable_and_ai_update_carries_current_metadata() -> None:
-    translation = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-3",
-                "text": "翻译文本",
-                "newsType": "Translation",
-                "engineType": "news",
-                "ts": 1_775_195_200_000,
-            },
-        }
-    )
-    annotation = parse_opennews_message(
-        {
-            "method": "news.ai_update",
-            "params": {
-                "newsId": 3_442_202,
-                "engineType": "news",
-                "newsType": "Reuters",
-                "score": 90,
-                "signal": "long",
-                "grade": "A+",
-                "coins": [
-                    {
-                        "symbol": "BTC",
-                        "market_type": "spot",
-                        "score": 90,
-                        "signal": "long",
-                        "grade": "A+",
-                    }
-                ],
-            },
-        }
-    )
-
-    assert translation is not None and translation.observation_kind == "translation"
-    assert translation.entry is None
-    assert annotation is not None and annotation.observation_kind == "provider_annotation"
-    assert annotation.provider_record_id == "3442202"
-    assert annotation.entry is None
-    assert annotation.provider_metadata == {
-        "score": 90,
-        "signal": "long",
-        "grade": "A+",
-        "coins": [
-            {
-                "symbol": "BTC",
-                "market_type": "spot",
-                "score": 90,
-                "signal": "long",
-                "grade": "A+",
-            }
-        ],
-    }
-
-
-def test_empty_provider_coins_do_not_erase_current_metadata() -> None:
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-empty-coins",
-                "text": "Provider sends an empty late coin list",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "ts": 1_775_195_200_000,
-                "coins": [],
-            },
-        }
-    )
+def test_empty_provider_coins_do_not_create_strategy_asset_metadata() -> None:
+    event = _strategy_event(coins=[])
 
     assert event is not None
     assert "coins" not in event.provider_metadata
 
 
-def test_strategy_and_non_news_engine_are_ignored() -> None:
-    assert parse_opennews_message({"method": "strategy.triggered", "params": {"id": "x"}}) is None
-    assert (
-        parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {"id": "x", "engineType": "listing", "text": "listed"},
-            }
-        )
-        is None
-    )
+@pytest.mark.parametrize("wire_id", [None, True, 10.19, "", "bad\x00id", "x" * 129])
+def test_invalid_wire_event_or_strategy_ids_are_ignored(wire_id: object) -> None:
+    assert _strategy_event(id=wire_id) is None
+    assert _strategy_event(strategy={"id": wire_id}) is None
 
 
-def test_rest_page_uses_the_same_message_normalizer_and_is_bounded() -> None:
-    rows = [
-        {
-            "id": f"wire-{index}",
-            "text": f"headline {index}",
-            "newsType": "Reuters",
-            "engineType": "news",
-            "ts": 1_775_195_200_000,
-        }
-        for index in range(105)
-    ]
-
-    page = parse_opennews_rest_response({"success": True, "data": rows})
-
-    assert page.is_last_page is False
-    assert len(page.events) == 100
-    assert page.events[0].provider_record_id == "wire-0"
-
-
-def test_rest_page_end_uses_provider_rows_instead_of_parsed_events() -> None:
-    rows = [
-        {
-            "id": f"wire-{index}",
-            "text": f"headline {index}",
-            "newsType": "Reuters",
-            "engineType": "news",
-            "ts": 1_775_195_200_000,
-        }
-        for index in range(99)
-    ]
-    rows.append({"engineType": "news", "text": "missing provider id"})
-
-    page = parse_opennews_rest_response({"success": True, "data": rows})
-
-    assert len(page.events) == 99
-    assert page.is_last_page is False
-
-
-def test_rest_client_requests_the_selected_recovery_page() -> None:
-    class _Response:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self):
-            return {
-                "data": [
-                    {
-                        "id": "wire-page-7",
-                        "text": "Page seven recovery item",
-                        "newsType": "Reuters",
-                        "engineType": "news",
-                        "ts": 1_775_195_200_000,
-                    }
-                ]
-            }
-
-    class _HttpClient:
-        def __init__(self) -> None:
-            self.request_json = None
-
-        def post(self, _url, *, json):
-            self.request_json = json
-            return _Response()
-
-    http_client = _HttpClient()
-    client = object.__new__(opennews_client.OpenNewsRestClient)
-    client._client = http_client
-
-    page = client.fetch_overlap_page(7)
-
-    assert [event.provider_record_id for event in page.events] == ["wire-page-7"]
-    assert page.is_last_page is True
-    assert http_client.request_json == {
-        "engineTypes": {"news": []},
-        "limit": 100,
-        "page": 7,
+def _strategy_event(**overrides):
+    strategy = overrides.pop("strategy", {"id": "strategy-test", "name": "Test Strategy"})
+    params = {
+        "id": "wire-test",
+        "engineType": "news",
+        "text": "Strategy report",
+        "link": None,
+        "ts": 1_775_195_200_000,
+        "strategy": strategy,
+        **overrides,
     }
-
-
-def test_rest_client_classifies_transport_failure() -> None:
-    class _HttpClient:
-        def post(self, _url, *, json):
-            del json
-            request = httpx.Request("POST", "https://opennews.test/recovery")
-            raise httpx.ConnectError("connection refused", request=request)
-
-    client = object.__new__(opennews_client.OpenNewsRestClient)
-    client._client = _HttpClient()
-
-    with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
-        client.fetch_overlap_page(1)
-
-
-def test_rest_client_does_not_hide_programming_errors() -> None:
-    class _HttpClient:
-        def post(self, _url, *, json):
-            del json
-            raise AssertionError("programming bug")
-
-    client = object.__new__(opennews_client.OpenNewsRestClient)
-    client._client = _HttpClient()
-
-    with pytest.raises(AssertionError, match="programming bug"):
-        client.fetch_overlap_page(1)
-
-
-def test_rest_client_does_not_hide_request_usage_errors() -> None:
-    class _HttpClient:
-        def post(self, _url, *, json):
-            del json
-            raise ValueError("invalid request construction")
-
-    client = object.__new__(opennews_client.OpenNewsRestClient)
-    client._client = _HttpClient()
-
-    with pytest.raises(ValueError, match="request construction"):
-        client.fetch_overlap_page(1)
-
-
-def test_rest_client_classifies_invalid_provider_json() -> None:
-    class _Response:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self):
-            raise ValueError("invalid provider JSON")
-
-    class _HttpClient:
-        def post(self, _url, *, json):
-            del json
-            return _Response()
-
-    client = object.__new__(opennews_client.OpenNewsRestClient)
-    client._client = _HttpClient()
-
-    with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
-        client.fetch_overlap_page(1)
-
-
-def test_rest_client_classifies_pathologically_nested_provider_json() -> None:
-    class _Response:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self):
-            raise RecursionError("provider JSON nesting exceeded")
-
-    class _HttpClient:
-        def post(self, _url, *, json):
-            del json
-            return _Response()
-
-    client = object.__new__(opennews_client.OpenNewsRestClient)
-    client._client = _HttpClient()
-
-    with pytest.raises(OpenNewsExpectedError, match="opennews_rest_failed"):
-        client.fetch_overlap_page(1)
-
-
-def test_invalid_rest_shape_fails_closed() -> None:
-    with pytest.raises(OpenNewsExpectedError, match="opennews_rest_payload_invalid"):
-        parse_opennews_rest_response({"data": "not-a-list"})
+    return parse_opennews_message(
+        {"method": "strategy.triggered", "params": params},
+        strategy_ids=frozenset({"strategy-test"}),
+    )
 
 
 class _InlineFiniteOperations:
@@ -710,16 +627,6 @@ class _InlineFiniteOperations:
         kwargs.pop("timeout_seconds")
         kwargs.pop("allow_shutdown", None)
         return function(*args, **kwargs)
-
-
-class _CountingEvent(asyncio.Event):
-    def __init__(self) -> None:
-        super().__init__()
-        self.set_calls = 0
-
-    def set(self) -> None:
-        self.set_calls += 1
-        super().set()
 
 
 class _FeedReader:
@@ -773,7 +680,6 @@ def _acquisition(
     db,
     reader: _FeedReader | None = None,
     finite_operations=None,
-    rest_client=None,
     websocket_client=None,
 ) -> NewsAcquisition:
     return NewsAcquisition(
@@ -783,116 +689,35 @@ def _acquisition(
         rss_feed_reader=reader or _FeedReader(_rss_wire()),
         rss_feed_parser=parse_rss_feed_wire,
         opennews_source=opennews_source(),
-        opennews_rest_client=rest_client,
+        opennews_strategy_ids=("strategy-test",) if websocket_client is not None else (),
         opennews_ws_client=websocket_client,
     )
 
 
-def test_opennews_reconcile_waits_for_the_stream_connection_before_recovery() -> None:
-    class _Database:
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            assert operation_name == "news_source_reconcile"
+def test_ws_only_runtime_is_disabled_without_a_websocket_adapter() -> None:
+    acquisition = _acquisition(db=object())
 
-    acquisition = _acquisition(
-        db=_Database(),
-        rest_client=object(),
-        websocket_client=object(),
-    )
-
-    asyncio.run(acquisition.reconcile())
-
-    assert not acquisition._opennews_recovery_requested.is_set()
+    assert acquisition.opennews_enabled is False
+    assert not hasattr(acquisition, "opennews_rest_client")
+    assert not any("recovery" in name for name in vars(acquisition))
 
 
-def test_opennews_receive_failure_does_not_duplicate_connection_recovery() -> None:
-    async def scenario() -> int:
-        stop_event = asyncio.Event()
-
-        class _Database:
-            async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-                assert operation_name == "opennews_status"
-                return True
-
-        class _WebSocketClient:
-            async def connect(self) -> None:
-                return None
-
-            async def receive(self):
-                raise OpenNewsExpectedError("opennews_receive_failed")
-
-            async def close(self) -> None:
-                stop_event.set()
-
-        acquisition = _acquisition(
-            db=_Database(),
-            rest_client=object(),
-            websocket_client=_WebSocketClient(),
+@pytest.mark.parametrize(
+    "strategy_ids",
+    [("1018", " 1018 "), ("1018", ""), ("1018", 1019)],
+)
+def test_ws_runtime_rejects_noncanonical_strategy_ids(strategy_ids: tuple[object, ...]) -> None:
+    with pytest.raises(ValueError, match="opennews_strategy_ids_invalid"):
+        NewsAcquisition(
+            db=object(),
+            finite_operations=_InlineFiniteOperations(),
+            rss_sources=(),
+            rss_feed_reader=_FeedReader(_rss_wire()),
+            rss_feed_parser=parse_rss_feed_wire,
+            opennews_source=opennews_source(),
+            opennews_strategy_ids=strategy_ids,
+            opennews_ws_client=object(),
         )
-        requests = _CountingEvent()
-        acquisition._opennews_recovery_requested = requests
-
-        await acquisition._opennews_receive_loop(stop_event)
-        return requests.set_calls
-
-    assert asyncio.run(scenario()) == 1
-
-
-def test_opennews_queue_overflow_reconnects_before_requesting_overlap() -> None:
-    async def scenario() -> tuple[int, list[str | None]]:
-        stop_event = asyncio.Event()
-
-        class _Database:
-            def __init__(self) -> None:
-                self.errors: list[str | None] = []
-
-            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-                assert operation_name == "opennews_status"
-                self.errors.append(args[3])
-                return True
-
-        class _WebSocketClient:
-            def __init__(self) -> None:
-                self.receive_calls = 0
-
-            async def connect(self) -> None:
-                return None
-
-            async def receive(self):
-                self.receive_calls += 1
-                if self.receive_calls > 1:
-                    raise OpenNewsExpectedError("opennews_receive_failed")
-                return {
-                    "method": "news.update",
-                    "params": {
-                        "id": "overflowed-live-event",
-                        "text": "Overflowed live event",
-                        "newsType": "Reuters",
-                        "engineType": "news",
-                        "ts": int(time.time() * 1_000),
-                    },
-                }
-
-            async def close(self) -> None:
-                stop_event.set()
-
-        database = _Database()
-        acquisition = _acquisition(
-            db=database,
-            rest_client=object(),
-            websocket_client=_WebSocketClient(),
-        )
-        acquisition._opennews_queue = asyncio.Queue(maxsize=1)
-        acquisition._opennews_queue.put_nowait(_report("already-buffered"))
-        requests = _CountingEvent()
-        acquisition._opennews_recovery_requested = requests
-
-        await acquisition._opennews_receive_loop(stop_event)
-        return requests.set_calls, database.errors
-
-    assert asyncio.run(scenario()) == (
-        1,
-        [None, "opennews_buffer_overflow", None],
-    )
 
 
 def test_rss_turn_claims_fetches_parses_and_publishes_one_due_source() -> None:
@@ -976,290 +801,12 @@ def test_default_disabled_rss_turn_performs_no_feed_request() -> None:
         rss_feed_reader=reader,
         rss_feed_parser=parse_rss_feed_wire,
         opennews_source=opennews_source(),
+        opennews_strategy_ids=(),
     )
 
     assert asyncio.run(acquisition.turn()) is False
     assert database.operations == ["news_rss_claim"]
     assert reader.requests == []
-
-
-def _report(provider_record_id: str):
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": provider_record_id,
-                "text": provider_record_id,
-                "newsType": "Reuters",
-                "engineType": "news",
-                "ts": int(time.time() * 1_000) - 1_000,
-            },
-        }
-    )
-    assert event is not None
-    return event
-
-
-def test_opennews_overlap_starts_at_newest_page_and_stops_on_repository_overlap(monkeypatch) -> None:
-    async def scenario() -> tuple[list[int], list[list[str]], list[bool]]:
-        stop_event = asyncio.Event()
-
-        class _Database:
-            def __init__(self) -> None:
-                self.batches: list[list[str]] = []
-                self.completions: list[bool] = []
-
-            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-                if operation_name == "opennews_recovery_start":
-                    return None
-                if operation_name == "opennews_recovery_publish":
-                    ids = [event.provider_record_id for event in args[0]]
-                    self.batches.append(ids)
-                    return {
-                        "events_seen": len(ids),
-                        "items_inserted": len(ids),
-                        "items_updated": 0,
-                        "metadata_updated": 0,
-                        "rejected": 0,
-                        "overlap_complete": len(self.batches) == 3,
-                    }
-                if operation_name == "opennews_recovery_complete":
-                    self.completions.append(bool(args[2]))
-                    stop_event.set()
-                    return True
-                raise AssertionError(operation_name)
-
-        class _RestClient:
-            def __init__(self) -> None:
-                self.pages: list[int] = []
-
-            def fetch_overlap_page(self, page):
-                self.pages.append(page)
-                return OpenNewsOverlapPage(
-                    events=(_report(f"page-{page}"),),
-                    is_last_page=False,
-                )
-
-        database = _Database()
-        rest = _RestClient()
-        acquisition = _acquisition(
-            db=database,
-            rest_client=rest,
-            websocket_client=object(),
-        )
-        acquisition._opennews_recovery_requested.set()
-
-        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
-        return rest.pages, database.batches, database.completions
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == (
-        [1, 2, 3],
-        [["page-1"], ["page-2"], ["page-3"]],
-        [False],
-    )
-
-
-@pytest.mark.parametrize("event_count", [0, 1])
-def test_opennews_short_page_finishes_recovery_without_fetching_more_pages(
-    monkeypatch,
-    event_count: int,
-) -> None:
-    async def scenario() -> tuple[list[int], list[bool], bool]:
-        stop_event = asyncio.Event()
-
-        class _Database:
-            def __init__(self) -> None:
-                self.completions: list[bool] = []
-
-            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-                if operation_name == "opennews_recovery_start":
-                    return None
-                if operation_name == "opennews_recovery_publish":
-                    events = args[0]
-                    return {
-                        "events_seen": len(events),
-                        "items_inserted": len(events),
-                        "items_updated": 0,
-                        "metadata_updated": 0,
-                        "rejected": 0,
-                        "overlap_complete": False,
-                    }
-                if operation_name == "opennews_recovery_complete":
-                    self.completions.append(bool(args[2]))
-                    stop_event.set()
-                    return True
-                raise AssertionError(operation_name)
-
-        class _RestClient:
-            def __init__(self) -> None:
-                self.pages: list[int] = []
-
-            def fetch_overlap_page(self, page):
-                self.pages.append(page)
-                return OpenNewsOverlapPage(
-                    events=tuple(_report(f"page-{page}-item-{index}") for index in range(event_count)),
-                    is_last_page=True,
-                )
-
-        database = _Database()
-        rest = _RestClient()
-        acquisition = _acquisition(
-            db=database,
-            rest_client=rest,
-            websocket_client=object(),
-        )
-        acquisition._opennews_recovery_requested.set()
-
-        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
-        return rest.pages, database.completions, acquisition._opennews_recovery_requested.is_set()
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == ([1], [False], False)
-
-
-def test_opennews_window_exhaustion_does_not_self_schedule_another_search(monkeypatch) -> None:
-    async def scenario() -> tuple[list[int], list[bool], bool]:
-        stop_event = asyncio.Event()
-
-        class _Database:
-            def __init__(self) -> None:
-                self.publish_calls = 0
-                self.completions: list[bool] = []
-
-            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-                if operation_name == "opennews_recovery_start":
-                    return None
-                if operation_name == "opennews_recovery_publish":
-                    self.publish_calls += 1
-                    return {
-                        "events_seen": 1,
-                        "items_inserted": 1,
-                        "items_updated": 0,
-                        "metadata_updated": 0,
-                        "rejected": 0,
-                        "overlap_complete": False,
-                    }
-                if operation_name == "opennews_recovery_complete":
-                    self.completions.append(bool(args[2]))
-                    stop_event.set()
-                    return True
-                raise AssertionError(operation_name)
-
-        class _RestClient:
-            def __init__(self) -> None:
-                self.pages: list[int] = []
-
-            def fetch_overlap_page(self, page):
-                self.pages.append(page)
-                return OpenNewsOverlapPage(
-                    events=(_report(f"attempt-{len(self.pages)}-page-{page}"),),
-                    is_last_page=False,
-                )
-
-        database = _Database()
-        rest = _RestClient()
-        acquisition = _acquisition(
-            db=database,
-            rest_client=rest,
-            websocket_client=object(),
-        )
-        acquisition._opennews_recovery_requested.set()
-
-        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
-        return rest.pages, database.completions, acquisition._opennews_recovery_requested.is_set()
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == ([*range(1, 12)], [True], False)
-
-
-def test_opennews_recovery_failure_stays_durable_without_a_status_clear(monkeypatch) -> None:
-    async def scenario() -> list[tuple[str, str | None]]:
-        stop_event = asyncio.Event()
-
-        class _Database:
-            def __init__(self) -> None:
-                self.operations: list[tuple[str, str | None]] = []
-
-            async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-                code = args[2].code if operation_name == "opennews_recovery_failure" else None
-                self.operations.append((operation_name, code))
-                if operation_name == "opennews_recovery_failure":
-                    stop_event.set()
-
-        class _OverrunFinite:
-            async def run(self, *_args, **_kwargs):
-                raise ResourceOperationOverrun("resource_operation_overrun:opennews_rest_recovery")
-
-        class _RestClient:
-            def fetch_overlap_page(self, _page):
-                raise AssertionError("the bounded executor owns this call")
-
-        database = _Database()
-        acquisition = _acquisition(
-            db=database,
-            finite_operations=_OverrunFinite(),
-            rest_client=_RestClient(),
-            websocket_client=object(),
-        )
-        acquisition._opennews_recovery_requested.set()
-
-        await asyncio.wait_for(acquisition._opennews_recovery_loop(stop_event), timeout=1.0)
-        return database.operations
-
-    monkeypatch.setattr(news_runtime, "_OPENNEWS_RECOVERY_MIN_INTERVAL_SECONDS", 0.0)
-
-    assert asyncio.run(scenario()) == [
-        ("opennews_recovery_start", None),
-        ("opennews_recovery_failure", "opennews_rest_timeout"),
-    ]
-
-
-def test_opennews_live_publish_does_not_clear_the_overlap_outcome() -> None:
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            self.operations.append(operation_name)
-            return {"items_inserted": 1}
-
-    async def scenario() -> tuple[list[str], bool]:
-        database = _Database()
-        acquisition = _acquisition(db=database)
-        acquisition._opennews_queue.put_nowait(_report("live-1"))
-        stop_event = asyncio.Event()
-        stop_event.set()
-        await acquisition._opennews_publish_loop(stop_event)
-        return database.operations, acquisition._opennews_recovery_requested.is_set()
-
-    assert asyncio.run(scenario()) == (["opennews_live_publish"], False)
-
-
-def test_recovery_has_a_five_minute_persisted_cooldown() -> None:
-    five_minutes_ms = 5 * 60 * 1_000
-
-    assert news_runtime._opennews_recovery_delay_seconds(
-        last_attempt_at_ms=1_000,
-        now_ms=1_001,
-    ) == pytest.approx((five_minutes_ms - 1) / 1_000)
-    assert (
-        news_runtime._opennews_recovery_delay_seconds(
-            last_attempt_at_ms=1_000,
-            now_ms=1_000 + five_minutes_ms,
-        )
-        == 0.0
-    )
-
-
-def test_news_acquisition_has_no_gap_state_machine() -> None:
-    acquisition = _acquisition(db=object())
-
-    assert not any(name.startswith("_opennews_gap") for name in vars(acquisition))
-    assert not hasattr(news_runtime, "_opennews_recovery_covers_boundary")
 
 
 def test_healthy_opennews_idle_keeps_the_same_websocket(monkeypatch) -> None:

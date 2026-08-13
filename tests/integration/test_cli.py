@@ -112,7 +112,15 @@ def seed_postgres(db_path: Path) -> None:
         conn.close()
 
 
-def write_runtime_config(home: Path, *, db_path: Path, ws_token: str | None = None, llm: bool = False) -> Path:
+def write_runtime_config(
+    home: Path,
+    *,
+    db_path: Path,
+    ws_token: str | None = None,
+    llm: bool = False,
+    opennews_token: str | None = None,
+    opennews_strategy_ids: tuple[str, ...] = (),
+) -> Path:
     app_home = home / ".tracefold"
     app_home.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -135,6 +143,11 @@ def write_runtime_config(home: Path, *, db_path: Path, ws_token: str | None = No
             "api_key": "sk-test",
             "base_url": "https://deepseek.test/v1",
             "news_brief_model": "deepseek-chat",
+        }
+    if opennews_token is not None or opennews_strategy_ids:
+        payload["news"] = {
+            "opennews_token": opennews_token,
+            "opennews_strategy_ids": list(opennews_strategy_ids),
         }
     path = app_home / "config.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
@@ -280,7 +293,14 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
             db_path = home / ".tracefold" / "postgres_test_db"
-            write_runtime_config(home, db_path=db_path, ws_token="secret", llm=True)
+            write_runtime_config(
+                home,
+                db_path=db_path,
+                ws_token="secret",
+                llm=True,
+                opennews_token="opennews-secret",
+                opennews_strategy_ids=("private-strategy-alpha", "private-strategy-beta"),
+            )
             stdout = io.StringIO()
             with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
                 exit_code = main(["config"], stdout=stdout)
@@ -307,6 +327,12 @@ class CliTests(unittest.TestCase):
             },
         )
         self.assertNotIn("gmgn-test", stdout.getvalue())
+        self.assertTrue(payload["data"]["news"]["opennews_strategy_ids_configured"])
+        self.assertEqual(payload["data"]["news"]["opennews_strategy_count"], 2)
+        self.assertNotIn("opennews_strategy_ids", payload["data"]["news"])
+        self.assertNotIn("opennews_token", payload["data"]["news"])
+        self.assertNotIn("private-strategy-alpha", stdout.getvalue())
+        self.assertNotIn("private-strategy-beta", stdout.getvalue())
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")
         self.assertEqual(
             set(payload["data"]["store"]["postgres_roles"]),
@@ -325,6 +351,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue(settings.news.enabled)
         self.assertFalse(settings.news.rss_enabled)
         self.assertFalse(payload["news"]["rss_enabled"])
+        self.assertEqual(payload["news"]["opennews_strategy_ids"], [])
         self.assertTrue(settings.providers.macro_sources.enabled)
         self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
         self.assertNotIn("request_timeout_seconds", payload["providers"]["macro_sources"])

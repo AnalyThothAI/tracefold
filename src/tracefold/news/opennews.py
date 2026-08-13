@@ -18,8 +18,6 @@ from .identity import (
 )
 from .models import NewsFeedEntry
 
-OPENNEWS_REST_LIMIT = 100
-
 _TRACKING_PARAMS = frozenset(
     {
         "fbclid",
@@ -52,85 +50,55 @@ class OpenNewsExpectedError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class OpenNewsEvent:
     provider_record_id: str
-    observation_kind: Literal["report", "translation", "provider_annotation"]
+    observation_kind: Literal["report"]
     provider_metadata: dict[str, Any]
-    entry: NewsFeedEntry | None
+    entry: NewsFeedEntry
 
 
-@dataclass(frozen=True, slots=True)
-class OpenNewsOverlapPage:
-    events: tuple[OpenNewsEvent, ...]
-    is_last_page: bool
-
-
-def parse_opennews_rest_response(payload: object) -> OpenNewsOverlapPage:
-    if not isinstance(payload, Mapping):
-        raise OpenNewsExpectedError("opennews_rest_payload_invalid")
-    value: object = payload.get("data", payload)
-    if isinstance(value, Mapping):
-        value = value.get("items", value.get("list", value.get("data", [])))
-    if not isinstance(value, list):
-        raise OpenNewsExpectedError("opennews_rest_payload_invalid")
-    events: list[OpenNewsEvent] = []
-    for row in value[:OPENNEWS_REST_LIMIT]:
-        if not isinstance(row, Mapping):
-            continue
-        parsed = parse_opennews_message({"method": "news.update", "params": row})
-        if parsed is not None:
-            events.append(parsed)
-    return OpenNewsOverlapPage(
-        events=tuple(events),
-        is_last_page=len(value) < OPENNEWS_REST_LIMIT,
-    )
-
-
-def parse_opennews_message(message: object) -> OpenNewsEvent | None:
+def parse_opennews_message(
+    message: object,
+    *,
+    strategy_ids: frozenset[str],
+) -> OpenNewsEvent | None:
     if message == "ping" or not isinstance(message, Mapping):
         return None
-    method = _text(message.get("method"))
-    if method == "strategy.triggered" or method not in {"news.update", "news.ai_update"}:
+    if _text(message.get("method")) != "strategy.triggered":
         return None
     params = message.get("params")
     if not isinstance(params, Mapping):
         return None
-    # Live rating frames use ``newsId``; reports and REST recovery rows use ``id``.
-    provider_record_id = _text(params.get("newsId")) if method == "news.ai_update" else ""
-    if not provider_record_id:
-        provider_record_id = _text(params.get("id"))
-    if not provider_record_id:
+    strategy = params.get("strategy")
+    if not isinstance(strategy, Mapping):
         return None
-    if method == "news.ai_update":
-        return OpenNewsEvent(
-            provider_record_id=provider_record_id,
-            observation_kind="provider_annotation",
-            provider_metadata=_provider_metadata(params),
-            entry=None,
-        )
-    if _text(params.get("engineType")).lower() != "news":
+    strategy_id = _wire_strategy_id(strategy.get("id"))
+    if not strategy_id or strategy_id not in strategy_ids:
+        return None
+    provider_record_id = _wire_strategy_id(params.get("id"))
+    if not provider_record_id:
         return None
     canonical_url = _article_url(_text(params.get("link")))
-    observation_kind: Literal["report", "translation"] = "translation" if _is_translation(params) else "report"
-    entry = None
-    if observation_kind == "report":
-        blocks = _logical_blocks(_content_text(params.get("text")))
-        title = javascript_trim(web_usv_string(utf16_slice(blocks[0], _MAX_HEADLINE_LEN))) if blocks else ""
-        description = _canonical_description(
-            explicit=_content_text(params.get("description")),
+    blocks = _logical_blocks(_content_text(params.get("text")))
+    title = javascript_trim(web_usv_string(utf16_slice(blocks[0], _MAX_HEADLINE_LEN))) if blocks else ""
+    entry = NewsFeedEntry(
+        guid=provider_record_id,
+        link=canonical_url or None,
+        title=title or None,
+        description=_canonical_description(
+            explicit="",
             remaining_blocks=blocks[1:],
             title=title,
-        )
-        entry = NewsFeedEntry(
-            guid=provider_record_id,
-            link=canonical_url or None,
-            title=title or None,
-            description=description,
-            published_at_ms=_timestamp_ms(params.get("ts")),
-            reporting_origin=_reporting_origin(params, canonical_url=canonical_url),
-        )
+        ),
+        published_at_ms=_timestamp_ms(params.get("ts")),
+        reporting_origin=_reporting_origin(params, canonical_url=canonical_url),
+    )
     return OpenNewsEvent(
         provider_record_id=provider_record_id,
-        observation_kind=observation_kind,
-        provider_metadata=_provider_metadata(params),
+        observation_kind="report",
+        provider_metadata=_provider_metadata(
+            params,
+            strategy=strategy,
+            strategy_id=strategy_id,
+        ),
         entry=entry,
     )
 
@@ -186,14 +154,9 @@ def _article_url(value: str) -> str:
 
 
 def _reporting_origin(params: Mapping[str, Any], *, canonical_url: str) -> str:
-    news_type = _text(params.get("newsType"))
-    if news_type.lower() == "twitter":
-        author = _text(params.get("source")).lower()
-        if author:
-            return author
-    explicit = news_type.lower()
+    explicit = _text(params.get("source")).lower()
     if explicit:
-        return explicit
+        return explicit[:128]
     if canonical_url:
         return str(urlsplit(canonical_url).hostname or "").lower() or "opennews"
     return "opennews"
@@ -228,15 +191,12 @@ def _canonical_description(
     return web_usv_string(utf16_slice(description, _MAX_DESCRIPTION_LEN))
 
 
-def _is_translation(params: Mapping[str, Any]) -> bool:
-    return _text(params.get("newsType")).lower() == "translation" or any(
-        key in params for key in ("translation", "translationOf", "translatedFrom", "translatedText")
-    )
-
-
-def _provider_metadata(params: Mapping[str, Any]) -> dict[str, Any]:
-    # REST rows nest ratings in ``aiRating`` while live rating frames carry
-    # score/signal/grade at the top level.
+def _provider_metadata(
+    params: Mapping[str, Any],
+    *,
+    strategy: Mapping[str, Any],
+    strategy_id: str,
+) -> dict[str, Any]:
     ai_rating = params.get("aiRating")
     ai = ai_rating if isinstance(ai_rating, Mapping) else {}
     result: dict[str, Any] = {}
@@ -279,7 +239,31 @@ def _provider_metadata(params: Mapping[str, Any]) -> dict[str, Any]:
             normalized.append(coin)
         if normalized:
             result["coins"] = normalized
+    strategy_match: dict[str, str] = {"id": strategy_id}
+    name = _text(strategy.get("name"))
+    if name:
+        strategy_match["name"] = name[:128]
+    source_type = _text(strategy.get("sourceType")).lower()
+    if source_type:
+        strategy_match["source_type"] = source_type[:32]
+    engine_type = _text(params.get("engineType")).lower()
+    if engine_type:
+        strategy_match["engine_type"] = engine_type[:32]
+    result["strategies"] = [strategy_match]
     return result
+
+
+def _wire_strategy_id(value: object) -> str:
+    if isinstance(value, bool) or value is None or not isinstance(value, str | int):
+        return ""
+    normalized = javascript_trim(str(value))
+    if not normalized or "\x00" in normalized or len(normalized) > 128:
+        return ""
+    try:
+        normalized.encode("utf-8")
+    except UnicodeEncodeError:
+        return ""
+    return normalized
 
 
 def _number(value: object) -> int | float | None:
@@ -317,10 +301,7 @@ def _content_text(value: object) -> str:
 
 
 __all__ = [
-    "OPENNEWS_REST_LIMIT",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
-    "OpenNewsOverlapPage",
     "parse_opennews_message",
-    "parse_opennews_rest_response",
 ]

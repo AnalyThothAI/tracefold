@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from threading import Event
 from typing import Any
 
 import tracefold.news.runtime as news_runtime
@@ -22,6 +19,30 @@ from tracefold.news.repository import NewsRepository
 from tracefold.news.sources import opennews_source, public_rss_sources
 
 NOW_MS = 1_785_560_400_000
+OPENNEWS_STRATEGY_IDS = frozenset({"1018", "1019"})
+
+
+def _strategy_event(
+    params: dict[str, Any],
+    *,
+    strategy_id: str = "1018",
+    strategy_name: str = "News Score > 70",
+    source_type: str = "news",
+):
+    return parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": {
+                **params,
+                "strategy": {
+                    "id": strategy_id,
+                    "name": strategy_name,
+                    "sourceType": source_type,
+                },
+            },
+        },
+        strategy_ids=OPENNEWS_STRATEGY_IDS,
+    )
 
 
 def _event(
@@ -30,29 +51,31 @@ def _event(
     score: int | None,
     record_id: str = "wire-1",
     published_at_ms: int = NOW_MS,
+    strategy_id: str = "1018",
+    strategy_name: str = "News Score > 70",
+    source_type: str = "news",
 ):
     ai_rating = {"score": score, "grade": "A"} if score is not None else None
-    event = parse_opennews_message(
+    event = _strategy_event(
         {
-            "method": "news.update",
-            "params": {
-                "id": record_id,
-                "text": title,
-                "description": "Policy decision and market response",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "link": "https://example.com/fed?utm_source=opennews",
-                "ts": published_at_ms,
-                **({"aiRating": ai_rating} if ai_rating is not None else {}),
-                "coins": [
-                    {
-                        "symbol": "BTC",
-                        "market_type": "spot",
-                        "match": "Bitcoin",
-                    }
-                ],
-            },
-        }
+            "id": record_id,
+            "text": f"{title}<br>Policy decision and market response affecting digital asset markets.",
+            "description": "Policy decision and market response",
+            "engineType": "news",
+            "link": "https://example.com/fed?utm_source=opennews",
+            "ts": published_at_ms,
+            **({"aiRating": ai_rating} if ai_rating is not None else {}),
+            "coins": [
+                {
+                    "symbol": "BTC",
+                    "market_type": "spot",
+                    "match": "Bitcoin",
+                }
+            ],
+        },
+        strategy_id=strategy_id,
+        strategy_name=strategy_name,
+        source_type=source_type,
     )
     assert event is not None
     return event
@@ -103,7 +126,6 @@ def test_opennews_primary_story_projects_before_any_rss_attempt() -> None:
     finally:
         conn.close()
 
-
 def test_opennews_items_expire_without_an_enabled_rss_catalog(monkeypatch) -> None:
     class _Database:
         def __init__(self, conn: Any) -> None:
@@ -151,6 +173,7 @@ def test_opennews_items_expire_without_an_enabled_rss_catalog(monkeypatch) -> No
             rss_feed_reader=reader,
             rss_feed_parser=lambda *_args, **_kwargs: None,
             opennews_source=source,
+            opennews_strategy_ids=OPENNEWS_STRATEGY_IDS,
         )
 
         assert asyncio.run(acquisition.turn()) is False
@@ -272,11 +295,21 @@ def test_ingest_health_is_driven_by_opennews_primary_with_rss_as_corroboration()
                 (*rss_sources, source),
                 now_ms=NOW_MS,
             )
+            repository.update_opennews_live_status(
+                source_id=source.source_id,
+                connected=True,
+                now_ms=NOW_MS,
+                error_code=None,
+            )
 
-        warming = repository.health_snapshot(now_ms=NOW_MS, rss_enabled=True)
+        warming = repository.health_snapshot(
+            now_ms=NOW_MS,
+            rss_enabled=True,
+            configured_strategy_count=2,
+        )
         assert warming["layers"]["ingest"]["status"] == "warming"
         assert warming["layers"]["ingest"]["reasons"] == [
-            "opennews_primary_no_success_yet",
+            "opennews_strategy_no_trigger_yet",
             "public_rss_corroboration_warming",
         ]
 
@@ -293,7 +326,11 @@ def test_ingest_health_is_driven_by_opennews_primary_with_rss_as_corroboration()
                 error_code=None,
             )
 
-        ready = repository.health_snapshot(now_ms=NOW_MS + 1, rss_enabled=True)
+        ready = repository.health_snapshot(
+            now_ms=NOW_MS + 1,
+            rss_enabled=True,
+            configured_strategy_count=2,
+        )
         assert ready["layers"]["ingest"]["status"] == "ready"
         assert ready["layers"]["ingest"]["reasons"] == [
             "public_rss_corroboration_warming",
@@ -329,7 +366,11 @@ def test_ingest_health_is_driven_by_opennews_primary_with_rss_as_corroboration()
                     finished_at_ms=NOW_MS + 2,
                 )
 
-        corroborated = repository.health_snapshot(now_ms=NOW_MS + 2, rss_enabled=True)
+        corroborated = repository.health_snapshot(
+            now_ms=NOW_MS + 2,
+            rss_enabled=True,
+            configured_strategy_count=2,
+        )
         assert corroborated["layers"]["ingest"]["status"] == "ready"
         assert corroborated["layers"]["ingest"]["reasons"] == []
 
@@ -341,7 +382,11 @@ def test_ingest_health_is_driven_by_opennews_primary_with_rss_as_corroboration()
                 error_code=None,
             )
 
-        disconnected = repository.health_snapshot(now_ms=NOW_MS + 3, rss_enabled=True)
+        disconnected = repository.health_snapshot(
+            now_ms=NOW_MS + 3,
+            rss_enabled=True,
+            configured_strategy_count=2,
+        )
         assert disconnected["layers"]["ingest"]["status"] == "degraded"
         assert disconnected["layers"]["ingest"]["reasons"] == [
             "opennews_primary_disconnected",
@@ -354,6 +399,17 @@ def test_ingest_health_is_driven_by_opennews_primary_with_rss_as_corroboration()
                 now_ms=NOW_MS + 4,
                 error_code=None,
             )
+        reconnected = repository.health_snapshot(
+            now_ms=NOW_MS + 4,
+            rss_enabled=True,
+            configured_strategy_count=2,
+        )
+        assert reconnected["layers"]["ingest"]["status"] == "degraded"
+        assert reconnected["layers"]["ingest"]["reasons"] == [
+            "opennews_strategy_coverage_unknown",
+        ]
+
+        with conn.transaction():
             repository.update_opennews_live_status(
                 source_id=source.source_id,
                 connected=False,
@@ -361,7 +417,11 @@ def test_ingest_health_is_driven_by_opennews_primary_with_rss_as_corroboration()
                 error_code="opennews_live_disconnected",
             )
 
-        degraded = repository.health_snapshot(now_ms=NOW_MS + 5, rss_enabled=True)
+        degraded = repository.health_snapshot(
+            now_ms=NOW_MS + 5,
+            rss_enabled=True,
+            configured_strategy_count=2,
+        )
         assert degraded["layers"]["ingest"]["status"] == "degraded"
         assert degraded["layers"]["ingest"]["reasons"] == [
             "opennews_primary_error",
@@ -607,7 +667,7 @@ def test_story_projection_persists_facet_facts_and_invariant_detects_drift() -> 
         stored = conn.execute("SELECT facet_facts FROM news_stories").fetchone()
         assert stored["facet_facts"] == {
             "source_ids": [source.source_id],
-            "reporting_origins": ["reuters"],
+            "reporting_origins": ["example.com"],
         }
         assert repository._story_invariant_counts(item_ids=[item_id])["total"] == 0
 
@@ -758,33 +818,14 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         reset_postgres_schema(conn)
         repository = NewsRepository(conn)
         source = opennews_source()
-        report = _event(title="Fed holds rates steady", score=None)
-        annotation = parse_opennews_message(
-            {
-                "method": "news.ai_update",
-                "params": {
-                    "newsId": "wire-1",
-                    "engineType": "news",
-                    "newsType": "Reuters",
-                    "score": 80,
-                    "signal": "long",
-                    "grade": "A+",
-                },
-            }
+        report = _event(title="Fed holds rates steady", score=80)
+        second_strategy = _event(
+            title="Fed holds rates steady",
+            score=80,
+            strategy_id="1019",
+            strategy_name="OI Event Monitor",
+            source_type="market",
         )
-        translation = parse_opennews_message(
-            {
-                "method": "news.update",
-                "params": {
-                    "id": "wire-1-zh",
-                    "text": "美联储维持利率不变",
-                    "newsType": "Translation",
-                    "engineType": "news",
-                    "ts": NOW_MS,
-                },
-            }
-        )
-        assert annotation is not None and translation is not None
 
         with conn.transaction():
             repository.sync_sources((source,), now_ms=NOW_MS)
@@ -795,14 +836,15 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
             )
             duplicate = repository.record_opennews_events(
                 source=source,
-                events=(report, translation),
+                events=(report, report),
                 observed_at_ms=NOW_MS + 1,
             )
-            annotated = repository.record_opennews_events(
+            matched = repository.record_opennews_events(
                 source=source,
-                events=(annotation,),
+                events=(second_strategy,),
                 observed_at_ms=NOW_MS + 2,
             )
+            rebuild_news_projection(repository, now_ms=NOW_MS + 2)
 
         assert first["items_inserted"] == 1
         assert duplicate == {
@@ -812,7 +854,8 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
             "metadata_updated": 0,
             "rejected": 2,
         }
-        assert annotated["metadata_updated"] == 1
+        assert matched["items_updated"] == 1
+        assert matched["metadata_updated"] == 0
         before = conn.execute(
             """
             SELECT item_id, provider_record_id, provider_metadata
@@ -822,49 +865,38 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         assert before["provider_record_id"] == "wire-1"
         assert before["provider_metadata"] == {
             "score": 80,
-            "signal": "long",
-            "grade": "A+",
+            "grade": "A",
             "coins": [{"symbol": "BTC", "market_type": "spot", "match": "Bitcoin"}],
+            "strategies": [
+                {
+                    "id": "1018",
+                    "name": "News Score > 70",
+                    "source_type": "news",
+                    "engine_type": "news",
+                },
+                {
+                    "id": "1019",
+                    "name": "OI Event Monitor",
+                    "source_type": "market",
+                    "engine_type": "news",
+                },
+            ],
         }
-
-        no_score = _event(title="Fed holds rates steady", score=None)
-        with conn.transaction():
-            no_score_result = repository.record_opennews_events(
-                source=source,
-                events=(no_score,),
-                observed_at_ms=NOW_MS + 3,
-            )
-        preserved = conn.execute(
-            "SELECT provider_metadata FROM news_items WHERE provider_record_id='wire-1'"
-        ).fetchone()["provider_metadata"]
-        assert no_score_result["items_updated"] == 0
-        assert preserved["score"] == 80
-        assert preserved["signal"] == "long"
-
-        changed = _event(title="Fed holds rates steady after policy meeting", score=82)
-        with conn.transaction():
-            result = repository.record_opennews_events(
-                source=source,
-                events=(changed,),
-                observed_at_ms=NOW_MS + 4,
-            )
-            rebuild_news_projection(repository, now_ms=NOW_MS + 4)
         after = conn.execute("SELECT item_id FROM news_items WHERE provider_record_id='wire-1'").fetchone()
-        assert result["items_updated"] == 1
         assert after["item_id"] == before["item_id"]
 
         story = repository.list_feed(
             push_enabled=False,
-            now_ms=NOW_MS + 4,
+            now_ms=NOW_MS + 2,
         )["stories"][0]
         detail = repository.get_story(
             story_id=story["story_id"],
             push_enabled=False,
-            now_ms=NOW_MS + 4,
+            now_ms=NOW_MS + 2,
         )
         assert detail is not None
         assert detail["members"][0]["provider_record_id"] == "wire-1"
-        assert detail["members"][0]["provider_metadata"]["score"] == 82
+        assert detail["members"][0]["provider_metadata"]["score"] == 80
         assert detail["members"][0]["provider_metadata"]["assets"] == [
             {"symbol": "BTC", "market_type": "spot", "match": "Bitcoin"}
         ]
@@ -875,28 +907,6 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         assert len(sources) == 1
         assert sources[0]["source_kind"] == "opennews"
         assert "latest_fetch_status" not in sources[0]
-
-        with conn.transaction():
-            live_failed = repository.update_opennews_live_status(
-                source_id=source.source_id,
-                connected=True,
-                now_ms=NOW_MS + 5,
-                error_code="opennews_buffer_overflow",
-            )
-            repository.mark_opennews_recovery_attempt(
-                source_id=source.source_id,
-                started_at_ms=NOW_MS + 6,
-            )
-        assert live_failed is True
-        assert repository.opennews_last_recovery_attempt(source_id=source.source_id) == NOW_MS + 6
-        source_status = conn.execute(
-            "SELECT last_outcome, last_error FROM news_sources WHERE source_id = %s",
-            (source.source_id,),
-        ).fetchone()
-        assert dict(source_status) == {
-            "last_outcome": "recovery_running",
-            "last_error": "opennews_buffer_overflow",
-        }
     finally:
         conn.close()
 
@@ -907,36 +917,28 @@ def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title()
         reset_postgres_schema(conn)
         repository = NewsRepository(conn)
         source = opennews_source()
-        emoji_only = parse_opennews_message(
+        emoji_only = _strategy_event(
             {
-                "method": "news.update",
-                "params": {
-                    "id": "3442019",
-                    "text": "👑👑👑",
-                    "newsType": "Twitter",
-                    "engineType": "news",
-                    "link": "https://example.com/emoji-only",
-                    "ts": NOW_MS,
-                    "source": "aeyakovenko",
-                    "score": 5,
-                    "aiRating": {"score": 5, "signal": "neutral", "grade": "C"},
-                    "coins": [{"symbol": "SOL", "market_type": "cex"}],
-                },
+                "id": "3442019",
+                "text": "👑👑👑",
+                "engineType": "news",
+                "link": "https://example.com/emoji-only",
+                "ts": NOW_MS,
+                "source": "aeyakovenko",
+                "score": 5,
+                "aiRating": {"score": 5, "signal": "neutral", "grade": "C"},
+                "coins": [{"symbol": "SOL", "market_type": "cex"}],
             }
         )
         canonicalized_text_events = tuple(
-            parse_opennews_message(
+            _strategy_event(
                 {
-                    "method": "news.update",
-                    "params": {
-                        "id": record_id,
-                        "text": invalid_text,
-                        "description": invalid_text,
-                        "newsType": "Reuters",
-                        "engineType": "news",
-                        "link": f"https://example.com/{invalid_text}",
-                        "ts": NOW_MS,
-                    },
+                    "id": record_id,
+                    "text": invalid_text,
+                    "description": invalid_text,
+                    "engineType": "news",
+                    "link": f"https://example.com/{invalid_text}",
+                    "ts": NOW_MS,
                 }
             )
             for record_id, invalid_text in (
@@ -944,17 +946,13 @@ def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title()
                 ("wire-surrogate-title", "bad\ud800title"),
             )
         )
-        valid = parse_opennews_message(
+        valid = _strategy_event(
             {
-                "method": "news.update",
-                "params": {
-                    "id": "wire-valid",
-                    "text": "Solana validators approve network upgrade",
-                    "newsType": "Reuters",
-                    "engineType": "news",
-                    "ts": NOW_MS,
-                    "aiRating": {"score": 75, "signal": "long", "grade": "A"},
-                },
+                "id": "wire-valid",
+                "text": "Solana validators approve network upgrade",
+                "engineType": "news",
+                "ts": NOW_MS,
+                "aiRating": {"score": 75, "signal": "long", "grade": "A"},
             }
         )
         assert emoji_only is not None and valid is not None
@@ -993,22 +991,47 @@ def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title()
                     "signal": "neutral",
                     "grade": "C",
                     "coins": [{"symbol": "SOL", "market_type": "cex"}],
+                    "strategies": [
+                        {
+                            "id": "1018",
+                            "name": "News Score > 70",
+                            "source_type": "news",
+                            "engine_type": "news",
+                        }
+                    ],
                 },
             },
             {
                 "provider_record_id": "wire-nul-title",
                 "title": "bad title",
-                "reporting_origin": "reuters",
-                "provider_metadata": {},
+                "reporting_origin": "opennews",
+                "provider_metadata": {
+                    "strategies": [
+                        {
+                            "id": "1018",
+                            "name": "News Score > 70",
+                            "source_type": "news",
+                            "engine_type": "news",
+                        }
+                    ],
+                },
             },
             {
                 "provider_record_id": "wire-valid",
                 "title": "Solana validators approve network upgrade",
-                "reporting_origin": "reuters",
+                "reporting_origin": "opennews",
                 "provider_metadata": {
                     "score": 75,
                     "signal": "long",
                     "grade": "A",
+                    "strategies": [
+                        {
+                            "id": "1018",
+                            "name": "News Score > 70",
+                            "source_type": "news",
+                            "engine_type": "news",
+                        }
+                    ],
                 },
             },
         ]
@@ -1030,17 +1053,13 @@ def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
         )
         parsed_events = []
         for index, (record_id, title, news_type, author) in enumerate(frames):
-            event = parse_opennews_message(
+            event = _strategy_event(
                 {
-                    "method": "news.update",
-                    "params": {
-                        "id": record_id,
-                        "text": title,
-                        "newsType": news_type,
-                        "engineType": "news",
-                        "ts": NOW_MS + index,
-                        **({"source": author} if author else {}),
-                    },
+                    "id": record_id,
+                    "text": title,
+                    "source": author or news_type,
+                    "engineType": "news",
+                    "ts": NOW_MS + index,
                 }
             )
             assert event is not None
@@ -1075,298 +1094,3 @@ def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
         assert conn.execute("SELECT count(*) AS count FROM news_items").fetchone()["count"] == 4
     finally:
         conn.close()
-
-
-def test_live_success_preserves_exhausted_overlap_diagnostic_until_recovery_succeeds() -> None:
-    conn = connect_postgres_test(read_only=False)
-    try:
-        reset_postgres_schema(conn)
-        source = opennews_source()
-        with conn.transaction():
-            repository = NewsRepository(conn)
-            repository.sync_sources((source,), now_ms=NOW_MS)
-            repository.mark_opennews_recovery_attempt(
-                source_id=source.source_id,
-                started_at_ms=NOW_MS + 1,
-            )
-            exhausted = repository.complete_opennews_recovery(
-                source_id=source.source_id,
-                started_at_ms=NOW_MS + 1,
-                finished_at_ms=NOW_MS + 2,
-                window_exhausted=True,
-                items_seen=220,
-                items_accepted=200,
-                rejection_counts={"future_date": 20},
-            )
-
-        # A fresh Repository models a restarted Workers process reconnecting live.
-        with conn.transaction():
-            live = NewsRepository(conn).update_opennews_live_status(
-                source_id=source.source_id,
-                connected=True,
-                now_ms=NOW_MS + 3,
-                error_code=None,
-            )
-        still_exhausted = conn.execute(
-            "SELECT last_outcome, last_error FROM news_sources WHERE source_id = %s",
-            (source.source_id,),
-        ).fetchone()
-
-        with conn.transaction():
-            recovered_repository = NewsRepository(conn)
-            recovered_repository.mark_opennews_recovery_attempt(
-                source_id=source.source_id,
-                started_at_ms=NOW_MS + 4,
-            )
-            recovered = recovered_repository.complete_opennews_recovery(
-                source_id=source.source_id,
-                started_at_ms=NOW_MS + 4,
-                finished_at_ms=NOW_MS + 5,
-                window_exhausted=False,
-                items_seen=20,
-                items_accepted=10,
-                rejection_counts={},
-            )
-        after_recovery = conn.execute(
-            "SELECT last_outcome, last_error FROM news_sources WHERE source_id = %s",
-            (source.source_id,),
-        ).fetchone()
-
-        assert exhausted is True
-        assert live is True
-        assert dict(still_exhausted) == {
-            "last_outcome": "recovery_window_exhausted",
-            "last_error": "opennews_recovery_window_exhausted",
-        }
-        assert recovered is True
-        assert dict(after_recovery) == {
-            "last_outcome": "recovery_success",
-            "last_error": None,
-        }
-    finally:
-        conn.close()
-
-
-def test_opennews_recovery_stops_at_the_first_existing_provider_record() -> None:
-    conn = connect_postgres_test(read_only=False)
-    try:
-        reset_postgres_schema(conn)
-        repository = NewsRepository(conn)
-        source = opennews_source()
-        existing = _event(
-            record_id="existing-overlap",
-            title="Existing overlap report",
-            score=60,
-            published_at_ms=NOW_MS - 60_000,
-        )
-        refreshed_existing = _event(
-            record_id="existing-overlap",
-            title="Existing overlap report",
-            score=80,
-            published_at_ms=NOW_MS - 60_000,
-        )
-        with conn.transaction():
-            repository.sync_sources((source,), now_ms=NOW_MS)
-            repository.record_opennews_events(
-                source=source,
-                events=(existing,),
-                observed_at_ms=NOW_MS,
-            )
-            repository.mark_opennews_recovery_attempt(
-                source_id=source.source_id,
-                started_at_ms=NOW_MS + 1,
-            )
-            outcome = repository.record_opennews_recovery_page(
-                source=source,
-                events=(
-                    _event(
-                        record_id="new-before-overlap",
-                        title="New report before overlap",
-                        score=70,
-                        published_at_ms=NOW_MS,
-                    ),
-                    refreshed_existing,
-                    _event(
-                        record_id="must-not-cross-overlap",
-                        title="Older report beyond overlap",
-                        score=50,
-                        published_at_ms=NOW_MS - 120_000,
-                    ),
-                ),
-                observed_at_ms=NOW_MS + 1,
-                recovery_started_at_ms=NOW_MS + 1,
-            )
-
-        assert outcome["events_seen"] == 3
-        assert outcome["items_inserted"] == 1
-        assert outcome["items_updated"] == 1
-        assert outcome["overlap_complete"] is True
-        assert outcome["stop_reason"] == "existing_provider_record"
-        rows = conn.execute(
-            "SELECT provider_record_id, provider_metadata FROM news_items ORDER BY provider_record_id"
-        ).fetchall()
-        provider_ids = {str(row["provider_record_id"]) for row in rows}
-        assert provider_ids == {"existing-overlap", "new-before-overlap"}
-        refreshed = next(row for row in rows if row["provider_record_id"] == "existing-overlap")
-        assert refreshed["provider_metadata"]["score"] == 80
-    finally:
-        conn.close()
-
-
-def test_opennews_recovery_ignores_live_rows_created_after_the_attempt_started() -> None:
-    conn = connect_postgres_test(read_only=False)
-    try:
-        reset_postgres_schema(conn)
-        repository = NewsRepository(conn)
-        source = opennews_source()
-        stable_boundary = _event(
-            record_id="stable-boundary",
-            title="Stable overlap boundary",
-            score=60,
-            published_at_ms=NOW_MS - 60_000,
-        )
-        live_after_start = _event(
-            record_id="live-after-start",
-            title="Live row arriving during recovery",
-            score=70,
-            published_at_ms=NOW_MS,
-        )
-        missing_gap = _event(
-            record_id="missing-gap",
-            title="Gap row that recovery must retain",
-            score=75,
-            published_at_ms=NOW_MS - 30_000,
-        )
-        with conn.transaction():
-            repository.sync_sources((source,), now_ms=NOW_MS - 2)
-            repository.record_opennews_events(
-                source=source,
-                events=(stable_boundary,),
-                observed_at_ms=NOW_MS - 1,
-            )
-            repository.mark_opennews_recovery_attempt(
-                source_id=source.source_id,
-                started_at_ms=NOW_MS,
-            )
-            repository.record_opennews_events(
-                source=source,
-                events=(live_after_start,),
-                observed_at_ms=NOW_MS + 1,
-            )
-            outcome = repository.record_opennews_recovery_page(
-                source=source,
-                events=(live_after_start, missing_gap, stable_boundary),
-                observed_at_ms=NOW_MS + 2,
-                recovery_started_at_ms=NOW_MS,
-            )
-
-        assert outcome["overlap_complete"] is True
-        assert outcome["stop_reason"] == "existing_provider_record"
-        provider_ids = {
-            str(row["provider_record_id"])
-            for row in conn.execute("SELECT provider_record_id FROM news_items").fetchall()
-        }
-        assert provider_ids == {"stable-boundary", "live-after-start", "missing-gap"}
-    finally:
-        conn.close()
-
-
-def test_opennews_rest_and_websocket_reports_atomically_merge_during_overlap() -> None:
-    setup = connect_postgres_test(read_only=False)
-    writer_a = connect_postgres_test(read_only=False)
-    writer_b = connect_postgres_test(read_only=False)
-    observer = connect_postgres_test(read_only=False)
-    release_first = Event()
-    first_holding = Event()
-    second_started = Event()
-    source = opennews_source()
-    first = _event(title="Fed holds rates steady", score=70)
-    second = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": "wire-1",
-                "text": "Fed holds rates steady",
-                "description": "Policy decision and market response",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "link": "https://example.com/fed?utm_source=opennews",
-                "ts": NOW_MS,
-                "aiRating": {"signal": "long", "grade": "A+"},
-                "coins": [],
-            },
-        }
-    )
-    assert second is not None
-
-    try:
-        reset_postgres_schema(setup)
-        with setup.transaction():
-            NewsRepository(setup).sync_sources((source,), now_ms=NOW_MS)
-        writer_b_pid = int(writer_b.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"])
-        writer_b.commit()
-
-        def write_first() -> dict[str, int]:
-            with writer_a.transaction():
-                result = NewsRepository(writer_a).record_opennews_events(
-                    source=source,
-                    events=(first,),
-                    observed_at_ms=NOW_MS,
-                )
-                first_holding.set()
-                assert release_first.wait(timeout=5.0)
-                return result
-
-        def write_second() -> dict[str, int]:
-            assert first_holding.wait(timeout=5.0)
-            with writer_b.transaction():
-                second_started.set()
-                return NewsRepository(writer_b).record_opennews_events(
-                    source=source,
-                    events=(second,),
-                    observed_at_ms=NOW_MS + 1,
-                )
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            first_future = executor.submit(write_first)
-            assert first_holding.wait(timeout=5.0)
-            second_future = executor.submit(write_second)
-            assert second_started.wait(timeout=5.0)
-            deadline = time.monotonic() + 5.0
-            blocked = False
-            try:
-                while time.monotonic() < deadline:
-                    blocked = bool(
-                        observer.execute(
-                            "SELECT cardinality(pg_blocking_pids(%s)) > 0 AS blocked",
-                            (writer_b_pid,),
-                        ).fetchone()["blocked"]
-                    )
-                    observer.commit()
-                    if blocked:
-                        break
-                    time.sleep(0.01)
-                assert blocked, "second OpenNews writer never overlapped the uncommitted first writer"
-            finally:
-                release_first.set()
-            first_result = first_future.result(timeout=5.0)
-            second_result = second_future.result(timeout=5.0)
-
-        assert first_result["items_inserted"] == 1
-        assert second_result["items_updated"] == 1
-        row = setup.execute(
-            "SELECT count(*) AS count, provider_metadata FROM news_items GROUP BY provider_metadata"
-        ).fetchone()
-        assert row["count"] == 1
-        assert row["provider_metadata"] == {
-            "score": 70,
-            "signal": "long",
-            "grade": "A+",
-            "coins": [{"symbol": "BTC", "market_type": "spot", "match": "Bitcoin"}],
-        }
-    finally:
-        release_first.set()
-        observer.close()
-        writer_b.close()
-        writer_a.close()
-        setup.close()

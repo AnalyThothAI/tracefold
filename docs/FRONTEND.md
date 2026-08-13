@@ -116,7 +116,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `公共全球简报`, `状态`, and `来源`, backed respectively by `/news`,
   `/news/brief`, `/news/status`, and `/news/sources`. Story detail remains at
   `/news/stories/:storyId` and carries the same navigation. There is one public
-  product and no personalized or user-adjustable score threshold. The default
+  operator-bound product and no reader-personalized or user-adjustable score threshold.
+  OpenNews admission is the exact configured account Strategy allowlist; the
+  browser neither displays the private Strategy IDs nor reimplements their
+  provider-owned rules. The default
   `重点` mode requests the current server population with the fixed strict
   `provider_score_gt=70`, `sort=latest`, and `limit=25`; URL-owned `view=all`
   exposes the complete population without that threshold. Tracefold importance
@@ -171,17 +174,21 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   remain inside audit disclosures. Linkless evidence remains valid; unavailable
   original-link actions are omitted from the reading layer.
 
-  `/news/status` reads `/api/news/status` and presents primary OpenNews ingest
+  `/news/status` reads `/api/news/status` and presents the OpenNews Strategy
+  connection, configured/observed counts, last accepted trigger, and durable
+  no-replay coverage-gap boundary
   before public RSS breadth/corroboration, followed by Story, Brief, Push, and
   translation evidence without creating a second health calculation. RSS
   displays `未启用` when the server reports its default-off configuration; zero
   enabled sources is not presented as warming or failure. The Feed
   also renders compact reader-facing News health in its header.
   `/news/sources` reads `/api/news/sources`, preserves its OpenNews-first server
-  cursor order across enabled sources, exposes current fetch/outcome evidence, and never introduces
+  cursor order across enabled sources, exposes current Strategy/fetch outcome evidence, and never introduces
   client-side source ranking or enablement. The OpenNews inventory card says
-  primary rather than displaying its reporting-origin tier as an acquisition
-  priority. Feed, Brief, Status, and Sources poll every 60 seconds; Feed and
+  Strategy automatic push rather than displaying its reporting-origin tier as
+  an acquisition priority. A reconnect never labels a prior uncovered interval
+  recovered because the provider publishes no Strategy replay contract. Feed,
+  Brief, Status, and Sources poll every 60 seconds; Feed and
   Brief retain ETag revalidation and a `304` reuses the cached body.
   There is no archive, revision timeline, read state, favorites, subscriptions,
   per-Story AI panel, push inbox, notification settings, browser model call, or

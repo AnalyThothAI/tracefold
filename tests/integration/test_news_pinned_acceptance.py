@@ -31,6 +31,7 @@ from tracefold.platform.config.settings import Settings
 
 PINNED_WORLDMONITOR_HEAD = "0e8785c43e6a693990a14181ae0a16066c15fc8c"
 NOW_MS = 1_786_082_400_000
+OPENNEWS_STRATEGY_IDS = frozenset({"1018", "1019"})
 _PINNED_GOLDEN_PATH = Path(__file__).resolve().parents[1] / "fixtures/worldmonitor_news_acceptance_0e8785c43e6a.json"
 _PINNED_SOURCE_NAMES = {source.strip().lower(): source for source in _PINNED_SOURCE_TIERS}
 
@@ -45,19 +46,24 @@ def _frame(
     link: str | None = None,
     author: str | None = None,
 ) -> dict[str, Any]:
+    wire_text = f"{text}<br>{description}" if description else text
     params: dict[str, Any] = {
         "id": record_id,
-        "text": text,
+        "text": wire_text,
         "description": description,
         "newsType": origin,
+        "source": author or origin,
         "engineType": "news",
         "ts": NOW_MS - offset_minutes * 60_000,
+        "strategy": {
+            "id": "1018",
+            "name": "News Score > 70",
+            "sourceType": "news",
+        },
     }
     if link is not None:
         params["link"] = link
-    if author is not None:
-        params["source"] = author
-    return {"method": "news.update", "params": params}
+    return {"method": "strategy.triggered", "params": params}
 
 
 # One frozen provider corpus owns the acceptance seam. It deliberately has a
@@ -748,7 +754,10 @@ def _compute_current_public_clusters(repository: NewsRepository, *, now_ms: int)
 
 def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_path: Path) -> None:
     prepare_postgres_database()
-    events = tuple(parse_opennews_message(frame) for frame in OPENNEWS_FRAMES)
+    events = tuple(
+        parse_opennews_message(frame, strategy_ids=OPENNEWS_STRATEGY_IDS)
+        for frame in OPENNEWS_FRAMES
+    )
     assert all(event is not None and event.entry is not None for event in events)
     typed_events = tuple(event for event in events if event is not None)
     _assert_canonical_opennews(typed_events)
@@ -851,7 +860,10 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
         sealed_healthy_publication = healthy_http["publication"]
 
         next_ms = NOW_MS + 3_600_000
-        changed = parse_opennews_message(NEXT_TURN_FRAME)
+        changed = parse_opennews_message(
+            NEXT_TURN_FRAME,
+            strategy_ids=OPENNEWS_STRATEGY_IDS,
+        )
         assert changed is not None
         changed_items = [*canonical_items, *_canonical_items((changed,))]
         degraded_pinned = _run_pinned_worldmonitor(changed_items, now_ms=next_ms)

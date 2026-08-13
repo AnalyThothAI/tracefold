@@ -13,7 +13,6 @@ from psycopg.types.json import Jsonb
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tracefold.news.opennews import parse_opennews_message
 from tracefold.platform.postgres.postgres_migrations import alembic_config
 from tracefold.platform.postgres.queue_terminal import terminalize_source_row
 
@@ -98,22 +97,6 @@ BRIEF_TABLE_COLUMNS = {
         "updated_at_ms",
     },
 }
-
-
-def _content_fingerprint(fact: dict[str, object]) -> str:
-    payload = {
-        key: fact[key]
-        for key in (
-            "title",
-            "description",
-            "canonical_url",
-            "reporting_origin",
-            "published_at_ms",
-            "language",
-        )
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def _reset_to_0245() -> tuple[Any, Any]:
@@ -279,170 +262,6 @@ def test_world_brief_hard_cut_has_one_thirteen_table_schema() -> None:
     assert brief_columns == BRIEF_TABLE_COLUMNS
 
 
-def test_world_brief_hard_cut_matches_the_canonical_opennews_fact_adapter() -> None:
-    config, conn = _reset_to_0245()
-    frames = (
-        {
-            "id": "twitter-wrapper",
-            "text": (
-                "<b>Bitcoin &amp; markets rally</b><BR/>"
-                "Detailed market context spans more than forty characters for readers.<br/>"
-                "https://example.com/body"
-            ),
-            "description": "",
-            "newsType": "Twitter",
-            "source": " @WireAuthor ",
-            "engineType": "news",
-            "link": "https://example.com/twitter-story",
-            "ts": 123,
-        },
-        {
-            "id": "explicit-news-type",
-            "text": "<i>Reuters confirms policy decision</i><br/>This remaining block must not win.",
-            "description": "Explicit Reuters context is longer than forty characters and wins over body text.",
-            "newsType": "Reuters",
-            "source": "@IgnoredWrapperAuthor",
-            "engineType": "news",
-            "link": "https://reuters.example/policy?utm_source=ignored&id=7",
-            "ts": 124,
-        },
-        {
-            "id": "url-host-fallback",
-            "text": (
-                "Host fallback headline<br>Host-derived context is longer than forty characters for canonical evidence."
-            ),
-            "description": "",
-            "newsType": "",
-            "source": "@NotAWrapper",
-            "engineType": "news",
-            "link": "HTTPS://Updates.Example.NET/world/?utm_campaign=ignored&item=9",
-            "ts": 125,
-        },
-        {
-            "id": "opennews-fallback",
-            "text": "OpenNews fallback headline",
-            "description": "too short",
-            "newsType": "",
-            "engineType": "news",
-            "link": "",
-            "ts": 126,
-        },
-        {
-            "id": "javascript-whitespace",
-            "text": (
-                "\ufeffAlpha\ufeffBeta policy update\ufeff<br>"
-                "Detailed\ufeffpublic context is longer than forty UTF-16 code units for readers."
-            ),
-            "description": "",
-            "newsType": "\ufeffReuters\ufeff",
-            "engineType": "\ufeffnews\ufeff",
-            "link": "",
-            "ts": 127,
-        },
-    )
-    expected: dict[str, dict[str, object]] = {}
-    try:
-        conn.execute(
-            """
-            INSERT INTO news_sources(
-              source_id, name, tier, lang, enabled, consecutive_failures,
-              created_at_ms, updated_at_ms, source_kind, live_connected,
-              gap_unclosed, gap_version
-            ) VALUES (
-              'news-opennews', 'OpenNews', 2, 'en', true, 0,
-              0, 0, 'opennews', false, false, 0
-            )
-            """
-        )
-        # A valid 0245 row already contains either newsType, URL host, or
-        # ``opennews``. Remove the old CHECK only in this fixture to prove the
-        # migration also repairs a retained pre-contract empty origin instead
-        # of discarding its Item/Push identity.
-        conn.execute("ALTER TABLE news_items DROP CONSTRAINT news_items_reporting_origin_check")
-        for index, params in enumerate(frames):
-            event = parse_opennews_message({"method": "news.update", "params": params})
-            assert event is not None and event.entry is not None
-            entry = event.entry
-            item_id = f"item-{params['id']}"
-            expected_fact: dict[str, object] = {
-                "item_id": item_id,
-                "title": entry.title,
-                "description": entry.description,
-                "canonical_url": entry.link,
-                "reporting_origin": entry.reporting_origin,
-                "published_at_ms": entry.published_at_ms,
-                "language": "en",
-            }
-            expected_fact["content_fingerprint"] = _content_fingerprint(expected_fact)
-            expected[item_id] = expected_fact
-            retained_origin = {
-                "twitter-wrapper": "twitter",
-                "explicit-news-type": " ReUtErS ",
-                "url-host-fallback": "",
-                "opennews-fallback": "",
-                "javascript-whitespace": "\ufeffReUtErS\ufeff",
-            }[str(params["id"])]
-            conn.execute(
-                """
-                INSERT INTO news_items(
-                  item_id, source_id, source_item_key, provider_record_id,
-                  provider_metadata, canonical_url, reporting_origin,
-                  title, normalized_title, description, lang, published_at_ms,
-                  first_observed_at_ms, last_observed_at_ms, content_fingerprint,
-                  level, category, classification_source, classification_confidence,
-                  importance_score, importance_factors, brief_excluded,
-                  active, created_at_ms, updated_at_ms
-                ) VALUES (
-                  %(item_id)s, 'news-opennews', %(provider_record_id)s, %(provider_record_id)s,
-                  %(provider_metadata)s, %(canonical_url)s, %(reporting_origin)s,
-                  %(title)s, 'legacy-normalized-title', %(description)s, 'en', %(published_at_ms)s,
-                  %(observed_at_ms)s, %(observed_at_ms)s, 'legacy-fingerprint',
-                  'info', 'general', 'keyword', 1, 0, '{}'::jsonb, false,
-                  true, %(observed_at_ms)s, %(observed_at_ms)s
-                )
-                """,
-                {
-                    "item_id": item_id,
-                    "provider_record_id": str(params["id"]),
-                    "provider_metadata": Jsonb(event.provider_metadata),
-                    "canonical_url": entry.link,
-                    "reporting_origin": retained_origin,
-                    "title": str(params["text"]),
-                    "description": str(params["description"]),
-                    "published_at_ms": int(entry.published_at_ms or 0),
-                    "observed_at_ms": 200 + index,
-                },
-            )
-        conn.execute(
-            """
-            ALTER TABLE news_items
-              ADD CONSTRAINT news_items_reporting_origin_check
-              CHECK (btrim(reporting_origin) <> '') NOT VALID
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    command.upgrade(config, "20260807_0246")
-    conn = connect_postgres_test(read_only=False)
-    try:
-        facts = {
-            str(row["item_id"]): dict(row)
-            for row in conn.execute(
-                """
-                SELECT item_id, title, description, canonical_url,
-                       reporting_origin, published_at_ms, lang AS language,
-                       content_fingerprint
-                  FROM news_items
-                 ORDER BY item_id
-                """
-            ).fetchall()
-        }
-    finally:
-        conn.close()
-
-    assert facts == expected
 
 
 def test_world_brief_hard_cut_normalizes_facts_and_preserves_push_ledger() -> None:

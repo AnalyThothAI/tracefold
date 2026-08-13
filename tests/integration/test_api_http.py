@@ -51,6 +51,24 @@ from tracefold.platform.config.settings import Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
 TOKEN_RADAR_TEST_REBUILD_OFFSET_MS = 60_000
+OPENNEWS_STRATEGY_IDS = frozenset({"1018", "1019"})
+
+
+def _strategy_event(params: dict[str, Any]):
+    return parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": {
+                **params,
+                "strategy": {
+                    "id": "1018",
+                    "name": "News Score > 70",
+                    "sourceType": "news",
+                },
+            },
+        },
+        strategy_ids=OPENNEWS_STRATEGY_IDS,
+    )
 
 
 def _opennews_event(
@@ -65,7 +83,17 @@ def _opennews_event(
     return OpenNewsEvent(
         provider_record_id=provider_record_id,
         observation_kind="report",
-        provider_metadata=dict(provider_metadata or {}),
+        provider_metadata={
+            "strategies": [
+                {
+                    "id": "1018",
+                    "name": "News Score > 70",
+                    "source_type": "news",
+                    "engine_type": "news",
+                }
+            ],
+            **dict(provider_metadata or {}),
+        },
         entry=NewsFeedEntry(
             guid=provider_record_id,
             link=f"https://example.test/{provider_record_id}",
@@ -1027,22 +1055,18 @@ def test_api_news_canonicalizes_opennews_wire_headline_and_wrapper_origin(tmp_pa
     app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
     source = opennews_source()
-    event = parse_opennews_message(
+    event = _strategy_event(
         {
-            "method": "news.update",
-            "params": {
-                "id": "twitter-canonical-wire",
-                "text": (
-                    "Iran announces verified ceasefire talks&lt;br&gt;"
-                    "Officials said the announcement followed two days of negotiations "
-                    "and published a detailed timetable.&lt;br&gt;https://example.test/noise"
-                ),
-                "newsType": "Twitter",
-                "engineType": "news",
-                "source": "ReutersWorld",
-                "link": "https://example.test/twitter-canonical-wire",
-                "ts": now_ms,
-            },
+            "id": "twitter-canonical-wire",
+            "text": (
+                "Iran announces verified ceasefire talks&lt;br&gt;"
+                "Officials said the announcement followed two days of negotiations "
+                "and published a detailed timetable.&lt;br&gt;https://example.test/noise"
+            ),
+            "engineType": "news",
+            "source": "ReutersWorld",
+            "link": "https://example.test/twitter-canonical-wire",
+            "ts": now_ms,
         }
     )
     assert event is not None
@@ -1080,26 +1104,22 @@ def test_api_news_canonicalizes_opennews_wire_headline_and_wrapper_origin(tmp_pa
     }
 
 
-def test_api_news_strips_wire_controls_and_prefers_bounded_explicit_description(tmp_path):
+def test_api_news_strips_wire_controls_and_bounds_strategy_text_description(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
     now_ms = int(time.time() * 1000)
     source = opennews_source()
-    event = parse_opennews_message(
+    event = _strategy_event(
         {
-            "method": "news.update",
-            "params": {
-                "id": "wire-controls-and-description",
-                "text": (
-                    "Central bank approves policy\x00 today<br>"
-                    "This remaining block must not replace an explicit provider description."
-                ),
-                "description": (
-                    "<p>Officials confirmed the decision &amp; published implementation details " + ("x" * 500) + "</p>"
-                ),
-                "newsType": "Reuters",
-                "engineType": "news",
-                "ts": now_ms,
-            },
+            "id": "wire-controls-and-description",
+            "text": (
+                "Central bank approves policy\x00 today<br>"
+                "<p>Officials confirmed the decision &amp; published implementation details "
+                + ("x" * 500)
+                + "</p>"
+            ),
+            "source": "Reuters",
+            "engineType": "news",
+            "ts": now_ms,
         }
     )
     assert event is not None
@@ -1541,7 +1561,9 @@ def test_api_news_notification_separates_current_eligibility_from_durable_delive
             repos.conn.execute(
                 """
                 UPDATE news_items
-                   SET provider_metadata = '{}'::jsonb,
+                   SET provider_metadata = jsonb_build_object(
+                         'strategies', provider_metadata -> 'strategies'
+                       ),
                        provider_score_updated_at_ms = %s
                  WHERE item_id = %s
                 """,
@@ -1623,7 +1645,9 @@ def test_api_news_notification_separates_current_eligibility_from_durable_delive
             repos.conn.execute(
                 """
                 UPDATE news_items
-                   SET provider_metadata = '{}'::jsonb,
+                   SET provider_metadata = jsonb_build_object(
+                         'strategies', provider_metadata -> 'strategies'
+                       ),
                        provider_score_updated_at_ms = %s
                  WHERE item_id = %s
                 """,

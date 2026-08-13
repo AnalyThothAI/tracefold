@@ -483,8 +483,14 @@ def sources_query(
                    s.enabled, s.feed_url, s.refresh_interval_seconds,
                    s.next_fetch_at_ms, s.claim_lease_expires_at_ms,
                    s.last_fetch_started_at_ms, s.last_fetch_finished_at_ms,
-                   s.live_connected, s.last_live_at_ms,
-                   s.last_recovery_at_ms,
+                   s.live_connected,
+                   s.last_connected_at_ms, s.last_disconnected_at_ms,
+                   s.last_overflow_at_ms, s.strategy_coverage_started_at_ms,
+                   s.coverage_unknown_since_at_ms,
+                   s.last_accepted_strategy_trigger_at_ms,
+                   false AS replay_supported,
+                   jsonb_array_length(s.observed_strategy_provenance)
+                     AS observed_strategy_count,
                    s.last_success_at_ms, s.last_http_status,
                    s.consecutive_failures, s.last_outcome, s.last_error,
                    s.last_rejection_counts, s.last_items_seen,
@@ -503,9 +509,15 @@ def status_opennews_query() -> ReadQuerySpec:
     return ReadQuerySpec(
         name="news_status_opennews",
         sql="""
-            SELECT source_id, name, live_connected, last_live_at_ms,
-                   last_recovery_at_ms, last_error, last_outcome,
-                   last_http_status, last_success_at_ms,
+            SELECT source_id, name, live_connected,
+                   last_connected_at_ms, last_disconnected_at_ms,
+                   last_overflow_at_ms, strategy_coverage_started_at_ms,
+                   coverage_unknown_since_at_ms,
+                   last_accepted_strategy_trigger_at_ms,
+                   false AS replay_supported,
+                   jsonb_array_length(observed_strategy_provenance)
+                     AS observed_strategy_count,
+                   last_error, last_outcome, last_success_at_ms,
                    consecutive_failures, last_rejection_counts,
                    last_items_seen, last_items_accepted
               FROM news_sources

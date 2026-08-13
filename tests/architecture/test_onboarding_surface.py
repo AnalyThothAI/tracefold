@@ -22,6 +22,10 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     }.isdisjoint(targets)
     assert "docker compose build migrate" in makefile
     assert makefile.count("docker compose build ") == 1
+    stop_writer = "docker compose stop -t 40 workers serve"
+    start_stack = "docker compose up -d --no-build --force-recreate --wait"
+    assert stop_writer in makefile
+    assert makefile.index(stop_writer) < makefile.index(start_stack)
     assert "docker compose up -d --no-build --force-recreate --wait" in makefile
     assert "--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers" in makefile
     assert "docker compose up -d --build --force-recreate" not in makefile

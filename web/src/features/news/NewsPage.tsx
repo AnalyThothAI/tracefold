@@ -157,7 +157,7 @@ function FeedRoute({ token }: { token: string }) {
           <p>
             {mode === "focus"
               ? `OpenNews > ${HIGH_SIGNAL_THRESHOLD} · 高信号动态`
-              : "公共来源完整新闻事件"}
+              : "账户策略命中的新闻事件"}
           </p>
         </div>
         <NewsInlineStatus
@@ -453,18 +453,30 @@ function NewsInlineStatus({
       <div className="news-status-diagnostics">
         {source ? (
           <section>
-            <h2>OpenNews 低延迟主采集链</h2>
+            <h2>OpenNews Strategy 自动推送</h2>
             <dl>
               <div>
                 <dt>实时连接</dt>
-                <dd>{source.live_connected ? "正常" : "正在恢复"}</dd>
+                <dd>{source.live_connected ? "正常" : "未连接"}</dd>
               </div>
               <div>
-                <dt>最近补齐</dt>
+                <dt>配置策略</dt>
+                <dd>{source.configured_strategy_count}</dd>
+              </div>
+              <div>
+                <dt>最近触发</dt>
                 <dd>
-                  {source.last_recovery_at_ms == null
-                    ? "等待首次补齐"
-                    : relativeTime(source.last_recovery_at_ms)}
+                  {source.last_accepted_strategy_trigger_at_ms == null
+                    ? "等待首次触发"
+                    : relativeTime(source.last_accepted_strategy_trigger_at_ms)}
+                </dd>
+              </div>
+              <div>
+                <dt>历史缺口</dt>
+                <dd>
+                  {source.coverage_unknown_since_at_ms == null
+                    ? "当前未记录"
+                    : `${relativeTime(source.coverage_unknown_since_at_ms)}起不可回放`}
                 </dd>
               </div>
               <div>
@@ -1369,9 +1381,9 @@ function appendNonDeferredTail(
 function readerFacingNewsStatus(
   error: boolean,
   status: NewsStatus | undefined,
-): { label: string; state: "live" | "recovering" | "stalled" } {
+): { label: string; state: "live" | "warming" | "stalled" } {
   if (error) return { label: "状态暂不可用", state: "stalled" };
-  if (!status) return { label: "正在检查新闻", state: "recovering" };
+  if (!status) return { label: "正在检查新闻", state: "warming" };
   if (status.layers.story.status === "degraded") {
     return { label: "新闻更新异常", state: "stalled" };
   }
@@ -1380,7 +1392,7 @@ function readerFacingNewsStatus(
   }
   const factStates = [status.layers.ingest.status, status.layers.story.status];
   if (factStates.includes("warming")) {
-    return { label: "新闻数据恢复中", state: "recovering" };
+    return { label: "等待首次 Strategy 触发", state: "warming" };
   }
   return { label: "新闻已同步", state: "live" };
 }

@@ -14,6 +14,7 @@ from tracefold.platform.paths import app_home, app_log_path, config_path
 DEFAULT_UPSTREAM_CHAINS = ("sol", "eth", "base", "bsc", "robinhood")
 DEFAULT_UPSTREAM_CHANNELS = ("twitter_monitor_basic", "twitter_monitor_token")
 DEFAULT_GMGN_APP_VERSION = "20260429-12894-ccec416"
+OPENNEWS_STRATEGY_ID_LIMIT = 32
 
 
 class ApiConfig(BaseModel):
@@ -279,6 +280,7 @@ class NewsSettings(BaseModel):
     enabled: bool = True
     rss_enabled: bool = False
     opennews_token: str | None = None
+    opennews_strategy_ids: tuple[str, ...] = ()
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
 
     @field_validator("opennews_token", mode="before")
@@ -287,10 +289,37 @@ class NewsSettings(BaseModel):
         normalized = str(value or "").strip()
         return normalized or None
 
+    @field_validator("opennews_strategy_ids", mode="before")
+    @classmethod
+    def parse_opennews_strategy_ids(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, list | tuple):
+            raise ValueError("opennews_strategy_ids_invalid")
+        if len(value) > OPENNEWS_STRATEGY_ID_LIMIT:
+            raise ValueError("opennews_strategy_ids_too_many")
+        normalized: list[str] = []
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError("opennews_strategy_id_invalid")
+            strategy_id = raw.strip()
+            if not strategy_id or "\x00" in strategy_id or len(strategy_id) > 128:
+                raise ValueError("opennews_strategy_id_invalid")
+            try:
+                strategy_id.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError("opennews_strategy_id_invalid") from exc
+            normalized.append(strategy_id)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("opennews_strategy_ids_duplicate")
+        return tuple(sorted(normalized))
+
     @model_validator(mode="after")
     def require_news_for_push(self) -> NewsSettings:
         if not self.enabled and self.push.enabled:
             raise ValueError("news_push_requires_news_enabled")
+        if self.enabled and self.opennews_token and not self.opennews_strategy_ids:
+            raise ValueError("opennews_strategy_ids_required")
         return self
 
 
@@ -442,6 +471,7 @@ news:
   enabled: true
   rss_enabled: false
   opennews_token:
+  opennews_strategy_ids: []
   push:
     enabled: false
     feishu_webhook_url:

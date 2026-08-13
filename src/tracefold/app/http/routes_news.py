@@ -152,6 +152,7 @@ def get_news_status(request: Request) -> JSONResponse:
         data = repos.news.health_snapshot(
             now_ms=now_ms,
             rss_enabled=runtime.settings.news.rss_enabled,
+            configured_strategy_count=len(runtime.settings.news.opennews_strategy_ids),
             push_enabled=push_settings.enabled,
             feishu_webhook_url_configured=bool(push_settings.feishu_webhook_url),
             feishu_signing_secret_configured=bool(push_settings.feishu_signing_secret),

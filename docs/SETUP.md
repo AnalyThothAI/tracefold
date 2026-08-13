@@ -58,7 +58,8 @@ using `--force`.
 `tracefold init` is the sole default-config authority. There is no maintained
 static example or `.env` fallback. The generated default creates a local
 WebSocket token but contains no external provider, model, OpenNews, or Feishu
-credential, and leaves News push disabled. Edit only the operator-owned
+credential, leaves `news.opennews_strategy_ids` empty, and leaves News push
+disabled. Edit only the operator-owned
 `~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
 terminal output, docs, tests, and commits.
 
@@ -76,7 +77,9 @@ The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
 
 - absent `news.opennews_token` produces `opennews_token_missing` for the
-  primary low-latency OpenNews lane. RSS defaults off; operators may explicitly
+  operator-bound OpenNews Strategy lane. When a token is configured while News
+  is enabled, `news.opennews_strategy_ids` must be a non-empty duplicate-free
+  set or configuration fails closed. RSS defaults off; operators may explicitly
   set `news.rss_enabled: true` to add the public breadth/corroboration catalog;
 - absent GMGN/OKX credentials leave their authenticated profile, discovery, or
   market lanes unavailable, while configured keyless sources keep their own
@@ -90,8 +93,9 @@ lanes report explicit degradation or unavailable evidence:
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
-`tracefold config` reports the effective file paths and configured booleans;
-it never prints provider tokens, webhook URLs, signing secrets, or model keys.
+`tracefold config` reports the effective file paths, configured booleans, and
+`opennews_strategy_count`; it never prints provider tokens, Strategy-ID values,
+webhook URLs, signing secrets, or model keys.
 
 `news.push.feishu_signing_secret` is optional. When present, the Adapter adds
 the Feishu timestamp and signature. When absent, it sends the same compact
@@ -117,6 +121,9 @@ news:
   enabled: true
   rss_enabled: false
   opennews_token: "<operator secret>"
+  opennews_strategy_ids:
+    - "1018" # News Score > 70
+    - "1019" # OI Event Monitor
   push:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
@@ -129,6 +136,13 @@ direct DeepSeek triple enables the one-attempt presentation translation; do
 not add a `news.push.translation` block or duplicate the credential. The target
 language, 7.5-second request timeout, 8-second total
 budget, no-retry policy, and title limits are code-owned.
+
+The current cutover configures exactly `1018` (News Score > 70) and `1019` (OI
+Event Monitor), and `tracefold config` therefore reports a redacted Strategy
+count of `2`. Listing and Delisting Announcements and Storage News exist
+provider-side but are deliberately excluded. Provider-side enablement never
+silently edits Tracefold configuration; adding any Strategy later requires an
+explicit config change, while the account page remains the definition authority.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain the credentials/endpoints needed by each enabled
@@ -149,18 +163,24 @@ Disabled startup reconciliation removes RSS from the active source inventory
 and releases prior claims, while the acquisition clock still expires old facts
 without making RSS requests. When enabled, one bounded turn conditionally fetches at most one due feed and
 atomically replaces its accepted first-five snapshot; failures preserve the
-last successful snapshot until the 96-hour floor. The primary OpenNews WSS
-receiver, newest-first 12-hour REST overlap, and publisher share the same
-acquisition module. REST is requested after
-initial connection, reconnect, or queue overflow, reads at most 11 sequential
-pages, and stops at the first existing provider record or the 12-hour cutoff;
-there is no persisted gap state. RSS provides public breadth and independent
-corroboration; acquisition role does not change deterministic Story ranking.
+last successful snapshot until the 96-hour floor. The OpenNews Strategy receiver
+and publisher share the same acquisition module. It authenticates one WSS and
+sends zero application subscription frames; the server automatically pushes the
+account owner's `strategy.triggered` notifications. Tracefold admits only nested
+Strategy IDs in the exact configured allowlist, including configured NEWS and
+MARKET/OI events regardless of `engineType`. It does not send
+`news.subscribe`, `strategy.subscribe`, or `strategy.triggered`, does not call
+ordinary `/open/news_search` for recovery, and does not use private webpage APIs.
+A disconnect, queue overflow, process outage, or provider non-delivery creates
+an unknown coverage interval that reconnect cannot erase. RSS provides public
+breadth and independent corroboration; Strategy admission does not change the
+deterministic Story/Brief algorithms.
 A fixed 60-second writer owns the membership-expanded RSS Top-20-per-category
 plus OpenNews physical Story/selection projection,
 and the single-capacity native-state model arbiter owns World Brief. On the
-first post-migration start, the Story writer can publish current OpenNews facts
-before any RSS attempt. An empty Top Story selection is not claimable and does
+first post-migration start, the Story writer can publish current
+Strategy-admitted OpenNews facts before any RSS attempt. An empty Top Story
+selection is not claimable and does
 not complete or overwrite the current Brief slot; normal 60-second PostgreSQL
 polling makes a later non-empty selection in the same half hour eligible, with
 no wake service or compatibility path.
@@ -173,6 +193,9 @@ signed Feishu card containing the selected Item's original OpenNews headline
 plus a compact body with its `关联资产`, provider score, and optional
 original-link button, with durable at-least-once retries. It is not a
 generic Notifications product or item-level analysis path.
+An accepted Strategy trigger may therefore appear in Story while remaining
+ineligible for Focus or Push; scoreless MARKET/OI and exact-score-70 Items still
+face the unchanged strict provider-score `>70`, asset, baseline, and time gates.
 Each complete Push reconcile ring starts no sooner than 25 seconds after the
 prior ring started. Its clock and cursor survive restart, preventing a small
 Story set from being rescanned every few pages without delaying the capped
@@ -295,8 +318,18 @@ irreversibly delete retired News acquisition history and Macro publication,
 per-attempt, and stored intermediate history while preserving current items,
 facts, targets, document analyses, and module rows.
 Historical migration `20260801_0237` added an OpenNews recovery boundary;
-News migration `20260809_0247` removes that state, installs public RSS
-source scheduling, and hard-cuts Brief persistence to two singleton tables.
+historical News migration `20260809_0247` replaced it with bounded ordinary-news
+overlap, installed public RSS source scheduling, and hard-cut Brief persistence
+to two singleton tables. Neither recovery shape is current: Strategy-only
+migration `20260813_0265` removes ordinary-news REST overlap and records unknown coverage
+without replay.
+Stop Serve and Workers before applying `20260813_0265`. It deactivates
+legacy full-corpus OpenNews Items, clears Story/member/selection for the sole
+normal writer to rebuild after startup, clears
+incompatible Brief current/LKG state, cancels obsolete pending/retry Push work,
+preserves sent-delivery audit plus Push baseline/dedup evidence, and resets old
+REST-recovery telemetry. Start only the new writer after the exact non-empty
+allowlist is configured; never overlap old and new acquisition.
 Token Radar migration `20260810_0249` removed the retired Radar projection
 tables and temporary replay-only schema, then installed the compact singleton.
 It preserved material Events, intents, resolutions, identities, and market
@@ -352,7 +385,7 @@ them stopped through the 0259 invariant repair.
 Migration `20260813_0259` repairs the eligibility clock of any numeric-score
 Item written during a mixed-version 0258 cutover and then enforces that clock
 as a database invariant. Migration `20260813_0260` adds the durable 25-second
-Push reconcile-ring clock. Current head `20260813_0261` replaces Radar's old
+Push reconcile-ring clock. Migration `20260813_0261` replaces Radar's old
 expression index with a STORED generated text fingerprint and narrow covering
 index while preserving all facts/current payload. Keep Serve and Workers
 stopped while crossing these revisions, then restore only the new single
@@ -362,7 +395,7 @@ heartbeat stability.
 disabled after migration until the Feishu webhook and push switch are
 explicitly configured; signing remains optional. The first enabled reconcile
 records a no-backfill baseline; the code-owned 15-minute live-alert window also
-prevents later REST overlap from sending stale articles.
+prevents a later accepted Strategy update from sending stale articles.
 Enable the Macro workers only after the migration is current.
 
 The overview and six typed module reads are persisted-only and never trigger a
@@ -426,7 +459,7 @@ facts do not participate in admission or order. The cut adds
 no episode, frontier, Gate audit, or history table, exposes no window control,
 and changes no WebSocket behavior.
 
-Current migration `20260813_0261` materializes the exact ASCII-lower,
+Migration `20260813_0261` materializes the exact ASCII-lower,
 whitespace-normalized MD5 duplicate-text fingerprint as a STORED Event column
 and INCLUDEs it in the partial source-time index, allowing vacuum-visible
 history to remain Index Only without fetching wide Event text. Presentation

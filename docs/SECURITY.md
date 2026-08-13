@@ -63,12 +63,33 @@ globally routable. Feed failures preserve the previous current facts until the
 normal 96-hour expiry; malformed or unsafe-redirect responses cannot publish
 an empty replacement snapshot.
 
-`news.opennews_token` is an operator-owned secret. Configuration diagnostics
-expose only a configured boolean. OpenNews transport exceptions, current
-metadata, logs, generated artifacts, and public source/status responses must
-never contain the token or authorization header. Provider AI ratings are
-descriptive NewsItem metadata and cannot change identity, Story membership, or
-importance.
+`news.opennews_token` and the exact configured
+`news.opennews_strategy_ids` set are operator-owned secrets/configuration.
+Diagnostics expose only `opennews_token_configured`,
+`opennews_strategy_ids_configured`, and `opennews_strategy_count`; source/status
+responses never list the configured set. OpenNews transport exceptions, logs,
+generated artifacts, and public source/status responses must never contain the
+token, authorization header, or allowlist values.
+The current reviewed configuration contains exactly `1018` and `1019`, so
+diagnostics expose count `2`; provider-side Listing/Storage Strategies are not
+admitted. A future addition requires an explicit reviewed configuration change.
+
+The authenticated WSS automatically sends the account owner's
+`strategy.triggered` notifications. Tracefold sends no application subscription
+request and performs no Strategy CRUD, account-page scraping, cookie/session
+extraction, private webpage API call, or ordinary-news REST replay. Strategy
+definitions and provider-side enablement remain account authority. A successful
+handshake proves authentication/connectivity only; it does not prove Strategy
+existence, enablement, delivery completeness, or lossless history.
+
+Accepted event metadata is bounded to provider score/signal/grade/assets/source
+and the deterministic matching Strategy ID/name/source-type/observed-engine-type
+provenance union. The full Strategy definition and metrics payload are never
+copied into public data. Provider ratings and provenance are descriptive
+NewsItem metadata after admission and cannot change fact identity, Story
+membership, importance, or Brief ordering. Disconnect, overflow, outage, and
+provider non-delivery are recorded as unknown coverage; reconnect must not
+misrepresent them as recovered or expose secrets while reporting the gap.
 
 `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret` are operator-owned secrets. They are reported

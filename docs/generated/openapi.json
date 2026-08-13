@@ -8061,9 +8061,57 @@
       "NewsOpenNewsStatusData": {
         "additionalProperties": false,
         "properties": {
+          "configured_strategy_count": {
+            "title": "Configured Strategy Count",
+            "type": "integer"
+          },
           "consecutive_failures": {
             "title": "Consecutive Failures",
             "type": "integer"
+          },
+          "coverage_unknown_since_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Unknown Since At Ms"
+          },
+          "last_accepted_strategy_trigger_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Accepted Strategy Trigger At Ms"
+          },
+          "last_connected_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Connected At Ms"
+          },
+          "last_disconnected_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Disconnected At Ms"
           },
           "last_error": {
             "anyOf": [
@@ -8076,17 +8124,6 @@
             ],
             "title": "Last Error"
           },
-          "last_http_status": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Http Status"
-          },
           "last_items_accepted": {
             "title": "Last Items Accepted",
             "type": "integer"
@@ -8094,17 +8131,6 @@
           "last_items_seen": {
             "title": "Last Items Seen",
             "type": "integer"
-          },
-          "last_live_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Live At Ms"
           },
           "last_outcome": {
             "anyOf": [
@@ -8117,7 +8143,7 @@
             ],
             "title": "Last Outcome"
           },
-          "last_recovery_at_ms": {
+          "last_overflow_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -8126,7 +8152,7 @@
                 "type": "null"
               }
             ],
-            "title": "Last Recovery At Ms"
+            "title": "Last Overflow At Ms"
           },
           "last_rejection_counts": {
             "additionalProperties": {
@@ -8154,20 +8180,46 @@
             "title": "Name",
             "type": "string"
           },
+          "observed_strategy_count": {
+            "title": "Observed Strategy Count",
+            "type": "integer"
+          },
+          "replay_supported": {
+            "const": false,
+            "title": "Replay Supported",
+            "type": "boolean"
+          },
           "source_id": {
             "title": "Source Id",
             "type": "string"
+          },
+          "strategy_coverage_started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Coverage Started At Ms"
           }
         },
         "required": [
           "source_id",
           "name",
           "live_connected",
-          "last_live_at_ms",
-          "last_recovery_at_ms",
+          "configured_strategy_count",
+          "observed_strategy_count",
+          "last_connected_at_ms",
+          "last_disconnected_at_ms",
+          "last_overflow_at_ms",
+          "strategy_coverage_started_at_ms",
+          "coverage_unknown_since_at_ms",
+          "last_accepted_strategy_trigger_at_ms",
+          "replay_supported",
           "last_outcome",
           "last_error",
-          "last_http_status",
           "last_success_at_ms",
           "consecutive_failures",
           "last_rejection_counts",
@@ -8684,6 +8736,17 @@
             "title": "Consecutive Failures",
             "type": "integer"
           },
+          "coverage_unknown_since_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Unknown Since At Ms"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
@@ -8698,6 +8761,39 @@
               }
             ],
             "title": "Feed Url"
+          },
+          "last_accepted_strategy_trigger_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Accepted Strategy Trigger At Ms"
+          },
+          "last_connected_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Connected At Ms"
+          },
+          "last_disconnected_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Disconnected At Ms"
           },
           "last_error": {
             "anyOf": [
@@ -8751,17 +8847,6 @@
             "title": "Last Items Seen",
             "type": "integer"
           },
-          "last_live_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Live At Ms"
-          },
           "last_outcome": {
             "anyOf": [
               {
@@ -8773,7 +8858,7 @@
             ],
             "title": "Last Outcome"
           },
-          "last_recovery_at_ms": {
+          "last_overflow_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -8782,7 +8867,7 @@
                 "type": "null"
               }
             ],
-            "title": "Last Recovery At Ms"
+            "title": "Last Overflow At Ms"
           },
           "last_rejection_counts": {
             "additionalProperties": {
@@ -8821,6 +8906,10 @@
             ],
             "title": "Next Fetch At Ms"
           },
+          "observed_strategy_count": {
+            "title": "Observed Strategy Count",
+            "type": "integer"
+          },
           "refresh_interval_seconds": {
             "anyOf": [
               {
@@ -8831,6 +8920,10 @@
               }
             ],
             "title": "Refresh Interval Seconds"
+          },
+          "replay_supported": {
+            "title": "Replay Supported",
+            "type": "boolean"
           },
           "source_id": {
             "title": "Source Id",
@@ -8843,6 +8936,17 @@
             ],
             "title": "Source Kind",
             "type": "string"
+          },
+          "strategy_coverage_started_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Coverage Started At Ms"
           },
           "tier": {
             "title": "Tier",
@@ -8862,8 +8966,14 @@
           "last_fetch_started_at_ms",
           "last_fetch_finished_at_ms",
           "live_connected",
-          "last_live_at_ms",
-          "last_recovery_at_ms",
+          "last_connected_at_ms",
+          "last_disconnected_at_ms",
+          "last_overflow_at_ms",
+          "strategy_coverage_started_at_ms",
+          "coverage_unknown_since_at_ms",
+          "last_accepted_strategy_trigger_at_ms",
+          "replay_supported",
+          "observed_strategy_count",
           "last_success_at_ms",
           "last_http_status",
           "consecutive_failures",
@@ -8952,7 +9062,7 @@
           "operating_state": {
             "enum": [
               "live",
-              "recovering",
+              "warming",
               "stalled"
             ],
             "title": "Operating State",

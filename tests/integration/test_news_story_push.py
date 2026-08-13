@@ -24,6 +24,25 @@ from tracefold.news.repository import NewsRepository
 from tracefold.news.sources import opennews_source
 
 BASE_MS = 1_785_560_400_000
+OPENNEWS_STRATEGY_IDS = frozenset({"1018", "1019"})
+_REPORT_PARAMS_BY_ID: dict[str, dict[str, Any]] = {}
+
+
+def _strategy_event(params: dict[str, Any]):
+    return parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": {
+                **params,
+                "strategy": {
+                    "id": "1018",
+                    "name": "News Score > 70",
+                    "sourceType": "news",
+                },
+            },
+        },
+        strategy_ids=OPENNEWS_STRATEGY_IDS,
+    )
 
 
 def test_push_reconcile_discovery_is_one_audited_fixed_page() -> None:
@@ -37,7 +56,7 @@ def test_push_reconcile_discovery_is_one_audited_fixed_page() -> None:
         query_specs_module.story_push_contexts_query(story_ids=tuple(f"story-{index}" for index in range(101)))
 
 
-def test_push_reconcile_pages_and_revisits_later_ai_qualification() -> None:
+def test_push_reconcile_pages_and_revisits_later_strategy_qualification() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -68,6 +87,10 @@ def test_push_reconcile_pages_and_revisits_later_ai_qualification() -> None:
                          'score', CASE WHEN value = 1001 THEN 90 ELSE 60 END,
                          'coins', jsonb_build_array(jsonb_build_object(
                            'symbol', 'BTC', 'market_type', 'spot'
+                         )),
+                         'strategies', jsonb_build_array(jsonb_build_object(
+                           'id', '1018', 'name', 'News Score > 70',
+                           'source_type', 'news', 'engine_type', 'news'
                          ))
                        ),
                        %s, %s, 'Audit Wire', 'Reconcile report ' || value, '', 'en',
@@ -269,7 +292,7 @@ def test_push_baseline_fence_ignores_later_projection_and_noneligibility_metadat
             rebuild_news_projection(repository, now_ms=BASE_MS + 1)
             repository.record_opennews_events(
                 source=opennews_source(),
-                events=(_annotation("prebaseline-before-story", score=90),),
+                events=(_strategy_refresh("prebaseline-before-story", score=90),),
                 observed_at_ms=BASE_MS + 2,
             )
 
@@ -303,51 +326,48 @@ def _event(
     url: str | None = "https://example.com/news",
     asset_symbols: tuple[str, ...] = ("BTC",),
 ):
-    event = parse_opennews_message(
-        {
-            "method": "news.update",
-            "params": {
-                "id": record_id,
-                "text": title,
-                "description": f"Details for {record_id}",
-                "newsType": "Reuters",
-                "engineType": "news",
-                "link": url,
-                "ts": published_at_ms,
-                "aiRating": {
-                    "score": score,
-                    "signal": "long",
-                    "grade": "A",
-                },
-                "coins": [{"symbol": symbol, "market_type": "spot"} for symbol in asset_symbols],
-            },
-        }
-    )
+    params: dict[str, Any] = {
+        "id": record_id,
+        "text": f"{title}<br>Details for {record_id} provide enough context for downstream rendering.",
+        "description": f"Details for {record_id}",
+        "engineType": "news",
+        "link": url,
+        "ts": published_at_ms,
+        "aiRating": {
+            "score": score,
+            "signal": "long",
+            "grade": "A",
+        },
+        "coins": [{"symbol": symbol, "market_type": "spot"} for symbol in asset_symbols],
+    }
+    _REPORT_PARAMS_BY_ID[record_id] = params
+    event = _strategy_event(params)
     assert event is not None
     return event
 
 
-def _annotation(
+def _strategy_refresh(
     record_id: str,
     *,
     score: float,
     asset_symbols: tuple[str, ...] | None = None,
 ):
+    original = _REPORT_PARAMS_BY_ID.get(record_id)
+    assert original is not None, f"missing initial Strategy report for {record_id}"
     params: dict[str, Any] = {
-        "newsId": record_id,
-        "engineType": "news",
-        "score": score,
-        "signal": "long",
-        "grade": "A+",
+        **original,
+        "aiRating": {
+            "score": score,
+            "signal": "long",
+            "grade": "A+",
+        },
     }
     if asset_symbols is not None:
-        params["coins"] = [{"symbol": symbol, "market_type": "spot"} for symbol in asset_symbols]
-    event = parse_opennews_message(
-        {
-            "method": "news.ai_update",
-            "params": params,
-        }
-    )
+        params["coins"] = [
+            {"symbol": symbol, "market_type": "spot"} for symbol in asset_symbols
+        ]
+    _REPORT_PARAMS_BY_ID[record_id] = params
+    event = _strategy_event(params)
     assert event is not None
     return event
 
@@ -479,6 +499,7 @@ def test_push_health_sample_overflow_fails_closed(
         public_health = repository.health_snapshot(
             now_ms=BASE_MS,
             rss_enabled=False,
+            configured_strategy_count=2,
             push_enabled=True,
             feishu_webhook_url_configured=True,
         )
@@ -875,7 +896,10 @@ def test_story_push_contexts_select_numeric_max_then_newest_then_item_id() -> No
             """,
             (Jsonb({"score": "999"}),),
         )
-        conn.execute("UPDATE news_items SET provider_metadata = '{}'::jsonb WHERE provider_record_id = 'no-score'")
+        conn.execute(
+            "UPDATE news_items SET provider_metadata = provider_metadata - 'score' "
+            "WHERE provider_record_id = 'no-score'"
+        )
         conn.commit()
 
         selected = next(iter(_only_numeric_story_contexts(repository).values()))
@@ -952,7 +976,7 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
         with conn.transaction():
             repository.record_opennews_events(
                 source=opennews_source(),
-                events=(_annotation("score-clock", score=82),),
+                events=(_strategy_refresh("score-clock", score=82),),
                 observed_at_ms=BASE_MS + 7_200_010,
             )
         qualified = next(iter(_only_numeric_story_contexts(repository).values()))["provider_evidence"]
@@ -961,7 +985,7 @@ def test_provider_score_clock_changes_only_when_the_numeric_score_fact_changes()
         with conn.transaction():
             repository.record_opennews_events(
                 source=opennews_source(),
-                events=(_annotation("score-clock", score=82),),
+                events=(_strategy_refresh("score-clock", score=82),),
                 observed_at_ms=BASE_MS + 7_200_020,
             )
         duplicate = next(iter(_only_numeric_story_contexts(repository).values()))["provider_evidence"]
@@ -1021,7 +1045,7 @@ def test_selected_item_score_change_keeps_the_story_ledger_state(
         with conn.transaction():
             repository.record_opennews_events(
                 source=opennews_source(),
-                events=(_annotation("selected-later", score=90),),
+                events=(_strategy_refresh("selected-later", score=90),),
                 observed_at_ms=BASE_MS + 5,
             )
 
@@ -1185,7 +1209,7 @@ def test_skipped_candidate_can_qualify_after_provider_assets_update(
             repository.record_opennews_events(
                 source=opennews_source(),
                 events=(
-                    _annotation(
+                    _strategy_refresh(
                         "later-assets",
                         score=88,
                         asset_symbols=("BTC",),
@@ -1241,7 +1265,7 @@ def test_existing_unfrozen_delivery_with_filtered_assets_is_suppressed(
                 repository.record_opennews_events(
                     source=opennews_source(),
                     events=(
-                        _annotation(
+                        _strategy_refresh(
                             "existing-unfrozen",
                             score=88,
                             asset_symbols=asset_symbols,
@@ -1309,7 +1333,7 @@ def test_existing_frozen_retry_with_cl_family_only_assets_is_suppressed_before_s
             repository.record_opennews_events(
                 source=opennews_source(),
                 events=(
-                    _annotation(
+                    _strategy_refresh(
                         "existing-frozen-retry",
                         score=88,
                         asset_symbols=("CL", "XYZ-CL"),
@@ -1339,7 +1363,7 @@ def test_existing_frozen_retry_with_cl_family_only_assets_is_suppressed_before_s
         conn.close()
 
 
-def test_late_recovery_score_does_not_push_a_stale_article() -> None:
+def test_late_strategy_score_does_not_push_a_stale_article() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -1355,7 +1379,7 @@ def test_late_recovery_score_does_not_push_a_stale_article() -> None:
                 source=opennews_source(),
                 events=(
                     _event(
-                        "late-recovery-score",
+                        "late-strategy-score",
                         title="Issuer files for a spot exchange product",
                         score=70,
                         published_at_ms=BASE_MS + 1,
@@ -1369,7 +1393,7 @@ def test_late_recovery_score_does_not_push_a_stale_article() -> None:
         with conn.transaction():
             repository.record_opennews_events(
                 source=opennews_source(),
-                events=(_annotation("late-recovery-score", score=88),),
+                events=(_strategy_refresh("late-strategy-score", score=88),),
                 observed_at_ms=recovered_at_ms,
             )
 
@@ -1481,7 +1505,7 @@ def test_push_retries_frozen_prepared_payload_outside_transactions(
         with conn.transaction():
             repository.record_opennews_events(
                 source=opennews_source(),
-                events=(_annotation("after-enable", score=71),),
+                events=(_strategy_refresh("after-enable", score=71),),
                 observed_at_ms=BASE_MS + 3,
             )
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"]))
@@ -1533,7 +1557,7 @@ def test_push_retries_frozen_prepared_payload_outside_transactions(
         with conn.transaction():
             repository.record_opennews_events(
                 source=opennews_source(),
-                events=(_annotation("after-enable", score=99),),
+                events=(_strategy_refresh("after-enable", score=99),),
                 observed_at_ms=clock["now_ms"] + 1,
             )
         asyncio.run(runtime.reconcile(now_ms=clock["now_ms"] + 1))

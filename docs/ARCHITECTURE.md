@@ -68,9 +68,9 @@ Material facts include:
   `registry_assets`, `asset_identity_evidence`, `asset_identity_current`;
 - market: `market_ticks`, `enriched_events`, `market_observations`,
   `market_settlements`, and `market_position_facts`;
-- news: canonical current Article facts from the primary low-latency OpenNews
-  lane and, when explicitly enabled, the code-owned public RSS
-  breadth/corroboration catalog in `news_items`;
+- news: canonical current Article facts admitted by the operator's exact
+  OpenNews Strategy allowlist and, when explicitly enabled, the code-owned
+  public RSS breadth/corroboration catalog in `news_items`;
 - macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
   `macro_documents`.
 
@@ -87,10 +87,13 @@ values. It never overwrites acquisition-owned facts.
 OpenNews's raw `coins` annotation remains source evidence in `news_items`; the
 public News read adapter exposes that bounded annotation as generic `assets`
 because provider symbols can represent crypto, equities, or commodities. It
-does not classify, validate, or correct those labels.
+does not classify, validate, or correct those labels. Each accepted provider
+event also retains a bounded, deterministic, sorted-unique union of the matching
+Strategy ID, name, source type, and observed engine type. It never persists the
+full Strategy definition or metrics payload.
 
-Source connection health in `news_sources`, queues, leases, retries, native
-model runs/jobs, and terminal events are control state. Typed Macro and Profile
+Source connection and unknown-coverage state in `news_sources`, queues, leases,
+retries, native model runs/jobs, and terminal events are control state. Typed Macro and Profile
 frontiers store stable
 domain/shard identity, input fingerprint, earliest deadline, lease, failure,
 and publication checkpoints. `first_dirty_at_ms` records the causal change,
@@ -221,8 +224,8 @@ Important atomic units are:
 - one Macro acquisition completion: normalized fact insert, cursor advance, and
   compare-and-set target completion;
 - current read-model write plus acknowledgement of the exact claim;
-- one RSS source snapshot or OpenNews overlap page plus its canonical current
-  NewsItem facts;
+- one RSS source snapshot or one accepted OpenNews Strategy trigger plus its
+  canonical current NewsItem fact and provenance union;
 - one coherent Story/member/selection closure;
 - one fenced half-hour Brief slot completion against its frozen selection and
   one whole served current/LKG payload;
@@ -436,9 +439,12 @@ at commit `0e8785c43e6a693990a14181ae0a16066c15fc8c`, not an independent
 editorial ontology or the personalized Digest Magazine pipeline:
 
 ```text
-OpenNews source
-  -> persistent WSS plus newest-first bounded 12-hour REST overlap
-  -> primary low-latency 12-hour current facts
+OpenNews account Strategies
+  -> authenticated persistent WSS; server automatically sends strategy.triggered
+  -> no application subscribe/request; literal ping/pong and RFC control heartbeat only
+  -> exact configured multi-Strategy allowlist
+  -> operator-bound, Strategy-qualified 12-hour current facts
+  -> disconnect/overflow/outage records an unknown coverage interval
 
 WorldMonitor full/en + INTEL RSS catalog
   -> disabled by default; enable only with news.rss_enabled: true
@@ -486,28 +492,48 @@ until the 96-hour floor expires. Initial and bounded redirect hops are checked
 as public HTTPS and must resolve only to globally routable addresses before the
 Adapter sends them.
 
-OpenNews is the primary low-latency acquisition lane. Its persistent
-authenticated WSS receiver feeds one bounded queue. Initial connection and
-reconnect each trigger one REST overlap; queue overflow ends the current stream
-so its reconnect uses that same single path. REST starts from the newest page,
-reads at most eleven 100-item pages, and stops at the provider's last page, the
-first provider record persisted before the attempt, or the 12-hour cutoff. A
-full eleven-page attempt records exhaustion and waits for the next connection
-event instead of scheduling itself. There is no persisted gap boundary, gap
-version, or historical backfill state. OpenNews provider record ID is the
-source-local fact identity, so WSS/REST overlap updates or no-ops every consumed
-row, including the terminating overlap row. Provider
-annotations are bounded descriptive metadata and cannot affect source identity,
-materialized Story identity/aggregates/population, importance, material
-admission, ordering, or Brief. A selected numeric score may qualify an already
-projected Story for outbound Push or a downstream read-time filter, including
-the browser's fixed strict `>70` focus mode; neither changes the materialized
-Story population. The acquisition role changes freshness and health semantics,
-not ranking or reporting-origin tier.
+OpenNews is an operator-bound, Strategy-qualified low-latency acquisition lane.
+Its persistent authenticated WSS receiver feeds one bounded queue. After the
+protocol handshake Tracefold sends no `news.subscribe`, `news.unsubscribe`,
+`strategy.subscribe`, `strategy.triggered`, or other application request. It
+may answer a provider literal `ping` with literal `pong` and use RFC WebSocket
+control-frame heartbeat; neither is a subscription. The provider automatically
+sends the account owner's `strategy.triggered` notifications. Admission requires a non-empty `params.id` plus a nested
+`params.strategy.id` in the exact configured `news.opennews_strategy_ids` set.
+Configured and wire IDs are trimmed opaque strings and mutable Strategy names
+are never admission keys. An allowlisted NEWS, MARKET, meme, or listing frame is
+accepted regardless of `engineType`; raw `news.update`, `news.ai_update`,
+acknowledgements, malformed frames, and unconfigured Strategies are ignored.
+The current cutover allowlist is exactly `1018` (News Score > 70) and `1019` (OI
+Event Monitor). Provider-side Listing/Storage Strategies are outside this input
+population unless a future explicit configuration change admits them.
+The account page remains the Strategy-definition authority, and Tracefold does
+not reproduce its score, OI, keyword, symbol, venue, or time-window rules.
+
+`params.id` remains the source-local material fact identity;
+`params.strategy.id` is provenance, never fact identity. Repeated delivery of
+the same provider event writes one NewsItem. Exact replay writes nothing, while
+the same event observed under multiple configured Strategies merges a
+deterministic sorted-unique provenance union without last-write erasure.
+Different provider event IDs remain distinct facts even when their text is
+similar. Linkless MARKET/OI reports are valid, and neither `newsType=strategy`
+nor the wrapper Strategy name becomes the reporting origin. Provider score,
+signal, grade, assets, source, title, timestamp, and link remain bounded
+descriptive metadata. Strategy admission changes the material input population;
+it does not change Story identity, importance, ordering, Brief, or the separate
+strict `>70` Focus/Push rules.
+
+There is no OpenNews REST pull, Strategy history endpoint, cursor, replay, or
+lossless/exact-once delivery contract in production. A disconnect, process
+outage, provider non-delivery, or queue overflow creates an uncovered interval
+whose coverage is unknown. Reconnect proves only current authentication and
+connectivity; it cannot close, backfill, or erase that interval. The public
+advanced news search may support manual diagnostics, but it is ordinary news
+search and is never authoritative Strategy history or runtime recovery.
 
 The sole Story writer loads active RSS Items from the 96-hour feed window and
-OpenNews Items from the 12-hour primary window. It expands RSS facts in the
-pinned category-major membership order, runs the WorldMonitor identity,
+OpenNews Items from the 12-hour Strategy-qualified window. It expands RSS facts
+in the pinned category-major membership order, runs the WorldMonitor identity,
 classification, corroboration, and importance kernel before any category cap,
 then retains the stable top 20 membership rows per category. It forms one
 physical union of those capped RSS Items plus every current OpenNews Item and
@@ -524,10 +550,10 @@ sampled/adaptive population path.
 
 NewsItem identity is `(source_id, source_item_key)`. RSS prefers a non-empty
 GUID, then the canonical URL, then a deterministic title/publication-time key;
-OpenNews uses its provider record ID as both source item key and overlap
-identity. Tracking parameters are removed from article links. Provider
-annotations update only bounded OpenNews metadata and never replace report
-content.
+OpenNews uses `params.id` as its source item key. Tracking parameters are
+removed from article links. Repeated configured Strategy frames merge only
+bounded OpenNews metadata and the Strategy provenance union; they never replace
+one fact with one Item per Strategy.
 
 Story identity is the Python port of WorldMonitor's
 `shared/story-identity.js`: normalized titles, deterministic signed FNV-1a
@@ -638,9 +664,9 @@ the selected Item was published after the baseline and within the code-owned
 set. A set is qualifying when it has at least one non-empty symbol and is not
 contained entirely in the normalized CL family `{CL, XYZ-CL}`. Mixed sets such
 as `{CL, BTC}` remain eligible; this narrow outbound noise filter neither hides
-News reads nor attempts to repair other provider mislabelling. Older Items
-discovered through REST overlap or a later Story identity are durably
-suppressed, never backfilled to Feishu. It chooses the
+News reads nor attempts to repair other provider mislabelling. Older Items that
+qualify only after a later accepted Strategy frame or Story identity are
+durably suppressed, never backfilled to Feishu. It chooses the
 highest-scored member with deterministic publication-time and Item-ID ties, and
 freezes that Story/Item evidence once. Its code-owned 2.5-second reconcile reads
 at most 1,000 persisted current Stories by primary-key cursor per transaction;
@@ -748,6 +774,13 @@ persisted OpenNews gap columns and facet tables, replaces the former Brief
 run/publication tables with the two-singleton slot design, clears rebuildable
 Story/selection state, and deletes incompatible Push payload rows. It is
 irreversible and has no runtime compatibility lane.
+`20260813_0265` is the Strategy-only hard cut. It keeps this nine-table ownership
+boundary but deactivates legacy full-corpus OpenNews Items, clears and normally
+rebuilds the Story/member/selection closure through the sole normal writer,
+clears incompatible Brief current/LKG state,
+cancels legacy pending/retry Push work, preserves immutable sent-delivery audit
+plus baseline/dedup evidence, and replaces obsolete REST-recovery telemetry with
+truthful unknown-coverage state. Old and new acquisition writers never overlap.
 `20260813_0256` keeps that exact nine-table boundary and adds deterministic,
 rebuildable source/origin `facet_facts` to each `news_stories` row. The sole
 Story writer derives them from the same complete membership closure before the
@@ -913,8 +946,10 @@ Migrations `20260801_0235` and `20260801_0236` are irreversible hard cuts: they
 remove retired News acquisition and Macro derived/control history without
 adding compatibility tables or readers.
 Historical migration `20260801_0237` introduced a persisted OpenNews recovery
-boundary; News migration `20260809_0247` removes that state in favor of
-newest-first 12-hour overlap. `20260801_0238` adds the two News-owned
+boundary, and historical migration `20260809_0247` replaced it with a bounded
+12-hour ordinary-news overlap. Neither is the current acquisition contract:
+`20260813_0265` removes ordinary-news REST overlap and records
+unknown coverage without replay. `20260801_0238` adds the two News-owned
 push-control tables with an
 uninitialized baseline. Runtime initialization records that fence once, and
 every bounded reconcile page suppresses selected evidence already persisted at

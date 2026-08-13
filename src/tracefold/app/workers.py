@@ -36,7 +36,7 @@ from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.integrations.news_feeds import RssFeedReader, parse_rss_feed_wire
 from tracefold.integrations.news_push import FeishuNewsPushDelivery
-from tracefold.integrations.opennews import OpenNewsRestClient, OpenNewsWebSocketClient
+from tracefold.integrations.opennews import OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
     FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
@@ -863,7 +863,6 @@ async def _wire_components(
     if settings.news.enabled:
         source = opennews_source()
         rss_sources = public_rss_sources() if settings.news.rss_enabled else ()
-        opennews_rest = OpenNewsRestClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
         opennews_ws = (
             OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
         )
@@ -874,7 +873,7 @@ async def _wire_components(
             rss_feed_reader=RssFeedReader(),
             rss_feed_parser=parse_rss_feed_wire,
             opennews_source=source,
-            opennews_rest_client=opennews_rest,
+            opennews_strategy_ids=settings.news.opennews_strategy_ids,
             opennews_ws_client=opennews_ws,
         )
         if news_cpu is None:

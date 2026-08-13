@@ -9,6 +9,7 @@ from tracefold.app.http.schemas import (
     NewsBriefRunData,
     NewsBriefStatusData,
     NewsIngestStatusData,
+    NewsOpenNewsStatusData,
     NewsPushDelivery24hData,
     NewsPushTranslation24hData,
     NewsRssStatusData,
@@ -106,7 +107,7 @@ def test_news_brief_http_contract_is_one_slot_and_one_sealed_payload() -> None:
     }.isdisjoint(publication_fields)
 
 
-def test_news_health_contract_has_public_rss_without_retired_gap_or_projection_backlog() -> None:
+def test_news_health_contract_exposes_strategy_coverage_without_rest_recovery() -> None:
     assert set(NewsIngestStatusData.model_fields) == {
         "status",
         "reasons",
@@ -136,7 +137,38 @@ def test_news_health_contract_has_public_rss_without_retired_gap_or_projection_b
         "last_items_seen",
         "last_items_accepted",
     } <= source_fields
-    assert {"gap_unclosed", "gap_version"}.isdisjoint(source_fields)
+    assert {
+        "last_connected_at_ms",
+        "last_disconnected_at_ms",
+        "last_overflow_at_ms",
+        "strategy_coverage_started_at_ms",
+        "coverage_unknown_since_at_ms",
+        "last_accepted_strategy_trigger_at_ms",
+        "replay_supported",
+        "observed_strategy_count",
+    } <= source_fields
+    assert {"last_live_at_ms", "last_recovery_at_ms"}.isdisjoint(source_fields)
+    assert set(NewsOpenNewsStatusData.model_fields) == {
+        "source_id",
+        "name",
+        "live_connected",
+        "configured_strategy_count",
+        "observed_strategy_count",
+        "last_connected_at_ms",
+        "last_disconnected_at_ms",
+        "last_overflow_at_ms",
+        "strategy_coverage_started_at_ms",
+        "coverage_unknown_since_at_ms",
+        "last_accepted_strategy_trigger_at_ms",
+        "replay_supported",
+        "last_outcome",
+        "last_error",
+        "last_success_at_ms",
+        "consecutive_failures",
+        "last_rejection_counts",
+        "last_items_seen",
+        "last_items_accepted",
+    }
 
 
 def test_news_push_slo_contract_reports_the_24h_sample_complete_flag() -> None:

@@ -82,9 +82,27 @@ def test_public_news_acquisition_owns_rss_and_opennews_inputs() -> None:
         "rss_feed_reader",
         "rss_feed_parser",
         "opennews_source",
-        "opennews_rest_client",
+        "opennews_strategy_ids",
         "opennews_ws_client",
     } <= set(parameters)
+    assert "opennews_rest_client" not in parameters
+
+
+def test_opennews_production_has_no_subscription_or_rest_recovery_path() -> None:
+    integration_root = ROOT / "src/tracefold/integrations/opennews"
+    production_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            integration_root / "__init__.py",
+            integration_root / "client.py",
+            ROOT / "src/tracefold/app/workers.py",
+            ROOT / "src/tracefold/news/runtime.py",
+        )
+    )
+
+    assert "news.subscribe" not in production_text
+    assert "OpenNewsRestClient" not in production_text
+    assert "opennews_rest_client" not in production_text
 
 
 def test_news_root_has_no_compatibility_getattr() -> None:

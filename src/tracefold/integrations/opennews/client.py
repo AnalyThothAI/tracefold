@@ -6,18 +6,11 @@ from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
 
-import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, PayloadTooBig, ProtocolError
 
 from tracefold.news import OpenNewsExpectedError
-from tracefold.news.opennews import (
-    OPENNEWS_REST_LIMIT,
-    OpenNewsOverlapPage,
-    parse_opennews_rest_response,
-)
 
-OPENNEWS_REST_URL = "https://ai.6551.io/open/news_search"
 OPENNEWS_WSS_URL = "wss://ai.6551.io/open/news_wss"
 OPENNEWS_MAX_FRAME_BYTES = 1 * 1024 * 1024
 OPENNEWS_WS_IDLE_SECONDS = 45.0
@@ -29,48 +22,6 @@ _EXPECTED_WEBSOCKET_FAILURES = (
     PayloadTooBig,
     ProtocolError,
 )
-
-
-class OpenNewsRestClient:
-    """One bounded synchronous recovery page; Runtime owns pagination and cadence."""
-
-    def __init__(self, *, token: str, timeout_seconds: float = 20.0) -> None:
-        self._client = httpx.Client(
-            timeout=httpx.Timeout(timeout_seconds),
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-        )
-
-    def fetch_overlap_page(self, page: int) -> OpenNewsOverlapPage:
-        """Fetch chronological News facts for WSS gap closure, not product search."""
-
-        page_number = int(page)
-        try:
-            response = self._client.post(
-                OPENNEWS_REST_URL,
-                json={
-                    "engineTypes": {"news": []},
-                    "limit": OPENNEWS_REST_LIMIT,
-                    "page": page_number,
-                },
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            status = int(exc.response.status_code)
-            code = "opennews_auth_failed" if status in {401, 403} else "opennews_http_failed"
-            raise OpenNewsExpectedError(code, status_code=status) from None
-        except httpx.HTTPError:
-            raise OpenNewsExpectedError("opennews_rest_failed") from None
-        try:
-            payload = response.json()
-        except (RecursionError, ValueError):
-            raise OpenNewsExpectedError("opennews_rest_failed") from None
-        return parse_opennews_rest_response(payload)
-
-    def close(self) -> None:
-        self._client.close()
 
 
 class OpenNewsWebSocketClient:
@@ -91,19 +42,6 @@ class OpenNewsWebSocketClient:
                 max_queue=16,
             )
             self._websocket = websocket
-            await websocket.send(
-                json.dumps(
-                    {
-                        "method": "news.subscribe",
-                        "id": "tracefold-news",
-                        "params": {"engineTypes": {"news": []}},
-                    },
-                    separators=(",", ":"),
-                )
-            )
-            ack = _json_object(await _bounded_recv(websocket))
-            if ack.get("error"):
-                raise OpenNewsExpectedError("opennews_subscribe_failed")
         except OpenNewsExpectedError:
             await self.close()
             raise
@@ -162,8 +100,6 @@ def _json_object(raw: object) -> Mapping[str, Any]:
 
 
 __all__ = [
-    "OPENNEWS_REST_URL",
     "OPENNEWS_WSS_URL",
-    "OpenNewsRestClient",
     "OpenNewsWebSocketClient",
 ]

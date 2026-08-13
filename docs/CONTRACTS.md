@@ -55,9 +55,23 @@ retries, and reservations are code-owned.
 Environment variables are not a credential contract.
 
 `news.opennews_token` is the operator-owned secret for the production News
-source. It is reported only as the redacted boolean
-`news.opennews_token_configured`. When absent, News reports
-`opennews_token_missing`; no substitute credential path is used.
+source. `news.opennews_strategy_ids` is the exact non-empty, duplicate-free set
+of account Strategy IDs admitted by that source. IDs are trimmed opaque strings;
+configuration order has no business meaning, and mutable Strategy names are not
+admission keys. When News is enabled, a configured token with a missing or empty
+Strategy set fails closed. When the token is absent, News reports
+`opennews_token_missing`; no substitute credential path is used. `tracefold config`
+exposes only `opennews_token_configured`,
+`opennews_strategy_ids_configured`, and `opennews_strategy_count`; it never
+prints token or Strategy-ID values.
+
+The current production cutover set is exactly two IDs: `1018` (News Score > 70)
+and `1019` (OI Event Monitor), so redacted diagnostics report count `2`.
+Listing and Delisting Announcements and Storage News exist provider-side but are
+deliberately excluded from this cutover. A future Strategy is admitted only by
+an explicit `news.opennews_strategy_ids` configuration change; provider-side
+enablement alone has no effect. Disabling or deleting an allowlisted Strategy
+stops future triggers and must remain operationally visible.
 
 `news.rss_enabled` is the sole public RSS activation switch and defaults to
 `false`. CLI diagnostics report the effective boolean. There is no source list,
@@ -93,7 +107,7 @@ failure or overlong input uses the original header and a visible fallback note. 
 live-alert admission requires both the selected Item's provider article clock
 and its dedicated provider score/assets eligibility-evidence clock to be newer than the
 first-enable baseline and the article to be no more than 15 minutes old; this
-prevents a future-skewed provider clock from replaying baseline evidence. Stale recovery data is
+prevents a future-skewed provider clock from replaying baseline evidence. Stale late-arriving data is
 recorded as suppressed and is never sent. Every frozen retry rechecks that age
 immediately before network submission and becomes suppressed once the deadline
 passes. The selected Item must also contain at least one non-empty
@@ -165,7 +179,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity, profile, and market facts owned by those readers |
 | Radar/market | `/api/token-radar`, `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
-| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | public WorldMonitor RSS plus OpenNews current facts, deterministic Story/selection state, and one sealed half-hour Brief current/LKG payload |
+| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | operator-bound OpenNews Strategy facts plus optional public WorldMonitor RSS, deterministic Story/selection state, and one sealed half-hour Brief current/LKG payload |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
 There is no CEX OI/detail product API. Generic exchange facts and provider adapters remain internal inputs to supported products.
@@ -277,6 +291,12 @@ Stocks interface.
 
 ### News
 
+News is an operator-bound, Strategy-qualified event surface, not a complete
+non-personalized OpenNews corpus. The NewsLiquid account owns Strategy
+definitions; Tracefold only admits automatic `strategy.triggered` notifications
+whose nested Strategy ID is in the configured allowlist and does not reproduce
+provider rules locally.
+
 The News public surface is exactly five read-only routes:
 
 - `GET /api/news/feed?category={category}&level={level}&source_id={source_id}&reporting_origin={reporting_origin}&provider_score_gt={score}&q={query}&sort={importance|latest}&limit={limit}&cursor={cursor}`
@@ -336,17 +356,24 @@ The News public surface is exactly five read-only routes:
   source-age range, L1/L2/none content, source slots, versions, validation, and
   provenance. It does not return publication history or request-time Story
   joins. A degraded run never replaces or refreshes a healthy whole LKG.
-- `GET /api/news/sources` returns primary OpenNews first, followed by the
+- `GET /api/news/sources` returns operator-bound OpenNews first, followed by the
   enabled code-owned public RSS breadth/corroboration sources, with source kind, feed
   schedule/claim state, latest outcome, bounded rejection/item counts, and
-  OpenNews live/overlap status. Its opaque cursor is bound to that server order.
+  OpenNews connection, accepted-trigger, and unknown-coverage status. Its opaque
+  cursor is bound to that server order. Configured Strategy IDs are never listed.
 - `GET /api/news/status` derives warming/ready/degraded News health from
   PostgreSQL source, Story-invariant, public Brief, and outbound push state. It also
   exposes the operator-facing `live`, `recovering`, or `stalled` state and the
   last successful Story publication clock. Ingest health is driven by the
-  OpenNews primary lane and reports RSS breadth/corroboration
-  enablement plus totals/success/failure/claims as additional evidence; Story health reports
-  only projection clocks, counts, and invariant failures.
+  OpenNews Strategy lane and reports current WSS connected/disconnected, last
+  accepted configured trigger, configured Strategy count/boolean, bounded
+  observed Strategy names/types, last disconnect/overflow, uncovered-gap start,
+  and explicit no-replay/coverage-unknown state. A reconnect clears a current
+  transport error but never erases a prior unknown interval. RSS
+  breadth/corroboration enablement plus totals/success/failure/claims remain
+  additional evidence; Story health reports only projection clocks, counts, and
+  invariant failures. The overall `recovering` label denotes a non-ready product
+  layer; it never claims that OpenNews history is being replayed or a gap closed.
 
 `/api/news/feed` and `/api/news/brief` emit an ETag, honor
 `If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.
@@ -361,22 +388,29 @@ threshold.
 
 NewsItem identity is `(source_id, source_item_key)`. RSS identity prefers GUID,
 then canonical URL, then a deterministic title/publication-time key. OpenNews
-uses provider record ID as its source item key and overlap identity. OpenNews
-reports upsert one canonical current fact. The title is the first non-empty logical plaintext
+uses the provider event `params.id` as its source item key; nested
+`params.strategy.id` is admission provenance, not fact identity. OpenNews
+Strategy reports upsert one canonical current fact. The title is the first non-empty logical plaintext
 block, capped at 500 JavaScript UTF-16 code units; a clamp that splits a
 surrogate pair is converted with Web scalar-value replacement before storage.
 A cleaned explicit description wins; otherwise remaining blocks form the
 description, with the 40-to-400 JavaScript UTF-16 code-unit contract,
 Web scalar-value replacement after truncation, and title-equality suppression.
-Verified Twitter wrapper reports use
-the author handle as reporting origin; other reports use `newsType`, then the
-canonical URL host, then `opennews`. Linkless reports remain valid. Provider
+Reporting origin prefers the underlying bounded `source`, then the canonical URL
+host, then `opennews`; `newsType=strategy` and the wrapper Strategy name are not
+reporting origins. Linkless MARKET/OI reports remain valid. Provider
 metadata is limited to the provider-source label, `score`, `signal`, `grade`,
-and provider-labelled `assets` details. The OpenNews adapter persists the
+provider-labelled `assets` details, and a deterministic sorted-unique
+`strategies` union of matching Strategy ID, name, source type, and observed
+engine type. The full Strategy definition and metrics payload are discarded.
+The OpenNews adapter persists the
 upstream raw `coins` member as source evidence, while every public News read
 maps it to `assets` and omits `coins`.
-Provider annotations merge metadata into the same current row; translation
-frames received from OpenNews and non-news messages are discarded. Provider
+Exact replay writes nothing. When the same `params.id` arrives under multiple
+configured Strategies, their provenance unions into the same Item without
+last-write erasure; different event IDs remain different material facts.
+`news.update`, `news.ai_update`, acknowledgements, malformed frames, and
+unconfigured Strategy frames are discarded. Provider
 metadata is descriptive and does not affect Story identity, classification,
 importance, Feed ordering, or Brief. A numeric provider score may qualify the
 already projected Story for a read-time `provider_score_gt` filter or the
@@ -407,7 +441,7 @@ prior snapshot, and RSS facts expire at 96 hours. The reader follows at most two
 redirects itself; the initial URL and every redirect target must be public HTTPS
 and every resolved address must be globally routable before a request is sent.
 
-Story calculation joins the primary 12-hour OpenNews facts with RSS facts
+Story calculation joins the 12-hour Strategy-admitted OpenNews facts with RSS facts
 expanded in pinned category-major membership order, runs lexical clustering,
 keyword classification, corroboration, and
 importance before the stable top-20 cap in each category, then forms a physical
@@ -479,24 +513,35 @@ whole 24-hour population.
 Deterministic Story
 cards remain readable while Brief or push is unavailable.
 
-Production News always runs the OpenNews primary low-latency lane. The sole RSS
-switch is `news.rss_enabled`; it defaults to `false`, and only `true` schedules
-the exact code-owned public RSS breadth/corroboration catalog. When false,
-reconciliation disables prior RSS rows and releases their claims,
-`/api/news/sources` serves OpenNews only, Story uses its current OpenNews
-population, and status returns `rss.enabled=false` without an RSS degradation
-reason. OpenNews uses one WSS
-stream for current facts. Initial connection and reconnect each trigger one
-bounded REST overlap; queue overflow ends the current stream so its reconnect
-uses the same single trigger. REST reads newest-first from page 1, at most
-eleven 100-item pages, and stops at the provider's last page, the first provider
-record persisted before the attempt, or the 12-hour cutoff. It consumes the
-terminating overlap row, and an eleven-page exhaustion records its outcome
-without scheduling another search. Each RSS turn claims at most one due source and persists its
-conditional-fetch and bounded outcome state. There is no persisted gap flag,
-boundary, version, or unbounded recovery lane. OpenNews acquisition priority
-does not alter deterministic Story scoring, selector ordering, or its
-reporting-origin tier.
+Production News runs one authenticated OpenNews WSS for account Strategy facts.
+After the protocol handshake Tracefold sends no application subscribe/request:
+it never sends `news.subscribe`, `news.unsubscribe`, `strategy.subscribe`, or
+`strategy.triggered`. It may answer a provider literal `ping` with literal
+`pong` and use RFC WebSocket control-frame heartbeat; neither is a subscription.
+The server automatically pushes the account owner's Strategy notifications.
+Admission requires `method=strategy.triggered`, object
+`params`, object `params.strategy`, a non-empty provider event `params.id`, and a
+nested Strategy ID in `news.opennews_strategy_ids`. Matching NEWS, MARKET, meme,
+and listing frames share the same path; `engineType` does not exclude an
+allowlisted Strategy.
+
+There is no ordinary `/open/news_search` production call, Strategy-history REST
+pull, cursor, replay, or disconnect backfill. Public advanced news search is
+filtered ordinary news search and cannot reproduce Strategy trigger history,
+especially MARKET/OI events. A disconnect, queue overflow, process outage, or
+provider-side non-delivery creates a durable unknown-coverage interval. A later
+handshake or trigger may restore current transport/fact freshness but cannot
+rename that interval recovered. A successful handshake also does not prove that
+configured Strategies exist, remain enabled, or will trigger.
+
+The sole RSS switch is `news.rss_enabled`; it defaults to `false`, and only
+`true` schedules the exact code-owned public RSS breadth/corroboration catalog.
+When false, reconciliation disables prior RSS rows and releases their claims,
+`/api/news/sources` serves OpenNews only, Story uses its current Strategy-admitted
+OpenNews population, and status returns `rss.enabled=false` without an RSS
+degradation reason. Each RSS turn claims at most one due source and persists its
+conditional-fetch and bounded outcome state. Strategy admission does not alter
+deterministic Story scoring, selector ordering, or reporting-origin tier.
 
 There is no `/api/news/stories` collection, `view=latest|priority`, Brief
 history route, analysis request route, item route, News WebSocket payload,
@@ -662,8 +707,16 @@ retired News acquisition and Macro derived/control history while preserving
 current items, material facts, acquisition targets, Fed document analysis, and
 the six module rows.
 Historical migration `20260801_0237` added an OpenNews recovery boundary;
-News migration `20260809_0247` removes it in favor of bounded 12-hour
-overlap. `20260801_0238` adds the News push baseline and delivery ledger.
+historical migration `20260809_0247` replaced it with bounded 12-hour ordinary-
+news overlap. Neither is the current provider contract. `20260813_0265` hard-cuts
+to Strategy-only WSS, removes ordinary-news REST overlap, deactivates legacy
+full-corpus OpenNews Items, clears Story/member/selection so the sole normal
+writer rebuilds it from remaining enabled facts, clears
+incompatible Brief current/LKG state, cancels legacy pending/retry Push work,
+preserves immutable sent-delivery audit plus Push baseline/dedup evidence, and
+replaces obsolete recovery telemetry with unknown-coverage state. It has no
+dual writer or compatibility mode. `20260801_0238` adds the News push baseline
+and delivery ledger.
 Applying these migrations does not send a message; delivery begins only after an explicit
 webhook-backed push configuration and the first enabled reconcile establishes
 its baseline. Signing is optional. `20260807_0246` is the irreversible public
@@ -744,7 +797,8 @@ nothing; `worker_active` is admission state, not observed process liveness.
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.
 News steady state and explicit maintenance use the same complete current
-12-hour WorldMonitor calculation from persisted NewsItems. `radar-status`
+12-hour WorldMonitor calculation from persisted Strategy-admitted and optional
+RSS NewsItems. `radar-status`
 reports only the current singleton clocks, fingerprints, bounded counts, and
 last attempt; it never returns the retired factor payload.
 

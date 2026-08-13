@@ -111,21 +111,22 @@ feeds, 183 category memberships, 178 reporting-source names, and 17 categories.
 Optional cached classification, Dashboard ISQ reorder, and personalized Digest
 Magazine remain excluded surfaces.
 
-The pinned checkout contains no OpenNews implementation. OpenNews as the
-primary low-latency lane is therefore an explicit Tracefold input-role
+The pinned checkout contains no OpenNews implementation. The operator-bound,
+Strategy-qualified OpenNews lane is therefore an explicit Tracefold input-role
 decision; WorldMonitor parity covers the RSS catalog and parser, shared Story
 kernel, public selector, composer, and no-empty/current-LKG publication
-semantics. Primary acquisition never implies an OpenNews score boost or tier
-override.
+semantics. Strategy admission never implies an OpenNews score boost or tier
+override, and Tracefold never re-evaluates provider Strategy rules.
 
 The maintained chain takes the first five RSS/Atom wire entries before gates,
 keeps valid feed snapshots for 96 hours, scores membership-expanded RSS rows
 before the stable Top 20 per category, and unions the selected physical Items
-with the complete current 12-hour primary OpenNews lane. Provider AI metadata is
-descriptive and cannot affect Story identity, public scoring, material
-admission, ordering, or Brief. A selected numeric OpenNews score may qualify
-outbound Push and the downstream fixed `>70` reader focus filter; neither
-changes the materialized Story population. The public seed applies the pinned
+with the current 12-hour Strategy-admitted OpenNews facts. Strategy admission is
+the material-input gate; bounded provider score, assets, and Strategy provenance
+cannot affect Story identity, public scoring, ordering, or Brief after admission.
+A selected numeric OpenNews score may qualify outbound Push and the downstream
+fixed `>70` reader focus filter; neither changes the materialized Story
+population. The public seed applies the pinned
 JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items with the
 same identity kernel before selection. The public selector is one global
 server-owned order with no profile, preference, embedding, topic grouping,
@@ -147,9 +148,9 @@ The identity port also fixes the pinned Node runtime's Unicode 17 letter,
 number, uppercase, and lowercase semantics so host Python Unicode data cannot
 silently change Story IDs.
 The real-PostgreSQL public pipeline suite additionally covers RSS snapshot
-replacement, canonical OpenNews adaptation/overlap, the physical Story closure,
-singleton selection, L1/L2 composer, half-hour slot finalization, and whole LKG
-decision. Run the differential lane with:
+replacement, canonical allowlisted Strategy adaptation and provenance union,
+the physical Story closure, singleton selection, L1/L2 composer, half-hour slot
+finalization, and whole LKG decision. Run the differential lane with:
 
 ```bash
 TRACEFOLD_WORLDMONITOR_REPO=/path/to/worldmonitor \
@@ -166,9 +167,10 @@ evidence uses that exact sibling so the frozen-golden fallback is not mistaken
 for a fresh upstream execution.
 
 The release evaluation explicitly enables RSS before replaying the current
-production RSS/OpenNews NewsItem corpus in isolated PostgreSQL; the runtime
-default remains OpenNews-only. Record the RSS 96-hour and OpenNews 12-hour
-cutoffs; physical Item and category-membership counts; Story,
+production RSS plus Strategy-admitted OpenNews NewsItem corpus in isolated
+PostgreSQL; the runtime default remains OpenNews-only. Record the RSS 96-hour
+and OpenNews 12-hour cutoffs; configured Strategy count without values;
+physical Item and category-membership counts; Story,
 singleton/multi-member, reporting-origin, and category counts; every materially
 large cluster; highest-similarity non-merges; selected Top Story evidence and
 drop distribution; and both pinned commits. This is a distribution and parity
@@ -176,21 +178,28 @@ review, not a compression target. The Story turn must remain inside the
 10,000-row, 8 MiB, 25-second, and 60-second freshness boundaries without
 sampling or widening either source window.
 
-Cutover acceptance requires one atomic hard cut: exactly nine News tables,
-five public News routes, one primary low-latency OpenNews lane plus the exact
-opt-in 179-feed public RSS breadth/corroboration catalog, one acquisition module, one
-fixed-period Story/selection writer, one
-native model seam, and no
-old payload, prompt, selector, reading-layer localization, personalized, or
-compatibility path. The primary maintained seam sends representative RSS wire
-responses and OpenNews frames through real PostgreSQL, the production complete
-Story projection and public selector, fake external model transports, the
-half-hour frozen-slot/current-LKG state machine, and authenticated
-`GET /api/news/brief`; repositories, transactions, calculation, selector,
-composer, and HTTP serialization remain real.
+`20260813_0265` cutover acceptance requires one atomic hard cut: exactly nine
+News tables, five public News routes, and one zero-send authenticated OpenNews
+WSS consuming automatic account `strategy.triggered` pushes for the exact
+two-ID allowlist `1018`/`1019`, the exact
+opt-in 179-feed public RSS breadth/corroboration catalog, one acquisition module,
+one fixed-period Story/selection writer, one native model seam, and no ordinary
+`news.subscribe`, `/open/news_search` recovery, dual writer, old payload,
+personalized, or compatibility path. The primary maintained seam sends
+representative RSS responses plus configured NEWS and MARKET/OI Strategy
+frames through real PostgreSQL, the production complete Story projection and
+public selector, fake external model transports, the half-hour
+frozen-slot/current-LKG state machine, and authenticated `GET /api/news/brief`;
+repositories, transactions, calculation, selector, composer, and HTTP
+serialization remain real.
 
-Release evidence additionally proves canonical headline/origin normalization
-and repeat-delivery zero writes; complete Story membership and CAS; exact public
+Release evidence additionally proves the socket sends no application
+subscribe/request during connect while retaining literal ping/pong and RFC
+control heartbeat, the first automatic trigger is not consumed as an ACK,
+configured Strategy admission ignores `engineType`, canonical headline/origin
+normalization, exact replay zero writes, same-event sorted-unique multi-Strategy
+provenance union, and distinct-event fact identity; complete Story membership
+and CAS; exact public
 Top Story order and provenance; L1 success or truthful L2/none degradation;
 whole healthy LKG preservation without clock refresh or mixed snapshots;
 the exact Ollama -> configured direct DeepSeek -> Groq order; all-or-none
@@ -201,13 +210,31 @@ labels L1/L2 as an enhancement, preserves linkless evidence, and exposes no
 publication history or personalized ranking.
 
 When Push is enabled, acceptance still proves first-enable zero-send baseline
-suppression, strict score greater than 70, the 15-minute Article deadline,
+suppression, strict score greater than 70 after Strategy admission, the
+15-minute Article deadline,
 selected-Item ledger deduplication across Story-ID changes, frozen at-least-once
 delivery, optional one-shot presentation-only title translation with immediate
 original fallback, exact signed/unsigned Feishu shapes, bounded retry/terminal
-classification, and no dependency on the serial model arbiter. Push state and
-pending/retry rows survive the News hard cut; absence of a signing secret is an
-explicit unsigned mode, never a fallback after a signed attempt fails.
+classification, and no dependency on the serial model arbiter. The hard cut
+cancels legacy pending/retry rows that no longer have current eligibility while
+preserving immutable sent-delivery audit plus the Push baseline/dedup fence;
+absence of a signing secret is an explicit unsigned mode, never a fallback
+after a signed attempt fails.
+
+Production cutover review records exactly `1018` (News Score > 70) and `1019`
+(OI Event Monitor), a redacted configured count of `2`, one redacted real
+MARKET/OI frame and one redacted NEWS frame, the deterministic provenance-union
+result for a same-event multi-Strategy match, and explicit confirmation that a
+scoreless MARKET/OI event remains subject to the unchanged downstream Push
+gates. Listing and Delisting Announcements and Storage News may remain enabled
+provider-side but are explicitly outside this cutover. Any future addition is a
+reviewed configuration change, never implicit provider-side enablement.
+
+Transport/status acceptance records disconnect, overflow, and process-outage
+intervals as unknown coverage. Reconnect may restore current connectivity but
+must not clear the prior interval or claim replay. The public advanced news
+search is valid only for manual diagnostics/parity sampling and must never
+appear in a production recovery seam.
 
 ## Generated contracts
 

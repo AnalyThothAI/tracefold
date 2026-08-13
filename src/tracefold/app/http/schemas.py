@@ -475,8 +475,14 @@ class NewsSourceData(ExactApiSchema):
     last_fetch_started_at_ms: int | None
     last_fetch_finished_at_ms: int | None
     live_connected: bool
-    last_live_at_ms: int | None
-    last_recovery_at_ms: int | None
+    last_connected_at_ms: int | None
+    last_disconnected_at_ms: int | None
+    last_overflow_at_ms: int | None
+    strategy_coverage_started_at_ms: int | None
+    coverage_unknown_since_at_ms: int | None
+    last_accepted_strategy_trigger_at_ms: int | None
+    replay_supported: bool
+    observed_strategy_count: int
     last_success_at_ms: int | None
     last_http_status: int | None
     consecutive_failures: int
@@ -502,11 +508,17 @@ class NewsOpenNewsStatusData(ExactApiSchema):
     source_id: str
     name: str
     live_connected: bool
-    last_live_at_ms: int | None
-    last_recovery_at_ms: int | None
+    configured_strategy_count: int
+    observed_strategy_count: int
+    last_connected_at_ms: int | None
+    last_disconnected_at_ms: int | None
+    last_overflow_at_ms: int | None
+    strategy_coverage_started_at_ms: int | None
+    coverage_unknown_since_at_ms: int | None
+    last_accepted_strategy_trigger_at_ms: int | None
+    replay_supported: Literal[False]
     last_outcome: str | None
     last_error: str | None
-    last_http_status: int | None
     last_success_at_ms: int | None
     consecutive_failures: int
     last_rejection_counts: dict[str, int]
@@ -610,7 +622,7 @@ class NewsStatusLayersData(ExactApiSchema):
 
 class NewsStatusData(ExactApiSchema):
     status: NewsHealthStatus
-    operating_state: Literal["live", "recovering", "stalled"]
+    operating_state: Literal["live", "warming", "stalled"]
     last_success_at_ms: int | None
     reasons: list[str]
     layers: NewsStatusLayersData

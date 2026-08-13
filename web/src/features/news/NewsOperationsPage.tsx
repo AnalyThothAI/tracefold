@@ -24,9 +24,9 @@ export function NewsStatusRoute({ token }: { token: string }) {
       <NewsSectionTabs active="status" />
       <header className="news-operations-header">
         <div>
-          <span className="news-eyebrow">PUBLIC NEWS STATUS</span>
+          <span className="news-eyebrow">STRATEGY NEWS STATUS</span>
           <h1>新闻运行状态</h1>
-          <p>公开采集、新闻事件、简报与推送链路的当前状态。</p>
+          <p>账户 Strategy 自动推送、新闻事件、简报与推送链路的当前状态。</p>
         </div>
         {status ? (
           <span className="news-operations-state" data-state={status.operating_state}>
@@ -74,19 +74,32 @@ function StatusDocument({ status }: { status: NewsStatus }) {
           {opennews ? (
             <>
               <StatusFact
-                label="OpenNews 主链实时连接"
+                label="OpenNews Strategy 连接"
                 value={opennews.live_connected ? "正常" : "未连接"}
               />
               <StatusFact
-                label="OpenNews 主链最近补齐"
-                value={optionalTime(opennews.last_recovery_at_ms)}
+                label="配置 Strategy"
+                value={String(opennews.configured_strategy_count)}
               />
               <StatusFact
-                label="OpenNews 主链最近接收"
+                label="已观察 Strategy"
+                value={String(opennews.observed_strategy_count)}
+              />
+              <StatusFact
+                label="最近 Strategy 触发"
+                value={optionalTime(opennews.last_accepted_strategy_trigger_at_ms)}
+              />
+              <StatusFact
+                label="不可回放缺口起点"
+                value={optionalTime(opennews.coverage_unknown_since_at_ms)}
+              />
+              <StatusFact label="历史回放" value="不支持" />
+              <StatusFact
+                label="最近批次接收"
                 value={`${opennews.last_items_accepted}/${opennews.last_items_seen}`}
               />
               <StatusFact
-                label="OpenNews 主链连续失败"
+                label="连续失败"
                 value={String(opennews.consecutive_failures)}
               />
             </>
@@ -204,28 +217,28 @@ export function NewsSourcesRoute({ token }: { token: string }) {
 
   return (
     <section
-      aria-label="公开新闻来源"
+      aria-label="新闻来源"
       className="radar-panel news-panel news-operations-shell"
       data-page-archetype="scan"
     >
       <NewsSectionTabs active="sources" />
       <header className="news-operations-header">
         <div>
-          <span className="news-eyebrow">PUBLIC NEWS SOURCES</span>
-          <h1>公开新闻来源</h1>
-          <p>OpenNews 低延迟主采集链；公共 RSS 覆盖与交叉印证链可由配置启用。</p>
+          <span className="news-eyebrow">NEWS SOURCES</span>
+          <h1>新闻来源</h1>
+          <p>OpenNews 账户 Strategy 自动推送；公共 RSS 覆盖与交叉印证链可由配置启用。</p>
         </div>
         {sources.length ? <span className="news-source-count">已加载 {sources.length}</span> : null}
       </header>
 
       {query.isLoading && !query.data ? (
-        <PageState.Loading layout="panel" rows={6} label="正在读取公开新闻来源" />
+        <PageState.Loading layout="panel" rows={6} label="正在读取新闻来源" />
       ) : null}
       {query.isError && !query.data ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
       {!query.isLoading && !query.isError && !sources.length ? (
-        <PageState.Empty hint="等待服务端公开来源目录。" title="暂无公开新闻来源" />
+        <PageState.Empty hint="等待服务端来源目录。" title="暂无新闻来源" />
       ) : null}
       {sources.length ? (
         <PageState.Stale updating={query.isFetching && !query.isFetchingNextPage}>
@@ -258,7 +271,9 @@ function SourceCard({ source }: { source: NewsSource }) {
       <header>
         <div>
           <span>
-            {source.source_kind === "rss" ? `RSS · TIER ${source.tier}` : "OPENNEWS · 主采集链"}
+            {source.source_kind === "rss"
+              ? `RSS · TIER ${source.tier}`
+              : "OPENNEWS · STRATEGY 自动推送"}
           </span>
           <h2>{source.name}</h2>
           <code>{source.source_id}</code>
@@ -273,6 +288,18 @@ function SourceCard({ source }: { source: NewsSource }) {
           value={`${source.last_items_accepted}/${source.last_items_seen}`}
         />
         <StatusFact label="连续失败" value={String(source.consecutive_failures)} />
+        {source.source_kind === "opennews" ? (
+          <>
+            <StatusFact
+              label="最近 Strategy 触发"
+              value={optionalTime(source.last_accepted_strategy_trigger_at_ms)}
+            />
+            <StatusFact
+              label="不可回放缺口起点"
+              value={optionalTime(source.coverage_unknown_since_at_ms)}
+            />
+          </>
+        ) : null}
       </dl>
       {source.feed_url && isHttpUrl(source.feed_url) ? (
         <a href={source.feed_url} rel="noreferrer" target="_blank">
@@ -302,14 +329,17 @@ function getSourceState(source: NewsSource): { label: string; state: string } {
   }
   if (source.last_success_at_ms == null) return { label: "等待首次采集", state: "warming" };
   if (source.source_kind === "opennews" && !source.live_connected) {
-    return { label: "实时连接异常", state: "degraded" };
+    return { label: "Strategy 连接异常", state: "degraded" };
+  }
+  if (source.source_kind === "opennews" && source.coverage_unknown_since_at_ms != null) {
+    return { label: "历史覆盖未知", state: "degraded" };
   }
   return { label: "采集正常", state: "ready" };
 }
 
 function operatingStateLabel(state: NewsStatus["operating_state"]): string {
   if (state === "live") return "运行正常";
-  if (state === "recovering") return "正在恢复";
+  if (state === "warming") return "准备中";
   return "运行受阻";
 }
 

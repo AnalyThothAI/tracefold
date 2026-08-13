@@ -28,6 +28,7 @@ from .opennews import OpenNewsEvent
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
 _STORY_ACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000
 _NEWS_STALL_AFTER_MS = 120_000
+_MAX_STRATEGY_PROVENANCE = 32
 _PUSH_SUMMARY_BUCKET = {
     "suppressed": "suppressed_count",
     "pending_translation": "pending_count",
@@ -119,6 +120,40 @@ def _rss_source_item_key(
 
 def _numeric_provider_score(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and isfinite(float(value))
+
+
+def _strategy_provenance(value: object) -> list[dict[str, str]]:
+    """Return one deterministic, bounded provenance row per opaque Strategy ID."""
+
+    if not isinstance(value, list):
+        return []
+    by_id: dict[str, dict[str, str]] = {}
+    for candidate in value:
+        if not isinstance(candidate, Mapping):
+            continue
+        strategy_id = str(candidate.get("id") or "").strip()
+        if not strategy_id or "\x00" in strategy_id or len(strategy_id) > 128:
+            continue
+        normalized = {"id": strategy_id}
+        for key, limit in (("name", 128), ("source_type", 32), ("engine_type", 32)):
+            field = str(candidate.get(key) or "").strip()
+            if field and "\x00" not in field:
+                normalized[key] = field[:limit]
+        current = by_id.get(strategy_id)
+        if current is None or _sha256_json(normalized) > _sha256_json(current):
+            by_id[strategy_id] = normalized
+    return [by_id[strategy_id] for strategy_id in sorted(by_id)[:_MAX_STRATEGY_PROVENANCE]]
+
+
+def _merged_strategy_provenance(*values: object) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    for value in values:
+        candidates.extend(_strategy_provenance(value))
+    return _strategy_provenance(candidates)
+
+
+def _stable_payload_order(value: Mapping[str, Any]) -> str:
+    return json.dumps(dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _cursor_encode(payload: Mapping[str, Any]) -> str:
@@ -236,6 +271,46 @@ class NewsRepository:
                       THEN NULL
                     ELSE news_sources.claim_lease_expires_at_ms
                   END,
+                  live_connected = CASE
+                    WHEN EXCLUDED.source_kind = 'opennews'
+                     AND news_sources.live_connected
+                      THEN false
+                    ELSE news_sources.live_connected
+                  END,
+                  last_disconnected_at_ms = CASE
+                    WHEN EXCLUDED.source_kind = 'opennews'
+                     AND news_sources.live_connected
+                      THEN EXCLUDED.updated_at_ms
+                    ELSE news_sources.last_disconnected_at_ms
+                  END,
+                  coverage_unknown_since_at_ms = CASE
+                    WHEN EXCLUDED.source_kind = 'opennews'
+                     AND news_sources.live_connected
+                     AND news_sources.strategy_coverage_started_at_ms IS NOT NULL
+                      THEN COALESCE(
+                        news_sources.coverage_unknown_since_at_ms,
+                        news_sources.strategy_coverage_started_at_ms
+                      )
+                    ELSE news_sources.coverage_unknown_since_at_ms
+                  END,
+                  last_outcome = CASE
+                    WHEN EXCLUDED.source_kind = 'opennews'
+                     AND news_sources.live_connected
+                      THEN 'strategy_process_outage'
+                    ELSE news_sources.last_outcome
+                  END,
+                  last_error = CASE
+                    WHEN EXCLUDED.source_kind = 'opennews'
+                     AND news_sources.live_connected
+                      THEN 'opennews_process_outage'
+                    ELSE news_sources.last_error
+                  END,
+                  consecutive_failures = CASE
+                    WHEN EXCLUDED.source_kind = 'opennews'
+                     AND news_sources.live_connected
+                      THEN news_sources.consecutive_failures + 1
+                    ELSE news_sources.consecutive_failures
+                  END,
                   updated_at_ms = EXCLUDED.updated_at_ms
                 WHERE (
                   news_sources.name,
@@ -253,6 +328,9 @@ class NewsRepository:
                   EXCLUDED.source_kind,
                   EXCLUDED.feed_url,
                   EXCLUDED.refresh_interval_seconds
+                ) OR (
+                  EXCLUDED.source_kind = 'opennews'
+                  AND news_sources.live_connected
                 )
                 """,
                 {
@@ -649,96 +727,12 @@ class NewsRepository:
         )
         return int(cursor.rowcount or 0)
 
-    def opennews_last_recovery_attempt(self, *, source_id: str) -> int | None:
-        row = self.conn.execute(
-            """
-            SELECT GREATEST(
-                     COALESCE(last_fetch_started_at_ms, 0),
-                     COALESCE(last_fetch_finished_at_ms, 0),
-                     COALESCE(last_recovery_at_ms, 0)
-                   ) AS last_attempt_at_ms
-              FROM news_sources
-             WHERE source_id = %s AND source_kind = 'opennews'
-            """,
-            (source_id,),
-        ).fetchone()
-        if row is None or int(row["last_attempt_at_ms"] or 0) <= 0:
-            return None
-        return int(row["last_attempt_at_ms"])
-
-    def mark_opennews_recovery_attempt(self, *, source_id: str, started_at_ms: int) -> None:
-        self.conn.execute(
-            """
-            UPDATE news_sources
-               SET last_fetch_started_at_ms = %s,
-                   last_outcome = 'recovery_running',
-                   updated_at_ms = %s
-             WHERE source_id = %s AND source_kind = 'opennews'
-            """,
-            (int(started_at_ms), int(started_at_ms), source_id),
-        )
-
-    def record_opennews_recovery_page(
-        self,
-        *,
-        source: NewsSourceDefinition,
-        events: Sequence[OpenNewsEvent],
-        observed_at_ms: int,
-        recovery_started_at_ms: int,
-    ) -> dict[str, Any]:
-        report_ids = [event.provider_record_id for event in events if event.observation_kind == "report"]
-        stable_existing_ids: set[str] = set()
-        if report_ids:
-            stable_existing_ids = {
-                str(row["provider_record_id"])
-                for row in self.conn.execute(
-                    """
-                    SELECT provider_record_id
-                      FROM news_items
-                     WHERE source_id = %s
-                       AND provider_record_id = ANY(%s)
-                       AND first_observed_at_ms < %s
-                    """,
-                    (source.source_id, report_ids, int(recovery_started_at_ms)),
-                ).fetchall()
-            }
-        prefix: list[OpenNewsEvent] = []
-        stop_reason: str | None = None
-        cutoff_ms = int(observed_at_ms) - _STORY_ACTIVE_WINDOW_MS
-        for event in events:
-            if event.observation_kind == "report":
-                if event.provider_record_id in stable_existing_ids:
-                    prefix.append(event)
-                    stop_reason = "existing_provider_record"
-                    break
-                if (
-                    event.entry is not None
-                    and event.entry.published_at_ms is not None
-                    and int(event.entry.published_at_ms) < cutoff_ms
-                ):
-                    stop_reason = "twelve_hour_cutoff"
-                    break
-            prefix.append(event)
-        outcome = self.record_opennews_events(
-            source=source,
-            events=prefix,
-            observed_at_ms=observed_at_ms,
-            recovery_started_at_ms=recovery_started_at_ms,
-        )
-        return {
-            **outcome,
-            "events_seen": len(events),
-            "overlap_complete": stop_reason is not None,
-            "stop_reason": stop_reason,
-        }
-
     def record_opennews_events(
         self,
         *,
         source: NewsSourceDefinition,
         events: Sequence[OpenNewsEvent],
         observed_at_ms: int,
-        recovery_started_at_ms: int | None = None,
     ) -> dict[str, int]:
         """Upsert bounded OpenNews current facts without an audit-history lane."""
 
@@ -746,68 +740,21 @@ class NewsRepository:
             raise ValueError("opennews_source_required")
         inserted = 0
         updated = 0
-        metadata_updated = 0
         rejections: Counter[str] = Counter()
+        observed_strategy_provenance: list[dict[str, str]] = []
         for event in events:
-            if event.observation_kind == "translation":
-                rejections["translation"] += 1
-                continue
             incoming_metadata = {
                 key: value for key, value in event.provider_metadata.items() if value not in (None, "", [], {})
             }
-            if event.observation_kind == "provider_annotation":
-                metadata = Jsonb(incoming_metadata)
-                cursor = self.conn.execute(
-                    """
-                    UPDATE news_items
-                       SET push_eligibility_updated_at_ms = CASE
-                             WHEN (
-                               %(metadata)s ? 'score'
-                               AND provider_metadata -> 'score' IS DISTINCT FROM
-                                   %(metadata)s -> 'score'
-                             ) OR (
-                               %(metadata)s ? 'coins'
-                               AND provider_metadata -> 'coins' IS DISTINCT FROM
-                                   %(metadata)s -> 'coins'
-                             )
-                               THEN %(observed_at_ms)s
-                             ELSE push_eligibility_updated_at_ms
-                           END,
-                           provider_score_updated_at_ms = CASE
-                             WHEN jsonb_typeof(%(metadata)s -> 'score') = 'number'
-                              AND provider_metadata -> 'score' IS DISTINCT FROM
-                                  %(metadata)s -> 'score'
-                               THEN %(observed_at_ms)s
-                             ELSE provider_score_updated_at_ms
-                           END,
-                           provider_metadata = provider_metadata || %(metadata)s,
-                           last_observed_at_ms = %(observed_at_ms)s,
-                           updated_at_ms = %(observed_at_ms)s
-                     WHERE source_id = %(source_id)s
-                       AND provider_record_id = %(provider_record_id)s
-                       AND provider_metadata IS DISTINCT FROM
-                           provider_metadata || %(metadata)s
-                    """,
-                    {
-                        "metadata": metadata,
-                        "observed_at_ms": int(observed_at_ms),
-                        "source_id": source.source_id,
-                        "provider_record_id": event.provider_record_id,
-                    },
-                )
-                writes = int(cursor.rowcount or 0)
-                metadata_updated += writes
-                if writes == 0:
-                    exists = self.conn.execute(
-                        """
-                        SELECT 1
-                          FROM news_items
-                         WHERE source_id = %s AND provider_record_id = %s
-                        """,
-                        (source.source_id, event.provider_record_id),
-                    ).fetchone()
-                    rejections["duplicate" if exists is not None else "annotation_before_report"] += 1
+            incoming_strategies = _strategy_provenance(incoming_metadata.get("strategies"))
+            if not incoming_strategies:
+                rejections["strategy_provenance_missing"] += 1
                 continue
+            observed_strategy_provenance = _merged_strategy_provenance(
+                observed_strategy_provenance,
+                incoming_strategies,
+            )
+            incoming_metadata["strategies"] = incoming_strategies
 
             entry = event.entry
             title = str(entry.title or "").strip() if entry is not None else ""
@@ -839,26 +786,93 @@ class NewsRepository:
                 language=language,
             )
             item_id = deterministic_id("news_item", source.source_id, event.provider_record_id)
-            values = {
-                "item_id": item_id,
-                "source_id": source.source_id,
-                "source_item_key": event.provider_record_id,
-                "provider_record_id": event.provider_record_id,
-                "provider_metadata": Jsonb(incoming_metadata),
-                "provider_score_updated_at_ms": (
-                    observed_at_ms if _numeric_provider_score(incoming_metadata.get("score")) else None
+            existing = self.conn.execute(
+                """
+                WITH lock_provider_record AS (
+                  SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))
+                )
+                SELECT item.provider_metadata, item.canonical_url,
+                       item.reporting_origin, item.title, item.description,
+                       item.lang, item.published_at_ms,
+                       item.content_fingerprint, item.active
+                  FROM lock_provider_record
+                  LEFT JOIN LATERAL (
+                    SELECT provider_metadata, canonical_url,
+                           reporting_origin, title, description, lang,
+                           published_at_ms, content_fingerprint, active
+                      FROM news_items
+                     WHERE source_id = %s AND provider_record_id = %s
+                     FOR UPDATE
+                  ) AS item ON true
+                """,
+                (
+                    f"news-opennews-provider-record:{source.source_id}:{event.provider_record_id}",
+                    source.source_id,
+                    event.provider_record_id,
                 ),
-                "push_eligibility_updated_at_ms": (
-                    observed_at_ms if {"score", "coins"}.intersection(incoming_metadata) else None
-                ),
+            ).fetchone()
+            existing_metadata = dict(existing["provider_metadata"] or {}) if existing is not None else {}
+            merged_strategies = _merged_strategy_provenance(
+                existing_metadata.get("strategies"),
+                incoming_strategies,
+            )
+            incoming_payload: dict[str, Any] = {
+                "provider_metadata": {key: value for key, value in incoming_metadata.items() if key != "strategies"},
                 "canonical_url": canonical_url,
                 "reporting_origin": reporting_origin,
                 "title": title,
                 "description": description,
                 "lang": language,
-                "published_at_ms": published_at_ms,
-                "observed_at_ms": observed_at_ms,
+                "published_at_ms": int(published_at_ms),
                 "content_fingerprint": content_fingerprint,
+            }
+            existing_payload = (
+                {
+                    "provider_metadata": {
+                        key: value for key, value in existing_metadata.items() if key != "strategies"
+                    },
+                    "canonical_url": existing["canonical_url"],
+                    "reporting_origin": existing["reporting_origin"],
+                    "title": existing["title"],
+                    "description": existing["description"],
+                    "lang": existing["lang"],
+                    "published_at_ms": int(existing["published_at_ms"]),
+                    "content_fingerprint": existing["content_fingerprint"],
+                }
+                if existing is not None
+                and existing["provider_metadata"] is not None
+                and bool(existing["active"])
+                and _strategy_provenance(existing_metadata.get("strategies"))
+                else None
+            )
+            winner = (
+                existing_payload
+                if existing_payload is not None
+                and _stable_payload_order(existing_payload) > _stable_payload_order(incoming_payload)
+                else incoming_payload
+            )
+            winner_metadata = dict(winner["provider_metadata"])
+            winner_metadata["strategies"] = merged_strategies
+            values = {
+                "item_id": item_id,
+                "source_id": source.source_id,
+                "source_item_key": event.provider_record_id,
+                "provider_record_id": event.provider_record_id,
+                "provider_metadata": Jsonb(winner_metadata),
+                "provider_score_updated_at_ms": (
+                    observed_at_ms if _numeric_provider_score(winner_metadata.get("score")) else None
+                ),
+                "push_eligibility_updated_at_ms": (
+                    observed_at_ms if {"score", "coins", "strategies"}.intersection(winner_metadata) else None
+                ),
+                "canonical_url": winner["canonical_url"],
+                "reporting_origin": winner["reporting_origin"],
+                "title": winner["title"],
+                "description": winner["description"],
+                "lang": winner["lang"],
+                "published_at_ms": winner["published_at_ms"],
+                "observed_at_ms": observed_at_ms,
+                "content_fingerprint": winner["content_fingerprint"],
             }
             cursor = self.conn.execute(
                 """
@@ -895,6 +909,9 @@ class NewsRepository:
                       EXCLUDED.provider_metadata ? 'coins'
                       AND current_item.provider_metadata -> 'coins' IS DISTINCT FROM
                           EXCLUDED.provider_metadata -> 'coins'
+                    ) OR (
+                      current_item.provider_metadata -> 'strategies' IS DISTINCT FROM
+                          EXCLUDED.provider_metadata -> 'strategies'
                     )
                       THEN EXCLUDED.push_eligibility_updated_at_ms
                     ELSE current_item.push_eligibility_updated_at_ms
@@ -903,10 +920,14 @@ class NewsRepository:
                     WHEN jsonb_typeof(EXCLUDED.provider_metadata -> 'score') = 'number'
                      AND current_item.provider_metadata -> 'score' IS DISTINCT FROM
                          EXCLUDED.provider_metadata -> 'score'
-                      THEN EXCLUDED.provider_score_updated_at_ms
+                      THEN CASE
+                        WHEN current_item.active
+                          THEN current_item.first_observed_at_ms
+                        ELSE EXCLUDED.provider_score_updated_at_ms
+                      END
                     ELSE current_item.provider_score_updated_at_ms
                   END,
-                  provider_metadata = current_item.provider_metadata || EXCLUDED.provider_metadata,
+                  provider_metadata = EXCLUDED.provider_metadata,
                   canonical_url = EXCLUDED.canonical_url,
                   reporting_origin = EXCLUDED.reporting_origin,
                   title = EXCLUDED.title,
@@ -942,9 +963,7 @@ class NewsRepository:
                   active = true,
                   updated_at_ms = EXCLUDED.updated_at_ms
                 WHERE current_item.content_fingerprint IS DISTINCT FROM EXCLUDED.content_fingerprint
-                   OR current_item.provider_metadata IS DISTINCT FROM (
-                        current_item.provider_metadata || EXCLUDED.provider_metadata
-                      )
+                   OR current_item.provider_metadata IS DISTINCT FROM EXCLUDED.provider_metadata
                    OR NOT current_item.active
                 RETURNING (xmax = 0) AS inserted
                 """,
@@ -959,40 +978,57 @@ class NewsRepository:
             else:
                 updated += 1
 
-        if recovery_started_at_ms is None and events:
+        if events:
+            source_row = self.conn.execute(
+                """
+                SELECT observed_strategy_provenance
+                  FROM news_sources
+                 WHERE source_id = %s AND source_kind = 'opennews'
+                 FOR UPDATE
+                """,
+                (source.source_id,),
+            ).fetchone()
+            durable_strategy_provenance = _merged_strategy_provenance(
+                source_row["observed_strategy_provenance"] if source_row is not None else None,
+                observed_strategy_provenance,
+            )
             self.conn.execute(
                 """
                 UPDATE news_sources
-                   SET last_live_at_ms = %s,
-                       last_success_at_ms = %s,
-                       last_outcome = CASE
-                         WHEN last_outcome IN (
-                           'recovery_running', 'recovery_failed',
-                           'recovery_window_exhausted'
-                         ) THEN last_outcome
-                         ELSE 'live_success'
+                   SET last_success_at_ms = CASE
+                         WHEN %(accepted_trigger)s THEN %(observed_at_ms)s
+                         ELSE last_success_at_ms
                        END,
-                       last_rejection_counts = %s,
-                       last_items_seen = %s,
-                       last_items_accepted = %s,
-                       updated_at_ms = %s
-                 WHERE source_id = %s
+                       last_accepted_strategy_trigger_at_ms = CASE
+                         WHEN %(accepted_trigger)s THEN %(observed_at_ms)s
+                         ELSE last_accepted_strategy_trigger_at_ms
+                       END,
+                       observed_strategy_provenance = %(strategy_provenance)s,
+                       last_outcome = CASE
+                         WHEN %(accepted_trigger)s THEN 'strategy_trigger_success'
+                         ELSE 'strategy_trigger_rejected'
+                       END,
+                       last_rejection_counts = %(last_rejection_counts)s,
+                       last_items_seen = %(last_items_seen)s,
+                       last_items_accepted = %(last_items_accepted)s,
+                       updated_at_ms = %(observed_at_ms)s
+                 WHERE source_id = %(source_id)s
                 """,
-                (
-                    int(observed_at_ms),
-                    int(observed_at_ms),
-                    Jsonb(dict(rejections)),
-                    len(events),
-                    inserted + updated,
-                    int(observed_at_ms),
-                    source.source_id,
-                ),
+                {
+                    "accepted_trigger": bool(observed_strategy_provenance),
+                    "observed_at_ms": int(observed_at_ms),
+                    "strategy_provenance": Jsonb(durable_strategy_provenance),
+                    "last_rejection_counts": Jsonb(dict(rejections)),
+                    "last_items_seen": len(events),
+                    "last_items_accepted": inserted + updated,
+                    "source_id": source.source_id,
+                },
             )
         return {
             "events_seen": len(events),
             "items_inserted": inserted,
             "items_updated": updated,
-            "metadata_updated": metadata_updated,
+            "metadata_updated": 0,
             "rejected": sum(rejections.values()),
         }
 
@@ -1018,23 +1054,61 @@ class NewsRepository:
         connected: bool,
         now_ms: int,
         error_code: str | None,
+        coverage_gap: bool = False,
+        overflow: bool = False,
     ) -> bool:
+        normalized_error = str(error_code)[:500] if error_code else None
+        overflow = bool(overflow or (normalized_error and "overflow" in normalized_error))
+        mark_coverage_unknown = bool(not connected or normalized_error or coverage_gap or overflow)
         cursor = self.conn.execute(
             """
             UPDATE news_sources
                SET live_connected = %(connected)s,
-                   last_live_at_ms = CASE
+                   last_connected_at_ms = CASE
                      WHEN %(connected)s THEN %(now_ms)s
-                     ELSE last_live_at_ms
+                     ELSE last_connected_at_ms
+                   END,
+                   last_disconnected_at_ms = CASE
+                     WHEN NOT %(connected)s THEN %(now_ms)s
+                     ELSE last_disconnected_at_ms
+                   END,
+                   last_overflow_at_ms = CASE
+                     WHEN %(overflow)s THEN %(now_ms)s
+                     ELSE last_overflow_at_ms
+                   END,
+                   strategy_coverage_started_at_ms = COALESCE(
+                     strategy_coverage_started_at_ms,
+                     CASE WHEN %(connected)s THEN %(now_ms)s END
+                   ),
+                   coverage_unknown_since_at_ms = CASE
+                     WHEN %(mark_coverage_unknown)s
+                      AND COALESCE(
+                        strategy_coverage_started_at_ms,
+                        CASE WHEN %(connected)s THEN %(now_ms)s END
+                      ) IS NOT NULL
+                       THEN COALESCE(
+                       coverage_unknown_since_at_ms,
+                       %(now_ms)s
+                     )
+                     ELSE coverage_unknown_since_at_ms
                    END,
                    last_outcome = CASE
-                     WHEN %(error_code)s::text IS NOT NULL THEN 'live_failed'
-                     ELSE last_outcome
+                     WHEN %(overflow)s THEN 'strategy_coverage_overflow'
+                     WHEN %(error_code)s::text IS NOT NULL THEN 'strategy_disconnected_failed'
+                     WHEN %(connected)s THEN 'strategy_connected'
+                     ELSE 'strategy_disconnected'
                    END,
                    last_error = CASE
                      WHEN %(error_code)s::text IS NOT NULL
                        THEN %(error_code)s::text
-                     ELSE last_error
+                     WHEN %(connected)s THEN NULL
+                     ELSE NULL
+                   END,
+                   consecutive_failures = CASE
+                     WHEN %(error_code)s::text IS NOT NULL
+                       THEN consecutive_failures + 1
+                     WHEN %(connected)s THEN 0
+                     ELSE consecutive_failures
                    END,
                    updated_at_ms = %(now_ms)s
              WHERE source_id = %(source_id)s
@@ -1043,97 +1117,13 @@ class NewsRepository:
             {
                 "connected": connected,
                 "now_ms": int(now_ms),
-                "error_code": str(error_code)[:500] if error_code else None,
+                "error_code": normalized_error,
+                "mark_coverage_unknown": mark_coverage_unknown,
+                "overflow": overflow,
                 "source_id": source_id,
             },
         )
         return bool(cursor.rowcount)
-
-    def complete_opennews_recovery(
-        self,
-        *,
-        source_id: str,
-        started_at_ms: int,
-        finished_at_ms: int,
-        window_exhausted: bool,
-        items_seen: int,
-        items_accepted: int,
-        rejection_counts: Mapping[str, int],
-    ) -> bool:
-        outcome = "recovery_window_exhausted" if window_exhausted else "recovery_success"
-        error_code = "opennews_recovery_window_exhausted" if window_exhausted else None
-        cursor = self.conn.execute(
-            """
-            UPDATE news_sources
-               SET last_fetch_finished_at_ms = %s,
-                   last_recovery_at_ms = %s,
-                   last_success_at_ms = CASE
-                     WHEN %s THEN last_success_at_ms
-                     ELSE %s
-                   END,
-                   last_http_status = 200,
-                   consecutive_failures = CASE
-                     WHEN %s THEN consecutive_failures + 1
-                     ELSE 0
-                   END,
-                   last_outcome = %s,
-                   last_error = %s,
-                   last_rejection_counts = %s,
-                   last_items_seen = %s,
-                   last_items_accepted = %s,
-                   updated_at_ms = %s
-             WHERE source_id = %s
-               AND source_kind = 'opennews'
-               AND last_fetch_started_at_ms = %s
-            """,
-            (
-                int(finished_at_ms),
-                int(finished_at_ms),
-                bool(window_exhausted),
-                int(finished_at_ms),
-                bool(window_exhausted),
-                outcome,
-                error_code,
-                Jsonb(dict(rejection_counts)),
-                int(items_seen),
-                int(items_accepted),
-                int(finished_at_ms),
-                source_id,
-                int(started_at_ms),
-            ),
-        )
-        return bool(cursor.rowcount)
-
-    def record_opennews_recovery_failure(
-        self,
-        *,
-        source_id: str,
-        started_at_ms: int,
-        finished_at_ms: int,
-        error_code: str,
-        status_code: int | None,
-    ) -> None:
-        self.conn.execute(
-            """
-            UPDATE news_sources
-               SET last_fetch_started_at_ms = %s,
-                   last_fetch_finished_at_ms = %s,
-                   last_http_status = %s,
-                   consecutive_failures = consecutive_failures + 1,
-                   last_error = %s,
-                   last_outcome = 'recovery_failed',
-                   updated_at_ms = %s
-             WHERE source_id = %s AND source_kind = 'opennews'
-            """,
-            (
-                started_at_ms,
-                finished_at_ms,
-                status_code,
-                str(error_code)[:500],
-                finished_at_ms,
-                source_id,
-            ),
-        )
 
     # Persistent Story projection ----------------------------------------------
 
@@ -2662,6 +2652,7 @@ class NewsRepository:
         *,
         now_ms: int,
         rss_enabled: bool,
+        configured_strategy_count: int,
         push_enabled: bool = False,
         feishu_webhook_url_configured: bool = False,
         feishu_signing_secret_configured: bool = False,
@@ -2670,6 +2661,8 @@ class NewsRepository:
     ) -> dict[str, Any]:
         if workers_state not in {None, "running", "recovering", "stalled"}:
             raise ValueError("news_workers_state_invalid")
+        if configured_strategy_count < 0:
+            raise ValueError("news_configured_strategy_count_invalid")
         opennews_query = query_specs.status_opennews_query()
         opennews = self.conn.execute(
             opennews_query.sql,
@@ -2684,7 +2677,15 @@ class NewsRepository:
         ).fetchone()
         brief = self.get_brief(now_ms=now_ms)
         ingest_reasons: list[str] = []
-        opennews_payload = dict(opennews) if opennews is not None else None
+        opennews_payload = (
+            {
+                **dict(opennews),
+                "configured_strategy_count": int(configured_strategy_count),
+                "replay_supported": False,
+            }
+            if opennews is not None
+            else None
+        )
         next_due_values = [int(row["next_fetch_at_ms"]) for row in rss_rows if row["next_fetch_at_ms"] is not None]
         success_values = [int(row["last_success_at_ms"]) for row in rss_rows if row["last_success_at_ms"] is not None]
         rss_payload = {
@@ -2698,18 +2699,32 @@ class NewsRepository:
         }
         if opennews_payload is None:
             ingest_status = "degraded"
-            ingest_reasons.append("opennews_primary_missing")
-        elif opennews_payload["last_error"] is not None:
+            ingest_reasons.append("opennews_strategy_missing")
+        elif configured_strategy_count == 0:
             ingest_status = "degraded"
-            ingest_reasons.append("opennews_primary_error")
-        elif opennews_payload["last_success_at_ms"] is None:
-            ingest_status = "warming"
-            ingest_reasons.append("opennews_primary_no_success_yet")
-        elif not bool(opennews_payload["live_connected"]):
-            ingest_status = "degraded"
-            ingest_reasons.append("opennews_primary_disconnected")
+            ingest_reasons.append("opennews_strategy_missing")
         else:
-            ingest_status = "ready"
+            if opennews_payload["last_error"] is not None:
+                ingest_reasons.append("opennews_strategy_transport_error")
+            if not bool(opennews_payload["live_connected"]):
+                ingest_reasons.append("opennews_strategy_disconnected")
+            if opennews_payload["coverage_unknown_since_at_ms"] is not None:
+                ingest_reasons.append("opennews_strategy_coverage_unknown")
+            if any(
+                reason
+                in {
+                    "opennews_strategy_transport_error",
+                    "opennews_strategy_disconnected",
+                    "opennews_strategy_coverage_unknown",
+                }
+                for reason in ingest_reasons
+            ):
+                ingest_status = "degraded"
+            elif opennews_payload["last_accepted_strategy_trigger_at_ms"] is None:
+                ingest_status = "warming"
+                ingest_reasons.append("opennews_strategy_no_trigger_yet")
+            else:
+                ingest_status = "ready"
 
         if rss_enabled:
             if rss_payload["source_count"] == 0:
@@ -2882,7 +2897,7 @@ class NewsRepository:
         operating_state = (
             "stalled"
             if runtime_stalled or push_stalled
-            else "recovering"
+            else "warming"
             if overall != "ready" or (push_enabled and (push_snapshot["pending_count"] or push_snapshot["retry_count"]))
             else "live"
         )
