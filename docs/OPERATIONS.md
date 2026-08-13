@@ -423,6 +423,9 @@ records `buffer_overflow`, and leaves current WSS connected.
 
 There is no ordinary OpenNews Search overlap. Disconnect, queue overflow, and
 unexpected process outage open typed incidents; planned shutdown is distinct.
+Planned intervals are excluded from network-failure counts, but they still close
+at the next live connection and recover from official Strategy history because
+the provider may publish events while Tracefold is intentionally offline.
 Reconnect closes the current transport interval, then official authenticated
 `/open/strategy_list` verifies the configured set and bounded
 `/open/strategy_hits` pages recover each interval with overlap. Exact fact

@@ -548,7 +548,7 @@ failure, unexpected process restart, overflow, and planned shutdown have
 separate incident causes. Reconnect proves current connectivity and closes the
 transport interval but does not by itself assert historical completeness.
 
-Closed non-planned incidents are recovered only through the provider's official
+Closed incidents, including planned deploy intervals, are recovered only through the provider's official
 authenticated `/open/strategy_list` and `/open/strategy_hits` endpoints. The
 list call verifies the exact configured Strategies are enabled; history is
 page-bounded, overlap-safe, filtered to the incident interval, and persisted as

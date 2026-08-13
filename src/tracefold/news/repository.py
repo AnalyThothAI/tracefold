@@ -1152,22 +1152,19 @@ class NewsRepository:
             self.conn.execute(
                 """
                 INSERT INTO news_opennews_incidents (
-                  source_id, cause_class, opened_at_ms, reconnected_at_ms,
-                  closed_at_ms, planned, close_code, recovery_status,
+                  source_id, cause_class, opened_at_ms,
+                  planned, close_code, recovery_status,
                   recovery_from_at_ms, recovery_to_at_ms, recovered_count,
                   last_error_code, created_at_ms, updated_at_ms
                 ) VALUES (
-                  %s, 'planned_shutdown', %s, %s, %s, true, %s,
-                  'not_required', %s, %s, 0, NULL, %s, %s
+                  %s, 'planned_shutdown', %s, true, %s,
+                  'pending', %s, NULL, 0, NULL, %s, %s
                 )
                 """,
                 (
                     source_id,
                     int(now_ms),
-                    int(now_ms),
-                    int(now_ms),
                     close_code,
-                    int(now_ms),
                     int(now_ms),
                     int(now_ms),
                     int(now_ms),
@@ -1234,7 +1231,6 @@ class NewsRepository:
                        updated_at_ms = %s
                  WHERE source_id = %s
                    AND closed_at_ms IS NULL
-                   AND NOT planned
                 """,
                 (int(now_ms), int(now_ms), int(now_ms), int(now_ms), source_id),
             )
@@ -1296,7 +1292,6 @@ class NewsRepository:
               FROM news_opennews_incidents
              WHERE source_id = %s
                AND incident_id > %s
-               AND NOT planned
                AND closed_at_ms IS NOT NULL
                AND recovery_status IN ('pending', 'partial', 'unavailable')
              ORDER BY opened_at_ms, incident_id
@@ -1341,7 +1336,6 @@ class NewsRepository:
                        last_error_code = %s,
                        updated_at_ms = %s
                  WHERE source_id = %s
-                   AND NOT planned
                    AND recovery_status IN ('pending', 'running', 'partial', 'unavailable')
                 """,
                 (public_error, int(now_ms), source_id),

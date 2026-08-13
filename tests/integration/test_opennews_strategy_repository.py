@@ -154,6 +154,51 @@ def test_overflow_incident_does_not_change_connected_wss_state() -> None:
     assert dict(incident) == {"cause_class": "buffer_overflow", "recovery_status": "pending"}
 
 
+def test_planned_shutdown_gap_is_recovered_but_not_counted_as_network_failure() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        with conn.transaction():
+            repository.sync_sources((opennews_source(),), now_ms=BASE_MS)
+            repository.update_opennews_live_status(
+                source_id="news-opennews",
+                connected=False,
+                now_ms=BASE_MS + 100,
+                error_code=None,
+                planned=True,
+            )
+            opened = conn.execute(
+                """SELECT cause_class, planned, closed_at_ms, recovery_status
+                     FROM news_opennews_incidents"""
+            ).fetchone()
+            repository.update_opennews_live_status(
+                source_id="news-opennews",
+                connected=True,
+                now_ms=BASE_MS + 300,
+                error_code=None,
+            )
+            closed = repository.claim_opennews_recovery(
+                source_id="news-opennews",
+                after_incident_id=0,
+            )
+    finally:
+        conn.close()
+
+    assert dict(opened) == {
+        "cause_class": "planned_shutdown",
+        "planned": True,
+        "closed_at_ms": None,
+        "recovery_status": "pending",
+    }
+    assert closed is not None
+    assert closed["planned"] is True
+    assert closed["reconnected_at_ms"] == BASE_MS + 300
+    assert closed["closed_at_ms"] == BASE_MS + 300
+    assert closed["recovery_from_at_ms"] == BASE_MS + 100
+    assert closed["recovery_to_at_ms"] == BASE_MS + 300
+
+
 def _event(provider_record_id: str, strategy_id: str) -> OpenNewsEvent:
     return OpenNewsEvent(
         provider_record_id=provider_record_id,
