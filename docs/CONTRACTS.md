@@ -179,8 +179,8 @@ There is no CEX OI/detail product API. Generic exchange facts and provider adapt
 
 ### Token Radar
 
-`GET /api/token-radar` reads the one `token_radar_current` current/LKG
-singleton. It has no product query parameter: `window`, `venue`, `limit`,
+`GET /api/token-radar` reads the one `token_radar_current` singleton. It has
+no product query parameter: `window`, `venue`, `limit`,
 `scope`, sorting, filtering, and pagination are rejected rather than ignored or
 aliased. The existing authentication `token` query remains an authentication
 transport, not a Radar option. The product is one fixed four-hour causal view:
@@ -190,32 +190,24 @@ first eight hours, then supplies the final four-hour replay transition to `t`;
 that reconstruction is neither a selectable nor a third public window. There
 is no one-hour or twenty-four-hour Radar variant.
 
-The exact data payload is one `token_radar_snapshot_v4` object. Before the
-first successful v4 sample it is:
+The exact data payload is one `token_radar_snapshot_v5` object. The hard-cut
+initial value and any successful empty publication are:
 
 ```json
 {
-  "schema_version": "token_radar_snapshot_v4",
-  "state": "unavailable",
-  "stale_reason": null,
-  "state_changed_at_ms": 0,
+  "schema_version": "token_radar_snapshot_v5",
   "social_evidence_as_of_ms": 0,
   "eligible_total": 0,
   "items": []
 }
 ```
 
-`state` is exactly `current|stale|unavailable`. `current` means the latest
-complete sample published successfully. `stale` preserves the complete
-last-known-good Items and uses only
-`source_unavailable|projection_failed` as its non-null `stale_reason`.
-`unavailable` has `stale_reason=null`, zero social clock/counts, and no Items
-because no v4 LKG exists. `state_changed_at_ms` changes only when this public
-state/reason changes; `social_evidence_as_of_ms` is the latest persisted social
-fact-availability clock represented by the replay, never a market clock.
-Repeated identical current or stale observations do not advance either clock
-or rewrite serving state. `schema_version` is the only public semantic version;
-the Gate/ruleset version and fingerprints remain internal.
+These four keys are the complete top-level contract; state, stale reasons,
+attempts, failures, ruleset metadata, and workload telemetry do not exist.
+`social_evidence_as_of_ms` is the latest persisted social fact-availability
+clock represented by a complete replay, never a market clock. A failed turn
+leaves the last successful payload untouched. A successful business-identical
+turn writes zero serving rows and does not advance `updated_at_ms`.
 
 `items` contains at most fifty entries in server-owned order. Each entry has
 exactly canonical `target` identity (`target_type`, `target_id`, `symbol`, and
@@ -243,7 +235,7 @@ non-positive value, or non-finite value nulls only that presentation fact.
 `price_change_since_signal` additionally requires a valid current price and the
 persisted trigger price anchor, with its current-price observation no earlier
 than the trigger source-event time. Market presentation never changes admission,
-qualification, or order, and v4 has no market `status` or
+qualification, or order, and v5 has no market `status` or
 `counter_evidence`. `eligible_total` counts the complete eligible population
 before the maximum-fifty selection; Items contain that full population when it
 is at most fifty and exactly fifty otherwise. Order is `qualified_at_ms`
@@ -262,16 +254,15 @@ internal chain value `robinhood` (provider adapters map its external chain index
 fallback; clients present it as a contract address rather than a ticker.
 
 The response has `Cache-Control: private, no-cache` and a strong ETag bound to
-the complete served v4 object, including public state. A matching
-`If-None-Match` returns `304` with no body, including for unchanged healthy or
-unchanged stale reads. The endpoint never calls a provider, recalculates the
-reducer, hydrates a profile, returns source-event lists, or falls back to a v3
+the complete served v5 object. A matching `If-None-Match` returns `304` with no
+body. The endpoint never calls a provider, recalculates the reducer, hydrates a
+profile, returns source-event lists, or falls back to a v4
 contract. The writer obtains identity/profile, exact trigger-price anchor,
 current-price, and independently fresh market-cap facts in one bounded batch
 read only after Top-50 selection; the browser makes no per-Item profile or
 live-market data request. Scores, ranks, decisions, factor families, per-rule
 Gate audits, rejected-candidate histories, normalization, security judgments,
-windows, venues, and compatibility fields do not exist. Radar v4 changes no
+windows, venues, and compatibility fields do not exist. Radar v5 changes no
 WebSocket route, message, replay, or subscription contract.
 Search and Token Case remain independent fact readers; a Radar link may focus
 the exact trigger Event in Token Case, but Radar current state is not copied
@@ -784,7 +775,7 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 
 Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
 
-`queue-inspect`, `radar-status`, `validate-projections`, and
+`queue-inspect`, `validate-projections`, and
 `audit-token-intent` are strict Serve-role reads.
 They do not acquire the maintenance lock, so operators can inspect the running
 singleton without interrupting it. Repair and rebuild commands remain
@@ -814,9 +805,8 @@ observed process liveness.
 reconstructing `market_tick_current` from persisted `market_ticks`.
 News steady state and explicit maintenance use the same complete current
 12-hour WorldMonitor calculation from persisted Strategy-admitted and optional
-RSS NewsItems. `radar-status`
-reports only the current singleton clocks, fingerprints, bounded counts, and
-last attempt; it never returns the retired factor payload.
+RSS NewsItems. Token Radar has no product-specific status command; its public
+read surface is the authenticated exact snapshot endpoint.
 
 One-shot maintenance commands construct only the dependencies required by the
 named domain operation and invoke that bounded operation directly. The

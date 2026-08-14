@@ -127,13 +127,11 @@ from .provider_contracts import (
 from .radar.constants import (
     TOKEN_RADAR_INPUT_BYTE_CAP,
     TOKEN_RADAR_INPUT_ROW_CAP,
-    TOKEN_RADAR_LOAD_BUDGET_SECONDS,
     TOKEN_RADAR_MAX_ITEMS,
     TOKEN_RADAR_OUTPUT_BYTE_CAP,
     TOKEN_RADAR_REFRESH_SECONDS,
 )
 from .radar.current_worker import TokenRadarCurrentProjection
-from .radar.operations import TokenRadarStatusUnavailable, token_radar_status
 from .views.event_token_projection_query import EventTokenProjectionQuery
 from .views.search_events_query import SearchEventsQuery
 from .views.search_inspect_service import SearchInspectService
@@ -176,7 +174,6 @@ __all__ = [
     "OKX_DEX_PROFILE_PROVIDER",
     "TOKEN_RADAR_INPUT_BYTE_CAP",
     "TOKEN_RADAR_INPUT_ROW_CAP",
-    "TOKEN_RADAR_LOAD_BUDGET_SECONDS",
     "TOKEN_RADAR_MAX_ITEMS",
     "TOKEN_RADAR_OUTPUT_BYTE_CAP",
     "TOKEN_RADAR_REFRESH_SECONDS",
@@ -269,7 +266,6 @@ __all__ = [
     "TokenProfileReadModel",
     "TokenProfileSourceQuery",
     "TokenRadarCurrentProjection",
-    "TokenRadarStatusUnavailable",
     "TokenSnapshot",
     "TokenTargetCursorError",
     "TokenTargetPostsCursorError",
@@ -307,5 +303,4 @@ __all__ = [
     "sync_cex_token_profiles",
     "sync_us_equity_symbols",
     "token_intent_resolution_id",
-    "token_radar_status",
 ]

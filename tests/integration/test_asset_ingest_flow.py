@@ -186,7 +186,7 @@ def test_ingest_capture_tick_updates_current_without_writing_token_radar(tmp_pat
         )
         radar_row = conn.execute(
             """
-            SELECT latest_attempt_status, served_payload
+            SELECT snapshot_fingerprint, served_payload
             FROM token_radar_current
             WHERE singleton_key = true
             """
@@ -205,7 +205,7 @@ def test_ingest_capture_tick_updates_current_without_writing_token_radar(tmp_pat
     assert result.inserted is True
     assert current_row is not None
     assert current_row["tick_id"] == capture_result.tick.tick_id
-    assert radar_row["latest_attempt_status"] == "never"
+    assert radar_row["snapshot_fingerprint"].startswith("sha256:")
     assert radar_row["served_payload"]["items"] == []
     assert live_row is not None
     assert live_row["event_kind"] == "event"

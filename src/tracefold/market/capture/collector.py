@@ -65,12 +65,6 @@ class CollectorService:
         self._event_publish_lock = asyncio.Lock()
         self.status = CollectorStatus(started_at_ms=_now_ms())
 
-    def source_is_streaming(self) -> bool:
-        client = self.upstream_client
-        if client is None:
-            return False
-        return str(client.connection_state_payload().get("state") or "") == "streaming"
-
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if self.upstream_client is None:
             raise RuntimeError("upstream_client is required")

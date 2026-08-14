@@ -183,10 +183,7 @@ function statusData() {
 
 function tokenRadarData(itemCount: number, presentationStress: boolean, unsupportedChain: boolean) {
   return {
-    schema_version: "token_radar_snapshot_v4",
-    state: "current",
-    stale_reason: null,
-    state_changed_at_ms: NOW - 120_000,
+    schema_version: "token_radar_snapshot_v5",
     social_evidence_as_of_ms: NOW,
     eligible_total: itemCount,
     items: Array.from({ length: itemCount }, (_, index) =>

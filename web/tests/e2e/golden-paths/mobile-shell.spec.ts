@@ -99,7 +99,7 @@ test("mobile Radar Case action remains reachable on the final item", async ({ pa
 
   const lastItem = page.locator(".live-radar-item").last();
   await lastItem.scrollIntoViewIfNeeded();
-  await lastItem.getByRole("link", { name: "Open Token Case" }).click();
+  await lastItem.getByRole("link", { name: "Open CASE50 Token Case" }).click();
   await expect(page).toHaveURL(/focus=trigger&trigger_event_id=event-upeg-50$/);
   await expectNoUnhandledApiRequests(page);
 });

@@ -29,7 +29,7 @@ from tracefold.platform.postgres.postgres_migrations import latest_migration_ver
 from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
 
 _FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
-_DEADLINE_DOMAINS = ("radar", *_FRONTIER_DOMAINS)
+_DEADLINE_DOMAINS = _FRONTIER_DOMAINS
 
 _AUTHORIZATION_URL = "https://github.com/AnalyThothAI/tracefold/issues/33#issuecomment-5149965794"
 _AUTHORIZED_BY = "aaurix"
@@ -402,7 +402,7 @@ def _complete_evidence(root: Path) -> dict:
                 "baseline_sha256": hashlib.sha256(f"{domain}-same".encode()).hexdigest(),
                 "candidate_sha256": hashlib.sha256(f"{domain}-same".encode()).hexdigest(),
             }
-            for domain in ("radar", "news", "macro", "profile")
+            for domain in ("news", "macro", "profile")
         },
     }
     offline = evidence["gates"]["offline_semantic_determinism"]
@@ -617,27 +617,6 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
             },
             **({"query_audit": _query_audit()} if sequence == 0 else {}),
         },
-        "token_radar_api": {
-            "unconditional": {
-                "status": 200,
-                "latency_ms": 10.0,
-                "bytes": 1024,
-                "data_bytes": 900,
-                "items": 1,
-                "etag_sha256": "b" * 64,
-                "data_sha256": "c" * 64,
-            },
-            "conditional": {
-                "status": 304,
-                "latency_ms": 5.0,
-                "bytes": 0,
-                "etag_sha256": "b" * 64,
-            },
-        },
-        "token_radar_database": {
-            "before": {"data_sha256": "c" * 64, "items": 1},
-            "after": {"data_sha256": "c" * 64, "items": 1},
-        },
         "telemetry": {
             "metric_families": sorted(
                 {
@@ -663,27 +642,13 @@ def _collection_sample(sequence: int, *, clock: _AcceptanceClock, commit: str) -
             },
             "projection_deadline_misses_total": {domain: 0.0 for domain in _DEADLINE_DOMAINS},
             "projection_transitions_total": {domain: {"arrival": 0.0, "completion": 0.0} for domain in domains},
-            "last_run_timestamp_seconds": {
-                "token_radar_current": at_ms / 1_000 - float(sequence % 3) * 10.0,
-            },
-            "projection_rows": [
-                {
-                    "labels": {"worker": "token_radar_current", "stage": stage},
-                    "value": float(value),
-                }
-                for stage, value in (("input", 12), ("eligible", 3), ("public", 3))
-            ],
-            "projection_bytes": [
-                {
-                    "labels": {"worker": "token_radar_current", "direction": direction},
-                    "value": float(value),
-                }
-                for direction, value in (("input", 1024), ("output", 512))
-            ],
+            "last_run_timestamp_seconds": {},
+            "projection_rows": [],
+            "projection_bytes": [],
             "processing_seconds": _processing_rows(count=sequence // 3 + 1),
             "jobs_total": [
                 {
-                    "labels": {"worker": "token_radar_current", "status": "published"},
+                    "labels": {"worker": "news_story_projection", "status": "published"},
                     "value": float(sequence // 3 + 1),
                 }
             ],
@@ -705,19 +670,19 @@ def _processing_rows(*, count: int) -> list[dict]:
     return [
         {
             "name": "tracefold_worker_processing_seconds_bucket",
-            "labels": {"worker": "token_radar_current", "le": boundary},
+            "labels": {"worker": "news_story_projection", "le": boundary},
             "value": float(count),
         }
         for boundary in ("2.0", "5.0", "8.0", "12.0", "+Inf")
     ] + [
         {
             "name": "tracefold_worker_processing_seconds_count",
-            "labels": {"worker": "token_radar_current"},
+            "labels": {"worker": "news_story_projection"},
             "value": float(count),
         },
         {
             "name": "tracefold_worker_processing_seconds_sum",
-            "labels": {"worker": "token_radar_current"},
+            "labels": {"worker": "news_story_projection"},
             "value": float(count),
         },
     ]

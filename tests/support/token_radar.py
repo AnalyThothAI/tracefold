@@ -23,7 +23,7 @@ def run_token_radar_current(conn: Any, *, now_ms: int) -> dict[str, Any]:
     )
     conn.commit()
     with conn.transaction():
-        return repository.publish(reduced, evaluation_at_ms=now_ms)
+        return repository.publish(reduced, updated_at_ms=now_ms)
 
 
 __all__ = ["run_token_radar_current"]

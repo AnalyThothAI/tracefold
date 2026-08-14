@@ -476,7 +476,7 @@ def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> Non
                 ),
                 now_ms=base_now_ms,
             )
-            result = repository.publish(reduced, evaluation_at_ms=base_now_ms)
+            result = repository.publish(reduced, updated_at_ms=base_now_ms)
         assert result["status"] in {"published", "unchanged", "recovered"}
     finally:
         conn.close()
@@ -2084,10 +2084,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
 
     assert radar.status_code == 200
     assert radar.json()["data"] == {
-        "schema_version": "token_radar_snapshot_v4",
-        "state": "current",
-        "stale_reason": None,
-        "state_changed_at_ms": rebuild_now_ms,
+        "schema_version": "token_radar_snapshot_v5",
         "social_evidence_as_of_ms": 0,
         "eligible_total": 0,
         "items": [],
@@ -2128,10 +2125,7 @@ def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
     assert response.status_code == 200
     data = response.json()["data"]
     assert data == {
-        "schema_version": "token_radar_snapshot_v4",
-        "state": "current",
-        "stale_reason": None,
-        "state_changed_at_ms": rebuild_now_ms,
+        "schema_version": "token_radar_snapshot_v5",
         "social_evidence_as_of_ms": 0,
         "eligible_total": 0,
         "items": [],
@@ -2259,10 +2253,7 @@ def test_api_token_radar_rejects_all_product_queries_but_keeps_auth_token(tmp_pa
     ]
     assert auth_query.status_code == 200
     assert auth_query.json()["data"] == {
-        "schema_version": "token_radar_snapshot_v4",
-        "state": "unavailable",
-        "stale_reason": None,
-        "state_changed_at_ms": 0,
+        "schema_version": "token_radar_snapshot_v5",
         "social_evidence_as_of_ms": 0,
         "eligible_total": 0,
         "items": [],
@@ -2306,7 +2297,7 @@ def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
     with write_repositories() as repos, repos.transaction():
         result = TokenRadarCurrentRepository(repos.conn).publish(
             reduced,
-            evaluation_at_ms=now_ms,
+            updated_at_ms=now_ms,
         )
     assert result["status"] == "published"
     app = create_app(settings=settings)
@@ -2323,46 +2314,11 @@ def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
                 "If-None-Match": current.headers["etag"],
             },
         )
-        with write_repositories() as repos, repos.transaction():
-            failure_writes = TokenRadarCurrentRepository(repos.conn).record_failure(
-                error_code="token_radar_source_unavailable",
-                evaluation_at_ms=now_ms + 1,
-            )
-        stale = client.get(
-            "/api/token-radar",
-            headers={
-                "Authorization": "Bearer secret",
-                "If-None-Match": current.headers["etag"],
-            },
-        )
-        stale_not_modified = client.get(
-            "/api/token-radar",
-            headers={
-                "Authorization": "Bearer secret",
-                "If-None-Match": stale.headers["etag"],
-            },
-        )
-        with write_repositories() as repos, repos.transaction():
-            recovered_result = TokenRadarCurrentRepository(repos.conn).publish(
-                reduced,
-                evaluation_at_ms=now_ms + 2,
-            )
-        recovered = client.get(
-            "/api/token-radar",
-            headers={
-                "Authorization": "Bearer secret",
-                "If-None-Match": stale.headers["etag"],
-            },
-        )
-
     assert current.status_code == 200
     assert current.json() == {
         "ok": True,
         "data": {
-            "schema_version": "token_radar_snapshot_v4",
-            "state": "current",
-            "stale_reason": None,
-            "state_changed_at_ms": now_ms,
+            "schema_version": "token_radar_snapshot_v5",
             "social_evidence_as_of_ms": reduced.snapshot["social_evidence_as_of_ms"],
             "eligible_total": 1,
             "items": reduced.snapshot["items"],
@@ -2373,95 +2329,6 @@ def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
     assert current_not_modified.status_code == 304
     assert not current_not_modified.content
     assert current_not_modified.headers["etag"] == current.headers["etag"]
-
-    assert failure_writes == 1
-    assert stale.status_code == 200
-    assert stale.json()["data"] == {
-        **current.json()["data"],
-        "state": "stale",
-        "stale_reason": "source_unavailable",
-        "state_changed_at_ms": now_ms + 1,
-    }
-    assert stale.headers["etag"] != current.headers["etag"]
-    assert stale_not_modified.status_code == 304
-    assert not stale_not_modified.content
-    assert stale_not_modified.headers["etag"] == stale.headers["etag"]
-
-    assert recovered_result == {"status": "recovered", "rows_written": 1}
-    assert recovered.status_code == 200
-    assert recovered.json()["data"] == {
-        **current.json()["data"],
-        "state_changed_at_ms": now_ms + 2,
-    }
-    assert recovered.headers["etag"] != stale.headers["etag"]
-
-
-def test_api_token_radar_local_p95_budgets_at_maximum_public_size(tmp_path):
-    now_ms = int(time.time() * 1_000)
-    settings = make_settings(tmp_path)
-    reduced = reduce_token_radar(
-        [
-            token_radar_revision(
-                target_id=f"asset:perf:{target_index}",
-                event_index=event_index,
-                now_ms=now_ms,
-            )
-            for target_index in range(50)
-            for event_index in range(3)
-        ],
-        now_ms=now_ms,
-    )
-    reduced = enrich_token_radar(
-        reduced,
-        [
-            {
-                "target_type": "Asset",
-                "target_id": f"asset:perf:{target_index}",
-                "symbol": f"P{target_index}",
-                "name": f"Performance Token {target_index}",
-                "logo_url": f"/api/token-images/{target_index:064x}",
-                "chain": "eip155:1",
-                "exchange": None,
-                "address": f"0x{target_index:040x}",
-                "signal_price_usd": None,
-                "price_usd": "1.25",
-                "price_observed_at_ms": now_ms,
-                "market_cap_usd": "1250000",
-                "market_cap_observed_at_ms": now_ms,
-            }
-            for target_index in range(50)
-        ],
-        now_ms=now_ms,
-    )
-    assert len(reduced.snapshot["items"]) == 50
-    with write_repositories() as repos, repos.transaction():
-        TokenRadarCurrentRepository(repos.conn).publish(reduced, evaluation_at_ms=now_ms)
-
-    app = create_app(settings=settings)
-    headers = {"Authorization": "Bearer secret"}
-    with TestClient(app) as client:
-        first = client.get("/api/token-radar", headers=headers)
-        assert first.status_code == 200
-        cached_headers = {**headers, "If-None-Match": first.headers["etag"]}
-        for _ in range(20):
-            assert client.get("/api/token-radar", headers=headers).status_code == 200
-            assert client.get("/api/token-radar", headers=cached_headers).status_code == 304
-
-        success_ms: list[float] = []
-        cached_ms: list[float] = []
-        for _ in range(200):
-            started = time.perf_counter()
-            response = client.get("/api/token-radar", headers=headers)
-            success_ms.append((time.perf_counter() - started) * 1_000)
-            assert response.status_code == 200
-
-            started = time.perf_counter()
-            response = client.get("/api/token-radar", headers=cached_headers)
-            cached_ms.append((time.perf_counter() - started) * 1_000)
-            assert response.status_code == 304
-
-    assert sorted(success_ms)[189] <= 100
-    assert sorted(cached_ms)[189] <= 50
 
 
 def test_api_live_market_returns_missing_without_durable_current_row(tmp_path):

@@ -26,23 +26,18 @@ from tracefold.app.workers_runtime_collector import (
     _validate_sample,
     validate_workers_runtime_collection,
 )
-from tracefold.market import TOKEN_RADAR_LOAD_BUDGET_SECONDS, TOKEN_RADAR_REFRESH_SECONDS
 from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
 
 _FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
-_DEADLINE_DOMAINS = ("radar", *_FRONTIER_DOMAINS)
+_DEADLINE_DOMAINS = _FRONTIER_DOMAINS
 
 
 def test_runtime_and_frontier_contract_follow_news_hard_cut() -> None:
     assert WORKERS_RUNTIME_VERSION == "2"
     assert _FRONTIER_DOMAINS == ("profile", "macro")
-
-
-def test_token_radar_release_clock_is_fixed_at_thirty_seconds() -> None:
-    assert TOKEN_RADAR_REFRESH_SECONDS == 30.0
 
 
 def test_loopback_probe_never_uses_operator_system_proxy() -> None:
@@ -101,16 +96,6 @@ def test_public_collector_survives_one_metrics_timeout_and_records_the_retry(
     monkeypatch.setattr(collector_module._ProductionSampler, "__init__", sampler_init)
     monkeypatch.setattr(collector_module._ProductionSampler, "close", lambda _self: None)
     monkeypatch.setattr(collector_module._ProductionSampler, "_read_probe", read_probe)
-    monkeypatch.setattr(
-        collector_module._ProductionSampler,
-        "_read_token_radar_database_state",
-        lambda _self: current["sample"]["token_radar_database"]["before"],
-    )
-    monkeypatch.setattr(
-        collector_module._ProductionSampler,
-        "_read_token_radar_api",
-        lambda _self: current["sample"]["token_radar_api"],
-    )
     monkeypatch.setattr(
         collector_module._ProductionSampler,
         "_read_container",
@@ -174,116 +159,6 @@ def test_metrics_retry_is_finite_and_preserves_the_failure_stage(monkeypatch: py
 
     assert calls == 2
     assert failure.value.cause_type == "TimeoutError"
-
-
-def test_token_radar_sampler_authenticates_200_then_revalidates_its_etag(monkeypatch) -> None:
-    requests = []
-    data = {"items": [{}]}
-    data_sha256 = hashlib.sha256(
-        json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    etag = f'"{data_sha256}"'
-
-    class Response:
-        def __init__(self, *, status: int, headers: dict[str, str], payload: bytes) -> None:
-            self.status = status
-            self.headers = headers
-            self._payload = payload
-
-        def read(self, _limit: int) -> bytes:
-            return self._payload
-
-        def close(self) -> None:
-            return None
-
-    class Opener:
-        def open(self, request, *, timeout: float):
-            assert timeout == 1.0
-            requests.append(request)
-            if request.headers.get("If-none-match"):
-                return Response(status=304, headers={"ETag": etag}, payload=b"")
-            return Response(
-                status=200,
-                headers={"ETag": etag},
-                payload=b'{"ok":true,"data":{"items":[{}]}}',
-            )
-
-    sampler = object.__new__(collector_module._ProductionSampler)
-    sampler._settings = Settings(ws_token="operator-token")
-    sampler._serve_api_url = "http://127.0.0.1:8765"
-    monkeypatch.setattr(collector_module, "_LOOPBACK_HTTP", Opener())
-
-    evidence = sampler._read_token_radar_api()
-
-    assert [request.headers["Authorization"] for request in requests] == [
-        "Bearer operator-token",
-        "Bearer operator-token",
-    ]
-    assert requests[1].headers["If-none-match"] == etag
-    assert (
-        evidence["unconditional"].items()
-        >= {
-            "status": 200,
-            "bytes": len(b'{"ok":true,"data":{"items":[{}]}}'),
-            "items": 1,
-        }.items()
-    )
-    assert evidence["conditional"]["status"] == 304
-    assert evidence["conditional"]["bytes"] == 0
-    assert evidence["unconditional"]["etag_sha256"] == evidence["conditional"]["etag_sha256"]
-    assert evidence["unconditional"]["data_sha256"] == data_sha256
-    assert evidence["unconditional"]["data_bytes"] == len(
-        json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    )
-
-
-def test_token_radar_database_state_hashes_the_served_payload() -> None:
-    payload = {
-        "schema_version": "token_radar_snapshot_v4",
-        "social_evidence_as_of_ms": 1_800_000_000_000,
-        "eligible_total": 1,
-        "items": [{"target": {"symbol": "代币"}}],
-    }
-    public = {
-        "schema_version": "token_radar_snapshot_v4",
-        "state": "stale",
-        "stale_reason": "source_unavailable",
-        "state_changed_at_ms": 1_800_000_000_001,
-        "social_evidence_as_of_ms": 1_800_000_000_000,
-        "eligible_total": 1,
-        "items": [{"target": {"symbol": "代币"}}],
-    }
-
-    class Result:
-        @staticmethod
-        def fetchone():
-            return {
-                "state_fingerprint": "sha256:" + "a" * 64,
-                "latest_attempt_status": "failed",
-                "latest_error_code": "token_radar_source_unavailable",
-                "state_changed_at_ms": 1_800_000_000_001,
-                "served_payload": payload,
-            }
-
-    class Connection:
-        @staticmethod
-        def execute(_query: str):
-            return Result()
-
-    sampler = object.__new__(collector_module._ProductionSampler)
-    sampler._conn = Connection()
-
-    assert sampler._read_token_radar_database_state() == {
-        "data_sha256": hashlib.sha256(
-            json.dumps(
-                public,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest(),
-        "items": 1,
-    }
 
 
 def test_collection_metadata_reports_only_remote_brief_key_booleans(monkeypatch, tmp_path: Path) -> None:
@@ -475,14 +350,14 @@ def test_compose_http_endpoint_uses_published_loopback_port() -> None:
 
 def test_prometheus_parser_preserves_required_families_and_separate_resource_evidence() -> None:
     telemetry = TelemetryRegistry()
-    telemetry.record_processing_seconds("token_radar_current", 1.5)
-    telemetry.record_job("token_radar_current", "published")
-    telemetry.mark_last_run("token_radar_current", timestamp=1_800_000_000.0)
-    telemetry.set_projection_rows("token_radar_current", "input", 12)
-    telemetry.set_projection_rows("token_radar_current", "eligible", 3)
-    telemetry.set_projection_rows("token_radar_current", "public", 3)
-    telemetry.set_projection_bytes("token_radar_current", "input", 1024)
-    telemetry.set_projection_bytes("token_radar_current", "output", 512)
+    telemetry.record_processing_seconds("news_story_projection", 1.5)
+    telemetry.record_job("news_story_projection", "published")
+    telemetry.mark_last_run("news_story_projection", timestamp=1_800_000_000.0)
+    telemetry.set_projection_rows("news_story_projection", "input", 12)
+    telemetry.set_projection_rows("news_story_projection", "eligible", 3)
+    telemetry.set_projection_rows("news_story_projection", "public", 3)
+    telemetry.set_projection_bytes("news_story_projection", "input", 1024)
+    telemetry.set_projection_bytes("news_story_projection", "output", 512)
     telemetry.record_resource_admission(
         "database_control",
         "runtime_heartbeat",
@@ -517,11 +392,11 @@ def test_prometheus_parser_preserves_required_families_and_separate_resource_evi
     }
     assert parsed["jobs_total"] == [
         {
-            "labels": {"status": "published", "worker": "token_radar_current"},
+            "labels": {"status": "published", "worker": "news_story_projection"},
             "value": 1.0,
         }
     ]
-    assert parsed["last_run_timestamp_seconds"] == {"token_radar_current": 1_800_000_000.0}
+    assert parsed["last_run_timestamp_seconds"] == {"news_story_projection": 1_800_000_000.0}
     assert len(parsed["projection_rows"]) == 3
     assert len(parsed["projection_bytes"]) == 2
 
@@ -599,7 +474,10 @@ def test_empty_resource_metric_evidence_fails_closed(key: str) -> None:
 @pytest.mark.parametrize(
     ("path", "stage"),
     [
-        (("projection_deadline_misses_total", "radar"), "projection_deadline_counter_regressed:radar"),
+        (
+            ("projection_deadline_misses_total", _FRONTIER_DOMAINS[0]),
+            f"projection_deadline_counter_regressed:{_FRONTIER_DOMAINS[0]}",
+        ),
         (
             ("projection_transitions_total", _FRONTIER_DOMAINS[0], "completion"),
             f"projection_transition_counter_regressed:{_FRONTIER_DOMAINS[0]}",
@@ -684,165 +562,15 @@ def test_summary_binds_waits_query_audit_resource_metrics_and_hard_deadlines() -
     assert summary["resource_metrics"]["admission"]["count_delta"] == 180
     assert summary["resource_metrics"]["service"]["count_delta"] == 180
     assert summary["deadline_misses"]["counter_delta"] == 0.0
-    assert summary["token_radar"]["successful_turn_count"] == 60
-    assert summary["token_radar"]["failed_turn_count"] == 0
-    assert summary["token_radar"]["processing_count_delta"] == 60
-    assert summary["token_radar"]["terminal_count_delta"] == 60
-    assert summary["token_radar"]["max_last_run_age_seconds"] <= 30.0
-    assert summary["token_radar"]["processing_p95_upper_bound_seconds"] == 2.0
-    assert summary["token_radar"]["processing_maximum_upper_bound_seconds"] == 2.0
-    assert summary["token_radar_api"]["unconditional_p95_ms"] == 10.0
-    assert summary["token_radar_api"]["conditional_p95_ms"] == 5.0
 
 
-def test_token_radar_interval_requires_full_cadence_and_matching_terminal_count() -> None:
-    stalled = _samples()
-    _set_token_radar_counters(stalled[-1], processing=2, published=2)
-
-    stalled_summary = _summarize(stalled)
-
-    assert stalled_summary["checks"]["token_radar_turn_cadence_complete"] is False
-    assert "token_radar_turn_cadence_complete" in stalled_summary["failed_checks"]
-
-    mismatched = _samples()
-    _set_token_radar_counters(mismatched[-1], processing=61, published=60)
-    with pytest.raises(_SampleFailure, match="token_radar_processing_jobs_count_mismatch"):
-        _summarize(mismatched)
-
-    hot_loop = _samples()
-    _set_token_radar_counters(hot_loop[-1], processing=1_801, published=1_801)
-    hot_loop_summary = _summarize(hot_loop)
-    assert hot_loop_summary["checks"]["token_radar_turn_cadence_complete"] is False
-
-
-def test_token_radar_stale_skipped_turns_fail_release_acceptance() -> None:
-    samples = _samples()
-    for sample in samples:
-        for job in sample["telemetry"]["jobs_total"]:
-            if job["labels"] == {
-                "worker": "token_radar_current",
-                "status": "published",
-            }:
-                job["labels"]["status"] = "stale_skipped"
-
-    summary = _summarize(samples)
-
-    assert summary["token_radar"]["stale_skipped_turn_count"] == 60
-    assert summary["checks"]["token_radar_stale_skipped_turns_zero"] is False
-    assert summary["all_checks_passed"] is False
-
-
-def test_token_radar_representative_input_must_belong_to_an_interval_turn() -> None:
-    samples = _samples()
-    for sample in samples[1:]:
-        for row in sample["telemetry"]["projection_rows"]:
-            row["value"] = 0.0
-        for row in sample["telemetry"]["projection_bytes"]:
-            row["value"] = 0.0
-
-    summary = _summarize(samples)
-
-    assert summary["token_radar"]["max_input_rows"] == 0
-    assert summary["checks"]["token_radar_representative_input_observed"] is False
-    assert summary["all_checks_passed"] is False
-
-
-def test_token_radar_counters_cannot_advance_more_than_once_per_ten_second_sample() -> None:
-    clock = _VirtualClock()
-    previous = _sample(0, clock=clock)
-    clock.seconds = 10.0
-    current = _sample(1, clock=clock)
-    _set_token_radar_counters(current, processing=3, published=3)
-
-    with pytest.raises(_SampleFailure, match="token_radar_sample_cadence_invalid"):
-        _validate_sample(current, metadata=_metadata(), previous=previous)
-
-
-def test_token_radar_last_run_must_remain_fresh_at_every_sample() -> None:
-    clock = _VirtualClock()
-    sample = _sample(0, clock=clock)
-    sample["telemetry"]["last_run_timestamp_seconds"]["token_radar_current"] = sample["at_ms"] / 1_000 - 36.0
-
-    with pytest.raises(_SampleFailure, match="token_radar_last_run_stale"):
-        _validate_sample(sample, metadata=_metadata(), previous=None)
-
-
-def test_token_radar_api_must_come_from_same_serve_image_as_workers() -> None:
+def test_serve_api_must_come_from_same_image_as_workers() -> None:
     clock = _VirtualClock()
     sample = _sample(0, clock=clock)
     sample["serve_container"]["image_id"] = "old-serve-image"
 
     with pytest.raises(_SampleFailure, match="serve_image_identity_mismatch"):
         _validate_sample(sample, metadata=_metadata(), previous=None)
-
-
-def test_token_radar_api_payload_must_match_same_database_singleton() -> None:
-    clock = _VirtualClock()
-    sample = _sample(0, clock=clock)
-    sample["token_radar_api"]["unconditional"]["data_sha256"] = "d" * 64
-
-    with pytest.raises(_SampleFailure, match="token_radar_api_database_mismatch"):
-        _validate_sample(sample, metadata=_metadata(), previous=None)
-
-
-@pytest.mark.parametrize(
-    ("mutate", "failed_check"),
-    [
-        (
-            lambda sample: _add_failed_token_radar_turn(sample),  # noqa: PLW0108
-            "token_radar_failed_turns_zero",
-        ),
-        (
-            lambda sample: (
-                _set_processing_bucket(sample, "2.0", 57.0),
-                _set_processing_bucket(sample, "5.0", 57.0),
-                _set_processing_bucket(sample, "8.0", 57.0),
-            ),
-            "token_radar_processing_p95_at_most_8_seconds",
-        ),
-        (
-            lambda sample: (
-                _set_processing_bucket(sample, "2.0", 60.0),
-                _set_processing_bucket(sample, "5.0", 60.0),
-                _set_processing_bucket(sample, "8.0", 60.0),
-                _set_processing_bucket(sample, "12.0", 60.0),
-            ),
-            "token_radar_processing_all_at_most_12_seconds",
-        ),
-        (
-            lambda sample: sample["telemetry"]["projection_deadline_misses_total"].update({"radar": 1.0}),
-            "token_radar_deadline_delta_zero",
-        ),
-    ],
-)
-def test_token_radar_interval_gates_fail_closed(mutate, failed_check) -> None:
-    samples = _samples()
-    mutate(samples[-1])
-
-    summary = _summarize(samples)
-
-    assert summary["checks"][failed_check] is False
-    assert failed_check in summary["failed_checks"]
-
-
-def test_token_radar_api_evidence_requires_authenticated_200_and_matching_304() -> None:
-    clock = _VirtualClock()
-    sample = _sample(0, clock=clock)
-    sample["token_radar_api"]["conditional"]["status"] = 200
-
-    with pytest.raises(_SampleFailure, match="token_radar_api_conditional_status"):
-        _validate_sample(sample, metadata=_metadata(), previous=None)
-
-
-def test_token_radar_api_output_cap_applies_to_the_snapshot_not_the_http_envelope() -> None:
-    samples = _samples()
-    for sample in samples:
-        sample["token_radar_api"]["unconditional"]["bytes"] = collector_module.TOKEN_RADAR_OUTPUT_BYTE_CAP + 512
-        sample["token_radar_api"]["unconditional"]["data_bytes"] = collector_module.TOKEN_RADAR_OUTPUT_BYTE_CAP
-
-    summary = _summarize(samples)
-
-    assert summary["checks"]["token_radar_api_uncompressed_bytes_at_most_96_kib"] is True
 
 
 def test_bounded_lock_wait_is_recorded_without_failing_the_sample() -> None:
@@ -887,7 +615,7 @@ def test_collection_rejects_negative_restart_after_all_hashes_and_summary_are_re
         (("postgres", "worker_connections"), 5, "postgres_worker_connection_limit"),
         (
             ("postgres", "max_transaction_seconds"),
-            max(NEWS_STORY_PUBLISH_TIMEOUT_SECONDS, TOKEN_RADAR_LOAD_BUDGET_SECONDS) + 0.1,
+            NEWS_STORY_PUBLISH_TIMEOUT_SECONDS + 0.1,
             "postgres_transaction_duration",
         ),
         (("telemetry", "resource_active", "finite_operation"), 4.0, "worker_resource_active_limit"),
@@ -1070,27 +798,6 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
             "frontiers": frontiers,
             **({"query_audit": _query_audit()} if sequence == 0 else {}),
         },
-        "token_radar_api": {
-            "unconditional": {
-                "status": 200,
-                "latency_ms": 10.0,
-                "bytes": 1024,
-                "data_bytes": 900,
-                "items": 1,
-                "etag_sha256": "b" * 64,
-                "data_sha256": "c" * 64,
-            },
-            "conditional": {
-                "status": 304,
-                "latency_ms": 5.0,
-                "bytes": 0,
-                "etag_sha256": "b" * 64,
-            },
-        },
-        "token_radar_database": {
-            "before": {"data_sha256": "c" * 64, "items": 1},
-            "after": {"data_sha256": "c" * 64, "items": 1},
-        },
         "telemetry": {
             "metric_families": sorted(
                 {
@@ -1116,27 +823,13 @@ def _sample(sequence: int, *, clock: _VirtualClock) -> dict:
             },
             "projection_deadline_misses_total": {domain: 0.0 for domain in _DEADLINE_DOMAINS},
             "projection_transitions_total": transitions,
-            "last_run_timestamp_seconds": {
-                "token_radar_current": at_ms / 1_000 - float(sequence % 3) * 10.0,
-            },
-            "projection_rows": [
-                {
-                    "labels": {"worker": "token_radar_current", "stage": stage},
-                    "value": float(value),
-                }
-                for stage, value in (("input", 12), ("eligible", 3), ("public", 3))
-            ],
-            "projection_bytes": [
-                {
-                    "labels": {"worker": "token_radar_current", "direction": direction},
-                    "value": float(value),
-                }
-                for direction, value in (("input", 1024), ("output", 512))
-            ],
+            "last_run_timestamp_seconds": {},
+            "projection_rows": [],
+            "projection_bytes": [],
             "processing_seconds": _processing_rows(count=sequence // 3 + 1),
             "jobs_total": [
                 {
-                    "labels": {"worker": "token_radar_current", "status": "published"},
+                    "labels": {"worker": "news_story_projection", "status": "published"},
                     "value": float(sequence // 3 + 1),
                 }
             ],
@@ -1158,55 +851,22 @@ def _processing_rows(*, count: int) -> list[dict]:
     return [
         {
             "name": "tracefold_worker_processing_seconds_bucket",
-            "labels": {"worker": "token_radar_current", "le": boundary},
+            "labels": {"worker": "news_story_projection", "le": boundary},
             "value": float(count),
         }
         for boundary in ("2.0", "5.0", "8.0", "12.0", "+Inf")
     ] + [
         {
             "name": "tracefold_worker_processing_seconds_count",
-            "labels": {"worker": "token_radar_current"},
+            "labels": {"worker": "news_story_projection"},
             "value": float(count),
         },
         {
             "name": "tracefold_worker_processing_seconds_sum",
-            "labels": {"worker": "token_radar_current"},
+            "labels": {"worker": "news_story_projection"},
             "value": float(count),
         },
     ]
-
-
-def _set_processing_bucket(sample: dict, boundary: str, value: float) -> None:
-    for row in sample["telemetry"]["processing_seconds"]:
-        if row["name"].endswith("_bucket") and row["labels"]["le"] == boundary:
-            row["value"] = value
-            return
-    raise AssertionError(f"missing boundary: {boundary}")
-
-
-def _set_token_radar_counters(sample: dict, *, processing: int, published: int) -> None:
-    for row in sample["telemetry"]["processing_seconds"]:
-        row["value"] = float(processing)
-    for row in sample["telemetry"]["jobs_total"]:
-        if row["labels"] == {"worker": "token_radar_current", "status": "published"}:
-            row["value"] = float(published)
-            return
-    raise AssertionError("missing token_radar_current published counter")
-
-
-def _add_failed_token_radar_turn(sample: dict) -> None:
-    for row in sample["telemetry"]["jobs_total"]:
-        if row["labels"] == {"worker": "token_radar_current", "status": "published"}:
-            row["value"] -= 1.0
-            break
-    else:
-        raise AssertionError("missing token_radar_current published counter")
-    sample["telemetry"]["jobs_total"].append(
-        {
-            "labels": {"worker": "token_radar_current", "status": "failed"},
-            "value": 1.0,
-        }
-    )
 
 
 def _resource_rows(kind: str, *, count: int, seconds: float) -> list[dict]:

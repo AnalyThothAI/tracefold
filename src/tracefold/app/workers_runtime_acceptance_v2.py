@@ -57,7 +57,7 @@ _OPERATOR_AUTHORIZATION_STATEMENT = (
 )
 _OPERATOR_AUTHORIZATION_STATEMENT_SHA256 = "0fcdc80cfa8e20d74c5f9fcb92bbc6cb611e807b489f2386a260a6afea022886"
 _FRONTIER_DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
-_SEMANTIC_DOMAINS = ("news", "macro", "profile", "radar")
+_SEMANTIC_DOMAINS = ("news", "macro", "profile")
 _STARTUP_PROOFS = (
     "first_heartbeat_readiness",
     "fresh_row_collision",

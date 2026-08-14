@@ -353,10 +353,9 @@ async def run_workers(settings: Settings) -> None:
             business_tasks.append(
                 group.create_task(
                     _guard_child(
-                        _run_periodic(
+                        _run_after_completion(
                             components.radar_current.sample,
                             period_seconds=TOKEN_RADAR_REFRESH_SECONDS,
-                            initial_delay_seconds=TOKEN_RADAR_REFRESH_SECONDS,
                             stop_event=work_stop_event,
                         ),
                         on_fatal=enter_fatal,
@@ -642,6 +641,17 @@ async def _run_periodic(
         if deadline <= loop.time():
             deadline = loop.time() + float(period_seconds)
         await _wait_or_stop(stop_event, deadline - loop.time())
+
+
+async def _run_after_completion(
+    sample: Callable[[], Awaitable[None]],
+    *,
+    period_seconds: float,
+    stop_event: asyncio.Event,
+) -> None:
+    while not stop_event.is_set():
+        await sample()
+        await _wait_or_stop(stop_event, float(period_seconds))
 
 
 async def _run_recurring_database_overrun_boundary(
@@ -1001,10 +1011,7 @@ async def _wire_components(
         raise RuntimeError("profile_provider_wiring_mismatch")
     token_radar_current = TokenRadarCurrentProjection(
         db=db,
-        heavy_db=heavy_db,
         cpu=projection_cpu,
-        telemetry=telemetry,
-        source_is_streaming=collector.source_is_streaming if collector is not None else lambda: False,
     )
     projections = (
         ProfileProjectionCandidate(
@@ -1036,7 +1043,6 @@ async def _wire_components(
 
 
 async def _reconcile_once(components: _Components) -> None:
-    await components.radar_current.sample()
     await components.asset_profile_refresh.reconcile()
     if components.news is not None:
         await components.news.reconcile()

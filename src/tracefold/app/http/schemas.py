@@ -1765,24 +1765,13 @@ class TokenRadarItemData(ExactApiSchema):
 
 
 class TokenRadarData(ExactApiSchema):
-    schema_version: Literal["token_radar_snapshot_v4"]
-    state: Literal["current", "stale", "unavailable"]
-    stale_reason: Literal["source_unavailable", "projection_failed"] | None
-    state_changed_at_ms: int = Field(ge=0)
+    schema_version: Literal["token_radar_snapshot_v5"]
     social_evidence_as_of_ms: int = Field(ge=0)
     eligible_total: int = Field(ge=0)
     items: list[TokenRadarItemData] = Field(max_length=50)
 
     @model_validator(mode="after")
     def validate_selection_count(self) -> TokenRadarData:
-        if (self.state == "stale") != (self.stale_reason is not None):
-            raise ValueError("token_radar_state_reason_invalid")
-        if self.state == "unavailable" and (
-            self.social_evidence_as_of_ms != 0 or self.eligible_total != 0 or self.items
-        ):
-            raise ValueError("token_radar_unavailable_payload_invalid")
-        if self.state == "unavailable" and self.state_changed_at_ms != 0:
-            raise ValueError("token_radar_unavailable_state_clock_invalid")
         if any(
             item.trigger_source_event_at_ms > item.qualified_at_ms
             or item.qualified_at_ms > self.social_evidence_as_of_ms

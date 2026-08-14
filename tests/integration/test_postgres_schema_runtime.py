@@ -567,21 +567,8 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert radar_frontier_columns == set()
     assert radar_current_columns == {
         "singleton_key",
-        "schema_version",
-        "ruleset_version",
-        "ruleset_fingerprint",
-        "input_fingerprint",
-        "state_fingerprint",
-        "evidence_as_of_ms",
-        "evaluation_at_ms",
-        "input_rows",
-        "input_bytes",
-        "latest_attempt_status",
-        "latest_error_code",
-        "failure_count",
-        "state_changed_at_ms",
+        "snapshot_fingerprint",
         "served_payload",
-        "created_at_ms",
         "updated_at_ms",
     }
     assert retired_projection_tables == set()
@@ -640,7 +627,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260813_0268"
+    assert version == latest_migration_version() == "20260814_0269"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -665,7 +652,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260813_0268"
+    assert version == latest_migration_version() == "20260814_0269"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -1117,7 +1104,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260813_0268"
+        assert version == latest_migration_version() == "20260814_0269"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

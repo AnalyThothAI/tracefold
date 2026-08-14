@@ -212,7 +212,6 @@ Useful live-data smoke checks:
 uv run tracefold config
 uv run tracefold ops refresh-asset-profiles --limit 5
 uv run tracefold ops mirror-token-images --limit 50
-uv run tracefold ops radar-status
 ```
 
 The first command confirms the real config paths. The profile refresh command
@@ -366,10 +365,14 @@ Migration `20260812_0255` hard-cuts only that rebuildable singleton to
 `token_radar_snapshot_v4` and initial `unavailable` state, and installs the
 bounded source-time index rebuilt as the narrow fingerprint covering index,
 plus the covering resolution index used by the optimized load SQL. It again
-preserves every material fact. Stop Serve and Workers while an existing
-database crosses this revision; after migration, start only the v4 runtime and
-let its first successful twelve-hour bounded replay publish the single fixed
-four-hour product as `current`. A fresh database migrates directly to head.
+preserves every material fact. This is now historical.
+Migration `20260814_0269` is the current irreversible v5 KISS hard cut. It
+preserves every material fact, replaces only the rebuildable Radar singleton
+with one valid empty `token_radar_snapshot_v5` packet and canonical snapshot
+fingerprint, and removes all attempt/failure/state/ruleset/input/workload
+columns. Stop Serve and Workers while an existing database crosses this
+revision; after migration, start only the v5 runtime. A fresh database migrates
+directly to head.
 Migration `20260813_0256` adds deterministic `facet_facts` to the existing
 rebuildable `news_stories` read model, backfills it from current Story
 membership, and invalidates the Story input fingerprint for one normal writer
@@ -436,33 +439,26 @@ It intentionally does not make business-data freshness part of readiness. Run
 current modules; use `make logs` for the bounded startup evidence named by a
 failure.
 
-### Token Radar v4 serving reset
+### Token Radar v5 serving hard cut
 
-For the one-time `0254` to `0255` transition, build the new image first, stop
+For the one-time `0255` to `0269` transition, build the new image first, stop
 Serve and Workers, run the ordinary one-shot migration service, and verify that
 material fact counts and identities are unchanged before starting the new
-runtime. The migration is transactional: failure leaves the v3 singleton in
-place. After it succeeds, fix forward with the v4 code; the v3 packet and any
-compatibility reader/writer are not retained. The public state is
-`unavailable` until the first complete Worker sample, then `current`; a later
-known source or projection failure retains the complete LKG as `stale`, and the
-next complete sample restores `current`.
+runtime. The migration is transactional: failure leaves the v4 singleton in
+place. After it succeeds, fix forward with the v5 code; no v4 packet reader,
+dual writer, compatibility adapter, or imported LKG remains.
 
-The first v4 Worker turn reads only the bounded twelve-hour source-time and
-resolution-revision horizon. It uses the first eight hours to seed adjacent
-prior/current state at `t-4h`, then replays the final four-hour transition to
-produce prior `(t-8h, t-4h)` and current `[t-4h, t]`. It opens only on a
-positive full-Gate false-to-true transition, applies four-hour TTL suppression,
-selects Top 50, then performs one selected-target identity/market presentation
-batch read. The input envelope is 20,000 rows/16 MiB and the output remains fifty
-Items/96 KiB. The whole-turn hard ceiling is 12.0 seconds. Base phase caps are
-9.0 seconds for load, 2.5 seconds for compute, and 0.25 seconds each for
-presentation and publication. Each phase gets the smaller of its absolute cap
-and the remaining whole-turn time after later fixed phases are reserved;
-earlier unused time remains slack and never raises a later phase's cap. Market
-facts do not participate in admission or order. The cut adds
-no episode, frontier, Gate audit, or history table, exposes no window control,
-and changes no WebSocket behavior.
+The v5 singleton always serves one complete exact packet containing only
+`schema_version`, `social_evidence_as_of_ms`, `eligible_total`, and `items`.
+Its initial value is an empty valid packet; there is no availability, stale, or
+failure state. Workers run one immediate turn and then wait 30 seconds after
+each completed turn. A turn loads the bounded twelve-hour causal replay,
+reduces the unchanged four-hour current/prior semantics on the isolated CPU
+process, batch-loads selected presentation facts, and publishes only when the
+canonical snapshot fingerprint changes. Database operations use the shared
+native deadlines; there is no Radar whole-turn or phase budget. A non-cancelled
+failure leaves the last successful packet unchanged and retries only on the
+next natural cycle.
 
 Migration `20260813_0261` materializes the exact ASCII-lower,
 whitespace-normalized MD5 duplicate-text fingerprint as a STORED Event column

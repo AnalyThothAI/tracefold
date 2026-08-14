@@ -58,7 +58,7 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
   const identity = item.locator(".live-radar-identity");
   const market = item.locator(".live-radar-market");
   const evidence = item.locator(".live-radar-item-evidence");
-  const action = item.getByRole("link", { name: "Open Token Case" });
+  const action = item.getByRole("link", { name: "Open UPEG Token Case" });
   await expect(item).toBeVisible();
 
   const layout = await item.evaluate((element) => {
@@ -66,7 +66,7 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
     const identityElement = element.querySelector<HTMLElement>(".live-radar-identity");
     const marketElement = element.querySelector<HTMLElement>(".live-radar-market");
     const evidenceElement = element.querySelector<HTMLElement>(".live-radar-item-evidence");
-    const actionElement = element.querySelector<HTMLElement>(":scope > a");
+    const actionElement = element.querySelector<HTMLElement>(".live-radar-card-link > span");
     if (!identityElement || !marketElement || !evidenceElement || !actionElement) {
       throw new Error("Radar Item is missing a visible information group");
     }
@@ -144,7 +144,9 @@ test("Radar remains readable in the narrow desktop workbench", async ({ page }) 
   await page.setViewportSize({ width: 1_210, height: 504 });
   const originalViewportLayout = await item.evaluate((element) => {
     const itemBox = element.getBoundingClientRect();
-    const actionBox = element.querySelector(":scope > a")?.getBoundingClientRect();
+    const actionBox = element
+      .querySelector(".live-radar-card-link > span")
+      ?.getBoundingClientRect();
     const facts = element.querySelectorAll<HTMLElement>(
       ".live-radar-market [role=group], .live-radar-item-evidence [role=group]",
     );

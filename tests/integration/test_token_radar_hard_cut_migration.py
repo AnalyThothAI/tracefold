@@ -694,6 +694,100 @@ def test_0255_downgrade_is_explicitly_irreversible() -> None:
         migration.downgrade()
 
 
+def test_upgrade_from_0268_keeps_material_facts_and_replaces_v4_with_minimal_v5() -> None:
+    config, conn = _reset_to_0248()
+    try:
+        _seed_nonempty_0248_state(conn)
+        command.upgrade(config, "20260813_0268")
+        conn.execute(
+            """
+            UPDATE token_radar_current
+               SET latest_attempt_status = 'failed',
+                   latest_error_code = 'retired_failure_state',
+                   failure_count = 7,
+                   served_payload =
+                     '{"schema_version":"token_radar_snapshot_v4","social_evidence_as_of_ms":30,'
+                     '"eligible_total":1,"items":[{}]}'::jsonb,
+                   state_changed_at_ms = 31,
+                   updated_at_ms = 32
+             WHERE singleton_key = true
+            """
+        )
+        conn.commit()
+        facts_before = _fact_identities(conn)
+        tables_before = _public_tables(conn)
+
+        command.upgrade(config, "20260814_0269")
+
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == {"version_num": "20260814_0269"}
+        assert _fact_identities(conn) == facts_before
+        assert _public_tables(conn) == tables_before
+        assert _table_columns(conn, "token_radar_current") == {
+            "singleton_key",
+            "snapshot_fingerprint",
+            "served_payload",
+            "updated_at_ms",
+        }
+        assert conn.execute(
+            """
+            SELECT singleton_key, snapshot_fingerprint, served_payload, updated_at_ms
+              FROM token_radar_current
+            """
+        ).fetchall() == [
+            {
+                "singleton_key": True,
+                "snapshot_fingerprint": "sha256:5ea0cbe27b8434069c6d9186408f5a372c5290b0c7f4d0f24d68f483df0bd8a8",
+                "served_payload": {
+                    "schema_version": "token_radar_snapshot_v5",
+                    "social_evidence_as_of_ms": 0,
+                    "eligible_total": 0,
+                    "items": [],
+                },
+                "updated_at_ms": 0,
+            }
+        ]
+
+        for invalid_payload in (
+            {
+                "schema_version": "token_radar_snapshot_v4",
+                "social_evidence_as_of_ms": 0,
+                "eligible_total": 0,
+                "items": [],
+            },
+            {
+                "schema_version": "token_radar_snapshot_v5",
+                "social_evidence_as_of_ms": 0,
+                "eligible_total": 0,
+                "items": [],
+                "state": "current",
+            },
+            {
+                "schema_version": "token_radar_snapshot_v5",
+                "social_evidence_as_of_ms": 0,
+                "eligible_total": 1,
+                "items": [],
+            },
+        ):
+            with pytest.raises(CheckViolation):
+                conn.execute(
+                    "UPDATE token_radar_current SET served_payload = %s WHERE singleton_key = true",
+                    (Jsonb(invalid_payload),),
+                )
+            conn.rollback()
+    finally:
+        reset_postgres_schema(conn)
+        conn.close()
+
+
+def test_0269_downgrade_is_explicitly_irreversible() -> None:
+    migration = importlib.import_module(
+        "tracefold.platform.postgres.alembic.versions.20260814_0269_token_radar_v5_kiss_hard_cut"
+    )
+
+    with pytest.raises(RuntimeError, match="irreversible Token Radar v5 hard cut"):
+        migration.downgrade()
+
+
 def _reset_to_0248() -> tuple[Any, Any]:
     config = alembic_config()
     config.attributes["database_url"] = _test_postgres_dsn()

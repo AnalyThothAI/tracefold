@@ -131,7 +131,7 @@ def test_token_radar_contract_declares_conditional_get() -> None:
 
 
 @pytest.mark.contract
-def test_token_radar_v4_is_exact_top50_and_stocks_surface_is_absent() -> None:
+def test_token_radar_v5_is_exact_top50_and_stocks_surface_is_absent() -> None:
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.settings import Settings
 
@@ -142,7 +142,13 @@ def test_token_radar_v4_is_exact_top50_and_stocks_surface_is_absent() -> None:
 
     assert "/api/stocks-radar" not in schema["paths"]
     assert all(not name.startswith("StocksRadar") for name in components)
-    assert radar["properties"]["schema_version"]["const"] == "token_radar_snapshot_v4"
+    assert radar["properties"]["schema_version"]["const"] == "token_radar_snapshot_v5"
+    assert set(radar["properties"]) == {
+        "schema_version",
+        "social_evidence_as_of_ms",
+        "eligible_total",
+        "items",
+    }
     assert radar["properties"]["items"]["maxItems"] == 50
     assert set(market["required"]) == {
         "price_usd",

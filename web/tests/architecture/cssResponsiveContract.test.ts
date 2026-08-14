@@ -70,19 +70,10 @@ describe("responsive CSS contract", () => {
       radarQueueRules.some(
         (rule) =>
           selectorContains(rule.selector, ".live-radar-queue") &&
-          !selectorContains(rule.selector, ".live-radar-queue--delayed") &&
           declarationValue(rule.body, "grid-template-rows") === "auto minmax(0, 1fr)" &&
           declarationValue(rule.body, "overflow") === "hidden",
       ),
       ".live-radar-queue must bound its header and queue scroller without an empty delay row",
-    ).toBe(true);
-    expect(
-      rules.some(
-        (rule) =>
-          selectorContains(rule.selector, ".live-radar-queue--delayed") &&
-          declarationValue(rule.body, "grid-template-rows") === "auto auto minmax(0, 1fr)",
-      ),
-      ".live-radar-queue must add a bounded row only while delay status is visible",
     ).toBe(true);
     expect(
       radarItemsRules.some(

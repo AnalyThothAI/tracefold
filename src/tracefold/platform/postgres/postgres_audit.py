@@ -170,8 +170,7 @@ _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
         "name": "token_radar_latest",
         "sql": """
-            SELECT schema_version, state_fingerprint, latest_attempt_status,
-                   latest_error_code, state_changed_at_ms, served_payload
+            SELECT snapshot_fingerprint, served_payload, updated_at_ms
             FROM token_radar_current
             WHERE singleton_key = true
         """,
@@ -561,7 +560,7 @@ class ProjectionValidationAudit:
                AND cex.cex_token_id = sampled_radar_rows.item #>> '{target,target_id}'
             ),
             latest_radar AS (
-              SELECT evaluation_at_ms AS computed_at_ms
+              SELECT updated_at_ms AS computed_at_ms
               FROM token_radar_current
               WHERE singleton_key = true
             )
@@ -584,24 +583,16 @@ class ProjectionValidationAudit:
                        WHEN count(*) <> 1 THEN 1
                        ELSE count(*) FILTER (
                          WHERE NOT singleton_key
-                            OR schema_version <> 'token_radar_snapshot_v4'
-                            OR (
-                              latest_attempt_status = 'ready'
-                              AND state_fingerprint IS NULL
-                            )
-                            OR (
-                              state_fingerprint IS NOT NULL
-                              AND (
-                                NULLIF(btrim(ruleset_version), '') IS NULL
-                                OR ruleset_fingerprint !~ '^sha256:[0-9a-f]{64}$'
-                              )
-                            )
+                            OR snapshot_fingerprint !~ '^sha256:[0-9a-f]{64}$'
                             OR served_payload ->> 'schema_version'
-                                 <> 'token_radar_snapshot_v4'
+                                 <> 'token_radar_snapshot_v5'
+                            OR COALESCE((served_payload ->> 'social_evidence_as_of_ms')::bigint, -1) < 0
                             OR jsonb_typeof(served_payload -> 'items') <> 'array'
                             OR jsonb_array_length(served_payload -> 'items') > 50
                             OR COALESCE((served_payload ->> 'eligible_total')::bigint, -1)
                                  < jsonb_array_length(served_payload -> 'items')
+                            OR octet_length(served_payload::text) > 98304
+                            OR updated_at_ms < 0
                        )::integer
                      END AS count
               FROM token_radar_current

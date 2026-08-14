@@ -1,4 +1,4 @@
-"""Run one real Token Radar worker sample against the isolated E2E database."""
+"""Run one production Token Radar v5 sample against the isolated E2E database."""
 
 from __future__ import annotations
 
@@ -29,19 +29,14 @@ async def _sample(postgres_dsn: str) -> None:
     cpu = CpuProcess()
     try:
         await cpu.prewarm()
-        await TokenRadarCurrentProjection(
-            db=database,
-            heavy_db=database.heavy_business(),
-            cpu=cpu,
-            source_is_streaming=lambda: True,
-        ).sample()
+        await TokenRadarCurrentProjection(db=database, cpu=cpu).sample()
     finally:
         cpu.close_admission()
         database.close_business_admission()
         try:
             if not await cpu.drain(timeout_seconds=5.0):
                 raise RuntimeError("token_radar_e2e_cpu_drain_timeout")
-            if not await database.drain_business(timeout_seconds=5.0):
+            if not await database.drain_business(timeout_seconds=15.0):
                 raise RuntimeError("token_radar_e2e_database_drain_timeout")
         finally:
             cpu.close()

@@ -264,7 +264,7 @@ class CpuProcess:
         function: Callable[..., T],
         /,
         *args: Any,
-        service_timeout_seconds: float,
+        service_timeout_seconds: float | None,
         total_timeout_seconds: float | None = None,
         on_submitted: Callable[[], None] | None = None,
         **kwargs: Any,
@@ -296,8 +296,8 @@ class CpuProcess:
             "accepted",
             admission_started,
         )
-        service_timeout = float(service_timeout_seconds)
-        if total_timeout is not None:
+        service_timeout = None if service_timeout_seconds is None else float(service_timeout_seconds)
+        if total_timeout is not None and service_timeout is not None:
             service_timeout = min(
                 service_timeout,
                 max(0.001, total_timeout - (loop.time() - admission_started)),
@@ -333,6 +333,8 @@ class CpuProcess:
         if on_submitted is not None:
             on_submitted()
         try:
+            if service_timeout is None:
+                return await wrapped
             return await await_concurrent_future(
                 underlying,
                 wrapped,

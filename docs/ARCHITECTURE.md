@@ -21,13 +21,12 @@ providers / public streams
 repositories, and serve telemetry. `tracefold workers` initializes ingestion,
 acquisition, the bounded external/model capabilities, one short-projection CPU
 lane, an isolated News Story CPU lane when News is enabled, singleton runtime
-status, dirty-triggered News Story and fixed-period Token Radar writers, and one
+status, dirty-triggered News Story and after-completion Token Radar writers, and one
 EDF projection coordinator for the remaining frontier-backed domains. The
-measured long Radar load and News Story load/full-publication work shares one
-fixed heavy-operation permit before the unchanged two-slot business executor.
-Waiting for that permit consumes no business slot, so those heavy phases cannot
-run concurrently; this adds no pool, executor, connection reservation, scheduler, or
-configuration surface. Workers
+News Story load/full-publication work uses the fixed heavy-operation permit
+before the unchanged two-slot business executor. Token Radar uses ordinary
+business-database admission and an isolated CPU process turn, without a Radar
+permit, service deadline, executor, or configuration surface. Workers
 recover exclusively by re-reading PostgreSQL facts, typed Macro/Profile frontiers, native News
 Brief/Fed-document model state, the News Story-push state machine,
 and queues on bounded code-owned clocks.
@@ -106,10 +105,9 @@ and publication checkpoints. `first_dirty_at_ms` records the causal change,
 `deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
 eligibility clock for a scheduled recheck or retry. An eligible shard may run
 before its deadline; the deadline is never a start gate. Token Radar has no
-durable source-edge row, dirty frontier, claim, lease, or quarantine state: its
-fixed-period writer rereads a bounded fact window, consults the already-owned
-stream state only to freeze LKG while known non-streaming, and retains the last
-good singleton on failure. Profile refresh heat tiers, retry attempts, provider circuits, and terminal reasons are
+durable source-edge row, dirty frontier, claim, lease, quarantine, failure, or
+source-stream state: its fixed-period writer rereads a bounded fact window and
+publishes only complete successful snapshots. Profile refresh heat tiers, retry attempts, provider circuits, and terminal reasons are
 likewise queue policy, not profile facts.
 The sealed `news_brief_current.served_payload` and rows in
 `macro_document_analyses` are derived model outputs bound to frozen evidence;
@@ -264,14 +262,13 @@ external provider seam may translate a finite-operation overrun into its
 existing durable retry, degradation, or terminal policy; doing so never
 releases the shared capability permit before the underlying future actually
 finishes. Frontier-backed projection turns therefore have phase-native
-deadlines and no aggregate fatal watchdog. The fixed-period Token Radar sample
-is the explicit exception: it has the code-owned 12.0-second whole-turn ceiling
-described below in addition to its phase deadlines.
+deadlines and no aggregate fatal watchdog. Token Radar has no application-level
+phase or whole-turn deadline; native PostgreSQL statement safety remains in
+force.
 
 Projection claim leases cover the complete legal phase envelope: Profile and
-Macro use 30 seconds each. The fixed-period Token Radar and News
-Story writers have no frontier lease; each uses its own bounded operation
-budget.
+Macro use 30 seconds each. The after-completion Token Radar loop and fixed-period
+News Story writer have no frontier lease.
 
 ## Product flows
 
@@ -295,27 +292,25 @@ events + intent resolution revisions
   -> four-hour episode TTL and suppression until a later positive false -> true crossing
   -> qualified_at descending + stable target-key ties -> Top 50
   -> bounded selected-target identity and market-presentation hydration
-  -> atomic token_radar_current v4 current/LKG singleton (maximum 50 Items / 96 KiB)
+  -> atomic token_radar_current v5 singleton (maximum 50 Items / 96 KiB)
   -> Token Radar -> focused Token Case evidence
 ```
 
 Token Radar is a change-first research queue, not a score, trading action,
 market screener, security audit, or operational monitor. Every 30 seconds its
 sole writer streams at most 20,000 typed Event/resolution-revision rows and 16
-MiB from a twelve-hour source-time horizon, then runs one deterministic reducer
-with a twelve-second whole-turn hard ceiling. The evidence load selects only
+MiB from a twelve-hour source-time horizon, then runs one deterministic reducer.
+The evidence load selects only
 reducer fields in stable replay order against a source-time covering index and
 the covering resolution index. The material read selects the STORED generated
 `events.token_radar_text_fingerprint` column with the exact ASCII-lower,
 whitespace-normalization, and MD5 semantics of its fixed-width, non-security
 duplicate-text fingerprint. The partial source-time index INCLUDEs that column,
 so vacuum-visible history can remain an Index Only read without fetching or
-transferring the wide Event text payload. The base phase
-caps are 9.0 seconds for load, 2.5 seconds for compute,
-and 0.25 seconds each for presentation and publication. Every phase is bounded
-by the smaller of its absolute cap and the remaining whole-turn time after
-reserving later fixed phases; unused earlier time remains whole-turn slack but
-never raises a later phase's cap. Source event time defines current `[t-4h, t]`
+transferring the wide Event text payload. A turn always executes load, CPU
+reduction, presentation, then publish. Failures log bounded structured detail
+and the independent scheduler retries after its next natural 30-second wait;
+they do not write serving state or stop Workers. Source event time defines current `[t-4h, t]`
 and prior
 `(t-8h, t-4h)` windows. Replay starts at `t-4h`: the first eight hours of the
 source horizon seed the adjacent prior/current state at that boundary, and the
@@ -374,22 +369,20 @@ current/prior four-hour mention change, actual independent-author/text counts,
 propagation time, duplicate share, and that presentation packet. It contains
 no rank, decision, score, per-rule evaluation history, rejected candidates,
 source-event list, window, venue, pagination, archive, or user-adjustable
-parameter. The Radar Module exposes only its fixed-period `sample` interface to
+parameter. The Radar Module exposes only its one-turn `sample` interface to
 Workers; evidence, presentation, publication, and serving operations remain
 private PostgreSQL Adapter seams.
 
 Publication locks the one stable product row and replaces the complete compact
-payload atomically. Public state is `current` after a complete sample, `stale`
-with the full last-known-good payload after a known source or projection
-failure, and `unavailable` before any v4 last-known-good payload exists. Stale
-reasons are a small generic enum; they never contain provider or internal error
-detail. A business-identical payload or repeated identical stale observation
-writes zero serving state. Oversized input, timeout, calculation failure, or a
-known non-streaming source never samples, truncates, or publishes an apparently
-healthy empty queue. The next complete successful sample restores `current`.
-Restart recovery is the next bounded PostgreSQL replay. Search and Token Case
+v5 payload atomically. The singleton contains only its key, complete payload,
+snapshot fingerprint, and changed-success timestamp. A business-identical
+payload writes zero serving rows. Load, reduction, presentation, or publication
+failure leaves the last successful snapshot untouched; no public state,
+failure counter, stale reason, attempt clock, or Radar telemetry is persisted.
+The hard-cut initial value is a valid empty v5 snapshot. Restart recovery is the
+next bounded PostgreSQL replay. Search and Token Case
 read their owning facts directly and never use Radar current state as evidence
-authority. Radar v4 changes no WebSocket route, message, or subscription
+authority. Radar v5 changes no WebSocket route, message, or subscription
 behavior. There is no Stocks product, route, public read model, or writer.
 `us_equity_symbols` remains only an identity-collision guard for token
 resolution and does not constitute a Stocks surface. General cross-asset Market
@@ -423,7 +416,7 @@ one-hour current/prior windows and a one-hour episode TTL. No v2 trigger was
 imported, and no dual reader/writer, episode/frontier/history table, Gate audit,
 or compatibility path was installed.
 
-Migration `20260812_0255` is the irreversible v4 hard cut. It resets only the
+Historical migration `20260812_0255` was the irreversible v4 hard cut. It reset only the
 rebuildable singleton to initial `unavailable` with
 `token_radar_snapshot_v4`, rebuilds the bounded source-time index as the narrow
 fingerprint covering index, installs the covering resolution index for the
@@ -434,6 +427,15 @@ control. Its first successful sample reconstructs state from the twelve-hour
 fact horizon by seeding at `t-4h` and replaying the final four-hour transition;
 it imports no v3 trigger or LKG payload. There is no dual reader/writer,
 feature flag, compatibility adapter, staging runtime, or history import.
+
+Migration `20260814_0269` is the irreversible v5 KISS hard cut. It preserves
+all material facts and replaces the rebuildable v4 singleton with the exact
+empty v5 payload plus its canonical snapshot fingerprint. The complete public
+root has exactly `schema_version`, `social_evidence_as_of_ms`,
+`eligible_total`, and `items`. It removes ruleset/input/state
+fingerprints, attempt/failure state, workload counts, evaluation/state-change
+clocks, and creation metadata. There is no public state envelope,
+compatibility reader, or dual write.
 
 Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
 error outcomes back off exponentially to a bounded terminal state, and only a

@@ -1157,22 +1157,9 @@
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `singleton_key` | `BOOLEAN` | False | `true` |
-| `schema_version` | `TEXT` | False | `None` |
-| `ruleset_version` | `TEXT` | True | `None` |
-| `ruleset_fingerprint` | `TEXT` | True | `None` |
-| `input_fingerprint` | `TEXT` | True | `None` |
-| `state_fingerprint` | `TEXT` | True | `None` |
-| `evidence_as_of_ms` | `BIGINT` | False | `0` |
-| `evaluation_at_ms` | `BIGINT` | False | `0` |
-| `input_rows` | `INTEGER` | False | `0` |
-| `input_bytes` | `BIGINT` | False | `0` |
-| `latest_attempt_status` | `TEXT` | False | `'never'::text` |
-| `latest_error_code` | `TEXT` | True | `None` |
-| `failure_count` | `INTEGER` | False | `0` |
 | `served_payload` | `JSONB` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `state_changed_at_ms` | `BIGINT` | False | `0` |
+| `snapshot_fingerprint` | `TEXT` | False | `None` |
 
 ## `us_equity_symbols`
 

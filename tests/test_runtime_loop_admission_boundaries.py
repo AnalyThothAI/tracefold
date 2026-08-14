@@ -12,6 +12,7 @@ from tracefold.app import workers as workers_module
 from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.workers import (
     _MARKET_TICK_POLL_SECONDS,
+    _run_after_completion,
     _run_due,
     _run_periodic,
 )
@@ -135,6 +136,43 @@ def test_periodic_loop_can_defer_its_first_sample_without_changing_cadence(
 
     assert samples == 1
     assert waits[0] == 30.0
+
+
+def test_token_radar_loop_samples_immediately_then_waits_after_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sequence: list[str] = []
+
+    async def wait(stop_event: asyncio.Event, seconds: float) -> None:
+        sequence.append(f"wait:{seconds:g}")
+        stop_event.set()
+
+    async def scenario() -> None:
+        stop_event = asyncio.Event()
+
+        async def sample() -> None:
+            sequence.extend(("sample:start", "sample:end"))
+
+        await _run_after_completion(sample, period_seconds=30.0, stop_event=stop_event)
+
+    monkeypatch.setattr(workers_module, "_wait_or_stop", wait)
+    asyncio.run(scenario())
+
+    assert sequence == ["sample:start", "sample:end", "wait:30"]
+
+
+def test_token_radar_loop_propagates_cancellation() -> None:
+    async def sample() -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            _run_after_completion(
+                sample,
+                period_seconds=30.0,
+                stop_event=asyncio.Event(),
+            )
+        )
 
 
 def test_recurring_database_overruns_wait_for_each_loops_normal_cadence(

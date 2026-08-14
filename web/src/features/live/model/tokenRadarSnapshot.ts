@@ -1,7 +1,7 @@
 import type { components } from "@lib/types/openapi";
 
 export const TOKEN_RADAR_WINDOW = "4h" as const;
-export const TOKEN_RADAR_SNAPSHOT_SCHEMA = "token_radar_snapshot_v4" as const;
+export const TOKEN_RADAR_SNAPSHOT_SCHEMA = "token_radar_snapshot_v5" as const;
 
 export type TokenRadarSnapshotItem = components["schemas"]["TokenRadarItemData"];
 export type TokenRadarSnapshot = components["schemas"]["TokenRadarData"];
@@ -10,33 +10,10 @@ export function parseTokenRadarSnapshot(value: unknown): TokenRadarSnapshot {
   const snapshot = record(value, "snapshot");
   exactKeys(
     snapshot,
-    [
-      "schema_version",
-      "state",
-      "stale_reason",
-      "state_changed_at_ms",
-      "social_evidence_as_of_ms",
-      "eligible_total",
-      "items",
-    ],
+    ["schema_version", "social_evidence_as_of_ms", "eligible_total", "items"],
     "snapshot",
   );
   if (snapshot.schema_version !== TOKEN_RADAR_SNAPSHOT_SCHEMA) fail("snapshot.schema_version");
-  if (
-    snapshot.state !== "current" &&
-    snapshot.state !== "stale" &&
-    snapshot.state !== "unavailable"
-  ) {
-    fail("snapshot.state");
-  }
-  const staleReason = tokenRadarStaleReason(snapshot.stale_reason, "snapshot.stale_reason");
-  if ((snapshot.state === "stale") !== (staleReason !== null)) {
-    fail("snapshot.stale_reason");
-  }
-  const stateChangedAtMs = nonnegativeInteger(
-    snapshot.state_changed_at_ms,
-    "snapshot.state_changed_at_ms",
-  );
   const socialEvidenceAsOfMs = nonnegativeInteger(
     snapshot.social_evidence_as_of_ms,
     "snapshot.social_evidence_as_of_ms",
@@ -51,20 +28,8 @@ export function parseTokenRadarSnapshot(value: unknown): TokenRadarSnapshot {
   });
   if (items.length !== Math.min(eligibleTotal, 50)) fail("snapshot.eligible_total");
   validateServerOrder(items);
-  if (
-    snapshot.state === "unavailable" &&
-    (stateChangedAtMs !== 0 ||
-      socialEvidenceAsOfMs !== 0 ||
-      eligibleTotal !== 0 ||
-      items.length !== 0)
-  ) {
-    fail("snapshot.state");
-  }
   return {
     schema_version: TOKEN_RADAR_SNAPSHOT_SCHEMA,
-    state: snapshot.state,
-    stale_reason: staleReason,
-    state_changed_at_ms: stateChangedAtMs,
     social_evidence_as_of_ms: socialEvidenceAsOfMs,
     eligible_total: eligibleTotal,
     items,
@@ -263,16 +228,6 @@ function nullableTokenImagePath(value: unknown, path: string): string | null {
   const parsed = nullableString(value, path);
   if (parsed !== null && !/^\/api\/token-images\/[0-9a-f]{64}$/.test(parsed)) fail(path);
   return parsed;
-}
-
-function tokenRadarStaleReason(
-  value: unknown,
-  path: string,
-): "source_unavailable" | "projection_failed" | null {
-  if (value === null || value === "source_unavailable" || value === "projection_failed") {
-    return value;
-  }
-  return fail(path);
 }
 
 function finiteNumber(value: unknown, path: string): number {

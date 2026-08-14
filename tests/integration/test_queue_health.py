@@ -49,19 +49,14 @@ def test_active_queue_inspection_covers_every_declared_queue_while_workers_are_r
             ),
             object(),
         )
-        projection_code, projection_payload = ops.handle_ops(
-            SimpleNamespace(ops_command="radar-status"),
-            object(),
-        )
     finally:
         worker_db.release_steady_runtime_lock(steady_lock)
         asyncio.run(worker_db.aclose())
 
-    assert queue_code == projection_code == 0
-    assert queue_payload["ok"] is projection_payload["ok"] is True
+    assert queue_code == 0
+    assert queue_payload["ok"] is True
     assert tuple(item["source_table"] for item in queue_payload["data"]["items"]) == ALL_QUEUE_TABLES
     assert all(item["queue_health"]["available"] for item in queue_payload["data"]["items"])
-    assert projection_payload["data"]["latest_attempt_status"] == "never"
 
 
 def test_queue_registry_has_one_truthful_owner_for_all_seven_tables() -> None:

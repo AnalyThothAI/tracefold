@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from decimal import Decimal
+
+import pytest
+from psycopg.errors import CheckViolation
 
 from tests.factories import make_event
 from tests.postgres_test_utils import connect_postgres_test
@@ -11,6 +16,7 @@ from tracefold.market import EnrichedEventCapture, MarketTick, event_to_row, mar
 from tracefold.market.radar.reducer import (
     RadarEvidenceRevision,
     RadarSelectionKey,
+    ReducedTokenRadar,
     enrich_token_radar,
     reduce_token_radar,
     token_radar_text_fingerprint,
@@ -21,117 +27,96 @@ NOW_MS = 1_800_000_000_000
 MINUTE_MS = 60_000
 
 
-def test_singleton_publish_is_state_idempotent_and_failure_preserves_lkg(tmp_path) -> None:
+def test_singleton_publish_writes_only_when_the_complete_snapshot_changes(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
         repository = TokenRadarCurrentRepository(conn)
         reduced = _enriched(_eligible_rows())
 
-        with conn.transaction():
-            initial_failure_writes = repository.record_failure(
-                error_code="token_radar_sample_budget_exceeded",
-                evaluation_at_ms=NOW_MS - 1,
-            )
-        initial_failure = _stored(conn)
+        initial = _stored(conn)
 
         with conn.transaction():
-            first = repository.publish(reduced, evaluation_at_ms=NOW_MS)
+            first = repository.publish(reduced, updated_at_ms=NOW_MS)
         published = _stored(conn)
 
-        irrelevant = _enriched(
-            [
-                *_eligible_rows(),
-                replace(
-                    _eligible_rows()[0],
-                    target_id="weak-target",
-                    event_id="weak-event",
-                    received_at_ms=NOW_MS - 10 * MINUTE_MS,
-                ),
-            ],
-        )
-        assert irrelevant.input_fingerprint != reduced.input_fingerprint
-        assert irrelevant.state_fingerprint == reduced.state_fingerprint
-
         with conn.transaction():
-            unchanged = repository.publish(irrelevant, evaluation_at_ms=NOW_MS + 1)
+            unchanged = repository.publish(reduced, updated_at_ms=NOW_MS + 1)
         after_unchanged = _stored(conn)
-
-        with conn.transaction():
-            failed_writes = repository.record_failure(
-                error_code="token_radar_input_row_overflow",
-                evaluation_at_ms=NOW_MS + 2,
-            )
-        failed = _stored(conn)
-
-        with conn.transaction():
-            duplicate_failure_writes = repository.record_failure(
-                error_code="token_radar_reducer_budget_exceeded",
-                evaluation_at_ms=NOW_MS + 2,
-            )
-
-        with conn.transaction():
-            recovered = repository.publish(irrelevant, evaluation_at_ms=NOW_MS + 3)
-        recovered_row = _stored(conn)
-
     finally:
         conn.close()
 
-    assert initial_failure_writes == 1
-    assert initial_failure["latest_attempt_status"] == "failed"
-    assert initial_failure["ruleset_version"] is None
-    assert _served_payload(initial_failure) == {
-        "schema_version": "token_radar_snapshot_v4",
+    assert _served_payload(initial) == {
+        "schema_version": "token_radar_snapshot_v5",
         "social_evidence_as_of_ms": 0,
         "eligible_total": 0,
         "items": [],
     }
-    assert initial_failure["state_changed_at_ms"] == 0
     assert first == {"status": "published", "rows_written": 1}
-    assert published["state_changed_at_ms"] == NOW_MS
+    assert published["snapshot_fingerprint"] == reduced.snapshot_fingerprint
+    assert published["updated_at_ms"] == NOW_MS
+    assert _served_payload(published) == reduced.snapshot
     assert unchanged == {"status": "unchanged", "rows_written": 0}
     assert after_unchanged == published
-    assert failed_writes == 1
-    assert duplicate_failure_writes == 0
-    assert failed["latest_attempt_status"] == "failed"
-    assert failed["state_changed_at_ms"] == NOW_MS + 2
-    assert _served_payload(failed) == _served_payload(published)
-    assert recovered == {"status": "recovered", "rows_written": 1}
-    assert recovered_row["latest_attempt_status"] == "ready"
-    assert recovered_row["latest_error_code"] is None
-    assert recovered_row["state_changed_at_ms"] == NOW_MS + 3
-    assert _served_payload(recovered_row) == _served_payload(published)
-    assert recovered_row["ruleset_version"] == reduced.ruleset_version
-    assert recovered_row["ruleset_fingerprint"] == reduced.ruleset_fingerprint
 
 
-def test_semantic_fingerprint_change_updates_internal_identity_without_changing_public_state(
-    tmp_path,
-) -> None:
+def test_snapshot_change_updates_payload_fingerprint_and_publication_clock(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
         repository = TokenRadarCurrentRepository(conn)
         reduced = _enriched(_eligible_rows())
         with conn.transaction():
-            repository.publish(reduced, evaluation_at_ms=NOW_MS)
+            repository.publish(reduced, updated_at_ms=NOW_MS)
         before = _stored(conn)
 
-        changed_semantics = replace(
+        changed_snapshot = {
+            **reduced.snapshot,
+            "social_evidence_as_of_ms": int(reduced.snapshot["social_evidence_as_of_ms"]) + 1,
+        }
+        changed = replace(
             reduced,
-            ruleset_fingerprint=f"sha256:{'0' * 64}",
+            snapshot=changed_snapshot,
+            snapshot_fingerprint=_snapshot_fingerprint(changed_snapshot),
         )
         with conn.transaction():
-            result = repository.publish(changed_semantics, evaluation_at_ms=NOW_MS + 1)
+            result = repository.publish(changed, updated_at_ms=NOW_MS + 1)
         after = _stored(conn)
     finally:
         conn.close()
 
     assert result == {"status": "published", "rows_written": 1}
-    assert after["ruleset_fingerprint"] == changed_semantics.ruleset_fingerprint
-    assert after["state_fingerprint"] == before["state_fingerprint"]
-    assert after["state_changed_at_ms"] == before["state_changed_at_ms"]
-    assert _served_payload(after) == _served_payload(before)
+    assert after["snapshot_fingerprint"] == changed.snapshot_fingerprint
+    assert after["snapshot_fingerprint"] != before["snapshot_fingerprint"]
+    assert after["updated_at_ms"] == NOW_MS + 1
+    assert _served_payload(after) == changed_snapshot
+
+
+def test_failed_whole_payload_publication_leaves_the_current_row_unchanged(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        repository = TokenRadarCurrentRepository(conn)
+        before = _stored(conn)
+        invalid = ReducedTokenRadar(
+            snapshot_fingerprint=f"sha256:{'f' * 64}",
+            snapshot={
+                "schema_version": "token_radar_snapshot_v5",
+                "social_evidence_as_of_ms": NOW_MS,
+                "eligible_total": 0,
+                "items": [],
+                "partial": True,
+            },
+            selected_keys=(),
+        )
+
+        with pytest.raises(CheckViolation), conn.transaction():
+            repository.publish(invalid, updated_at_ms=NOW_MS)
+        after = _stored(conn)
+    finally:
+        conn.close()
+
+    assert after == before
 
 
 def test_persistence_seam_replays_resolution_history_and_uses_only_selected_trigger_anchor(
@@ -510,12 +495,7 @@ def test_selected_cex_presentation_uses_the_supported_binance_usdt_swap_key(tmp_
 def _stored(conn) -> dict[str, object]:
     row = conn.execute(
         """
-        SELECT ruleset_version, ruleset_fingerprint,
-               input_fingerprint, state_fingerprint,
-               evidence_as_of_ms, evaluation_at_ms,
-               input_rows, input_bytes,
-               latest_attempt_status, latest_error_code,
-               failure_count, state_changed_at_ms, served_payload, updated_at_ms
+        SELECT snapshot_fingerprint, served_payload, updated_at_ms
           FROM token_radar_current
          WHERE singleton_key = true
         """
@@ -529,6 +509,11 @@ def _served_payload(row: dict[str, object]) -> dict[str, object]:
     payload = row.get("served_payload")
     assert isinstance(payload, dict)
     return payload
+
+
+def _snapshot_fingerprint(snapshot: dict[str, object]) -> str:
+    encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _eligible_rows() -> list[RadarEvidenceRevision]:

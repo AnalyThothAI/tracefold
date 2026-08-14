@@ -100,7 +100,6 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild_market_current.add_argument("--after-target-id", default="")
     rebuild_market_current.add_argument("--limit", type=_positive_int, default=500)
     rebuild_market_current.add_argument("--execute", action="store_true", required=True)
-    ops_subcommands.add_parser("radar-status", help="print compact Token Radar singleton status")
     queue_inspect = ops_subcommands.add_parser("queue-inspect", help="inspect worker queue terminal evidence")
     queue_inspect.add_argument("--owner", default="")
     queue_inspect.add_argument("--source-table", default="")

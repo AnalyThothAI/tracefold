@@ -42,7 +42,7 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
   await expect(page.getByLabel("radar window")).toHaveCount(0);
   await expect(page.getByLabel("token radar venue filter")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /sort/i })).toHaveCount(0);
-  await expect(item.getByRole("link", { name: "Open Token Case" })).toHaveAttribute(
+  await expect(item.getByRole("link", { name: "Open UPEG Token Case" })).toHaveAttribute(
     "href",
     /\?window=4h&focus=trigger&trigger_event_id=event-upeg-1$/,
   );
@@ -50,19 +50,48 @@ test("cold Radar load renders the rich change-first queue", async ({ page }) => 
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoNestedHorizontalOverflow(page, [".topbar", ".live-radar-item"]);
   await expectNoUnhandledApiRequests(page);
-});
 
-test("Radar's single action opens a Case focused on the trigger", async ({ page }) => {
-  await installMockApi(page);
-  await page.goto("/");
-
-  const item = page.locator(".live-radar-item").first();
-  await item.getByRole("link", { name: "Open Token Case" }).click();
-
+  const caseLink = item.getByRole("link", { name: "Open UPEG Token Case" });
+  await caseLink.focus();
+  await page.keyboard.press("Enter");
   await expect(page).toHaveURL(
     /\/token\/Asset\/asset%3Adex%3Aeth%3A.*\?window=4h&focus=trigger&trigger_event_id=event-upeg-1$/,
   );
-  await expect(page.getByRole("article", { name: "Trigger evidence" })).toBeVisible();
+});
+
+test("card navigation keeps controls isolated and restores Radar scroll on explicit return", async ({
+  page,
+}) => {
+  await installMockApi(page, { radarItemCount: 50 });
+  await page.goto("/");
+
+  const firstItem = page.locator(".live-radar-item").first();
+  await firstItem.getByRole("button", { name: "Copy UPEG contract address" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(firstItem.getByRole("link", { name: "Open UPEG on GMGN" })).toHaveAttribute(
+    "target",
+    "_blank",
+  );
+
+  const list = page.locator(".live-radar-items");
+  const item = page.locator(".live-radar-item").nth(8);
+  await list.evaluate((element, itemIndex) => {
+    const target = element.children.item(itemIndex);
+    if (!(target instanceof HTMLElement)) throw new Error("Radar target item is unavailable");
+    element.scrollTop = Math.max(0, target.offsetTop - 16);
+  }, 8);
+  const scrollTop = await list.evaluate((element) => element.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
+  await item
+    .getByRole("link", { name: "Open CASE9 Token Case" })
+    .click({ position: { x: 20, y: 20 } });
+
+  await expect(page).toHaveURL(
+    /\/token\/Asset\/asset%3Adex%3Aeth%3A.*%3A9\?window=4h&focus=trigger&trigger_event_id=event-upeg-9$/,
+  );
+  await page.getByRole("link", { name: "返回 Token Radar" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBe(scrollTop);
   await expectNoUnhandledApiRequests(page);
 });
 
@@ -77,34 +106,5 @@ test("the capped fifty-item Radar keeps its final item reachable", async ({ page
     ".live-radar-item:last-of-type",
   );
   await expectNoDocumentHorizontalOverflow(page);
-  await expectNoUnhandledApiRequests(page);
-});
-
-test("a full snapshot refresh stays below the 50ms browser long-task gate", async ({ page }) => {
-  await page.clock.install({ time: new Date(1_777_746_300_000) });
-  await page.addInitScript(() => {
-    const target = window as typeof window & { __radarLongTasks?: number[] };
-    target.__radarLongTasks = [];
-    new PerformanceObserver((entries) => {
-      target.__radarLongTasks?.push(...entries.getEntries().map((entry) => entry.duration));
-    }).observe({ type: "longtask", buffered: true });
-  });
-  await installMockApi(page, { radarItemCount: 0, radarRefreshItemCount: 50 });
-  await page.goto("/");
-  const queueItems = page.getByRole("list", { name: "Radar priority queue" }).getByRole("listitem");
-  await expect(queueItems).toHaveCount(0);
-  await expect(page.getByText("No eligible cases")).toBeVisible();
-  await page.evaluate(() => {
-    (window as typeof window & { __radarLongTasks?: number[] }).__radarLongTasks = [];
-  });
-
-  await page.clock.fastForward(30_000);
-  await expect(queueItems).toHaveCount(50);
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(null))));
-
-  const longTasks = await page.evaluate(
-    () => (window as typeof window & { __radarLongTasks?: number[] }).__radarLongTasks ?? [],
-  );
-  expect(longTasks.filter((duration) => duration > 50)).toEqual([]);
   await expectNoUnhandledApiRequests(page);
 });

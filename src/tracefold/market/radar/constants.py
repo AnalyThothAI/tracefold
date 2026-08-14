@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
-import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
-TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION = "token_radar_snapshot_v4"
+TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION = "token_radar_snapshot_v5"
 TOKEN_RADAR_PERIOD_MS = 4 * 60 * 60 * 1000
 TOKEN_RADAR_CURRENT_WINDOW_MS = TOKEN_RADAR_PERIOD_MS
 TOKEN_RADAR_PRIOR_WINDOW_MS = TOKEN_RADAR_PERIOD_MS
@@ -18,8 +16,6 @@ TOKEN_RADAR_MAX_ITEMS = 50
 TOKEN_RADAR_INPUT_ROW_CAP = 20_000
 TOKEN_RADAR_INPUT_BYTE_CAP = 16 * 1024 * 1024
 TOKEN_RADAR_OUTPUT_BYTE_CAP = 96 * 1024
-TOKEN_RADAR_TURN_BUDGET_SECONDS = 12.0
-TOKEN_RADAR_LOAD_BUDGET_SECONDS = 9.0
 TOKEN_RADAR_REFRESH_SECONDS = 30.0
 TOKEN_RADAR_SOURCE_PROVIDER = "gmgn"
 TOKEN_RADAR_SOURCE_TRANSPORT = "direct_ws"
@@ -39,9 +35,6 @@ TOKEN_RADAR_RESOLVED_TARGET_TYPES = ("Asset", "CexToken")
 class _TokenRadarSemantics:
     """The complete code-owned replay semantics; never a public audit payload."""
 
-    version: str
-    replay_semantics_version: str
-    snapshot_schema_version: str
     source_provider: str
     source_transport: str
     source_coverage: str
@@ -64,9 +57,6 @@ class _TokenRadarSemantics:
 
 
 TOKEN_RADAR_SEMANTICS = _TokenRadarSemantics(
-    version="token_radar_rules_v2",
-    replay_semantics_version="token_radar_causal_replay_v4",
-    snapshot_schema_version=TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
     source_provider=TOKEN_RADAR_SOURCE_PROVIDER,
     source_transport=TOKEN_RADAR_SOURCE_TRANSPORT,
     source_coverage=TOKEN_RADAR_SOURCE_COVERAGE,
@@ -87,16 +77,3 @@ TOKEN_RADAR_SEMANTICS = _TokenRadarSemantics(
     maximum_propagation_ms=30 * 60 * 1000,
     max_items=TOKEN_RADAR_MAX_ITEMS,
 )
-
-
-def _semantics_fingerprint(semantics: _TokenRadarSemantics) -> str:
-    encoded = json.dumps(
-        asdict(semantics),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-TOKEN_RADAR_SEMANTICS_FINGERPRINT = _semantics_fingerprint(TOKEN_RADAR_SEMANTICS)

@@ -50,8 +50,8 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   Macro. The archetype governs hierarchy and density, never data ownership or
   business inference.
 - **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads/writes. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, `postApi`, or `queryClient.set*` directly. `frontendDataOwnership.test.ts` enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
-- **URL state.** Shareable Search and Token Case options live in their owning route-state helpers. Token Radar has no filter, window, venue, sort, selection, or pagination state. Local stores are only for interaction state that should not survive hard reloads.
-- **Socket lifecycle.** `shared/socket` owns authentication, Token Case live-market cache patches, and ref-counted market-target subscriptions. The React client sends `replay: 0` and does not retain public `event` messages; backend event/replay remains a public evidence contract for other consumers. Token Radar registers no market target and is never patched from WebSocket state. Token Case subscribes only its active target. Stream/poll workers emit live market messages only after durable current-row persistence; those messages remain a cache enhancement, not a second source of truth. The Radar v4 hard cut changes no WebSocket route, message, replay, or subscription behavior.
+- **URL state.** Shareable Search and Token Case options live in their owning route-state helpers. Token Radar has no filter, window, venue, sort, selection, or pagination state. Its internal-navigation scroll position travels only in same-session router state and does not survive a hard reload.
+- **Socket lifecycle.** `shared/socket` owns authentication, Token Case live-market cache patches, and ref-counted market-target subscriptions. The React client sends `replay: 0` and does not retain public `event` messages; backend event/replay remains a public evidence contract for other consumers. Token Radar registers no market target and is never patched from WebSocket state. Token Case subscribes only its active target. Stream/poll workers emit live market messages only after durable current-row persistence; those messages remain a cache enhancement, not a second source of truth. The Radar v5 hard cut changes no WebSocket route, message, replay, or subscription behavior.
 - **Search route.** `/search` reuses the cockpit topbar but owns its
   search-local rail, filters, resolver candidates, and selected result. Topbar
   submit navigates to `/search?q=<query>`. Token search results render the
@@ -68,22 +68,26 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `trigger_event_id`; the route locates and visually focuses that exact Event
   or states that it is unavailable. It does not reconstruct a retired Radar
   rank, lane, decision, or score.
-- **Token Radar drilldown.** Token Radar is the scan surface. Every Item links
-  to `Open Token Case`, targeting its canonical identity and exact trigger
-  Event. Rows with a contract address can copy the full address; supported
-  on-chain identities also link that address to GMGN in a new tab. The browser
-  keeps the server order and never scores, filters, admits, fills, or reorders
-  Items.
+- **Token Radar drilldown.** Token Radar is the scan surface. Every whole Item
+  is one internal Token Case link targeting its canonical identity and exact
+  trigger Event. Copy remains a row-local button and supported on-chain
+  identities keep a separate GMGN link in a new tab; neither activates the
+  card link. Token Case stays in the current tab, shows an explicit Radar return
+  action, and restores the bounded queue scroll from same-session route state.
+  The browser keeps server order and never scores, filters, admits, fills, or
+  reorders Items.
 - **Token Radar currentness.** `/` is one full-height, maximum-fifty rich
-  research queue over `token_radar_snapshot_v4`. The browser renders the
-  server-owned `current|stale|unavailable` state rather than inferring
-  projection health from HTTP success. `current` renders the queue; `stale`
-  retains every LKG row and shows one bounded source/projection banner;
-  `unavailable` renders an explicit empty state and no placeholder queue row.
+  research queue over `token_radar_snapshot_v5`. The exact top level is
+  `schema_version`, `social_evidence_as_of_ms`, `eligible_total`, and `items`;
+  there is no Radar health state or state banner. A cached polling failure keeps
+  the last successful queue silently. Only a first-read failure uses the route
+  error surface, while a valid empty snapshot shows `No eligible cases`.
   Each real row renders the
   server-provided same-origin icon or a fixed-size symbol fallback, symbol/name,
   chain/address, current USD price, price change since the signal, market
-  capitalization, transparent attention/evidence, and one Token Case action.
+  capitalization, and transparent attention/evidence. Identity plus current
+  market facts form the primary visual layer; why-now and evidence form the
+  secondary layer.
   Identity uses one primary symbol/name line plus one canonical identity line;
   canonical chain identifiers are rendered as human-readable network names and
   supported addresses expose an explicit GMGN destination. The header states
@@ -106,10 +110,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   query polls `/api/token-radar` every 30 seconds with an ETag-bound conditional
   GET; a `304` reuses the exact cached snapshot. Image elements may read only the
   same-origin paths already present in that snapshot.
-  Cached content survives a recoverable transport refresh error and shows one
-  standard `Update delayed` state; that transport state does not replace the
-  server-owned stale banner. There is no green health badge, per-second age
-  timer, client-side staleness inference, or window/venue frame cache.
+  Cached content survives a recoverable transport refresh error without a
+  delay/stale banner; the next scheduled poll recovers automatically. There is
+  no green health badge, per-second age timer, client-side staleness inference,
+  or window/venue frame cache.
 - **News routes.** `/news` is a decision-first scan surface over the flat global
   Story Feed from `/api/news/feed`; the browser never clusters, scores, selects
   provider evidence, or reorders. The public News navigation contains `全球新闻`,
@@ -272,7 +276,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
 - **Score display.** Any displayed ranking score includes its component breakdown from the API. The UI does not recompute ranking facts locally.
 - **Token images.** Token Case/profile surfaces render
-  `profile.identity.logo_url` directly, and Radar renders the v4 Item
+  `profile.identity.logo_url` directly, and Radar renders the v5 Item
   `target.logo_url` directly. The API contract guarantees either value is
   `null` or a same-origin `/api/token-images/{image_id}` path; DB
   constraints reject remote provider URLs before they reach the frontend. Do

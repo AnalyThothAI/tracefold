@@ -18,7 +18,7 @@ NOW_MS = 1_800_000_000_000
 MINUTE_MS = 60_000
 
 
-def test_v4_enrichment_adds_identity_exact_signal_price_and_independent_market_clocks() -> None:
+def test_v5_enrichment_adds_identity_exact_signal_price_and_independent_market_clocks() -> None:
     reduced = reduce_token_radar(_eligible_revisions(), now_ms=NOW_MS)
 
     enriched = enrich_token_radar(
@@ -36,7 +36,7 @@ def test_v4_enrichment_adds_identity_exact_signal_price_and_independent_market_c
     )
 
     assert enriched.snapshot == {
-        "schema_version": "token_radar_snapshot_v4",
+        "schema_version": "token_radar_snapshot_v5",
         "social_evidence_as_of_ms": NOW_MS - 10 * MINUTE_MS + 3_000,
         "eligible_total": 1,
         "items": [
@@ -75,10 +75,10 @@ def test_v4_enrichment_adds_identity_exact_signal_price_and_independent_market_c
             }
         ],
     }
-    assert enriched.state_fingerprint != reduced.state_fingerprint
+    assert enriched.snapshot_fingerprint != reduced.snapshot_fingerprint
 
 
-def test_v4_enrichment_drops_invalid_or_stale_presentation_fields_independently() -> None:
+def test_v5_enrichment_drops_invalid_or_stale_presentation_fields_independently() -> None:
     reduced = reduce_token_radar(_eligible_revisions(), now_ms=NOW_MS)
 
     invalid = enrich_token_radar(
@@ -126,7 +126,7 @@ def test_v4_enrichment_drops_invalid_or_stale_presentation_fields_independently(
     }
 
 
-def test_v4_enrichment_keeps_an_exact_asset_address_without_inventing_a_symbol() -> None:
+def test_v5_enrichment_keeps_an_exact_asset_address_without_inventing_a_symbol() -> None:
     address = "J7o48eA9qftqHpod2CsUbBH4q1Tzq3doTRXFDA4wpump"
     reduced = reduce_token_radar(_eligible_revisions(), now_ms=NOW_MS)
 
@@ -163,8 +163,7 @@ def test_reducer_selects_exact_first_fifty_before_presentation_hydration() -> No
 
     reduced = reduce_token_radar(rows, now_ms=NOW_MS)
 
-    assert reduced.snapshot["schema_version"] == "token_radar_snapshot_v4"
-    assert reduced.eligible_rows == 60
+    assert reduced.snapshot["schema_version"] == "token_radar_snapshot_v5"
     assert reduced.snapshot["eligible_total"] == 60
     assert len(reduced.snapshot["items"]) == 50
     assert [item["target"]["target_id"] for item in reduced.snapshot["items"]] == [

@@ -10991,7 +10991,7 @@
             "type": "array"
           },
           "schema_version": {
-            "const": "token_radar_snapshot_v4",
+            "const": "token_radar_snapshot_v5",
             "title": "Schema Version",
             "type": "string"
           },
@@ -10999,42 +10999,10 @@
             "minimum": 0.0,
             "title": "Social Evidence As Of Ms",
             "type": "integer"
-          },
-          "stale_reason": {
-            "anyOf": [
-              {
-                "enum": [
-                  "source_unavailable",
-                  "projection_failed"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Stale Reason"
-          },
-          "state": {
-            "enum": [
-              "current",
-              "stale",
-              "unavailable"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "state_changed_at_ms": {
-            "minimum": 0.0,
-            "title": "State Changed At Ms",
-            "type": "integer"
           }
         },
         "required": [
           "schema_version",
-          "state",
-          "stale_reason",
-          "state_changed_at_ms",
           "social_evidence_as_of_ms",
           "eligible_total",
           "items"

@@ -9,38 +9,7 @@ afterEach(() => {
 });
 
 describe("RadarQueue", () => {
-  it("keeps the complete last-known-good queue behind the server-owned stale banner", () => {
-    const stale = {
-      ...fixture(1),
-      state: "stale",
-      stale_reason: "source_unavailable",
-    } as const;
-
-    renderQueue(stale);
-
-    expect(screen.getByRole("status")).toHaveTextContent("Radar stale");
-    expect(screen.getByRole("status")).toHaveTextContent("Source unavailable");
-    expect(screen.getByText("$TOKEN1")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open Token Case" })).toBeVisible();
-  });
-
-  it("renders the server-owned unavailable state without an invented queue row", () => {
-    const unavailable = {
-      ...fixture(0),
-      state: "unavailable",
-      state_changed_at_ms: 0,
-      social_evidence_as_of_ms: 0,
-    } as const;
-
-    renderQueue(unavailable);
-
-    expect(screen.getByText("Radar unavailable")).toBeInTheDocument();
-    expect(screen.getByText("No validated Radar snapshot is available yet.")).toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "Radar priority queue" })).not.toBeInTheDocument();
-    expect(screen.queryByText("No eligible cases")).not.toBeInTheDocument();
-  });
-
-  it("renders a rich server-ordered Top 50 with one Case action per item and no hydration", () => {
+  it("renders a rich server-ordered Top 50 with one whole-card Case link per item and no hydration", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const snapshot = fixture();
@@ -61,16 +30,14 @@ describe("RadarQueue", () => {
     expect(rows[0]).toHaveTextContent("+12%");
     expect(rows[0]).toHaveTextContent("$1.3M");
 
-    const actions = screen.getAllByRole("link", { name: "Open Token Case" });
+    const actions = screen.getAllByRole("link", { name: /Open TOKEN\d+ Token Case/ });
     expect(actions).toHaveLength(50);
     expect(actions[0]).toHaveAttribute(
       "href",
       "/token/Asset/asset%3Asolana%3Atoken%3Atoken-1?window=4h&focus=trigger&trigger_event_id=event-token-1",
     );
     expect(actions[49]).toBeVisible();
-    expect(container.querySelector(".live-radar-queue")).not.toHaveClass(
-      "live-radar-queue--delayed",
-    );
+    expect(actions[0]).toHaveClass("live-radar-card-link");
     const icon = screen.getByRole("img", { name: "Token 1 Network icon" });
     expect(icon).toHaveAttribute("src", `/api/token-images/${"a".repeat(64)}`);
     expect(icon).toHaveAttribute("decoding", "async");
@@ -281,13 +248,37 @@ describe("RadarQueue", () => {
     expect(image).toHaveAttribute("src", refreshed.items[0].target.logo_url);
   });
 
-  it("keeps the last good snapshot and reports a refresh delay", () => {
+  it("keeps the last good snapshot and hides a cached refresh failure", () => {
     const { container } = renderQueue(fixture(), new Error("offline"));
 
     expect(screen.getByText("$TOKEN1")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("更新延迟");
+    expect(screen.queryByText("更新延迟")).not.toBeInTheDocument();
     expect(screen.queryByText("offline")).not.toBeInTheDocument();
-    expect(container.querySelector(".live-radar-queue")).toHaveClass("live-radar-queue--delayed");
+    expect(container.querySelector(".live-radar-queue")).toBeInTheDocument();
+  });
+
+  it("restores the bounded queue scroll from route interaction state", () => {
+    render(
+      <MemoryRouter>
+        <RadarQueue
+          bootstrapError={false}
+          bootstrapLoading={false}
+          error={null}
+          initialScrollTop={720}
+          isLoading={false}
+          isRefreshing={false}
+          snapshot={fixture()}
+          onRetry={vi.fn()}
+          onSessionRetry={vi.fn()}
+          sessionAvailable={true}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("list", { name: "Radar priority queue" })).toHaveProperty(
+      "scrollTop",
+      720,
+    );
   });
 
   it("renders a truthful empty state and only creates rows for real eligible items", () => {
@@ -316,7 +307,7 @@ describe("RadarQueue", () => {
     expect(screen.queryByText("Unknown venue")).not.toBeInTheDocument();
     expect(screen.getByRole("list", { name: "Radar priority queue" })).toBeInTheDocument();
     expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Open Token Case" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Token Case/ })).not.toBeInTheDocument();
     const evidenceClock = container.querySelector(".live-radar-header time");
     expect(evidenceClock).not.toBeNull();
     expect(evidenceClock).toHaveTextContent("No social evidence yet");
@@ -342,7 +333,7 @@ describe("RadarQueue", () => {
     expect(container.querySelector(".live-radar-header time")).toBe(evidenceClock);
     expect(evidenceClock).not.toHaveTextContent("No social evidence yet");
     expect(screen.getAllByRole("listitem")).toHaveLength(50);
-    expect(screen.getAllByRole("link", { name: "Open Token Case" })).toHaveLength(50);
+    expect(screen.getAllByRole("link", { name: /Open TOKEN\d+ Token Case/ })).toHaveLength(50);
   });
 });
 
@@ -366,10 +357,7 @@ function renderQueue(snapshot: TokenRadarSnapshot, error: Error | null = null) {
 
 function fixture(count = 50): TokenRadarSnapshot {
   return {
-    schema_version: "token_radar_snapshot_v4",
-    state: "current",
-    stale_reason: null,
-    state_changed_at_ms: 1_778_426_420_000,
+    schema_version: "token_radar_snapshot_v5",
     social_evidence_as_of_ms: 1_778_426_440_000,
     eligible_total: count === 50 ? 63 : count,
     items: Array.from({ length: count }, (_, index) =>

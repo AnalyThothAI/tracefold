@@ -9,9 +9,15 @@ export type TokenCasePanelProps = {
   vm: TokenCaseViewModel;
   onWindowChange: (window: TokenCaseWindow) => void;
   onLoadMorePosts: () => void;
+  radarReturnScrollTop?: number | null;
 };
 
-export function TokenCasePanel({ vm, onWindowChange, onLoadMorePosts }: TokenCasePanelProps) {
+export function TokenCasePanel({
+  vm,
+  onWindowChange,
+  onLoadMorePosts,
+  radarReturnScrollTop = null,
+}: TokenCasePanelProps) {
   return (
     <section aria-label="Token case" className={styles.panel} data-page-archetype="case">
       <TokenCaseHero
@@ -20,6 +26,7 @@ export function TokenCasePanel({ vm, onWindowChange, onLoadMorePosts }: TokenCas
         metrics={vm.metrics}
         route={vm.route}
         target={vm.target}
+        radarReturnScrollTop={radarReturnScrollTop}
         onWindowChange={onWindowChange}
       />
       <div className={styles.workspace}>

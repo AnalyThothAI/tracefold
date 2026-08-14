@@ -23,12 +23,7 @@ from tracefold.app.workers_runtime_acceptance_v2 import (
     workers_runtime_evidence_template,
 )
 from tracefold.app.workers_runtime_collector import collect_workers_runtime_acceptance
-from tracefold.market import (
-    TokenRadarStatusUnavailable,
-    rebuild_recent_token_intents,
-    reprocess_recent_token_intents,
-    token_radar_status,
-)
+from tracefold.market import rebuild_recent_token_intents, reprocess_recent_token_intents
 from tracefold.platform.config.settings import load_settings
 from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
 
@@ -36,7 +31,6 @@ _READ_ONLY_OPS_COMMANDS = frozenset(
     {
         "audit-token-intent",
         "queue-inspect",
-        "radar-status",
         "validate-projections",
     }
 )
@@ -176,23 +170,6 @@ def _handle_ops_exclusive(
 def _handle_ops_read_only(args: object, *, repos: Any) -> tuple[int, dict[str, Any]]:
     if args.ops_command == "queue-inspect":
         return queue_ops.handle_queue_inspect(args, repos)
-
-    if args.ops_command == "radar-status":
-        try:
-            status = token_radar_status(repos.conn)
-        except TokenRadarStatusUnavailable as exc:
-            return 1, {
-                "ok": False,
-                "error": exc.code,
-                "data": {
-                    "status": "unavailable",
-                    "required_migration": exc.required_migration,
-                },
-            }
-        return 0, {
-            "ok": True,
-            "data": status,
-        }
 
     if args.ops_command == "validate-projections":
         data = ProjectionValidationAudit(repos.conn).run(sample=args.sample)

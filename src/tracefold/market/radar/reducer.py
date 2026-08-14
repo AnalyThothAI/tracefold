@@ -5,7 +5,6 @@ import heapq
 import json
 import math
 import re
-import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -24,7 +23,6 @@ from tracefold.market.radar.constants import (
     TOKEN_RADAR_PRIOR_WINDOW_MS,
     TOKEN_RADAR_REPLAY_TRANSITION_MS,
     TOKEN_RADAR_SEMANTICS,
-    TOKEN_RADAR_SEMANTICS_FINGERPRINT,
     TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
     TOKEN_RADAR_SOURCE_HORIZON_MS,
 )
@@ -45,10 +43,6 @@ BindingKey = tuple[str, TargetKey]
 
 class TokenRadarInputOverflow(RuntimeError):
     """The material-fact input exceeded a hard reducer envelope."""
-
-
-class TokenRadarBudgetExceeded(RuntimeError):
-    """The deterministic reducer exceeded its code-owned CPU deadline."""
 
 
 class TokenRadarOutputOverflow(RuntimeError):
@@ -115,14 +109,7 @@ class RadarSelectionKey:
 
 @dataclass(frozen=True, slots=True)
 class ReducedTokenRadar:
-    ruleset_version: str
-    ruleset_fingerprint: str
-    input_fingerprint: str
-    state_fingerprint: str
-    input_rows: int
-    input_bytes: int
-    output_bytes: int
-    eligible_rows: int
+    snapshot_fingerprint: str
     snapshot: dict[str, Any]
     selected_keys: tuple[RadarSelectionKey, ...]
 
@@ -290,7 +277,6 @@ def reduce_token_radar(
     revisions: Sequence[RadarEvidenceRevision],
     *,
     now_ms: int,
-    deadline_monotonic: float | None = None,
 ) -> ReducedTokenRadar:
     """Replay bounded resolution-aware facts into causal four-hour Radar episodes."""
 
@@ -301,10 +287,7 @@ def reduce_token_radar(
     input_bytes = token_radar_input_size(revisions)
     if input_bytes > TOKEN_RADAR_INPUT_BYTE_CAP:
         raise TokenRadarInputOverflow("token_radar_input_byte_overflow")
-    _check_deadline(deadline_monotonic)
 
-    canonical_inputs = [asdict(revision) for revision in sorted(revisions, key=_canonical_revision_sort_key)]
-    input_fingerprint = _fingerprint(canonical_inputs)
     replay_start_ms = max(0, parsed_now_ms - TOKEN_RADAR_REPLAY_TRANSITION_MS)
     source_horizon_ms = max(0, parsed_now_ms - TOKEN_RADAR_SOURCE_HORIZON_MS)
     live_revisions = [
@@ -324,13 +307,10 @@ def reduce_token_radar(
         changes,
         replay_start_ms=replay_start_ms,
         now_ms=parsed_now_ms,
-        deadline_monotonic=deadline_monotonic,
     )
 
     candidates: list[dict[str, Any]] = []
-    for index, (target, state) in enumerate(sorted(states.items())):
-        if index % 64 == 0:
-            _check_deadline(deadline_monotonic)
+    for target, state in sorted(states.items()):
         state.expire_episode(at_ms=parsed_now_ms)
         if state.episode is None or not state.gate_is_true:
             continue
@@ -382,10 +362,6 @@ def reduce_token_radar(
     }
     return _reduced(
         snapshot=snapshot,
-        input_fingerprint=input_fingerprint,
-        input_rows=input_rows,
-        input_bytes=input_bytes,
-        eligible_rows=eligible_rows,
         selected_keys=tuple(candidate["selection_key"] for candidate in selected),
     )
 
@@ -432,10 +408,6 @@ def enrich_token_radar(
     }
     return _reduced(
         snapshot=snapshot,
-        input_fingerprint=reduced.input_fingerprint,
-        input_rows=reduced.input_rows,
-        input_bytes=reduced.input_bytes,
-        eligible_rows=reduced.eligible_rows,
         selected_keys=reduced.selected_keys,
     )
 
@@ -453,36 +425,13 @@ def token_radar_input_row_size(revision: RadarEvidenceRevision) -> int:
 def _reduced(
     *,
     snapshot: dict[str, Any],
-    input_fingerprint: str,
-    input_rows: int,
-    input_bytes: int,
-    eligible_rows: int,
     selected_keys: tuple[RadarSelectionKey, ...],
 ) -> ReducedTokenRadar:
-    output_bytes = len(
-        _canonical_json_bytes(
-            {
-                "schema_version": TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
-                "state": "stale",
-                "stale_reason": "projection_failed",
-                "state_changed_at_ms": 9_223_372_036_854_775_807,
-                "social_evidence_as_of_ms": snapshot["social_evidence_as_of_ms"],
-                "eligible_total": snapshot["eligible_total"],
-                "items": snapshot["items"],
-            }
-        )
-    )
+    output_bytes = len(_canonical_json_bytes(snapshot))
     if output_bytes > TOKEN_RADAR_OUTPUT_BYTE_CAP:
         raise TokenRadarOutputOverflow("token_radar_output_byte_overflow")
     return ReducedTokenRadar(
-        ruleset_version=TOKEN_RADAR_SEMANTICS.version,
-        ruleset_fingerprint=TOKEN_RADAR_SEMANTICS_FINGERPRINT,
-        input_fingerprint=input_fingerprint,
-        state_fingerprint=_fingerprint(snapshot),
-        input_rows=input_rows,
-        input_bytes=input_bytes,
-        output_bytes=output_bytes,
-        eligible_rows=eligible_rows,
+        snapshot_fingerprint=_fingerprint(snapshot),
         snapshot=snapshot,
         selected_keys=selected_keys,
     )
@@ -587,7 +536,6 @@ def _replay(
     *,
     replay_start_ms: int,
     now_ms: int,
-    deadline_monotonic: float | None,
 ) -> dict[TargetKey, _TargetState]:
     changes_by_time: dict[int, list[_BindingChange]] = defaultdict(list)
     for change in changes:
@@ -626,9 +574,7 @@ def _replay(
             *boundaries_by_time,
         }
     )
-    for index, effective_at_ms in enumerate(transition_times):
-        if index % 128 == 0:
-            _check_deadline(deadline_monotonic)
+    for effective_at_ms in transition_times:
         removals, additions = _apply_binding_group(
             changes_by_time.get(effective_at_ms, ()),
             binding_counts=binding_counts,
@@ -831,17 +777,6 @@ def _binding_change_sort_key(change: _BindingChange) -> tuple[Any, ...]:
     )
 
 
-def _canonical_revision_sort_key(revision: RadarEvidenceRevision) -> tuple[Any, ...]:
-    return (
-        revision.source_event_at_ms,
-        revision.event_id,
-        revision.intent_id,
-        revision.resolution_decision_at_ms,
-        revision.resolution_created_at_ms,
-        revision.resolution_id,
-    )
-
-
 def token_radar_text_fingerprint(value: str | None) -> str | None:
     if value is None:
         return None
@@ -926,11 +861,6 @@ def _nonnegative_int(value: Any, error_code: str) -> int:
     return parsed
 
 
-def _check_deadline(deadline_monotonic: float | None) -> None:
-    if deadline_monotonic is not None and time.monotonic() > deadline_monotonic:
-        raise TokenRadarBudgetExceeded("token_radar_reducer_budget_exceeded")
-
-
 __all__ = [
     "TOKEN_RADAR_INPUT_BYTE_CAP",
     "TOKEN_RADAR_INPUT_ROW_CAP",
@@ -938,7 +868,6 @@ __all__ = [
     "RadarEvidenceRevision",
     "RadarSelectionKey",
     "ReducedTokenRadar",
-    "TokenRadarBudgetExceeded",
     "TokenRadarInputOverflow",
     "TokenRadarInvariantViolation",
     "TokenRadarOutputOverflow",

@@ -23,7 +23,7 @@ describe("live radar route", () => {
     expect(screen.queryByLabelText("token radar venue filter")).not.toBeInTheDocument();
     expect(screen.queryByText(/score/i)).not.toBeInTheDocument();
 
-    expect(screen.getByRole("link", { name: "Open Token Case" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open UPEG Token Case" })).toHaveAttribute(
       "href",
       expect.stringContaining("?window=4h&focus=trigger&trigger_event_id=event-upeg-1"),
     );
@@ -31,7 +31,7 @@ describe("live radar route", () => {
     expect(radarRequest?.[1]?.params).toBeUndefined();
   });
 
-  it("retains the last good queue and reports a delayed refresh", async () => {
+  it("retains the last good queue without surfacing a cached poll failure", async () => {
     let radarReads = 0;
     setupAppRouteTest((mock) => {
       mockLiveRadarRoute(mock);
@@ -48,52 +48,9 @@ describe("live radar route", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
 
-    expect(await screen.findByText("更新延迟")).toHaveAttribute("role", "status");
+    await waitFor(() => expect(radarReads).toBe(2));
     expect(screen.getByText(/\$UPEG/)).toBeInTheDocument();
-  });
-
-  it("renders server-owned stale state while retaining its last-known-good row", async () => {
-    setupAppRouteTest((mock) => {
-      mockLiveRadarRoute(mock);
-      const base = mock.getApiImpl;
-      mock.getApiImpl = async (path, options) =>
-        path === "/api/token-radar"
-          ? ok(
-              tokenRadarFixture({
-                state: "stale",
-                stale_reason: "projection_failed",
-              }),
-            )
-          : base(path, options);
-    });
-    renderAppRoute("/");
-
-    expect(await screen.findByText(/Radar stale/)).toHaveTextContent("Projection unavailable");
-    expect(screen.getByText(/\$UPEG/)).toBeInTheDocument();
-  });
-
-  it("renders server-owned unavailable state without a placeholder queue row", async () => {
-    setupAppRouteTest((mock) => {
-      mockLiveRadarRoute(mock);
-      const base = mock.getApiImpl;
-      mock.getApiImpl = async (path, options) =>
-        path === "/api/token-radar"
-          ? ok(
-              tokenRadarFixture({
-                state: "unavailable",
-                stale_reason: null,
-                state_changed_at_ms: 0,
-                social_evidence_as_of_ms: 0,
-                eligible_total: 0,
-                items: [],
-              }),
-            )
-          : base(path, options);
-    });
-    renderAppRoute("/");
-
-    expect(await screen.findByText("Radar unavailable")).toBeInTheDocument();
-    expect(screen.queryByText("No eligible cases")).not.toBeInTheDocument();
+    expect(screen.queryByText("更新延迟")).not.toBeInTheDocument();
   });
 
   it("renders an empty no-evidence snapshot without a 1970 timestamp", async () => {

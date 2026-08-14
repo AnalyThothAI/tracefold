@@ -3778,18 +3778,9 @@ export interface components {
              * Schema Version
              * @constant
              */
-            schema_version: "token_radar_snapshot_v4";
+            schema_version: "token_radar_snapshot_v5";
             /** Social Evidence As Of Ms */
             social_evidence_as_of_ms: number;
-            /** Stale Reason */
-            stale_reason: ("source_unavailable" | "projection_failed") | null;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "current" | "stale" | "unavailable";
-            /** State Changed At Ms */
-            state_changed_at_ms: number;
         };
         /** TokenRadarEvidenceData */
         TokenRadarEvidenceData: {

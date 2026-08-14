@@ -4,11 +4,9 @@ from dataclasses import replace
 
 import pytest
 
-from tracefold.market.radar import reducer as reducer_module
 from tracefold.market.radar.reducer import (
     TOKEN_RADAR_INPUT_BYTE_CAP,
     TOKEN_RADAR_INPUT_ROW_CAP,
-    TOKEN_RADAR_OUTPUT_BYTE_CAP,
     RadarEvidenceRevision,
     RadarSelectionKey,
     TokenRadarInputOverflow,
@@ -21,7 +19,7 @@ NOW_MS = 1_800_000_000_000
 MINUTE_MS = 60_000
 
 
-def test_reducer_emits_the_exact_compact_v4_evidence_packet() -> None:
+def test_reducer_emits_the_exact_compact_v5_evidence_packet() -> None:
     rows = [
         _row(event_id="prior-a", author="alice", minutes_ago=300, text="old thesis"),
         _row(
@@ -43,11 +41,7 @@ def test_reducer_emits_the_exact_compact_v4_evidence_packet() -> None:
 
     reduced = reduce_token_radar(rows, now_ms=NOW_MS)
 
-    assert reduced.input_rows == len(rows)
-    assert reduced.eligible_rows == 1
-    assert reduced.ruleset_version == "token_radar_rules_v2"
-    assert reduced.ruleset_fingerprint == ("sha256:5e750d077f458bbfafd2a77b6083329ee70874e2c98a8de20e0315868620d1c6")
-    assert reduced.output_bytes <= TOKEN_RADAR_OUTPUT_BYTE_CAP
+    assert len(reduced.snapshot_fingerprint) == len("sha256:") + 64
     assert reduced.selected_keys == (
         RadarSelectionKey(
             target_type="Asset",
@@ -58,7 +52,7 @@ def test_reducer_emits_the_exact_compact_v4_evidence_packet() -> None:
         ),
     )
     assert reduced.snapshot == {
-        "schema_version": "token_radar_snapshot_v4",
+        "schema_version": "token_radar_snapshot_v5",
         "social_evidence_as_of_ms": NOW_MS - 10 * MINUTE_MS,
         "eligible_total": 1,
         "items": [
@@ -105,8 +99,7 @@ def test_reducer_selects_the_exact_first_fifty_from_sixty_eligible_targets() -> 
 
     reduced = reduce_token_radar(rows, now_ms=NOW_MS)
 
-    assert reduced.snapshot["schema_version"] == "token_radar_snapshot_v4"
-    assert reduced.eligible_rows == 60
+    assert reduced.snapshot["schema_version"] == "token_radar_snapshot_v5"
     assert reduced.snapshot["eligible_total"] == 60
     assert len(reduced.snapshot["items"]) == 50
     assert [item["target"]["target_id"] for item in reduced.snapshot["items"]] == [
@@ -114,25 +107,18 @@ def test_reducer_selects_the_exact_first_fifty_from_sixty_eligible_targets() -> 
     ]
 
 
-def test_reducer_order_is_deterministic_and_fingerprint_tracks_fact_content() -> None:
+def test_reducer_order_and_snapshot_fingerprint_are_deterministic() -> None:
     rows = [
         _row(event_id="event-a", author="alice", minutes_ago=50, text="one"),
         _row(event_id="event-b", author="bob", minutes_ago=40, text="two"),
         _row(event_id="event-c", author="carol", minutes_ago=30, text="three"),
     ]
-    changed_rows = [
-        *rows[:-1],
-        replace(rows[-1], text_fingerprint=token_radar_text_fingerprint("changed fact")),
-    ]
-
     first = reduce_token_radar(rows, now_ms=NOW_MS)
     reordered = reduce_token_radar(list(reversed(rows)), now_ms=NOW_MS)
-    changed = reduce_token_radar(changed_rows, now_ms=NOW_MS)
 
     assert first.snapshot == reordered.snapshot
     assert first.selected_keys == reordered.selected_keys
-    assert first.input_fingerprint == reordered.input_fingerprint
-    assert changed.input_fingerprint != first.input_fingerprint
+    assert first.snapshot_fingerprint == reordered.snapshot_fingerprint
 
 
 def test_first_positive_revision_where_all_gate_rules_pass_is_the_trigger() -> None:
@@ -166,9 +152,7 @@ def test_text_duplicate_normalization_has_one_reducer_owned_semantics() -> None:
     assert item["evidence"]["duplicate_share"] == pytest.approx(1 / 3)
 
 
-def test_late_trigger_scans_twenty_thousand_rows_with_periodic_deadline_checks(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_late_trigger_scans_the_complete_twenty_thousand_row_envelope() -> None:
     rows = []
     for index in range(TOKEN_RADAR_INPUT_ROW_CAP):
         if index == TOKEN_RADAR_INPUT_ROW_CAP - 2:
@@ -187,19 +171,9 @@ def test_late_trigger_scans_twenty_thousand_rows_with_periodic_deadline_checks(
             )
         )
 
-    monotonic_calls = 0
-
-    def _monotonic() -> float:
-        nonlocal monotonic_calls
-        monotonic_calls += 1
-        return 0.0
-
-    monkeypatch.setattr(reducer_module.time, "monotonic", _monotonic)
-
-    reduced = reduce_token_radar(rows, now_ms=NOW_MS, deadline_monotonic=1.0)
+    reduced = reduce_token_radar(rows, now_ms=NOW_MS)
 
     assert reduced.snapshot["items"][0]["trigger_event_id"] == "event-19999"
-    assert monotonic_calls >= 80
 
 
 def test_target_leaves_immediately_when_later_evidence_breaks_a_gate_rule() -> None:
@@ -221,7 +195,7 @@ def test_target_leaves_immediately_when_later_evidence_breaks_a_gate_rule() -> N
     reduced = reduce_token_radar(rows, now_ms=NOW_MS)
 
     assert reduced.snapshot["eligible_total"] == 0
-    assert reduced.eligible_rows == 0
+    assert reduced.snapshot["eligible_total"] == 0
 
 
 def test_social_freshness_advances_even_when_no_target_is_eligible() -> None:
@@ -235,7 +209,7 @@ def test_social_freshness_advances_even_when_no_target_is_eligible() -> None:
     snapshot = reduce_token_radar([weak], now_ms=NOW_MS).snapshot
 
     assert snapshot == {
-        "schema_version": "token_radar_snapshot_v4",
+        "schema_version": "token_radar_snapshot_v5",
         "social_evidence_as_of_ms": NOW_MS - 5 * MINUTE_MS,
         "eligible_total": 0,
         "items": [],

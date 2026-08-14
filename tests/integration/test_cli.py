@@ -175,14 +175,13 @@ class CliTests(unittest.TestCase):
         assert parsed.ops_command == "collect-workers-runtime-acceptance"
         assert parsed.bundle == bundle
 
-    def test_audit_and_current_token_radar_commands_are_registered(self):
+    def test_audit_and_current_operations_commands_are_registered(self):
         parser = build_parser()
 
         commands = [
             ["db", "audit"],
             ["db", "query-audit"],
             ["db", "query-audit", "--analyze"],
-            ["ops", "radar-status"],
             ["ops", "validate-projections", "--sample", "5"],
             ["ops", "sync-binance-usdt-perp-universe", "--dry-run"],
             ["ops", "sync-binance-usdt-perp-universe", "--execute"],
@@ -203,29 +202,28 @@ class CliTests(unittest.TestCase):
         self.assertEqual(parsed[1].db_command, "query-audit")
         self.assertFalse(parsed[1].analyze)
         self.assertTrue(parsed[2].analyze)
-        self.assertEqual(parsed[3].ops_command, "radar-status")
-        self.assertEqual(parsed[4].ops_command, "validate-projections")
-        self.assertEqual(parsed[4].sample, 5)
+        self.assertEqual(parsed[3].ops_command, "validate-projections")
+        self.assertEqual(parsed[3].sample, 5)
+        self.assertEqual(parsed[4].ops_command, "sync-binance-usdt-perp-universe")
+        self.assertTrue(parsed[4].dry_run)
         self.assertEqual(parsed[5].ops_command, "sync-binance-usdt-perp-universe")
-        self.assertTrue(parsed[5].dry_run)
-        self.assertEqual(parsed[6].ops_command, "sync-binance-usdt-perp-universe")
-        self.assertTrue(parsed[6].execute)
-        self.assertEqual(parsed[7].ops_command, "sync-binance-cex-profiles")
-        self.assertEqual(parsed[8].ops_command, "run-resolution-refresh")
+        self.assertTrue(parsed[5].execute)
+        self.assertEqual(parsed[6].ops_command, "sync-binance-cex-profiles")
+        self.assertEqual(parsed[7].ops_command, "run-resolution-refresh")
+        self.assertEqual(parsed[7].limit, 5)
+        self.assertEqual(parsed[8].ops_command, "refresh-asset-profiles")
         self.assertEqual(parsed[8].limit, 5)
-        self.assertEqual(parsed[9].ops_command, "refresh-asset-profiles")
+        self.assertEqual(parsed[9].ops_command, "mirror-token-images")
         self.assertEqual(parsed[9].limit, 5)
-        self.assertEqual(parsed[10].ops_command, "mirror-token-images")
-        self.assertEqual(parsed[10].limit, 5)
-        self.assertEqual(parsed[11].ops_command, "reprocess-token-intents")
-        self.assertEqual(parsed[11].window, "24h")
-        self.assertEqual(parsed[11].lookup_key, ["symbol:SLOP"])
-        self.assertEqual(parsed[12].ops_command, "rebuild-token-intents")
-        self.assertEqual(parsed[12].window, "5m")
-        self.assertEqual(parsed[13].ops_command, "audit-token-intent")
-        self.assertEqual(parsed[14].ops_command, "sync-us-equity-symbols")
-        self.assertEqual(parsed[15].ops_command, "seal-workers-runtime-acceptance")
-        self.assertTrue(parsed[15].template)
+        self.assertEqual(parsed[10].ops_command, "reprocess-token-intents")
+        self.assertEqual(parsed[10].window, "24h")
+        self.assertEqual(parsed[10].lookup_key, ["symbol:SLOP"])
+        self.assertEqual(parsed[11].ops_command, "rebuild-token-intents")
+        self.assertEqual(parsed[11].window, "5m")
+        self.assertEqual(parsed[12].ops_command, "audit-token-intent")
+        self.assertEqual(parsed[13].ops_command, "sync-us-equity-symbols")
+        self.assertEqual(parsed[14].ops_command, "seal-workers-runtime-acceptance")
+        self.assertTrue(parsed[14].template)
 
     def test_workers_runtime_v2_acceptance_template_does_not_require_runtime_config(self):
         stdout = io.StringIO()
@@ -383,7 +381,7 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Settings.model_validate({"workers": {"collector": {"enabled": False}}})
 
-    def test_recent_search_and_radar_status_use_postgres_runtime_store(self):
+    def test_recent_and_search_use_postgres_runtime_store(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
             db_path = home / ".tracefold" / "postgres_test_db"
@@ -393,22 +391,17 @@ class CliTests(unittest.TestCase):
             with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
                 recent_code = main(["recent", "--limit", "5"], stdout=stdout)
                 search_code = main(["search", "$PEPE", "--limit", "5"], stdout=stdout)
-                radar_status_code = main(["ops", "radar-status"], stdout=stdout)
 
         lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
         self.assertEqual(
             [
                 recent_code,
                 search_code,
-                radar_status_code,
             ],
-            [0, 0, 0],
+            [0, 0],
         )
         self.assertEqual(lines[0]["data"]["events"][0]["event_id"], "event-1")
         self.assertEqual(lines[1]["data"]["items"][0]["event"]["event_id"], "event-1")
-        self.assertEqual(lines[2]["data"]["schema_version"], "token_radar_snapshot_v4")
-        self.assertEqual(lines[2]["data"]["latest_attempt_status"], "ready")
-        self.assertEqual(lines[2]["data"]["public_items"], 0)
 
     def test_db_audit_query_audit_and_token_radar_ops_use_postgres_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -424,7 +417,6 @@ class CliTests(unittest.TestCase):
             with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
                 db_audit_code = main(["db", "audit"], stdout=stdout)
                 query_audit_code = main(["db", "query-audit"], stdout=stdout)
-                radar_status_code = main(["ops", "radar-status"], stdout=stdout)
                 validate_code = main(["ops", "validate-projections", "--sample", "5"], stdout=stdout)
 
         lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
@@ -432,10 +424,9 @@ class CliTests(unittest.TestCase):
             [
                 db_audit_code,
                 query_audit_code,
-                radar_status_code,
                 validate_code,
             ],
-            [0, 0, 0, 0],
+            [0, 0, 0],
         )
         self.assertEqual(lines[0]["data"]["engine"], "postgresql")
         self.assertTrue(lines[0]["data"]["projection_schema"]["token_radar_current"])
@@ -443,11 +434,8 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("projection_runs", lines[0]["data"]["projection_schema"])
         self.assertFalse(lines[1]["data"]["analyze"])
         self.assertIn("token_radar_latest", {item["name"] for item in lines[1]["data"]["queries"]})
-        self.assertEqual(lines[2]["data"]["latest_attempt_status"], "never")
-        self.assertEqual(lines[2]["data"]["eligible_total"], 0)
-        self.assertEqual(lines[2]["data"]["public_items"], 0)
-        self.assertEqual(lines[3]["data"]["sample"], 5)
-        self.assertEqual(lines[3]["data"]["mismatch_count"], 0)
+        self.assertEqual(lines[2]["data"]["sample"], 5)
+        self.assertEqual(lines[2]["data"]["mismatch_count"], 0)
 
 
 def test_recent_defaults_to_runtime_postgres_store_without_ws_token(tmp_path, monkeypatch):

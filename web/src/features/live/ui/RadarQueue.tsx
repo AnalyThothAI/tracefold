@@ -6,10 +6,11 @@ import {
 } from "@lib/format";
 import { gmgnTokenUrl } from "@lib/gmgn";
 import { tokenTargetPath } from "@shared/routing/paths";
+import { radarNavigationState } from "@shared/routing/radarNavigationState";
 import * as PageState from "@shared/ui/PageState";
 import { Button } from "@shared/ui/button";
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useLayoutEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 
 import {
   TOKEN_RADAR_WINDOW,
@@ -38,6 +39,7 @@ type RadarQueueProps = {
   error: Error | null;
   isLoading: boolean;
   isRefreshing: boolean;
+  initialScrollTop?: number | null;
   onRetry: () => void;
   onSessionRetry: () => void;
   sessionAvailable: boolean;
@@ -50,10 +52,29 @@ export function RadarQueue({
   error,
   isLoading,
   isRefreshing,
+  initialScrollTop = null,
   onRetry,
   onSessionRetry,
   sessionAvailable,
 }: RadarQueueProps) {
+  const navigate = useNavigate();
+  const itemsRef = useRef<HTMLOListElement>(null);
+  const restoredScroll = useRef(false);
+
+  useLayoutEffect(() => {
+    if (restoredScroll.current || initialScrollTop === null || !snapshot) return;
+    const items = itemsRef.current;
+    if (!items) return;
+    items.scrollTop = initialScrollTop;
+    restoredScroll.current = true;
+  }, [initialScrollTop, snapshot]);
+
+  const openCase = (path: string) => {
+    navigate(path, {
+      state: radarNavigationState(itemsRef.current?.scrollTop ?? 0),
+    });
+  };
+
   if (bootstrapLoading) {
     return (
       <section className="live-radar-queue" aria-label="Radar">
@@ -105,43 +126,19 @@ export function RadarQueue({
       </section>
     );
   }
-  if (snapshot?.state === "unavailable") {
-    return (
-      <section className="live-radar-queue" aria-label="Radar" aria-busy={isRefreshing}>
-        <RadarHeader snapshot={snapshot} />
-        <PageState.Empty
-          hint="No validated Radar snapshot is available yet."
-          title="Radar unavailable"
-        />
-      </section>
-    );
-  }
   const items = snapshot?.items ?? [];
-  const serverStale = snapshot?.state === "stale";
 
   return (
-    <section
-      className={`live-radar-queue${snapshot && (error || serverStale) ? " live-radar-queue--delayed" : ""}`}
-      aria-label="Radar"
-      aria-busy={isRefreshing}
-    >
+    <section className="live-radar-queue" aria-label="Radar" aria-busy={isRefreshing}>
       <RadarHeader snapshot={snapshot} />
-      {snapshot && serverStale ? (
-        <p className="live-radar-delay" role="status">
-          {`Radar stale · ${staleReasonLabel(snapshot.stale_reason)} · last-known-good queue retained`}
-        </p>
-      ) : snapshot && error ? (
-        <p className="live-radar-delay" role="status">
-          更新延迟
-        </p>
-      ) : null}
       <div className="live-radar-content">
-        <ol className="live-radar-items" aria-label="Radar priority queue">
-          <RadarQueueItem item={items[0] ?? null} key="radar-first-slot" />
+        <ol className="live-radar-items" aria-label="Radar priority queue" ref={itemsRef}>
+          <RadarQueueItem item={items[0] ?? null} key="radar-first-slot" onOpen={openCase} />
           {items.slice(1).map((item) => (
             <RadarQueueItem
               item={item}
               key={`${item.target.target_type}:${item.target.target_id}`}
+              onOpen={openCase}
             />
           ))}
         </ol>
@@ -179,7 +176,13 @@ function RadarHeader({ snapshot }: { snapshot: TokenRadarSnapshot | null }) {
   );
 }
 
-function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
+function RadarQueueItem({
+  item,
+  onOpen,
+}: {
+  item: TokenRadarSnapshotItem | null;
+  onOpen: (path: string) => void;
+}) {
   const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null);
   const [copyResult, setCopyResult] = useState<{
     address: string;
@@ -236,15 +239,18 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
             {empty ? "Waiting for fixed evidence rules" : displayName}
           </span>
           <small className="live-radar-contract">
-            <a
-              aria-hidden={empty || undefined}
-              aria-label={!empty && gmgnUrl ? `Open ${identityLabel} on GMGN` : undefined}
-              href={gmgnUrl ?? undefined}
-              rel={gmgnUrl ? "noreferrer" : undefined}
-              tabIndex={!empty && gmgnUrl ? undefined : -1}
-              target={gmgnUrl ? "_blank" : undefined}
-              title={address ?? undefined}
-            >
+            {gmgnUrl ? (
+              <a
+                aria-label={`Open ${identityLabel} on GMGN`}
+                href={gmgnUrl}
+                rel="noreferrer"
+                target="_blank"
+                title={address ?? undefined}
+              >
+                <span>{formatContractIdentity(identity, address ?? "")}</span>
+                <span className="live-radar-gmgn"> · GMGN ↗</span>
+              </a>
+            ) : (
               <span>
                 {empty
                   ? "\u00a0"
@@ -252,8 +258,7 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
                     ? formatContractIdentity(identity, address)
                     : identity || "Unknown venue"}
               </span>
-              {gmgnUrl ? <span className="live-radar-gmgn"> · GMGN ↗</span> : null}
-            </a>
+            )}
             <button
               aria-atomic="true"
               aria-hidden={!interactiveAddress || undefined}
@@ -391,12 +396,28 @@ function RadarQueueItem({ item }: { item: TokenRadarSnapshotItem | null }) {
         </time>
       </div>
       <Link
+        aria-label={empty ? undefined : `Open ${identityLabel} Token Case`}
         aria-hidden={empty || undefined}
+        className="live-radar-card-link"
+        onClick={(event) => {
+          if (
+            empty ||
+            event.button !== 0 ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.shiftKey ||
+            event.altKey
+          ) {
+            return;
+          }
+          event.preventDefault();
+          onOpen(casePath);
+        }}
         style={empty ? { visibility: "hidden" } : undefined}
         tabIndex={empty ? -1 : undefined}
         to={casePath}
       >
-        Open Token Case
+        <span aria-hidden>Open Token Case</span>
       </Link>
     </li>
   );
@@ -477,10 +498,6 @@ function formatDuration(value: number): string {
 
 function formatObservation(value: number | null): string {
   return value === null ? "No observation" : `Observed ${RADAR_TRIGGER_FORMATTER.format(value)}`;
-}
-
-function staleReasonLabel(reason: TokenRadarSnapshot["stale_reason"]): string {
-  return reason === "source_unavailable" ? "Source unavailable" : "Projection unavailable";
 }
 
 function formatTimestamp(value: number): string {

@@ -19,10 +19,6 @@
     background: var(--surface-root);
   }
 
-  .live-radar-queue--delayed {
-    grid-template-rows: auto auto minmax(0, 1fr);
-  }
-
   .live-radar-header {
     display: grid;
     grid-template-columns: auto auto minmax(0, 1fr) auto;
@@ -63,16 +59,6 @@
     justify-self: end;
   }
 
-  .live-radar-delay {
-    margin: 0;
-    border-bottom: 1px solid var(--signal-caution-border);
-    background: var(--signal-caution-soft);
-    color: var(--signal-caution);
-    padding: 7px 16px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-
   .live-radar-content {
     display: grid;
     min-width: 0;
@@ -95,13 +81,14 @@
   }
 
   .live-radar-item {
+    position: relative;
     box-sizing: border-box;
     height: 84px;
     min-width: 0;
     min-height: 84px;
     contain: strict;
     display: grid;
-    grid-template-columns: minmax(210px, 0.85fr) minmax(360px, 1.4fr) auto;
+    grid-template-columns: minmax(210px, 0.85fr) minmax(360px, 1.4fr) 126px;
     grid-template-areas:
       "identity market action"
       "evidence evidence action";
@@ -186,6 +173,8 @@
   }
 
   .live-radar-contract {
+    position: relative;
+    z-index: 2;
     grid-column: 1 / -1;
     min-width: 0;
     display: flex;
@@ -332,28 +321,42 @@
     color: var(--signal-negative);
   }
 
-  .live-radar-item > a {
-    grid-area: action;
-    align-self: center;
-    justify-self: end;
+  .live-radar-card-link {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    border-radius: inherit;
+    color: var(--accent-primary);
+    text-decoration: none;
+  }
+
+  .live-radar-card-link > span {
+    position: absolute;
+    top: 50%;
+    right: 16px;
     min-height: 32px;
     display: inline-flex;
     align-items: center;
     border: 1px solid var(--accent-border);
     border-radius: 4px;
     background: var(--accent-soft);
-    color: var(--accent-primary);
     padding: 7px 10px;
     font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1;
-    text-decoration: none;
+    transform: translateY(-50%);
     white-space: nowrap;
   }
 
-  .live-radar-item > a:hover,
-  .live-radar-item > a:focus-visible {
+  .live-radar-item:has(.live-radar-card-link:hover),
+  .live-radar-item:has(.live-radar-card-link:focus-visible) {
     border-color: var(--accent-primary);
+    background: var(--surface-panel);
+  }
+
+  .live-radar-card-link:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
   }
 
   .live-radar-item-evidence {
@@ -414,7 +417,7 @@
 
   @media (max-width: 900px) {
     .live-radar-header {
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) 118px;
       height: 68px;
       gap: 3px 8px;
       padding: 9px 10px;
@@ -454,6 +457,12 @@
         "evidence evidence";
       gap: 8px 10px;
       padding: 9px;
+    }
+
+    .live-radar-card-link > span {
+      top: 16px;
+      right: 9px;
+      transform: none;
     }
 
     .live-radar-icon {

@@ -213,7 +213,7 @@ def test_news_story_uses_a_dedicated_cpu_lane() -> None:
     assert components.news_story.heavy_db is database.heavy
     assert components.radar_current.cpu is short_cpu
     assert components.radar_current.db is database
-    assert components.radar_current.heavy_db is database.heavy
+    assert not hasattr(components.radar_current, "heavy_db")
     assert all(projection.cpu is short_cpu for projection in components.projections)
 
 
@@ -310,7 +310,7 @@ def test_rss_catalog_is_wired_only_when_explicitly_enabled(
     assert any(getattr(turn, "__self__", None) is components.news for turn, _idle in components.due_turns)
 
 
-def test_startup_reconcile_publishes_token_radar_before_competing_business_work() -> None:
+def test_startup_reconcile_excludes_token_radar_and_reconciles_other_business_work() -> None:
     calls: list[tuple[str, int | None]] = []
 
     class _Radar:
@@ -355,13 +355,12 @@ def test_startup_reconcile_publishes_token_radar_before_competing_business_work(
     asyncio.run(workers._reconcile_once(components))  # type: ignore[arg-type]
 
     assert [name for name, _value in calls] == [
-        "radar",
         "profile",
         "news",
         "push",
         "macro_projection",
     ]
-    assert calls[3][1] is not None
+    assert calls[2][1] is not None
 
 
 @pytest.mark.parametrize(

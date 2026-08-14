@@ -6,10 +6,12 @@ import styles from "./RouteBackLink.module.css";
 export function RouteBackLink({
   ariaLabel,
   label,
+  state,
   to,
 }: {
   ariaLabel: string;
   label: string;
+  state?: unknown;
   to: string;
 }) {
   const inRouter = useInRouterContext();
@@ -22,7 +24,7 @@ export function RouteBackLink({
 
   if (inRouter) {
     return (
-      <Link aria-label={ariaLabel} className={styles.link} to={to}>
+      <Link aria-label={ariaLabel} className={styles.link} state={state} to={to}>
         {content}
       </Link>
     );

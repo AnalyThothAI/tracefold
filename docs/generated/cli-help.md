@@ -215,10 +215,10 @@ options:
 
 ```
 usage: tracefold ops [-h]
-                     {seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,radar-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent} ...
+                     {seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent} ...
 
 positional arguments:
-  {seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,radar-status,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent}
+  {seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent}
     seal-workers-runtime-acceptance
                         validate and seal a complete Workers Runtime V2
                         acceptance bundle
@@ -228,7 +228,6 @@ positional arguments:
     rebuild-market-current
                         rebuild current market rows from persisted market tick
                         facts
-    radar-status        print compact Token Radar singleton status
     queue-inspect       inspect worker queue terminal evidence
     queue-resolve       resolve worker queue terminal evidence
     queue-resolve-bucket
@@ -307,16 +306,6 @@ options:
   --after-target-id AFTER_TARGET_ID
   --limit LIMIT
   --execute
-
-```
-
-## `ops radar-status`
-
-```
-usage: tracefold ops radar-status [-h]
-
-options:
-  -h, --help  show this help message and exit
 
 ```
 

@@ -13,8 +13,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import ProxyHandler, build_opener
 
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg import conninfo
@@ -23,14 +22,6 @@ from tracefold.app.database import WORKER_DATABASE_LOCK_TIMEOUT_SECONDS
 from tracefold.app.provider_ownership import gmgn_stream_enabled
 from tracefold.app.query_audit import query_audit_catalog, query_audit_for_connection
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
-from tracefold.market import (
-    TOKEN_RADAR_INPUT_BYTE_CAP,
-    TOKEN_RADAR_INPUT_ROW_CAP,
-    TOKEN_RADAR_LOAD_BUDGET_SECONDS,
-    TOKEN_RADAR_MAX_ITEMS,
-    TOKEN_RADAR_OUTPUT_BYTE_CAP,
-)
-from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
@@ -51,22 +42,8 @@ COLLECTION_FILE = "workers-runtime-collection.json"
 _HTTP_TIMEOUT_SECONDS = 1.0
 _MAX_PROBE_BYTES = 64 * 1024
 _MAX_METRICS_BYTES = 4 * 1024 * 1024
-_MAX_TOKEN_RADAR_API_BYTES = TOKEN_RADAR_OUTPUT_BYTE_CAP + 4 * 1024
-_TOKEN_RADAR_API_UNCONDITIONAL_P95_MS = 100.0
-_TOKEN_RADAR_API_CONDITIONAL_P95_MS = 50.0
-_TOKEN_RADAR_API_MAX_BYTES = TOKEN_RADAR_OUTPUT_BYTE_CAP
-_TOKEN_RADAR_WORKER = "token_radar_current"
-_TOKEN_RADAR_RELEASE_INTERVAL_SECONDS = 30.0
-_TOKEN_RADAR_MAX_LAST_RUN_AGE_SECONDS = _TOKEN_RADAR_RELEASE_INTERVAL_SECONDS + 5.0
-_TOKEN_RADAR_MIN_INTERVAL_TURNS = int(COLLECTION_DURATION_SECONDS // _TOKEN_RADAR_RELEASE_INTERVAL_SECONDS) - 1
-_TOKEN_RADAR_MAX_INTERVAL_TURNS = math.ceil(COLLECTION_DURATION_SECONDS / _TOKEN_RADAR_RELEASE_INTERVAL_SECONDS) + 1
-_TOKEN_RADAR_SUCCESS_STATUSES = frozenset({"published", "unchanged", "recovered"})
-_TOKEN_RADAR_JOB_STATUSES = _TOKEN_RADAR_SUCCESS_STATUSES | {"failed", "stale_skipped"}
 _MAX_RSS_BYTES = 2 * 1024 * 1024 * 1024
-_MAX_TRANSACTION_SECONDS = max(
-    NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
-    TOKEN_RADAR_LOAD_BUDGET_SECONDS,
-)
+_MAX_TRANSACTION_SECONDS = NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IPV4_ANY = ".".join(("0", "0", "0", "0"))
@@ -79,7 +56,7 @@ _RESOURCE_CAPS = {
     "cpu_process": 2.0,
 }
 _DOMAINS = tuple(spec.domain for spec in FRONTIER_SPECS)
-_DEADLINE_DOMAINS = ("radar", *_DOMAINS)
+_DEADLINE_DOMAINS = _DOMAINS
 _FRONTIER_TABLES = {spec.domain: spec.table for spec in FRONTIER_SPECS}
 _REQUIRED_METRIC_FAMILIES = {
     "tracefold_worker_projection_deadline_misses",
@@ -397,9 +374,6 @@ class _ProductionSampler:
 
     def read_sample(self, sequence: int) -> dict[str, Any]:
         probe, probe_rtt_ms = self._read_probe()
-        token_radar_database_before = self._read_token_radar_database_state()
-        token_radar_api = self._read_token_radar_api()
-        token_radar_database_after = self._read_token_radar_database_state()
         metrics_text, metrics_attempts = self._read_worker_metrics()
         container = self._read_container(probe_process_id=int(probe.get("process_id") or 0))
         serve_container = self._read_serve_container()
@@ -429,11 +403,6 @@ class _ProductionSampler:
             "container": container,
             "serve_container": serve_container,
             "postgres": postgres,
-            "token_radar_api": token_radar_api,
-            "token_radar_database": {
-                "before": token_radar_database_before,
-                "after": token_radar_database_after,
-            },
             "telemetry": {
                 **_parse_worker_metrics(metrics_text),
             },
@@ -485,110 +454,6 @@ class _ProductionSampler:
             return payload.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise _SampleFailure(f"{stage}_encoding", exc) from exc
-
-    def _read_token_radar_api(self) -> dict[str, Any]:
-        token = str(self._settings.ws_token or "").strip()
-        if not token:
-            raise _SampleFailure("token_radar_api_auth_token")
-        url = f"{self._serve_api_url}/api/token-radar"
-        unconditional = self._read_token_radar_response(
-            Request(  # noqa: S310 -- fixed loopback HTTP scheme with config-validated port
-                url,
-                headers={"Authorization": f"Bearer {token}"},
-            ),
-            stage="token_radar_api_unconditional",
-        )
-        if unconditional["status"] != 200:
-            raise _SampleFailure("token_radar_api_unconditional_status")
-        etag = str(unconditional["headers"].get("etag") or "").strip()
-        if not etag:
-            raise _SampleFailure("token_radar_api_etag")
-        try:
-            payload = json.loads(unconditional["payload"])
-        except json.JSONDecodeError as exc:
-            raise _SampleFailure("token_radar_api_unconditional_json", exc) from exc
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            raise _SampleFailure("token_radar_api_unconditional_payload")
-        data = payload.get("data")
-        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
-            raise _SampleFailure("token_radar_api_unconditional_payload")
-        encoded_data = _canonical_token_radar_data(data)
-        data_sha256 = hashlib.sha256(encoded_data).hexdigest()
-        if etag != f'"{data_sha256}"':
-            raise _SampleFailure("token_radar_api_etag_payload_mismatch")
-        conditional = self._read_token_radar_response(
-            Request(  # noqa: S310 -- fixed loopback HTTP scheme with config-validated port
-                url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "If-None-Match": etag,
-                },
-            ),
-            stage="token_radar_api_conditional",
-        )
-        if conditional["status"] != 304:
-            raise _SampleFailure("token_radar_api_conditional_status")
-        conditional_etag = str(conditional["headers"].get("etag") or "").strip()
-        if conditional_etag != etag:
-            raise _SampleFailure("token_radar_api_conditional_etag")
-        return {
-            "unconditional": {
-                "status": 200,
-                "latency_ms": unconditional["latency_ms"],
-                "bytes": len(unconditional["payload"]),
-                "data_bytes": len(encoded_data),
-                "items": len(data["items"]),
-                "etag_sha256": hashlib.sha256(etag.encode("utf-8")).hexdigest(),
-                "data_sha256": data_sha256,
-            },
-            "conditional": {
-                "status": 304,
-                "latency_ms": conditional["latency_ms"],
-                "bytes": len(conditional["payload"]),
-                "etag_sha256": hashlib.sha256(conditional_etag.encode("utf-8")).hexdigest(),
-            },
-        }
-
-    def _read_token_radar_database_state(self) -> dict[str, Any]:
-        try:
-            payload = TokenRadarCurrentRepository(self._conn).served_snapshot()
-        except BaseException as exc:
-            raise _SampleFailure("token_radar_database", exc) from exc
-        if not isinstance(payload.get("items"), list):
-            raise _SampleFailure("token_radar_database_payload")
-        encoded = _canonical_token_radar_data(payload)
-        return {
-            "data_sha256": hashlib.sha256(encoded).hexdigest(),
-            "items": len(payload["items"]),
-        }
-
-    @staticmethod
-    def _read_token_radar_response(request: Request, *, stage: str) -> dict[str, Any]:
-        started = time.monotonic()
-        response: Any
-        try:
-            response = _LOOPBACK_HTTP.open(request, timeout=_HTTP_TIMEOUT_SECONDS)
-        except HTTPError as exc:
-            response = exc
-        except BaseException as exc:
-            raise _SampleFailure(stage, exc) from exc
-        try:
-            payload = response.read(_MAX_TOKEN_RADAR_API_BYTES + 1)
-            raw_status = getattr(response, "status", None)
-            status = int(raw_status if raw_status is not None else response.getcode())
-            headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
-        except BaseException as exc:
-            raise _SampleFailure(stage, exc) from exc
-        finally:
-            response.close()
-        if len(payload) > _MAX_TOKEN_RADAR_API_BYTES:
-            raise _SampleFailure(f"{stage}_oversized")
-        return {
-            "status": status,
-            "headers": headers,
-            "payload": payload,
-            "latency_ms": (time.monotonic() - started) * 1_000,
-        }
 
     def _read_container(self, *, probe_process_id: int) -> dict[str, Any]:
         container = self._read_compose_container("workers")
@@ -873,23 +738,7 @@ def _validate_sample(
     if _nonnegative_float(probe.get("probe_rtt_ms"), stage="worker_probe_latency") > 1_000:
         raise _SampleFailure("worker_probe_latency")
 
-    token_radar_api = _mapping(sample, "token_radar_api", stage="token_radar_api")
-    _validate_token_radar_api(token_radar_api)
-    _validate_token_radar_database_binding(
-        token_radar_api,
-        _mapping(sample, "token_radar_database", stage="token_radar_database"),
-    )
     telemetry = _mapping(sample, "telemetry", stage="worker_telemetry")
-    _validate_token_radar_runtime_metrics(telemetry, at_ms=at_ms)
-    if previous is not None:
-        previous_telemetry = _mapping(previous, "telemetry", stage="previous_worker_telemetry")
-        current_last_run = _token_radar_last_run(telemetry, at_ms=at_ms)["timestamp_seconds"]
-        previous_last_run = _token_radar_last_run(
-            previous_telemetry,
-            at_ms=_nonnegative_int(previous.get("at_ms"), stage="previous_sample_time"),
-        )["timestamp_seconds"]
-        if current_last_run < previous_last_run:
-            raise _SampleFailure("token_radar_last_run_regressed")
 
     container = _mapping(sample, "container", stage="workers_container_payload")
     if container.get("running") is not True:
@@ -1025,8 +874,6 @@ def _validate_sample(
     previous_telemetry = (
         _mapping(previous, "telemetry", stage="previous_worker_telemetry") if previous is not None else None
     )
-    if previous_telemetry is not None:
-        _validate_token_radar_sample_progress(telemetry, previous=previous_telemetry)
     _validate_telemetry(telemetry, previous=previous_telemetry)
 
 
@@ -1156,7 +1003,6 @@ def _validate_telemetry(
     resources = {key: _validate_resource_metric_rows(telemetry.get(key), key=key) for key in _RESOURCE_METRIC_NAMES}
     processing = _validate_processing_metric_rows(telemetry.get("processing_seconds"))
     jobs = _validate_job_metric_rows(telemetry.get("jobs_total"))
-    _validate_token_radar_metric_presence(processing, jobs)
     if previous is None:
         return
 
@@ -1357,182 +1203,6 @@ def _validate_job_metric_rows(raw_rows: Any) -> dict[tuple[str, str], float]:
     return rows
 
 
-def _validate_token_radar_metric_presence(
-    processing: Mapping[str, Mapping[str, Any]],
-    jobs: Mapping[tuple[str, str], float],
-) -> None:
-    radar_processing = processing.get(_TOKEN_RADAR_WORKER)
-    if radar_processing is None:
-        raise _SampleFailure("token_radar_processing_required")
-    required_boundaries = {"2.0", "8.0", "12.0", "+Inf"}
-    if not required_boundaries.issubset(radar_processing["buckets"]):
-        raise _SampleFailure("token_radar_processing_boundaries")
-    if any(worker == _TOKEN_RADAR_WORKER and status not in _TOKEN_RADAR_JOB_STATUSES for worker, status in jobs):
-        raise _SampleFailure("token_radar_job_status")
-
-
-def _validate_token_radar_api(api: dict[str, Any]) -> None:
-    if set(api) != {"unconditional", "conditional"}:
-        raise _SampleFailure("token_radar_api_shape")
-    unconditional = _mapping(api, "unconditional", stage="token_radar_api_unconditional")
-    conditional = _mapping(api, "conditional", stage="token_radar_api_conditional")
-    if set(unconditional) != {
-        "status",
-        "latency_ms",
-        "bytes",
-        "data_bytes",
-        "items",
-        "etag_sha256",
-        "data_sha256",
-    }:
-        raise _SampleFailure("token_radar_api_unconditional_shape")
-    if set(conditional) != {"status", "latency_ms", "bytes", "etag_sha256"}:
-        raise _SampleFailure("token_radar_api_conditional_shape")
-    if unconditional.get("status") != 200:
-        raise _SampleFailure("token_radar_api_unconditional_status")
-    if conditional.get("status") != 304:
-        raise _SampleFailure("token_radar_api_conditional_status")
-    for name, response in (("unconditional", unconditional), ("conditional", conditional)):
-        _nonnegative_float(response.get("latency_ms"), stage=f"token_radar_api_{name}_latency")
-        _nonnegative_int(response.get("bytes"), stage=f"token_radar_api_{name}_bytes")
-        etag = str(response.get("etag_sha256") or "")
-        if not _SHA256_PATTERN.fullmatch(etag):
-            raise _SampleFailure(f"token_radar_api_{name}_etag")
-    items = _nonnegative_int(unconditional.get("items"), stage="token_radar_api_unconditional_items")
-    _nonnegative_int(unconditional.get("data_bytes"), stage="token_radar_api_unconditional_data_bytes")
-    if items > TOKEN_RADAR_MAX_ITEMS:
-        raise _SampleFailure("token_radar_api_item_cap")
-    if not _SHA256_PATTERN.fullmatch(str(unconditional.get("data_sha256") or "")):
-        raise _SampleFailure("token_radar_api_unconditional_data_sha256")
-    if unconditional["etag_sha256"] != conditional["etag_sha256"]:
-        raise _SampleFailure("token_radar_api_conditional_etag")
-
-
-def _validate_token_radar_database_binding(
-    api: Mapping[str, Any],
-    database: Mapping[str, Any],
-) -> None:
-    if set(database) != {"before", "after"}:
-        raise _SampleFailure("token_radar_database_shape")
-    states: list[tuple[str, int]] = []
-    for position in ("before", "after"):
-        state = _mapping(database, position, stage=f"token_radar_database_{position}")
-        if set(state) != {"data_sha256", "items"}:
-            raise _SampleFailure(f"token_radar_database_{position}_shape")
-        data_sha256 = str(state.get("data_sha256") or "")
-        if not _SHA256_PATTERN.fullmatch(data_sha256):
-            raise _SampleFailure(f"token_radar_database_{position}_data_sha256")
-        items = _nonnegative_int(
-            state.get("items"),
-            stage=f"token_radar_database_{position}_items",
-        )
-        if items > TOKEN_RADAR_MAX_ITEMS:
-            raise _SampleFailure("token_radar_database_item_cap")
-        states.append((data_sha256, items))
-    unconditional = _mapping(api, "unconditional", stage="token_radar_api_unconditional")
-    api_state = (
-        str(unconditional.get("data_sha256") or ""),
-        _nonnegative_int(
-            unconditional.get("items"),
-            stage="token_radar_api_unconditional_items",
-        ),
-    )
-    if api_state not in states:
-        raise _SampleFailure("token_radar_api_database_mismatch")
-
-
-def _validate_token_radar_runtime_metrics(telemetry: Mapping[str, Any], *, at_ms: int) -> None:
-    last_run = _token_radar_last_run(telemetry, at_ms=at_ms)
-    if last_run["age_seconds"] > _TOKEN_RADAR_MAX_LAST_RUN_AGE_SECONDS:
-        raise _SampleFailure("token_radar_last_run_stale")
-    workload = _token_radar_workload(telemetry)
-    if workload["input_rows"] > TOKEN_RADAR_INPUT_ROW_CAP:
-        raise _SampleFailure("token_radar_input_row_cap")
-    if workload["public_rows"] > TOKEN_RADAR_MAX_ITEMS:
-        raise _SampleFailure("token_radar_public_row_cap")
-    if workload["public_rows"] > workload["eligible_rows"]:
-        raise _SampleFailure("token_radar_public_eligible_mismatch")
-    if workload["input_bytes"] > TOKEN_RADAR_INPUT_BYTE_CAP:
-        raise _SampleFailure("token_radar_input_byte_cap")
-    if workload["output_bytes"] > TOKEN_RADAR_OUTPUT_BYTE_CAP:
-        raise _SampleFailure("token_radar_output_byte_cap")
-
-
-def _validate_token_radar_sample_progress(
-    telemetry: Mapping[str, Any],
-    *,
-    previous: Mapping[str, Any],
-) -> None:
-    current_processing = _validate_processing_metric_rows(telemetry.get("processing_seconds"))
-    previous_processing = _validate_processing_metric_rows(previous.get("processing_seconds"))
-    current_jobs = _validate_job_metric_rows(telemetry.get("jobs_total"))
-    previous_jobs = _validate_job_metric_rows(previous.get("jobs_total"))
-    _validate_token_radar_metric_presence(current_processing, current_jobs)
-    _validate_token_radar_metric_presence(previous_processing, previous_jobs)
-    processing_delta = int(
-        current_processing[_TOKEN_RADAR_WORKER]["count"] - previous_processing[_TOKEN_RADAR_WORKER]["count"]
-    )
-    if not 0 <= processing_delta <= 1:
-        raise _SampleFailure("token_radar_sample_cadence_invalid")
-    terminal_delta = sum(
-        int(
-            current_jobs.get((_TOKEN_RADAR_WORKER, status), 0.0) - previous_jobs.get((_TOKEN_RADAR_WORKER, status), 0.0)
-        )
-        for status in _TOKEN_RADAR_JOB_STATUSES
-    )
-    if terminal_delta != processing_delta:
-        raise _SampleFailure("token_radar_processing_jobs_count_mismatch")
-
-
-def _token_radar_last_run(telemetry: Mapping[str, Any], *, at_ms: int) -> dict[str, float]:
-    rows = _mapping(telemetry, "last_run_timestamp_seconds", stage="worker_last_run_timestamp")
-    timestamp = _nonnegative_float(rows.get(_TOKEN_RADAR_WORKER), stage="token_radar_last_run_timestamp")
-    age_seconds = at_ms / 1_000 - timestamp
-    if age_seconds < 0:
-        raise _SampleFailure("token_radar_last_run_clock")
-    return {"timestamp_seconds": timestamp, "age_seconds": age_seconds}
-
-
-def _token_radar_workload(telemetry: Mapping[str, Any]) -> dict[str, int]:
-    row_values: dict[str, int] = {}
-    for raw in telemetry.get("projection_rows") or []:
-        if not isinstance(raw, Mapping):
-            raise _SampleFailure("token_radar_workload_rows")
-        labels = _mapping(dict(raw), "labels", stage="token_radar_workload_row_labels")
-        if labels.get("worker") != _TOKEN_RADAR_WORKER:
-            continue
-        stage = str(labels.get("stage") or "")
-        if stage not in {"input", "eligible", "public"} or stage in row_values:
-            raise _SampleFailure("token_radar_workload_row_labels")
-        row_values[stage] = _nonnegative_int(raw.get("value"), stage=f"token_radar_{stage}_rows")
-    if set(row_values) != {"input", "eligible", "public"}:
-        raise _SampleFailure("token_radar_workload_rows_required")
-
-    byte_values: dict[str, int] = {}
-    for raw in telemetry.get("projection_bytes") or []:
-        if not isinstance(raw, Mapping):
-            raise _SampleFailure("token_radar_workload_bytes")
-        labels = _mapping(dict(raw), "labels", stage="token_radar_workload_byte_labels")
-        if labels.get("worker") != _TOKEN_RADAR_WORKER:
-            continue
-        direction = str(labels.get("direction") or "")
-        if direction not in {"input", "output"} or direction in byte_values:
-            raise _SampleFailure("token_radar_workload_byte_labels")
-        byte_values[direction] = _nonnegative_int(
-            raw.get("value"),
-            stage=f"token_radar_{direction}_bytes",
-        )
-    if set(byte_values) != {"input", "output"}:
-        raise _SampleFailure("token_radar_workload_bytes_required")
-    return {
-        "input_rows": row_values["input"],
-        "eligible_rows": row_values["eligible"],
-        "public_rows": row_values["public"],
-        "input_bytes": byte_values["input"],
-        "output_bytes": byte_values["output"],
-    }
-
-
 def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
     if len(samples) != EXPECTED_SAMPLE_COUNT:
         raise _SampleFailure("sample_count")
@@ -1545,7 +1215,6 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
     containers = [_mapping(sample, "container", stage="workers_container_payload") for sample in samples]
     serve_containers = [_mapping(sample, "serve_container", stage="serve_container_payload") for sample in samples]
     postgres_samples = [_mapping(sample, "postgres", stage="postgres_payload") for sample in samples]
-    token_radar_api_samples = [_mapping(sample, "token_radar_api", stage="token_radar_api") for sample in samples]
     telemetry_samples = [_mapping(sample, "telemetry", stage="worker_telemetry") for sample in samples]
 
     runtime_ids = {str(probe.get("runtime_id") or "") for probe in probes}
@@ -1600,14 +1269,6 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
     query_audit = _query_audit_summary(_mapping(postgres_samples[0], "query_audit", stage="postgres_query_audit"))
     capacity = _capacity_summary(first, last, duration_ms=duration_ms)
-    token_radar = _token_radar_interval_summary(
-        telemetry_samples[0],
-        telemetry_samples[-1],
-        telemetry_samples=telemetry_samples,
-        sample_times_ms=[int(sample["at_ms"]) for sample in samples],
-    )
-    token_radar_api = _token_radar_api_summary(token_radar_api_samples)
-
     checks = {
         "duration_at_least_1800_seconds": duration_seconds >= COLLECTION_DURATION_SECONDS,
         "sample_count_exact": len(samples) == EXPECTED_SAMPLE_COUNT,
@@ -1636,29 +1297,6 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
         <= _MAX_TRANSACTION_SECONDS,
         "postgres_query_audit_passed": bool(query_audit["ok"]),
         "deadline_counter_delta_zero": deadline_end - deadline_start == 0,
-        "token_radar_successful_turn_observed": token_radar["successful_turn_count"] > 0,
-        "token_radar_turn_cadence_complete": (
-            _TOKEN_RADAR_MIN_INTERVAL_TURNS <= token_radar["processing_count_delta"] <= _TOKEN_RADAR_MAX_INTERVAL_TURNS
-            and token_radar["max_last_run_age_seconds"] <= _TOKEN_RADAR_MAX_LAST_RUN_AGE_SECONDS
-        ),
-        "token_radar_workload_bound_to_every_turn": (
-            token_radar["observed_turn_workload_count"] == token_radar["processing_count_delta"]
-        ),
-        "token_radar_representative_input_observed": token_radar["max_input_rows"] > 0,
-        "token_radar_failed_turns_zero": token_radar["failed_turn_count"] == 0,
-        "token_radar_stale_skipped_turns_zero": token_radar["stale_skipped_turn_count"] == 0,
-        "token_radar_processing_p95_at_most_8_seconds": token_radar["processing_p95_upper_bound_seconds"] <= 8.0,
-        "token_radar_processing_all_at_most_12_seconds": token_radar["processing_maximum_upper_bound_seconds"] <= 12.0,
-        "token_radar_deadline_delta_zero": token_radar["deadline_miss_delta"] == 0,
-        "token_radar_api_unconditional_p95_at_most_100_ms": (
-            token_radar_api["unconditional_p95_ms"] <= _TOKEN_RADAR_API_UNCONDITIONAL_P95_MS
-        ),
-        "token_radar_api_conditional_p95_at_most_50_ms": (
-            token_radar_api["conditional_p95_ms"] <= _TOKEN_RADAR_API_CONDITIONAL_P95_MS
-        ),
-        "token_radar_api_uncompressed_bytes_at_most_96_kib": (
-            token_radar_api["max_data_bytes"] <= _TOKEN_RADAR_API_MAX_BYTES
-        ),
         "unresolved_deadline_misses_zero": all(
             int(frontier["unresolved_deadline_misses"]) == 0
             for row in postgres_samples
@@ -1716,8 +1354,6 @@ def _summarize(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "counter_delta": deadline_end - deadline_start,
             "unresolved_end": _unresolved_total(postgres_samples[-1], "unresolved_deadline_misses"),
         },
-        "token_radar": token_radar,
-        "token_radar_api": token_radar_api,
         "unresolved_projection_quarantine": _unresolved_total(
             postgres_samples[-1],
             "unresolved_quarantine",
@@ -1746,146 +1382,6 @@ def _query_audit_summary(audit: dict[str, Any]) -> dict[str, Any]:
             ).encode("utf-8")
         ).hexdigest(),
     }
-
-
-def _token_radar_interval_summary(
-    first: Mapping[str, Any],
-    last: Mapping[str, Any],
-    *,
-    telemetry_samples: list[dict[str, Any]],
-    sample_times_ms: list[int],
-) -> dict[str, Any]:
-    first_processing = _validate_processing_metric_rows(first.get("processing_seconds"))
-    last_processing = _validate_processing_metric_rows(last.get("processing_seconds"))
-    first_jobs = _validate_job_metric_rows(first.get("jobs_total"))
-    last_jobs = _validate_job_metric_rows(last.get("jobs_total"))
-    _validate_token_radar_metric_presence(first_processing, first_jobs)
-    _validate_token_radar_metric_presence(last_processing, last_jobs)
-    start = first_processing[_TOKEN_RADAR_WORKER]
-    end = last_processing[_TOKEN_RADAR_WORKER]
-    count_delta = int(end["count"] - start["count"])
-    if count_delta < 0:
-        raise _SampleFailure("token_radar_processing_counter_regressed")
-    bucket_deltas = {
-        boundary: value - start["buckets"][boundary]
-        for boundary, value in end["buckets"].items()
-        if boundary in start["buckets"]
-    }
-    if set(bucket_deltas) != set(end["buckets"]):
-        raise _SampleFailure("token_radar_processing_series_disappeared")
-    if any(value < 0 for value in bucket_deltas.values()):
-        raise _SampleFailure("token_radar_processing_counter_regressed")
-    if bucket_deltas["+Inf"] != count_delta:
-        raise _SampleFailure("token_radar_processing_count_mismatch")
-    p95_rank = math.ceil(count_delta * 0.95)
-    finite_buckets = sorted((float(boundary), count) for boundary, count in bucket_deltas.items() if boundary != "+Inf")
-    p95_upper_bound = next((boundary for boundary, count in finite_buckets if count >= p95_rank), math.inf)
-    maximum_upper_bound = next((boundary for boundary, count in finite_buckets if count == count_delta), math.inf)
-    successful_turn_count = sum(
-        int(last_jobs.get((_TOKEN_RADAR_WORKER, status), 0.0) - first_jobs.get((_TOKEN_RADAR_WORKER, status), 0.0))
-        for status in _TOKEN_RADAR_SUCCESS_STATUSES
-    )
-    failed_turn_count = int(
-        last_jobs.get((_TOKEN_RADAR_WORKER, "failed"), 0.0) - first_jobs.get((_TOKEN_RADAR_WORKER, "failed"), 0.0)
-    )
-    stale_skipped_turn_count = int(
-        last_jobs.get((_TOKEN_RADAR_WORKER, "stale_skipped"), 0.0)
-        - first_jobs.get((_TOKEN_RADAR_WORKER, "stale_skipped"), 0.0)
-    )
-    if successful_turn_count < 0 or failed_turn_count < 0 or stale_skipped_turn_count < 0:
-        raise _SampleFailure("token_radar_jobs_counter_regressed")
-    terminal_count_delta = successful_turn_count + failed_turn_count + stale_skipped_turn_count
-    if terminal_count_delta != count_delta:
-        raise _SampleFailure("token_radar_processing_jobs_count_mismatch")
-    deadline_start = _counter_domain_values(
-        first,
-        "projection_deadline_misses_total",
-        stage="projection_deadline_metrics",
-        domains=_DEADLINE_DOMAINS,
-    )["radar"]
-    deadline_end = _counter_domain_values(
-        last,
-        "projection_deadline_misses_total",
-        stage="projection_deadline_metrics",
-        domains=_DEADLINE_DOMAINS,
-    )["radar"]
-    last_runs = [
-        _token_radar_last_run(telemetry, at_ms=at_ms)
-        for telemetry, at_ms in zip(telemetry_samples, sample_times_ms, strict=True)
-    ]
-    observed_turn_workloads = [
-        _token_radar_workload(current)
-        for previous, current in pairwise(telemetry_samples)
-        if _token_radar_processing_count(current) > _token_radar_processing_count(previous)
-    ]
-    workload_maxima = {
-        key: max((item[key] for item in observed_turn_workloads), default=0)
-        for key in (
-            "input_rows",
-            "eligible_rows",
-            "public_rows",
-            "input_bytes",
-            "output_bytes",
-        )
-    }
-    return {
-        "processing_count_delta": count_delta,
-        "processing_p95_upper_bound_seconds": p95_upper_bound,
-        "processing_maximum_upper_bound_seconds": maximum_upper_bound,
-        "successful_turn_count": successful_turn_count,
-        "failed_turn_count": failed_turn_count,
-        "stale_skipped_turn_count": stale_skipped_turn_count,
-        "terminal_count_delta": terminal_count_delta,
-        "deadline_miss_delta": deadline_end - deadline_start,
-        "minimum_required_turns": _TOKEN_RADAR_MIN_INTERVAL_TURNS,
-        "maximum_allowed_turns": _TOKEN_RADAR_MAX_INTERVAL_TURNS,
-        "max_last_run_age_seconds": max(item["age_seconds"] for item in last_runs),
-        "observed_turn_workload_count": len(observed_turn_workloads),
-        **{f"max_{key}": value for key, value in workload_maxima.items()},
-    }
-
-
-def _token_radar_processing_count(telemetry: Mapping[str, Any]) -> int:
-    processing = _validate_processing_metric_rows(telemetry.get("processing_seconds"))
-    _validate_token_radar_metric_presence(
-        processing,
-        _validate_job_metric_rows(telemetry.get("jobs_total")),
-    )
-    return int(processing[_TOKEN_RADAR_WORKER]["count"])
-
-
-def _token_radar_api_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    unconditional = []
-    conditional = []
-    bytes_values = []
-    data_bytes_values = []
-    items_values = []
-    for sample in samples:
-        _validate_token_radar_api(sample)
-        first = _mapping(sample, "unconditional", stage="token_radar_api_unconditional")
-        second = _mapping(sample, "conditional", stage="token_radar_api_conditional")
-        unconditional.append(float(first["latency_ms"]))
-        conditional.append(float(second["latency_ms"]))
-        bytes_values.append(int(first["bytes"]))
-        data_bytes_values.append(int(first["data_bytes"]))
-        items_values.append(int(first["items"]))
-    return {
-        "unconditional_p95_ms": _nearest_rank_p95(unconditional),
-        "conditional_p95_ms": _nearest_rank_p95(conditional),
-        "max_unconditional_bytes": max(bytes_values),
-        "max_data_bytes": max(data_bytes_values),
-        "max_conditional_bytes": max(
-            int(_mapping(sample, "conditional", stage="token_radar_api_conditional")["bytes"]) for sample in samples
-        ),
-        "min_items": min(items_values),
-        "max_items": max(items_values),
-    }
-
-
-def _nearest_rank_p95(values: list[float]) -> float:
-    if not values:
-        raise _SampleFailure("token_radar_api_latency_required")
-    return sorted(values)[math.ceil(len(values) * 0.95) - 1]
 
 
 def _resource_metric_summary(
@@ -2316,15 +1812,6 @@ def _failure(stage: str, exc: BaseException | None) -> dict[str, Any]:
 
 def _json_line(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
-
-
-def _canonical_token_radar_data(payload: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        dict(payload),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
 
 
 def _write_json_exclusive(path: Path, payload: Any) -> None:

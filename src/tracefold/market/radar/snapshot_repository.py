@@ -92,8 +92,7 @@ class TokenRadarCurrentRepository:
     def served_snapshot(self) -> dict[str, Any]:
         row = self.conn.execute(
             """
-            SELECT state_fingerprint, latest_attempt_status, latest_error_code,
-                   state_changed_at_ms, served_payload
+            SELECT served_payload
               FROM token_radar_current
              WHERE singleton_key = true
             """
@@ -106,14 +105,12 @@ class TokenRadarCurrentRepository:
         self,
         reduced: ReducedTokenRadar,
         *,
-        evaluation_at_ms: int,
+        updated_at_ms: int,
     ) -> TokenRadarPublicationResult:
         require_transaction(self.conn, operation="publish_token_radar_current")
         current = self.conn.execute(
             """
-            SELECT ruleset_version, ruleset_fingerprint, state_fingerprint,
-                   latest_attempt_status, latest_error_code, evaluation_at_ms,
-                   state_changed_at_ms
+            SELECT snapshot_fingerprint
               FROM token_radar_current
              WHERE singleton_key = true
              FOR UPDATE
@@ -121,144 +118,27 @@ class TokenRadarCurrentRepository:
         ).fetchone()
         if current is None:
             raise RuntimeError("token_radar_current_singleton_missing")
-        if int(current["evaluation_at_ms"]) > int(evaluation_at_ms):
-            return {"status": "stale_skipped", "rows_written": 0}
-        state_unchanged = current.get("state_fingerprint") == reduced.state_fingerprint
-        semantics_unchanged = (
-            current.get("ruleset_version") == reduced.ruleset_version
-            and current.get("ruleset_fingerprint") == reduced.ruleset_fingerprint
-        )
-        if state_unchanged and semantics_unchanged and str(current["latest_attempt_status"]) == "ready":
+        if current.get("snapshot_fingerprint") == reduced.snapshot_fingerprint:
             return {"status": "unchanged", "rows_written": 0}
-        current_public_state = _public_state_key(current)
-        state_changed_at_ms = (
-            int(current["state_changed_at_ms"]) if current_public_state == ("current", None) else int(evaluation_at_ms)
-        )
-        if state_unchanged and semantics_unchanged:
-            cursor = self.conn.execute(
-                """
-                UPDATE token_radar_current
-                   SET input_fingerprint = %s,
-                       evaluation_at_ms = %s,
-                       input_rows = %s,
-                       input_bytes = %s,
-                       latest_attempt_status = 'ready',
-                       latest_error_code = NULL,
-                       state_changed_at_ms = %s,
-                       updated_at_ms = %s
-                 WHERE singleton_key = true
-                   AND evaluation_at_ms <= %s
-                   AND latest_attempt_status = 'failed'
-                """,
-                (
-                    reduced.input_fingerprint,
-                    int(evaluation_at_ms),
-                    int(reduced.input_rows),
-                    int(reduced.input_bytes),
-                    state_changed_at_ms,
-                    int(evaluation_at_ms),
-                    int(evaluation_at_ms),
-                ),
-            )
-            changed = mutation_count(cursor, error_code="token_radar_current_recovery_count_invalid")
-            return {
-                "status": "recovered" if changed else "stale_skipped",
-                "rows_written": changed,
-            }
         cursor = self.conn.execute(
             """
             UPDATE token_radar_current
-               SET schema_version = %s,
-                   ruleset_version = %s,
-                   ruleset_fingerprint = %s,
-                   input_fingerprint = %s,
-                   state_fingerprint = %s,
-                   evidence_as_of_ms = %s,
-                   evaluation_at_ms = %s,
-                   input_rows = %s,
-                   input_bytes = %s,
-                   latest_attempt_status = 'ready',
-                   latest_error_code = NULL,
+               SET snapshot_fingerprint = %s,
                    served_payload = %s,
-                   state_changed_at_ms = %s,
                    updated_at_ms = %s
              WHERE singleton_key = true
-               AND evaluation_at_ms <= %s
             """,
             (
-                TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
-                reduced.ruleset_version,
-                reduced.ruleset_fingerprint,
-                reduced.input_fingerprint,
-                reduced.state_fingerprint,
-                int(reduced.snapshot["social_evidence_as_of_ms"]),
-                int(evaluation_at_ms),
-                int(reduced.input_rows),
-                int(reduced.input_bytes),
+                reduced.snapshot_fingerprint,
                 Jsonb(reduced.snapshot),
-                state_changed_at_ms,
-                int(evaluation_at_ms),
-                int(evaluation_at_ms),
+                int(updated_at_ms),
             ),
         )
         changed = mutation_count(cursor, error_code="token_radar_current_publish_count_invalid")
         return {
-            "status": "published" if changed else "stale_skipped",
+            "status": "published",
             "rows_written": changed,
         }
-
-    def record_failure(self, *, error_code: str, evaluation_at_ms: int) -> int:
-        require_transaction(self.conn, operation="fail_token_radar_current")
-        code = str(error_code).strip()
-        if not code:
-            raise ValueError("token_radar_failure_code_required")
-        current = self.conn.execute(
-            """
-            SELECT state_fingerprint, latest_attempt_status, latest_error_code,
-                   evaluation_at_ms, state_changed_at_ms
-              FROM token_radar_current
-             WHERE singleton_key = true
-             FOR UPDATE
-            """
-        ).fetchone()
-        if current is None:
-            raise RuntimeError("token_radar_current_singleton_missing")
-        if int(current["evaluation_at_ms"]) > int(evaluation_at_ms):
-            return 0
-        current_public_state = _public_state_key(current)
-        failed_public_state = (
-            ("stale", _public_failure_reason(code))
-            if current.get("state_fingerprint") is not None
-            else ("unavailable", None)
-        )
-        if str(current["latest_attempt_status"]) == "failed" and current_public_state == failed_public_state:
-            return 0
-        state_changed_at_ms = (
-            int(evaluation_at_ms)
-            if current_public_state != failed_public_state
-            else int(current["state_changed_at_ms"])
-        )
-        cursor = self.conn.execute(
-            """
-            UPDATE token_radar_current
-               SET evaluation_at_ms = %s,
-                   latest_attempt_status = 'failed',
-                   latest_error_code = %s,
-                   failure_count = failure_count + 1,
-                   state_changed_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE singleton_key = true
-               AND evaluation_at_ms <= %s
-            """,
-            (
-                int(evaluation_at_ms),
-                code,
-                state_changed_at_ms,
-                int(evaluation_at_ms),
-                int(evaluation_at_ms),
-            ),
-        )
-        return mutation_count(cursor, error_code="token_radar_current_failure_count_invalid")
 
 
 def _material_revision(row: Any) -> RadarEvidenceRevision:
@@ -490,43 +370,12 @@ def _served_data(row: Any) -> dict[str, Any]:
         raise RuntimeError("token_radar_current_payload_invalid")
     if payload.get("schema_version") != TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION:
         raise RuntimeError("token_radar_current_schema_invalid")
-
-    state, stale_reason = _public_state_key(row)
-    business: dict[str, Any]
-    if state == "unavailable":
-        business = {
-            "schema_version": TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
-            "social_evidence_as_of_ms": 0,
-            "eligible_total": 0,
-            "items": [],
-        }
-    else:
-        business = payload
-
     return {
         "schema_version": TOKEN_RADAR_SNAPSHOT_SCHEMA_VERSION,
-        "state": state,
-        "stale_reason": stale_reason,
-        "state_changed_at_ms": int(row.get("state_changed_at_ms") or 0),
-        "social_evidence_as_of_ms": int(business["social_evidence_as_of_ms"]),
-        "eligible_total": int(business["eligible_total"]),
-        "items": list(business["items"]),
+        "social_evidence_as_of_ms": int(payload["social_evidence_as_of_ms"]),
+        "eligible_total": int(payload["eligible_total"]),
+        "items": list(payload["items"]),
     }
-
-
-def _public_failure_reason(error_code: Any) -> str:
-    return "source_unavailable" if str(error_code or "") == "token_radar_source_unavailable" else "projection_failed"
-
-
-def _public_state_key(row: Any) -> tuple[str, str | None]:
-    if row.get("state_fingerprint") is None:
-        return ("unavailable", None)
-    status = str(row.get("latest_attempt_status") or "")
-    if status == "ready":
-        return ("current", None)
-    if status == "failed":
-        return ("stale", _public_failure_reason(row.get("latest_error_code")))
-    raise RuntimeError("token_radar_current_status_invalid")
 
 
 __all__ = [
