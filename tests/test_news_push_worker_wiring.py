@@ -224,7 +224,7 @@ def test_translation_absolute_deadline_cancels_without_using_finite_operations(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr("tracefold.news.push._TRANSLATION_TOTAL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("tracefold.news.push.PUSH_TRANSLATION_DEADLINE_SECONDS", 0.01)
     database = _Database()
     finite = _Finite()
     translator = _Translator()
@@ -246,7 +246,7 @@ def test_translation_absolute_deadline_cancels_without_using_finite_operations(
         "display_title": "Bitcoin rises 5%",
         "fallback_code": "news_item_push_translation_timeout",
         "outcome": "fallback",
-        "translation_policy_version": "title_zh_v4",
+        "translation_policy_version": "title_zh_v5",
     }
 
 
@@ -355,7 +355,7 @@ def test_chinese_item_title_skips_translation_and_freezes_not_needed() -> None:
     assert database.presentation == {
         "display_title": "比特币现货 ETF 资金流入",
         "outcome": "not_needed",
-        "translation_policy_version": "title_zh_v4",
+        "translation_policy_version": "title_zh_v5",
     }
 
 
@@ -421,7 +421,7 @@ def test_long_item_title_skips_translation_and_falls_back_without_blocking() -> 
         "display_title": title,
         "fallback_code": "news_item_push_translation_input_too_long",
         "outcome": "fallback",
-        "translation_policy_version": "title_zh_v4",
+        "translation_policy_version": "title_zh_v5",
     }
 
 

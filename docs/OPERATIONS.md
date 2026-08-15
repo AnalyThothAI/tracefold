@@ -531,10 +531,11 @@ Optional translation reuses the configured direct DeepSeek `llm.api_key`,
 provider. It is an outbound presentation adapter outside the serial model
 arbiter and shared synchronous finite-operation threads. Each non-Chinese Item
 title receives at most one cancellable asynchronous provider call under a
-1.5-second absolute deadline. Chinese input bypasses the endpoint. Missing
+5-second absolute deadline. Chinese input bypasses the endpoint. Missing
 configuration, timeout, invalid output, and titles over 500 graphemes use the
-original immediately. A valid Chinese result becomes the header and the
-original always remains visible. Translation outcomes are informational and
+original immediately. Validation is structural only; acronyms, numbers, and
+asset-like text are not semantically anchored. A non-empty bounded Chinese
+result becomes the header and the original always remains visible. Translation outcomes are informational and
 never degrade delivery health.
 
 The compact card is rendered only from the immutable Item source snapshot and

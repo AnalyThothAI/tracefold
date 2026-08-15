@@ -166,12 +166,19 @@ def test_item_push_translates_before_fence_and_sends_once() -> None:
             )
             repository.record_opennews_events(
                 source=opennews_source(),
-                events=(_event("translated", strategy_id="1018", score=91),),
+                events=(
+                    _event(
+                        "translated",
+                        strategy_id="1018",
+                        score=91,
+                        title="Iran has not decided to resume US talks",
+                    ),
+                ),
                 observed_at_ms=BASE_MS + 1_000,
                 ingest_mode="live",
             )
 
-        translator = _Translator("比特币 ETF 资金流入加速")
+        translator = _Translator("伊朗尚未决定恢复与美国谈判")
         sender = _Sender()
         database = WorkerDatabase.create(
             Settings(storage=postgres_settings_storage()),
@@ -203,16 +210,16 @@ def test_item_push_translates_before_fence_and_sends_once() -> None:
             asyncio.run(database.aclose())
         conn.close()
 
-    assert translator.titles == ["Strategy report translated"]
+    assert translator.titles == ["Iran has not decided to resume US talks"]
     assert len(sender.calls) == 1
     assert row is not None
     assert row["status"] == "sent"
     assert row["source_payload"]["schema_version"] == "news_item_push_v1"
     assert row["presentation_snapshot"] == {
-        "display_title": "比特币 ETF 资金流入加速",
+        "display_title": "伊朗尚未决定恢复与美国谈判",
         "outcome": "translated",
         "translation_duration_ms": 0,
-        "translation_policy_version": "title_zh_v4",
+        "translation_policy_version": "title_zh_v5",
     }
     assert sender.calls[0]["source_payload"] == row["source_payload"]
     assert sender.calls[0]["presentation_snapshot"] == row["presentation_snapshot"]
@@ -282,7 +289,7 @@ def test_translation_failure_falls_back_and_feishu_failure_is_terminal_without_r
         "fallback_code": "news_item_push_translation_rate_limited",
         "outcome": "fallback",
         "translation_duration_ms": 0,
-        "translation_policy_version": "title_zh_v4",
+        "translation_policy_version": "title_zh_v5",
     }
 
 
@@ -311,7 +318,7 @@ def test_startup_terminalizes_preexisting_sending_even_when_delivery_is_unavaila
                     "display_title": "Strategy report interrupted",
                     "outcome": "fallback",
                     "fallback_code": "news_item_push_translation_unavailable",
-                    "translation_policy_version": "title_zh_v4",
+                    "translation_policy_version": "title_zh_v5",
                 },
                 attempted_at_ms=BASE_MS + 2_000,
             )

@@ -14,14 +14,13 @@ from tracefold.platform.resource import (
 )
 
 PUSH_PAYLOAD_SCHEMA_VERSION = "news_item_push_v1"
-PUSH_TRANSLATION_POLICY_VERSION = "title_zh_v4"
+PUSH_TRANSLATION_POLICY_VERSION = "title_zh_v5"
+PUSH_TRANSLATION_DEADLINE_SECONDS = 5.0
 
-_TRANSLATION_TOTAL_TIMEOUT_SECONDS = 1.5
 _DELIVERY_TOTAL_TIMEOUT_SECONDS = 7.5
 _DELIVERY_OPERATION_TIMEOUT_SECONDS = 7.0
 _MAX_TITLE_GRAPHEMES = 500
 _ERROR_CODE = re.compile(r"^[a-z0-9_]{1,120}$")
-_ANCHOR = re.compile(r"(?<![\w])(?:\$?[A-Z][A-Z0-9._/-]{1,14}|\d+(?:[.,]\d+)*(?:%|bp|bps)?)(?![\w])")
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,12 +226,9 @@ class NewsItemPush:
 
         started_at_ms = self._clock_ms()
         try:
-            async with asyncio.timeout(_TRANSLATION_TOTAL_TIMEOUT_SECONDS):
+            async with asyncio.timeout(PUSH_TRANSLATION_DEADLINE_SECONDS):
                 translated = await self.translator.translate(original_title)
-            display_title = _validated_translation(
-                original_title=original_title,
-                translated_title=translated,
-            )
+            display_title = _translation_display_title(translated)
         except NewsPushExternalError as exc:
             return _fallback_presentation(
                 original_title,
@@ -373,11 +369,7 @@ def _fallback_presentation(
     return presentation
 
 
-def _validated_translation(
-    *,
-    original_title: str,
-    translated_title: object,
-) -> str:
+def _translation_display_title(translated_title: object) -> str:
     translated = " ".join(str(translated_title or "").split())
     try:
         translated.encode("utf-8")
@@ -390,14 +382,7 @@ def _validated_translation(
         or _grapheme_count_exceeds(translated, _MAX_TITLE_GRAPHEMES)
     ):
         raise NewsPushExternalError("news_item_push_translation_output_invalid")
-    for anchor in _required_anchors(original_title):
-        if anchor not in translated:
-            raise NewsPushExternalError("news_item_push_translation_anchors_changed")
     return translated
-
-
-def _required_anchors(value: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(match.group(0) for match in _ANCHOR.finditer(value)))
 
 
 def _looks_chinese(value: str) -> bool:

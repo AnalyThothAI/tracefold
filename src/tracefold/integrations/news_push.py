@@ -10,6 +10,7 @@ import httpx
 
 from tracefold.news.push import (
     PUSH_PAYLOAD_SCHEMA_VERSION,
+    PUSH_TRANSLATION_DEADLINE_SECONDS,
     NewsPushExternalError,
     NewsPushReceipt,
 )
@@ -19,7 +20,6 @@ from .feishu import (
     FeishuWebhookClient,
 )
 
-_TRANSLATION_REQUEST_TIMEOUT_SECONDS = 1.5
 _FEISHU = "feishu"
 _TEXT_LIMIT = 500
 
@@ -38,7 +38,7 @@ class OpenAICompatibleNewsPushTranslator:
         self._model = str(model).strip()
         self._client = httpx.AsyncClient(
             base_url=str(base_url).strip().rstrip("/") + "/",
-            timeout=httpx.Timeout(_TRANSLATION_REQUEST_TIMEOUT_SECONDS),
+            timeout=httpx.Timeout(PUSH_TRANSLATION_DEADLINE_SECONDS),
             headers={
                 "Authorization": f"Bearer {str(api_key).strip()}",
                 "Content-Type": "application/json",
@@ -60,7 +60,6 @@ class OpenAICompatibleNewsPushTranslator:
                             "role": "system",
                             "content": (
                                 "将金融新闻标题忠实翻译为简体中文。不得总结、解释、补充事实；"
-                                "数字、百分比、金额、$TOKEN 和大写资产符号必须原样保留。"
                                 "只输出翻译后的单行标题，不要 JSON、引号、Markdown 或解释。"
                             ),
                         },

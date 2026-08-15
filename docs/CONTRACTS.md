@@ -91,13 +91,14 @@ Optional title translation reuses the direct DeepSeek `llm.api_key`,
 `llm.base_url`, and `llm.news_brief_model`; there is no
 `news.push.translation` block, second credential, inferred endpoint, or
 fallback provider. For each non-Chinese title it makes at most one request,
-under one 1.5-second absolute deadline, before the durable Feishu fence and
+under one 5-second absolute deadline, before the durable Feishu fence and
 outside a database transaction. The asynchronous request is cancelled at that
 deadline and never occupies the shared synchronous finite-operation threads. It
 never switches providers or retries.
 Chinese input bypasses translation. Timeout, unavailable configuration,
-invalid output, and titles over 500 graphemes immediately select the original
-title. Translation success or fallback is presentation-only and never changes
+empty/non-Chinese/oversized output, and titles over 500 graphemes immediately
+select the original title. Translation does not apply semantic anchor checks to
+acronyms, numbers, or asset-like text. Translation success or fallback is presentation-only and never changes
 delivery eligibility or health. The Feishu JSON 2.0 card uses a valid Chinese
 translation as its plain-text header and always shows the original visibly in
 the body.

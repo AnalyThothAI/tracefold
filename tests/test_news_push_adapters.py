@@ -11,7 +11,7 @@ from tracefold.integrations.news_push import (
     FeishuNewsPushSender,
     OpenAICompatibleNewsPushTranslator,
 )
-from tracefold.news.push import NewsPushExternalError
+from tracefold.news.push import PUSH_TRANSLATION_DEADLINE_SECONDS, NewsPushExternalError
 
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
 
@@ -54,8 +54,10 @@ def test_translator_makes_one_plain_text_openai_compatible_request() -> None:
     body = json.loads(requests[0].content)
     assert body["model"] == "fast-translator"
     assert body["temperature"] == 0
+    assert PUSH_TRANSLATION_DEADLINE_SECONDS == 5.0
     assert "response_format" not in body
     assert "只输出 JSON" not in body["messages"][0]["content"]
+    assert "必须原样保留" not in body["messages"][0]["content"]
 
 
 @pytest.mark.parametrize(

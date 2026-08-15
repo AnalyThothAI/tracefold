@@ -134,7 +134,7 @@ Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. With Push enabled, a configured
 direct DeepSeek triple enables the one-attempt presentation translation; do
 not add a `news.push.translation` block or duplicate the credential. The target
-language, 1.5-second absolute translation deadline, zero-retry policy, and title
+language, 5-second absolute translation deadline, zero-retry policy, and title
 limits are code-owned. Missing or invalid delivery configuration is fail-soft:
 Serve and Workers still start, while secret-free diagnostics report requested
 and effective availability plus a sanitized reason.
