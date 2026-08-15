@@ -14,11 +14,11 @@ from .projection import (
     NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
     NewsProjectionInputExceeded,
     NewsProjectionService,
-    compute_news_story_projection,
+    build_story_projection,
 )
 
 
-class NewsStoryProjection:
+class NewsStoryProjectionWorker:
     """The sole dirty-triggered writer for the complete current Story closure."""
 
     def __init__(
@@ -27,6 +27,7 @@ class NewsStoryProjection:
         db: Any,
         heavy_db: Any,
         cpu: Any,
+        telemetry: Any | None = None,
         dirty: asyncio.Event | None = None,
         debounce_seconds: float = 1.0,
         safety_seconds: float = 300.0,
@@ -34,6 +35,7 @@ class NewsStoryProjection:
         self.db = db
         self.heavy_db = heavy_db
         self.cpu = cpu
+        self.telemetry = telemetry
         self.dirty = dirty or asyncio.Event()
         self.debounce_seconds = float(debounce_seconds)
         self.safety_seconds = float(safety_seconds)
@@ -78,11 +80,11 @@ class NewsStoryProjection:
                 return
             projection = await self.cpu.run(
                 "news_story_compute",
-                compute_news_story_projection,
+                build_story_projection,
                 snapshot,
                 service_timeout_seconds=NEWS_STORY_COMPUTE_TIMEOUT_SECONDS,
             )
-            await self.heavy_db.run_business(
+            publish_result = await self.heavy_db.run_business(
                 "news_story_publish",
                 self.service.publish,
                 snapshot,
@@ -90,6 +92,8 @@ class NewsStoryProjection:
                 operation_timeout_seconds=NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
                 now_ms=_now_ms(),
             )
+            if publish_result.get("projection_status") == "rebuilt":
+                self._record_projection_diagnostics(projection.diagnostics)
         except ResourceAdmissionTimeout:
             self.dirty.set()
             return
@@ -105,6 +109,34 @@ class NewsStoryProjection:
                 )
             except ResourceAdmissionTimeout:
                 return
+
+    def _record_projection_diagnostics(self, diagnostics: dict[str, Any]) -> None:
+        if self.telemetry is None:
+            return
+        for measure in (
+            "input_physical_item_count",
+            "input_encoded_bytes",
+            "population_physical_item_count",
+            "exact_atom_count",
+            "exact_membership_count",
+            "candidate_pair_count",
+            "preliminary_rss_candidate_pair_count",
+            "candidate_pair_peak",
+            "accepted_decision_count",
+            "rejected_decision_count",
+            "conflict_veto_count",
+            "ambiguity_split_count",
+            "grounded_provider_count",
+            "story_count",
+        ):
+            self.telemetry.set_news_story_projection_value(measure, int(diagnostics.get(measure, 0)))
+        family_counts = diagnostics.get("event_family_counts")
+        if isinstance(family_counts, dict):
+            for family in ("market_telemetry", "filing", "disaster", "general"):
+                self.telemetry.set_news_story_projection_value(
+                    f"event_family_{family}",
+                    int(family_counts.get(family, 0)),
+                )
 
 
 def _now_ms() -> int:
@@ -134,4 +166,4 @@ async def _wait_for_story_trigger(
         await asyncio.gather(dirty_task, stop_task, return_exceptions=True)
 
 
-__all__ = ["NewsStoryProjection"]
+__all__ = ["NewsStoryProjectionWorker"]

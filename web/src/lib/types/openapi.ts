@@ -3294,6 +3294,7 @@ export interface components {
             description: string;
             /** First Published At Ms */
             first_published_at_ms: number;
+            identity_evidence: components["schemas"]["NewsStoryIdentityEvidenceData"];
             importance_factors: components["schemas"]["NewsImportanceFactorsData"];
             /** Importance Score */
             importance_score: number;
@@ -3328,6 +3329,47 @@ export interface components {
             title: string;
             /** Url */
             url: string | null;
+        };
+        /** NewsStoryIdentityEvidenceData */
+        NewsStoryIdentityEvidenceData: {
+            /** Action Keys */
+            action_keys: string[];
+            /** Anchor Item Id */
+            anchor_item_id: string;
+            /** Clustering Version */
+            clustering_version: string;
+            /** Comparison Version */
+            comparison_version: string;
+            /** Event Policy Version */
+            event_policy_version: string;
+            /** Feature Version */
+            feature_version: string;
+            /** Grounded Provider Count */
+            grounded_provider_count: number;
+            /** Grounded Provider Version */
+            grounded_provider_version: string;
+            /** Identity Version */
+            identity_version: string;
+            /** Jaccard Version */
+            jaccard_version: string;
+            /** Location Keys */
+            location_keys: string[];
+            /** Max Accepted Jaccard */
+            max_accepted_jaccard: number;
+            /** Max Rejected Jaccard */
+            max_rejected_jaccard: number;
+            /** Membership Reasons */
+            membership_reasons: {
+                [key: string]: number;
+            };
+            /** Numeric Keys */
+            numeric_keys: string[];
+            /** Rejection Reasons */
+            rejection_reasons: {
+                [key: string]: number;
+            };
+            /** Strong Entity Keys */
+            strong_entity_keys: string[];
         };
         /** NewsStoryMemberData */
         NewsStoryMemberData: {

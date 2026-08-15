@@ -290,8 +290,29 @@ class NewsStoryMembersPageData(ExactApiSchema):
     next_cursor: str | None
 
 
+class NewsStoryIdentityEvidenceData(ExactApiSchema):
+    identity_version: str
+    comparison_version: str
+    feature_version: str
+    grounded_provider_version: str
+    jaccard_version: str
+    event_policy_version: str
+    clustering_version: str
+    anchor_item_id: str
+    strong_entity_keys: list[str]
+    action_keys: list[str]
+    numeric_keys: list[str]
+    location_keys: list[str]
+    membership_reasons: dict[str, int]
+    rejection_reasons: dict[str, int]
+    max_accepted_jaccard: float
+    max_rejected_jaccard: float
+    grounded_provider_count: int
+
+
 class NewsStoryDetailData(NewsStoryData):
     canonical_title: str
+    identity_evidence: NewsStoryIdentityEvidenceData
     members: list[NewsStoryMemberData]
     members_page: NewsStoryMembersPageData
 

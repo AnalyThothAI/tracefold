@@ -661,12 +661,69 @@ function StoryRoute({ token, storyId }: { token: string; storyId: string }) {
                   </div>
                 </dl>
               </section>
+              <section>
+                <h2>Story V2 身份证据</h2>
+                <p>词法相似度只使用 Jaccard；强事实用于确认或否决，不形成第二套聚类。</p>
+                <dl className="news-story-evidence-grid">
+                  <div>
+                    <dt>固定锚点</dt>
+                    <dd>{story.identity_evidence.anchor_item_id}</dd>
+                  </div>
+                  <div>
+                    <dt>强实体</dt>
+                    <dd>{auditEvidenceList(story.identity_evidence.strong_entity_keys)}</dd>
+                  </div>
+                  <div>
+                    <dt>动作</dt>
+                    <dd>{auditEvidenceList(story.identity_evidence.action_keys)}</dd>
+                  </div>
+                  <div>
+                    <dt>数值 / 地点</dt>
+                    <dd>
+                      {auditEvidenceList([
+                        ...story.identity_evidence.numeric_keys,
+                        ...story.identity_evidence.location_keys,
+                      ])}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>成员理由</dt>
+                    <dd>{auditReasonList(story.identity_evidence.membership_reasons)}</dd>
+                  </div>
+                  <div>
+                    <dt>冲突否决</dt>
+                    <dd>{auditReasonList(story.identity_evidence.rejection_reasons)}</dd>
+                  </div>
+                  <div>
+                    <dt>Jaccard 诊断</dt>
+                    <dd>
+                      接受 {story.identity_evidence.max_accepted_jaccard.toFixed(3)} · 拒绝{" "}
+                      {story.identity_evidence.max_rejected_jaccard.toFixed(3)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>版本</dt>
+                    <dd>{story.identity_evidence.identity_version}</dd>
+                  </div>
+                </dl>
+              </section>
             </div>
           </details>
         </article>
       ) : null}
     </section>
   );
+}
+
+function auditEvidenceList(values: readonly string[]): string {
+  return values.length > 0 ? values.join("、") : "无强事实";
+}
+
+function auditReasonList(values: Readonly<Record<string, number>>): string {
+  const entries = Object.entries(values);
+  return entries.length > 0
+    ? entries.map(([reason, count]) => `${reason} × ${count}`).join("、")
+    : "无";
 }
 
 function StoryHero({ story }: { story: NewsStory }) {

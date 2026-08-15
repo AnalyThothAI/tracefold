@@ -5,9 +5,8 @@ import json
 
 import pytest
 
-from tracefold.news.models import STORY_IDENTITY_VERSION
-from tracefold.news.projection import NewsProjectionSnapshot, compute_news_story_projection
-from tracefold.news.ranking import PUBLIC_SELECTOR_VERSION
+from tracefold.news.models import STORY_IDENTITY_VERSION, STORY_SELECTOR_VERSION
+from tracefold.news.projection import NewsStoryFactSnapshot, build_story_projection
 
 NOW_MS = 1_785_600_000_000
 TITLE = "Magnitude 6.8 earthquake strikes northern Chile"
@@ -36,10 +35,10 @@ def _row(
 
 
 def test_story_turn_emits_one_complete_canonical_public_selection_snapshot() -> None:
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="f" * 64,
-        scoring_epoch_ms=NOW_MS,
-        current_input_fingerprint=None,
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint="f" * 64,
+        evaluation_time_ms=NOW_MS,
+        published_material_snapshot_fingerprint=None,
         rows=(
             _row(
                 "ap",
@@ -56,8 +55,8 @@ def test_story_turn_emits_one_complete_canonical_public_selection_snapshot() -> 
         ),
     )
 
-    projection = compute_news_story_projection(snapshot)
-    selection = projection["selection_snapshot"]
+    projection = build_story_projection(snapshot)
+    selection = projection.selection_snapshot
 
     assert set(selection) == {
         "projection_revision",
@@ -68,9 +67,9 @@ def test_story_turn_emits_one_complete_canonical_public_selection_snapshot() -> 
         "identity_version",
         "selection_fingerprint",
     }
-    assert selection["projection_revision"] == snapshot.input_fingerprint
+    assert selection["projection_revision"] == snapshot.material_snapshot_fingerprint
     assert selection["selector_evaluated_at_ms"] == NOW_MS
-    assert selection["selector_version"] == PUBLIC_SELECTOR_VERSION
+    assert selection["selector_version"] == STORY_SELECTOR_VERSION
     assert selection["identity_version"] == STORY_IDENTITY_VERSION
     assert selection["selection_stats"] == {
         "considered": 1,
@@ -104,7 +103,7 @@ def test_story_turn_emits_one_complete_canonical_public_selection_snapshot() -> 
         "threat_level",
         "category",
     }
-    assert top_story["story_id"] == projection["stories"][0]["story_id"]
+    assert top_story["story_id"] == projection.stories[0]["story_id"]
     assert top_story["primary_title"] == TITLE
     assert top_story["primary_source"] == "Reuters"
     assert top_story["primary_link"] == "https://example.test/reuters"
@@ -115,7 +114,7 @@ def test_story_turn_emits_one_complete_canonical_public_selection_snapshot() -> 
     assert top_story["last_updated_ms"] == NOW_MS - 2 * 60_000
     assert top_story["member_titles"] == [TITLE, TITLE]
     assert top_story["source_tier"] == 1
-    assert top_story["upstream_importance_score"] == projection["stories"][0]["importance_score"]
+    assert top_story["upstream_importance_score"] == projection.stories[0]["importance_score"]
     assert top_story["entity_corroboration"] is False
     assert top_story["corroboration_source_count"] == 0
     assert isinstance(top_story["importance_score"], float)
@@ -131,14 +130,14 @@ def test_story_turn_emits_one_complete_canonical_public_selection_snapshot() -> 
         separators=(",", ":"),
     ).encode()
     assert selection["selection_fingerprint"] == hashlib.sha256(encoded).hexdigest()
-    assert compute_news_story_projection(snapshot)["selection_snapshot"] == selection
+    assert build_story_projection(snapshot).selection_snapshot == selection
 
 
 def test_public_rank_recency_uses_newest_member_not_older_high_tier_primary() -> None:
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="e" * 64,
-        scoring_epoch_ms=NOW_MS,
-        current_input_fingerprint=None,
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint="e" * 64,
+        evaluation_time_ms=NOW_MS,
+        published_material_snapshot_fingerprint=None,
         rows=(
             _row(
                 "reuters-old",
@@ -155,7 +154,7 @@ def test_public_rank_recency_uses_newest_member_not_older_high_tier_primary() ->
         ),
     )
 
-    top_story = compute_news_story_projection(snapshot)["selection_snapshot"]["top_stories"][0]
+    top_story = build_story_projection(snapshot).selection_snapshot["top_stories"][0]
 
     assert top_story["primary_source"] == "Reuters"
     assert top_story["primary_published_at_ms"] == NOW_MS - 60 * 60_000
@@ -164,14 +163,14 @@ def test_public_rank_recency_uses_newest_member_not_older_high_tier_primary() ->
 
 
 def test_empty_story_turn_still_emits_the_single_empty_selector_authority() -> None:
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="0" * 64,
-        scoring_epoch_ms=NOW_MS,
-        current_input_fingerprint=None,
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint="0" * 64,
+        evaluation_time_ms=NOW_MS,
+        published_material_snapshot_fingerprint=None,
         rows=(),
     )
 
-    selection = compute_news_story_projection(snapshot)["selection_snapshot"]
+    selection = build_story_projection(snapshot).selection_snapshot
 
     assert selection["top_stories"] == []
     assert selection["selection_stats"] == {

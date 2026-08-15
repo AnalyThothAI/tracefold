@@ -91,6 +91,25 @@ export function newsStoryDetailFixture(overrides: Partial<NewsStoryDetail> = {})
   return {
     ...newsStoryFixture(),
     canonical_title: "Central banks respond to a new global policy shock",
+    identity_evidence: {
+      action_keys: ["announce"],
+      anchor_item_id: "news-item-reuters",
+      clustering_version: "news_story_fixed_anchor_v2",
+      comparison_version: "news_story_comparison_v2",
+      event_policy_version: "news_story_event_policy_v2",
+      feature_version: "news_story_features_v2",
+      grounded_provider_count: 0,
+      grounded_provider_version: "news_story_grounded_provider_v2",
+      identity_version: "news_story_identity_v2",
+      jaccard_version: "news_story_jaccard_v2",
+      location_keys: [],
+      max_accepted_jaccard: 1,
+      max_rejected_jaccard: 0,
+      membership_reasons: { exact_title: 1 },
+      numeric_keys: [],
+      rejection_reasons: {},
+      strong_entity_keys: ["actor:central banks"],
+    },
     members: [
       {
         category: "economic",

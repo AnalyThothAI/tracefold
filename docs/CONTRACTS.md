@@ -297,6 +297,8 @@ The News public surface is exactly five read-only routes:
   pagination. Every cursor and ETag binds the complete
   normalized filter identity. The response includes Stories, filtered facets
   including reporting origins, `next_cursor`, and `has_more`.
+  Feed and Story-member cursors use the Story V2 cursor generation; older
+  cursor versions fail explicitly instead of crossing identity generations.
   Source and reporting-origin facets expand deterministic dimensions stored in
   the current Story read model; they preserve the same per-Story deduplication,
   origin normalization, labels, and filtered counts without scanning member
@@ -320,7 +322,10 @@ The News public surface is exactly five read-only routes:
 - `GET /api/news/stories/{story_id}` returns one current Story and its complete
   NewsItem evidence. It exposes representative/scoring item identity,
   title/reporting-origin/time, classification, reporting-origin count,
-  importance score, and the transparent factor breakdown. Member and
+  importance score, the transparent factor breakdown, and bounded
+  `identity_evidence`: algorithm versions, fixed anchor, strong keys,
+  accepted/rejected reason histograms, Jaccard diagnostics, and grounded
+  provider count. Feed remains compact and does not include this audit object. Member and
   representative URLs are nullable for linkless dispatches. An expired Story
   ID returns not found; there is no archived Story contract, revision timeline,
   or per-Story AI analysis.
@@ -397,22 +402,22 @@ ordered by numeric provider score, non-empty asset evidence, then canonical
 payload; Tracefold never creates a hybrid fact from fields of several wrappers.
 Different event IDs remain different material facts.
 `news.update`, `news.ai_update`, acknowledgements, malformed frames, and
-unconfigured Strategy frames are discarded. Provider
-metadata is descriptive and does not affect Story identity, classification,
-importance, Feed ordering, Brief, or Push admission. A numeric provider score
-may qualify the already projected Story only for a read-time
-`provider_score_gt` filter; it does not change the materialized Story
-population. Story identity is
-the full SHA-256 of the earliest normalized title in the selected physical
-RSS/OpenNews component using WorldMonitor-compatible identity.
-Story IDs identify the exact shared lexical components; `canonical_key` keeps
-the caller-owned public `titleHash` used for first-stage signals. Separate
-components may share that public tracking hash while retaining distinct Story
-IDs and complete Item membership. The public seed stage independently applies
-the pinned JavaScript UTF-16 `title.length > 10` gate before rerunning the same
-clustering kernel. A short bridge can therefore split one complete Story into
-multiple selector candidates that map back to the same Story ID. No additional
-semantic merge rule is exposed.
+unconfigured Strategy frames are discarded. Provider score, Strategy
+provenance, signal, and grade are descriptive and do not affect Story identity,
+classification, ordering, Brief, or Push admission. A numeric score may qualify
+an already projected Story only for the read-time `provider_score_gt` filter.
+Snapshot loading passes only bounded provider `symbol`, `market_type`, and
+`match` fields to Story V2; they become strong evidence only when the symbol or
+match text is grounded in the original title. Ungrounded labels cannot merge or
+veto.
+
+Story identity is `SHA-256(news_story_identity_v2 ||
+anchor_comparison_identity)`. The anchor comes from the deterministic
+fixed-anchor closure over normalized Jaccard plus compatible strong facts.
+Untrackable titles use a per-Item sentinel. There is one identity and one
+membership closure: no secondary tracking hash, alias, redirect, compatibility
+read, or public Item recluster. The JavaScript UTF-16 `title.length > 10` gate
+is only a public admissibility/representative rule over materialized Stories.
 The code-owned source catalog is the pinned WorldMonitor
 `full/en + INTEL_SOURCES` public population: exactly 179 physical HTTPS feeds,
 183 category memberships, 178 reporting-source names, and 17 categories. The
@@ -426,21 +431,21 @@ prior snapshot, and RSS facts expire at 96 hours. The reader follows at most two
 redirects itself; the initial URL and every redirect target must be public HTTPS
 and every resolved address must be globally routable before a request is sent.
 
-Story calculation joins the 12-hour Strategy-admitted OpenNews facts with RSS facts
-expanded in pinned category-major membership order, runs lexical clustering,
-keyword classification, corroboration, and
-importance before the stable top-20 cap in each category, then forms a physical
-union of the capped RSS Items plus all current 12-hour OpenNews Items. The
-materialized Story/member closure contains each physical Item once. The public
-seed retains duplicate category memberships, so public `source_count` can
-exceed `unique_source_count`; the latter is the distinct reporting-origin
-count. It then applies the JavaScript UTF-16 `title.length > 10` gate,
-reclusters with the same kernel, and derives second-stage
+Story calculation first builds one preliminary physical RSS closure with the
+same private Story V2 algorithm, then classifies and scores physical Items
+before category expansion and the stable Top 20 per category. The selected RSS
+rows are deduplicated back to physical Items and unioned with every current
+12-hour OpenNews Item. `build_story_projection` then returns the one final
+Story/member closure and public selection. Jaccard is the only lexical score;
+typed entity/action/numeric/location/time facts constrain its `same_event`
+decision, and fixed anchors prevent accepted members from becoming transitive
+bridges. Public selection consumes those Stories directly and derives
 importance/admissibility, 16-hour effective recency, the maximum-three
-primary-source cap, and corroborated-lead reservation. It selects at most eight
-Stories in stable server order and reports admissibility, source-cap, and
-overflow drops. There is no personalization, embedding, topic grouping,
-entity veto, client reorder, or guaranteed topic/multi-source quota.
+primary-source cap, and corroborated-lead reservation. It emits at most eight
+Stories in stable server order with drop statistics. `source_count` and
+`unique_source_count` reflect distinct reporting origins in the authoritative
+physical closure. There is no personalization, embedding, topic grouping,
+client reorder, or guaranteed topic/multi-source quota.
 
 L1 receives only ordered primary headlines, primary sources, and distinct
 source counts. Every provider response must pass the same citation-scoped
@@ -712,11 +717,18 @@ Applying the migration performs no provider or outbound call. Delivery begins
 only after effective webhook-backed availability and only for first-inserted
 live OpenNews Items observed after the enablement epoch. Recovery, RSS,
 pre-epoch Items, and later annotation changes never create or mutate Push work.
-`20260815_0271` is the current offline title-presentation hard cut. It adds
+`20260815_0271` is the historical offline title-presentation hard cut. It adds
 `news_item_title_presentations`, terminalizes pre-cut nonterminal Push work,
 retains the renamed legacy Push presentation JSON as audit only, and binds new
 Push rows to the exact title fingerprint. It has no history backfill,
 compatibility reader/writer, or migration-time provider/outbound call.
+`20260815_0272` is the current Story V2 replace-not-layer hard cut. With Serve
+and Workers stopped, it clears Story memberships, Stories, selection, and the
+Brief current/LKG payload; drops the old secondary identity column; adds the
+bounded non-null `identity_evidence` object; and resets the Story projection
+summary. It preserves NewsItem facts, title presentations, Item Push delivery
+audit, and incident state. The first Workers turn rebuilds one V2 closure; old
+Story URLs and cursor generations have no compatibility path.
 `20260807_0246` is the irreversible public
 World Brief hard cut: it canonicalizes retained OpenNews facts, drops the
 retired Story display-title translation table and incompatible Brief state,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import inspect
 from pathlib import Path
 
@@ -23,6 +24,8 @@ PUBLIC_NEWS_INTERFACE = {
     "NewsFeedReader",
     "NewsSourceDefinition",
     "NewsStoryProjection",
+    "NewsStoryFactSnapshot",
+    "NewsStoryProjectionWorker",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
@@ -30,6 +33,7 @@ PUBLIC_NEWS_INTERFACE = {
     "PublicInsightsCategory",
     "PublicInsightsThreatLevel",
     "ThreatLevel",
+    "build_story_projection",
 }
 
 
@@ -109,6 +113,35 @@ def test_news_has_no_shallow_interface_or_duplicate_story_rebuild() -> None:
 
     assert not (news_root / "interface.py").exists()
     assert "def rebuild_stories(" not in (news_root / "repository.py").read_text(encoding="utf-8")
+
+
+def test_story_v2_has_one_jaccard_identity_and_no_retired_kernel() -> None:
+    news_root = ROOT / "src/tracefold/news"
+    identity_sources = "\n".join(
+        (news_root / name).read_text(encoding="utf-8").lower()
+        for name in ("identity.py", "projection.py", "story_projection.py")
+    )
+
+    assert "jaccard" in identity_sources
+    assert all(
+        marker not in identity_sources for marker in ("cosine", "fnv", "cluster_texts", "union_find", "unionfind")
+    )
+
+
+def test_story_v2_private_decision_seams_do_not_leak_to_callers() -> None:
+    news_root = ROOT / "src/tracefold/news"
+    violations: list[str] = []
+    for path in sorted(news_root.rglob("*.py")):
+        if path.name == "story_projection.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or not str(node.module or "").endswith("story_projection"):
+                continue
+            violations.extend(
+                f"{path.relative_to(ROOT)}:{alias.name}" for alias in node.names if alias.name.startswith("_")
+            )
+    assert violations == []
 
 
 def test_story_projection_has_no_push_interface_or_candidate_writer() -> None:

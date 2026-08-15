@@ -9480,6 +9480,9 @@
             "title": "First Published At Ms",
             "type": "integer"
           },
+          "identity_evidence": {
+            "$ref": "#/components/schemas/NewsStoryIdentityEvidenceData"
+          },
           "importance_factors": {
             "$ref": "#/components/schemas/NewsImportanceFactorsData"
           },
@@ -9590,10 +9593,123 @@
           "last_published_at_ms",
           "provider_evidence",
           "canonical_title",
+          "identity_evidence",
           "members",
           "members_page"
         ],
         "title": "NewsStoryDetailData",
+        "type": "object"
+      },
+      "NewsStoryIdentityEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "action_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Action Keys",
+            "type": "array"
+          },
+          "anchor_item_id": {
+            "title": "Anchor Item Id",
+            "type": "string"
+          },
+          "clustering_version": {
+            "title": "Clustering Version",
+            "type": "string"
+          },
+          "comparison_version": {
+            "title": "Comparison Version",
+            "type": "string"
+          },
+          "event_policy_version": {
+            "title": "Event Policy Version",
+            "type": "string"
+          },
+          "feature_version": {
+            "title": "Feature Version",
+            "type": "string"
+          },
+          "grounded_provider_count": {
+            "title": "Grounded Provider Count",
+            "type": "integer"
+          },
+          "grounded_provider_version": {
+            "title": "Grounded Provider Version",
+            "type": "string"
+          },
+          "identity_version": {
+            "title": "Identity Version",
+            "type": "string"
+          },
+          "jaccard_version": {
+            "title": "Jaccard Version",
+            "type": "string"
+          },
+          "location_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Location Keys",
+            "type": "array"
+          },
+          "max_accepted_jaccard": {
+            "title": "Max Accepted Jaccard",
+            "type": "number"
+          },
+          "max_rejected_jaccard": {
+            "title": "Max Rejected Jaccard",
+            "type": "number"
+          },
+          "membership_reasons": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Membership Reasons",
+            "type": "object"
+          },
+          "numeric_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Numeric Keys",
+            "type": "array"
+          },
+          "rejection_reasons": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Rejection Reasons",
+            "type": "object"
+          },
+          "strong_entity_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Strong Entity Keys",
+            "type": "array"
+          }
+        },
+        "required": [
+          "identity_version",
+          "comparison_version",
+          "feature_version",
+          "grounded_provider_version",
+          "jaccard_version",
+          "event_policy_version",
+          "clustering_version",
+          "anchor_item_id",
+          "strong_entity_keys",
+          "action_keys",
+          "numeric_keys",
+          "location_keys",
+          "membership_reasons",
+          "rejection_reasons",
+          "max_accepted_jaccard",
+          "max_rejected_jaccard",
+          "grounded_provider_count"
+        ],
+        "title": "NewsStoryIdentityEvidenceData",
         "type": "object"
       },
       "NewsStoryMemberData": {

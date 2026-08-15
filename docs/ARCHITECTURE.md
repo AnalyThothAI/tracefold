@@ -477,13 +477,15 @@ Title presentation turn
   -> Feed/detail use the display title and expose the original title
   -> Push waits for that same decision, then attempts Feishu once
 
-RSS category membership expansion
-  -> deterministic score before per-category Top 20
-  -> physical union with OpenNews
+Physical RSS facts
+  -> one preliminary Jaccard/fact-coherent closure and deterministic score
+  -> category expansion -> per-category Top 20 -> physical deduplication
+  -> physical union with every current OpenNews Item
   -> coherent current-only Story + members after a 1-second dirty debounce
      with a 5-minute safety pass
-  -> public UTF-16 title-length gate + same-kernel seed clustering
-  -> public cluster evidence + importance/admissibility/recency selection
+  -> one final normalized-Jaccard + fact-compatibility + fixed-anchor closure
+  -> public UTF-16 Story admissibility gate; no Item recluster
+  -> authoritative Story evidence + importance/admissibility/recency selection
   -> at most eight server-ordered Top Stories with corroborated-lead reservation
   -> UTC half-hour slot freezes the current selection
   -> Ollama -> configured direct DeepSeek -> Groq L1 waterfall
@@ -568,78 +570,90 @@ or provider failure remains explicit as `unavailable` or `partial`. Recovered
 facts may enter Story/Brief but can never create outbound Push. OpenNews Search
 is not a recovery or parity authority.
 
-The sole Story writer loads active RSS Items from the 96-hour feed window and
-OpenNews Items from the 12-hour Strategy-qualified window. It expands RSS facts
-in the pinned category-major membership order, runs the WorldMonitor identity,
-classification, corroboration, and importance kernel before any category cap,
-then retains the stable top 20 membership rows per category. It forms one
-physical union of those capped RSS Items plus every current OpenNews Item and
-calculates the materialized Story/member closure from that union. Duplicate
-RSS category memberships therefore count in public selector evidence without
-duplicating physical Story membership. Accepted facts set one process-local
-dirty event. The sole writer coalesces bursts for one second, while one
-five-minute safety pass covers a lost local wake. A load-time compare-and-set prevents an older
-snapshot from overwriting a newer publication. The turn is bounded by 10,000
-rows, 8 MiB input, and a 25-second CPU budget; unchanged or superseded input
-writes zero serving rows. Its isolated serial CPU process prevents this long
-calculation from blocking Token Radar, Profile, or Macro CPU admission. There
-are no News frontiers, similarity-edge rows, aliases, membership history, or
-sampled/adaptive population path.
+The sole Story writer captures active RSS Items from the 96-hour window and
+Strategy-qualified OpenNews Items from the 12-hour window as one bounded
+`NewsStoryFactSnapshot`. The snapshot contains original Item facts, source and
+category fields, an exact title fingerprint, and only provider
+`symbol`/`market_type`/`match` fields; provider score, Strategy provenance, Push,
+and title-presentation state are excluded. `build_story_projection(snapshot)` is
+the only computation interface. It returns the complete Item updates, Story
+closure, membership closure, identity evidence, and ordered public selection.
+The application layer only loads, invokes, rechecks the opaque material
+fingerprint under the publication fence, and publishes one transaction.
 
-NewsItem identity is `(source_id, source_item_key)`. RSS prefers a non-empty
-GUID, then the canonical URL, then a deterministic title/publication-time key;
-OpenNews uses `params.id` as its source item key. Tracking parameters are
-removed from article links. Repeated configured Strategy frames merge only
-bounded OpenNews metadata and the Strategy provenance union; they never replace
-one fact with one Item per Strategy.
+News Story V2 has one Tracefold-owned identity algorithm. It normalizes source
+noise, Unicode width and punctuation, a pinned Simplified/Traditional Chinese
+comparison form, and equivalent numeric scales without changing the stored
+title. It calculates one lexical score: Jaccard over the normalized token set,
+with pinned CJK n-grams in that same set. Strong title-bounded actor, target,
+asset, action, instrument, period, numeric, location, and time facts constrain
+the same decision. Provider asset/market fields become strong only when the
+symbol or match text is present in the original title. Broad keywords and
+ungrounded labels may improve recall or classification but cannot merge or
+veto Stories. WorldMonitor's former vector/cosine Digest identity, browser
+greedy grouping, semantic refinement, and Redis canonical adoption are not
+Story authorities in Tracefold.
 
-Story identity is the Python port of WorldMonitor's
-`shared/story-identity.js`: normalized titles, deterministic signed FNV-1a
-512-dimensional vectors, uniform and boosted cosine channels, threshold
-`0.615`, exact-duplicate union, high-containment rescue, 250-item candidate
-buckets, and deterministic union-find. A Story ID is the full SHA-256 of the
-shared `normalizeStoryText` value for the pinned earliest anchor in that
-current component; an untrackable component uses its per-Item sentinel. It may
-change when the earliest item expires; the previous Story is removed and its
-detail route returns not found. The separate `canonical_key` records the
-caller-owned public `titleHash` used by the digest first stage. Distinct lexical
-components may share that value, but never membership or selector grouping.
-There is no archived Story product, embedding, full-article extraction,
-browser clustering, revision product, or per-Story AI analysis. Shared title
-presentation is an exact-title display projection only; it adds no model-derived
-NewsItem or Story state and cannot change the original-text search/Story/Brief
-closure.
+The module compresses compatible exact-title Items into deterministic atoms,
+builds at most 250,000 deduplicated candidates through bounded lexical and
+strong-signature indexes, and evaluates time conflicts and strong fact
+conflicts before exact, high-Jaccard, or strong-signature normal-Jaccard
+acceptance. Atoms are ordered by publication time, comparison-title Unicode
+order, and stable Item identity. The first unassigned atom is a fixed anchor;
+every fuzzy member must independently agree with that anchor and the complete
+accumulated strong signature. Members never become bridges. A candidate tied
+on the highest evidence across anchors remains a singleton. Candidate overflow
+fails explicitly; there is no all-pairs fallback, sampling, adaptive threshold,
+or second metric.
 
-Threat level and category use WorldMonitor's deterministic keyword classifier,
-including exclusions and historical downgrade. There is no item-level AI
-classifier or cache. Importance uses WorldMonitor's 55% severity, 20% source
-tier, 15% corroboration, and 10% recency, followed by the narrow
-diplomacy/flashpoint and entity-corroboration boosts. Materialized Story
-`source_count` counts distinct reporting origins. Public candidate
-`source_count` retains membership-expanded evidence, while
-`unique_source_count` counts distinct reporting origins; repeated category
-membership can therefore make the first greater than the second. Repeated
-OpenNews delivery of one provider record still counts once. Persisted recency
-uses the equivalent one-hour cache epoch, so unchanged input within an epoch
-writes zero serving rows. The API exposes the scoring item and factor
-breakdown. Global clustering precedes search, filtering, sorting, and keyset
-pagination.
+RSS population selection first calculates features, one preliminary physical
+RSS closure, classification, corroboration, and importance. Only then are
+physical Items expanded through their code-owned category memberships for the
+stable Top 20 per category and deduplicated back to one physical RSS union. All
+current OpenNews Items are appended and the same private fixed-anchor algorithm
+builds the one final authoritative closure. The preliminary closure has no
+public identity. Accepted facts set one process-local dirty event; bursts
+coalesce for one second and a five-minute safety pass covers a lost wake. The
+turn is bounded by 10,000 rows, 8 MiB encoded input, 250,000 candidate atom
+pairs, an 8 KiB identity-evidence object per Story, and a 25-second isolated CPU
+envelope. Unchanged or superseded input writes zero serving rows.
 
-The Story transaction is also the only public selection writer. Materialized
-Stories retain complete ownership, while the public `seed-insights` stage first
-drops titles whose JavaScript UTF-16 length is at most ten and then reruns the
-same pinned clustering kernel over eligible Items. Removing a short bridge can
-split one complete Story into multiple public candidates; each candidate maps
-back to its containing Story ID. The selector derives member titles, distinct
-origins, entity corroboration, source tier, public category/threat, second-stage
-importance, admissibility, and 16-hour effective-recency rank, then selects at
-most eight. One primary reporting origin can occupy at most three slots. If the
-normal Top Stories contain no eligible corroborated lead, the highest-ranked
-eligible candidate is reserved and the result is restored to public rank order.
-Drop counts distinguish admissibility, source-cap, and overflow effects. This
-is one global public selection: there is no profile, preference, embedding,
-topic grouping, entity veto, `(source, category)` quota, client-side ISQ
-reorder, or promised topic/multi-source diversity.
+NewsItem identity remains `(source_id, source_item_key)`. RSS prefers a
+non-empty GUID, then canonical URL, then a deterministic title/publication key;
+OpenNews uses `params.id`. Tracking parameters are removed from links. Repeated
+configured Strategy frames union bounded provenance into the same Item and
+never create one Item per Strategy. Original titles remain the sole Story,
+search, scoring, and Brief text facts; Item-scoped display-title presentation
+is a read-time join only.
+
+A Story ID is `SHA-256(identity_version || anchor_comparison_identity)`. The
+anchor is the fixed anchor of the final closure; untrackable titles use a
+per-Item sentinel. Each Story stores one bounded `identity_evidence` object with
+versions, anchor Item, strong keys, accepted/rejected reason histograms,
+Jaccard diagnostics, and grounded-provider count. There is no second stored
+identity, alias, redirect, archived Story, membership history, similarity edge,
+embedding, full-article extraction, or per-Story model output. IDs are
+current-window identities and may change when an anchor leaves, an earlier fact
+arrives, material evidence changes, or the identity version changes; old detail
+URLs return not found.
+
+Threat level and category continue to use the exact pinned WorldMonitor keyword
+classifier and historical downgrade. Importance retains the pinned 55%
+severity, 20% source tier, 15% corroboration, and 10% recency weights plus the
+narrow diplomacy/flashpoint boost. `source_count` is the distinct reporting
+origin count over complete physical membership. Representative, scoring Item,
+facets, first/last clocks, aggregates, and the Story state fingerprint all come
+from that same closure.
+
+The Story transaction is also the sole public-selection writer. Public Top
+Stories adapt authoritative Stories directly and never cluster Items again. The
+pinned JavaScript UTF-16 `title.length > 10` check remains only an
+admissibility/representative rule; it cannot change membership. The pinned
+WorldMonitor selector still derives public category/threat, effective-recency
+rank, a maximum-three primary-source cap, corroborated-lead reservation, and at
+most eight ordered Stories with drop statistics. WorldMonitor is pinned here
+only for the RSS catalog/parser, keyword classifier, importance/selector, and
+Brief prompt/parser/composer helpers—not for Tracefold Story identity.
 
 The selection table is one singleton captured-current snapshot, not rank rows.
 `selection_fingerprint` binds its projection revision/evaluation clock, every

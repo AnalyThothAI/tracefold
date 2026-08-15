@@ -272,9 +272,9 @@ def test_news_kiss_has_one_acquisition_module_and_one_story_writer() -> None:
     workers_source = (SRC / "app" / "workers.py").read_text(encoding="utf-8")
 
     assert news_source.count("class NewsAcquisition:") == 1
-    assert news_source.count("class NewsStoryProjection:") == 1
+    assert news_source.count("class NewsStoryProjectionWorker:") == 1
     assert workers_source.count("NewsAcquisition(") == 1
-    assert workers_source.count("NewsStoryProjection(") == 1
+    assert workers_source.count("NewsStoryProjectionWorker(") == 1
 
 
 def test_public_news_has_no_personalization_or_parallel_product_infrastructure() -> None:
@@ -318,7 +318,8 @@ def test_public_news_has_no_personalization_or_parallel_product_infrastructure()
     projection_source = (SRC / "news" / "projection.py").read_text(encoding="utf-8")
     story_input_source = (SRC / "news" / "story_store.py").read_text(encoding="utf-8")
     assert "provider_metadata" not in projection_source
-    assert "provider_metadata" not in story_input_source
+    assert "item.provider_metadata -> 'coins' AS provider_identity" in story_input_source
+    assert '"provider_metadata"' not in story_input_source
 
 
 def test_news_kiss_retired_tables_have_no_production_owner() -> None:

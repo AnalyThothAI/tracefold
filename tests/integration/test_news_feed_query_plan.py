@@ -118,16 +118,16 @@ def _insert_production_shaped_news(conn: Any) -> None:
     conn.execute(
         """
         INSERT INTO news_stories(
-          story_id, canonical_key, canonical_title,
+          story_id, canonical_title,
           representative_item_id, representative_source_id,
           representative_title, representative_description,
           scoring_item_id, level, category, importance_score,
           importance_factors, item_count, source_count,
           first_published_at_ms, last_published_at_ms,
-          state_fingerprint, created_at_ms, updated_at_ms, facet_facts
+          state_fingerprint, created_at_ms, updated_at_ms, facet_facts,
+          identity_evidence
         )
         SELECT 'story-' || lpad(series_no::text, 5, '0'),
-               'story-key-' || lpad(series_no::text, 5, '0'),
                'Feed provider-evidence plan story ' || series_no,
                'item-' || lpad(series_no::text, 5, '0'),
                'feed-plan-source',
@@ -145,7 +145,21 @@ def _insert_production_shaped_news(conn: Any) -> None:
                'story-fingerprint-' || lpad(series_no::text, 5, '0'),
                series_no,
                series_no,
-               '{"source_ids":["feed-plan-source"],"reporting_origins":["Feed Plan Wire"]}'::jsonb
+               '{"source_ids":["feed-plan-source"],"reporting_origins":["Feed Plan Wire"]}'::jsonb,
+               jsonb_build_object(
+                 'identity_version', 'news_story_identity_v2',
+                 'feature_version', 'news_story_feature_v2',
+                 'jaccard_version', 'news_story_jaccard_v2',
+                 'event_policy_version', 'news_story_event_policy_v2',
+                 'clustering_version', 'news_story_fixed_anchor_v2',
+                 'anchor_item_id', 'item-' || lpad(series_no::text, 5, '0'),
+                 'strong_entity_keys', '[]'::jsonb,
+                 'action_keys', '[]'::jsonb,
+                 'numeric_keys', '[]'::jsonb,
+                 'location_keys', '[]'::jsonb,
+                 'membership_reasons', '{}'::jsonb,
+                 'rejection_reasons', '{}'::jsonb
+               )
           FROM generate_series(1, %s::integer) series_no
         """,
         (_STORY_COUNT,),

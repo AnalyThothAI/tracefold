@@ -5,15 +5,17 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
+
 import tracefold.news.runtime as news_runtime
 from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
 from tests.support.news import rebuild_news_projection
 from tracefold.app.repositories import repositories_for_connection
-from tracefold.news import NewsAcquisition, NewsFeedEntry, NewsFeedFetch
+from tracefold.news import NewsAcquisition, NewsFeedEntry, NewsFeedFetch, story_store
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.projection import (
-    NewsProjectionSnapshot,
-    compute_news_story_projection,
+    NewsStoryFactSnapshot,
+    build_story_projection,
 )
 from tracefold.news.repository import NewsRepository
 from tracefold.news.sources import opennews_source, public_rss_sources
@@ -81,12 +83,14 @@ def _event(
     return event
 
 
-def _projection_snapshot(payload: dict[str, Any]) -> NewsProjectionSnapshot:
-    return NewsProjectionSnapshot(
-        input_fingerprint=str(payload["input_fingerprint"]),
-        scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
-        current_input_fingerprint=(
-            str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") is not None else None
+def _projection_snapshot(payload: dict[str, Any]) -> NewsStoryFactSnapshot:
+    return NewsStoryFactSnapshot(
+        material_snapshot_fingerprint=str(payload["material_snapshot_fingerprint"]),
+        evaluation_time_ms=int(payload["evaluation_time_ms"]),
+        published_material_snapshot_fingerprint=(
+            str(payload["published_material_snapshot_fingerprint"])
+            if payload.get("published_material_snapshot_fingerprint") is not None
+            else None
         ),
         rows=tuple(dict(row) for row in payload["rows"]),
     )
@@ -160,15 +164,15 @@ def test_story_projection_publish_has_constant_database_statement_count() -> Non
             )
 
         snapshot = _projection_snapshot(repository.load_story_projection(now_ms=NOW_MS))
-        projection = compute_news_story_projection(snapshot)
-        assert len(projection["item_updates"]) == 32
+        projection = build_story_projection(snapshot)
+        assert len(projection.item_updates) == 32
 
         counting_conn = _CountingConnection(conn)
         publishing_repository = NewsRepository(counting_conn)
         with conn.transaction():
             result = publishing_repository.publish_story_projection(
                 snapshot=snapshot,
-                projection=projection,
+                projection=projection.as_payload(),
                 now_ms=NOW_MS + 1,
             )
 
@@ -247,6 +251,65 @@ def test_unchanged_story_sample_refreshes_success_clock_without_serving_writes()
             "input_fingerprint": before["input_fingerprint"],
             "last_success_at_ms": NOW_MS + 60_000,
         }
+    finally:
+        conn.close()
+
+
+def test_story_material_fingerprint_includes_only_bounded_identity_relevant_provider_fields() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(_event(record_id="provider-fingerprint", title="BTC OI Rise 3%", score=75),),
+                observed_at_ms=NOW_MS,
+            )
+
+        before = repository.load_story_projection(now_ms=NOW_MS)
+        assert set(before["rows"][0]) == {
+            "item_id",
+            "source_id",
+            "canonical_url",
+            "reporting_origin",
+            "title",
+            "description",
+            "published_at_ms",
+            "source_position",
+            "tier",
+            "source_kind",
+            "title_fingerprint",
+            "provider_identity",
+            "memberships",
+        }
+        with conn.transaction():
+            conn.execute(
+                """
+                UPDATE news_items
+                   SET provider_metadata = jsonb_set(provider_metadata, '{score}', '99'::jsonb)
+                 WHERE provider_record_id = 'provider-fingerprint'
+                """
+            )
+        score_only = repository.load_story_projection(now_ms=NOW_MS)
+        assert score_only["material_snapshot_fingerprint"] == before["material_snapshot_fingerprint"]
+
+        with conn.transaction():
+            conn.execute(
+                """
+                UPDATE news_items
+                   SET provider_metadata = jsonb_set(
+                         provider_metadata,
+                         '{coins,0,market_type}',
+                         '"perpetual"'::jsonb
+                       )
+                 WHERE provider_record_id = 'provider-fingerprint'
+                """
+            )
+        identity_change = repository.load_story_projection(now_ms=NOW_MS)
+        assert identity_change["material_snapshot_fingerprint"] != before["material_snapshot_fingerprint"]
     finally:
         conn.close()
 
@@ -851,7 +914,7 @@ def test_story_projection_rejects_input_changed_during_compute_and_older_publish
                 observed_at_ms=NOW_MS + 1,
             )
             older = _projection_snapshot(repository.load_story_projection(now_ms=NOW_MS + 2))
-        older_projection = compute_news_story_projection(older)
+        older_projection = build_story_projection(older)
 
         with conn.transaction():
             repository.record_opennews_events(
@@ -867,7 +930,7 @@ def test_story_projection_rejects_input_changed_during_compute_and_older_publish
                 observed_at_ms=NOW_MS + 2,
             )
             newer = _projection_snapshot(repository.load_story_projection(now_ms=NOW_MS + 3))
-        newer_projection = compute_news_story_projection(newer)
+        newer_projection = build_story_projection(newer)
 
         with conn.transaction():
             repository.record_opennews_events(
@@ -884,14 +947,14 @@ def test_story_projection_rejects_input_changed_during_compute_and_older_publish
             )
             accepted = repository.publish_story_projection(
                 snapshot=newer,
-                projection=newer_projection,
+                projection=newer_projection.as_payload(),
                 now_ms=NOW_MS + 4,
             )
 
         with conn.transaction():
             superseded = repository.publish_story_projection(
                 snapshot=older,
-                projection=older_projection,
+                projection=older_projection.as_payload(),
                 now_ms=NOW_MS + 5,
             )
 
@@ -933,6 +996,92 @@ def test_story_projection_rejects_input_changed_during_compute_and_older_publish
             ).fetchone()["count"]
             == 1
         )
+    finally:
+        conn.close()
+
+
+def test_story_projection_failure_rolls_back_the_complete_previous_closure(
+    monkeypatch: Any,
+) -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        source = opennews_source()
+        with conn.transaction():
+            repository.sync_sources((source,), now_ms=NOW_MS)
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _event(
+                        record_id="atomic-baseline",
+                        title="Central bank holds rates after policy meeting",
+                        score=80,
+                    ),
+                ),
+                observed_at_ms=NOW_MS,
+            )
+            rebuild_news_projection(repository, now_ms=NOW_MS)
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=source,
+                events=(
+                    _event(
+                        record_id="atomic-new-fact",
+                        title="Major earthquake strikes a separate coastal region",
+                        score=90,
+                        published_at_ms=NOW_MS + 1,
+                    ),
+                ),
+                observed_at_ms=NOW_MS + 1,
+            )
+            snapshot = _projection_snapshot(repository.load_story_projection(now_ms=NOW_MS + 2))
+        projection = build_story_projection(snapshot)
+
+        def serving_state() -> dict[str, list[dict[str, Any]]]:
+            return {
+                "items": [
+                    dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT item_id, level, category, classification_source,
+                               classification_confidence, importance_score,
+                               importance_factors, updated_at_ms
+                          FROM news_items ORDER BY item_id
+                        """
+                    ).fetchall()
+                ],
+                "stories": [
+                    dict(row) for row in conn.execute("SELECT * FROM news_stories ORDER BY story_id").fetchall()
+                ],
+                "memberships": [
+                    dict(row)
+                    for row in conn.execute("SELECT * FROM news_story_members ORDER BY story_id, item_id").fetchall()
+                ],
+                "selection": [
+                    dict(row) for row in conn.execute("SELECT * FROM news_brief_selection_current").fetchall()
+                ],
+                "summary": [dict(row) for row in conn.execute("SELECT * FROM news_projection_summary").fetchall()],
+            }
+
+        before = serving_state()
+        conn.commit()
+
+        def fail_selection(*_args: Any, **_kwargs: Any) -> int:
+            raise RuntimeError("forced_story_selection_failure")
+
+        monkeypatch.setattr(story_store, "_replace_brief_selection", fail_selection)
+        with (
+            pytest.raises(RuntimeError, match="forced_story_selection_failure"),
+            conn.transaction(),
+        ):
+            repository.publish_story_projection(
+                snapshot=snapshot,
+                projection=projection.as_payload(),
+                now_ms=NOW_MS + 3,
+            )
+
+        assert serving_state() == before
     finally:
         conn.close()
 
@@ -1161,7 +1310,7 @@ def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title()
         conn.close()
 
 
-def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
+def test_story_v2_keeps_distinct_comparison_and_untrackable_item_identities() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         reset_postgres_schema(conn)
@@ -1202,7 +1351,8 @@ def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
             """
             SELECT count(*) AS membership_count,
                    count(DISTINCT member.story_id) AS story_count,
-                   count(DISTINCT story.canonical_key) AS canonical_key_count
+                   count(*) FILTER (WHERE jsonb_typeof(story.identity_evidence) = 'object')
+                       AS evidenced_story_count
               FROM news_story_members member
               JOIN news_stories story ON story.story_id = member.story_id
             """
@@ -1210,7 +1360,7 @@ def test_public_tracking_hash_does_not_fold_distinct_story_components() -> None:
         assert ownership == {
             "membership_count": 4,
             "story_count": 4,
-            "canonical_key_count": 2,
+            "evidenced_story_count": 4,
         }
         assert rebuilt["projection_status"] == "rebuilt"
         assert conn.execute("SELECT count(*) AS count FROM news_items").fetchone()["count"] == 4

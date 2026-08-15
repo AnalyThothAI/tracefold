@@ -10,8 +10,8 @@ import pytest
 from tracefold.app import workers
 from tracefold.app.market_providers import AssetMarketProviders
 from tracefold.macro import MacroProjectionCandidate
-from tracefold.news import NewsStoryProjection
-from tracefold.news.projection import NewsProjectionSnapshot
+from tracefold.news import NewsStoryProjectionWorker
+from tracefold.news.projection import NewsStoryFactSnapshot
 from tracefold.news.push import NewsItemPush, NewsPushReceipt
 from tracefold.news.title_presentation import NewsItemTitlePresentation
 from tracefold.platform.config.settings import Settings
@@ -30,7 +30,7 @@ def test_story_projection_coalesces_a_dirty_burst_into_one_additional_sample() -
     async def scenario() -> int:
         dirty = asyncio.Event()
         stop = asyncio.Event()
-        projection = NewsStoryProjection(
+        projection = NewsStoryProjectionWorker(
             db=object(),
             heavy_db=object(),
             cpu=object(),
@@ -60,10 +60,10 @@ def test_story_projection_coalesces_a_dirty_burst_into_one_additional_sample() -
 
 def test_unchanged_story_sample_refreshes_only_the_projection_clock() -> None:
     operations: list[tuple[str, tuple[object, ...]]] = []
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="same",
-        scoring_epoch_ms=0,
-        current_input_fingerprint="same",
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint="same",
+        evaluation_time_ms=0,
+        published_material_snapshot_fingerprint="same",
         rows=(),
     )
 
@@ -73,7 +73,7 @@ def test_unchanged_story_sample_refreshes_only_the_projection_clock() -> None:
             operations.append((operation_name, args))
             return snapshot if operation_name == "news_story_load" else {"projection_status": "unchanged_input"}
 
-    projection = NewsStoryProjection(db=_Database(), heavy_db=_Database(), cpu=object())
+    projection = NewsStoryProjectionWorker(db=_Database(), heavy_db=_Database(), cpu=object())
     asyncio.run(projection.sample())
 
     assert [name for name, _args in operations] == ["news_story_load", "news_story_publish"]
@@ -84,10 +84,10 @@ def test_story_projection_retries_after_database_admission_timeout() -> None:
     async def scenario() -> tuple[int, int]:
         dirty = asyncio.Event()
         stop = asyncio.Event()
-        snapshot = NewsProjectionSnapshot(
-            input_fingerprint="same",
-            scoring_epoch_ms=0,
-            current_input_fingerprint="same",
+        snapshot = NewsStoryFactSnapshot(
+            material_snapshot_fingerprint="same",
+            evaluation_time_ms=0,
+            published_material_snapshot_fingerprint="same",
             rows=(),
         )
 
@@ -108,7 +108,7 @@ def test_story_projection_retries_after_database_admission_timeout() -> None:
                 return {"projection_status": "unchanged_input"}
 
         database = _Database()
-        projection = NewsStoryProjection(
+        projection = NewsStoryProjectionWorker(
             db=database,
             heavy_db=database,
             cpu=object(),

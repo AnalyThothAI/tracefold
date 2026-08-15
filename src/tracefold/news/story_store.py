@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -7,7 +8,21 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from .brief import selection_fingerprint
-from .models import CLASSIFIER_VERSION, IMPORTANCE_VERSION, STORY_IDENTITY_VERSION
+from .models import (
+    CLASSIFIER_VERSION,
+    IMPORTANCE_VERSION,
+    STORY_CLUSTERING_VERSION,
+    STORY_COMPARISON_VERSION,
+    STORY_EVENT_POLICY_VERSION,
+    STORY_FEATURE_VERSION,
+    STORY_GROUNDED_PROVIDER_VERSION,
+    STORY_IDENTITY_VERSION,
+    STORY_JACCARD_VERSION,
+    STORY_SELECTOR_VERSION,
+)
+from .models import (
+    STORY_PROJECTION_VERSION as STORY_MODULE_PROJECTION_VERSION,
+)
 from .sources import public_rss_sources
 
 RSS_ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
@@ -16,12 +31,40 @@ SCORING_EPOCH_MS = 60 * 60 * 1000
 NEWS_STORY_INPUT_ROW_CAP = 10_000
 NEWS_STORY_INPUT_BYTES_CAP = 8 * 1024 * 1024
 STORY_PROJECTION_VERSION = (
-    f"{STORY_IDENTITY_VERSION}:{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:rss96h-membership-top20-opennews12h-facets-v2"
+    f"{STORY_MODULE_PROJECTION_VERSION}:{STORY_IDENTITY_VERSION}:{STORY_COMPARISON_VERSION}:"
+    f"{STORY_FEATURE_VERSION}:{STORY_GROUNDED_PROVIDER_VERSION}:{STORY_EVENT_POLICY_VERSION}:"
+    f"{STORY_JACCARD_VERSION}:{STORY_CLUSTERING_VERSION}:{STORY_SELECTOR_VERSION}:"
+    f"{CLASSIFIER_VERSION}:{IMPORTANCE_VERSION}:rss96h-physical-top20-opennews12h-v2"
 )
 
 
 class NewsProjectionInputExceeded(RuntimeError):
     pass
+
+
+def _title_fingerprint(title: str) -> str:
+    return hashlib.sha256(str(title).encode()).hexdigest()
+
+
+def _bounded_provider_identity(value: object) -> tuple[dict[str, str], ...]:
+    if not isinstance(value, list):
+        return ()
+    bounded: list[dict[str, str]] = []
+    for raw in value[:16]:
+        if not isinstance(raw, Mapping):
+            continue
+        symbol = str(raw.get("symbol") or "").strip()[:32]
+        market_type = str(raw.get("market_type") or "").strip()[:32]
+        if not symbol:
+            continue
+        identity = {"symbol": symbol}
+        if market_type:
+            identity["market_type"] = market_type
+        match = str(raw.get("match") or "").strip()[:64]
+        if match:
+            identity["match"] = match
+        bounded.append(identity)
+    return tuple(bounded)
 
 
 def _require_bounded_story_rows(rows: Sequence[Mapping[str, Any]]) -> None:
@@ -51,7 +94,7 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
                  + octet_length(item.reporting_origin)
                  + octet_length(item.title)
                  + octet_length(item.description)
-                 + octet_length(item.content_fingerprint)
+                 + coalesce(octet_length((item.provider_metadata -> 'coins')::text), 0)
                  + 12
                ), 0) AS minimum_input_bytes
          FROM news_items item
@@ -79,7 +122,8 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
             """
             SELECT item.item_id, item.source_id, item.canonical_url,
                    item.reporting_origin, item.title, item.description,
-                   item.published_at_ms, item.content_fingerprint,
+                   item.published_at_ms,
+                   item.provider_metadata -> 'coins' AS provider_identity,
                    item.source_position, source.tier, source.source_kind
               FROM news_items item
               JOIN news_sources source ON source.source_id = item.source_id
@@ -105,8 +149,9 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
         if rss_source_ids
         else {}
     )
-    rows = [
-        {
+    rows = []
+    for row in loaded_rows:
+        story_row = {
             **{
                 key: row[key]
                 for key in (
@@ -122,34 +167,23 @@ def load_story_projection(repository: Any, *, now_ms: int) -> dict[str, Any]:
                     "source_kind",
                 )
             },
+            "title_fingerprint": _title_fingerprint(str(row["title"])),
+            "provider_identity": _bounded_provider_identity(row.get("provider_identity")),
             "memberships": memberships_by_source_id.get(str(row["source_id"]), ()),
         }
-        for row in loaded_rows
-    ]
+        rows.append(story_row)
     _require_bounded_story_rows(rows)
     input_fingerprint = repository.stable_json_hash(
         {
             "projection_version": STORY_PROJECTION_VERSION,
             "scoring_epoch_ms": scoring_epoch_ms,
-            "items": [
-                [
-                    str(row["item_id"]),
-                    str(row["content_fingerprint"]),
-                    int(row["published_at_ms"]),
-                    str(row["reporting_origin"]),
-                    int(row["tier"]),
-                    str(row["source_kind"]),
-                    row["source_position"],
-                    list(memberships_by_source_id.get(str(row["source_id"]), ())),
-                ]
-                for row in loaded_rows
-            ],
+            "items": rows,
         }
     )
     return {
-        "input_fingerprint": input_fingerprint,
-        "scoring_epoch_ms": scoring_epoch_ms,
-        "current_input_fingerprint": (summary["input_fingerprint"] if summary is not None else None),
+        "material_snapshot_fingerprint": input_fingerprint,
+        "evaluation_time_ms": scoring_epoch_ms,
+        "published_material_snapshot_fingerprint": (summary["input_fingerprint"] if summary is not None else None),
         "rows": rows,
     }
 
@@ -165,7 +199,7 @@ def publish_story_projection(
     conn = repository.conn
     repository.lock_story_inputs()
     current_input = load_story_projection(repository, now_ms=now_ms)
-    if current_input["input_fingerprint"] != snapshot.input_fingerprint:
+    if current_input["material_snapshot_fingerprint"] != snapshot.material_snapshot_fingerprint:
         return {
             "projection_status": "superseded_snapshot",
             "items": len(snapshot.rows),
@@ -179,7 +213,7 @@ def publish_story_projection(
         """
     ).fetchone()
     published_fingerprint = summary["input_fingerprint"] if summary is not None else None
-    if published_fingerprint == snapshot.input_fingerprint:
+    if published_fingerprint == snapshot.material_snapshot_fingerprint:
         conn.execute(
             """
             UPDATE news_projection_summary
@@ -195,7 +229,7 @@ def publish_story_projection(
             "stories": len(projection.get("stories", [])),
             "rows_written": 0,
         }
-    if published_fingerprint != snapshot.current_input_fingerprint:
+    if published_fingerprint != snapshot.published_material_snapshot_fingerprint:
         return {
             "projection_status": "superseded_snapshot",
             "items": len(snapshot.rows),
@@ -261,7 +295,7 @@ def publish_story_projection(
                 newest_story,
                 material_writes > 0,
                 now_ms,
-                snapshot.input_fingerprint,
+                snapshot.material_snapshot_fingerprint,
                 STORY_PROJECTION_VERSION,
                 now_ms,
                 now_ms,
@@ -387,7 +421,6 @@ def _publish_materialized_rows(
         desired_stories AS MATERIALIZED (
           SELECT * FROM jsonb_to_recordset(%s::jsonb) AS desired(
             story_id text,
-            canonical_key text,
             canonical_title text,
             representative_item_id text,
             representative_source_id text,
@@ -400,6 +433,7 @@ def _publish_materialized_rows(
             importance_score integer,
             importance_factors jsonb,
             facet_facts jsonb,
+            identity_evidence jsonb,
             item_count integer,
             source_count integer,
             first_published_at_ms bigint,
@@ -409,27 +443,27 @@ def _publish_materialized_rows(
         ),
         upserted_stories AS (
           INSERT INTO news_stories(
-                  story_id, canonical_key, canonical_title,
+                  story_id, canonical_title,
                   representative_item_id, representative_source_id,
                   representative_title, representative_url,
                   representative_description, scoring_item_id, level, category,
                   importance_score, importance_factors, facet_facts,
+                  identity_evidence,
                   item_count, source_count,
                   first_published_at_ms, last_published_at_ms, state_fingerprint,
                   created_at_ms, updated_at_ms
           )
-          SELECT story_id, canonical_key, canonical_title,
+          SELECT story_id, canonical_title,
                  representative_item_id, representative_source_id,
                  representative_title, representative_url,
                  representative_description, scoring_item_id,
                  level, category, importance_score,
-                 importance_factors, facet_facts,
+                 importance_factors, facet_facts, identity_evidence,
                  item_count, source_count,
                  first_published_at_ms, last_published_at_ms, state_fingerprint,
                  %s, %s
             FROM desired_stories
           ON CONFLICT (story_id) DO UPDATE SET
-                  canonical_key=EXCLUDED.canonical_key,
                   canonical_title=EXCLUDED.canonical_title,
                   representative_item_id=EXCLUDED.representative_item_id,
                   representative_source_id=EXCLUDED.representative_source_id,
@@ -441,6 +475,7 @@ def _publish_materialized_rows(
                   importance_score=EXCLUDED.importance_score,
                   importance_factors=EXCLUDED.importance_factors,
                   facet_facts=EXCLUDED.facet_facts,
+                  identity_evidence=EXCLUDED.identity_evidence,
                   item_count=EXCLUDED.item_count, source_count=EXCLUDED.source_count,
                   first_published_at_ms=EXCLUDED.first_published_at_ms,
                   last_published_at_ms=EXCLUDED.last_published_at_ms,

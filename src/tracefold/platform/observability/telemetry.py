@@ -84,6 +84,12 @@ class TelemetryRegistry:
             ("domain", "transition"),
             registry=self.registry,
         )
+        self.news_story_projection_value = Gauge(
+            "tracefold_news_story_projection_value",
+            "Aggregate, content-free diagnostics for the current News Story projection.",
+            ("measure",),
+            registry=self.registry,
+        )
         self.queue_oldest_delay_seconds = Gauge(
             "tracefold_worker_queue_oldest_delay_seconds",
             "Age of the oldest due queue item.",
@@ -181,6 +187,9 @@ class TelemetryRegistry:
             domain=_label(domain),
             transition=_label(transition),
         ).inc(normalized_count)
+
+    def set_news_story_projection_value(self, measure: str, value: int) -> None:
+        self.news_story_projection_value.labels(measure=_label(measure)).set(max(0, int(value)))
 
     def set_queue_oldest_delay_seconds(self, worker: str, queue: str, seconds: float) -> None:
         self.queue_oldest_delay_seconds.labels(

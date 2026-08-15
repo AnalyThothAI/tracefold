@@ -18,13 +18,12 @@ from tests.postgres_test_utils import (
     prepare_postgres_database,
     reset_postgres_schema,
 )
-from tests.support.news import compute_news_public_clusters, rebuild_news_projection
+from tests.support.news import rebuild_news_projection
 from tracefold.app.http.app import create_app
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.news.models import NewsBriefStory
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.projection import NewsProjectionSnapshot
-from tracefold.news.ranking import score_public_cluster
+from tracefold.news.projection import NewsStoryFactSnapshot, build_story_projection
 from tracefold.news.repository import NewsRepository
 from tracefold.news.sources import _PINNED_SOURCE_TIERS, opennews_source
 from tracefold.platform.config.settings import NewsPushSettings, NewsSettings, Settings
@@ -585,40 +584,30 @@ def _assert_canonical_opennews(events: tuple[Any, ...]) -> None:
         } == expected
 
 
-def _assert_story_and_selector_parity(
+def _assert_story_v2_and_pinned_helpers(
     conn: Any,
     pinned: dict[str, Any],
-    actual_clusters: list[dict[str, Any]],
+    actual_top_stories: list[dict[str, Any]],
 ) -> None:
-    actual_components = [
-        {
-            "storyId": row["story_id"],
-            "canonicalKey": row["canonical_key"],
-            "memberIds": sorted(row["member_ids"]),
-            "memberCount": row["member_count"],
-            "sourceCount": row["source_count"],
-        }
+    stories = [
+        dict(row)
         for row in conn.execute(
             """
-            SELECT story.story_id, story.canonical_key, story.item_count AS member_count,
-                   story.source_count,
+            SELECT story.story_id, story.item_count, story.source_count, story.identity_evidence,
                    array_agg(item.provider_record_id ORDER BY item.provider_record_id) AS member_ids
               FROM news_stories story
               JOIN news_story_members member ON member.story_id = story.story_id
               JOIN news_items item ON item.item_id = member.item_id
-             GROUP BY story.story_id, story.canonical_key, story.item_count, story.source_count
+             GROUP BY story.story_id, story.item_count, story.source_count, story.identity_evidence
              ORDER BY story.story_id
             """
         ).fetchall()
     ]
-    expected_components = sorted(
-        (
-            {key: component[key] for key in ("storyId", "canonicalKey", "memberIds", "memberCount", "sourceCount")}
-            for component in pinned["components"]
-        ),
-        key=lambda component: component["storyId"],
-    )
-    assert actual_components == expected_components
+    assert stories
+    assert all(len(story["story_id"]) == 64 for story in stories)
+    assert all(story["item_count"] == len(story["member_ids"]) for story in stories)
+    assert all(story["source_count"] <= story["item_count"] for story in stories)
+    assert all(story["identity_evidence"]["identity_version"] == "news_story_identity_v2" for story in stories)
 
     actual_items = {
         row["provider_record_id"]: dict(row)
@@ -637,119 +626,29 @@ def _assert_story_and_selector_parity(
         assert actual["category"] == expected["category"]
         assert actual["classification_source"] == expected["classSource"]
         assert actual["classification_confidence"] == pytest.approx(expected["confidence"])
-        assert actual["importance_score"] == expected["importanceScore"]
-        factors = actual["importance_factors"]
-        assert factors["severity_level"] == expected["level"]
-        assert factors["reporting_origin_count"] == expected["corroborationCount"]
-        assert factors["scoring_corroboration_count"] == max(
-            expected["corroborationCount"], expected["entityCorroborationCount"]
-        )
-        assert factors["entity_corroboration_boost"] == min(expected["entityCorroborationCount"], 5) * 4
-        assert factors["total"] == expected["importanceScore"]
-
-    expected_clusters = pinned["clusters"]
-    assert len(actual_clusters) == len(expected_clusters)
-    for actual, expected in zip(actual_clusters, expected_clusters, strict=True):
-        assert {
-            "storyId": actual["story_id"],
-            "primaryTitle": actual["primary_title"],
-            "primarySource": actual["primary_source"].strip().lower(),
-            "primaryLink": actual["primary_link"],
-            "primaryPublishedAtMs": actual["primary_published_at_ms"],
-            "sourceCount": actual["source_count"],
-            "uniqueSourceCount": actual["unique_source_count"],
-            "sources": [source.strip().lower() for source in actual["sources"]],
-            "lastUpdatedMs": actual["last_updated_ms"],
-            "memberTitles": actual["member_titles"],
-            "sourceTier": actual["source_tier"],
-            "upstreamImportanceScore": actual["upstream_importance_score"],
-            "entityCorroboration": actual["entity_corroboration"],
-            "corroborationSourceCount": actual["corroboration_source_count"],
-            "isAlert": actual["is_alert"],
-            "threatLevel": actual["threat_level"],
-            "category": actual["category"],
-            "threat": actual["threat"],
-        } == {
-            **{key: expected[key] for key in expected if key not in {"importanceScore", "primarySource", "sources"}},
-            "primarySource": expected["primarySource"].strip().lower(),
-            "sources": [source.strip().lower() for source in expected["sources"]],
-        }
-        assert score_public_cluster(actual) == pytest.approx(expected["importanceScore"], abs=1e-12)
 
     selection = conn.execute("SELECT * FROM news_brief_selection_current WHERE singleton_key = true").fetchone()
     assert selection is not None
-    expected_stats = pinned["selector"]["stats"]
-    assert selection["selection_stats"] == {
-        "considered": expected_stats["considered"],
-        "admissibility_dropped": expected_stats["admissibilityDropped"],
-        "source_cap_dropped": expected_stats["sourceCapDropped"],
-        "overflow_dropped": expected_stats["overflowDropped"],
-        "brief_eligible_considered": expected_stats["briefEligibleConsidered"],
-        "brief_eligible_promoted": expected_stats["briefEligiblePromoted"],
-    }
-    assert expected_stats["briefEligiblePromoted"] is True
-    actual_top = list(selection["top_stories"])
-    expected_top = pinned["selector"]["selected"]
-    assert [story["story_id"] for story in actual_top] == [story["storyId"] for story in expected_top]
-    for actual, expected in zip(actual_top, expected_top, strict=True):
-        cluster = next(
-            cluster
-            for cluster in expected_clusters
-            if cluster["storyId"] == expected["storyId"] and cluster["primaryTitle"] == expected["primaryTitle"]
-        )
-        assert {
-            "primary_title": actual["primary_title"],
-            "primary_source": actual["primary_source"].strip().lower(),
-            "primary_link": actual["primary_link"],
-            "primary_published_at_ms": actual["primary_published_at_ms"],
-            "source_count": actual["source_count"],
-            "unique_source_count": actual["unique_source_count"],
-            "sources": [source.strip().lower() for source in actual["sources"]],
-            "last_updated_ms": actual["last_updated_ms"],
-            "member_titles": actual["member_titles"],
-            "source_tier": actual["source_tier"],
-            "upstream_importance_score": actual["upstream_importance_score"],
-            "entity_corroboration": actual["entity_corroboration"],
-            "corroboration_source_count": actual["corroboration_source_count"],
-            "is_alert": actual["is_alert"],
-            "threat_level": actual["threat_level"],
-            "category": actual["category"],
-        } == {
-            "primary_title": cluster["primaryTitle"],
-            "primary_source": cluster["primarySource"].strip().lower(),
-            "primary_link": cluster["primaryLink"],
-            "primary_published_at_ms": cluster["primaryPublishedAtMs"],
-            "source_count": cluster["sourceCount"],
-            "unique_source_count": cluster["uniqueSourceCount"],
-            "sources": [source.strip().lower() for source in cluster["sources"]],
-            "last_updated_ms": cluster["lastUpdatedMs"],
-            "member_titles": cluster["memberTitles"],
-            "source_tier": cluster["sourceTier"],
-            "upstream_importance_score": cluster["upstreamImportanceScore"],
-            "entity_corroboration": cluster["entityCorroboration"],
-            "corroboration_source_count": cluster["corroborationSourceCount"],
-            "is_alert": cluster["isAlert"],
-            "threat_level": cluster["threatLevel"],
-            "category": cluster["category"],
-        }
-        assert actual["importance_score"] == pytest.approx(expected["importanceScore"], abs=1e-12)
-        assert actual["effective_importance_score"] == pytest.approx(expected["effectiveImportanceScore"], abs=1e-12)
-    assert pinned["selector"]["briefClusterStoryId"] in {story["story_id"] for story in actual_top}
+    assert list(selection["top_stories"]) == actual_top_stories
+    story_ids = {story["story_id"] for story in stories}
+    assert {story["story_id"] for story in actual_top_stories} <= story_ids
 
 
 def _compute_current_public_clusters(repository: NewsRepository, *, now_ms: int) -> list[dict[str, Any]]:
     payload = repository.load_story_projection(now_ms=now_ms)
-    public_clusters = compute_news_public_clusters(
-        NewsProjectionSnapshot(
-            input_fingerprint=str(payload["input_fingerprint"]),
-            scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
-            current_input_fingerprint=(
-                str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") else None
+    projection = build_story_projection(
+        NewsStoryFactSnapshot(
+            material_snapshot_fingerprint=str(payload["material_snapshot_fingerprint"]),
+            evaluation_time_ms=int(payload["evaluation_time_ms"]),
+            published_material_snapshot_fingerprint=(
+                str(payload["published_material_snapshot_fingerprint"])
+                if payload.get("published_material_snapshot_fingerprint")
+                else None
             ),
             rows=tuple(dict(row) for row in payload["rows"]),
         )
     )
-    return public_clusters
+    return [dict(row) for row in projection.selection_snapshot["top_stories"]]
 
 
 def test_scoreless_1019_market_strategy_reaches_story_brief_http_and_push(
@@ -984,7 +883,7 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
         assert replay["items_inserted"] == 0
         assert replay["items_updated"] == 0
         assert projection["projection_status"] == "rebuilt"
-        _assert_story_and_selector_parity(
+        _assert_story_v2_and_pinned_helpers(
             conn,
             pinned,
             _compute_current_public_clusters(repository, now_ms=NOW_MS),
@@ -1080,7 +979,7 @@ def test_frozen_opennews_pinned_worldmonitor_provider_to_http_and_whole_lkg(tmp_
         with conn.transaction():
             repository.record_opennews_events(source=source, events=(changed,), observed_at_ms=next_ms)
             rebuild_news_projection(repository, now_ms=next_ms)
-        _assert_story_and_selector_parity(
+        _assert_story_v2_and_pinned_helpers(
             conn,
             degraded_pinned,
             _compute_current_public_clusters(repository, now_ms=next_ms),

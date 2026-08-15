@@ -6,13 +6,21 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-STORY_IDENTITY_VERSION = "worldmonitor_story_identity_0e8785c_utf16"
+STORY_COMPARISON_VERSION = "news_story_comparison_v2"
+STORY_FEATURE_VERSION = "news_story_features_v2"
+STORY_GROUNDED_PROVIDER_VERSION = "news_story_grounded_provider_v2"
+STORY_EVENT_POLICY_VERSION = "news_story_event_policy_v2"
+STORY_JACCARD_VERSION = "news_story_jaccard_v2"
+STORY_CLUSTERING_VERSION = "news_story_fixed_anchor_v2"
+STORY_IDENTITY_VERSION = "news_story_identity_v2"
+STORY_SELECTOR_VERSION = "news_story_public_selector_v2"
+STORY_PROJECTION_VERSION = "news_story_projection_v2"
 CLASSIFIER_VERSION = "worldmonitor_keyword_classifier_0e8785c"
 IMPORTANCE_VERSION = "worldmonitor_importance_0e8785c_reporting_origin"
 BRIEF_PROMPT_VERSION = "worldmonitor_public_insights_prompt_0e8785c"
 BRIEF_WORKFLOW_VERSION = "worldmonitor_public_insights_workflow_0e8785c"
 BRIEF_COMPOSER_VERSION = "worldmonitor_public_insights_composer_0e8785c"
-BRIEF_SCHEMA_VERSION = "worldmonitor_public_insights_schema_v2"
+BRIEF_SCHEMA_VERSION = "worldmonitor_public_insights_schema_v3"
 NEWS_LOCALE = "en"
 
 INSIGHTS_SYNTHESIS_PARSE = "INSIGHTS_SYNTHESIS_PARSE"

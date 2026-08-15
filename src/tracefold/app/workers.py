@@ -68,7 +68,7 @@ from tracefold.market import (
 from tracefold.news import (
     NewsAcquisition,
     NewsBriefCandidate,
-    NewsStoryProjection,
+    NewsStoryProjectionWorker,
 )
 from tracefold.news.push import NewsItemPush
 from tracefold.news.sources import opennews_source, public_rss_sources
@@ -169,7 +169,7 @@ class _Components:
     asset_profile_refresh: AssetProfileRefresh
     collector: CollectorService | None
     news: NewsAcquisition | None
-    news_story: NewsStoryProjection | None
+    news_story: NewsStoryProjectionWorker | None
     news_brief: NewsBriefCandidate | None
     news_title_presentation: NewsItemTitlePresentation | None
     news_push: NewsItemPush | None
@@ -843,7 +843,7 @@ async def _wire_components(
 
     due_turns: list[tuple[Callable[[], Awaitable[bool | str | None]], float]] = []
     news: NewsAcquisition | None = None
-    news_story: NewsStoryProjection | None = None
+    news_story: NewsStoryProjectionWorker | None = None
     news_brief: NewsBriefCandidate | None = None
     push_availability = news_push_availability(settings)
     title_availability = news_title_presentation_availability(settings)
@@ -905,10 +905,11 @@ async def _wire_components(
         )
         if news_cpu is None:
             raise RuntimeError("news_cpu_missing")
-        news_story = NewsStoryProjection(
+        news_story = NewsStoryProjectionWorker(
             db=db,
             heavy_db=heavy_db,
             cpu=news_cpu,
+            telemetry=telemetry,
             dirty=story_dirty,
         )
         news_brief = NewsBriefCandidate(

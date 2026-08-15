@@ -465,22 +465,37 @@ def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_his
               FROM generate_series(1, 200) value;
 
             INSERT INTO news_stories(
-              story_id, canonical_key, canonical_title,
+              story_id, canonical_title,
               representative_item_id, representative_source_id,
               representative_title, representative_description,
               scoring_item_id, level, category, importance_score,
               importance_factors, item_count, source_count,
               first_published_at_ms, last_published_at_ms,
-              state_fingerprint, created_at_ms, updated_at_ms, facet_facts
+              state_fingerprint, created_at_ms, updated_at_ms, facet_facts,
+              identity_evidence
             )
-            SELECT 'story-' || value, 'story-key-' || value,
-                   'Story ' || value, 'member-' || (value * 2 - 1),
+            SELECT 'story-' || value, 'Story ' || value,
+                   'member-' || (value * 2 - 1),
                    'audit-source', 'Story ' || value, '',
                    'member-' || (value * 2 - 1), 'info', 'general', 1,
                    '{}'::jsonb, 2, 1, 20000 + value * 2 - 1,
                    20000 + value * 2, 'story-fingerprint-' || value,
                    30000 + value, 30000 + value,
-                   '{"source_ids":["audit-source"],"reporting_origins":["Audit Wire"]}'::jsonb
+                   '{"source_ids":["audit-source"],"reporting_origins":["Audit Wire"]}'::jsonb,
+                   jsonb_build_object(
+                     'identity_version', 'news_story_identity_v2',
+                     'feature_version', 'news_story_feature_v2',
+                     'jaccard_version', 'news_story_jaccard_v2',
+                     'event_policy_version', 'news_story_event_policy_v2',
+                     'clustering_version', 'news_story_fixed_anchor_v2',
+                     'anchor_item_id', 'member-' || (value * 2 - 1),
+                     'strong_entity_keys', '[]'::jsonb,
+                     'action_keys', '[]'::jsonb,
+                     'numeric_keys', '[]'::jsonb,
+                     'location_keys', '[]'::jsonb,
+                     'membership_reasons', '{}'::jsonb,
+                     'rejection_reasons', '{}'::jsonb
+                   )
               FROM generate_series(1, 100) value;
 
             INSERT INTO news_story_members(story_id, item_id)

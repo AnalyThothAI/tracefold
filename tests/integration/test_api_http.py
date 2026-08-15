@@ -44,7 +44,7 @@ from tracefold.news import (
     OpenNewsEvent,
 )
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.projection import NewsProjectionSnapshot, compute_news_story_projection
+from tracefold.news.projection import NewsStoryFactSnapshot, build_story_projection
 from tracefold.news.sources import opennews_source, public_rss_sources
 from tracefold.platform.config.settings import NewsSettings, Settings
 
@@ -110,11 +110,13 @@ def _rebuild_news_projection(
     now_ms: int,
 ) -> dict[str, Any]:
     payload = repos.news.load_story_projection(now_ms=now_ms)
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint=str(payload["input_fingerprint"]),
-        scoring_epoch_ms=int(payload["scoring_epoch_ms"]),
-        current_input_fingerprint=(
-            str(payload["current_input_fingerprint"]) if payload.get("current_input_fingerprint") else None
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint=str(payload["material_snapshot_fingerprint"]),
+        evaluation_time_ms=int(payload["evaluation_time_ms"]),
+        published_material_snapshot_fingerprint=(
+            str(payload["published_material_snapshot_fingerprint"])
+            if payload.get("published_material_snapshot_fingerprint")
+            else None
         ),
         rows=tuple(dict(row) for row in payload["rows"]),
     )
@@ -125,11 +127,11 @@ def _rebuild_news_projection(
             "stories": 0,
             "rows_written": 0,
         }
-    projection = compute_news_story_projection(snapshot)
+    projection = build_story_projection(snapshot)
     return dict(
         repos.news.publish_story_projection(
             snapshot=snapshot,
-            projection=projection,
+            projection=projection.as_payload(),
             now_ms=now_ms,
         )
     )
@@ -828,6 +830,10 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         )
         story_id = story["story_id"]
         detail_response = client.get(f"/api/news/stories/{story_id}", headers=headers)
+        pre_cut_story_response = client.get(
+            f"/api/news/stories/{'2' * 64}",
+            headers=headers,
+        )
         brief_response = client.get("/api/news/brief", headers=headers)
         status_response = client.get("/api/news/status", headers=headers)
         realtime_status_response = client.get(
@@ -936,6 +942,7 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     }
 
     assert detail_response.status_code == 200
+    assert pre_cut_story_response.status_code == 404
     detail = detail_response.json()["data"]
     assert detail["story_id"] == story_id
     assert detail["representative_item_id"]

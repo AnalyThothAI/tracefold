@@ -756,6 +756,9 @@ describe("NewsPage", () => {
     );
     fireEvent.click(auditSummary);
     expect(screen.getByText("聚合身份")).toBeInTheDocument();
+    expect(screen.getByText("Story V2 身份证据")).toBeInTheDocument();
+    expect(screen.getByText(/词法相似度只使用 Jaccard/)).toBeInTheDocument();
+    expect(screen.getByText("news_story_identity_v2")).toBeInTheDocument();
     expect(screen.getByText("总重要度").parentElement).toHaveTextContent("83");
     expect(screen.getByRole("link", { name: /评分报道原文/ })).toHaveAttribute(
       "href",

@@ -1684,7 +1684,7 @@ class NewsRepository:
         feed_cursor: tuple[int, int, str] | None = None
         if cursor:
             decoded = _cursor_decode(cursor)
-            if decoded.get("v") != 1 or decoded.get("sort") != sort:
+            if decoded.get("v") != 2 or decoded.get("sort") != sort:
                 raise ValueError("news_feed_cursor_invalid")
             cursor_filters = decoded.get("filters")
             if cursor_filters != filters:
@@ -1720,7 +1720,7 @@ class NewsRepository:
             last = page[-1]
             next_cursor = _cursor_encode(
                 {
-                    "v": 1,
+                    "v": 2,
                     "sort": sort,
                     "filters": filters,
                     "last_published_at_ms": int(last["last_published_at_ms"]),
@@ -1819,7 +1819,7 @@ class NewsRepository:
         member_cursor: tuple[int, str] | None = None
         if members_cursor:
             decoded = _cursor_decode(members_cursor)
-            if decoded.get("v") != 1 or decoded.get("kind") != "story_members":
+            if decoded.get("v") != 2 or decoded.get("kind") != "story_members":
                 raise ValueError("news_story_members_cursor_invalid")
             if decoded.get("story_id") != story_id:
                 raise ValueError("news_story_members_cursor_story_mismatch")
@@ -1845,7 +1845,7 @@ class NewsRepository:
             last = page[-1]
             next_cursor = _cursor_encode(
                 {
-                    "v": 1,
+                    "v": 2,
                     "kind": "story_members",
                     "story_id": story_id,
                     "published_at_ms": int(last["published_at_ms"]),
@@ -1857,6 +1857,7 @@ class NewsRepository:
             **story,
             "provider_evidence": provider_evidence,
             "canonical_title": str(row["canonical_title"]),
+            "identity_evidence": dict(row["identity_evidence"]),
             "members": [_item_payload(member) for member in page],
             "members_page": {
                 "returned_count": len(page),

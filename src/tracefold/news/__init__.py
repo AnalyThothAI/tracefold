@@ -22,8 +22,9 @@ from .opennews import (
     OpenNewsHistoryError,
     OpenNewsStrategyHistory,
 )
-from .projection_worker import NewsStoryProjection
+from .projection_worker import NewsStoryProjectionWorker
 from .runtime import NewsAcquisition, NewsBriefCandidate
+from .story_projection import NewsStoryFactSnapshot, NewsStoryProjection, build_story_projection
 
 __all__ = [
     "EventCategory",
@@ -39,7 +40,9 @@ __all__ = [
     "NewsFeedFetch",
     "NewsFeedReader",
     "NewsSourceDefinition",
+    "NewsStoryFactSnapshot",
     "NewsStoryProjection",
+    "NewsStoryProjectionWorker",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
@@ -47,4 +50,5 @@ __all__ = [
     "PublicInsightsCategory",
     "PublicInsightsThreatLevel",
     "ThreatLevel",
+    "build_story_projection",
 ]

@@ -14,7 +14,7 @@ from tracefold.macro.dependencies import (
 from tracefold.macro.projection import MacroModuleClaim, MacroProjectionService
 from tracefold.news import story_store
 from tracefold.news.brief import selection_fingerprint
-from tracefold.news.projection import NewsProjectionSnapshot
+from tracefold.news.projection import NewsStoryFactSnapshot
 from tracefold.news.repository import NewsRepository
 
 
@@ -79,7 +79,7 @@ def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: An
         story_store,
         "load_story_projection",
         lambda _repository, *, now_ms: {
-            "input_fingerprint": "snapshot-fingerprint",
+            "material_snapshot_fingerprint": "snapshot-fingerprint",
             "rows": [],
         },
     )
@@ -87,10 +87,10 @@ def test_news_story_owner_invariant_uses_only_published_snapshot(monkeypatch: An
     for helper in ("_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
 
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="snapshot-fingerprint",
-        scoring_epoch_ms=0,
-        current_input_fingerprint=None,
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint="snapshot-fingerprint",
+        evaluation_time_ms=0,
+        published_material_snapshot_fingerprint=None,
         rows=(
             {"item_id": "snapshot-b", "published_at_ms": 2},
             {"item_id": "snapshot-a", "published_at_ms": 1},
@@ -177,7 +177,7 @@ def test_news_story_load_captures_the_publish_fence_before_moving_facts(
     )
 
     assert calls == ["summary", "bounds", "facts"]
-    assert snapshot["current_input_fingerprint"] == "published-fingerprint"
+    assert snapshot["published_material_snapshot_fingerprint"] == "published-fingerprint"
 
 
 def test_news_story_publish_accepts_a_matching_locked_input_snapshot(monkeypatch: Any) -> None:
@@ -187,16 +187,16 @@ def test_news_story_publish_accepts_a_matching_locked_input_snapshot(monkeypatch
     monkeypatch.setattr(
         story_store,
         "load_story_projection",
-        lambda *_args, **_kwargs: {"input_fingerprint": "snapshot-fingerprint"},
+        lambda *_args, **_kwargs: {"material_snapshot_fingerprint": "snapshot-fingerprint"},
     )
     monkeypatch.setattr(story_store, "_publish_materialized_rows", lambda *_args, **_kwargs: (0, 0))
     for helper in ("_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
 
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="snapshot-fingerprint",
-        scoring_epoch_ms=0,
-        current_input_fingerprint="previous-fingerprint",
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint="snapshot-fingerprint",
+        evaluation_time_ms=0,
+        published_material_snapshot_fingerprint="previous-fingerprint",
         rows=({"item_id": "snapshot", "published_at_ms": 1},),
     )
 
@@ -227,13 +227,13 @@ def test_news_story_publish_rejects_a_superseded_snapshot(monkeypatch: Any) -> N
     monkeypatch.setattr(
         story_store,
         "load_story_projection",
-        lambda *_args, **_kwargs: {"input_fingerprint": "snapshot-fingerprint"},
+        lambda *_args, **_kwargs: {"material_snapshot_fingerprint": "snapshot-fingerprint"},
     )
 
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="snapshot-fingerprint",
-        scoring_epoch_ms=0,
-        current_input_fingerprint="previous-fingerprint",
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint="snapshot-fingerprint",
+        evaluation_time_ms=0,
+        published_material_snapshot_fingerprint="previous-fingerprint",
         rows=({"item_id": "snapshot", "published_at_ms": 1},),
     )
 
@@ -261,12 +261,12 @@ def test_news_story_invariant_failure_is_not_hidden_as_a_moving_snapshot(monkeyp
     monkeypatch.setattr(
         story_store,
         "load_story_projection",
-        lambda *_args, **_kwargs: {"input_fingerprint": "snapshot-fingerprint"},
+        lambda *_args, **_kwargs: {"material_snapshot_fingerprint": "snapshot-fingerprint"},
     )
-    snapshot = NewsProjectionSnapshot(
-        input_fingerprint="snapshot-fingerprint",
-        scoring_epoch_ms=0,
-        current_input_fingerprint=None,
+    snapshot = NewsStoryFactSnapshot(
+        material_snapshot_fingerprint="snapshot-fingerprint",
+        evaluation_time_ms=0,
+        published_material_snapshot_fingerprint=None,
         rows=({"item_id": "snapshot", "published_at_ms": 1},),
     )
 

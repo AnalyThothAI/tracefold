@@ -201,6 +201,17 @@ def test_finite_awaits_durable_fence_before_submitting_thread_work() -> None:
     asyncio.run(scenario())
 
 
+def test_story_projection_diagnostics_are_bounded_labelled_gauges() -> None:
+    telemetry = TelemetryRegistry()
+
+    telemetry.set_news_story_projection_value("candidate_pair_count", 7)
+    telemetry.set_news_story_projection_value("event_family_general", 3)
+
+    rendered = telemetry.render_prometheus_text()
+    assert 'tracefold_news_story_projection_value{measure="candidate_pair_count"} 7.0' in rendered
+    assert 'tracefold_news_story_projection_value{measure="event_family_general"} 3.0' in rendered
+
+
 def test_finite_does_not_submit_when_durable_fence_fails() -> None:
     class FenceFailure(RuntimeError):
         pass

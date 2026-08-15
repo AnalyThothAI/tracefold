@@ -815,7 +815,6 @@
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `story_id` | `TEXT` | False | `None` |
-| `canonical_key` | `TEXT` | False | `None` |
 | `canonical_title` | `TEXT` | False | `None` |
 | `representative_item_id` | `TEXT` | False | `None` |
 | `representative_source_id` | `TEXT` | False | `None` |
@@ -835,6 +834,7 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `facet_facts` | `JSONB` | False | `None` |
+| `identity_evidence` | `JSONB` | False | `None` |
 
 ## `news_story_members`
 

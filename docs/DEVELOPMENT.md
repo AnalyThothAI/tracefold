@@ -100,85 +100,74 @@ uv run pytest -q \
   tests/integration/test_compose_postgres.py
 ```
 
-### News WorldMonitor parity evaluation
+### News Story V2 evaluation and pinned WorldMonitor helpers
 
-The public News authority is WorldMonitor commit
-`0e8785c43e6a693990a14181ae0a16066c15fc8c`. Parity includes the public
-`full/en + INTEL_SOURCES` population builder, shared lexical Story identity,
-public cluster scoring/selection, English L1/L2 synthesis, and whole-payload
-current/LKG semantics. The frozen catalog contains exactly 179 physical HTTPS
-feeds, 183 category memberships, 178 reporting-source names, and 17 categories.
-Optional cached classification, Dashboard ISQ reorder, and personalized Digest
-Magazine remain excluded surfaces.
+Tracefold Story identity is owned by Issue #44 and is evaluated through one
+public computation seam: `build_story_projection(NewsStoryFactSnapshot)`.
+WorldMonitor commit `0e8785c43e6a693990a14181ae0a16066c15fc8c` remains pinned
+only for the 179-feed RSS catalog/parser, keyword classifier, importance/public
+selector, and Brief prompt/parser/composer helpers. Its Digest identity,
+browser grouping, semantic refinement, and tracking state are explicitly not
+Story parity targets.
 
-The pinned checkout contains no OpenNews implementation. The operator-bound,
-Strategy-qualified OpenNews lane is therefore an explicit Tracefold input-role
-decision; WorldMonitor parity covers the RSS catalog and parser, shared Story
-kernel, public selector, composer, and no-empty/current-LKG publication
-semantics. Strategy admission never implies an OpenNews score boost or tier
-override, and Tracefold never re-evaluates provider Strategy rules.
+`tests/fixtures/news_story_v2_golden.json` is the versioned original-title
+corpus. `tests/test_news_story_projection_v2.py` asserts all mandatory merge
+and split cases, reason codes, fixed-anchor non-transitivity, conservative
+multi-anchor ambiguity, untrackable per-Item identity, input-permutation
+invariance, provider grounding, exact candidate/evidence failures, and pairwise
+precision >= 0.98 and recall >= 0.90. The corpus includes the observed SEC and
+OI template failures plus Simplified/Traditional Chinese, numeric-format,
+Anthropic, wrapper/Unicode, disaster revision, cross-window, and noisy-provider
+cases. Tests of private feature seams may diagnose a rule, but acceptance must
+pass through the complete projection interface.
 
-The maintained chain takes the first five RSS/Atom wire entries before gates,
-keeps valid feed snapshots for 96 hours, scores membership-expanded RSS rows
-before the stable Top 20 per category, and unions the selected physical Items
-with the current 12-hour Strategy-admitted OpenNews facts. Strategy admission is
-the material-input gate; bounded provider score, assets, and Strategy provenance
-cannot affect Story identity, public scoring, ordering, or Brief after
-admission. Push admission is fixed independently at the first live OpenNews
-Item insert and never consults Story state. A selected numeric OpenNews score may qualify only the
-downstream fixed `>70` reader focus filter; it does not change the materialized Story
-population. The public seed applies the pinned
-JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items with the
-same identity kernel before selection. The public selector is one global
-server-owned order with no profile, preference, embedding, topic grouping,
-entity veto, private diversity rule, or client-side reorder.
-
-`tests/test_news_public_sources.py`, `tests/test_news_rss_adapter.py`, and
-`tests/test_news_worldmonitor_parity.py` are the maintained local suites. They
-cover the exact source/membership inventory and order, first-five parser gates,
-positive and negative title pairs, exact-title and containment merges,
-CJK features, hot buckets, order independence, classification, historical
-exclusions, importance rounding, public selector ordering and admission,
-corroborated-lead reservation, and the frozen reporting-origin tier-map digest.
-`tests/test_news_pinned_worldmonitor_differential.py` is the actual upstream
-differential: when the pinned sibling is present, it imports and executes its
-identity, selector, prompt, parser, and composer modules and verifies the result
-against the committed golden before comparing Tracefold. Portable runs without
-the sibling use that same golden rather than skipping the lane.
-The identity port also fixes the pinned Node runtime's Unicode 17 letter,
-number, uppercase, and lowercase semantics so host Python Unicode data cannot
-silently change Story IDs.
-The real-PostgreSQL public pipeline suite additionally covers RSS snapshot
-replacement, canonical allowlisted Strategy adaptation and provenance union,
-the physical Story closure, singleton selection, L1/L2 composer, half-hour slot
-finalization, and whole LKG decision. Run the differential lane with:
+`tests/test_news_public_sources.py` and `tests/test_news_rss_adapter.py` retain
+the exact source/membership inventory and first-five parser gates.
+`tests/test_news_worldmonitor_parity.py` covers only pinned classifier,
+historical-marker, and importance behavior.
+`tests/test_news_pinned_worldmonitor_differential.py` executes the pinned
+selector and Brief helpers when the sibling checkout is present and otherwise
+uses the committed frozen output. It no longer claims Story-identity parity.
+Run the focused lane with:
 
 ```bash
 TRACEFOLD_WORLDMONITOR_REPO=/path/to/worldmonitor \
   uv run pytest -q \
+    tests/test_news_story_projection_v2.py \
     tests/test_news_public_sources.py \
     tests/test_news_rss_adapter.py \
     tests/test_news_pinned_worldmonitor_differential.py \
     tests/test_news_worldmonitor_parity.py
 ```
 
-The repository defaults to the sibling `../worldmonitor`. A present repo at any
-commit other than `0e8785c43e6a693990a14181ae0a16066c15fc8c` fails. Release
-evidence uses that exact sibling so the frozen-golden fallback is not mistaken
-for a fresh upstream execution.
+The repository defaults to sibling `../worldmonitor`; a present checkout at
+another commit fails the differential. Story V2 remains deterministic without
+that checkout or any network/model call.
 
-The release evaluation explicitly enables RSS before replaying the current
-production RSS plus Strategy-admitted OpenNews NewsItem corpus in isolated
-PostgreSQL; the runtime default remains OpenNews-only. Record the RSS 96-hour
-and OpenNews 12-hour cutoffs; configured Strategy count without values;
-physical Item and category-membership counts; Story,
-singleton/multi-member, reporting-origin, and category counts; every materially
-large cluster; highest-similarity non-merges; selected Top Story evidence and
-drop distribution; and both pinned commits. This is a distribution and parity
-review, not a compression target. The Story turn must remain inside the
-10,000-row, 8 MiB, and 25-second calculation boundaries; a 1-second dirty
-debounce plus 5-minute safety pass must not lose an accepted fact without
-sampling or widening either source window.
+Before the hard cut, run a read-only shadow against the current 96-hour RSS and
+12-hour OpenNews fact population and attach the report to Issue #44. Record
+physical Items, exact atoms, Stories, size P50/P90/P99/max, current-to-V2
+merge/split counts, candidate/accepted/rejected/conflict/ambiguity/grounded
+counts, event-family distribution, encoded input, compute time, and every Story
+larger than 20 Items with a manual coherence disposition. The projection must
+stay within 10,000 Items, 8 MiB, 250,000 candidate pairs, 25 seconds, and 8 KiB
+per Story evidence; do not repair failures through sampling or dynamic windows.
+After cutover, attach Story distribution, analyzed query plans, News health,
+first coherent V2 selection/Brief evidence, and an unchanged-publication
+zero-write result. Two clean full generation/check runs must have no drift.
+
+Use the configured Serve role so PostgreSQL enforces the zero-write boundary:
+
+```bash
+uv run tracefold config
+uv run python scripts/news_story_v2_shadow.py
+```
+
+The JSON report includes the database revision, version fingerprint, current→V2
+merge/split comparison, deterministic decision counters, bounds, and an explicit
+manual-review list for every V2 Story larger than 20 Items. It never emits
+provider credentials, raw provider metadata, comparison tokens, or rejected
+titles.
 
 `20260813_0266` historical cutover acceptance requires one atomic hard cut: exactly ten
 News tables, five public News routes, and one zero-send authenticated OpenNews

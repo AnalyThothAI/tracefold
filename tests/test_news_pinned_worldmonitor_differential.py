@@ -18,17 +18,12 @@ from tracefold.news.brief import (
 )
 from tracefold.news.classification import classify_by_keyword
 from tracefold.news.identity import (
-    cluster_texts,
-    normalize_story_canonical_title,
-    normalize_story_text,
-    public_story_title_hash,
-    story_similarity,
     utf16_length,
     utf16_slice,
     web_usv_string,
 )
 from tracefold.news.models import NewsBriefStory
-from tracefold.news.projection import NewsProjectionSnapshot, compute_news_story_projection
+from tracefold.news.projection import NewsStoryFactSnapshot, build_story_projection
 from tracefold.news.ranking import importance_factors, select_top_stories
 
 PINNED_WORLDMONITOR_HEAD = "0e8785c43e6a693990a14181ae0a16066c15fc8c"
@@ -565,18 +560,9 @@ def pinned_worldmonitor_output() -> dict[str, Any]:
     return actual
 
 
-def test_story_identity_matches_pinned_normalization_similarity_and_clusters(
+def test_classifier_importance_and_seed_stage_remain_pinned_to_worldmonitor(
     pinned_worldmonitor_output: dict[str, Any],
 ) -> None:
-    actual = pinned_worldmonitor_output["identity"]
-
-    assert actual["normalizations"] == [normalize_story_text(text) for text in IDENTITY_NORMALIZATION_TEXTS]
-    for pinned_score, pair in zip(actual["similarities"], IDENTITY_SIMILARITY_PAIRS, strict=True):
-        assert story_similarity(*pair) == pytest.approx(pinned_score, abs=1e-12)
-    assert actual["clusters"] == [cluster_texts(group) for group in IDENTITY_CLUSTER_GROUPS]
-    assert actual["canonicalHashes"] == [
-        public_story_title_hash(normalize_story_canonical_title(title)) for title in CANONICAL_HASH_TITLES
-    ]
     assert pinned_worldmonitor_output["classifications"] == [
         classify_by_keyword(title, now_ms=NOW_MS).model_dump() for title in CLASSIFIER_TITLES
     ]
@@ -636,16 +622,16 @@ def test_public_cluster_and_grounding_edges_match_pinned_web_semantics(
         }
         for index, origin in enumerate(SOURCE_ORDER_ORIGINS)
     )
-    projection = compute_news_story_projection(
-        NewsProjectionSnapshot(
-            input_fingerprint="f" * 64,
-            scoring_epoch_ms=NOW_MS,
-            current_input_fingerprint=None,
+    projection = build_story_projection(
+        NewsStoryFactSnapshot(
+            material_snapshot_fingerprint="f" * 64,
+            evaluation_time_ms=NOW_MS,
+            published_material_snapshot_fingerprint=None,
             rows=source_rows,
         )
     )
 
-    assert projection["selection_snapshot"]["top_stories"][0]["sources"] == pinned_worldmonitor_output["sourceOrdering"]
+    assert projection.selection_snapshot["top_stories"][0]["sources"] == pinned_worldmonitor_output["sourceOrdering"]
     local_numeric_results: list[dict[str, object]] = []
     for summary, ground in NUMERIC_GROUNDING_CASES:
         missing = brief_module._numeric_facts(summary) - brief_module._numeric_facts(ground)

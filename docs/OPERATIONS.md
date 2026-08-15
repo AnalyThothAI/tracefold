@@ -322,13 +322,14 @@ WorldMonitor full/en + INTEL RSS catalog
   -> claim one due source -> conditional fetch -> first-five snapshot
   -> 96-hour breadth/corroboration facts
 
-RSS membership expansion -> score before category Top 20
-  -> physical union with OpenNews
+Physical RSS facts -> one preliminary Jaccard/fact-coherent closure and score
+  -> category expansion -> stable Top 20 per category -> physical deduplication
+  -> physical union with every current OpenNews Item
   -> 1-second dirty debounce + 5-minute safety pass
-  -> WorldMonitor clustering/classification/importance
-  -> compare-and-publish current Story/member closure
-  -> public UTF-16 title-length gate + same-kernel seed clustering
-  -> public cluster score/admission/recency selector
+  -> one final normalized-Jaccard + fact-compatibility + fixed-anchor closure
+  -> compare-and-publish current Story/member closure with identity evidence
+  -> public UTF-16 Story admissibility gate; no Item recluster
+  -> Story score/admission/recency selector
   -> singleton server-ordered Top Story selection snapshot
   -> /api/news/feed + /api/news/stories/{story_id}
 
@@ -446,23 +447,27 @@ Different event IDs remain different facts. The full Strategy definition and
 metrics payload are discarded. Story owns only deterministic derived columns on
 the same row.
 
-The dirty-triggered projection is the only Story/member/Brief-selection writer. It
-expands the RSS facts in pinned category-major membership order and calculates
-identity, classification, corroboration, and importance before selecting the
-stable Top 20 membership rows per category. It then deduplicates those rows to
-one physical RSS union, appends every current OpenNews Item, and calculates the
-physical Story closure. Public selection retains duplicate category
-memberships, so `source_count` can exceed the distinct-origin
-`unique_source_count`, without duplicating physical Story members. Calculation
-runs outside the database and publishes one coherent captured closure. New
+The dirty-triggered projection is the only Story/member/Brief-selection writer.
+It loads one bounded material snapshot, then invokes
+`build_story_projection(snapshot)` outside PostgreSQL. The module constructs a
+preliminary physical RSS closure before category expansion and scoring, keeps
+the stable Top 20 membership rows per category, deduplicates them back to
+physical Items, appends all current OpenNews Items, and builds the one final
+closure. Story V2 uses normalized Jaccard as its only lexical score, strong
+fact compatibility in the same decision, and deterministic fixed anchors.
+Provider symbol/market/match evidence is strong only when title-grounded.
+Calculation publishes one coherent captured closure. New
 accepted facts set a local dirty event, bursts coalesce for one second, and a
 five-minute safety pass covers a lost wake. A load-time fingerprint prevents older
 snapshots from overwriting newer ones, and unchanged inputs write zero serving
-rows. The operation is bounded by 10,000 input rows, 8 MiB, and a 25-second CPU
-deadline. Do not repair capacity failures with sampling or dynamic windows;
-diagnose `news_story_input_row_cap`, `news_story_input_byte_cap`, or
+rows. The operation is bounded by 10,000 input rows, 8 MiB, 250,000 candidate
+atom pairs, 8 KiB identity evidence per Story, and a 25-second CPU deadline. Do
+not repair capacity failures with sampling, alternate metrics, or dynamic
+windows; diagnose `news_story_input_row_cap`, `news_story_input_byte_cap`,
+`news_story_candidate_pair_cap`, `news_story_identity_evidence_byte_cap`, or
 `news_story_operation_timeout` against the RSS 96-hour and OpenNews 12-hour
-populations.
+populations. Story failure does not mutate or block Item Push or title
+presentation state.
 
 Push outbox creation is part of the first live OpenNews Item insert. The same
 transaction reads the effective delivery state and enablement epoch, then
@@ -486,14 +491,14 @@ delivery is currently unavailable. Pending rows survive restart. The ordinary
 shared productive 250 ms repoll drains work; an empty Push turn waits one
 second. There is no Push-specific pacing mechanism.
 
-The selector turn keeps the complete captured Story closure, then applies the
-pinned JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items
-with the same identity kernel. It applies the public cluster score,
-admissibility gate, 16-hour effective-recency ordering,
+The selector consumes the authoritative Story closure directly. The pinned
+JavaScript UTF-16 `title.length > 10` gate is only an admissibility and
+representative rule; it never changes membership. The selector applies the
+public score, 16-hour effective-recency ordering,
 maximum-three primary-source cap, and corroborated-lead reservation, then seals
 at most eight Top Stories plus drop telemetry. Unchanged canonical selection
 replay writes zero serving rows. It has no personalization, embedding, topic
-grouping, entity veto, client ISQ ordering, or source-category quota.
+grouping, client ISQ ordering, or source-category quota.
 
 The native Brief candidate is driven only by UTC half-hour slots. It opens the
 current slot first and never replays a chain of historical slots. Story
@@ -756,7 +761,7 @@ call, or outbound send during migration. Restart first reconciles effective
 availability and terminalizes interrupted `sending` rows, then only new live
 OpenNews Item transactions may create `news_item_push_v1` work.
 
-Migration `20260815_0271` is the current offline title-presentation hard cut.
+Migration `20260815_0271` is the historical offline title-presentation hard cut.
 Stop Serve and Workers and take a PostgreSQL backup before applying it. It adds
 the eleventh News table, terminalizes pre-cut nonterminal Push rows, renames the
 old Push presentation JSON to audit-only legacy data, and binds new Push rows
@@ -768,6 +773,19 @@ neither repeats an external call. A settlement failure after DeepL, DeepSeek,
 or Feishu is fatal to Workers so a process with unknowable side-effect state
 cannot continue; Serve remains available and the supervisor restart executes
 those reconciliations.
+
+Migration `20260815_0272` is the current offline Story V2 hard cut. Stop Serve
+and Workers before applying it; old application code must never run against the
+new column shape. The migration acquires the maintenance gate, clears only
+Story memberships, Stories, public selection, and the Brief current/LKG
+payload, replaces the secondary Story identity column with bounded non-null
+`identity_evidence`, and resets the Story summary. It preserves News Items,
+title presentations, Item Push rows and sent audit, and OpenNews incidents.
+Start only the new Workers, wait for the first successful V2 projection, then
+start/verify Serve. An empty News view before that projection is valid; a mixed
+generation is not. Verify old cursors fail, old Story URLs return 404, the next
+Brief uses V2 Story IDs, the News table count remains eleven, and a second
+unchanged Story turn writes zero serving rows.
 
 ## Operator actions and retention
 
@@ -1014,11 +1032,25 @@ Item outbox creation and zero-retry settlement. Verify two distinct provider
 Item IDs that later merge into one Story still create two independent Push
 attempts; Story failure must not block Push, and Push failure must not change
 Story/Feed/Brief.
-Current `20260815_0271` adds the shared exact-title decision before Push. Verify
+Historical `20260815_0271` adds the shared exact-title decision before Push. Verify
 one title presentation is reused by Feed/detail and every matching Push, search
 still matches the original title only, Push-blocking work outranks RSS/recovery
 backlog, permanent DeepL rejection rotates only future work, and both providers
 failing still resolve the original without blocking delivery.
+Current `20260815_0272` replaces Story identity with normalized Jaccard plus
+strong fact compatibility and fixed anchors. Verify the labelled SEC/OI splits,
+the complete golden corpus, bounded operator evidence on Story detail, compact
+Feed rows, candidate/input/evidence failures, old cursor/URL rejection, one
+coherent selection/Brief generation, analyzed Feed/detail plans, and unchanged
+zero-write publication. Attach the read-only shadow before cutover and the
+post-cutover distribution/health evidence to Issue #44.
+The successful writer publishes content-free aggregate gauges as
+`tracefold_news_story_projection_value{measure="..."}` for physical/population
+Items, encoded bytes, exact atoms/memberships, candidate final/peak counts,
+accepted/rejected decisions, conflict vetoes, ambiguity splits, grounded
+provider evidence, Story count, and the four fixed event-family counts. Generate
+the pre-cut report with `uv run python scripts/news_story_v2_shadow.py`; it uses
+the configured read-only Serve role and performs no publication.
 
 Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
 `20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to
