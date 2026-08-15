@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tracefold.news.query_specs import push_delivery_samples_query
 from tracefold.platform.postgres.postgres_migrations import alembic_config
 
 
@@ -274,6 +275,11 @@ def test_0271_retires_unsettled_push_and_does_not_invent_presentation_history() 
                AND table_name LIKE 'news_%'
             """
         ).fetchone()["value"]
+        delivery_sample_query = push_delivery_samples_query(now_ms=1_000)
+        legacy_delivery_samples = conn.execute(
+            delivery_sample_query.sql,
+            delivery_sample_query.params,
+        ).fetchall()
     finally:
         conn.close()
 
@@ -298,6 +304,7 @@ def test_0271_retires_unsettled_push_and_does_not_invent_presentation_history() 
     assert "presentation_snapshot" not in columns
     assert {"legacy_presentation_snapshot", "source_title_fingerprint"} <= columns
     assert news_table_count == 11
+    assert legacy_delivery_samples == []
 
 
 def _reset_to_0269():

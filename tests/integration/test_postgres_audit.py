@@ -49,7 +49,15 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
             ReadQuerySpec(
                 name=name,
                 sql="SELECT 1",
-                amplification_basis=("aggregate_input" if name == "news_feed_focus_facets" else "returned_rows"),
+                amplification_basis=(
+                    "aggregate_input"
+                    if name
+                    in {
+                        "news_feed_focus_facets",
+                        "news_status_story_latency",
+                    }
+                    else "returned_rows"
+                ),
             )
             for name in _NEWS_QUERY_NAMES
         )
@@ -81,11 +89,12 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_push_delivery_24h",
     )
     assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
-        "news_feed_focus_facets"
+        "news_feed_focus_facets",
+        "news_status_story_latency",
     ]
 
 
-def test_app_catalog_rejects_aggregate_input_for_any_query_except_feed_facets():
+def test_app_catalog_rejects_unapproved_aggregate_input_queries():
     def news_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         del now_ms
         return (
@@ -101,7 +110,7 @@ def test_app_catalog_rejects_aggregate_input_for_any_query_except_feed_facets():
             ),
         )
 
-    with pytest.raises(ValueError, match="only news_feed_focus_facets"):
+    with pytest.raises(ValueError, match="only bounded aggregate reads"):
         query_audit_catalog(now_ms=0, news_query_specs=news_specs)
 
 

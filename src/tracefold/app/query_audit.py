@@ -100,8 +100,11 @@ def query_audit_catalog(
         *provider(now_ms=int(now_ms)),
     )
     aggregate_input_queries = [query.name for query in queries if query.amplification_basis == "aggregate_input"]
-    if aggregate_input_queries != ["news_feed_focus_facets"]:
-        raise ValueError("only news_feed_focus_facets may use aggregate-input amplification")
+    if aggregate_input_queries != [
+        "news_feed_focus_facets",
+        "news_status_story_latency",
+    ]:
+        raise ValueError("only bounded aggregate reads may use aggregate-input amplification")
     return QueryAuditCatalog(
         queries=queries,
         query_routes=dict(PUBLIC_ROUTE_QUERY_COVERAGE),

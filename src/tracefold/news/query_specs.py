@@ -435,6 +435,7 @@ def status_story_latency_query(*, now_ms: int) -> ReadQuerySpec:
              LIMIT %s
         """,
         params=(int(now_ms) - _REALTIME_WINDOW_MS, int(now_ms), SLO_SAMPLE_LIMIT + 1),
+        amplification_basis="aggregate_input",
     )
 
 
@@ -565,6 +566,7 @@ def push_delivery_samples_query(*, now_ms: int) -> ReadQuerySpec:
                    END AS latency_ms
               FROM news_push_deliveries
              WHERE source_payload ->> 'schema_version' = 'news_item_push_v1'
+               AND source_title_fingerprint IS NOT NULL
                AND status IN ('sent', 'terminal')
                AND CASE
                      WHEN status = 'sent' THEN sent_at_ms
