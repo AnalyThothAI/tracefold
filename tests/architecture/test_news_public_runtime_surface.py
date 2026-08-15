@@ -21,16 +21,12 @@ PUBLIC_NEWS_INTERFACE = {
     "NewsFeedExpectedError",
     "NewsFeedFetch",
     "NewsFeedReader",
-    "NewsPushDelivery",
-    "NewsPushDeliveryError",
-    "NewsPushReceipt",
     "NewsSourceDefinition",
     "NewsStoryProjection",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
     "OpenNewsStrategyHistory",
-    "PreparedNewsPush",
     "PublicInsightsCategory",
     "PublicInsightsThreatLevel",
     "ThreatLevel",
@@ -115,6 +111,25 @@ def test_news_has_no_shallow_interface_or_duplicate_story_rebuild() -> None:
     assert "def rebuild_stories(" not in (news_root / "repository.py").read_text(encoding="utf-8")
 
 
+def test_story_projection_has_no_push_interface_or_candidate_writer() -> None:
+    from tracefold.news.repository import NewsRepository
+
+    assert "push_enabled" not in inspect.signature(news.NewsStoryProjection).parameters
+    assert "push_enabled" not in inspect.signature(NewsRepository.publish_story_projection).parameters
+    repository_source = (ROOT / "src/tracefold/news/repository.py").read_text(encoding="utf-8")
+    story_store_source = (ROOT / "src/tracefold/news/story_store.py").read_text(encoding="utf-8")
+    assert "insert_story_push_candidates" not in repository_source
+    assert "insert_story_push_candidates" not in story_store_source
+
+
+def test_opennews_item_writer_does_not_acquire_story_publication_lock() -> None:
+    from tracefold.news.repository import NewsRepository
+
+    source = inspect.getsource(NewsRepository.record_opennews_events)
+
+    assert "lock_story_inputs" not in source
+
+
 def test_news_brief_is_not_registered_as_a_generic_queue() -> None:
     queue_health = (ROOT / "src/tracefold/app/queue_health.py").read_text(encoding="utf-8")
     queue_ops = (ROOT / "src/tracefold/app/cli/commands/queue_ops.py").read_text(encoding="utf-8")
@@ -125,6 +140,9 @@ def test_news_brief_is_not_registered_as_a_generic_queue() -> None:
 
 def test_push_delivery_accepts_only_the_current_frozen_schema() -> None:
     adapter = (ROOT / "src/tracefold/integrations/news_push.py").read_text(encoding="utf-8")
+    push_module = (ROOT / "src/tracefold/news/push.py").read_text(encoding="utf-8")
 
-    assert 'payload.get("schema_version") != _DELIVERY_SCHEMA_VERSION' in adapter
-    assert "schema_version is None" not in adapter
+    assert 'source.get("schema_version") != PUSH_PAYLOAD_SCHEMA_VERSION' in adapter
+    assert "legacy_delivery_payload" not in adapter
+    assert "def prepare(" not in push_module
+    assert "def deliver(" not in push_module

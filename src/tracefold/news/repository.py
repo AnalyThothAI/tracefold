@@ -23,20 +23,12 @@ from .models import (
     NewsSourceDefinition,
 )
 from .opennews import OpenNewsEvent
+from .sources import OPENNEWS_SOURCE_ID
 
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
 _STORY_ACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000
-_NEWS_PUSH_SLOW_REPORTING_MS = 120_000
 _NEWS_PIPELINE_LOCK_KEY = 727_301_984
 _MAX_STRATEGY_PROVENANCE = 32
-_PUSH_SUMMARY_BUCKET = {
-    "suppressed": "suppressed_count",
-    "pending_translation": "pending_count",
-    "pending_delivery": "pending_count",
-    "retry_wait": "retry_count",
-    "sent": "sent_count",
-    "terminal": "terminal_count",
-}
 _TRACKING_PARAMS = frozenset(
     {
         "utm_source",
@@ -171,6 +163,66 @@ def _provider_payload_order(value: Mapping[str, Any]) -> tuple[float, bool, str,
     )
 
 
+def _news_item_push_source_payload(
+    *,
+    item_id: str,
+    provider_event_id: str,
+    provider_metadata: Mapping[str, Any],
+    live_observed_at_ms: int,
+    original_title: str,
+    reporting_origin: str,
+    provider_published_at_ms: int,
+    source_url: str | None,
+) -> dict[str, Any]:
+    strategy_labels: list[str] = []
+    seen_strategies: set[str] = set()
+    for strategy in _strategy_provenance(provider_metadata.get("strategies")):
+        strategy_id = str(strategy["id"]).strip()
+        strategy_name = str(strategy.get("name") or "").strip()
+        label = f"{strategy_id} {strategy_name}".strip()
+        identity = label.casefold()
+        if label and identity not in seen_strategies:
+            seen_strategies.add(identity)
+            strategy_labels.append(label)
+
+    assets: list[dict[str, str]] = []
+    seen_assets: set[tuple[str, str]] = set()
+    coins = provider_metadata.get("coins")
+    if isinstance(coins, list):
+        for raw_asset in coins[:32]:
+            if not isinstance(raw_asset, Mapping):
+                continue
+            symbol = str(raw_asset.get("symbol") or "").strip()[:32]
+            market_type = str(raw_asset.get("market_type") or "").strip()[:32]
+            asset_identity = (symbol.casefold(), market_type.casefold())
+            if not symbol or not market_type or asset_identity in seen_assets:
+                continue
+            seen_assets.add(asset_identity)
+            assets.append({"symbol": symbol, "market_type": market_type})
+
+    payload: dict[str, Any] = {
+        "schema_version": "news_item_push_v1",
+        "item_id": str(item_id),
+        "provider_event_id": str(provider_event_id),
+        "live_observed_at_ms": int(live_observed_at_ms),
+        "original_title": str(original_title),
+        "reporting_origin": str(reporting_origin),
+        "provider_published_at_ms": int(provider_published_at_ms),
+        "strategy_labels": strategy_labels,
+        "assets": assets,
+    }
+    if source_url:
+        payload["source_url"] = str(source_url)
+    score = provider_metadata.get("score")
+    if _numeric_provider_score(score) and 0 <= float(cast(int | float, score)) <= 100:
+        payload["score"] = score
+    for key in ("signal", "grade"):
+        value = str(provider_metadata.get(key) or "").strip()
+        if value:
+            payload[key] = value[:32]
+    return payload
+
+
 def _cursor_encode(payload: Mapping[str, Any]) -> str:
     raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -209,12 +261,13 @@ def _percentile_cont_ms(values: Sequence[int], percentile: float) -> int | None:
 
 def _incomplete_translation_sample() -> dict[str, Any]:
     return {
+        "total": 0,
         "attempted": 0,
-        "succeeded": 0,
-        "success_ratio": None,
+        "translated": 0,
+        "not_needed": 0,
+        "fallback": 0,
         "latency_p95_ms": None,
-        "failure_counts": {},
-        "slo_met": None,
+        "fallback_counts": {},
         "sample_complete": False,
     }
 
@@ -222,8 +275,9 @@ def _incomplete_translation_sample() -> dict[str, Any]:
 def _incomplete_delivery_sample() -> dict[str, Any]:
     return {
         "completed": 0,
+        "sent": 0,
+        "terminal": 0,
         "latency_p95_ms": None,
-        "over_120s": 0,
         "slo_met": None,
         "sample_complete": False,
     }
@@ -774,11 +828,10 @@ class NewsRepository:
     ) -> dict[str, int]:
         """Upsert bounded OpenNews facts through the sole idempotent Item writer."""
 
-        if source.source_kind != "opennews":
+        if source.source_kind != "opennews" or source.source_id != OPENNEWS_SOURCE_ID:
             raise ValueError("opennews_source_required")
         if ingest_mode not in {"live", "recovery"}:
             raise ValueError("opennews_ingest_mode_invalid")
-        self.lock_story_inputs()
         rejections: Counter[str] = Counter()
         observed_strategy_provenance: list[dict[str, str]] = []
         candidates: dict[str, dict[str, Any]] = {}
@@ -972,13 +1025,24 @@ class NewsRepository:
                     "content_fingerprint": winner["content_fingerprint"],
                 }
             )
+            write_rows[-1]["push_payload"] = _news_item_push_source_payload(
+                item_id=str(write_rows[-1]["item_id"]),
+                provider_event_id=provider_record_id,
+                provider_metadata=winner_metadata,
+                live_observed_at_ms=int(observed_at_ms),
+                original_title=str(winner["title"]),
+                reporting_origin=str(winner["reporting_origin"]),
+                provider_published_at_ms=int(winner["published_at_ms"]),
+                source_url=(str(winner["canonical_url"]) if winner["canonical_url"] is not None else None),
+            )
 
+        push_outbox_writes = 0
         if write_rows:
             outcome = self.conn.execute(
                 """
                 WITH incoming AS MATERIALIZED (
                   SELECT *
-                    FROM jsonb_to_recordset(%s::jsonb) AS row(
+                    FROM jsonb_to_recordset(%(json)s::jsonb) AS row(
                       item_id text,
                       source_id text,
                       source_item_key text,
@@ -992,8 +1056,14 @@ class NewsRepository:
                       lang text,
                       published_at_ms bigint,
                       observed_at_ms bigint,
-                      content_fingerprint text
+                      content_fingerprint text,
+                      push_payload jsonb
                     )
+                ), push_state AS MATERIALIZED (
+                  SELECT delivery_available, enablement_epoch_at_ms
+                    FROM news_push_state
+                   WHERE singleton_key = 'current'
+                   FOR UPDATE
                 ), written AS (
                   INSERT INTO news_items AS current_item (
                     item_id, source_id, source_item_key, provider_record_id,
@@ -1051,16 +1121,60 @@ class NewsRepository:
                         THEN '{}'::jsonb ELSE current_item.importance_factors END,
                     active = true,
                     updated_at_ms = EXCLUDED.updated_at_ms
-                  RETURNING (xmax = 0) AS inserted
+                  RETURNING current_item.item_id,
+                            current_item.first_ingest_mode,
+                            (xmax = 0) AS inserted
+                ), push_written AS (
+                  INSERT INTO news_push_deliveries (
+                    item_id, live_observed_at_ms, source_payload,
+                    legacy_delivery_payload, presentation_snapshot,
+                    status, attempted_at_ms, receipt, last_error,
+                    sent_at_ms, created_at_ms, updated_at_ms
+                  )
+                  SELECT written.item_id, incoming.observed_at_ms,
+                         incoming.push_payload, NULL, NULL,
+                         'pending', NULL, NULL, NULL, NULL,
+                         incoming.observed_at_ms, incoming.observed_at_ms
+                    FROM written
+                    JOIN incoming USING (item_id)
+                    CROSS JOIN push_state
+                   WHERE written.inserted
+                     AND written.first_ingest_mode = 'live'
+                     AND push_state.delivery_available
+                     AND push_state.enablement_epoch_at_ms IS NOT NULL
+                     AND incoming.observed_at_ms
+                           >= push_state.enablement_epoch_at_ms
+                  ON CONFLICT (item_id) DO NOTHING
+                  RETURNING item_id
+                ), push_count AS MATERIALIZED (
+                  SELECT count(*)::bigint AS value FROM push_written
+                ), push_summary AS (
+                  UPDATE news_push_state state
+                     SET total_count = total_count + push_count.value,
+                         pending_count = pending_count + push_count.value,
+                         updated_at_ms = greatest(
+                           state.updated_at_ms,
+                           %(observed_at_ms)s
+                         )
+                    FROM push_count
+                   WHERE state.singleton_key = 'current'
+                     AND push_count.value > 0
+                  RETURNING state.singleton_key
                 )
                 SELECT count(*) FILTER (WHERE inserted) AS inserted,
-                       count(*) FILTER (WHERE NOT inserted) AS updated
+                       count(*) FILTER (WHERE NOT inserted) AS updated,
+                       (SELECT value FROM push_count) AS push_outbox_writes,
+                       (SELECT count(*) FROM push_summary) AS push_summary_writes
                   FROM written
                 """,
-                (Jsonb(write_rows),),
+                {
+                    "json": Jsonb(write_rows),
+                    "observed_at_ms": int(observed_at_ms),
+                },
             ).fetchone()
             inserted = int(outcome["inserted"] or 0)
             updated = int(outcome["updated"] or 0)
+            push_outbox_writes = int(outcome["push_outbox_writes"] or 0)
 
         if events:
             durable_strategy_provenance = _merged_strategy_provenance(
@@ -1103,6 +1217,7 @@ class NewsRepository:
             "events_seen": len(events),
             "items_inserted": inserted,
             "items_updated": updated,
+            "push_outbox_writes": push_outbox_writes,
             "metadata_updated": 0,
             "rejected": sum(rejections.values()),
         }
@@ -1364,7 +1479,6 @@ class NewsRepository:
         snapshot: Any,
         projection: Mapping[str, Any],
         now_ms: int,
-        push_enabled: bool | None = None,
     ) -> dict[str, Any]:
         from .story_store import publish_story_projection
 
@@ -1373,7 +1487,6 @@ class NewsRepository:
             snapshot=snapshot,
             projection=projection,
             now_ms=now_ms,
-            push_enabled=push_enabled,
         )
 
     def record_story_projection_failure(
@@ -1484,8 +1597,6 @@ class NewsRepository:
     def list_feed(
         self,
         *,
-        push_enabled: bool,
-        now_ms: int,
         category: str | None = None,
         level: str | None = None,
         source_id: str | None = None,
@@ -1555,7 +1666,7 @@ class NewsRepository:
         has_more = len(rows) > limit
         page = rows[:limit]
         page_story_ids = [str(row["story_id"]) for row in page]
-        provider_evidence = self.story_push_contexts(story_ids=page_story_ids)
+        provider_evidence = self.story_provider_evidence(story_ids=page_story_ids)
         next_cursor = None
         if has_more and page:
             last = page[-1]
@@ -1574,11 +1685,6 @@ class NewsRepository:
             story = _story_summary(row)
             selected = provider_evidence.get(str(row["story_id"]))
             story["provider_evidence"] = _public_provider_evidence(selected)
-            story["notification"] = _public_notification(
-                selected,
-                push_enabled=push_enabled,
-                now_ms=now_ms,
-            )
             stories.append(story)
         return {
             "sort": sort,
@@ -1651,8 +1757,6 @@ class NewsRepository:
         self,
         *,
         story_id: str,
-        push_enabled: bool,
-        now_ms: int,
         members_limit: int = 100,
         members_cursor: str | None = None,
     ) -> dict[str, Any] | None:
@@ -1662,7 +1766,7 @@ class NewsRepository:
         row = self.conn.execute(story_query.sql, story_query.params).fetchone()
         if row is None:
             return None
-        selected = self.story_push_contexts(story_ids=(story_id,)).get(story_id)
+        selected = self.story_provider_evidence(story_ids=(story_id,)).get(story_id)
         provider_evidence = _public_provider_evidence(selected)
         member_cursor: tuple[int, str] | None = None
         if members_cursor:
@@ -1704,11 +1808,6 @@ class NewsRepository:
         return {
             **story,
             "provider_evidence": provider_evidence,
-            "notification": _public_notification(
-                selected,
-                push_enabled=push_enabled,
-                now_ms=now_ms,
-            ),
             "canonical_title": str(row["canonical_title"]),
             "members": [_item_payload(member) for member in page],
             "members_page": {
@@ -1859,25 +1958,233 @@ class NewsRepository:
     def get_brief(self, *, now_ms: int) -> dict[str, Any]:
         return brief_store.get_brief(self, now_ms=now_ms)
 
-    # News Story push ----------------------------------------------------------
+    # News Item push -----------------------------------------------------------
 
-    def story_push_contexts(
+    def reconcile_item_push(
+        self,
+        *,
+        delivery_available: bool,
+        now_ms: int,
+    ) -> dict[str, int | bool | None]:
+        row = self.conn.execute(
+            """
+            WITH current_state AS MATERIALIZED (
+              SELECT delivery_available, enablement_epoch_at_ms
+                FROM news_push_state
+               WHERE singleton_key = 'current'
+               FOR UPDATE
+            ), interrupted AS (
+              UPDATE news_push_deliveries
+                 SET status = 'terminal',
+                     last_error = 'news_item_push_interrupted_unknown',
+                     updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
+               WHERE status = 'sending'
+                 AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+              RETURNING item_id
+            ), interrupted_count AS MATERIALIZED (
+              SELECT count(*)::bigint AS value FROM interrupted
+            ), changed AS (
+              UPDATE news_push_state state
+                 SET delivery_available = %(delivery_available)s,
+                     enablement_epoch_at_ms = CASE
+                       WHEN NOT %(delivery_available)s THEN NULL
+                       WHEN current_state.delivery_available
+                         AND current_state.enablement_epoch_at_ms IS NOT NULL
+                         THEN current_state.enablement_epoch_at_ms
+                       ELSE %(now_ms)s
+                     END,
+                     sending_count = sending_count - interrupted_count.value,
+                     terminal_count = terminal_count + interrupted_count.value,
+                     latest_error = CASE
+                       WHEN interrupted_count.value > 0
+                         THEN 'news_item_push_interrupted_unknown'
+                       ELSE latest_error
+                     END,
+                     latest_error_at_ms = CASE
+                       WHEN interrupted_count.value > 0 THEN %(now_ms)s
+                       ELSE latest_error_at_ms
+                     END,
+                     updated_at_ms = greatest(state.updated_at_ms, %(now_ms)s)
+                FROM current_state, interrupted_count
+               WHERE state.singleton_key = 'current'
+              RETURNING state.delivery_available,
+                        state.enablement_epoch_at_ms,
+                        (
+                          state.delivery_available
+                            IS DISTINCT FROM current_state.delivery_available
+                          OR state.enablement_epoch_at_ms
+                            IS DISTINCT FROM current_state.enablement_epoch_at_ms
+                        ) AS availability_changed,
+                        interrupted_count.value AS terminalized
+            )
+            SELECT * FROM changed
+            """,
+            {
+                "delivery_available": bool(delivery_available),
+                "now_ms": int(now_ms),
+            },
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("news_push_state_missing")
+        return {
+            "delivery_available": bool(row["delivery_available"]),
+            "enablement_epoch_at_ms": (
+                int(row["enablement_epoch_at_ms"]) if row["enablement_epoch_at_ms"] is not None else None
+            ),
+            "availability_changed": bool(row["availability_changed"]),
+            "terminalized": int(row["terminalized"]),
+        }
+
+    def peek_item_push(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT item_id, source_payload, live_observed_at_ms, created_at_ms
+              FROM news_push_deliveries
+             WHERE status = 'pending'
+               AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+             ORDER BY live_observed_at_ms, item_id
+             LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def fence_item_push(
+        self,
+        *,
+        item_id: str,
+        presentation_snapshot: Mapping[str, Any],
+        attempted_at_ms: int,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            WITH changed AS (
+              UPDATE news_push_deliveries
+                 SET status = 'sending',
+                     presentation_snapshot = %(presentation)s,
+                     attempted_at_ms = %(attempted_at_ms)s,
+                     updated_at_ms = greatest(updated_at_ms, %(attempted_at_ms)s)
+               WHERE item_id = %(item_id)s
+                 AND status = 'pending'
+                 AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+              RETURNING item_id, source_payload, presentation_snapshot
+            ), summary AS (
+              UPDATE news_push_state
+                 SET pending_count = pending_count - 1,
+                     sending_count = sending_count + 1,
+                     updated_at_ms = greatest(updated_at_ms, %(attempted_at_ms)s)
+               WHERE singleton_key = 'current'
+                 AND EXISTS (SELECT 1 FROM changed)
+              RETURNING singleton_key
+            )
+            SELECT changed.*,
+                   (SELECT count(*) FROM summary) AS summary_writes
+              FROM changed
+            """,
+            {
+                "item_id": str(item_id),
+                "presentation": Jsonb(dict(presentation_snapshot)),
+                "attempted_at_ms": int(attempted_at_ms),
+            },
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def complete_item_push(
+        self,
+        *,
+        item_id: str,
+        receipt: Mapping[str, Any],
+        now_ms: int,
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            WITH changed AS (
+              UPDATE news_push_deliveries
+                 SET status = 'sent',
+                     receipt = %(receipt)s,
+                     sent_at_ms = %(now_ms)s,
+                     updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
+               WHERE item_id = %(item_id)s
+                 AND status = 'sending'
+                 AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+              RETURNING item_id
+            ), summary AS (
+              UPDATE news_push_state
+                 SET sending_count = sending_count - 1,
+                     sent_count = sent_count + 1,
+                     latest_sent_at_ms = CASE
+                       WHEN EXISTS (SELECT 1 FROM changed)
+                         THEN greatest(coalesce(latest_sent_at_ms, 0), %(now_ms)s)
+                       ELSE latest_sent_at_ms
+                     END,
+                     updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
+               WHERE singleton_key = 'current'
+                 AND EXISTS (SELECT 1 FROM changed)
+              RETURNING singleton_key
+            )
+            SELECT count(*) AS changed,
+                   (SELECT count(*) FROM summary) AS summary_writes
+              FROM changed
+            """,
+            {
+                "item_id": str(item_id),
+                "receipt": Jsonb(dict(receipt)),
+                "now_ms": int(now_ms),
+            },
+        ).fetchone()
+        return bool(row is not None and int(row["changed"]) == 1)
+
+    def terminalize_item_push(
+        self,
+        *,
+        item_id: str,
+        error_code: str,
+        now_ms: int,
+    ) -> bool:
+        normalized_error = str(error_code or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9_]{1,120}", normalized_error):
+            raise ValueError("news_item_push_error_invalid")
+        row = self.conn.execute(
+            """
+            WITH changed AS (
+              UPDATE news_push_deliveries
+                 SET status = 'terminal',
+                     last_error = %(error_code)s,
+                     updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
+               WHERE item_id = %(item_id)s
+                 AND status = 'sending'
+                 AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+              RETURNING item_id
+            ), summary AS (
+              UPDATE news_push_state
+                 SET sending_count = sending_count - 1,
+                     terminal_count = terminal_count + 1,
+                     latest_error = %(error_code)s,
+                     latest_error_at_ms = %(now_ms)s,
+                     updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
+               WHERE singleton_key = 'current'
+                 AND EXISTS (SELECT 1 FROM changed)
+              RETURNING singleton_key
+            )
+            SELECT count(*) AS changed,
+                   (SELECT count(*) FROM summary) AS summary_writes
+              FROM changed
+            """,
+            {
+                "error_code": normalized_error,
+                "item_id": str(item_id),
+                "now_ms": int(now_ms),
+            },
+        ).fetchone()
+        return bool(row is not None and int(row["changed"]) == 1)
+
+    def story_provider_evidence(
         self,
         *,
         story_ids: Sequence[str],
     ) -> dict[str, dict[str, Any]]:
-        """Return selected provider evidence and durable push state per Story.
-
-        Selection is deterministic: numeric score descending, then newest
-        publication, then item identity. Requested Story IDs remain present
-        without numeric evidence so Feed/detail can still expose a durable
-        Story-scoped delivery fact. Callers must provide their already-bounded
-        serving scope; push reconciliation owns a separate cursor-paged read.
-        """
-
         if not story_ids:
             return {}
-        contexts_query = query_specs.story_push_contexts_query(story_ids=story_ids)
+        contexts_query = query_specs.story_provider_evidence_query(story_ids=story_ids)
         rows = self.conn.execute(
             contexts_query.sql,
             contexts_query.params,
@@ -1885,838 +2192,94 @@ class NewsRepository:
         result: dict[str, dict[str, Any]] = {}
         for row in rows:
             story_id = str(row["story_id"])
-            result[story_id] = _push_context_payload(row, story_id=story_id)
-        return result
-
-    def set_push_enabled(self, *, enabled: bool, now_ms: int) -> tuple[int | None, bool]:
-        row = self.conn.execute(
-            """
-            SELECT enabled, enablement_epoch_at_ms
-              FROM news_push_state
-             WHERE singleton_key = 'current'
-             FOR UPDATE
-            """
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("news_push_state_missing")
-        was_enabled = bool(row["enabled"])
-        if was_enabled == bool(enabled):
-            epoch = row["enablement_epoch_at_ms"]
-            return (int(epoch) if epoch is not None else None), False
-        epoch = int(now_ms) if enabled else None
-        self.conn.execute(
-            """
-            UPDATE news_push_state
-               SET enabled = %s,
-                   enablement_epoch_at_ms = %s,
-                   updated_at_ms = greatest(updated_at_ms, %s)
-             WHERE singleton_key = 'current'
-            """,
-            (bool(enabled), epoch, int(now_ms)),
-        )
-        return epoch, True
-
-    def insert_story_push_candidates(self, *, now_ms: int) -> int:
-        state = self.conn.execute(
-            """
-            SELECT enabled, enablement_epoch_at_ms
-              FROM news_push_state
-             WHERE singleton_key = 'current'
-             FOR UPDATE
-            """
-        ).fetchone()
-        if state is None:
-            raise RuntimeError("news_push_state_missing")
-        if not bool(state["enabled"]) or state["enablement_epoch_at_ms"] is None:
-            return 0
-        epoch = int(state["enablement_epoch_at_ms"])
-        rows = self.conn.execute(
-            """
-            SELECT story.story_id, story.importance_score, story.item_count,
-                   story.source_count, story.first_published_at_ms,
-                   story.last_published_at_ms,
-                   representative.item_id AS selected_item_id,
-                   trigger.first_observed_at_ms AS live_observed_at_ms,
-                   representative.canonical_url,
-                   representative.provider_metadata,
-                   representative.reporting_origin,
-                   representative.title,
-                   representative.description,
-                   representative.lang,
-                   representative.published_at_ms,
-                   coalesce(strategies.value, '[]'::jsonb) AS strategies
-              FROM news_stories story
-              JOIN news_items representative
-                ON representative.item_id = story.representative_item_id
-              JOIN LATERAL (
-                SELECT item.item_id, item.first_observed_at_ms
-                  FROM news_story_members member
-                  JOIN news_items item ON item.item_id = member.item_id
-                 WHERE member.story_id = story.story_id
-                   AND item.first_ingest_mode = 'live'
-                   AND item.first_observed_at_ms >= %s
-                 ORDER BY item.first_observed_at_ms, item.item_id
-                 LIMIT 1
-              ) trigger ON true
-              LEFT JOIN LATERAL (
-                SELECT jsonb_agg(strategy ORDER BY strategy ->> 'id', strategy ->> 'name') AS value
-                  FROM (
-                    SELECT DISTINCT strategy
-                      FROM news_story_members member
-                      JOIN news_items item ON item.item_id = member.item_id
-                      CROSS JOIN LATERAL jsonb_array_elements(
-                        coalesce(item.provider_metadata -> 'strategies', '[]'::jsonb)
-                      ) strategy
-                     WHERE member.story_id = story.story_id
-                  ) matches
-              ) strategies ON true
-             WHERE NOT EXISTS (
-               SELECT 1 FROM news_push_deliveries delivery
-                WHERE delivery.story_id = story.story_id
-             )
-             ORDER BY story.story_id
-            """,
-            (epoch,),
-        ).fetchall()
-        inserted = 0
-        for row in rows:
-            metadata = dict(row["provider_metadata"] or {})
-            metadata["strategies"] = list(row["strategies"] or [])
-            source_payload = {
-                "schema_version": "news_story_push_v2",
-                "story_id": str(row["story_id"]),
-                "provider_evidence": {
-                    "item_id": str(row["selected_item_id"]),
-                    "url": str(row["canonical_url"]) if row["canonical_url"] else None,
-                    "provider_metadata": metadata,
-                    "reporting_origin": str(row["reporting_origin"]),
-                    "title": str(row["title"]),
-                    "description": str(row["description"]),
-                    "lang": str(row["lang"]),
-                    "published_at_ms": int(row["published_at_ms"]),
-                },
-                "tracefold_story": {
-                    "importance_score": int(row["importance_score"]),
-                    "item_count": int(row["item_count"]),
-                    "source_count": int(row["source_count"]),
-                    "first_published_at_ms": int(row["first_published_at_ms"]),
-                    "last_published_at_ms": int(row["last_published_at_ms"]),
-                },
-            }
-            inserted += int(
-                self.insert_push_candidate(
-                    story_id=str(row["story_id"]),
-                    selected_item_id=str(row["selected_item_id"]),
-                    live_observed_at_ms=int(row["live_observed_at_ms"]),
-                    source_payload=source_payload,
-                    now_ms=now_ms,
+            result[story_id] = {
+                "provider_evidence": (
+                    {
+                        "item_id": str(row["item_id"]),
+                        "url": (str(row["canonical_url"]) if row["canonical_url"] else None),
+                        "provider_metadata": dict(row["provider_metadata"] or {}),
+                    }
+                    if row["item_id"] is not None
+                    else None
                 )
-            )
-        return inserted
-
-    def _lock_push_summary(self) -> None:
-        row = self.conn.execute(
-            """
-            SELECT singleton_key
-              FROM news_push_state
-             WHERE singleton_key = 'current'
-             FOR UPDATE
-            """
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("news_push_state_missing")
-
-    def _apply_push_summary_change(
-        self,
-        *,
-        previous_status_counts: Mapping[str, int] | None = None,
-        current_status_counts: Mapping[str, int] | None = None,
-        total_delta: int = 0,
-        latest_sent_at_ms: int | None = None,
-        latest_error: str | None = None,
-        latest_error_at_ms: int | None = None,
-        now_ms: int,
-    ) -> None:
-        bucket_deltas: Counter[str] = Counter()
-        for status, count in (previous_status_counts or {}).items():
-            bucket_deltas[_PUSH_SUMMARY_BUCKET[str(status)]] -= int(count)
-        for status, count in (current_status_counts or {}).items():
-            bucket_deltas[_PUSH_SUMMARY_BUCKET[str(status)]] += int(count)
-        public_error = _public_push_error(latest_error) if latest_error is not None else None
-        self.conn.execute(
-            """
-            UPDATE news_push_state
-               SET total_count = total_count + %s,
-                   suppressed_count = suppressed_count + %s,
-                   pending_count = pending_count + %s,
-                   retry_count = retry_count + %s,
-                   sent_count = sent_count + %s,
-                   terminal_count = terminal_count + %s,
-                   latest_sent_at_ms = CASE
-                     WHEN %s::bigint IS NULL THEN latest_sent_at_ms
-                     ELSE greatest(coalesce(latest_sent_at_ms, 0), %s::bigint)
-                   END,
-                   latest_error = CASE
-                     WHEN %s::bigint IS NULL THEN latest_error
-                     WHEN latest_error_at_ms IS NULL
-                       OR %s::bigint >= latest_error_at_ms
-                       THEN %s::text
-                     ELSE latest_error
-                   END,
-                   latest_error_at_ms = CASE
-                     WHEN %s::bigint IS NULL THEN latest_error_at_ms
-                     ELSE greatest(coalesce(latest_error_at_ms, 0), %s::bigint)
-                   END,
-                   updated_at_ms = greatest(updated_at_ms, %s)
-             WHERE singleton_key = 'current'
-            """,
-            (
-                int(total_delta),
-                int(bucket_deltas["suppressed_count"]),
-                int(bucket_deltas["pending_count"]),
-                int(bucket_deltas["retry_count"]),
-                int(bucket_deltas["sent_count"]),
-                int(bucket_deltas["terminal_count"]),
-                latest_sent_at_ms,
-                latest_sent_at_ms,
-                latest_error_at_ms,
-                latest_error_at_ms,
-                public_error,
-                latest_error_at_ms,
-                latest_error_at_ms,
-                int(now_ms),
-            ),
-        )
-
-    def insert_push_candidate(
-        self,
-        *,
-        story_id: str,
-        selected_item_id: str,
-        live_observed_at_ms: int,
-        source_payload: Mapping[str, Any],
-        now_ms: int,
-    ) -> bool:
-        self._lock_push_summary()
-        row = self.conn.execute(
-            """
-            INSERT INTO news_push_deliveries (
-              story_id, selected_item_id, live_observed_at_ms,
-              source_payload, delivery_payload,
-              payload_fingerprint, translation_status, status,
-              delivery_attempts, next_attempt_at_ms, lease_owner,
-              lease_token, lease_expires_at_ms, receipt, last_error,
-              sent_at_ms, created_at_ms, updated_at_ms
-            ) SELECT
-              %s, %s, %s, %s, NULL, NULL, 'pending', 'pending_translation',
-              0, %s, NULL, NULL, NULL, NULL, NULL, NULL, %s, %s
-             WHERE NOT EXISTS (
-               SELECT 1
-                 FROM news_push_deliveries existing
-                WHERE existing.selected_item_id = %s
-             )
-            ON CONFLICT (story_id) DO NOTHING
-            RETURNING status
-            """,
-            (
-                story_id,
-                selected_item_id,
-                int(live_observed_at_ms),
-                Jsonb(dict(source_payload)),
-                int(now_ms),
-                int(now_ms),
-                int(now_ms),
-                selected_item_id,
-            ),
-        ).fetchone()
-        if row is None:
-            return False
-        self._apply_push_summary_change(
-            current_status_counts={str(row["status"]): 1},
-            total_delta=1,
-            now_ms=now_ms,
-        )
-        return True
-
-    def terminalize_exhausted_push_deliveries(
-        self,
-        *,
-        now_ms: int,
-        max_attempts: int,
-    ) -> int:
-        self._lock_push_summary()
-        rows = self.conn.execute(
-            """
-            WITH candidates AS MATERIALIZED (
-              SELECT story_id, status AS previous_status
-                FROM news_push_deliveries
-               WHERE status IN ('pending_delivery', 'retry_wait')
-                 AND delivery_attempts >= %s
-                 AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= %s)
-               FOR UPDATE
-            ), changed AS (
-              UPDATE news_push_deliveries delivery
-               SET status = 'terminal',
-                   next_attempt_at_ms = NULL,
-                   lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   last_error = COALESCE(last_error, 'delivery_attempt_limit_exhausted'),
-                   updated_at_ms = %s
-                FROM candidates
-               WHERE delivery.story_id = candidates.story_id
-              RETURNING candidates.previous_status,
-                        delivery.status, delivery.story_id, delivery.last_error
-            )
-            SELECT previous_status, status, story_id, last_error
-              FROM changed
-             ORDER BY story_id
-            """,
-            (int(max_attempts), int(now_ms), int(now_ms)),
-        ).fetchall()
-        if not rows:
-            return 0
-        previous = Counter(str(row["previous_status"]) for row in rows)
-        current = Counter(str(row["status"]) for row in rows)
-        latest = rows[0]
-        self._apply_push_summary_change(
-            previous_status_counts=previous,
-            current_status_counts=current,
-            latest_error=str(latest["last_error"]),
-            latest_error_at_ms=now_ms,
-            now_ms=now_ms,
-        )
-        return len(rows)
-
-    def release_interrupted_push_translation_claims(
-        self,
-        *,
-        active_lease_owner: str,
-        now_ms: int,
-    ) -> int:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET next_attempt_at_ms = %s,
-                   lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL
-             WHERE status = 'pending_translation'
-               AND translation_status = 'attempted'
-               AND delivery_attempts = 0
-               AND delivery_payload IS NULL
-               AND payload_fingerprint IS NULL
-               AND lease_owner IS NOT NULL
-               AND lease_owner <> %s
-            """,
-            (int(now_ms), active_lease_owner),
-        )
-        return int(cursor.rowcount or 0)
-
-    def peek_push_delivery(
-        self,
-        *,
-        now_ms: int,
-        max_attempts: int,
-    ) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT story_id, next_attempt_at_ms
-              FROM news_push_deliveries
-             WHERE status IN (
-                     'pending_translation', 'pending_delivery', 'retry_wait'
-                   )
-               AND next_attempt_at_ms <= %s
-               AND delivery_attempts < %s
-               AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= %s)
-             ORDER BY next_attempt_at_ms, live_observed_at_ms, story_id
-             LIMIT 1
-            """,
-            (int(now_ms), int(max_attempts), int(now_ms)),
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def claim_push_delivery(
-        self,
-        *,
-        story_id: str,
-        now_ms: int,
-        max_attempts: int,
-        lease_owner: str,
-        lease_token: str,
-        lease_expires_at_ms: int,
-    ) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            WITH claimed AS (
-              UPDATE news_push_deliveries
-                 SET lease_owner = %s,
-                     lease_token = %s,
-                     lease_expires_at_ms = %s,
-                     updated_at_ms = CASE
-                       WHEN translation_status = 'attempted'
-                         AND delivery_payload IS NULL
-                         THEN updated_at_ms
-                       ELSE %s
-                     END
-               WHERE story_id = %s
-                 AND status IN (
-                       'pending_translation', 'pending_delivery', 'retry_wait'
-                     )
-                 AND next_attempt_at_ms <= %s
-                 AND delivery_attempts < %s
-                 AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= %s)
-              RETURNING *
-            )
-            SELECT claimed.*, state.enablement_epoch_at_ms
-              FROM claimed
-              LEFT JOIN news_push_state state
-                ON state.singleton_key = 'current'
-            """,
-            (
-                lease_owner,
-                lease_token,
-                int(lease_expires_at_ms),
-                int(now_ms),
-                story_id,
-                int(now_ms),
-                int(max_attempts),
-                int(now_ms),
-            ),
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def mark_push_translation_attempted(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        attempted_at_ms: int,
-    ) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET translation_status = 'attempted',
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND lease_token = %s
-               AND status = 'pending_translation'
-               AND translation_status = 'pending'
-               AND delivery_attempts = 0
-               AND delivery_payload IS NULL
-               AND payload_fingerprint IS NULL
-            """,
-            (int(attempted_at_ms), story_id, lease_token),
-        )
-        return bool(cursor.rowcount)
-
-    def freeze_push_delivery_payload(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        translation_status: str,
-        delivery_payload: Mapping[str, Any],
-        payload_fingerprint: str,
-        now_ms: int,
-    ) -> dict[str, Any] | None:
-        if translation_status not in {"translated", "not_needed", "unavailable"}:
-            raise ValueError("news_push_translation_status_invalid")
-        prompt_version, attempted_at_ms, duration_ms, fallback_code = _push_translation_telemetry(delivery_payload)
-        self._lock_push_summary()
-        row = self.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET translation_status = %s,
-                   delivery_payload = %s,
-                   payload_fingerprint = %s,
-                   translation_prompt_version = %s,
-                   translation_attempted_at_ms = %s,
-                   translation_duration_ms = %s,
-                   translation_fallback_code = %s,
-                   status = 'pending_delivery',
-                   next_attempt_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND lease_token = %s
-               AND status = 'pending_translation'
-               AND delivery_payload IS NULL
-            RETURNING *
-            """,
-            (
-                translation_status,
-                Jsonb(dict(delivery_payload)),
-                payload_fingerprint,
-                prompt_version,
-                attempted_at_ms,
-                duration_ms,
-                fallback_code,
-                int(now_ms),
-                int(now_ms),
-                story_id,
-                lease_token,
-            ),
-        ).fetchone()
-        if row is None:
-            return None
-        self._apply_push_summary_change(
-            previous_status_counts={"pending_translation": 1},
-            current_status_counts={str(row["status"]): 1},
-            now_ms=now_ms,
-        )
-        return dict(row)
-
-    def release_push_preparation_claim(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        now_ms: int,
-    ) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET next_attempt_at_ms = %s,
-                   lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   updated_at_ms = CASE
-                     WHEN translation_status = 'attempted'
-                       THEN updated_at_ms
-                     ELSE %s
-                   END
-             WHERE story_id = %s
-               AND lease_token = %s
-               AND status = 'pending_translation'
-               AND translation_status IN ('pending', 'attempted')
-               AND delivery_attempts = 0
-               AND delivery_payload IS NULL
-               AND payload_fingerprint IS NULL
-            """,
-            (int(now_ms), int(now_ms), story_id, lease_token),
-        )
-        return bool(cursor.rowcount)
-
-    def record_push_render_failure(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        translation_status: str,
-        delivery_payload: Mapping[str, Any],
-        payload_fingerprint: str,
-        error_code: str,
-        now_ms: int,
-    ) -> bool:
-        if translation_status not in {"translated", "not_needed", "unavailable"}:
-            raise ValueError("news_push_translation_status_invalid")
-        prompt_version, attempted_at_ms, duration_ms, fallback_code = _push_translation_telemetry(delivery_payload)
-        self._lock_push_summary()
-        row = self.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET translation_status = %s,
-                   delivery_payload = %s,
-                   payload_fingerprint = %s,
-                   translation_prompt_version = %s,
-                   translation_attempted_at_ms = %s,
-                   translation_duration_ms = %s,
-                   translation_fallback_code = %s,
-                   status = 'terminal',
-                   next_attempt_at_ms = NULL,
-                   lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   last_error = %s,
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND lease_token = %s
-               AND status = 'pending_translation'
-               AND delivery_payload IS NULL
-            RETURNING status, last_error
-            """,
-            (
-                translation_status,
-                Jsonb(dict(delivery_payload)),
-                payload_fingerprint,
-                prompt_version,
-                attempted_at_ms,
-                duration_ms,
-                fallback_code,
-                str(error_code)[:500],
-                int(now_ms),
-                story_id,
-                lease_token,
-            ),
-        ).fetchone()
-        if row is None:
-            return False
-        self._apply_push_summary_change(
-            previous_status_counts={"pending_translation": 1},
-            current_status_counts={str(row["status"]): 1},
-            latest_error=str(row["last_error"]),
-            latest_error_at_ms=now_ms,
-            now_ms=now_ms,
-        )
-        return True
-
-    def start_push_delivery_attempt(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        now_ms: int,
-    ) -> dict[str, Any] | None:
-        self._lock_push_summary()
-        row = self.conn.execute(
-            """
-            WITH candidate AS MATERIALIZED (
-              SELECT story_id, status AS previous_status
-                FROM news_push_deliveries
-               WHERE story_id = %s
-                 AND lease_token = %s
-                 AND status IN ('pending_delivery', 'retry_wait')
-                 AND delivery_payload IS NOT NULL
-                 AND payload_fingerprint IS NOT NULL
-               FOR UPDATE
-            ), changed AS (
-              UPDATE news_push_deliveries delivery
-               SET status = 'pending_delivery',
-                   delivery_attempts = delivery_attempts + 1,
-                   updated_at_ms = %s
-                FROM candidate
-               WHERE delivery.story_id = candidate.story_id
-              RETURNING delivery.*, candidate.previous_status
-            )
-            SELECT * FROM changed
-            """,
-            (story_id, lease_token, int(now_ms)),
-        ).fetchone()
-        if row is None:
-            return None
-        self._apply_push_summary_change(
-            previous_status_counts={str(row["previous_status"]): 1},
-            current_status_counts={str(row["status"]): 1},
-            now_ms=now_ms,
-        )
-        return dict(row)
-
-    def complete_push_delivery(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        receipt: Mapping[str, Any],
-        now_ms: int,
-    ) -> bool:
-        self._lock_push_summary()
-        row = self.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET status = 'sent',
-                   next_attempt_at_ms = NULL,
-                   lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   receipt = %s,
-                   last_error = NULL,
-                   sent_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND lease_token = %s
-               AND status = 'pending_delivery'
-            RETURNING status, sent_at_ms
-            """,
-            (Jsonb(dict(receipt)), int(now_ms), int(now_ms), story_id, lease_token),
-        ).fetchone()
-        if row is None:
-            return False
-        self._apply_push_summary_change(
-            previous_status_counts={"pending_delivery": 1},
-            current_status_counts={str(row["status"]): 1},
-            latest_sent_at_ms=int(row["sent_at_ms"]),
-            now_ms=now_ms,
-        )
-        return True
-
-    def fail_push_delivery(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        error_code: str,
-        retryable: bool,
-        next_attempt_at_ms: int,
-        max_attempts: int,
-        now_ms: int,
-    ) -> str | None:
-        self._lock_push_summary()
-        row = self.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET status = CASE
-                     WHEN %s AND delivery_attempts < %s
-                       THEN 'retry_wait'
-                     ELSE 'terminal'
-                   END,
-                   next_attempt_at_ms = CASE
-                     WHEN %s AND delivery_attempts < %s
-                       THEN %s
-                     ELSE NULL
-                   END,
-                   lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   last_error = %s,
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND lease_token = %s
-               AND status = 'pending_delivery'
-            RETURNING status, last_error
-            """,
-            (
-                bool(retryable),
-                int(max_attempts),
-                bool(retryable),
-                int(max_attempts),
-                int(next_attempt_at_ms),
-                str(error_code)[:500],
-                int(now_ms),
-                story_id,
-                lease_token,
-            ),
-        ).fetchone()
-        if row is None:
-            return None
-        self._apply_push_summary_change(
-            previous_status_counts={"pending_delivery": 1},
-            current_status_counts={str(row["status"]): 1},
-            latest_error=str(row["last_error"]),
-            latest_error_at_ms=now_ms,
-            now_ms=now_ms,
-        )
-        return str(row["status"])
-
-    def release_push_delivery_claim(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        now_ms: int,
-    ) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET lease_owner = NULL,
-                   lease_token = NULL,
-                   lease_expires_at_ms = NULL,
-                   delivery_attempts = greatest(delivery_attempts - 1, 0),
-                   next_attempt_at_ms = %s,
-                   updated_at_ms = %s
-             WHERE story_id = %s
-               AND lease_token = %s
-               AND status = 'pending_delivery'
-            """,
-            (int(now_ms), int(now_ms), story_id, lease_token),
-        )
-        return bool(cursor.rowcount)
+            }
+        return result
 
     def push_health_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         state_query = query_specs.push_state_query()
         state = self.conn.execute(state_query.sql, state_query.params).fetchone()
         if state is None:
             raise RuntimeError("news_push_state_missing")
-        oldest_due_query = query_specs.push_oldest_due_query()
-        oldest_due = self.conn.execute(
-            oldest_due_query.sql,
-            oldest_due_query.params,
+        oldest_query = query_specs.push_oldest_pending_query()
+        oldest = self.conn.execute(
+            oldest_query.sql,
+            oldest_query.params,
         ).fetchone()
-        enablement_epoch_at_ms = state["enablement_epoch_at_ms"]
-        retry_count = int(state["retry_count"] or 0)
-        terminal_count = int(state["terminal_count"] or 0)
-        translation_24h = self._push_translation_24h_snapshot(now_ms=now_ms)
-        delivery_24h = self._push_delivery_24h_snapshot(now_ms=now_ms)
-        slo_breached = (
-            translation_24h["slo_met"] is False
-            or delivery_24h["slo_met"] is False
-            or not translation_24h["sample_complete"]
-            or not delivery_24h["sample_complete"]
-        )
-        status = (
-            "warming"
-            if enablement_epoch_at_ms is None
-            else "degraded"
-            if retry_count or terminal_count or slo_breached
-            else "ready"
-        )
         return {
-            "status": status,
-            "initialized": enablement_epoch_at_ms is not None,
-            "enablement_epoch_at_ms": (int(enablement_epoch_at_ms) if enablement_epoch_at_ms is not None else None),
+            "delivery_available": bool(state["delivery_available"]),
+            "enablement_epoch_at_ms": (
+                int(state["enablement_epoch_at_ms"]) if state["enablement_epoch_at_ms"] is not None else None
+            ),
             "total_count": int(state["total_count"] or 0),
-            "suppressed_count": int(state["suppressed_count"] or 0),
             "pending_count": int(state["pending_count"] or 0),
-            "retry_count": retry_count,
+            "sending_count": int(state["sending_count"] or 0),
             "sent_count": int(state["sent_count"] or 0),
-            "terminal_count": terminal_count,
-            "oldest_due_at_ms": (oldest_due["next_attempt_at_ms"] if oldest_due is not None else None),
-            "latest_sent_at_ms": state["latest_sent_at_ms"],
+            "terminal_count": int(state["terminal_count"] or 0),
+            "oldest_pending_at_ms": (int(oldest["live_observed_at_ms"]) if oldest is not None else None),
+            "latest_sent_at_ms": (int(state["latest_sent_at_ms"]) if state["latest_sent_at_ms"] is not None else None),
             "latest_error": (
                 _public_push_error(str(state["latest_error"])) if state["latest_error"] is not None else None
             ),
-            "latest_error_at_ms": state["latest_error_at_ms"],
-            "translation_24h": translation_24h,
-            "delivery_24h": delivery_24h,
+            "latest_error_at_ms": (
+                int(state["latest_error_at_ms"]) if state["latest_error_at_ms"] is not None else None
+            ),
+            "translation_24h": self._push_translation_24h_snapshot(now_ms=now_ms),
+            "delivery_24h": self._push_delivery_24h_snapshot(now_ms=now_ms),
             "measured_at_ms": int(now_ms),
         }
 
     def _push_translation_24h_snapshot(self, *, now_ms: int) -> dict[str, Any]:
-        samples_query = query_specs.push_translation_samples_query(now_ms=now_ms)
-        rows = self.conn.execute(samples_query.sql, samples_query.params).fetchall()
+        query = query_specs.push_translation_samples_query(now_ms=now_ms)
+        rows = self.conn.execute(query.sql, query.params).fetchall()
         if len(rows) > query_specs.SLO_SAMPLE_LIMIT:
             return _incomplete_translation_sample()
-        attempted = len(rows)
-        succeeded = sum(str(row["translation_status"]) == "translated" for row in rows)
-        latency_p95_ms = _percentile_cont_95_ms(
-            [int(row["duration_ms"]) for row in rows if row["duration_ms"] is not None and int(row["duration_ms"]) >= 0]
-        )
-        success_ratio = succeeded / attempted if attempted else None
-        failure_counts: Counter[str] = Counter()
+        outcomes = Counter(str(row["outcome"] or "fallback") for row in rows)
+        durations = [
+            int(row["duration_ms"]) for row in rows if row["duration_ms"] is not None and int(row["duration_ms"]) >= 0
+        ]
+        fallback_counts: Counter[str] = Counter()
         for row in rows:
-            if str(row["translation_status"]) == "translated":
+            if str(row["outcome"]) != "fallback":
                 continue
-            failure_code = row["fallback_code"] or "news_push_translation_unknown_failure"
-            failure_counts[_public_push_error(str(failure_code))] += 1
-        slo_met = (
-            success_ratio >= 0.95 and latency_p95_ms is not None and latency_p95_ms <= 3_000
-            if success_ratio is not None
-            else None
-        )
+            fallback_counts[_public_push_error(str(row["fallback_code"] or "news_item_push_translation_failed"))] += 1
         return {
-            "attempted": attempted,
-            "succeeded": succeeded,
-            "success_ratio": success_ratio,
-            "latency_p95_ms": latency_p95_ms,
-            "failure_counts": dict(sorted(failure_counts.items())),
-            "slo_met": slo_met,
+            "total": len(rows),
+            "attempted": len(durations),
+            "translated": outcomes["translated"],
+            "not_needed": outcomes["not_needed"],
+            "fallback": outcomes["fallback"],
+            "latency_p95_ms": _percentile_cont_95_ms(durations),
+            "fallback_counts": dict(sorted(fallback_counts.items())),
             "sample_complete": True,
         }
 
     def _push_delivery_24h_snapshot(self, *, now_ms: int) -> dict[str, Any]:
-        samples_query = query_specs.push_delivery_samples_query(now_ms=now_ms)
-        rows = self.conn.execute(samples_query.sql, samples_query.params).fetchall()
+        query = query_specs.push_delivery_samples_query(now_ms=now_ms)
+        rows = self.conn.execute(query.sql, query.params).fetchall()
         if len(rows) > query_specs.SLO_SAMPLE_LIMIT:
             return _incomplete_delivery_sample()
         latencies = [
-            int(row["latency_ms"]) for row in rows if row["latency_ms"] is not None and int(row["latency_ms"]) >= 0
+            int(row["latency_ms"])
+            for row in rows
+            if row["status"] == "sent" and row["latency_ms"] is not None and int(row["latency_ms"]) >= 0
         ]
-        completed = len(latencies)
         latency_p95_ms = _percentile_cont_95_ms(latencies)
         return {
-            "completed": completed,
+            "completed": len(rows),
+            "sent": sum(str(row["status"]) == "sent" for row in rows),
+            "terminal": sum(str(row["status"]) == "terminal" for row in rows),
             "latency_p95_ms": latency_p95_ms,
-            "over_120s": sum(latency > _NEWS_PUSH_SLOW_REPORTING_MS for latency in latencies),
-            "slo_met": latency_p95_ms <= 90_000 if latency_p95_ms is not None else None,
+            "slo_met": (latency_p95_ms <= 15_000 if latency_p95_ms is not None else None),
             "sample_complete": True,
         }
 
@@ -2747,7 +2310,10 @@ class NewsRepository:
         now_ms: int,
         rss_enabled: bool,
         configured_strategy_count: int,
-        push_enabled: bool = False,
+        push_requested: bool = False,
+        push_delivery_available: bool = False,
+        push_translation_available: bool = False,
+        push_unavailable_reason: str | None = None,
         feishu_webhook_url_configured: bool = False,
         feishu_signing_secret_configured: bool = False,
         workers_state: str | None = None,
@@ -2875,74 +2441,37 @@ class NewsRepository:
         )
         brief_reasons = [] if brief_status == "ready" else [f"public_brief_{brief['state']}"]
         push_snapshot = self.push_health_snapshot(now_ms=now_ms)
-        translation_24h = push_snapshot["translation_24h"]
         delivery_24h = push_snapshot["delivery_24h"]
-        translation_success_breached = bool(
-            translation_24h["success_ratio"] is not None and float(translation_24h["success_ratio"]) < 0.95
-        )
-        translation_latency_breached = bool(
-            translation_24h["latency_p95_ms"] is not None and int(translation_24h["latency_p95_ms"]) > 3_000
-        )
-        delivery_latency_breached = bool(
-            delivery_24h["latency_p95_ms"] is not None and int(delivery_24h["latency_p95_ms"]) > 90_000
-        )
-        translation_sample_overflow = not bool(translation_24h["sample_complete"])
-        delivery_sample_overflow = not bool(delivery_24h["sample_complete"])
-        if push_enabled:
-            push_reasons: list[str] = []
-            if not feishu_webhook_url_configured:
-                push_reasons.append("feishu_webhook_url_not_configured")
-            if not push_snapshot["initialized"]:
-                push_reasons.append("push_enablement_epoch_uninitialized")
-            if push_snapshot["retry_count"]:
-                push_reasons.append("push_delivery_retry_wait")
-            if push_snapshot["terminal_count"]:
-                push_reasons.append("push_delivery_terminal")
-            if translation_success_breached:
-                push_reasons.append("push_translation_success_slo_breached")
-            if translation_latency_breached:
-                push_reasons.append("push_translation_latency_slo_breached")
-            if delivery_latency_breached:
-                push_reasons.append("push_delivery_latency_slo_breached")
-            if translation_sample_overflow:
-                push_reasons.append("push_translation_sample_overflow")
-            if delivery_sample_overflow:
-                push_reasons.append("push_delivery_sample_overflow")
-            push_status = (
-                "degraded"
-                if (
-                    not feishu_webhook_url_configured
-                    or push_snapshot["retry_count"]
-                    or push_snapshot["terminal_count"]
-                    or translation_success_breached
-                    or translation_latency_breached
-                    or delivery_latency_breached
-                    or translation_sample_overflow
-                    or delivery_sample_overflow
-                )
-                else "warming"
-                if push_snapshot["pending_count"]
-                else str(push_snapshot["status"])
-            )
-            push_payload = {
-                **push_snapshot,
-                "status": push_status,
-                "reasons": push_reasons,
-                "enabled": True,
-                "feishu_webhook_url_configured": feishu_webhook_url_configured,
-                "feishu_signing_secret_configured": feishu_signing_secret_configured,
-            }
+        push_reasons: list[str] = []
+        state_synchronized = bool(push_snapshot["delivery_available"]) == bool(push_delivery_available)
+        if push_requested:
+            if push_unavailable_reason is not None:
+                push_reasons.append(str(push_unavailable_reason))
+            if not state_synchronized:
+                push_reasons.append("news_item_push_availability_unsynchronized")
+            if push_delivery_available and push_snapshot["enablement_epoch_at_ms"] is None:
+                push_reasons.append("news_item_push_enablement_epoch_missing")
+            if int(delivery_24h["terminal"] or 0) > 0:
+                push_reasons.append("news_item_push_recent_terminal")
+            if delivery_24h["slo_met"] is False:
+                push_reasons.append("news_item_push_delivery_latency_slo_breached")
+            if not bool(delivery_24h["sample_complete"]):
+                push_reasons.append("news_item_push_delivery_sample_overflow")
+            push_status = "degraded" if push_reasons else "ready"
         else:
             push_status = "disabled"
-            push_payload = {
-                **push_snapshot,
-                "status": push_status,
-                "reasons": [],
-                "enabled": False,
-                "feishu_webhook_url_configured": feishu_webhook_url_configured,
-                "feishu_signing_secret_configured": feishu_signing_secret_configured,
-            }
-
+        push_payload = {
+            **push_snapshot,
+            "status": push_status,
+            "reasons": push_reasons,
+            "requested": bool(push_requested),
+            "delivery_available": bool(push_delivery_available),
+            "translation_available": bool(push_translation_available),
+            "availability_reason": push_unavailable_reason,
+            "state_synchronized": state_synchronized,
+            "feishu_webhook_url_configured": (bool(feishu_webhook_url_configured)),
+            "feishu_signing_secret_configured": (bool(feishu_signing_secret_configured)),
+        }
         layers = {
             "ingest": {
                 "status": ingest_status,
@@ -2984,16 +2513,10 @@ class NewsRepository:
             story_status,
             brief_status,
         ]
-        if push_enabled:
+        if push_requested:
             statuses.append(push_status)
         overall = "degraded" if "degraded" in statuses else "warming" if "warming" in statuses else "ready"
-        operating_state = (
-            "stalled"
-            if runtime_stalled
-            else "recovering"
-            if overall != "ready" or (push_enabled and (push_snapshot["pending_count"] or push_snapshot["retry_count"]))
-            else "live"
-        )
+        operating_state = "stalled" if runtime_stalled else "recovering" if overall != "ready" else "live"
         return {
             "status": overall,
             "operating_state": operating_state,
@@ -3025,8 +2548,7 @@ class NewsRepository:
                 if (
                     opennews is None
                     or configured_strategy_count == 0
-                    or opennews["last_error"]
-                    in {"opennews_authentication_failed", "opennews_token_missing"}
+                    or opennews["last_error"] in {"opennews_authentication_failed", "opennews_token_missing"}
                 )
                 else "connected"
                 if bool(opennews["live_connected"])
@@ -3080,44 +2602,6 @@ def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _push_context_payload(
-    row: Mapping[str, Any],
-    *,
-    story_id: str,
-) -> dict[str, Any]:
-    selected: dict[str, Any] = {
-        "story_id": story_id,
-        "push_delivery_status": row["push_delivery_status"],
-        "enablement_epoch_at_ms": (
-            int(row["enablement_epoch_at_ms"]) if row["enablement_epoch_at_ms"] is not None else None
-        ),
-        "live_observed_at_ms": (int(row["live_observed_at_ms"]) if row["live_observed_at_ms"] is not None else None),
-        "provider_evidence": None,
-    }
-    if row["item_id"] is None:
-        return selected
-    selected.update(
-        {
-            "importance_score": int(row["importance_score"]),
-            "item_count": int(row["item_count"]),
-            "source_count": int(row["source_count"]),
-            "first_published_at_ms": int(row["first_published_at_ms"]),
-            "last_published_at_ms": int(row["last_published_at_ms"]),
-        }
-    )
-    selected["provider_evidence"] = {
-        "item_id": str(row["item_id"]),
-        "url": str(row["canonical_url"]) if row["canonical_url"] else None,
-        "provider_metadata": dict(row["provider_metadata"] or {}),
-        "reporting_origin": str(row["reporting_origin"]),
-        "title": str(row["title"]),
-        "description": str(row["description"]),
-        "lang": str(row["lang"]),
-        "published_at_ms": int(row["published_at_ms"]),
-    }
-    return selected
-
-
 def _public_provider_metadata(value: object) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -3151,61 +2635,11 @@ def _public_provider_evidence(selected: Mapping[str, Any] | None) -> dict[str, A
     }
 
 
-def _public_notification(
-    selected: Mapping[str, Any] | None,
-    *,
-    push_enabled: bool,
-    now_ms: int,
-) -> dict[str, Any]:
-    del now_ms
-    live_observed_at_ms = (
-        int(selected["live_observed_at_ms"])
-        if selected is not None and selected.get("live_observed_at_ms") is not None
-        else None
-    )
-    enablement_epoch_at_ms = (
-        int(selected["enablement_epoch_at_ms"])
-        if selected is not None and selected.get("enablement_epoch_at_ms") is not None
-        else None
-    )
-    eligible = bool(
-        push_enabled
-        and live_observed_at_ms is not None
-        and enablement_epoch_at_ms is not None
-        and live_observed_at_ms >= enablement_epoch_at_ms
-    )
-    ineligible_reason = (
-        None
-        if eligible
-        else "disabled"
-        if not push_enabled
-        else "recovery_only"
-        if live_observed_at_ms is None
-        else "before_enablement"
-    )
-    status = selected.get("push_delivery_status") if selected is not None else None
-    if status in {"pending_translation", "pending_delivery", "retry_wait"}:
-        delivery_state = "pending"
-    elif status == "sent":
-        delivery_state = "sent"
-    elif status == "suppressed":
-        delivery_state = "suppressed"
-    elif status == "terminal":
-        delivery_state = "failed"
-    else:
-        delivery_state = "not_created"
-    return {
-        "eligible": eligible,
-        "ineligible_reason": ineligible_reason,
-        "delivery_state": delivery_state,
-    }
-
-
 def _public_push_error(value: str) -> str:
     normalized = str(value or "").strip().lower()
     if re.fullmatch(r"[a-z0-9_]{1,120}", normalized):
         return normalized
-    return "news_story_push_delivery_error"
+    return "news_item_push_delivery_error"
 
 
 def _public_opennews_error(value: object) -> str | None:
@@ -3229,29 +2663,6 @@ def _opennews_incident_cause(error_code: str | None) -> str:
         "opennews_buffer_overflow": "buffer_overflow",
         "opennews_process_outage": "process_outage",
     }.get(error_code or "", "unknown")
-
-
-def _push_translation_telemetry(
-    delivery_payload: Mapping[str, Any],
-) -> tuple[str | None, int | None, int | None, str | None]:
-    presentation = delivery_payload.get("presentation")
-    if not isinstance(presentation, Mapping):
-        return None, None, None, None
-    prompt_version = str(presentation.get("prompt_version") or "").strip() or None
-
-    def nonnegative_int(value: Any) -> int | None:
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            return None
-        return int(value)
-
-    attempted_at_ms = nonnegative_int(presentation.get("translation_attempted_at_ms"))
-    duration_ms = nonnegative_int(presentation.get("translation_duration_ms"))
-    if attempted_at_ms is None:
-        duration_ms = None
-    fallback_code = str(presentation.get("fallback_code") or "").strip() or None
-    if prompt_version is None:
-        return None, None, None, None
-    return prompt_version, attempted_at_ms, duration_ms, fallback_code
 
 
 def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:

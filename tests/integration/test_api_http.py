@@ -108,7 +108,6 @@ def _rebuild_news_projection(
     repos: Any,
     *,
     now_ms: int,
-    push_enabled: bool | None = None,
 ) -> dict[str, Any]:
     payload = repos.news.load_story_projection(now_ms=now_ms)
     snapshot = NewsProjectionSnapshot(
@@ -132,7 +131,6 @@ def _rebuild_news_projection(
             snapshot=snapshot,
             projection=projection,
             now_ms=now_ms,
-            push_enabled=push_enabled,
         )
     )
 
@@ -1023,13 +1021,16 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         for key in (
             "status",
             "reasons",
-            "enabled",
+            "requested",
+            "delivery_available",
+            "translation_available",
+            "availability_reason",
+            "state_synchronized",
             "feishu_webhook_url_configured",
             "feishu_signing_secret_configured",
-            "initialized",
             "enablement_epoch_at_ms",
             "pending_count",
-            "retry_count",
+            "sending_count",
             "terminal_count",
             "sent_count",
             "latest_sent_at_ms",
@@ -1037,13 +1038,16 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
     } == {
         "status": "disabled",
         "reasons": [],
-        "enabled": False,
+        "requested": False,
+        "delivery_available": False,
+        "translation_available": False,
+        "availability_reason": None,
+        "state_synchronized": True,
         "feishu_webhook_url_configured": False,
         "feishu_signing_secret_configured": False,
-        "initialized": False,
         "enablement_epoch_at_ms": None,
         "pending_count": 0,
-        "retry_count": 0,
+        "sending_count": 0,
         "terminal_count": 0,
         "sent_count": 0,
         "latest_sent_at_ms": None,
@@ -1197,306 +1201,32 @@ def test_api_news_strips_wire_controls_and_bounds_strategy_text_description(tmp_
     }
 
 
-def test_api_news_status_reports_enabled_push_without_secrets_or_payloads(tmp_path):
+def test_api_news_status_reports_item_push_without_secrets_or_story_state(tmp_path):
     settings = make_settings(tmp_path)
     settings.news.push = type(settings.news.push)(
         enabled=True,
-        feishu_webhook_url=("https://open.feishu.cn/open-apis/bot/v2/hook/status-test-hook"),
+        feishu_webhook_url=("https://open.feishu.cn/open-apis/bot/v2/hook/item-status-hook"),
+        feishu_signing_secret="must-not-leak",
     )
     app = create_app(settings=settings)
     now_ms = int(time.time() * 1000)
-    source = opennews_source()
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            _sync_public_news_sources(repos, now_ms=now_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="status-story",
-                        title="Central bank announces a policy decision",
-                        description="Officials published the decision.",
-                        published_at_ms=now_ms - 1_000,
-                        reporting_origin="authority",
-                    ),
-                ),
-                observed_at_ms=now_ms,
-            )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-            repos.news.update_opennews_live_status(
-                source_id=source.source_id,
-                connected=True,
-                now_ms=now_ms,
-                error_code=None,
-            )
-
-        headers = {"Authorization": "Bearer secret"}
-        warming_response = client.get("/api/news/status", headers=headers)
-
-        with write_repositories() as repos, repos.transaction():
-            repos.news.set_push_enabled(enabled=True, now_ms=now_ms + 1)
-
-        unsigned_ready_response = client.get("/api/news/status", headers=headers)
-
-        with write_repositories() as repos, repos.transaction():
-            for story_id in ("a" * 64, "b" * 64, "c" * 64, "d" * 64):
-                assert repos.news.insert_push_candidate(
-                    story_id=story_id,
-                    selected_item_id=f"selected-{story_id[0]}",
-                    live_observed_at_ms=now_ms,
-                    source_payload={
-                        "card": "leaked-card",
-                        "webhook": ("https://open.feishu.cn/open-apis/bot/v2/hook/status-test-hook"),
-                    },
-                    now_ms=now_ms + 2,
-                )
-            repos.conn.execute(
-                """
-                UPDATE news_push_deliveries
-                   SET status = CASE story_id
-                         WHEN %s THEN 'retry_wait'
-                         WHEN %s THEN 'terminal'
-                         WHEN %s THEN 'sent'
-                         ELSE status
-                       END,
-                       delivery_attempts = CASE
-                         WHEN story_id IN (%s, %s, %s) THEN 1
-                         ELSE delivery_attempts
-                       END,
-                       next_attempt_at_ms = CASE
-                         WHEN story_id = %s THEN %s
-                         WHEN story_id IN (%s, %s) THEN NULL
-                         ELSE next_attempt_at_ms
-                       END,
-                       last_error = CASE
-                         WHEN story_id = %s THEN %s
-                         WHEN story_id = %s THEN 'feishu_business_rejected'
-                         ELSE NULL
-                       END,
-                       sent_at_ms = CASE WHEN story_id = %s THEN %s ELSE NULL END,
-                       updated_at_ms = CASE WHEN story_id = %s THEN %s ELSE %s END
-                """,
-                (
-                    "b" * 64,
-                    "c" * 64,
-                    "d" * 64,
-                    "b" * 64,
-                    "c" * 64,
-                    "d" * 64,
-                    "b" * 64,
-                    now_ms + 60_000,
-                    "c" * 64,
-                    "d" * 64,
-                    "b" * 64,
-                    "status-test-signing-secret https://example.test leaked-card",
-                    "c" * 64,
-                    "d" * 64,
-                    now_ms + 3,
-                    "b" * 64,
-                    now_ms + 5,
-                    now_ms + 4,
-                ),
-            )
-            repos.conn.execute(
-                """
-                UPDATE news_push_state
-                   SET total_count = 4,
-                       suppressed_count = 0,
-                       pending_count = 1,
-                       retry_count = 1,
-                       sent_count = 1,
-                       terminal_count = 1,
-                       latest_sent_at_ms = %s,
-                       latest_error = 'news_story_push_delivery_error',
-                       latest_error_at_ms = %s,
-                       updated_at_ms = %s
-                 WHERE singleton_key = 'current'
-                """,
-                (now_ms + 3, now_ms + 5, now_ms + 5),
-            )
-
-        degraded_response = client.get("/api/news/status", headers=headers)
-        settings.news.push.enabled = False
-        disabled_history_response = client.get("/api/news/status", headers=headers)
-
-    assert warming_response.status_code == 200
-    warming = warming_response.json()["data"]
-    assert warming["status"] == "warming"
-    assert {name: layer["status"] for name, layer in warming["layers"].items()} == {
-        "ingest": "ready",
-        "story": "ready",
-        "brief": "warming",
-        "push": "warming",
-    }
-    assert warming["layers"]["push"]["initialized"] is False
-    assert warming["layers"]["push"]["feishu_signing_secret_configured"] is False
-    assert warming["layers"]["push"]["reasons"] == ["push_enablement_epoch_uninitialized"]
-    assert warming["layers"]["push"]["translation_24h"] == {
-        "attempted": 0,
-        "succeeded": 0,
-        "success_ratio": None,
-        "latency_p95_ms": None,
-        "failure_counts": {},
-        "slo_met": None,
-        "sample_complete": True,
-    }
-    assert warming["layers"]["push"]["delivery_24h"] == {
-        "completed": 0,
-        "latency_p95_ms": None,
-        "over_120s": 0,
-        "slo_met": None,
-        "sample_complete": True,
-    }
-
-    assert unsigned_ready_response.status_code == 200
-    unsigned_ready = unsigned_ready_response.json()["data"]
-    assert unsigned_ready["status"] == "warming"
-    assert unsigned_ready["layers"]["push"]["status"] == "ready"
-    assert unsigned_ready["layers"]["push"]["reasons"] == []
-    assert unsigned_ready["layers"]["push"]["feishu_signing_secret_configured"] is False
-
-    assert degraded_response.status_code == 200
-    degraded = degraded_response.json()["data"]
-    push = degraded["layers"]["push"]
-    assert degraded["status"] == "degraded"
-    assert push["status"] == "degraded"
-    assert push["enabled"] is True
-    assert push["feishu_webhook_url_configured"] is True
-    assert push["feishu_signing_secret_configured"] is False
-    assert push["initialized"] is True
-    assert push["enablement_epoch_at_ms"] == now_ms + 1
-    assert push["pending_count"] == 1
-    assert push["retry_count"] == 1
-    assert push["terminal_count"] == 1
-    assert push["sent_count"] == 1
-    assert push["latest_sent_at_ms"] == now_ms + 3
-    assert push["latest_error"] == "news_story_push_delivery_error"
-    assert push["reasons"] == [
-        "push_delivery_retry_wait",
-        "push_delivery_terminal",
-    ]
-    rendered = json.dumps(degraded)
-    assert "status-test-signing-secret" not in rendered
-    assert "status-test-hook" not in rendered
-    assert "leaked-card" not in rendered
-
-    assert disabled_history_response.status_code == 200
-    disabled_history = disabled_history_response.json()["data"]
-    disabled_push = disabled_history["layers"]["push"]
-    assert disabled_history["status"] == "warming"
-    assert disabled_push["status"] == "disabled"
-    assert disabled_push["enabled"] is False
-    assert disabled_push["initialized"] is True
-    assert disabled_push["enablement_epoch_at_ms"] == now_ms + 1
-    assert disabled_push["pending_count"] == 1
-    assert disabled_push["retry_count"] == 1
-    assert disabled_push["terminal_count"] == 1
-    assert disabled_push["sent_count"] == 1
-    assert disabled_push["latest_sent_at_ms"] == now_ms + 3
-
-
-def test_api_news_notification_uses_live_enablement_without_score_or_asset_gates(tmp_path):
-    settings = make_settings(tmp_path)
-    settings.news.push = type(settings.news.push)(
-        enabled=True,
-        feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/http-notification-test",
-    )
-    app = create_app(settings=settings)
-    now_ms = 1_800_000_000_000
     source = opennews_source()
 
     with TestClient(app) as client:
         with write_repositories() as repos, repos.transaction():
             repos.news.sync_sources((source,), now_ms=now_ms - 2_000)
-            assert repos.news.set_push_enabled(enabled=True, now_ms=now_ms - 1_000) == (
-                now_ms - 1_000,
-                True,
+            repos.news.reconcile_item_push(
+                delivery_available=True,
+                now_ms=now_ms - 1_000,
             )
-            repos.news.record_opennews_events(
+            outcome = repos.news.record_opennews_events(
                 source=source,
                 events=(
                     _opennews_event(
-                        provider_record_id="scoreless-assetless-live",
-                        title="Regional authority publishes an operational market update",
-                        description="The authority published the update.",
-                        published_at_ms=now_ms - 500,
-                        reporting_origin="authority",
-                        provider_metadata={},
-                    ),
-                ),
-                observed_at_ms=now_ms,
-            )
-            projection = _rebuild_news_projection(
-                repos,
-                now_ms=now_ms,
-                push_enabled=True,
-            )
-            delivery = repos.conn.execute("SELECT story_id, status FROM news_push_deliveries").fetchone()
-
-        assert projection["push_outbox_writes"] == 1
-        assert delivery is not None
-        headers = {"Authorization": "Bearer secret"}
-        story = client.get(
-            f"/api/news/stories/{delivery['story_id']}",
-            headers=headers,
-        ).json()["data"]
-        assert story["provider_evidence"]["provider_metadata"].get("score") is None
-        assert story["provider_evidence"]["provider_metadata"].get("assets") is None
-        assert story["notification"] == {
-            "eligible": True,
-            "ineligible_reason": None,
-            "delivery_state": "pending",
-        }
-
-        with write_repositories() as repos, repos.transaction():
-            repos.conn.execute(
-                """
-                UPDATE news_push_deliveries
-                   SET status = 'sent', sent_at_ms = %s, updated_at_ms = %s
-                 WHERE story_id = %s
-                """,
-                (now_ms + 1, now_ms + 1, delivery["story_id"]),
-            )
-        sent = client.get(
-            f"/api/news/stories/{delivery['story_id']}",
-            headers=headers,
-        ).json()["data"]
-        assert sent["notification"]["delivery_state"] == "sent"
-
-        settings.news.push = type(settings.news.push)()
-        disabled = client.get(
-            f"/api/news/stories/{delivery['story_id']}",
-            headers=headers,
-        ).json()["data"]
-        assert disabled["notification"] == {
-            "eligible": False,
-            "ineligible_reason": "disabled",
-            "delivery_state": "sent",
-        }
-
-
-def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
-    settings = make_settings(tmp_path)
-    settings.news.push = type(settings.news.push)(
-        enabled=True,
-        feishu_webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/status-test-hook",
-    )
-    app = create_app(settings=settings)
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            _sync_public_news_sources(repos, now_ms=now_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="status-runtime-push",
+                        provider_record_id="item-status",
                         title="Bitcoin issuer announces a spot fund decision",
                         description="The issuer published the decision.",
-                        published_at_ms=now_ms - 1_000,
+                        published_at_ms=now_ms - 500,
                         reporting_origin="issuer",
                         provider_metadata={"score": 91},
                     ),
@@ -1510,172 +1240,46 @@ def test_api_news_status_reports_workers_push_lag_and_translation_slo(tmp_path):
                 now_ms=now_ms,
                 error_code=None,
             )
-            repos.news.set_push_enabled(enabled=True, now_ms=now_ms)
-            repos.conn.execute(
-                """
-                INSERT INTO workers_runtime (
-                  singleton_key, runtime_id, runtime_version, lifecycle_state,
-                  started_at_ms, heartbeat_at_ms, fatal_code
-                ) VALUES (true, %s, 'test-runtime', 'starting', %s, %s, NULL)
-                """,
-                (
-                    "00000000-0000-0000-0000-000000000001",
-                    now_ms - 20_000,
-                    now_ms,
-                ),
+            pending = repos.news.peek_item_push()
+            assert pending is not None
+            repos.news.fence_item_push(
+                item_id=str(pending["item_id"]),
+                presentation_snapshot={
+                    "display_title": "Bitcoin issuer announces a spot fund decision",
+                    "outcome": "fallback",
+                    "fallback_code": "news_item_push_translation_unavailable",
+                    "translation_policy_version": "title_zh_v3",
+                },
+                attempted_at_ms=now_ms,
+            )
+            repos.news.terminalize_item_push(
+                item_id=str(pending["item_id"]),
+                error_code="news_item_push_feishu_failed",
+                now_ms=now_ms,
             )
 
         headers = {"Authorization": "Bearer secret"}
-        starting = client.get("/api/news/status", headers=headers).json()["data"]
-        assert starting["operating_state"] == "recovering"
-        assert "workers_runtime_starting" in starting["layers"]["story"]["reasons"]
+        status_response = client.get("/api/news/status", headers=headers)
+        feed_response = client.get("/api/news/feed", headers=headers)
 
-        with write_repositories() as repos, repos.transaction():
-            repos.conn.execute(
-                """
-                UPDATE workers_runtime
-                   SET lifecycle_state = 'running', heartbeat_at_ms = %s
-                 WHERE singleton_key
-                """,
-                (now_ms - 16_000,),
-            )
-        stale = client.get("/api/news/status", headers=headers).json()["data"]
-        assert stale["operating_state"] == "stalled"
-        assert "workers_runtime_heartbeat_stale" in stale["layers"]["story"]["reasons"]
-
-        with write_repositories() as repos, repos.transaction():
-            repos.conn.execute("DELETE FROM workers_runtime")
-            story = repos.conn.execute(
-                """
-                SELECT member.story_id
-                  FROM news_story_members member
-                  JOIN news_items item ON item.item_id = member.item_id
-                 WHERE jsonb_typeof(item.provider_metadata -> 'score') = 'number'
-                 ORDER BY member.story_id
-                 LIMIT 1
-                """
-            ).fetchone()
-            assert story is not None
-            evidence = repos.news.story_push_contexts(story_ids=(str(story["story_id"]),))[str(story["story_id"])]
-            selected = evidence["provider_evidence"]
-            for index, duration_ms in enumerate((1_000, 4_000), start=1):
-                story_id = f"{index:x}" * 64
-                assert repos.news.insert_push_candidate(
-                    story_id=story_id,
-                    selected_item_id=f"translation-sample-{index}",
-                    live_observed_at_ms=now_ms - 130_000,
-                    source_payload={"provider_evidence": selected},
-                    now_ms=now_ms - 130_000,
-                )
-                repos.conn.execute(
-                    """
-                    UPDATE news_push_deliveries
-                       SET status = %s,
-                           translation_status = %s,
-                           translation_prompt_version = 'title_zh_v2',
-                           translation_attempted_at_ms = %s,
-                           translation_duration_ms = %s,
-                           translation_fallback_code = %s,
-                           next_attempt_at_ms = NULL,
-                           sent_at_ms = %s,
-                           updated_at_ms = %s,
-                           delivery_payload = jsonb_build_object(
-                             'presentation', jsonb_build_object(
-                               'prompt_version', 'title_zh_v2',
-                               'headline_mode', cast(%s AS text),
-                               'fallback_code', cast(%s AS text),
-                               'translation_attempted_at_ms', cast(%s AS bigint),
-                               'translation_duration_ms', cast(%s AS bigint)
-                             )
-                           ),
-                           payload_fingerprint = repeat(%s, 64)
-                     WHERE story_id = %s
-                    """,
-                    (
-                        "sent" if index == 1 else "terminal",
-                        "translated" if index == 1 else "unavailable",
-                        now_ms - 1_000,
-                        duration_ms,
-                        None if index == 1 else "news_push_translation_rate_limited",
-                        now_ms - 500 if index == 1 else None,
-                        now_ms - 500,
-                        "translated" if index == 1 else "fallback_original",
-                        None if index == 1 else "news_push_translation_rate_limited",
-                        now_ms - 1_000,
-                        duration_ms,
-                        str(index),
-                        story_id,
-                    ),
-                )
-            repos.conn.execute(
-                """
-                UPDATE news_push_state
-                   SET total_count = 2,
-                       suppressed_count = 0,
-                       pending_count = 0,
-                       retry_count = 0,
-                       sent_count = 1,
-                       terminal_count = 1,
-                       latest_sent_at_ms = %s,
-                       updated_at_ms = %s
-                 WHERE singleton_key = 'current'
-                """,
-                (now_ms - 500, now_ms - 500),
-            )
-
-        translation = client.get("/api/news/status", headers=headers).json()["data"]
-
-    assert translation["operating_state"] == "recovering"
-    push = translation["layers"]["push"]
-    assert push["translation_24h"] == {
-        "attempted": 2,
-        "succeeded": 1,
-        "success_ratio": 0.5,
-        "latency_p95_ms": 3850,
-        "failure_counts": {"news_push_translation_rate_limited": 1},
-        "slo_met": False,
-        "sample_complete": True,
-    }
-    assert push["delivery_24h"] == {
-        "completed": 2,
-        "latency_p95_ms": 129500,
-        "over_120s": 2,
-        "slo_met": False,
-        "sample_complete": True,
-    }
-    assert "push_translation_success_slo_breached" in push["reasons"]
-    assert "push_translation_latency_slo_breached" in push["reasons"]
-    assert "push_delivery_latency_slo_breached" in push["reasons"]
-
-    with write_repositories() as repos, repos.transaction():
-        repos.conn.execute(
-            """
-            UPDATE news_push_deliveries
-               SET status = 'pending_delivery',
-                   next_attempt_at_ms = %s,
-                   delivery_payload = NULL,
-                   payload_fingerprint = NULL,
-                   translation_status = 'pending'
-            WHERE story_id = %s
-            """,
-            (now_ms + 3_600_000, "1" * 64),
-        )
-        repos.conn.execute(
-            """
-            UPDATE news_push_state
-               SET pending_count = 1,
-                   sent_count = 0,
-                   updated_at_ms = %s
-             WHERE singleton_key = 'current'
-            """,
-            (now_ms,),
-        )
-    with TestClient(app) as client:
-        overdue = client.get(
-            "/api/news/status",
-            headers={"Authorization": "Bearer secret"},
-        ).json()["data"]
-    assert "push_delivery_stalled" not in overdue["layers"]["push"]["reasons"]
+    assert outcome["push_outbox_writes"] == 1
+    assert status_response.status_code == 200
+    push = status_response.json()["data"]["layers"]["push"]
+    assert push["status"] == "degraded"
+    assert push["requested"] is True
+    assert push["delivery_available"] is True
+    assert push["state_synchronized"] is True
+    assert push["pending_count"] == 0
+    assert push["sending_count"] == 0
+    assert push["terminal_count"] == 1
+    assert push["delivery_24h"]["terminal"] == 1
+    assert push["translation_24h"]["fallback"] == 1
+    assert push["reasons"] == ["news_item_push_recent_terminal"]
+    rendered = json.dumps(status_response.json())
+    assert "must-not-leak" not in rendered
+    assert "item-status-hook" not in rendered
+    story = feed_response.json()["data"]["stories"][0]
+    assert "notification" not in story
 
 
 def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):

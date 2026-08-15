@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
@@ -240,39 +241,6 @@ class NewsPushSettings(BaseModel):
         normalized = str(value or "").strip()
         return normalized or None
 
-    @field_validator("feishu_webhook_url")
-    @classmethod
-    def validate_feishu_webhook_url(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        parsed = urlsplit(value)
-        try:
-            port = parsed.port
-        except ValueError:
-            raise ValueError("news_push_feishu_webhook_url_invalid") from None
-        valid_path = parsed.path.startswith("/open-apis/bot/v2/hook/") and bool(
-            parsed.path.removeprefix("/open-apis/bot/v2/hook/")
-        )
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != "open.feishu.cn"
-            or port not in {None, 443}
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-            or not valid_path
-            or "/" in parsed.path.removeprefix("/open-apis/bot/v2/hook/")
-        ):
-            raise ValueError("news_push_feishu_webhook_url_invalid")
-        return value
-
-    @model_validator(mode="after")
-    def require_enabled_webhook(self) -> NewsPushSettings:
-        if self.enabled and not self.feishu_webhook_url:
-            raise ValueError("news_push_feishu_webhook_url_required")
-        return self
-
 
 class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -315,9 +283,7 @@ class NewsSettings(BaseModel):
         return tuple(sorted(normalized))
 
     @model_validator(mode="after")
-    def require_news_for_push(self) -> NewsSettings:
-        if not self.enabled and self.push.enabled:
-            raise ValueError("news_push_requires_news_enabled")
+    def validate_opennews_strategy_configuration(self) -> NewsSettings:
         if self.enabled and self.opennews_token and not self.opennews_strategy_ids:
             raise ValueError("opennews_strategy_ids_required")
         return self
@@ -378,6 +344,81 @@ class Settings(BaseModel):
             return None
         token = str(value).strip()
         return token or None
+
+
+@dataclass(frozen=True, slots=True)
+class NewsPushAvailability:
+    requested: bool
+    delivery_available: bool
+    translation_available: bool
+    reason: str | None
+    feishu_webhook_url_configured: bool
+    feishu_signing_secret_configured: bool
+
+
+def news_push_availability(settings: Settings) -> NewsPushAvailability:
+    push = settings.news.push
+    requested = push.enabled
+    webhook_configured = bool(push.feishu_webhook_url)
+    translation_available = bool(
+        settings.llm.api_key and settings.llm.news_brief_model and _is_http_base_url(settings.llm.base_url)
+    )
+    reason: str | None = None
+    if requested and not settings.news.enabled:
+        reason = "news_item_push_news_disabled"
+    elif requested and not webhook_configured:
+        reason = "news_item_push_feishu_webhook_missing"
+    elif requested and not _is_feishu_webhook_url(push.feishu_webhook_url):
+        reason = "news_item_push_feishu_webhook_invalid"
+    return NewsPushAvailability(
+        requested=requested,
+        delivery_available=requested and reason is None,
+        translation_available=translation_available,
+        reason=reason,
+        feishu_webhook_url_configured=webhook_configured,
+        feishu_signing_secret_configured=bool(push.feishu_signing_secret),
+    )
+
+
+def _is_feishu_webhook_url(value: str | None) -> bool:
+    if value is None:
+        return False
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    hook_id = parsed.path.removeprefix("/open-apis/bot/v2/hook/")
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname == "open.feishu.cn"
+        and port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and hook_id
+        and hook_id != parsed.path
+        and "/" not in hook_id
+    )
+
+
+def _is_http_base_url(value: str | None) -> bool:
+    if value is None:
+        return False
+    try:
+        parsed = urlsplit(value)
+        _port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def load_settings(*, require_ws_token: bool = True) -> Settings:

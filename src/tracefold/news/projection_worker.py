@@ -30,7 +30,6 @@ class NewsStoryProjection:
         dirty: asyncio.Event | None = None,
         debounce_seconds: float = 1.0,
         safety_seconds: float = 300.0,
-        push_enabled: bool = False,
     ) -> None:
         self.db = db
         self.heavy_db = heavy_db
@@ -38,7 +37,6 @@ class NewsStoryProjection:
         self.dirty = dirty or asyncio.Event()
         self.debounce_seconds = float(debounce_seconds)
         self.safety_seconds = float(safety_seconds)
-        self.push_enabled = bool(push_enabled)
         self.service = NewsProjectionService(db=db)
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
@@ -76,7 +74,6 @@ class NewsStoryProjection:
                     {},
                     operation_timeout_seconds=NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
                     now_ms=_now_ms(),
-                    push_enabled=self.push_enabled,
                 )
                 return
             projection = await self.cpu.run(
@@ -92,7 +89,6 @@ class NewsStoryProjection:
                 projection,
                 operation_timeout_seconds=NEWS_STORY_PUBLISH_TIMEOUT_SECONDS,
                 now_ms=_now_ms(),
-                push_enabled=self.push_enabled,
             )
         except ResourceAdmissionTimeout:
             self.dirty.set()

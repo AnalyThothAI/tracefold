@@ -138,7 +138,6 @@ class NewsProjectionService:
         projection: Mapping[str, Any],
         *,
         now_ms: int,
-        push_enabled: bool | None = None,
     ) -> dict[str, Any]:
         with (
             self.db.worker_session(
@@ -154,7 +153,6 @@ class NewsProjectionService:
                     snapshot=snapshot,
                     projection=projection,
                     now_ms=now_ms,
-                    push_enabled=push_enabled,
                 ),
             )
 

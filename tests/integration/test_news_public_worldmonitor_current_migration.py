@@ -8,8 +8,19 @@ from psycopg.errors import CheckViolation
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tracefold.platform.postgres.postgres_audit import NEWS_TABLES
 from tracefold.platform.postgres.postgres_migrations import alembic_config
+
+NEWS_TABLES_0247 = {
+    "news_sources",
+    "news_items",
+    "news_stories",
+    "news_story_members",
+    "news_projection_summary",
+    "news_brief_selection_current",
+    "news_brief_current",
+    "news_push_state",
+    "news_push_deliveries",
+}
 
 
 def test_0247_hard_cuts_news_to_public_current_state() -> None:
@@ -184,7 +195,7 @@ def test_0247_hard_cuts_news_to_public_current_state() -> None:
         ).fetchone()
         push_rows = conn.execute("SELECT story_id FROM news_push_deliveries ORDER BY story_id").fetchall()
 
-        assert news_tables == set(NEWS_TABLES)
+        assert news_tables == NEWS_TABLES_0247
         assert {
             "feed_url",
             "refresh_interval_seconds",

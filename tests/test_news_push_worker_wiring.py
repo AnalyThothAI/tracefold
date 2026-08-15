@@ -10,9 +10,9 @@ import pytest
 from tracefold.app import workers
 from tracefold.app.market_providers import AssetMarketProviders
 from tracefold.macro import MacroProjectionCandidate
-from tracefold.news import NewsPushReceipt, NewsStoryProjection
+from tracefold.news import NewsStoryProjection
 from tracefold.news.projection import NewsProjectionSnapshot
-from tracefold.news.push import NewsStoryPush
+from tracefold.news.push import NewsItemPush, NewsPushReceipt
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -121,15 +121,14 @@ def test_story_projection_retries_after_database_admission_timeout() -> None:
     assert asyncio.run(scenario()) == (2, 1)
 
 
-def test_push_periodic_sample_retries_after_database_admission_timeout() -> None:
+def test_push_startup_reconcile_propagates_database_admission_timeout() -> None:
     class _Push:
-        async def reconcile(self, *, now_ms: int) -> dict[str, int]:
-            assert now_ms > 0
+        async def reconcile(self) -> dict[str, int]:
             raise ResourceAdmissionTimeout("test_news_push_reconcile_admission_timeout")
 
     push = _Push()
     with pytest.raises(ResourceAdmissionTimeout):
-        asyncio.run(push.reconcile(now_ms=1))
+        asyncio.run(push.reconcile())
 
 
 def test_push_due_turn_retries_after_database_admission_timeout() -> None:
@@ -137,24 +136,197 @@ def test_push_due_turn_retries_after_database_admission_timeout() -> None:
         async def run_business(self, *_args: Any, **_kwargs: Any) -> object:
             raise ResourceAdmissionTimeout("test_news_push_turn_admission_timeout")
 
-    class _Delivery:
-        def render(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            raise AssertionError("not called")
-
-        def deliver(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
+    class _Sender:
+        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
             raise AssertionError("not called")
 
         def close(self) -> None:
             raise AssertionError("not called")
 
-    push = NewsStoryPush(
+    push = NewsItemPush(
         db=_Database(),
         finite_operations=object(),
-        delivery=_Delivery(),
-        runtime_id="runtime-1",
+        translator=None,
+        sender=_Sender(),
+        delivery_available=True,
     )
 
     assert asyncio.run(push.turn()) is None
+
+
+def test_stale_item_push_turn_that_loses_fence_sends_nothing() -> None:
+    class _Database:
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+
+        async def run_business(
+            self,
+            operation_name: str,
+            _function: Any,
+            /,
+            *args: Any,
+            **_kwargs: Any,
+        ) -> object:
+            self.operations.append(operation_name)
+            if operation_name == "news_item_push_peek":
+                return {
+                    "item_id": "news_item_0123456789abcdef0123456789abcdef",
+                    "source_payload": {
+                        "schema_version": "news_item_push_v1",
+                        "original_title": "Bitcoin rises",
+                    },
+                }
+            if operation_name == "news_item_push_fence":
+                return None
+            raise AssertionError(operation_name)
+
+    class _Sender:
+        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
+            raise AssertionError("stale turn must not send")
+
+        def close(self) -> None:
+            return None
+
+    database = _Database()
+    push = NewsItemPush(
+        db=database,
+        finite_operations=object(),
+        translator=None,
+        sender=_Sender(),
+        delivery_available=True,
+    )
+
+    assert asyncio.run(push.turn()) is False
+    assert database.operations == ["news_item_push_peek", "news_item_push_fence"]
+
+
+def test_chinese_item_title_skips_translation_and_freezes_not_needed() -> None:
+    class _Database:
+        def __init__(self) -> None:
+            self.presentation: dict[str, Any] | None = None
+
+        async def run_business(
+            self,
+            operation_name: str,
+            _function: Any,
+            /,
+            *args: Any,
+            **_kwargs: Any,
+        ) -> object:
+            if operation_name == "news_item_push_peek":
+                return {
+                    "item_id": "news_item_0123456789abcdef0123456789abcdef",
+                    "source_payload": {
+                        "schema_version": "news_item_push_v1",
+                        "original_title": "比特币现货 ETF 资金流入",
+                    },
+                }
+            if operation_name == "news_item_push_fence":
+                self.presentation = dict(args[1])
+                return {"item_id": args[0]}
+            if operation_name == "news_item_push_complete":
+                return True
+            raise AssertionError(operation_name)
+
+    class _InlineFinite:
+        async def run(self, _name: str, function: Any, /, *args: Any, **_kwargs: Any) -> object:
+            return function(*args)
+
+    class _Translator:
+        def translate(self, _title: str) -> str:
+            raise AssertionError("Chinese title must not be translated")
+
+        def close(self) -> None:
+            return None
+
+    class _Sender:
+        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
+            return NewsPushReceipt(provider="feishu")
+
+        def close(self) -> None:
+            return None
+
+    database = _Database()
+    push = NewsItemPush(
+        db=database,
+        finite_operations=_InlineFinite(),
+        translator=_Translator(),
+        sender=_Sender(),
+        delivery_available=True,
+    )
+
+    assert asyncio.run(push.turn()) is True
+    assert database.presentation == {
+        "display_title": "比特币现货 ETF 资金流入",
+        "outcome": "not_needed",
+        "translation_policy_version": "title_zh_v3",
+    }
+
+
+def test_long_item_title_skips_translation_and_falls_back_without_blocking() -> None:
+    title = "Bitcoin " + "x" * 501
+
+    class _Database:
+        def __init__(self) -> None:
+            self.presentation: dict[str, Any] | None = None
+
+        async def run_business(
+            self,
+            operation_name: str,
+            _function: Any,
+            /,
+            *args: Any,
+            **_kwargs: Any,
+        ) -> object:
+            if operation_name == "news_item_push_peek":
+                return {
+                    "item_id": "news_item_0123456789abcdef0123456789abcdef",
+                    "source_payload": {
+                        "schema_version": "news_item_push_v1",
+                        "original_title": title,
+                    },
+                }
+            if operation_name == "news_item_push_fence":
+                self.presentation = dict(args[1])
+                return {"item_id": args[0]}
+            if operation_name == "news_item_push_complete":
+                return True
+            raise AssertionError(operation_name)
+
+    class _InlineFinite:
+        async def run(self, _name: str, function: Any, /, *args: Any, **_kwargs: Any) -> object:
+            return function(*args)
+
+    class _Translator:
+        def translate(self, _title: str) -> str:
+            raise AssertionError("oversized title must not be translated")
+
+        def close(self) -> None:
+            return None
+
+    class _Sender:
+        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
+            return NewsPushReceipt(provider="feishu")
+
+        def close(self) -> None:
+            return None
+
+    database = _Database()
+    push = NewsItemPush(
+        db=database,
+        finite_operations=_InlineFinite(),
+        translator=_Translator(),
+        sender=_Sender(),
+        delivery_available=True,
+    )
+
+    assert asyncio.run(push.turn()) is True
+    assert database.presentation == {
+        "display_title": title,
+        "fallback_code": "news_item_push_translation_input_too_long",
+        "outcome": "fallback",
+        "translation_policy_version": "title_zh_v3",
+    }
 
 
 def test_worker_root_has_no_push_reconcile_ring() -> None:
@@ -165,13 +337,13 @@ def test_worker_root_has_no_push_reconcile_ring() -> None:
     assert "story_push_reconcile_page" not in source
 
 
-def test_news_push_composition_has_no_llm_or_title_translator_dependency() -> None:
+def test_news_item_push_exposes_only_one_turn_operation() -> None:
     wiring = inspect.getsource(workers._wire_components)
-    parameters = inspect.signature(NewsStoryPush).parameters
+    source = inspect.getsource(NewsItemPush)
 
     assert "DeepSeekNewsPushTranslator" not in wiring
-    assert "model_adapter" not in parameters
-    assert "translator" not in parameters
+    assert "prepare(" not in source
+    assert "deliver(" not in source
 
 
 def test_news_story_uses_a_dedicated_cpu_lane() -> None:
@@ -364,7 +536,7 @@ def test_startup_reconcile_excludes_token_radar_and_reconciles_other_business_wo
 
 
 @pytest.mark.parametrize(
-    ("news_enabled", "push_enabled", "llm_configured", "expected_push"),
+    ("news_enabled", "push_enabled", "llm_configured", "expected_delivery"),
     (
         (False, False, False, False),
         (True, False, True, False),
@@ -372,24 +544,31 @@ def test_startup_reconcile_excludes_token_radar_and_reconciles_other_business_wo
         (True, True, True, True),
     ),
 )
-def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
+def test_push_wiring_is_always_reconciled_and_reuses_global_llm(
     monkeypatch: pytest.MonkeyPatch,
     news_enabled: bool,
     push_enabled: bool,
     llm_configured: bool,
-    expected_push: bool,
+    expected_delivery: bool,
 ) -> None:
     constructed: list[tuple[str, dict[str, Any]]] = []
 
-    class _Delivery:
+    class _Sender:
         def __init__(self, **kwargs: Any) -> None:
-            constructed.append(("delivery", kwargs))
+            constructed.append(("sender", kwargs))
 
-        def render(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            return {"card": True}
-
-        def deliver(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
+        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
             return NewsPushReceipt(provider="feishu")
+
+        def close(self) -> None:
+            return None
+
+    class _Translator:
+        def __init__(self, **kwargs: Any) -> None:
+            constructed.append(("translator", kwargs))
+
+        def translate(self, title: str) -> str:
+            return title
 
         def close(self) -> None:
             return None
@@ -404,7 +583,8 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
     monkeypatch.setattr(workers, "wire_asset_market", lambda _settings: AssetMarketProviders())
     monkeypatch.setattr(workers, "configured_profile_provider_ids", lambda _settings: ())
     monkeypatch.setattr(workers, "gmgn_upstream_client", lambda _settings, **_kwargs: None)
-    monkeypatch.setattr(workers, "FeishuNewsPushDelivery", _Delivery)
+    monkeypatch.setattr(workers, "FeishuNewsPushSender", _Sender)
+    monkeypatch.setattr(workers, "OpenAICompatibleNewsPushTranslator", _Translator)
     monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
 
     settings = Settings(
@@ -441,24 +621,21 @@ def test_push_wiring_requires_news_and_push_and_reuses_global_llm(
         )
     )
 
-    assert (components.news_push is not None) is expected_push
+    assert components.news_push is not None
     assert not hasattr(components, "news_title_translation")
-    if expected_push:
-        assert [name for name, _kwargs in constructed] == ["delivery"]
-        assert components.news_push is not None
+    if expected_delivery:
+        assert [name for name, _kwargs in constructed] == (["translator", "sender"] if llm_configured else ["sender"])
         assert components.news_push not in components.models
         assert components.news_push in {getattr(turn, "__self__", None) for turn, _idle_seconds in components.due_turns}
-        assert constructed[0][1] == {
+        assert constructed[-1][1] == {
             "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
             "signing_secret": None,
-            "finite_operations": finite,
-            "translation_enabled": llm_configured,
-            "translation_base_url": "https://translator.test/v1" if llm_configured else None,
-            "translation_api_key": "translation-secret" if llm_configured else None,
-            "translation_engine": "fast-title-translator" if llm_configured else None,
         }
     else:
         assert constructed == []
+        assert components.news_push not in {
+            getattr(turn, "__self__", None) for turn, _idle_seconds in components.due_turns
+        }
 
 
 def test_empty_gmgn_channels_do_not_construct_a_collector(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -493,7 +670,7 @@ def test_empty_gmgn_channels_do_not_construct_a_collector(monkeypatch: pytest.Mo
     assert components.collector is None
 
 
-def test_news_story_push_closes_delivery_through_finite_capability() -> None:
+def test_news_item_push_closes_sender_through_finite_capability() -> None:
     calls: list[tuple[str, bool]] = []
     closed: list[str] = []
 
@@ -502,27 +679,25 @@ def test_news_story_push_closes_delivery_through_finite_capability() -> None:
             calls.append((operation_name, bool(kwargs["allow_shutdown"])))
             function()
 
-    class _Delivery:
-        def render(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            raise AssertionError("not called")
-
-        def deliver(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
+    class _Sender:
+        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
             raise AssertionError("not called")
 
         def close(self) -> None:
-            closed.append("delivery")
+            closed.append("sender")
 
-    push = NewsStoryPush(
+    push = NewsItemPush(
         db=object(),
         finite_operations=_Capability(),
-        delivery=_Delivery(),
-        runtime_id="runtime-1",
+        translator=None,
+        sender=_Sender(),
+        delivery_available=True,
     )
 
     asyncio.run(push.close())
 
-    assert calls == [("news_story_push_delivery_close", True)]
-    assert closed == ["delivery"]
+    assert calls == [("news_item_push_sender_close", True)]
+    assert closed == ["sender"]
 
 
 def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:

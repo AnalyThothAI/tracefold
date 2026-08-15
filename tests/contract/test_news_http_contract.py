@@ -1,6 +1,4 @@
-import pytest
 from fastapi.routing import APIRoute
-from pydantic import ValidationError
 
 from tracefold.app.http import routes_news
 from tracefold.app.http.schemas import (
@@ -36,35 +34,12 @@ def test_news_exposes_exactly_five_read_only_routes() -> None:
     }
 
 
-def test_news_story_notification_contract_separates_eligibility_from_delivery() -> None:
+def test_news_story_contract_has_no_push_notification_state() -> None:
     from tracefold.app.http import schemas
 
-    notification = schemas.NewsNotificationData
-
-    assert set(notification.model_fields) == {
-        "eligible",
-        "ineligible_reason",
-        "delivery_state",
-    }
-    assert "notification" in NewsStoryData.model_fields
+    assert not hasattr(schemas, "NewsNotificationData")
+    assert "notification" not in NewsStoryData.model_fields
     assert "push_delivery_state" not in NewsStoryData.model_fields
-
-    with pytest.raises(ValidationError, match="news_notification_eligibility_reason_invalid"):
-        notification.model_validate(
-            {
-                "eligible": True,
-                "ineligible_reason": "recovery_only",
-                "delivery_state": "sent",
-            }
-        )
-    with pytest.raises(ValidationError, match="news_notification_eligibility_reason_invalid"):
-        notification.model_validate(
-            {
-                "eligible": False,
-                "ineligible_reason": None,
-                "delivery_state": "not_created",
-            }
-        )
 
 
 def test_news_brief_http_contract_is_one_slot_and_one_sealed_payload() -> None:
@@ -173,18 +148,20 @@ def test_news_health_contract_separates_current_wss_from_strategy_history() -> N
 
 def test_news_push_slo_contract_reports_the_24h_sample_complete_flag() -> None:
     assert set(NewsPushTranslation24hData.model_fields) == {
+        "total",
         "attempted",
-        "succeeded",
-        "success_ratio",
+        "translated",
+        "not_needed",
+        "fallback",
         "latency_p95_ms",
-        "failure_counts",
-        "slo_met",
+        "fallback_counts",
         "sample_complete",
     }
     assert set(NewsPushDelivery24hData.model_fields) == {
         "completed",
+        "sent",
+        "terminal",
         "latency_p95_ms",
-        "over_120s",
         "slo_met",
         "sample_complete",
     }

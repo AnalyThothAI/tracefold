@@ -152,10 +152,13 @@ function StatusDocument({ status }: { status: NewsStatus }) {
         </StatusLayer>
 
         <StatusLayer title="新闻推送" status={push.status} reasons={push.reasons}>
-          <StatusFact label="服务状态" value={push.enabled ? "已启用" : "未启用"} />
+          <StatusFact label="配置意图" value={push.requested ? "已请求" : "未请求"} />
+          <StatusFact label="飞书投递" value={push.delivery_available ? "可用" : "不可用"} />
+          <StatusFact label="标题翻译" value={push.translation_available ? "可用" : "原文降级"} />
           <StatusFact label="待发送" value={String(push.pending_count)} />
+          <StatusFact label="发送中" value={String(push.sending_count)} />
           <StatusFact label="已发送" value={String(push.sent_count)} />
-          <StatusFact label="重试中" value={String(push.retry_count)} />
+          <StatusFact label="已终结" value={String(push.terminal_count)} />
           <StatusFact
             label="24 小时发送时延 P95"
             value={
@@ -165,10 +168,10 @@ function StatusDocument({ status }: { status: NewsStatus }) {
             }
           />
           <StatusFact
-            label="24 小时翻译成功"
+            label="24 小时标题呈现"
             value={
               push.translation_24h.sample_complete
-                ? `${push.translation_24h.succeeded}/${push.translation_24h.attempted}`
+                ? `译文 ${push.translation_24h.translated} · 无需 ${push.translation_24h.not_needed} · 原文 ${push.translation_24h.fallback}`
                 : "超过采样上限"
             }
           />

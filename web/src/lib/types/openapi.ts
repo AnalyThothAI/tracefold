@@ -2902,18 +2902,6 @@ export interface components {
              */
             status: "ready" | "warming" | "degraded";
         };
-        /** NewsNotificationData */
-        NewsNotificationData: {
-            /**
-             * Delivery State
-             * @enum {string}
-             */
-            delivery_state: "not_created" | "pending" | "sent" | "suppressed" | "failed";
-            /** Eligible */
-            eligible: boolean;
-            /** Ineligible Reason */
-            ineligible_reason: ("disabled" | "recovery_only" | "before_enablement") | null;
-        };
         /** NewsOpenNewsIncidentData */
         NewsOpenNewsIncidentData: {
             /**
@@ -3035,26 +3023,28 @@ export interface components {
             completed: number;
             /** Latency P95 Ms */
             latency_p95_ms: number | null;
-            /** Over 120S */
-            over_120s: number;
             /** Sample Complete */
             sample_complete: boolean;
+            /** Sent */
+            sent: number;
             /** Slo Met */
             slo_met: boolean | null;
+            /** Terminal */
+            terminal: number;
         };
         /** NewsPushStatusData */
         NewsPushStatusData: {
+            /** Availability Reason */
+            availability_reason: string | null;
             delivery_24h: components["schemas"]["NewsPushDelivery24hData"];
-            /** Enabled */
-            enabled: boolean;
+            /** Delivery Available */
+            delivery_available: boolean;
             /** Enablement Epoch At Ms */
             enablement_epoch_at_ms: number | null;
             /** Feishu Signing Secret Configured */
             feishu_signing_secret_configured: boolean;
             /** Feishu Webhook Url Configured */
             feishu_webhook_url_configured: boolean;
-            /** Initialized */
-            initialized: boolean;
             /** Latest Error */
             latest_error: string | null;
             /** Latest Error At Ms */
@@ -3063,47 +3053,53 @@ export interface components {
             latest_sent_at_ms: number | null;
             /** Measured At Ms */
             measured_at_ms: number;
-            /** Oldest Due At Ms */
-            oldest_due_at_ms: number | null;
+            /** Oldest Pending At Ms */
+            oldest_pending_at_ms: number | null;
             /** Pending Count */
             pending_count: number;
             /** Reasons */
             reasons: string[];
-            /** Retry Count */
-            retry_count: number;
+            /** Requested */
+            requested: boolean;
+            /** Sending Count */
+            sending_count: number;
             /** Sent Count */
             sent_count: number;
+            /** State Synchronized */
+            state_synchronized: boolean;
             /**
              * Status
              * @enum {string}
              */
-            status: "disabled" | "ready" | "warming" | "degraded";
-            /** Suppressed Count */
-            suppressed_count: number;
+            status: "disabled" | "ready" | "degraded";
             /** Terminal Count */
             terminal_count: number;
             /** Total Count */
             total_count: number;
             translation_24h: components["schemas"]["NewsPushTranslation24hData"];
+            /** Translation Available */
+            translation_available: boolean;
         };
         /** NewsPushTranslation24hData */
         NewsPushTranslation24hData: {
             /** Attempted */
             attempted: number;
-            /** Failure Counts */
-            failure_counts: {
+            /** Fallback */
+            fallback: number;
+            /** Fallback Counts */
+            fallback_counts: {
                 [key: string]: number;
             };
             /** Latency P95 Ms */
             latency_p95_ms: number | null;
+            /** Not Needed */
+            not_needed: number;
             /** Sample Complete */
             sample_complete: boolean;
-            /** Slo Met */
-            slo_met: boolean | null;
-            /** Succeeded */
-            succeeded: number;
-            /** Success Ratio */
-            success_ratio: number | null;
+            /** Total */
+            total: number;
+            /** Translated */
+            translated: number;
         };
         /** NewsRealtimeLatencyData */
         NewsRealtimeLatencyData: {
@@ -3288,7 +3284,6 @@ export interface components {
              * @enum {string}
              */
             level: "critical" | "high" | "medium" | "low" | "info";
-            notification: components["schemas"]["NewsNotificationData"];
             provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
             /** Representative Item Id */
             representative_item_id: string;
@@ -3335,7 +3330,6 @@ export interface components {
             /** Members */
             members: components["schemas"]["NewsStoryMemberData"][];
             members_page: components["schemas"]["NewsStoryMembersPageData"];
-            notification: components["schemas"]["NewsNotificationData"];
             provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
             /** Representative Item Id */
             representative_item_id: string;

@@ -537,7 +537,7 @@ def test_real_workers_never_returning_control_operation_is_fatal() -> None:
         _ensure_process_stopped(process)
 
 
-def test_real_workers_news_native_timeouts_recover_without_root_restart() -> None:
+def test_real_workers_news_story_native_timeout_recovers_without_root_restart() -> None:
     prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("news_bounded_recovery", port)
@@ -546,8 +546,6 @@ def test_real_workers_news_native_timeouts_recover_without_root_restart() -> Non
         _wait_for_outputs(
             process,
             (
-                "NEWS_PUSH_BOUNDED_TIMEOUT",
-                "NEWS_PUSH_RECOVERED",
                 "NEWS_STORY_BOUNDED_TIMEOUT",
                 "NEWS_STORY_RECOVERED",
             ),
@@ -563,44 +561,6 @@ def test_real_workers_news_native_timeouts_recover_without_root_restart() -> Non
         row = _runtime_row()
         assert row["lifecycle_state"] == "stopped"
         assert row["fatal_code"] is None
-    finally:
-        _ensure_process_stopped(process)
-
-
-def test_real_workers_periodic_database_overrun_recovers_after_native_completion() -> None:
-    prepare_postgres_database()
-    port = _free_port()
-    process = _start_workers_process("periodic_business_overrun_recovery", port)
-    try:
-        _wait_ready(process, port)
-        _wait_for_outputs(
-            process,
-            (
-                "NATIVE_TRANSACTION_TIMEOUT_FIRST",
-                "BUSINESS_OPERATION_OVERRUN",
-                "BUSINESS_OPERATION_RECOVERED",
-                "BUSINESS_NATIVE_COMPLETED",
-            ),
-            timeout_seconds=5.0,
-        )
-        _wait_metrics(
-            process,
-            port,
-            (
-                'tracefold_worker_resource_active{capability="database_business"} 0.0',
-                (
-                    'tracefold_worker_resource_service_seconds_count{capability="database_business",'
-                    'operation="test_periodic_business_overrun",outcome="success"} 1.0'
-                ),
-            ),
-        )
-        assert process.poll() is None
-        row = _runtime_row()
-        assert row["lifecycle_state"] == "running"
-        assert row["fatal_code"] is None
-
-        process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=5.0) == 0
     finally:
         _ensure_process_stopped(process)
 

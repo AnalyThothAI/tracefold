@@ -12,6 +12,7 @@ from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_etag_json, _validated_json
 from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.platform.config.settings import news_push_availability
 
 router = APIRouter()
 _FeedEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsFeedData]
@@ -51,12 +52,9 @@ def get_news_feed(
         },
     )
     runtime = _authenticated_runtime(request)
-    now_ms = _now_ms()
     try:
         with runtime.repositories() as repos:
             data = repos.news.list_feed(
-                push_enabled=runtime.settings.news.push.enabled,
-                now_ms=now_ms,
                 category=category or None,
                 level=level or None,
                 source_id=source_id or None,
@@ -90,13 +88,10 @@ def get_news_story(
         supported={"token", "members_limit", "members_cursor"},
     )
     runtime = _authenticated_runtime(request)
-    now_ms = _now_ms()
     try:
         with runtime.repositories() as repos:
             data = repos.news.get_story(
                 story_id=story_id.strip(),
-                push_enabled=runtime.settings.news.push.enabled,
-                now_ms=now_ms,
                 members_limit=members_limit,
                 members_cursor=members_cursor or None,
             )
@@ -146,7 +141,6 @@ def get_news_status(
 ) -> Response:
     _validate_query_params(request, supported={"token", "view"})
     runtime = _authenticated_runtime(request)
-    push_settings = runtime.settings.news.push
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
         if view == "realtime":
@@ -169,13 +163,17 @@ def get_news_status(
             repos.conn,
             now_ms=now_ms,
         )
+        push_availability = news_push_availability(runtime.settings)
         data = repos.news.health_snapshot(
             now_ms=now_ms,
             rss_enabled=runtime.settings.news.rss_enabled,
             configured_strategy_count=len(runtime.settings.news.opennews_strategy_ids),
-            push_enabled=push_settings.enabled,
-            feishu_webhook_url_configured=bool(push_settings.feishu_webhook_url),
-            feishu_signing_secret_configured=bool(push_settings.feishu_signing_secret),
+            push_requested=push_availability.requested,
+            push_delivery_available=push_availability.delivery_available,
+            push_translation_available=push_availability.translation_available,
+            push_unavailable_reason=push_availability.reason,
+            feishu_webhook_url_configured=(push_availability.feishu_webhook_url_configured),
+            feishu_signing_secret_configured=(push_availability.feishu_signing_secret_configured),
             workers_state=workers_state,
             workers_reason=workers_reason,
         )

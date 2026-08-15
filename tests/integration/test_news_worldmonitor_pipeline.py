@@ -978,6 +978,7 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
             "items_updated": 0,
             "metadata_updated": 0,
             "rejected": 2,
+            "push_outbox_writes": 0,
         }
         assert matched["items_updated"] == 1
         assert matched["metadata_updated"] == 0
@@ -1010,14 +1011,9 @@ def test_opennews_current_fact_updates_in_place_and_serves_provider_metadata() -
         after = conn.execute("SELECT item_id FROM news_items WHERE provider_record_id='wire-1'").fetchone()
         assert after["item_id"] == before["item_id"]
 
-        story = repository.list_feed(
-            push_enabled=False,
-            now_ms=NOW_MS + 2,
-        )["stories"][0]
+        story = repository.list_feed()["stories"][0]
         detail = repository.get_story(
             story_id=story["story_id"],
-            push_enabled=False,
-            now_ms=NOW_MS + 2,
         )
         assert detail is not None
         assert detail["members"][0]["provider_record_id"] == "wire-1"
@@ -1097,6 +1093,7 @@ def test_opennews_accepts_nonempty_canonical_plaintext_and_rejects_empty_title()
             "items_updated": 0,
             "metadata_updated": 0,
             "rejected": 1,
+            "push_outbox_writes": 0,
         }
         rows = conn.execute(
             """

@@ -18,7 +18,6 @@ import {
   type BriefTopStory,
   type NewsBrief,
   type NewsLevel,
-  type NewsNotification,
   type NewsStatus,
   type NewsStory,
   type NewsStoryDetail,
@@ -483,7 +482,6 @@ function StoryCard({ story }: { story: NewsStory }) {
   const providerSignal = providerSignalPresentation(
     story.provider_evidence?.provider_metadata.signal,
   );
-  const notification = story.notification;
   const factors = story.importance_factors;
   const boosts = [
     factors.diplomacy_flashpoint_boost
@@ -525,7 +523,6 @@ function StoryCard({ story }: { story: NewsStory }) {
         {summary ? <p className="news-story-summary">{summary}</p> : null}
         <footer className="news-story-footer">
           <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
-          <NotificationState notification={notification} />
           <details className="news-story-why">
             <summary>
               <span>为什么重要</span>
@@ -706,7 +703,6 @@ function StoryHero({ story }: { story: NewsStory }) {
       {summary ? <p className="news-story-lead">{summary}</p> : null}
       <div className="news-story-support">
         <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
-        <NotificationState notification={story.notification} />
       </div>
       <div className="news-story-hero-footer">
         <div className="news-evidence-metrics">
@@ -755,12 +751,6 @@ type ProviderSignalPresentation = {
   tone: "info" | "negative" | "neutral" | "positive";
 };
 
-type NotificationPresentation = {
-  detail: string | null;
-  label: string;
-  tone: "caution" | "info" | "negative" | "neutral" | "success";
-};
-
 function ProviderSignalBadge({ signal }: { signal: ProviderSignalPresentation | null }) {
   if (!signal) return null;
   return (
@@ -791,73 +781,6 @@ function providerSignalPresentation(
     return { label: "中性", tone: "neutral" };
   }
   return { label: value, tone: "info" };
-}
-
-function NotificationState({ notification }: { notification: NewsNotification }) {
-  const presentation = notificationPresentation(notification);
-  const accessibleLabel = `通知状态 ${presentation.label}${
-    presentation.detail ? `；${presentation.detail}` : ""
-  }`;
-  return (
-    <span
-      aria-label={accessibleLabel}
-      className="news-notification-state"
-      data-tone={presentation.tone}
-    >
-      <b>{presentation.label}</b>
-      {presentation.detail ? (
-        <span className="news-notification-detail">· {presentation.detail}</span>
-      ) : null}
-    </span>
-  );
-}
-
-function notificationPresentation(notification: NewsNotification): NotificationPresentation {
-  const currentDetail = notification.eligible
-    ? null
-    : notificationIneligibleDetail(notification.ineligible_reason);
-  switch (notification.delivery_state) {
-    case "sent":
-      return {
-        detail: currentDetail ? `当前${currentDetail}` : null,
-        label: "已通知",
-        tone: "success",
-      };
-    case "pending":
-      return {
-        detail: currentDetail ? `当前${currentDetail}` : null,
-        label: "通知中",
-        tone: "info",
-      };
-    case "failed":
-      return {
-        detail: currentDetail ? `当前${currentDetail}` : null,
-        label: "通知失败",
-        tone: "negative",
-      };
-    case "suppressed":
-      return {
-        detail: currentDetail ? `当前${currentDetail}` : null,
-        label: "已抑制",
-        tone: "caution",
-      };
-    case "not_created":
-      break;
-  }
-  if (notification.eligible) return { detail: null, label: "待通知", tone: "info" };
-  return { detail: currentDetail, label: "不通知", tone: "neutral" };
-}
-
-function notificationIneligibleDetail(
-  reason: NewsNotification["ineligible_reason"],
-): string | null {
-  if (!reason) return null;
-  const detailByReason: Record<NonNullable<NewsNotification["ineligible_reason"]>, string> = {
-    before_enablement: "启用前事件",
-    disabled: "通知关闭",
-    recovery_only: "仅恢复历史",
-  };
-  return detailByReason[reason];
 }
 
 function RelatedAssets({ assets }: { assets: readonly { symbol: string }[] | null | undefined }) {

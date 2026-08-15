@@ -16,7 +16,6 @@ def rebuild_news_projection(
     repository: Any,
     *,
     now_ms: int,
-    push_enabled: bool | None = None,
 ) -> dict[str, Any]:
     """Run the maintained Story load/compute/publish seam in one test transaction."""
 
@@ -36,7 +35,6 @@ def rebuild_news_projection(
             snapshot=snapshot,
             projection=projection,
             now_ms=now_ms,
-            push_enabled=push_enabled,
         ),
     )
 

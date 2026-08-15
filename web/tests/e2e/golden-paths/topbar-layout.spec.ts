@@ -53,10 +53,9 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
 
   const rows = page.locator(".news-story-row");
   await expect(rows).toHaveCount(6);
-  await expect(page.getByRole("link", { name: /重点/ })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("link", { name: "全部" })).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".news-provider-score")).toHaveCount(6);
   await expect(page.locator(".news-provider-score").first()).toContainText("OpenNews88");
-  await expect(page.locator('[aria-label="通知状态 已通知；当前已过通知时限"]')).toHaveCount(6);
   const fullyVisible = await rows.evaluateAll(
     (elements) =>
       elements.filter((element) => {
@@ -68,9 +67,7 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   expect(fullyVisible).toBeGreaterThanOrEqual(4);
 });
 
-test("News notification reasons and missing assets remain readable at AA contrast", async ({
-  page,
-}) => {
+test("News missing-asset evidence remains readable at AA contrast", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 720 });
   await installMockApi(page);
   const feed = newsFeedFixture();
@@ -78,11 +75,6 @@ test("News notification reasons and missing assets remain readable at AA contras
   feed.stories = [
     {
       ...baseStory,
-      notification: {
-        delivery_state: "not_created",
-        eligible: false,
-        ineligible_reason: "recovery_only",
-      },
       provider_evidence: {
         ...baseStory.provider_evidence!,
         provider_metadata: {
@@ -95,11 +87,6 @@ test("News notification reasons and missing assets remain readable at AA contras
     },
     {
       ...baseStory,
-      notification: {
-        delivery_state: "not_created",
-        eligible: false,
-        ineligible_reason: "disabled",
-      },
       provider_evidence: {
         ...baseStory.provider_evidence!,
         provider_metadata: {
@@ -120,8 +107,8 @@ test("News notification reasons and missing assets remain readable at AA contras
   );
   await page.goto("/news");
 
-  const reasons = page.locator(".news-related-assets-empty, .news-notification-detail");
-  await expect(reasons).toHaveCount(3);
+  const reasons = page.locator(".news-related-assets-empty");
+  await expect(reasons).toHaveCount(1);
   const contrastRatios = await reasons.evaluateAll((elements) => {
     const probe = document.createElement("span");
     document.body.append(probe);
@@ -165,7 +152,6 @@ test("desktop News detail keeps navigation adjacent to the story", async ({ page
   const hero = page.locator(".news-story-hero");
   await expect(backLink).toBeVisible();
   await expect(hero).toBeVisible();
-  await expect(hero.locator('[aria-label="通知状态 已通知；当前已过通知时限"]')).toBeVisible();
 
   const backBox = await backLink.boundingBox();
   const heroBox = await hero.boundingBox();

@@ -722,28 +722,18 @@
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `story_id` | `TEXT` | False | `None` |
-| `selected_item_id` | `TEXT` | False | `None` |
+| `item_id` | `TEXT` | False | `None` |
 | `source_payload` | `JSONB` | False | `None` |
-| `delivery_payload` | `JSONB` | True | `None` |
-| `payload_fingerprint` | `TEXT` | True | `None` |
-| `translation_status` | `TEXT` | False | `None` |
+| `legacy_delivery_payload` | `JSONB` | True | `None` |
 | `status` | `TEXT` | False | `None` |
-| `delivery_attempts` | `INTEGER` | False | `0` |
-| `next_attempt_at_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `lease_token` | `TEXT` | True | `None` |
-| `lease_expires_at_ms` | `BIGINT` | True | `None` |
 | `receipt` | `JSONB` | True | `None` |
 | `last_error` | `TEXT` | True | `None` |
 | `sent_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `translation_prompt_version` | `TEXT` | True | `None` |
-| `translation_attempted_at_ms` | `BIGINT` | True | `None` |
-| `translation_duration_ms` | `BIGINT` | True | `None` |
-| `translation_fallback_code` | `TEXT` | True | `None` |
 | `live_observed_at_ms` | `BIGINT` | False | `None` |
+| `presentation_snapshot` | `JSONB` | True | `None` |
+| `attempted_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_push_state`
 
@@ -754,15 +744,14 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `total_count` | `BIGINT` | False | `0` |
-| `suppressed_count` | `BIGINT` | False | `0` |
 | `pending_count` | `BIGINT` | False | `0` |
-| `retry_count` | `BIGINT` | False | `0` |
 | `sent_count` | `BIGINT` | False | `0` |
 | `terminal_count` | `BIGINT` | False | `0` |
 | `latest_sent_at_ms` | `BIGINT` | True | `None` |
 | `latest_error` | `TEXT` | True | `None` |
 | `latest_error_at_ms` | `BIGINT` | True | `None` |
-| `enabled` | `BOOLEAN` | False | `false` |
+| `delivery_available` | `BOOLEAN` | False | `false` |
+| `sending_count` | `BIGINT` | False | `0` |
 
 ## `news_sources`
 

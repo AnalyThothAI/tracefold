@@ -803,15 +803,21 @@ def test_scoreless_1019_market_strategy_reaches_story_brief_http_and_push(
         source = opennews_source()
         with conn.transaction():
             repository.sync_sources((source,), now_ms=NOW_MS - 2)
-            assert repository.set_push_enabled(enabled=True, now_ms=NOW_MS - 1) == (NOW_MS - 1, True)
+            push_reconcile = repository.reconcile_item_push(
+                delivery_available=True,
+                now_ms=NOW_MS - 1,
+            )
+            assert push_reconcile["enablement_epoch_at_ms"] == NOW_MS - 1
+            assert push_reconcile["availability_changed"] is True
             written = repository.record_opennews_events(
                 source=source,
                 events=typed_events,
                 observed_at_ms=NOW_MS,
             )
-            projection = rebuild_news_projection(repository, now_ms=NOW_MS, push_enabled=True)
+            projection = rebuild_news_projection(repository, now_ms=NOW_MS)
 
         assert written["items_inserted"] == 2
+        assert written["push_outbox_writes"] == 2
         assert projection["projection_status"] == "rebuilt"
         items = conn.execute(
             """
@@ -893,13 +899,12 @@ def test_scoreless_1019_market_strategy_reaches_story_brief_http_and_push(
                 now_ms=NOW_MS + 2,
             )
         assert publication_id is not None
-        delivery = conn.execute("SELECT status, source_payload FROM news_push_deliveries").fetchone()
-        assert delivery is not None
-        assert delivery["status"] == "pending_translation"
-        assert [
-            strategy["id"]
-            for strategy in delivery["source_payload"]["provider_evidence"]["provider_metadata"]["strategies"]
-        ] == ["1019"]
+        deliveries = conn.execute("SELECT status, source_payload FROM news_push_deliveries ORDER BY item_id").fetchall()
+        assert len(deliveries) == 2
+        assert all(delivery["status"] == "pending" for delivery in deliveries)
+        assert all(
+            delivery["source_payload"]["strategy_labels"] == ["1019 OI Event Monitor"] for delivery in deliveries
+        )
 
         settings = Settings(
             ws_token="secret",
@@ -937,11 +942,7 @@ def test_scoreless_1019_market_strategy_reaches_story_brief_http_and_push(
         feed_stories = feed.json()["data"]["stories"]
         assert len(feed_stories) == 1
         assert feed_stories[0]["title"] == title
-        assert feed_stories[0]["notification"] == {
-            "eligible": True,
-            "ineligible_reason": None,
-            "delivery_state": "pending",
-        }
+        assert "notification" not in feed_stories[0]
         assert priority_feed.json()["data"]["stories"] == []
         detail_data = detail.json()["data"]
         assert detail_data["story_id"] == story["story_id"]

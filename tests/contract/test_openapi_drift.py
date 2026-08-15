@@ -177,13 +177,18 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
 
     for path, envelope in expected.items():
         response_schema = schema["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-        assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
+        if path == "/api/news/status":
+            assert response_schema["anyOf"] == [
+                {"$ref": f"#/components/schemas/{envelope}"},
+                {"$ref": "#/components/schemas/ApiEnvelope_NewsRealtimeStatusResponseData_"},
+            ]
+        else:
+            assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
 
     for name in (
         "NewsFeedData",
         "NewsStoryData",
         "NewsStoryDetailData",
-        "NewsNotificationData",
         "NewsProviderMetadataData",
         "NewsBriefData",
         "NewsSourcesData",
@@ -206,26 +211,9 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "grade",
     }
     story_properties = components["NewsStoryData"]["properties"]
-    assert story_properties["notification"] == {"$ref": "#/components/schemas/NewsNotificationData"}
+    assert "notification" not in story_properties
     assert "push_delivery_state" not in story_properties
-    notification = components["NewsNotificationData"]
-    assert set(notification["required"]) == {
-        "eligible",
-        "ineligible_reason",
-        "delivery_state",
-    }
-    assert notification["properties"]["ineligible_reason"]["anyOf"][0]["enum"] == [
-        "disabled",
-        "recovery_only",
-        "before_enablement",
-    ]
-    assert notification["properties"]["delivery_state"]["enum"] == [
-        "not_created",
-        "pending",
-        "sent",
-        "suppressed",
-        "failed",
-    ]
+    assert "NewsNotificationData" not in components
 
 
 @pytest.mark.contract

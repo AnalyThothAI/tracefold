@@ -251,87 +251,14 @@ describe("NewsPage", () => {
     expect(within(neutralRow!).getByLabelText("OpenNews 信号 中性")).toBeInTheDocument();
   });
 
-  it("renders the server-owned notification lifecycle without re-evaluating eligibility", async () => {
+  it("keeps Story cards free of Push delivery state", async () => {
     const feed = newsFeedFixture();
-    const base = feed.stories[0];
-    const cases = [
-      {
-        delivery_state: "sent",
-        detail: "当前启用前事件",
-        eligible: false,
-        ineligible_reason: "before_enablement",
-        label: "已通知",
-        title: "A Story that was already notified",
-        tone: "success",
-      },
-      {
-        delivery_state: "not_created",
-        detail: null,
-        eligible: true,
-        ineligible_reason: null,
-        label: "待通知",
-        title: "A Story waiting for notification",
-        tone: "info",
-      },
-      {
-        delivery_state: "not_created",
-        detail: "仅恢复历史",
-        eligible: false,
-        ineligible_reason: "recovery_only",
-        label: "不通知",
-        title: "A recovery-only Story",
-        tone: "neutral",
-      },
-      {
-        delivery_state: "not_created",
-        detail: "通知关闭",
-        eligible: false,
-        ineligible_reason: "disabled",
-        label: "不通知",
-        title: "A Story observed while Push is disabled",
-        tone: "neutral",
-      },
-      {
-        delivery_state: "pending",
-        detail: null,
-        eligible: true,
-        ineligible_reason: null,
-        label: "通知中",
-        title: "A Story with notification in progress",
-        tone: "info",
-      },
-      {
-        delivery_state: "failed",
-        detail: null,
-        eligible: true,
-        ineligible_reason: null,
-        label: "通知失败",
-        title: "A Story with failed notification",
-        tone: "negative",
-      },
-    ] as const;
-    feed.stories = cases.map(
-      ({ detail: _detail, label: _label, title, tone: _tone, ...notification }, index) => ({
-        ...base,
-        notification,
-        story_id: `story-notification-${index}`,
-        title,
-      }),
-    );
     server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    await screen.findByRole("heading", { name: cases[0].title });
-    for (const item of cases) {
-      const row = screen.getByRole("heading", { name: item.title }).closest("article");
-      const state = within(row!).getByLabelText(
-        `通知状态 ${item.label}${item.detail ? `；${item.detail}` : ""}`,
-      );
-      expect(state).toHaveAttribute("data-tone", item.tone);
-      expect(state).toHaveTextContent(item.label);
-      if (item.detail) expect(state).toHaveTextContent(item.detail);
-    }
+    await screen.findByRole("heading", { name: feed.stories[0].title });
+    expect(screen.queryByLabelText(/通知状态/)).not.toBeInTheDocument();
   });
 
   it("shows provider-selected related assets in Feed order and labels missing upstream assets", async () => {
@@ -651,7 +578,9 @@ describe("NewsPage", () => {
     expect(within(ingest!).getByText("179/179")).toBeInTheDocument();
     expect(within(story!).getByText("当前事件").parentElement).toHaveTextContent("1");
     expect(within(brief!).getByText("公开状态").parentElement).toHaveTextContent("当前");
-    expect(within(push!).getByText("24 小时翻译成功").parentElement).toHaveTextContent("1/1");
+    expect(within(push!).getByText("24 小时标题呈现").parentElement).toHaveTextContent(
+      "译文 1 · 无需 0 · 原文 0",
+    );
     expect(within(push!).queryByRole("button")).not.toBeInTheDocument();
   });
 
@@ -784,11 +713,6 @@ describe("NewsPage", () => {
     const detail = newsStoryDetailFixture();
     detail.url = "https://representative.example/detail";
     detail.members[0].url = "https://scoring.example/detail";
-    detail.notification = {
-      delivery_state: "sent",
-      eligible: false,
-      ineligible_reason: "before_enablement",
-    };
     server.use(
       http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
         HttpResponse.json({ ok: true, data: detail }),
@@ -810,7 +734,7 @@ describe("NewsPage", () => {
     expect(hero).not.toBeNull();
     expect(within(hero!).getByText(detail.source_name)).toBeInTheDocument();
     expect(within(hero!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
-    expect(within(hero!).getByLabelText("通知状态 已通知；当前启用前事件")).toBeInTheDocument();
+    expect(within(hero!).queryByLabelText(/通知状态/)).not.toBeInTheDocument();
     const auditSummary = screen.getByText("查看 Tracefold 评分与新闻事件审计");
     expect(title.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(

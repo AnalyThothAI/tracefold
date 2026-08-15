@@ -63,7 +63,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert catalog.query_routes["/api/news/feed"] == (
         "news_feed_focus_rows",
         "news_feed_focus_facets",
-        "news_feed_push_contexts",
+        "news_story_provider_evidence",
     )
     assert catalog.query_routes["/api/news/status"] == (
         "workers_runtime",
@@ -75,7 +75,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_projection",
         "news_brief",
         "news_push_state",
-        "news_push_oldest_due",
+        "news_push_oldest_pending",
         "news_push_translation_24h",
         "news_push_delivery_24h",
     )
@@ -107,7 +107,7 @@ def test_app_catalog_rejects_aggregate_input_for_any_query_except_feed_facets():
 _NEWS_QUERY_NAMES = (
     "news_feed_focus_rows",
     "news_feed_focus_facets",
-    "news_feed_push_contexts",
+    "news_story_provider_evidence",
     "news_story",
     "news_story_members",
     "news_brief",
@@ -116,7 +116,7 @@ _NEWS_QUERY_NAMES = (
     "news_status_rss",
     "news_status_projection",
     "news_push_state",
-    "news_push_oldest_due",
+    "news_push_oldest_pending",
     "news_status_opennews_incidents",
     "news_status_inbound_latency",
     "news_status_story_latency",
@@ -505,7 +505,7 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
             """
             UPDATE news_push_state
                SET enablement_epoch_at_ms = %s,
-                   enabled = true,
+                   delivery_available = true,
                    updated_at_ms = %s
              WHERE singleton_key = 'current'
             """,
@@ -514,35 +514,39 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
         conn.execute(
             """
             INSERT INTO news_push_deliveries(
-              story_id, selected_item_id, live_observed_at_ms,
-              source_payload, delivery_payload,
-              payload_fingerprint, translation_status, status,
-              delivery_attempts, next_attempt_at_ms, sent_at_ms,
-              created_at_ms, updated_at_ms
+              item_id, live_observed_at_ms, source_payload,
+              presentation_snapshot, status, attempted_at_ms,
+              receipt, last_error, sent_at_ms, created_at_ms, updated_at_ms
             )
-            SELECT lpad(to_hex(value), 64, '0'),
-                   'selected-' || value,
+            SELECT 'news_item_' || md5(value::text),
                    %s - 60000,
-                   '{}'::jsonb,
                    jsonb_build_object(
-                     'presentation', jsonb_build_object(
-                       'prompt_version', 'title_zh_v2',
-                       'fallback_code', CASE
-                         WHEN value %% 10 = 0 THEN 'news_push_translation_rate_limited'
-                         ELSE NULL
-                       END,
-                       'translation_attempted_at_ms', CASE
-                         WHEN value <= 200 THEN %s - value
-                         ELSE %s - 172800000 - value
-                       END,
-                       'translation_duration_ms', 1000 + value %% 2500
-                     )
+                     'schema_version', 'news_item_push_v1',
+                     'item_id', 'news_item_' || md5(value::text),
+                     'provider_event_id', 'provider-' || value,
+                     'live_observed_at_ms', %s - 60000,
+                     'original_title', 'Title ' || value,
+                     'reporting_origin', 'OpenNews',
+                     'provider_published_at_ms', %s - 61000,
+                     'strategy_labels', jsonb_build_array('1018 News Score > 70'),
+                     'assets', '[]'::jsonb
                    ),
-                   repeat('a', 64),
-                   CASE WHEN value %% 10 = 0 THEN 'unavailable' ELSE 'translated' END,
+                   jsonb_strip_nulls(jsonb_build_object(
+                     'display_title', '标题 ' || value,
+                     'outcome', CASE WHEN value %% 10 = 0 THEN 'fallback' ELSE 'translated' END,
+                     'translation_policy_version', 'title_zh_v3',
+                     'translation_duration_ms', 1000 + value %% 2500,
+                     'fallback_code', CASE
+                       WHEN value %% 10 = 0 THEN 'news_item_push_translation_rate_limited'
+                     END
+                   )),
                    CASE WHEN value %% 2 = 0 THEN 'sent' ELSE 'terminal' END,
-                   1,
-                   NULL,
+                   CASE
+                     WHEN value <= 200 THEN %s - value
+                     ELSE %s - 172800000 - value
+                   END,
+                   CASE WHEN value %% 2 = 0 THEN '{"provider":"feishu"}'::jsonb END,
+                   CASE WHEN value %% 2 = 1 THEN 'news_item_push_feishu_failed' END,
                    CASE WHEN value %% 2 = 0 THEN
                      CASE
                        WHEN value <= 200 THEN %s - value
@@ -565,25 +569,16 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
                 audit_now_ms,
                 audit_now_ms,
                 audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
             ),
         )
         conn.execute(
             """
-            UPDATE news_push_deliveries
-               SET translation_prompt_version = 'title_zh_v2',
-                   translation_attempted_at_ms = (
-                     delivery_payload #>> '{presentation,translation_attempted_at_ms}'
-                   )::bigint,
-                   translation_duration_ms = (
-                     delivery_payload #>> '{presentation,translation_duration_ms}'
-                   )::bigint,
-                   translation_fallback_code = nullif(
-                     delivery_payload #>> '{presentation,fallback_code}',
-                     ''
-                   );
-
             UPDATE news_push_state
                SET total_count = 12000,
+                   pending_count = 0,
+                   sending_count = 0,
                    sent_count = 6000,
                    terminal_count = 6000
              WHERE singleton_key = 'current';
@@ -605,15 +600,17 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
     assert snapshot["pending_count"] == 0
     assert snapshot["sent_count"] == 6000
     assert snapshot["terminal_count"] == 6000
+    assert snapshot["translation_24h"]["total"] == 200
     assert snapshot["translation_24h"]["attempted"] == 200
-    assert snapshot["translation_24h"]["succeeded"] == 180
-    assert snapshot["translation_24h"]["failure_counts"] == {"news_push_translation_rate_limited": 20}
+    assert snapshot["translation_24h"]["translated"] == 180
+    assert snapshot["translation_24h"]["fallback_counts"] == {"news_item_push_translation_rate_limited": 20}
     assert snapshot["delivery_24h"]["completed"] == 200
-    assert snapshot["delivery_24h"]["over_120s"] == 0
+    assert snapshot["delivery_24h"]["sent"] == 100
+    assert snapshot["delivery_24h"]["terminal"] == 100
 
     for query_name in (
         "news_push_state",
-        "news_push_oldest_due",
+        "news_push_oldest_pending",
         "news_push_translation_24h",
         "news_push_delivery_24h",
     ):

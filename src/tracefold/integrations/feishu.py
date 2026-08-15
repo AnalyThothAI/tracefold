@@ -14,10 +14,8 @@ import httpx
 
 FEISHU_WEBHOOK_REQUEST_MAX_BYTES = 20 * 1024
 FEISHU_WEBHOOK_RATE_LIMIT_CODE = 11232
-FEISHU_AUTH_MODE_SIGNED = "signed"
-FEISHU_AUTH_MODE_UNSIGNED = "unsigned"
 _FEISHU_WEBHOOK_PATH_PREFIX = "/open-apis/bot/v2/hook/"
-_FEISHU_TIMEOUT_SECONDS = 10.0
+_FEISHU_TIMEOUT_SECONDS = 6.5
 
 
 class FeishuDeliveryError(RuntimeError):
@@ -29,14 +27,6 @@ class FeishuDeliveryError(RuntimeError):
         self.status_code = status_code
 
 
-class FeishuRetryableError(FeishuDeliveryError):
-    """A transport, rate-limit, or server failure safe for bounded retry."""
-
-
-class FeishuTerminalError(FeishuDeliveryError):
-    """A deterministic request, credential, or response-contract failure."""
-
-
 @dataclass(frozen=True, slots=True)
 class FeishuDeliveryReceipt:
     status_code: int
@@ -44,7 +34,7 @@ class FeishuDeliveryReceipt:
 
 
 class FeishuWebhookClient:
-    """One V2 custom-bot webhook call; the News push Module owns retry policy."""
+    """One V2 custom-bot webhook call; Item Push owns the terminal outcome."""
 
     def __init__(
         self,
@@ -66,10 +56,6 @@ class FeishuWebhookClient:
             transport=transport,
         )
 
-    @property
-    def auth_mode(self) -> str:
-        return FEISHU_AUTH_MODE_SIGNED if self._signing_secret is not None else FEISHU_AUTH_MODE_UNSIGNED
-
     def send(
         self,
         card: Mapping[str, Any],
@@ -83,7 +69,7 @@ class FeishuWebhookClient:
         if self._signing_secret is not None:
             timestamp = int(time.time()) if timestamp_seconds is None else int(timestamp_seconds)
             if timestamp <= 0:
-                raise FeishuTerminalError("feishu_timestamp_invalid")
+                raise FeishuDeliveryError("feishu_timestamp_invalid")
             payload = {
                 "timestamp": str(timestamp),
                 "sign": generate_feishu_signature(
@@ -99,33 +85,33 @@ class FeishuWebhookClient:
                 separators=(",", ":"),
             ).encode("utf-8")
         except (TypeError, ValueError):
-            raise FeishuTerminalError("feishu_card_invalid") from None
+            raise FeishuDeliveryError("feishu_card_invalid") from None
         if len(body) > FEISHU_WEBHOOK_REQUEST_MAX_BYTES:
-            raise FeishuTerminalError("feishu_card_too_large")
+            raise FeishuDeliveryError("feishu_card_too_large")
 
         try:
             response = self._client.post(self._webhook_url, content=body)
         except (httpx.TimeoutException, httpx.TransportError):
-            raise FeishuRetryableError("feishu_transport_failed") from None
+            raise FeishuDeliveryError("feishu_transport_failed") from None
 
         status_code = int(response.status_code)
         if status_code == 429 or status_code >= 500:
-            raise FeishuRetryableError("feishu_http_retryable", status_code=status_code)
+            raise FeishuDeliveryError("feishu_http_failed", status_code=status_code)
         if status_code < 200 or status_code >= 300:
-            raise FeishuTerminalError("feishu_http_terminal", status_code=status_code)
+            raise FeishuDeliveryError("feishu_http_rejected", status_code=status_code)
         try:
             response_payload = response.json()
         except ValueError:
-            raise FeishuTerminalError("feishu_response_invalid", status_code=status_code) from None
+            raise FeishuDeliveryError("feishu_response_invalid", status_code=status_code) from None
         if not isinstance(response_payload, Mapping):
-            raise FeishuTerminalError("feishu_response_invalid", status_code=status_code)
+            raise FeishuDeliveryError("feishu_response_invalid", status_code=status_code)
         code = response_payload.get("code")
         if isinstance(code, bool) or not isinstance(code, int):
-            raise FeishuTerminalError("feishu_response_invalid", status_code=status_code)
+            raise FeishuDeliveryError("feishu_response_invalid", status_code=status_code)
         if code == FEISHU_WEBHOOK_RATE_LIMIT_CODE:
-            raise FeishuRetryableError("feishu_business_rate_limited", status_code=status_code)
+            raise FeishuDeliveryError("feishu_business_rate_limited", status_code=status_code)
         if code != 0:
-            raise FeishuTerminalError("feishu_business_rejected", status_code=status_code)
+            raise FeishuDeliveryError("feishu_business_rejected", status_code=status_code)
         return FeishuDeliveryReceipt(status_code=status_code, code=code)
 
     def close(self) -> None:
@@ -166,14 +152,10 @@ def _is_feishu_webhook_url(value: str) -> bool:
 
 
 __all__ = [
-    "FEISHU_AUTH_MODE_SIGNED",
-    "FEISHU_AUTH_MODE_UNSIGNED",
     "FEISHU_WEBHOOK_RATE_LIMIT_CODE",
     "FEISHU_WEBHOOK_REQUEST_MAX_BYTES",
     "FeishuDeliveryError",
     "FeishuDeliveryReceipt",
-    "FeishuRetryableError",
-    "FeishuTerminalError",
     "FeishuWebhookClient",
     "generate_feishu_signature",
 ]

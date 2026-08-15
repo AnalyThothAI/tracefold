@@ -78,43 +78,38 @@ stops future triggers and must remain operationally visible.
 nested RSS configuration, environment override, or compatibility alias.
 
 `news.push` contains only `enabled`, `feishu_webhook_url`, and optional
-`feishu_signing_secret`. Enabling push requires the webhook, which must be the
-supported Feishu HTTPS custom-bot v2 boundary. If a non-empty signing secret is
-present, delivery includes the computed `timestamp` and `sign`; if absent,
-delivery is unsigned and includes neither field. Optional title translation
-reuses the direct DeepSeek `llm.api_key`, `llm.base_url`, and
-`llm.news_brief_model`; there is no `news.push.translation` block, second
-credential, inferred endpoint, or fallback provider. CLI diagnostics expose only configured
-booleans for Feishu and translation: `translation_enabled` derives from Push
-enablement plus the global LLM credential, while `translation_configured`
-reports that global credential availability. Each frozen internal delivery envelope
-contains the non-secret `auth_mode` (`signed` or `unsigned`) so a retry cannot
-change modes; it never contains the webhook, secret, timestamp, or signature.
-Threshold, cadence, deadlines, retries, translation target, 7.5-second request
-timeout, 8-second total translation budget, 500-grapheme input ceiling,
-validation, and card policy are code-owned. This Push translation remains an
-outbound presentation adapter and does not enter the serial model arbiter. For one fresh
-non-Chinese title it sends only that title in at most one request to the
-configured direct DeepSeek provider and never switches providers or retries. After
-resource admission, a durable `attempted` fence is committed immediately before
-submission. If the process stops before the outcome is frozen, recovery sends
-the original-title fallback without another model
-request; this uncertain dispatch is conservatively counted as an interrupted
-attempt. The
-Feishu JSON 2.0 card uses a valid Chinese translation as its plain-text header
-and shows the original visibly in the body. Chinese input bypasses translation;
-failure or overlong input uses the original header and a visible fallback note.
-Push admission requires only a live OpenNews fact first observed after the
-current enablement epoch. Recovery-first or pre-enablement facts never backfill.
-Provider score, assets, CL-family labels, and publication age are optional
-presentation evidence, not gates. Its compact body shows the representative
-Item's available OpenNews asset symbols and provider score under the generic
-`关联资产` label. Asset symbols preserve provider order after
-case-insensitive deduplication. A canonical
+`feishu_signing_secret`. This is fail-soft configuration: requesting Push with
+News disabled, a missing webhook, or an invalid webhook does not prevent Serve
+or Workers startup. Instead `tracefold config` and `/api/news/status` expose
+only `requested`, `delivery_available`, `translation_available`, a sanitized
+reason, and configured booleans. Delivery is available only for the supported
+Feishu HTTPS custom-bot v2 boundary. If a non-empty signing secret is present,
+delivery includes the computed `timestamp` and `sign`; if absent, delivery is
+explicitly unsigned and includes neither field.
+
+Optional title translation reuses the direct DeepSeek `llm.api_key`,
+`llm.base_url`, and `llm.news_brief_model`; there is no
+`news.push.translation` block, second credential, inferred endpoint, or
+fallback provider. For each non-Chinese title it makes at most one request,
+under one three-second total deadline, before the durable Feishu fence and
+outside a database transaction. It never switches providers or retries.
+Chinese input bypasses translation. Timeout, unavailable configuration,
+invalid output, and titles over 500 graphemes immediately select the original
+title. Translation success or fallback is presentation-only and never changes
+delivery eligibility or health. The Feishu JSON 2.0 card uses a valid Chinese
+translation as its plain-text header and always shows the original visibly in
+the body.
+Push admission requires only the first insert of a live OpenNews Item observed
+after the current enablement epoch while delivery is available. Recovery-first,
+RSS, pre-enablement, disabled, and unavailable facts never backfill.
+Provider score, assets, signal, grade, and publication age are optional
+presentation evidence, not gates. Its compact body shows the immutable Item
+snapshot's reporting origin, provider publication time, Strategy labels,
+available asset symbols, and optional score/signal/grade. A canonical
 HTTP(S) Item URL adds one `查看原文` button; a missing URL omits the button. The
-card has no subtitle, summary, signal, grade, Story score, source, or publication
-time. Push translation is presentation-only: Article, Story, provider score, and
-public News read models remain unchanged.
+card has no Story fields or derived summary. Push translation is
+presentation-only: Item, Story, provider score, and public News read models
+remain unchanged.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, private due/periodic loops, the projection EDF, the serial
@@ -312,20 +307,9 @@ The News public surface is exactly five read-only routes:
   or a commodity such as oil; Tracefold does not infer or correct its class.
   The browser does not cluster, score, select the maximum, classify assets, or
   reorder them.
-  Each Story carries an exact `notification` object. `eligible` is the current
-  Story Push qualification, and `ineligible_reason` is null when eligible or
-  exactly `disabled|recovery_only|before_enablement`. Push admits every Story
-  containing a first-live OpenNews fact observed at or after the current
-  enablement epoch. Provider score, assets, labels, publication time, Brief,
-  and translation are not admission gates; recovery-first facts never push.
-  `delivery_state` is independently and exclusively derived from the durable
-  ledger as `not_created|pending|sent|suppressed|failed`. Thus an ineligible
-  Story may still be `sent`, `suppressed`, `failed`, or `pending`; a later
-  later Story or configuration change never erases a historical delivery fact.
-  Current membership also resolves
-  the existing selected-Item ledger after a Story-ID change. The object is a
-  read-time Story Push projection, not a generic Notifications product, and
-  the browser does not reproduce its policy.
+  Stories expose no Push eligibility, delivery state, aggregate, or
+  `notification` field. Item Push identity and outcomes are intentionally not
+  mapped back through Story membership.
 - `GET /api/news/stories/{story_id}` returns one current Story and its complete
   NewsItem evidence. It exposes representative/scoring item identity,
   title/reporting-origin/time, classification, reporting-origin count,
@@ -488,25 +472,18 @@ compatibility reader.
 `story`, `brief`, and `push`. Brief reports the same public state, current
 slot/publication identity, and bounded latest-run telemetry. Its top-level
 `realtime` object reports current WSS state plus one-hour inbound and
-Story-visible latency samples. Push reports disabled/configured, enablement epoch,
-pending/retry/terminal counts, latest explicit delivery, and bounded sanitized
-error evidence without exposing secrets or card content. Its nested
-`translation_24h` reports durably fenced v2 attempts, including conservatively
-counted ambiguous interrupted dispatches, successes, success ratio, P95
-latency, failure-code counts, and SLO result; pre-fence skips are not attempts.
-Its exact `sample_complete` flag is `false` when the 24-hour population exceeds
-the bounded read sample; in that state numeric fields are neutral zero/null
-placeholders rather than partial metrics, status includes
-`push_translation_sample_overflow`, and operators must not treat them as the
-whole-window SLO. A complete empty window reports `sample_complete=true`.
-`delivery_24h` reports clean v2 sent/terminal completion count, P95 from the
-persisted first-live observation clock, completed samples whose latency exceeded
-120 seconds, and the 90-second P95 SLO result.
-It uses the same exact `sample_complete` semantics and reports
-`push_delivery_sample_overflow` when the bounded sample does not cover the
-whole 24-hour population.
-Deterministic Story
-cards remain readable while Brief or push is unavailable.
+Story-visible latency samples. Push reports `disabled`, `ready`, or `degraded`;
+requested and effective availability; enablement epoch; current
+`pending`/`sending`/`sent`/`terminal` counts; latest sent/error clocks; and
+bounded sanitized 24-hour samples without exposing secrets or card content.
+`translation_24h` reports translated, not-needed, and original-fallback
+presentation outcomes for diagnosis only; its failures never degrade Push.
+`delivery_24h` reports sent/terminal completion and P95 from the immutable first
+live observation clock. Current-policy P95 above 15 seconds, a recent terminal
+outcome, unsynchronized availability, or sample overflow degrades Push. Exact
+`sample_complete=false` means the bounded read did not cover the whole window,
+so operators must not interpret partial values as complete metrics. Story and
+Brief remain readable while Push is disabled or degraded.
 
 Production News runs one authenticated OpenNews WSS for account Strategy facts.
 After the protocol handshake Tracefold sends no application subscribe/request:
@@ -714,13 +691,17 @@ preserves immutable sent-delivery audit plus Push baseline/dedup evidence, and
 replaces obsolete recovery telemetry with unknown-coverage state. It has no
 dual writer or compatibility mode. `20260801_0238` adds the News push baseline
 and delivery ledger.
-`20260813_0266` adds the typed incident ledger and official Strategy-history
-recovery, persists immutable live/recovery ingest origin, and replaces Push's
-score/assets/freshness policy plus reconcile ring with one enablement epoch and
-same-transaction Story outbox. It terminalizes incompatible unsent v1 rows and
-preserves immutable sent audit. Applying these migrations does not send a
-message; delivery begins only after explicit webhook-backed Push configuration,
-then only for live facts observed after enablement. Signing is optional.
+`20260813_0266` historically added the typed incident ledger and official
+Strategy-history recovery, persisted immutable live/recovery ingest origin,
+and introduced a Story-scoped Push outbox. `20260814_0270` is the current
+offline Item Push hard cut. It reuses the same two Push tables, terminalizes
+legacy unsent Story-policy rows, preserves completed legacy card audit, replaces
+Story identity with stable Item identity, removes retry/lease fields, and
+installs the `pending -> sending -> sent|terminal` zero-retry state machine.
+Applying the migration performs no provider or outbound call. Delivery begins
+only after effective webhook-backed availability and only for first-inserted
+live OpenNews Items observed after the enablement epoch. Recovery, RSS,
+pre-epoch Items, and later annotation changes never create or mutate Push work.
 `20260807_0246` is the irreversible public
 World Brief hard cut: it canonicalizes retained OpenNews facts, drops the
 retired Story display-title translation table and incompatible Brief state,

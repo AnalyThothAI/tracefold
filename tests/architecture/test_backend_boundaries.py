@@ -39,6 +39,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/integrations/news_feeds/rss.py": {
         "tracefold.news.identity",
     },
+    "src/tracefold/integrations/news_push.py": {"tracefold.news.push"},
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
 }
 FORBIDDEN_CURRENT_IDENTITY_PARTS = {

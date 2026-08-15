@@ -41,9 +41,9 @@ product-model consumers.
 Optional News Push title translation is an outbound presentation adapter, not
 a product model: it cannot write a NewsItem, Story, score, or read model.
 News acquisition, NewsItem classification, Story identity, importance
-scoring, membership, and ordering remain deterministic. Push preserves the selected
-OpenNews original headline and freezes any translation only inside its delivery
-envelope. The six Macro modules are also deterministic views
+scoring, membership, and ordering remain deterministic. Push preserves the
+selected OpenNews Item's original headline and freezes any translation only
+inside its Item-scoped presentation snapshot. The six Macro modules are also deterministic views
 over persisted facts.
 
 Token Radar publishes a canonical address for copying and source navigation;
@@ -107,25 +107,25 @@ without one it deliberately sends an unsigned body containing neither field.
 Unsigned delivery has weaker request authentication and is an explicit
 operator choice, not a fallback after a signing error. In both modes the
 Adapter accepts only the configured Feishu webhook boundary and never follows
-redirects. The frozen delivery payload records only the non-secret `auth_mode`
-(`signed` or `unsigned`), never the webhook, signing secret, timestamp, or
-signature. A retry whose frozen mode differs from current configuration is
-terminal before network submission.
+redirects. Persisted Item source and presentation snapshots never contain the
+webhook, signing secret, timestamp, signature, or complete rendered card. There
+is exactly one Feishu attempt after the durable `sending` fence and no retry.
 
 News Push title translation reuses the operator-owned direct DeepSeek
 `llm.api_key`, `llm.base_url`, and `llm.news_brief_model`; there is no
 `news.push.translation` secret, second copy, inferred endpoint/model, or
-fallback provider. When translation is available, only the selected title is
+fallback provider. When translation is available, only the immutable Item title is
 sent to DeepSeek; asset annotations, score, URL, description, Story data,
 Feishu webhook, and
 signing secret are never included. Configuration diagnostics expose only
-`translation_enabled`, derived from Push enablement plus the direct triple, and
-`translation_configured`, derived from that triple's availability. The
+`requested`, `delivery_available`, `translation_available`, configured
+booleans, and a sanitized availability reason. The
 provider URL and key never enter logs, public status,
 generated artifacts, or frozen payloads. Frozen presentation metadata is
-non-secret and bounded: headline mode, target language, adapter kind, engine,
-prompt version, sanitized fallback code, and—only for dispatched translation
-work—the attempt clock and elapsed milliseconds.
+non-secret and bounded to the display title, translated/not-needed/fallback
+outcome, translation policy version, optional sanitized fallback code, and
+optional elapsed milliseconds. The original title always remains visible in
+the final card.
 
 The public News Brief L1 model receives only ordered primary headlines,
 primary reporting origins, and distinct-source counts. It receives no Article

@@ -19,15 +19,6 @@ def _return_one() -> int:
     return 1
 
 
-def _native_news_push_timeout(db: Any) -> None:
-    with db.worker_session(
-        "test_news_push_bounded_timeout",
-        statement_timeout_seconds=0.05,
-        transaction_timeout_seconds=0.2,
-    ) as repos:
-        repos.conn.execute("SELECT pg_sleep(0.2)")
-
-
 def _native_transaction_timeout(db: Any) -> None:
     with db.worker_session(
         "test_native_transaction_timeout",
@@ -36,19 +27,6 @@ def _native_transaction_timeout(db: Any) -> None:
         repos.conn.execute("SELECT 1")
         time.sleep(0.12)
         repos.conn.execute("SELECT 1")
-
-
-def _news_push_liveness(db: Any) -> int:
-    with db.worker_session("test_news_push_recovery") as repos:
-        row = repos.conn.execute("SELECT 1 AS ok").fetchone()
-        return int(row["ok"])
-
-
-def _slow_business_completion(delay_seconds: float) -> int:
-    print("BUSINESS_NATIVE_STARTED", flush=True)
-    time.sleep(delay_seconds)
-    print("BUSINESS_NATIVE_COMPLETED", flush=True)
-    return 1
 
 
 def _arguments() -> argparse.Namespace:
@@ -72,7 +50,6 @@ def _arguments() -> argparse.Namespace:
             "shutdown_stopping_control_never_returns",
             "provider_publication",
             "news_bounded_recovery",
-            "periodic_business_overrun_recovery",
         ),
     )
     return parser.parse_args()
@@ -129,12 +106,6 @@ async def _main() -> None:
 
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1
-
-    if arguments.mode == "periodic_business_overrun_recovery":
-        from tracefold.app import database as database_module
-
-        database_module._WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS = 0.1
-        database_module._WORKER_TRANSACTION_TIMEOUT_MARGIN_SECONDS = -0.9
 
     if arguments.mode in {
         "control_transient_startup",
@@ -321,13 +292,16 @@ async def _main() -> None:
         if arguments.mode == "news_bounded_recovery":
             news_cpu = kwargs["news_cpu"]
             assert news_cpu is not None
-            db = kwargs["db"]
             workers._NEWS_STORY_REFRESH_SECONDS = 0.1
-            workers._NEWS_PUSH_RECONCILE_SECONDS = 0.1
 
             class RecoveringNewsStory:
                 def __init__(self) -> None:
                     self.calls = 0
+
+                async def run(self, *, stop_event: asyncio.Event) -> None:
+                    while not stop_event.is_set():
+                        await self.sample()
+                        await asyncio.sleep(0.1)
 
                 async def sample(self) -> None:
                     self.calls += 1
@@ -353,105 +327,8 @@ async def _main() -> None:
                         )
                         print("NEWS_STORY_RECOVERED", flush=True)
 
-            class RecoveringNewsPush:
-                def __init__(self) -> None:
-                    self.calls = 0
-
-                async def reconcile(self, *, now_ms: int) -> dict[str, int]:
-                    del now_ms
-                    self.calls += 1
-                    if self.calls == 1:
-                        return {}
-                    if self.calls == 2:
-                        try:
-                            await db.run_business(
-                                "test_news_push_bounded_timeout",
-                                _native_news_push_timeout,
-                                db,
-                                operation_timeout_seconds=0.05,
-                            )
-                        finally:
-                            print("NEWS_PUSH_BOUNDED_TIMEOUT", flush=True)
-                    if self.calls == 3:
-                        assert (
-                            await db.run_business(
-                                "test_news_push_recovery",
-                                _news_push_liveness,
-                                db,
-                                operation_timeout_seconds=1.0,
-                            )
-                            == 1
-                        )
-                        print("NEWS_PUSH_RECOVERED", flush=True)
-                    return {}
-
-                async def close(self) -> None:
-                    return None
-
             components = _components(workers, market_providers_module, due_turns=())
             components.news_story = RecoveringNewsStory()
-            components.news_push = RecoveringNewsPush()
-            return components
-
-        if arguments.mode == "periodic_business_overrun_recovery":
-            db = kwargs["db"]
-            workers._NEWS_PUSH_RECONCILE_SECONDS = 0.05
-
-            class RecoveringPeriodicBusinessOperation:
-                def __init__(self) -> None:
-                    self.calls = 0
-
-                async def reconcile(self, *, now_ms: int) -> dict[str, int]:
-                    del now_ms
-                    self.calls += 1
-                    if self.calls == 1:
-                        # Startup reconciliation is deliberately inert; the
-                        # runtime periodic child owns the overrun seam.
-                        return {}
-                    if self.calls == 2:
-                        try:
-                            await db.run_business(
-                                "test_native_transaction_timeout",
-                                _native_transaction_timeout,
-                                db,
-                                operation_timeout_seconds=0.06,
-                            )
-                        except Exception as exc:
-                            from tracefold.platform.resource import ResourceAdmissionTimeout
-
-                            assert isinstance(exc, ResourceAdmissionTimeout)
-                            assert "worker_database_transaction_timeout" in str(exc)
-                            print("NATIVE_TRANSACTION_TIMEOUT_FIRST", flush=True)
-                        else:
-                            raise AssertionError("native transaction timeout missing")
-                    if self.calls == 3:
-                        try:
-                            await db.run_business(
-                                "test_periodic_business_overrun",
-                                _slow_business_completion,
-                                0.5,
-                                operation_timeout_seconds=0.01,
-                            )
-                        finally:
-                            print("BUSINESS_OPERATION_OVERRUN", flush=True)
-                    if self.calls == 4:
-                        assert (
-                            await db.run_business(
-                                "test_periodic_business_recovery",
-                                _news_push_liveness,
-                                db,
-                                operation_timeout_seconds=1.0,
-                            )
-                            == 1
-                        )
-                        print("BUSINESS_OPERATION_RECOVERED", flush=True)
-                    return {}
-
-                async def close(self) -> None:
-                    return None
-
-            components = _components(workers, market_providers_module, due_turns=())
-            components.news_push = RecoveringPeriodicBusinessOperation()
             return components
 
         db = kwargs["db"]

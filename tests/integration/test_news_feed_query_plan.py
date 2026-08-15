@@ -4,7 +4,7 @@ from typing import Any
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.news.query_specs import story_push_contexts_query
+from tracefold.news.query_specs import story_provider_evidence_query
 from tracefold.platform.postgres.postgres_audit import (
     PostgresQueryAudit,
     QueryAuditCatalog,
@@ -15,7 +15,7 @@ _STORY_COUNT = 16_000
 _REQUESTED_STORY_IDS = tuple(f"story-{story_no:05d}" for story_no in range(_STORY_COUNT - 99, _STORY_COUNT + 1))
 
 
-def test_news_feed_push_contexts_stays_bounded_to_requested_story_members(
+def test_news_feed_provider_evidence_stays_bounded_to_requested_story_members(
     tmp_path,
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
@@ -27,11 +27,10 @@ def test_news_feed_push_contexts_stays_bounded_to_requested_story_members(
             "news_items",
             "news_story_members",
             "news_stories",
-            "news_push_deliveries",
         ):
             _vacuum_analyze(conn, table_name)
 
-        query = story_push_contexts_query(story_ids=_REQUESTED_STORY_IDS)
+        query = story_provider_evidence_query(story_ids=_REQUESTED_STORY_IDS)
         catalog = QueryAuditCatalog(
             queries=(query,),
             query_routes={"/api/news/feed": (query.name,)},
@@ -50,7 +49,7 @@ def test_news_feed_push_contexts_stays_bounded_to_requested_story_members(
         "metrics": metrics,
     }
     assert payload["ok"] is True, diagnostic
-    assert result["name"] == "news_feed_push_contexts", diagnostic
+    assert result["name"] == "news_story_provider_evidence", diagnostic
     assert metrics["plan_json_valid"] is True, diagnostic
     assert not [
         scan
@@ -95,7 +94,7 @@ def _insert_production_shaped_news(conn: Any) -> None:
                  )
                ),
                'Feed Plan Wire',
-               'Feed push-context plan item ' || series_no,
+               'Feed provider-evidence plan item ' || series_no,
                '',
                'en',
                series_no,
@@ -129,10 +128,10 @@ def _insert_production_shaped_news(conn: Any) -> None:
         )
         SELECT 'story-' || lpad(series_no::text, 5, '0'),
                'story-key-' || lpad(series_no::text, 5, '0'),
-               'Feed push-context plan story ' || series_no,
+               'Feed provider-evidence plan story ' || series_no,
                'item-' || lpad(series_no::text, 5, '0'),
                'feed-plan-source',
-               'Feed push-context plan story ' || series_no,
+               'Feed provider-evidence plan story ' || series_no,
                '',
                'item-' || lpad(series_no::text, 5, '0'),
                'info',

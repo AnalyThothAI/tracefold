@@ -154,12 +154,9 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   commodities. The browser does not infer an asset class, correct provider
   labels, or hide CL-family labels from the reading surface. Missing assets are
   labelled `上游未标注` without hiding the Story. Provider signal is rendered
-  as both text and a semantic card rail; grade remains omitted. Each row also
-  renders the server-owned `notification` lifecycle: the durable delivery fact
-  is primary and current ineligibility is secondary, so a historical `sent`
-  Story never becomes visually `不通知`. The browser does not reimplement Push
-  qualification. Tracefold importance is secondary and its supplied factors live
-  under row-local `为什么重要`. The
+  as both text and a semantic card rail; grade remains omitted. Story rows do
+  not expose, infer, or aggregate Item Push state. Tracefold importance is
+  secondary and its supplied factors live under row-local `为什么重要`. The
   primary row action opens
   `/news/stories/:storyId`; a separate link opens original evidence when a
   valid URL exists and is otherwise omitted. Missing values are omitted.
@@ -168,7 +165,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 
   `/news/stories/:storyId` reads `/api/news/stories/{story_id}` and is
   reading-first: canonical headline, selected numeric OpenNews score and signal,
-  provider-labelled `关联资产`, server-owned notification lifecycle, severity, reporting origin/time,
+  provider-labelled `关联资产`, severity, reporting origin/time,
   independent-origin count, valid description, and representative original
   link precede related reports. Complete member
   pagination remains reachable. Internal IDs, complete factor math, provider
@@ -181,8 +178,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   state, connected/disconnected clocks, inbound and Story-visible P50/P95,
   configured/observed counts, last accepted trigger, official Strategy-history
   status, and the typed incident ledger
-  before public RSS breadth/corroboration, followed by Story, Brief, Push, and
-  translation evidence without creating a second health calculation. RSS
+  before public RSS breadth/corroboration, followed by Story, Brief, Item Push,
+  and informational translation evidence without creating a second health
+  calculation. Item Push diagnostics are aggregate operations state only; the
+  frontend does not link them back to a Story or reimplement admission. RSS
   displays `未启用` when the server reports its default-off configuration; zero
   enabled sources is not presented as warming or failure. The Feed
   also renders compact reader-facing News health in its header.

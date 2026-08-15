@@ -46,12 +46,12 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/news/feed": (
         "news_feed_focus_rows",
         "news_feed_focus_facets",
-        "news_feed_push_contexts",
+        "news_story_provider_evidence",
     ),
     "/api/news/stories/{story_id}": (
         "news_story",
         "news_story_members",
-        "news_feed_push_contexts",
+        "news_story_provider_evidence",
     ),
     "/api/news/brief": ("news_brief",),
     "/api/news/sources": ("news_sources",),
@@ -65,7 +65,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_projection",
         "news_brief",
         "news_push_state",
-        "news_push_oldest_due",
+        "news_push_oldest_pending",
         "news_push_translation_24h",
         "news_push_delivery_24h",
     ),

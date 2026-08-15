@@ -28,7 +28,7 @@ before the unchanged two-slot business executor. Token Radar uses ordinary
 business-database admission and an isolated CPU process turn, without a Radar
 permit, service deadline, executor, or configuration surface. Workers
 recover exclusively by re-reading PostgreSQL facts, typed Macro/Profile frontiers, native News
-Brief/Fed-document model state, the News Story-push state machine,
+Brief/Fed-document model state, the News Item Push ledger,
 and queues on bounded code-owned clocks.
 There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
@@ -113,15 +113,12 @@ The sealed `news_brief_current.served_payload` and rows in
 `macro_document_analyses` are derived model outputs bound to frozen evidence;
 they are not material facts.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
-they freeze a no-backfill enablement epoch, selected Story evidence, one optional
-presentation-only Chinese title translation or explicit original fallback,
-compact cards with provider-labelled assets, provider score, and an
-optional original-link button, plus claims, retries, and explicit delivery
-receipts. They
-do not become a second Story read model or notification product. The public
-Story `notification` object is only a read-time projection of two orthogonal
-News-owned facts: current Story Push eligibility and the existing durable
-delivery ledger.
+they freeze a no-backfill delivery epoch and one immutable `news_item_push_v1`
+snapshot for each eligible first-live OpenNews Item. A private turn may freeze
+one Chinese-title or original-title presentation decision, fence one Feishu
+attempt, and persist a sanitized sent or terminal outcome. There is no retry,
+lease, rendered-card persistence, Story identity, or public notification
+product in this ledger.
 
 ## Package map
 
@@ -146,7 +143,7 @@ tracefold.news
   runtime.py        bounded RSS/OpenNews acquisition and native Brief candidate
   projection.py     public population, Story, and selection calculation
   story_store.py    current-only Story compare-and-publish store
-  push.py           Story-qualified durable Feishu delivery
+  push.py           Item-scoped durable one-attempt Feishu delivery
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -456,6 +453,9 @@ OpenNews account Strategies
   -> authenticated persistent WSS; server automatically sends strategy.triggered
   -> no application subscribe/request; literal ping/pong and RFC control heartbeat only
   -> exact configured multi-Strategy allowlist
+  -> first live Item insert + same-transaction Item Push outbox when available
+     -> one best-effort Chinese-title attempt or immediate original fallback
+     -> one signed or explicitly unsigned Feishu attempt; sent or terminal
   -> operator-bound, Strategy-qualified 12-hour current facts
   -> disconnect/overflow/outage records an explicit incident interval
   -> official Strategy list/hits recovery; no ordinary-news Search
@@ -478,9 +478,6 @@ RSS category membership expansion
   -> Ollama -> configured direct DeepSeek -> Groq L1 waterfall
   -> shared-budget L2 single-headline fallback
   -> one whole sealed public Insights payload or whole LKG
-  -> same-transaction Story outbox for every live post-enablement Story
-     -> one bounded Chinese-title attempt or immediate original fallback
-     -> signed or explicitly unsigned frozen Feishu card
   -> one flat global cursor Feed with server-side filters
   -> /api/news/feed + /api/news/stories/{story_id}
      + /api/news/brief + /api/news/sources + /api/news/status
@@ -680,36 +677,31 @@ when no healthy payload exists, otherwise it preserves the complete healthy
 LKG without mixing Top Stories, prose, sources, or clocks. The public state is
 exactly `unavailable`, `current`, `degraded`, or `last_known_good`.
 
-`NewsStoryPush` is a News-owned durable outbound worker, not a model candidate
-or generic Notifications service. Enabling Push records one atomic enablement
-epoch. The Story writer creates the v2 outbox row in the same transaction as
-the Story/member closure for each Story that contains a first-live OpenNews
-fact observed at or after that epoch. Recovery-first facts and facts seen while
-Push is disabled never backfill. Score, assets, CL labels, provider publication
-time, Brief, model output, and a periodic discovery scan are not admission
-gates. The selected Item is the Story representative; the earliest qualifying
-live observation supplies the latency clock. Story ID and selected Item keep
-durable deduplication.
+`NewsItemPush` is a News-owned durable outbound capability, not a model
+candidate or generic Notifications service. The sole OpenNews Item writer
+creates one outbox row in the same short transaction that first inserts an
+eligible live Item. Identity is the deterministic `item_id` over
+`(source_id, source_item_key)`; OpenNews uses `params.id`. Strategy overlap
+therefore creates one alert, while distinct provider IDs remain distinct even
+when Story later clusters them together. Recovery-first, pre-epoch, RSS, and
+delivery-unavailable Items never create work or backfill.
 
-A private durable-due loop only prepares and delivers existing outbox rows; it
-does not discover Stories. For an unfrozen non-Chinese title, the Feishu Adapter
-makes at most one request through the configured direct DeepSeek triple. Success
-freezes a Chinese header plus visible original; any provider, validation,
-length, or timeout failure freezes the original in the same turn. Score and
-assets are optional card metadata, never requirements. Translation and Feishu
-I/O run outside database transactions. Every later retry receives the frozen
-card and never retranslates. Optional signing is explicit; a failed signed send
-never falls back to unsigned. Feishu `code == 0` is the only success. Transport,
-timeout, 429, and 5xx failures retry with bounded delays; deterministic failures
-become terminal. Delivery is durable at-least-once.
+The OpenNews Item writer uses its source-local transaction fence and does not
+acquire the Story publication advisory lock. A Story publish may therefore
+finish against its captured prior closure while a new Item/outbox commits; the
+post-commit dirty signal schedules the next deterministic closure. This keeps
+Story publication time and failure outside Item Push admission.
 
-Feed and detail expose the ledger projection as `notification`. `eligible` is
-true for an already-created live post-enablement delivery, or for a current
-Story that would be admitted under that same epoch rule. The only ineligibility
-reasons are `disabled`, `recovery_only`, and `before_enablement`; delivery state
-remains independently `not_created|pending|sent|suppressed|failed`. Historical
-sent/retry/terminal facts are never erased by later configuration or Story
-changes. No waiting-age threshold marks a quiet or retrying Push lane stalled.
+One private `NewsItemPush.turn()` peeks FIFO pending work, optionally translates
+the title outside a transaction under a three-second total bound, conditionally
+fences `pending -> sending` with the minimal presentation snapshot, renders the
+Feishu card, performs at most one request, and settles `sent` or `terminal`.
+Translation failure always falls back to the original title, which remains
+visible. Feishu `code == 0` is the only success. There is no delivery retry,
+backoff, lease, reaper, or exactly-once provider claim. A pre-fence crash leaves
+pending work; a post-fence or ambiguous interruption is terminalized at startup
+and never resent. Story projection never reads, writes, configures, or joins
+Push state, and Feed/detail expose no Push field.
 
 The complete live News storage boundary is exactly ten tables:
 `news_sources`, `news_items`, `news_stories`,
@@ -743,46 +735,23 @@ dynamic membership-bounded read, including the short interval after an Item
 expires and before the next atomic Story replacement. Source/origin filters
 and facets bind to that same published Story snapshot, so an Item correction
 cannot mix old facet counts with a new filter identity before replacement.
-`20260813_0257` adds narrow covering and partial-expression indexes used by
-that dynamic numeric score test and bounded Push-health reads. The existing
-`news_push_state` singleton now also carries exact lifetime delivery counts and
-the latest sanitized sent/error events; every ledger transition maintains it
-in the same repository transaction and lock order. Typed translation clocks on
-the ledger support a capped 24-hour row sample aggregated in Python. This adds
-no table or second writer: current membership remains the bounded outer
-relation, score changes are visible immediately, and source/origin values
-remain the published Story snapshot. The score index includes
-`provider_metadata` only because PostgreSQL otherwise heap-fetches for the
-expression predicate; it is a covering-index workaround, not a second score.
-`20260813_0258` adds a nullable scan cursor to the existing Push singleton, a
-dedicated provider score/assets eligibility clock to existing News Items, and
-replaces two existing indexes in place. Push candidate discovery advances
-one deterministic 1,000-Story primary-key page in the same transaction as
-candidate creation and cursor publication; rollback advances neither, restart
-continues from the durable cursor, and end-of-scan clears it so later provider
-annotations are reconsidered. Every page uses the same local first-enable
-evidence-clock fence, so pagination cannot turn a future-skewed pre-baseline
-Item into a notification. The widened Event received-time index and
-current-resolution unique index cover columns already read by market-target
-selection while preserving its joins, ordering, and uniqueness semantics.
-There is still no News wake plane, per-candidate frontier, extra table, or
-second writer.
-`20260813_0259` repairs any numeric-score Item written without that eligibility
-clock during a mixed-version 0258 cutover and makes the clock mandatory for
-numeric provider scores. It adds no table, writer, or serving field.
-`20260813_0260` adds the durable Push reconcile-ring start clock to the same
-singleton. A completed short ring waits until its 25-second start boundary;
-an unfinished ring and clock survive restart, while the capped ten-page ring
-retains its nominal 25-second interval. It adds no table, wake plane, or writer.
-`20260813_0266` is the current irreversible KISS hard cut. It adds the tenth
+`20260813_0257` through `20260813_0260` are historical Story Push migrations;
+their eligibility clocks, scan cursor, and reconcile ring are removed by the
+current Item Push hard cut.
+`20260813_0266` adds the tenth
 News table for typed OpenNews incidents, replaces legacy coverage flags with
 official Strategy-history status, and records immutable live-versus-recovery
 ingest origin. It removes provider-score/assets/freshness Push gates and the
 cursor/reconcile ring, renames the baseline to an enablement epoch, terminalizes
-incompatible unsent v1 deliveries, and makes Story publication the atomic v2
-outbox writer. The WSS receiver, database publisher, and status publisher run
+incompatible unsent v1 deliveries, and historically made Story publication the
+v2 outbox writer. The WSS receiver, database publisher, and status publisher run
 independently; current WSS state and one-hour inbound/Story-visible latency are
 separate from historical incident recovery.
+`20260814_0270` supersedes that Story Push boundary and hard-cuts the two
+existing Push tables in place to Item identity. It preserves completed legacy
+audit and old rendered payloads as audit-only data, terminalizes incompatible
+unsent work, removes Story/retry/lease fields, resets enablement, and adds no
+table.
 `20260813_0261` replaces Radar's expression index with the STORED generated
 fingerprint and its narrow covering index, preserving all facts and the current
 payload with no dual path.

@@ -134,8 +134,10 @@ Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. With Push enabled, a configured
 direct DeepSeek triple enables the one-attempt presentation translation; do
 not add a `news.push.translation` block or duplicate the credential. The target
-language, 7.5-second request timeout, 8-second total
-budget, no-retry policy, and title limits are code-owned.
+language, three-second total translation deadline, zero-retry policy, and title
+limits are code-owned. Missing or invalid delivery configuration is fail-soft:
+Serve and Workers still start, while secret-free diagnostics report requested
+and effective availability plus a sanitized reason.
 
 The current cutover configures exactly `1018` (News Score > 70) and `1019` (OI
 Event Monitor), and `tracefold config` therefore reports a redacted Strategy
@@ -152,7 +154,7 @@ The `llm` block owns one all-or-none direct DeepSeek triple—`api_key`,
 `base_url`, and `news_brief_model`—plus optional `groq_api_key`. The Brief order
 is Ollama, configured direct DeepSeek, then Groq. Worker timeouts, token budgets,
 cadence, and resource limits are code-owned; there is no environment-variable
-credential path or inferred DeepSeek URL/model. Story Push reuses only that
+credential path or inferred DeepSeek URL/model. Item Push reuses only that
 direct triple for its outbound title-presentation adapter; it does not use
 Ollama or Groq and does not enter the serial model arbiter.
 
@@ -186,15 +188,15 @@ Strategy-admitted OpenNews facts before any RSS attempt. An empty Top Story
 selection is not claimable and does
 not complete or overwrite the current Brief slot; a later dirty Story turn in
 the same half hour makes a non-empty selection eligible.
-Push is a separate News-owned delivery state machine. Initial enablement records
-one no-backfill epoch. The Story writer atomically inserts one outbox row for
-each Story containing a live fact first observed after that epoch. Scoreless,
-assetless, linkless, and CL-labelled Stories remain eligible; recovery-first and
-pre-enablement facts never backfill. The delivery worker sends one optionally
-signed Feishu card containing the representative Story headline plus a compact
-body with any available `关联资产`, provider score, and optional
-original-link button, with durable at-least-once retries. It is not a
-generic Notifications product or item-level analysis path.
+Push is a separate News-owned Item delivery state machine. Initial effective
+availability records one no-backfill epoch. The first live OpenNews Item insert
+atomically creates one outbox row keyed by `(source_id, source_item_key)`.
+Scoreless, assetless, linkless, and CL-labelled Items remain eligible;
+recovery-first, RSS, pre-enablement, disabled, and unavailable facts never
+backfill. Translation is one best-effort title-only call within three seconds;
+failure sends the original. The delivery worker then makes exactly one
+optionally signed Feishu attempt and settles it as sent or terminal. There is
+no retry, lease, reaper, generic Notifications product, or Story dependency.
 An accepted Strategy trigger may appear outside explicit Focus when it lacks a
 score above 70, while still creating Story and Push. The due worker never scans
 Stories to discover candidates; it only claims existing transactional outbox
@@ -332,8 +334,15 @@ Stop Serve and Workers before applying `20260813_0266`. It adds
 Strategy-history status, and marks every OpenNews fact's immutable first ingest
 mode. It removes the Push eligibility clocks/cursor/ring, renames the baseline
 to the enablement epoch, terminalizes incompatible unsent v1 rows, and installs
-the live-only v2 Story outbox contract. After restart, current WSS state and
+the historical live-only v2 Story outbox contract. After restart, current WSS state and
 latency are independent of incident recovery.
+Stop Serve and Workers before applying current migration `20260814_0270`. It
+hard-cuts the existing two Push tables to Item identity and zero retry,
+terminalizes legacy unsent Story-policy work, preserves completed legacy card
+audit, and removes Story, retry, lease, and translation-preparation columns.
+The migration performs no backfill or outbound call. Restart only the new
+runtime; startup reconciles effective availability and terminalizes any
+interrupted current-schema `sending` row before acquisition begins.
 Token Radar migration `20260810_0249` removed the retired Radar projection
 tables and temporary replay-only schema, then installed the compact singleton.
 It preserved material Events, intents, resolutions, identities, and market
@@ -401,9 +410,9 @@ writer, observe one bounded cursor wrap, and verify Push latency plus Workers
 heartbeat stability.
 `20260801_0238` historically adds the News push baseline/delivery ledger. Push remains
 disabled after migration until the Feishu webhook and push switch are
-explicitly configured; signing remains optional. Current migration 0266 uses a
-no-backfill enablement epoch and admits every live Story observed after it,
-without score, asset, or age gates.
+explicitly configured; signing remains optional. Current migration 0270 uses a
+no-backfill enablement epoch and admits each first-inserted live OpenNews Item
+observed after it, without score, asset, URL, or age gates.
 Enable the Macro workers only after the migration is current.
 
 The overview and six typed module reads are persisted-only and never trigger a

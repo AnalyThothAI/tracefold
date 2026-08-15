@@ -34,7 +34,7 @@ from tracefold.market.provider_contracts import (
     DexProviderTemporarilyUnavailable,
     MarketProviderExpectedError,
 )
-from tracefold.news.push import NewsPushDeliveryError, NewsStoryPush, _payload_fingerprint
+from tracefold.news.push import NewsItemPush, NewsPushReceipt
 from tracefold.news.runtime import NewsBriefCandidate
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import (
@@ -840,55 +840,49 @@ def test_macro_malformed_success_json_is_published_as_a_source_failure() -> None
     assert database.operations == ["macro_target_claim", "macro_publish_failure"]
 
 
-def test_news_push_delivery_overrun_records_retryable_failure_without_releasing_claim() -> None:
-    payload = {"schema_version": "news_story_push_v2", "story_id": "story-1"}
-
+def test_news_item_push_delivery_overrun_terminalizes_and_stops_overlap() -> None:
     class _Database:
         def __init__(self) -> None:
             self.operations: list[str] = []
+            self.error_code: str | None = None
 
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
+        async def run_business(self, operation_name, _function, /, *args, **_kwargs):
             self.operations.append(operation_name)
-            if operation_name == "news_story_push_claim":
+            if operation_name == "news_item_push_peek":
                 return {
-                    "selected_item_id": "item-1",
+                    "item_id": "news_item_0123456789abcdef0123456789abcdef",
                     "source_payload": {
-                        "provider_evidence": {
-                            "published_at_ms": 9_000_000_000_000,
-                        }
+                        "schema_version": "news_item_push_v1",
+                        "original_title": "Bitcoin rises",
                     },
-                    "delivery_payload": payload,
-                    "payload_fingerprint": _payload_fingerprint(payload),
                 }
-            if operation_name == "news_story_push_start_delivery":
-                return {"delivery_attempts": 1}
+            if operation_name == "news_item_push_fence":
+                return {"item_id": args[0]}
+            if operation_name == "news_item_push_terminalize":
+                self.error_code = str(args[1])
+                return True
             raise AssertionError(operation_name)
 
     database = _Database()
-    push = NewsStoryPush(
+    push = NewsItemPush(
         db=database,
         finite_operations=_SubmittedOverrunFiniteOperations(),
-        delivery=SimpleNamespace(deliver=lambda *_args, **_kwargs: None),
-        runtime_id="runtime",
+        translator=None,
+        sender=SimpleNamespace(
+            send=lambda *_args, **_kwargs: NewsPushReceipt(provider="feishu"),
+            close=lambda: None,
+        ),
+        delivery_available=True,
     )
-    failures: list[dict[str, object]] = []
 
-    async def record_failure(**kwargs):
-        failures.append(kwargs)
-        return "retry"
-
-    push._record_delivery_failure = record_failure  # type: ignore[method-assign]
-
-    assert asyncio.run(push._execute_story("story-1", now_ms=1_000)) is True
+    with pytest.raises(RuntimeError, match="news_item_push_feishu_operation_overrun"):
+        asyncio.run(push.turn())
     assert database.operations == [
-        "news_story_push_claim",
-        "news_story_push_start_delivery",
+        "news_item_push_peek",
+        "news_item_push_fence",
+        "news_item_push_terminalize",
     ]
-    assert len(failures) == 1
-    error = failures[0]["error"]
-    assert isinstance(error, NewsPushDeliveryError)
-    assert error.code == "news_story_push_delivery_timeout"
-    assert error.retryable is True
+    assert database.error_code == "news_item_push_feishu_timeout"
 
 
 @pytest.mark.parametrize(

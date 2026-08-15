@@ -196,31 +196,6 @@ class NewsImportanceFactorsData(ExactApiSchema):
     total: int
 
 
-class NewsNotificationData(ExactApiSchema):
-    eligible: bool
-    ineligible_reason: (
-        Literal[
-            "disabled",
-            "recovery_only",
-            "before_enablement",
-        ]
-        | None
-    )
-    delivery_state: Literal[
-        "not_created",
-        "pending",
-        "sent",
-        "suppressed",
-        "failed",
-    ]
-
-    @model_validator(mode="after")
-    def validate_eligibility_reason(self) -> NewsNotificationData:
-        if self.eligible == (self.ineligible_reason is not None):
-            raise ValueError("news_notification_eligibility_reason_invalid")
-        return self
-
-
 class NewsStoryData(ExactApiSchema):
     story_id: str
     title: str
@@ -239,7 +214,6 @@ class NewsStoryData(ExactApiSchema):
     first_published_at_ms: int
     last_published_at_ms: int
     provider_evidence: NewsProviderEvidenceData | None
-    notification: NewsNotificationData
 
 
 class NewsFeedFacetData(ExactApiSchema):
@@ -597,38 +571,42 @@ class NewsBriefStatusData(ExactApiSchema):
 
 
 class NewsPushTranslation24hData(ExactApiSchema):
+    total: int
     attempted: int
-    succeeded: int
-    success_ratio: float | None
+    translated: int
+    not_needed: int
+    fallback: int
     latency_p95_ms: int | None
-    failure_counts: dict[str, int]
-    slo_met: bool | None
+    fallback_counts: dict[str, int]
     sample_complete: bool
 
 
 class NewsPushDelivery24hData(ExactApiSchema):
     completed: int
+    sent: int
+    terminal: int
     latency_p95_ms: int | None
-    over_120s: int
     slo_met: bool | None
     sample_complete: bool
 
 
 class NewsPushStatusData(ExactApiSchema):
-    status: Literal["disabled", "ready", "warming", "degraded"]
+    status: Literal["disabled", "ready", "degraded"]
     reasons: list[str]
-    enabled: bool
+    requested: bool
+    delivery_available: bool
+    translation_available: bool
+    availability_reason: str | None
+    state_synchronized: bool
     feishu_webhook_url_configured: bool
     feishu_signing_secret_configured: bool
-    initialized: bool
     enablement_epoch_at_ms: int | None
     total_count: int
-    suppressed_count: int
     pending_count: int
-    retry_count: int
+    sending_count: int
     sent_count: int
     terminal_count: int
-    oldest_due_at_ms: int | None
+    oldest_pending_at_ms: int | None
     latest_sent_at_ms: int | None
     latest_error: str | None
     latest_error_at_ms: int | None

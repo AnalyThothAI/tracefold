@@ -8058,49 +8058,6 @@
         "title": "NewsIngestStatusData",
         "type": "object"
       },
-      "NewsNotificationData": {
-        "additionalProperties": false,
-        "properties": {
-          "delivery_state": {
-            "enum": [
-              "not_created",
-              "pending",
-              "sent",
-              "suppressed",
-              "failed"
-            ],
-            "title": "Delivery State",
-            "type": "string"
-          },
-          "eligible": {
-            "title": "Eligible",
-            "type": "boolean"
-          },
-          "ineligible_reason": {
-            "anyOf": [
-              {
-                "enum": [
-                  "disabled",
-                  "recovery_only",
-                  "before_enablement"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ineligible Reason"
-          }
-        },
-        "required": [
-          "eligible",
-          "ineligible_reason",
-          "delivery_state"
-        ],
-        "title": "NewsNotificationData",
-        "type": "object"
-      },
       "NewsOpenNewsIncidentData": {
         "additionalProperties": false,
         "properties": {
@@ -8580,13 +8537,13 @@
             ],
             "title": "Latency P95 Ms"
           },
-          "over_120s": {
-            "title": "Over 120S",
-            "type": "integer"
-          },
           "sample_complete": {
             "title": "Sample Complete",
             "type": "boolean"
+          },
+          "sent": {
+            "title": "Sent",
+            "type": "integer"
           },
           "slo_met": {
             "anyOf": [
@@ -8598,12 +8555,17 @@
               }
             ],
             "title": "Slo Met"
+          },
+          "terminal": {
+            "title": "Terminal",
+            "type": "integer"
           }
         },
         "required": [
           "completed",
+          "sent",
+          "terminal",
           "latency_p95_ms",
-          "over_120s",
           "slo_met",
           "sample_complete"
         ],
@@ -8613,11 +8575,22 @@
       "NewsPushStatusData": {
         "additionalProperties": false,
         "properties": {
+          "availability_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Availability Reason"
+          },
           "delivery_24h": {
             "$ref": "#/components/schemas/NewsPushDelivery24hData"
           },
-          "enabled": {
-            "title": "Enabled",
+          "delivery_available": {
+            "title": "Delivery Available",
             "type": "boolean"
           },
           "enablement_epoch_at_ms": {
@@ -8637,10 +8610,6 @@
           },
           "feishu_webhook_url_configured": {
             "title": "Feishu Webhook Url Configured",
-            "type": "boolean"
-          },
-          "initialized": {
-            "title": "Initialized",
             "type": "boolean"
           },
           "latest_error": {
@@ -8680,7 +8649,7 @@
             "title": "Measured At Ms",
             "type": "integer"
           },
-          "oldest_due_at_ms": {
+          "oldest_pending_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -8689,7 +8658,7 @@
                 "type": "null"
               }
             ],
-            "title": "Oldest Due At Ms"
+            "title": "Oldest Pending At Ms"
           },
           "pending_count": {
             "title": "Pending Count",
@@ -8702,27 +8671,30 @@
             "title": "Reasons",
             "type": "array"
           },
-          "retry_count": {
-            "title": "Retry Count",
+          "requested": {
+            "title": "Requested",
+            "type": "boolean"
+          },
+          "sending_count": {
+            "title": "Sending Count",
             "type": "integer"
           },
           "sent_count": {
             "title": "Sent Count",
             "type": "integer"
           },
+          "state_synchronized": {
+            "title": "State Synchronized",
+            "type": "boolean"
+          },
           "status": {
             "enum": [
               "disabled",
               "ready",
-              "warming",
               "degraded"
             ],
             "title": "Status",
             "type": "string"
-          },
-          "suppressed_count": {
-            "title": "Suppressed Count",
-            "type": "integer"
           },
           "terminal_count": {
             "title": "Terminal Count",
@@ -8734,23 +8706,29 @@
           },
           "translation_24h": {
             "$ref": "#/components/schemas/NewsPushTranslation24hData"
+          },
+          "translation_available": {
+            "title": "Translation Available",
+            "type": "boolean"
           }
         },
         "required": [
           "status",
           "reasons",
-          "enabled",
+          "requested",
+          "delivery_available",
+          "translation_available",
+          "availability_reason",
+          "state_synchronized",
           "feishu_webhook_url_configured",
           "feishu_signing_secret_configured",
-          "initialized",
           "enablement_epoch_at_ms",
           "total_count",
-          "suppressed_count",
           "pending_count",
-          "retry_count",
+          "sending_count",
           "sent_count",
           "terminal_count",
-          "oldest_due_at_ms",
+          "oldest_pending_at_ms",
           "latest_sent_at_ms",
           "latest_error",
           "latest_error_at_ms",
@@ -8768,11 +8746,15 @@
             "title": "Attempted",
             "type": "integer"
           },
-          "failure_counts": {
+          "fallback": {
+            "title": "Fallback",
+            "type": "integer"
+          },
+          "fallback_counts": {
             "additionalProperties": {
               "type": "integer"
             },
-            "title": "Failure Counts",
+            "title": "Fallback Counts",
             "type": "object"
           },
           "latency_p95_ms": {
@@ -8786,44 +8768,31 @@
             ],
             "title": "Latency P95 Ms"
           },
+          "not_needed": {
+            "title": "Not Needed",
+            "type": "integer"
+          },
           "sample_complete": {
             "title": "Sample Complete",
             "type": "boolean"
           },
-          "slo_met": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Slo Met"
-          },
-          "succeeded": {
-            "title": "Succeeded",
+          "total": {
+            "title": "Total",
             "type": "integer"
           },
-          "success_ratio": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Success Ratio"
+          "translated": {
+            "title": "Translated",
+            "type": "integer"
           }
         },
         "required": [
+          "total",
           "attempted",
-          "succeeded",
-          "success_ratio",
+          "translated",
+          "not_needed",
+          "fallback",
           "latency_p95_ms",
-          "failure_counts",
-          "slo_met",
+          "fallback_counts",
           "sample_complete"
         ],
         "title": "NewsPushTranslation24hData",
@@ -9463,9 +9432,6 @@
             "title": "Level",
             "type": "string"
           },
-          "notification": {
-            "$ref": "#/components/schemas/NewsNotificationData"
-          },
           "provider_evidence": {
             "anyOf": [
               {
@@ -9533,8 +9499,7 @@
           "source_count",
           "first_published_at_ms",
           "last_published_at_ms",
-          "provider_evidence",
-          "notification"
+          "provider_evidence"
         ],
         "title": "NewsStoryData",
         "type": "object"
@@ -9610,9 +9575,6 @@
           "members_page": {
             "$ref": "#/components/schemas/NewsStoryMembersPageData"
           },
-          "notification": {
-            "$ref": "#/components/schemas/NewsNotificationData"
-          },
           "provider_evidence": {
             "anyOf": [
               {
@@ -9681,7 +9643,6 @@
           "first_published_at_ms",
           "last_published_at_ms",
           "provider_evidence",
-          "notification",
           "canonical_title",
           "members",
           "members_page"

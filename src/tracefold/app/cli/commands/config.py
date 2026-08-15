@@ -5,7 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from tracefold.app.runtime_capabilities import macro_document_analysis_runtime
-from tracefold.platform.config.settings import load_settings, write_default_config
+from tracefold.platform.config.settings import (
+    load_settings,
+    news_push_availability,
+    write_default_config,
+)
 from tracefold.platform.paths import config_path
 
 
@@ -33,6 +37,7 @@ def handle_init(args: object) -> tuple[int, dict[str, Any]]:
 
 def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
+    push_availability = news_push_availability(settings)
     return (
         0,
         {
@@ -78,11 +83,12 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "groq_configured": bool(settings.llm.groq_api_key),
                     },
                     "push": {
-                        "enabled": settings.news.push.enabled,
-                        "feishu_webhook_url_configured": bool(settings.news.push.feishu_webhook_url),
-                        "feishu_signing_secret_configured": bool(settings.news.push.feishu_signing_secret),
-                        "translation_enabled": bool(settings.news.push.enabled and settings.llm.api_key),
-                        "translation_configured": bool(settings.llm.api_key),
+                        "requested": push_availability.requested,
+                        "delivery_available": push_availability.delivery_available,
+                        "translation_available": push_availability.translation_available,
+                        "reason": push_availability.reason,
+                        "feishu_webhook_url_configured": (push_availability.feishu_webhook_url_configured),
+                        "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),
                     },
                 },
                 "macro": {"document_analysis": macro_document_analysis_runtime(settings)},

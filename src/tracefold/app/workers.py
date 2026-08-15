@@ -35,7 +35,10 @@ from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.integrations.news_feeds import RssFeedReader, parse_rss_feed_wire
-from tracefold.integrations.news_push import FeishuNewsPushDelivery
+from tracefold.integrations.news_push import (
+    FeishuNewsPushSender,
+    OpenAICompatibleNewsPushTranslator,
+)
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
@@ -66,9 +69,9 @@ from tracefold.news import (
     NewsBriefCandidate,
     NewsStoryProjection,
 )
-from tracefold.news.push import NewsStoryPush
+from tracefold.news.push import NewsItemPush
 from tracefold.news.sources import opennews_source, public_rss_sources
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.settings import Settings, news_push_availability
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
@@ -92,8 +95,8 @@ _MODEL_MAX_TOKENS = 6_000
 _NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS = 60.0
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
+_DEFAULT_DUE_IDLE_SECONDS = 1.0
 _MARKET_TICK_POLL_SECONDS = 35.0
-_NEWS_PUSH_IDLE_SECONDS = 5.0
 _NEWS_RSS_IDLE_SECONDS = 30.0
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
@@ -162,7 +165,7 @@ class _Components:
     news: NewsAcquisition | None
     news_story: NewsStoryProjection | None
     news_brief: NewsBriefCandidate | None
-    news_push: NewsStoryPush | None
+    news_push: NewsItemPush | None
     macro_source: MacroSourceClient | None
     macro_turns: tuple[MacroAcquisition, ...]
     due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
@@ -835,7 +838,31 @@ async def _wire_components(
     news: NewsAcquisition | None = None
     news_story: NewsStoryProjection | None = None
     news_brief: NewsBriefCandidate | None = None
-    news_push: NewsStoryPush | None = None
+    push_availability = news_push_availability(settings)
+    push_translator = (
+        OpenAICompatibleNewsPushTranslator(
+            base_url=str(settings.llm.base_url),
+            api_key=str(settings.llm.api_key),
+            model=str(settings.llm.news_brief_model),
+        )
+        if push_availability.delivery_available and push_availability.translation_available
+        else None
+    )
+    push_sender = (
+        FeishuNewsPushSender(
+            webhook_url=str(settings.news.push.feishu_webhook_url),
+            signing_secret=settings.news.push.feishu_signing_secret,
+        )
+        if push_availability.delivery_available
+        else None
+    )
+    news_push = NewsItemPush(
+        db=db,
+        finite_operations=finite,
+        translator=push_translator,
+        sender=push_sender,
+        delivery_available=push_availability.delivery_available,
+    )
     model_candidates: list[Any] = []
     if settings.news.enabled:
         story_dirty = asyncio.Event()
@@ -866,7 +893,6 @@ async def _wire_components(
             heavy_db=heavy_db,
             cpu=news_cpu,
             dirty=story_dirty,
-            push_enabled=settings.news.push.enabled,
         )
         news_brief = NewsBriefCandidate(
             db=db,
@@ -886,28 +912,8 @@ async def _wire_components(
         # disabled it has no claimable source and performs no network request.
         due_turns.append((news.turn, _NEWS_RSS_IDLE_SECONDS))
         model_candidates.append(news_brief)
-        if settings.news.push.enabled:
-            webhook_url = settings.news.push.feishu_webhook_url
-            signing_secret = settings.news.push.feishu_signing_secret
-            translation_api_key = settings.llm.api_key
-            translation_enabled = bool(translation_api_key)
-            if not webhook_url:
-                raise RuntimeError("news_push_webhook_missing_after_validation")
-            news_push = NewsStoryPush(
-                db=db,
-                finite_operations=finite,
-                delivery=FeishuNewsPushDelivery(
-                    webhook_url=webhook_url,
-                    signing_secret=signing_secret,
-                    finite_operations=finite,
-                    translation_enabled=translation_enabled,
-                    translation_base_url=(settings.llm.base_url if translation_enabled else None),
-                    translation_api_key=translation_api_key,
-                    translation_engine=(settings.llm.news_brief_model if translation_enabled else None),
-                ),
-                runtime_id=runtime_id,
-            )
-            due_turns.append((news_push.turn, _NEWS_PUSH_IDLE_SECONDS))
+        if push_availability.delivery_available:
+            due_turns.append((news_push.turn, _DEFAULT_DUE_IDLE_SECONDS))
 
     document_model: MacroDocumentAnalysisService | None = None
     document_analysis_model_name: str | None = None
@@ -998,7 +1004,7 @@ async def _wire_components(
         finite_operations=finite,
         runtime_id=runtime_id,
     )
-    due_turns.append((event_anchor.turn, 1.0))
+    due_turns.append((event_anchor.turn, _DEFAULT_DUE_IDLE_SECONDS))
 
     market_poll = (
         MarketTickPoll(db=db, providers=providers, finite_operations=finite)

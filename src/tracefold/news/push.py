@@ -1,26 +1,28 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
-import secrets
+import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+import unicodedata
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
-    ResourceCapability,
     ResourceOperationOverrun,
 )
 
-PUSH_PAYLOAD_SCHEMA_VERSION = "news_story_push_v2"
+PUSH_PAYLOAD_SCHEMA_VERSION = "news_item_push_v1"
+PUSH_TRANSLATION_POLICY_VERSION = "title_zh_v3"
 
-_DELIVERY_MAX_ATTEMPTS = 6
-_DELIVERY_RETRY_DELAYS_MS = (5_000, 30_000, 120_000, 600_000, 1_800_000)
-_LEASE_MS = 60_000
-_DELIVERY_TIMEOUT_SECONDS = 12.0
+_TRANSLATION_TOTAL_TIMEOUT_SECONDS = 3.0
+_TRANSLATION_OPERATION_TIMEOUT_SECONDS = 2.5
+_DELIVERY_TOTAL_TIMEOUT_SECONDS = 7.5
+_DELIVERY_OPERATION_TIMEOUT_SECONDS = 7.0
+_MAX_TITLE_GRAPHEMES = 500
+_ERROR_CODE = re.compile(r"^[a-z0-9_]{1,120}$")
+_ANCHOR = re.compile(r"(?<![\w])(?:\$?[A-Z][A-Z0-9._/-]{1,14}|\d+(?:[.,]\d+)*(?:%|bp|bps)?)(?![\w])")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,57 +32,34 @@ class NewsPushReceipt:
     details: Mapping[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class PreparedNewsPush:
-    """One complete delivery envelope and its durable localization outcome."""
+class NewsPushTranslator(Protocol):
+    def translate(self, title: str) -> str: ...
 
-    payload: Mapping[str, Any]
-    translation_status: str
+    def close(self) -> None: ...
 
 
-class NewsPushDelivery(Protocol):
-    """News-side bridge run only through FiniteOperations.
-
-    ``prepare`` owns optional presentation-only external work and returns a
-    complete envelope exactly once. The caller hashes and persists that opaque
-    result. Its pre-submit callback is the durable at-most-once translation
-    fence; an interrupted fenced preparation must render the original without
-    resubmission. ``deliver`` receives only the frozen envelope on every retry.
-    """
-
-    async def prepare(
+class NewsPushSender(Protocol):
+    def send(
         self,
         source_payload: Mapping[str, Any],
-        *,
-        deadline_ms: int,
-        before_translation_submit: Callable[[], Awaitable[None]] | None = None,
-        interrupted_translation_attempted_at_ms: int | None = None,
-    ) -> PreparedNewsPush: ...
-
-    def deliver(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        idempotency_key: str,
+        presentation_snapshot: Mapping[str, Any],
     ) -> NewsPushReceipt: ...
 
     def close(self) -> None: ...
 
 
-class NewsPushDeliveryError(RuntimeError):
-    def __init__(self, code: str, *, retryable: bool) -> None:
-        self.code = str(code)[:500]
-        self.retryable = bool(retryable)
+class NewsPushExternalError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = _sanitize_error(code, fallback="news_item_push_external_error")
         super().__init__(self.code)
 
 
-class NewsStoryPush:
-    """Durable Story-scoped push state machine.
+class NewsItemPush:
+    """One deep Item-scoped outbound turn.
 
-    PostgreSQL calls are short phases around payload freezing and delivery.
-    External I/O never runs inside a transaction or on the event loop: delivery
-    uses FiniteOperations, and the pure one-time card renderer runs inline
-    before its output is frozen.
+    Callers know only reconciliation, one due turn, and lifecycle close.
+    Selection, best-effort translation, the durable Feishu fence, rendering,
+    external delivery, and settlement remain inside this module.
     """
 
     def __init__(
@@ -88,518 +67,424 @@ class NewsStoryPush:
         *,
         db: Any,
         finite_operations: Any,
-        delivery: NewsPushDelivery,
-        runtime_id: str,
+        translator: NewsPushTranslator | None,
+        sender: NewsPushSender | None,
+        delivery_available: bool,
+        clock_ms: Callable[[], int] | None = None,
     ) -> None:
+        if delivery_available and sender is None:
+            raise ValueError("news_item_push_sender_required")
         self.db = db
         self.finite_operations = finite_operations
-        self.delivery = delivery
-        self.lease_owner = f"news_story_push:{runtime_id}"
+        self.translator = translator
+        self.sender = sender
+        self.delivery_available = bool(delivery_available)
+        self._clock_ms = clock_ms or _now_ms
 
-    async def reconcile(self, *, now_ms: int) -> dict[str, int]:
+    async def reconcile(
+        self,
+        *,
+        now_ms: int | None = None,
+    ) -> dict[str, int | bool | None]:
+        effective_now_ms = self._clock_ms() if now_ms is None else int(now_ms)
         return cast(
-            dict[str, int],
+            dict[str, int | bool | None],
             await self.db.run_business(
-                "news_story_push_reconcile",
+                "news_item_push_reconcile",
                 self._reconcile_sync,
-                int(now_ms),
+                self.delivery_available,
+                effective_now_ms,
                 operation_timeout_seconds=3.0,
             ),
-        )
-
-    async def close(self) -> None:
-        """Close the synchronous delivery adapter through its owning capability."""
-
-        await self.finite_operations.run(
-            "news_story_push_delivery_close",
-            self.delivery.close,
-            timeout_seconds=5.0,
-            allow_shutdown=True,
         )
 
     async def turn(self) -> bool | None:
-        """Deliver one due Story without occupying the serial model arbiter."""
-
+        if not self.delivery_available or self.sender is None:
+            return False
         try:
-            now_ms = _now_ms()
             row = await self.db.run_business(
-                "news_story_push_peek",
+                "news_item_push_peek",
                 self._peek_sync,
-                now_ms,
                 operation_timeout_seconds=3.0,
             )
-            if row is None:
-                return False
-            return await self._execute_story(str(row["story_id"]), now_ms=now_ms)
         except ResourceAdmissionTimeout:
             return None
-
-    async def _execute_story(self, story_id: str, *, now_ms: int) -> bool:
-        lease_token = secrets.token_hex(16)
-        claim = await self.db.run_business(
-            "news_story_push_claim",
-            self._claim_sync,
-            story_id,
-            lease_token,
-            now_ms,
-            operation_timeout_seconds=0.5,
-        )
-        if claim is None:
+        if row is None:
             return False
 
-        source_payload = dict(claim["source_payload"])
-        translation_attempted_at_ms = (
-            int(claim["updated_at_ms"]) if claim.get("translation_status") == "attempted" else None
-        )
-        if claim.get("delivery_payload") is None:
-            deadline_ms = _now_ms() + 10_000
-
-            async def fence_translation_dispatch() -> None:
-                nonlocal translation_attempted_at_ms
-                attempted_at_ms = _now_ms()
-                try:
-                    fenced = await self.db.run_business(
-                        "news_story_push_fence_translation",
-                        self._fence_translation_sync,
-                        story_id,
-                        lease_token,
-                        attempted_at_ms,
-                        operation_timeout_seconds=0.5,
-                    )
-                except ResourceAdmissionTimeout:
-                    raise
-                except ResourceOperationOverrun:
-                    raise
-                except Exception as exc:
-                    raise RuntimeError("news_story_push_translation_fence_failed") from exc
-                if not fenced:
-                    raise RuntimeError("news_story_push_translation_fence_lost")
-                translation_attempted_at_ms = attempted_at_ms
-
-            try:
-                prepared = await self.delivery.prepare(
-                    source_payload,
-                    deadline_ms=deadline_ms,
-                    before_translation_submit=(
-                        fence_translation_dispatch if translation_attempted_at_ms is None else None
-                    ),
-                    interrupted_translation_attempted_at_ms=(translation_attempted_at_ms),
-                )
-                if (
-                    not isinstance(prepared, PreparedNewsPush)
-                    or prepared.translation_status not in {"translated", "not_needed", "unavailable"}
-                    or not isinstance(prepared.payload, Mapping)
-                    or not prepared.payload
-                ):
-                    raise NewsPushDeliveryError(
-                        "news_story_push_prepare_result_invalid",
-                        retryable=False,
-                    )
-                delivery_payload = dict(prepared.payload)
-                try:
-                    payload_fingerprint = _payload_fingerprint(delivery_payload)
-                except (TypeError, ValueError):
-                    raise NewsPushDeliveryError(
-                        "news_story_push_prepare_result_invalid",
-                        retryable=False,
-                    ) from None
-            except asyncio.CancelledError:
-                await asyncio.shield(
-                    self.db.run_business(
-                        "news_story_push_release_preparation",
-                        self._release_preparation_sync,
-                        story_id,
-                        lease_token,
-                        _now_ms(),
-                        operation_timeout_seconds=0.5,
-                    )
-                )
-                raise
-            except ResourceAdmissionTimeout:
-                released = await self.db.run_business(
-                    "news_story_push_release_preparation",
-                    self._release_preparation_sync,
-                    story_id,
-                    lease_token,
-                    _now_ms(),
-                    operation_timeout_seconds=0.5,
-                )
-                return bool(released)
-            except NewsPushDeliveryError as error:
-                terminal_payload = {
-                    "schema_version": PUSH_PAYLOAD_SCHEMA_VERSION,
-                    "story_id": story_id,
-                    "terminal_error": error.code,
-                }
-                terminalized = await self.db.run_business(
-                    "news_story_push_render_failure",
-                    self._render_failure_sync,
-                    story_id,
-                    lease_token,
-                    "not_needed",
-                    terminal_payload,
-                    _payload_fingerprint(terminal_payload),
-                    error.code,
-                    _now_ms(),
-                    operation_timeout_seconds=1.0,
-                )
-                return bool(terminalized)
-            prepared_at_ms = _now_ms()
-            claim = await self.db.run_business(
-                "news_story_push_freeze_payload",
-                self._freeze_payload_sync,
-                story_id,
-                lease_token,
-                prepared.translation_status,
-                delivery_payload,
-                payload_fingerprint,
-                prepared_at_ms,
-                operation_timeout_seconds=1.0,
-            )
-            if claim is None:
-                return False
-
-        delivery_payload = dict(claim.get("delivery_payload") or {})
-        payload_fingerprint = str(claim.get("payload_fingerprint") or "")
-        attempt = await self.db.run_business(
-            "news_story_push_start_delivery",
-            self._start_delivery_sync,
-            story_id,
-            lease_token,
-            _now_ms(),
-            operation_timeout_seconds=0.5,
-        )
-        if attempt is None:
-            return False
-        attempt_count = int(attempt["delivery_attempts"])
-
-        if not delivery_payload or _payload_fingerprint(delivery_payload) != payload_fingerprint:
-            await self._record_delivery_failure(
-                story_id=story_id,
-                lease_token=lease_token,
-                attempt_count=attempt_count,
-                error=NewsPushDeliveryError(
-                    "news_story_push_payload_fingerprint_mismatch",
-                    retryable=False,
-                ),
-            )
-            return True
-
-        submitted = False
-
-        def mark_submitted() -> None:
-            nonlocal submitted
-            submitted = True
-
+        source_payload = dict(row["source_payload"])
+        presentation = await self._presentation(source_payload)
+        attempted_at_ms = self._clock_ms()
         try:
-            receipt = await self.finite_operations.run(
-                "news_story_push_delivery",
-                self.delivery.deliver,
-                delivery_payload,
-                idempotency_key=story_id,
-                timeout_seconds=_DELIVERY_TIMEOUT_SECONDS,
-                on_submitted=mark_submitted,
-            )
-            if not isinstance(receipt, NewsPushReceipt) or not receipt.provider.strip():
-                raise NewsPushDeliveryError(
-                    "news_story_push_receipt_invalid",
-                    retryable=False,
-                )
-        except asyncio.CancelledError:
-            if not submitted:
-                await asyncio.shield(
-                    self.db.run_business(
-                        "news_story_push_release_delivery",
-                        self._release_delivery_sync,
-                        story_id,
-                        lease_token,
-                        _now_ms(),
-                        operation_timeout_seconds=0.5,
-                    )
-                )
-            raise
-        except ResourceAdmissionTimeout:
-            if submitted:
-                raise RuntimeError("news_story_push_delivery_admission_after_submit") from None
-            released = await self.db.run_business(
-                "news_story_push_release_delivery",
-                self._release_delivery_sync,
-                story_id,
-                lease_token,
-                _now_ms(),
+            fenced = await self.db.run_business(
+                "news_item_push_fence",
+                self._fence_sync,
+                str(row["item_id"]),
+                presentation,
+                attempted_at_ms,
                 operation_timeout_seconds=0.5,
             )
-            return bool(released)
-        except ResourceOperationOverrun as exc:
-            if exc.capability is not ResourceCapability.FINITE_OPERATION:
-                raise
-            await self._record_delivery_failure(
-                story_id=story_id,
-                lease_token=lease_token,
-                attempt_count=attempt_count,
-                error=NewsPushDeliveryError(
-                    "news_story_push_delivery_timeout",
-                    retryable=True,
-                ),
+        except ResourceAdmissionTimeout:
+            return None
+        except ResourceOperationOverrun:
+            raise RuntimeError("news_item_push_fence_outcome_unknown") from None
+        if fenced is None:
+            return False
+
+        send_submitted = False
+
+        def mark_send_submitted() -> None:
+            nonlocal send_submitted
+            send_submitted = True
+
+        try:
+            async with asyncio.timeout(_DELIVERY_TOTAL_TIMEOUT_SECONDS):
+                receipt = await self.finite_operations.run(
+                    "news_item_push_feishu_send",
+                    self.sender.send,
+                    source_payload,
+                    presentation,
+                    timeout_seconds=_DELIVERY_OPERATION_TIMEOUT_SECONDS,
+                    on_submitted=mark_send_submitted,
+                )
+            if not isinstance(receipt, NewsPushReceipt) or receipt.provider.strip().lower() != "feishu":
+                raise NewsPushExternalError("news_item_push_feishu_receipt_invalid")
+        except NewsPushExternalError as exc:
+            return await self._terminalize(
+                item_id=str(row["item_id"]),
+                error_code=exc.code,
             )
+        except ResourceAdmissionTimeout:
+            return await self._terminalize(
+                item_id=str(row["item_id"]),
+                error_code="news_item_push_feishu_admission_timeout",
+            )
+        except ResourceOperationOverrun:
+            await self._terminalize(
+                item_id=str(row["item_id"]),
+                error_code="news_item_push_feishu_timeout",
+            )
+            # The native call may still own a thread. Stop this runtime after
+            # preserving the terminal audit so another Item cannot overlap it.
+            raise RuntimeError("news_item_push_feishu_operation_overrun") from None
+        except TimeoutError:
+            await self._terminalize(
+                item_id=str(row["item_id"]),
+                error_code="news_item_push_feishu_timeout",
+            )
+            if send_submitted:
+                raise RuntimeError("news_item_push_feishu_operation_overrun") from None
             return True
-        except NewsPushDeliveryError as error:
-            await self._record_delivery_failure(
-                story_id=story_id,
-                lease_token=lease_token,
-                attempt_count=attempt_count,
-                error=error,
+        except Exception:
+            return await self._terminalize(
+                item_id=str(row["item_id"]),
+                error_code="news_item_push_feishu_failed",
             )
-            return True
 
-        completed = await self.db.run_business(
-            "news_story_push_complete",
-            self._complete_sync,
-            story_id,
-            lease_token,
-            _receipt_payload(receipt),
-            _now_ms(),
-            operation_timeout_seconds=1.0,
-        )
-        return bool(completed)
-
-    async def _record_delivery_failure(
-        self,
-        *,
-        story_id: str,
-        lease_token: str,
-        attempt_count: int,
-        error: NewsPushDeliveryError,
-    ) -> str | None:
-        now_ms = _now_ms()
-        return cast(
-            str | None,
-            await self.db.run_business(
-                "news_story_push_fail",
-                self._fail_sync,
-                story_id,
-                lease_token,
-                error.code,
-                error.retryable,
-                now_ms + _retry_delay_ms(attempt_count),
-                now_ms,
-                operation_timeout_seconds=1.0,
-            ),
-        )
-
-    def _reconcile_sync(self, now_ms: int) -> dict[str, int]:
-        with self.db.worker_session("news_story_push_reconcile", 3.0) as repos, repos.transaction():
-            repos.news.release_interrupted_push_translation_claims(
-                active_lease_owner=self.lease_owner,
-                now_ms=now_ms,
+        try:
+            completed = await self.db.run_business(
+                "news_item_push_complete",
+                self._complete_sync,
+                str(row["item_id"]),
+                _receipt_payload(receipt),
+                self._clock_ms(),
+                operation_timeout_seconds=0.5,
             )
-            _epoch, initialized = repos.news.set_push_enabled(enabled=True, now_ms=now_ms)
-            terminalized = repos.news.terminalize_exhausted_push_deliveries(
-                now_ms=now_ms,
-                max_attempts=_DELIVERY_MAX_ATTEMPTS,
+        except (ResourceAdmissionTimeout, ResourceOperationOverrun):
+            raise RuntimeError("news_item_push_sent_settlement_unavailable") from None
+        if not completed:
+            raise RuntimeError("news_item_push_sent_fence_lost")
+        return True
+
+    async def close(self) -> None:
+        seen: set[int] = set()
+        for name, adapter in (
+            ("news_item_push_translator_close", self.translator),
+            ("news_item_push_sender_close", self.sender),
+        ):
+            if adapter is None or id(adapter) in seen:
+                continue
+            seen.add(id(adapter))
+            await self.finite_operations.run(
+                name,
+                adapter.close,
+                timeout_seconds=5.0,
+                allow_shutdown=True,
+            )
+
+    async def _presentation(self, source_payload: Mapping[str, Any]) -> dict[str, Any]:
+        original_title = _source_title(source_payload)
+        if _looks_chinese(original_title):
+            return {
+                "display_title": original_title,
+                "outcome": "not_needed",
+                "translation_policy_version": PUSH_TRANSLATION_POLICY_VERSION,
+            }
+        if _grapheme_count_exceeds(original_title, _MAX_TITLE_GRAPHEMES):
+            return _fallback_presentation(
+                original_title,
+                "news_item_push_translation_input_too_long",
+            )
+        if self.translator is None:
+            return _fallback_presentation(
+                original_title,
+                "news_item_push_translation_unavailable",
+            )
+
+        started_at_ms = self._clock_ms()
+        try:
+            async with asyncio.timeout(_TRANSLATION_TOTAL_TIMEOUT_SECONDS):
+                translated = await self.finite_operations.run(
+                    "news_item_push_translate_title",
+                    self.translator.translate,
+                    original_title,
+                    timeout_seconds=_TRANSLATION_OPERATION_TIMEOUT_SECONDS,
+                )
+            display_title = _validated_translation(
+                original_title=original_title,
+                translated_title=translated,
+            )
+        except NewsPushExternalError as exc:
+            return _fallback_presentation(
+                original_title,
+                exc.code,
+                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
+            )
+        except ResourceAdmissionTimeout:
+            return _fallback_presentation(
+                original_title,
+                "news_item_push_translation_admission_timeout",
+                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
+            )
+        except ResourceOperationOverrun:
+            return _fallback_presentation(
+                original_title,
+                "news_item_push_translation_timeout",
+                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
+            )
+        except TimeoutError:
+            return _fallback_presentation(
+                original_title,
+                "news_item_push_translation_timeout",
+                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
+            )
+        except Exception:
+            return _fallback_presentation(
+                original_title,
+                "news_item_push_translation_failed",
+                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
             )
         return {
-            "initialized": int(initialized),
-            "terminalized": terminalized,
+            "display_title": display_title,
+            "outcome": "translated",
+            "translation_duration_ms": max(0, self._clock_ms() - started_at_ms),
+            "translation_policy_version": PUSH_TRANSLATION_POLICY_VERSION,
         }
 
-    def _peek_sync(self, now_ms: int) -> dict[str, Any] | None:
-        with self.db.worker_session("news_story_push_peek", 0.5) as repos:
-            return cast(
-                dict[str, Any] | None,
-                repos.news.peek_push_delivery(
-                    now_ms=now_ms,
-                    max_attempts=_DELIVERY_MAX_ATTEMPTS,
-                ),
+    async def _terminalize(self, *, item_id: str, error_code: str) -> bool:
+        try:
+            changed = await self.db.run_business(
+                "news_item_push_terminalize",
+                self._terminalize_sync,
+                item_id,
+                _sanitize_error(error_code, fallback="news_item_push_delivery_failed"),
+                self._clock_ms(),
+                operation_timeout_seconds=0.5,
             )
+        except (ResourceAdmissionTimeout, ResourceOperationOverrun):
+            raise RuntimeError("news_item_push_terminal_settlement_unavailable") from None
+        if not changed:
+            raise RuntimeError("news_item_push_terminal_fence_lost")
+        return True
 
-    def _claim_sync(
+    def _reconcile_sync(
         self,
-        story_id: str,
-        lease_token: str,
+        delivery_available: bool,
         now_ms: int,
-    ) -> dict[str, Any] | None:
-        with self.db.worker_session("news_story_push_claim", 0.5) as repos, repos.transaction():
+    ) -> dict[str, int | bool | None]:
+        with self.db.worker_session("news_item_push_reconcile", 3.0) as repos:
             return cast(
-                dict[str, Any] | None,
-                repos.news.claim_push_delivery(
-                    story_id=story_id,
-                    now_ms=now_ms,
-                    max_attempts=_DELIVERY_MAX_ATTEMPTS,
-                    lease_owner=self.lease_owner,
-                    lease_token=lease_token,
-                    lease_expires_at_ms=now_ms + _LEASE_MS,
-                ),
-            )
-
-    def _freeze_payload_sync(
-        self,
-        story_id: str,
-        lease_token: str,
-        translation_status: str,
-        delivery_payload: Mapping[str, Any],
-        payload_fingerprint: str,
-        now_ms: int,
-    ) -> dict[str, Any] | None:
-        with self.db.worker_session("news_story_push_freeze_payload", 1.0) as repos, repos.transaction():
-            return cast(
-                dict[str, Any] | None,
-                repos.news.freeze_push_delivery_payload(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    translation_status=translation_status,
-                    delivery_payload=delivery_payload,
-                    payload_fingerprint=payload_fingerprint,
+                dict[str, int | bool | None],
+                repos.news.reconcile_item_push(
+                    delivery_available=delivery_available,
                     now_ms=now_ms,
                 ),
             )
 
-    def _fence_translation_sync(
+    def _peek_sync(self) -> dict[str, Any] | None:
+        with self.db.worker_session("news_item_push_peek", 3.0) as repos:
+            return cast(dict[str, Any] | None, repos.news.peek_item_push())
+
+    def _fence_sync(
         self,
-        story_id: str,
-        lease_token: str,
+        item_id: str,
+        presentation_snapshot: Mapping[str, Any],
         attempted_at_ms: int,
-    ) -> bool:
-        with self.db.worker_session("news_story_push_fence_translation", 0.5) as repos, repos.transaction():
-            return bool(
-                repos.news.mark_push_translation_attempted(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    attempted_at_ms=attempted_at_ms,
-                )
-            )
-
-    def _render_failure_sync(
-        self,
-        story_id: str,
-        lease_token: str,
-        translation_status: str,
-        delivery_payload: Mapping[str, Any],
-        payload_fingerprint: str,
-        error_code: str,
-        now_ms: int,
-    ) -> bool:
-        with self.db.worker_session("news_story_push_render_failure", 1.0) as repos, repos.transaction():
-            return bool(
-                repos.news.record_push_render_failure(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    translation_status=translation_status,
-                    delivery_payload=delivery_payload,
-                    payload_fingerprint=payload_fingerprint,
-                    error_code=error_code,
-                    now_ms=now_ms,
-                )
-            )
-
-    def _release_preparation_sync(
-        self,
-        story_id: str,
-        lease_token: str,
-        now_ms: int,
-    ) -> bool:
-        with self.db.worker_session("news_story_push_release_preparation", 0.5) as repos, repos.transaction():
-            return bool(
-                repos.news.release_push_preparation_claim(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    now_ms=now_ms,
-                )
-            )
-
-    def _start_delivery_sync(
-        self,
-        story_id: str,
-        lease_token: str,
-        now_ms: int,
     ) -> dict[str, Any] | None:
-        with self.db.worker_session("news_story_push_start_delivery", 0.5) as repos, repos.transaction():
+        with self.db.worker_session("news_item_push_fence", 0.5) as repos:
             return cast(
                 dict[str, Any] | None,
-                repos.news.start_push_delivery_attempt(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    now_ms=now_ms,
+                repos.news.fence_item_push(
+                    item_id=item_id,
+                    presentation_snapshot=presentation_snapshot,
+                    attempted_at_ms=attempted_at_ms,
                 ),
             )
 
     def _complete_sync(
         self,
-        story_id: str,
-        lease_token: str,
+        item_id: str,
         receipt: Mapping[str, Any],
         now_ms: int,
     ) -> bool:
-        with self.db.worker_session("news_story_push_complete", 1.0) as repos, repos.transaction():
-            return bool(
-                repos.news.complete_push_delivery(
-                    story_id=story_id,
-                    lease_token=lease_token,
+        with self.db.worker_session("news_item_push_complete", 0.5) as repos:
+            return cast(
+                bool,
+                repos.news.complete_item_push(
+                    item_id=item_id,
                     receipt=receipt,
                     now_ms=now_ms,
-                )
+                ),
             )
 
-    def _release_delivery_sync(
+    def _terminalize_sync(
         self,
-        story_id: str,
-        lease_token: str,
+        item_id: str,
+        error_code: str,
         now_ms: int,
     ) -> bool:
-        with self.db.worker_session("news_story_push_release_delivery", 0.5) as repos, repos.transaction():
-            return bool(
-                repos.news.release_push_delivery_claim(
-                    story_id=story_id,
-                    lease_token=lease_token,
-                    now_ms=now_ms,
-                )
-            )
-
-    def _fail_sync(
-        self,
-        story_id: str,
-        lease_token: str,
-        error_code: str,
-        retryable: bool,
-        next_attempt_at_ms: int,
-        now_ms: int,
-    ) -> str | None:
-        with self.db.worker_session("news_story_push_fail", 1.0) as repos, repos.transaction():
+        with self.db.worker_session("news_item_push_terminalize", 0.5) as repos:
             return cast(
-                str | None,
-                repos.news.fail_push_delivery(
-                    story_id=story_id,
-                    lease_token=lease_token,
+                bool,
+                repos.news.terminalize_item_push(
+                    item_id=item_id,
                     error_code=error_code,
-                    retryable=retryable,
-                    next_attempt_at_ms=next_attempt_at_ms,
-                    max_attempts=_DELIVERY_MAX_ATTEMPTS,
                     now_ms=now_ms,
                 ),
             )
 
 
-def _receipt_payload(receipt: NewsPushReceipt) -> dict[str, Any]:
-    return {
-        "provider": receipt.provider,
-        "receipt_id": receipt.receipt_id,
-        "details": dict(receipt.details),
+def _source_title(source_payload: Mapping[str, Any]) -> str:
+    if source_payload.get("schema_version") != PUSH_PAYLOAD_SCHEMA_VERSION:
+        raise RuntimeError("news_item_push_source_schema_invalid")
+    title = str(source_payload.get("original_title") or "").strip()
+    if not title:
+        raise RuntimeError("news_item_push_source_title_invalid")
+    return title
+
+
+def _fallback_presentation(
+    original_title: str,
+    code: str,
+    *,
+    translation_duration_ms: int | None = None,
+) -> dict[str, Any]:
+    presentation: dict[str, Any] = {
+        "display_title": original_title,
+        "fallback_code": _sanitize_error(
+            code,
+            fallback="news_item_push_translation_failed",
+        ),
+        "outcome": "fallback",
+        "translation_policy_version": PUSH_TRANSLATION_POLICY_VERSION,
     }
+    if translation_duration_ms is not None:
+        presentation["translation_duration_ms"] = max(
+            0,
+            int(translation_duration_ms),
+        )
+    return presentation
 
 
-def _payload_fingerprint(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(
-        dict(payload),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
+def _validated_translation(
+    *,
+    original_title: str,
+    translated_title: object,
+) -> str:
+    translated = " ".join(str(translated_title or "").split())
+    try:
+        translated.encode("utf-8")
+    except UnicodeEncodeError:
+        raise NewsPushExternalError("news_item_push_translation_output_invalid") from None
+    if (
+        not translated
+        or "\x00" in translated
+        or not _contains_han(translated)
+        or _grapheme_count_exceeds(translated, _MAX_TITLE_GRAPHEMES)
+    ):
+        raise NewsPushExternalError("news_item_push_translation_output_invalid")
+    for anchor in _required_anchors(original_title):
+        if anchor not in translated:
+            raise NewsPushExternalError("news_item_push_translation_anchors_changed")
+    return translated
 
 
-def _retry_delay_ms(attempt_count: int) -> int:
-    index = max(0, min(int(attempt_count) - 1, len(_DELIVERY_RETRY_DELAYS_MS) - 1))
-    return _DELIVERY_RETRY_DELAYS_MS[index]
+def _required_anchors(value: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(match.group(0) for match in _ANCHOR.finditer(value)))
+
+
+def _looks_chinese(value: str) -> bool:
+    letters = [character for character in value if character.isalpha()]
+    if not letters:
+        return False
+    han = sum(_is_han(character) for character in letters)
+    return han >= max(1, len(letters) // 2)
+
+
+def _contains_han(value: str) -> bool:
+    return any(_is_han(character) for character in value)
+
+
+def _is_han(character: str) -> bool:
+    return "CJK UNIFIED IDEOGRAPH" in unicodedata.name(character, "")
+
+
+def _grapheme_count_exceeds(value: str, limit: int) -> bool:
+    return len(_graphemes(value)) > limit
+
+
+def _graphemes(value: str) -> list[str]:
+    clusters: list[str] = []
+    current = ""
+    join_next = False
+    for character in value:
+        codepoint = ord(character)
+        extends = (
+            bool(unicodedata.combining(character)) or 0xFE00 <= codepoint <= 0xFE0F or 0x1F3FB <= codepoint <= 0x1F3FF
+        )
+        if not current:
+            current = character
+        elif character == "\u200d":
+            current += character
+            join_next = True
+        elif extends or join_next:
+            current += character
+            join_next = False
+        else:
+            clusters.append(current)
+            current = character
+    if current:
+        clusters.append(current)
+    return clusters
+
+
+def _receipt_payload(receipt: NewsPushReceipt) -> dict[str, Any]:
+    result: dict[str, Any] = {"provider": "feishu"}
+    if receipt.receipt_id:
+        result["receipt_id"] = str(receipt.receipt_id).strip()[:256]
+    details = {
+        key: int(value)
+        for key in ("code", "status_code")
+        if (value := receipt.details.get(key)) is not None and isinstance(value, int) and not isinstance(value, bool)
+    }
+    if details:
+        result["details"] = details
+    return result
+
+
+def _sanitize_error(value: object, *, fallback: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if _ERROR_CODE.fullmatch(normalized) else fallback
 
 
 def _now_ms() -> int:
@@ -608,9 +493,8 @@ def _now_ms() -> int:
 
 __all__ = [
     "PUSH_PAYLOAD_SCHEMA_VERSION",
-    "NewsPushDelivery",
-    "NewsPushDeliveryError",
+    "PUSH_TRANSLATION_POLICY_VERSION",
+    "NewsItemPush",
+    "NewsPushExternalError",
     "NewsPushReceipt",
-    "NewsStoryPush",
-    "PreparedNewsPush",
 ]

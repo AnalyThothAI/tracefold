@@ -123,8 +123,9 @@ keeps valid feed snapshots for 96 hours, scores membership-expanded RSS rows
 before the stable Top 20 per category, and unions the selected physical Items
 with the current 12-hour Strategy-admitted OpenNews facts. Strategy admission is
 the material-input gate; bounded provider score, assets, and Strategy provenance
-cannot affect Story identity, public scoring, ordering, Brief, or Push admission
-after admission. A selected numeric OpenNews score may qualify only the
+cannot affect Story identity, public scoring, ordering, or Brief after
+admission. Push admission is fixed independently at the first live OpenNews
+Item insert and never consults Story state. A selected numeric OpenNews score may qualify only the
 downstream fixed `>70` reader focus filter; it does not change the materialized Story
 population. The public seed applies the pinned
 JavaScript UTF-16 `title.length > 10` gate and reclusters eligible Items with the
@@ -179,7 +180,7 @@ review, not a compression target. The Story turn must remain inside the
 debounce plus 5-minute safety pass must not lose an accepted fact without
 sampling or widening either source window.
 
-`20260813_0266` cutover acceptance requires one atomic hard cut: exactly ten
+`20260813_0266` historical cutover acceptance requires one atomic hard cut: exactly ten
 News tables, five public News routes, and one zero-send authenticated OpenNews
 WSS consuming automatic account `strategy.triggered` pushes for the exact
 two-ID allowlist `1018`/`1019`, the exact
@@ -210,15 +211,16 @@ transaction; all five endpoints; generated contracts; and the responsive real
 labels L1/L2 as an enhancement, preserves linkless evidence, and exposes no
 publication history or personalized ranking.
 
-When Push is enabled, acceptance proves one no-backfill enablement epoch,
-same-transaction outbox creation for live scoreless/assetless Stories,
-recovery-only exclusion, selected-Item ledger deduplication across Story-ID
-changes, frozen at-least-once
-delivery, optional one-shot presentation-only title translation with immediate
-original fallback, exact signed/unsigned Feishu shapes, bounded retry/terminal
-classification, and no dependency on the serial model arbiter. The hard cut
-terminalizes incompatible v1 pending/retry rows while preserving immutable sent
-delivery audit plus the Push enablement/dedup fence;
+Current `20260814_0270` acceptance proves one fail-soft effective-availability
+epoch, same-transaction first-live Item/outbox creation, recovery/RSS/pre-epoch
+exclusion, immutable source snapshots, and two independent Push attempts for
+two provider Item IDs even when Story later merges them. It proves optional
+one-shot title-only translation with immediate original fallback, translation
+outside database transactions, exact signed/unsigned Feishu shapes, and one
+Feishu attempt ending in `sent` or `terminal` with no retry, lease, or reaper.
+Startup terminalizes interrupted `sending` rows before acquisition. The hard cut
+terminalizes incompatible legacy unsent Story-policy rows while preserving
+completed legacy card audit and the Push enablement fence;
 absence of a signing secret is an explicit unsigned mode, never a fallback
 after a signed attempt fails.
 
@@ -226,7 +228,8 @@ Production cutover review records exactly `1018` (News Score > 70) and `1019`
 (OI Event Monitor), a redacted configured count of `2`, one redacted real
 MARKET/OI frame and one redacted NEWS frame, the deterministic provenance-union
 result for a same-event multi-Strategy match, and explicit confirmation that a
-scoreless MARKET/OI live event creates Story and Push without a score/asset gate.
+scoreless MARKET/OI live event creates one Item Push independently of whether
+Story projection later succeeds.
 Listing and Delisting Announcements and Storage News may remain enabled
 provider-side but are explicitly outside this cutover. Any future addition is a
 reviewed configuration change, never implicit provider-side enablement.

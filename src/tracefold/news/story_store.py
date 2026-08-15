@@ -160,7 +160,6 @@ def publish_story_projection(
     snapshot: Any,
     projection: Mapping[str, Any],
     now_ms: int,
-    push_enabled: bool | None = None,
 ) -> dict[str, Any]:
     _require_bounded_story_rows(snapshot.rows)
     conn = repository.conn
@@ -179,8 +178,6 @@ def publish_story_projection(
          WHERE singleton_key='current' FOR UPDATE
         """
     ).fetchone()
-    if push_enabled is not None:
-        repository.set_push_enabled(enabled=push_enabled, now_ms=now_ms)
     published_fingerprint = summary["input_fingerprint"] if summary is not None else None
     if published_fingerprint == snapshot.input_fingerprint:
         conn.execute(
@@ -221,7 +218,6 @@ def publish_story_projection(
     )
     membership_writes = _replace_memberships(conn, memberships=memberships)
     story_writes += _delete_absent_stories(conn, stories=stories)
-    push_writes = repository.insert_story_push_candidates(now_ms=now_ms) if push_enabled else 0
     invariants = repository._story_invariant_counts(
         item_ids=population_item_ids,
     )
@@ -282,8 +278,7 @@ def publish_story_projection(
         "membership_writes": membership_writes,
         "item_writes": item_writes,
         "bounded_read_model_writes": bounded_writes,
-        "push_outbox_writes": push_writes,
-        "rows_written": material_writes + push_writes + summary_writes,
+        "rows_written": material_writes + summary_writes,
     }
 
 
