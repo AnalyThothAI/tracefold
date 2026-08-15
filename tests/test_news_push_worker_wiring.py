@@ -13,6 +13,7 @@ from tracefold.macro import MacroProjectionCandidate
 from tracefold.news import NewsStoryProjection
 from tracefold.news.projection import NewsProjectionSnapshot
 from tracefold.news.push import NewsItemPush, NewsPushReceipt
+from tracefold.news.title_presentation import NewsItemTitlePresentation
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -146,7 +147,6 @@ def test_push_due_turn_retries_after_database_admission_timeout() -> None:
     push = NewsItemPush(
         db=_Database(),
         finite_operations=object(),
-        translator=None,
         sender=_Sender(),
         delivery_available=True,
     )
@@ -159,7 +159,7 @@ def test_translation_absolute_deadline_cancels_without_using_finite_operations(
 ) -> None:
     class _Database:
         def __init__(self) -> None:
-            self.presentation: dict[str, Any] | None = None
+            self.resolution: tuple[Any, ...] | None = None
 
         async def run_business(
             self,
@@ -169,39 +169,18 @@ def test_translation_absolute_deadline_cancels_without_using_finite_operations(
             *args: Any,
             **_kwargs: Any,
         ) -> object:
-            if operation_name == "news_item_push_peek":
+            if operation_name == "news_title_presentation_peek":
                 return {
                     "item_id": "news_item_0123456789abcdef0123456789abcdef",
-                    "source_payload": {
-                        "schema_version": "news_item_push_v1",
-                        "original_title": "Bitcoin rises 5%",
-                    },
+                    "source_title_fingerprint": "a" * 64,
+                    "original_title": "Bitcoin rises 5%",
                 }
-            if operation_name == "news_item_push_fence":
-                self.presentation = dict(args[1])
-                return {"item_id": args[0]}
-            if operation_name == "news_item_push_complete":
+            if operation_name == "news_title_presentation_fence":
+                return True
+            if operation_name == "news_title_presentation_resolve":
+                self.resolution = args
                 return True
             raise AssertionError(operation_name)
-
-    class _Finite:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-
-        async def run(
-            self,
-            operation_name: str,
-            function: Any,
-            /,
-            *args: Any,
-            **kwargs: Any,
-        ) -> object:
-            self.operations.append(operation_name)
-            assert operation_name == "news_item_push_feishu_send"
-            on_submitted = kwargs.get("on_submitted")
-            if on_submitted is not None:
-                on_submitted()
-            return function(*args)
 
     class _Translator:
         def __init__(self) -> None:
@@ -217,37 +196,25 @@ def test_translation_absolute_deadline_cancels_without_using_finite_operations(
         async def close(self) -> None:
             return None
 
-    class _Sender:
-        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
-            return NewsPushReceipt(provider="feishu")
-
-        def close(self) -> None:
-            return None
-
-    monkeypatch.setattr("tracefold.news.push.PUSH_TRANSLATION_DEADLINE_SECONDS", 0.01)
+    monkeypatch.setattr("tracefold.news.title_presentation.DEEPL_DEADLINE_SECONDS", 0.01)
     database = _Database()
-    finite = _Finite()
     translator = _Translator()
-    push = NewsItemPush(
+    presentation = NewsItemTitlePresentation(
         db=database,
-        finite_operations=finite,
-        translator=translator,
-        sender=_Sender(),
-        delivery_available=True,
+        deepl=translator,
+        deepseek=None,
     )
 
-    assert asyncio.run(push.turn()) is True
+    assert asyncio.run(presentation.turn()) is True
     assert translator.cancelled is True
-    assert finite.operations == ["news_item_push_feishu_send"]
-    assert database.presentation is not None
-    duration_ms = database.presentation.pop("translation_duration_ms")
-    assert isinstance(duration_ms, int) and duration_ms >= 0
-    assert database.presentation == {
-        "display_title": "Bitcoin rises 5%",
-        "fallback_code": "news_item_push_translation_timeout",
-        "outcome": "fallback",
-        "translation_policy_version": "title_zh_v5",
-    }
+    assert database.resolution is not None
+    assert database.resolution[2:7] == (
+        "resolving",
+        "Bitcoin rises 5%",
+        "fallback",
+        None,
+        "news_title_presentation_deepl_timeout",
+    )
 
 
 def test_stale_item_push_turn_that_loses_fence_sends_nothing() -> None:
@@ -271,6 +238,10 @@ def test_stale_item_push_turn_that_loses_fence_sends_nothing() -> None:
                         "schema_version": "news_item_push_v1",
                         "original_title": "Bitcoin rises",
                     },
+                    "presentation": {
+                        "original_title": "Bitcoin rises",
+                        "display_title": "比特币上涨",
+                    },
                 }
             if operation_name == "news_item_push_fence":
                 return None
@@ -287,7 +258,6 @@ def test_stale_item_push_turn_that_loses_fence_sends_nothing() -> None:
     push = NewsItemPush(
         db=database,
         finite_operations=object(),
-        translator=None,
         sender=_Sender(),
         delivery_available=True,
     )
@@ -296,10 +266,10 @@ def test_stale_item_push_turn_that_loses_fence_sends_nothing() -> None:
     assert database.operations == ["news_item_push_peek", "news_item_push_fence"]
 
 
-def test_chinese_item_title_skips_translation_and_freezes_not_needed() -> None:
+def test_chinese_item_title_skips_providers_and_resolves_not_needed() -> None:
     class _Database:
         def __init__(self) -> None:
-            self.presentation: dict[str, Any] | None = None
+            self.resolution: tuple[Any, ...] | None = None
 
         async def run_business(
             self,
@@ -309,24 +279,16 @@ def test_chinese_item_title_skips_translation_and_freezes_not_needed() -> None:
             *args: Any,
             **_kwargs: Any,
         ) -> object:
-            if operation_name == "news_item_push_peek":
+            if operation_name == "news_title_presentation_peek":
                 return {
                     "item_id": "news_item_0123456789abcdef0123456789abcdef",
-                    "source_payload": {
-                        "schema_version": "news_item_push_v1",
-                        "original_title": "比特币现货 ETF 资金流入",
-                    },
+                    "source_title_fingerprint": "a" * 64,
+                    "original_title": "比特币现货 ETF 资金流入",
                 }
-            if operation_name == "news_item_push_fence":
-                self.presentation = dict(args[1])
-                return {"item_id": args[0]}
-            if operation_name == "news_item_push_complete":
+            if operation_name == "news_title_presentation_resolve":
+                self.resolution = args
                 return True
             raise AssertionError(operation_name)
-
-    class _InlineFinite:
-        async def run(self, _name: str, function: Any, /, *args: Any, **_kwargs: Any) -> object:
-            return function(*args)
 
     class _Translator:
         async def translate(self, _title: str) -> str:
@@ -335,36 +297,30 @@ def test_chinese_item_title_skips_translation_and_freezes_not_needed() -> None:
         async def close(self) -> None:
             return None
 
-    class _Sender:
-        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
-            return NewsPushReceipt(provider="feishu")
-
-        def close(self) -> None:
-            return None
-
     database = _Database()
-    push = NewsItemPush(
+    presentation = NewsItemTitlePresentation(
         db=database,
-        finite_operations=_InlineFinite(),
-        translator=_Translator(),
-        sender=_Sender(),
-        delivery_available=True,
+        deepl=_Translator(),
+        deepseek=None,
     )
 
-    assert asyncio.run(push.turn()) is True
-    assert database.presentation == {
-        "display_title": "比特币现货 ETF 资金流入",
-        "outcome": "not_needed",
-        "translation_policy_version": "title_zh_v5",
-    }
+    assert asyncio.run(presentation.turn()) is True
+    assert database.resolution is not None
+    assert database.resolution[2:7] == (
+        "pending",
+        "比特币现货 ETF 资金流入",
+        "not_needed",
+        None,
+        None,
+    )
 
 
-def test_long_item_title_skips_translation_and_falls_back_without_blocking() -> None:
+def test_long_item_title_skips_providers_and_resolves_fallback() -> None:
     title = "Bitcoin " + "x" * 501
 
     class _Database:
         def __init__(self) -> None:
-            self.presentation: dict[str, Any] | None = None
+            self.resolution: tuple[Any, ...] | None = None
 
         async def run_business(
             self,
@@ -374,24 +330,16 @@ def test_long_item_title_skips_translation_and_falls_back_without_blocking() -> 
             *args: Any,
             **_kwargs: Any,
         ) -> object:
-            if operation_name == "news_item_push_peek":
+            if operation_name == "news_title_presentation_peek":
                 return {
                     "item_id": "news_item_0123456789abcdef0123456789abcdef",
-                    "source_payload": {
-                        "schema_version": "news_item_push_v1",
-                        "original_title": title,
-                    },
+                    "source_title_fingerprint": "a" * 64,
+                    "original_title": title,
                 }
-            if operation_name == "news_item_push_fence":
-                self.presentation = dict(args[1])
-                return {"item_id": args[0]}
-            if operation_name == "news_item_push_complete":
+            if operation_name == "news_title_presentation_resolve":
+                self.resolution = args
                 return True
             raise AssertionError(operation_name)
-
-    class _InlineFinite:
-        async def run(self, _name: str, function: Any, /, *args: Any, **_kwargs: Any) -> object:
-            return function(*args)
 
     class _Translator:
         async def translate(self, _title: str) -> str:
@@ -400,29 +348,22 @@ def test_long_item_title_skips_translation_and_falls_back_without_blocking() -> 
         async def close(self) -> None:
             return None
 
-    class _Sender:
-        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
-            return NewsPushReceipt(provider="feishu")
-
-        def close(self) -> None:
-            return None
-
     database = _Database()
-    push = NewsItemPush(
+    presentation = NewsItemTitlePresentation(
         db=database,
-        finite_operations=_InlineFinite(),
-        translator=_Translator(),
-        sender=_Sender(),
-        delivery_available=True,
+        deepl=_Translator(),
+        deepseek=None,
     )
 
-    assert asyncio.run(push.turn()) is True
-    assert database.presentation == {
-        "display_title": title,
-        "fallback_code": "news_item_push_translation_input_too_long",
-        "outcome": "fallback",
-        "translation_policy_version": "title_zh_v5",
-    }
+    assert asyncio.run(presentation.turn()) is True
+    assert database.resolution is not None
+    assert database.resolution[2:7] == (
+        "pending",
+        title,
+        "fallback",
+        None,
+        "news_title_presentation_input_too_long",
+    )
 
 
 def test_worker_root_has_no_push_reconcile_ring() -> None:
@@ -594,6 +535,11 @@ def test_startup_reconcile_excludes_token_radar_and_reconciles_other_business_wo
             calls.append(("push", now_ms))
             return {"inserted": 0}
 
+    class _TitlePresentation:
+        async def reconcile(self, *, now_ms: int) -> int:
+            calls.append(("title_presentation", now_ms))
+            return 0
+
     class _ProfileRefresh:
         async def reconcile(self) -> None:
             calls.append(("profile", None))
@@ -614,6 +560,7 @@ def test_startup_reconcile_excludes_token_radar_and_reconciles_other_business_wo
         radar_current=_Radar(),
         asset_profile_refresh=_ProfileRefresh(),
         news=_News(),
+        news_title_presentation=_TitlePresentation(),
         news_push=_Push(),
         macro_turns=(),
         projections=(macro_projection,),
@@ -625,25 +572,35 @@ def test_startup_reconcile_excludes_token_radar_and_reconciles_other_business_wo
     assert [name for name, _value in calls] == [
         "profile",
         "news",
+        "title_presentation",
         "push",
         "macro_projection",
     ]
     assert calls[2][1] is not None
+    assert calls[3][1] is not None
 
 
 @pytest.mark.parametrize(
-    ("news_enabled", "push_enabled", "llm_configured", "expected_delivery"),
     (
-        (False, False, False, False),
-        (True, False, True, False),
-        (True, True, False, True),
-        (True, True, True, True),
+        "news_enabled",
+        "push_enabled",
+        "deepl_configured",
+        "llm_configured",
+        "expected_delivery",
+    ),
+    (
+        (False, False, False, False, False),
+        (True, False, True, False, False),
+        (True, False, False, True, False),
+        (True, True, False, False, True),
+        (True, True, True, True, True),
     ),
 )
-def test_push_wiring_is_always_reconciled_and_reuses_global_llm(
+def test_title_presentation_and_push_have_independent_wiring(
     monkeypatch: pytest.MonkeyPatch,
     news_enabled: bool,
     push_enabled: bool,
+    deepl_configured: bool,
     llm_configured: bool,
     expected_delivery: bool,
 ) -> None:
@@ -659,9 +616,9 @@ def test_push_wiring_is_always_reconciled_and_reuses_global_llm(
         def close(self) -> None:
             return None
 
-    class _Translator:
+    class _Provider:
         def __init__(self, **kwargs: Any) -> None:
-            constructed.append(("translator", kwargs))
+            constructed.append(("provider", kwargs))
 
         async def translate(self, title: str) -> str:
             return title
@@ -680,7 +637,8 @@ def test_push_wiring_is_always_reconciled_and_reuses_global_llm(
     monkeypatch.setattr(workers, "configured_profile_provider_ids", lambda _settings: ())
     monkeypatch.setattr(workers, "gmgn_upstream_client", lambda _settings, **_kwargs: None)
     monkeypatch.setattr(workers, "FeishuNewsPushSender", _Sender)
-    monkeypatch.setattr(workers, "OpenAICompatibleNewsPushTranslator", _Translator)
+    monkeypatch.setattr(workers, "DeepLTitleTranslationProvider", _Provider)
+    monkeypatch.setattr(workers, "OpenAICompatibleDeepSeekTitleProvider", _Provider)
     monkeypatch.setattr(workers, "ProviderChainNewsBriefPublisher", _BriefPublisher)
 
     settings = Settings(
@@ -695,6 +653,9 @@ def test_push_wiring_is_always_reconciled_and_reuses_global_llm(
         ),
         news={
             "enabled": news_enabled,
+            "title_presentation": {
+                "deepl_api_keys": ["translation:fx"] if deepl_configured else [],
+            },
             "push": {
                 "enabled": push_enabled,
                 "feishu_webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
@@ -718,20 +679,23 @@ def test_push_wiring_is_always_reconciled_and_reuses_global_llm(
     )
 
     assert components.news_push is not None
-    assert not hasattr(components, "news_title_translation")
+    due_owners = {getattr(turn, "__self__", None) for turn, _idle_seconds in components.due_turns}
+    assert (components.news_title_presentation is not None) is news_enabled
+    if components.news_title_presentation is not None:
+        assert components.news_title_presentation in due_owners
+    expected_provider_count = int(news_enabled and deepl_configured) + int(news_enabled and llm_configured)
+    assert [name for name, _kwargs in constructed].count("provider") == expected_provider_count
     if expected_delivery:
-        assert [name for name, _kwargs in constructed] == (["translator", "sender"] if llm_configured else ["sender"])
+        assert [name for name, _kwargs in constructed].count("sender") == 1
         assert components.news_push not in components.models
-        assert components.news_push in {getattr(turn, "__self__", None) for turn, _idle_seconds in components.due_turns}
+        assert components.news_push in due_owners
         assert constructed[-1][1] == {
             "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
             "signing_secret": None,
         }
     else:
-        assert constructed == []
-        assert components.news_push not in {
-            getattr(turn, "__self__", None) for turn, _idle_seconds in components.due_turns
-        }
+        assert [name for name, _kwargs in constructed].count("sender") == 0
+        assert components.news_push not in due_owners
 
 
 def test_empty_gmgn_channels_do_not_construct_a_collector(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -766,7 +730,7 @@ def test_empty_gmgn_channels_do_not_construct_a_collector(monkeypatch: pytest.Mo
     assert components.collector is None
 
 
-def test_news_item_push_closes_async_translator_directly_and_sender_through_finite() -> None:
+def test_news_item_push_closes_sender_through_finite() -> None:
     calls: list[tuple[str, bool]] = []
     closed: list[str] = []
 
@@ -782,17 +746,9 @@ def test_news_item_push_closes_async_translator_directly_and_sender_through_fini
         def close(self) -> None:
             closed.append("sender")
 
-    class _Translator:
-        async def translate(self, _title: str) -> str:
-            raise AssertionError("not called")
-
-        async def close(self) -> None:
-            closed.append("translator")
-
     push = NewsItemPush(
         db=object(),
         finite_operations=_Capability(),
-        translator=_Translator(),
         sender=_Sender(),
         delivery_available=True,
     )
@@ -800,7 +756,7 @@ def test_news_item_push_closes_async_translator_directly_and_sender_through_fini
     asyncio.run(push.close())
 
     assert calls == [("news_item_push_sender_close", True)]
-    assert closed == ["translator", "sender"]
+    assert closed == ["sender"]
 
 
 def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
@@ -834,6 +790,10 @@ def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
         async def close(self) -> None:
             calls.append("push_close")
 
+    class _TitlePresentation:
+        async def close(self) -> None:
+            calls.append("title_presentation_close")
+
     async def scenario() -> None:
         loop = asyncio.get_running_loop()
         await workers._graceful_cleanup(
@@ -848,6 +808,7 @@ def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
                 collector=None,
                 news=None,
                 news_brief=None,
+                news_title_presentation=_TitlePresentation(),
                 news_push=_Push(),
                 macro_source=None,
             ),  # type: ignore[arg-type]
@@ -856,6 +817,8 @@ def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:
     asyncio.run(scenario())
 
     assert "push_close" in calls
+    assert "title_presentation_close" in calls
+    assert calls.index("title_presentation_close") < calls.index("db_drain")
     assert calls.index("push_close") < calls.index("db_drain")
     assert calls.index("push_close") < calls.index("finite_drain")
     assert calls.index("push_close") < calls.index("model_drain")

@@ -3,23 +3,16 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
-from tracefold.platform.resource import (
-    ResourceAdmissionTimeout,
-    ResourceOperationOverrun,
-)
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 PUSH_PAYLOAD_SCHEMA_VERSION = "news_item_push_v1"
-PUSH_TRANSLATION_POLICY_VERSION = "title_zh_v5"
-PUSH_TRANSLATION_DEADLINE_SECONDS = 5.0
 
 _DELIVERY_TOTAL_TIMEOUT_SECONDS = 7.5
 _DELIVERY_OPERATION_TIMEOUT_SECONDS = 7.0
-_MAX_TITLE_GRAPHEMES = 500
 _ERROR_CODE = re.compile(r"^[a-z0-9_]{1,120}$")
 
 
@@ -30,17 +23,11 @@ class NewsPushReceipt:
     details: Mapping[str, Any] = field(default_factory=dict)
 
 
-class NewsPushTranslator(Protocol):
-    async def translate(self, title: str) -> str: ...
-
-    async def close(self) -> None: ...
-
-
 class NewsPushSender(Protocol):
     def send(
         self,
         source_payload: Mapping[str, Any],
-        presentation_snapshot: Mapping[str, Any],
+        presentation: Mapping[str, Any],
     ) -> NewsPushReceipt: ...
 
     def close(self) -> None: ...
@@ -53,19 +40,13 @@ class NewsPushExternalError(RuntimeError):
 
 
 class NewsItemPush:
-    """One deep Item-scoped outbound turn.
-
-    Callers know only reconciliation, one due turn, and lifecycle close.
-    Selection, best-effort translation, the durable Feishu fence, rendering,
-    external delivery, and settlement remain inside this module.
-    """
+    """Deliver one Item after its exact shared presentation is resolved."""
 
     def __init__(
         self,
         *,
         db: Any,
         finite_operations: Any,
-        translator: NewsPushTranslator | None,
         sender: NewsPushSender | None,
         delivery_available: bool,
         clock_ms: Callable[[], int] | None = None,
@@ -74,7 +55,6 @@ class NewsItemPush:
             raise ValueError("news_item_push_sender_required")
         self.db = db
         self.finite_operations = finite_operations
-        self.translator = translator
         self.sender = sender
         self.delivery_available = bool(delivery_available)
         self._clock_ms = clock_ms or _now_ms
@@ -111,14 +91,14 @@ class NewsItemPush:
             return False
 
         source_payload = dict(row["source_payload"])
-        presentation = await self._presentation(source_payload)
+        presentation = dict(row["presentation"])
+        _validate_shared_presentation(source_payload, presentation)
         attempted_at_ms = self._clock_ms()
         try:
             fenced = await self.db.run_business(
                 "news_item_push_fence",
                 self._fence_sync,
                 str(row["item_id"]),
-                presentation,
                 attempted_at_ms,
                 operation_timeout_seconds=0.5,
             )
@@ -148,10 +128,7 @@ class NewsItemPush:
             if not isinstance(receipt, NewsPushReceipt) or receipt.provider.strip().lower() != "feishu":
                 raise NewsPushExternalError("news_item_push_feishu_receipt_invalid")
         except NewsPushExternalError as exc:
-            return await self._terminalize(
-                item_id=str(row["item_id"]),
-                error_code=exc.code,
-            )
+            return await self._terminalize(item_id=str(row["item_id"]), error_code=exc.code)
         except ResourceAdmissionTimeout:
             return await self._terminalize(
                 item_id=str(row["item_id"]),
@@ -162,8 +139,6 @@ class NewsItemPush:
                 item_id=str(row["item_id"]),
                 error_code="news_item_push_feishu_timeout",
             )
-            # The native call may still own a thread. Stop this runtime after
-            # preserving the terminal audit so another Item cannot overlap it.
             raise RuntimeError("news_item_push_feishu_operation_overrun") from None
         except TimeoutError:
             await self._terminalize(
@@ -195,8 +170,6 @@ class NewsItemPush:
         return True
 
     async def close(self) -> None:
-        if self.translator is not None:
-            await self.translator.close()
         if self.sender is not None:
             await self.finite_operations.run(
                 "news_item_push_sender_close",
@@ -204,55 +177,6 @@ class NewsItemPush:
                 timeout_seconds=5.0,
                 allow_shutdown=True,
             )
-
-    async def _presentation(self, source_payload: Mapping[str, Any]) -> dict[str, Any]:
-        original_title = _source_title(source_payload)
-        if _looks_chinese(original_title):
-            return {
-                "display_title": original_title,
-                "outcome": "not_needed",
-                "translation_policy_version": PUSH_TRANSLATION_POLICY_VERSION,
-            }
-        if _grapheme_count_exceeds(original_title, _MAX_TITLE_GRAPHEMES):
-            return _fallback_presentation(
-                original_title,
-                "news_item_push_translation_input_too_long",
-            )
-        if self.translator is None:
-            return _fallback_presentation(
-                original_title,
-                "news_item_push_translation_unavailable",
-            )
-
-        started_at_ms = self._clock_ms()
-        try:
-            async with asyncio.timeout(PUSH_TRANSLATION_DEADLINE_SECONDS):
-                translated = await self.translator.translate(original_title)
-            display_title = _translation_display_title(translated)
-        except NewsPushExternalError as exc:
-            return _fallback_presentation(
-                original_title,
-                exc.code,
-                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
-            )
-        except TimeoutError:
-            return _fallback_presentation(
-                original_title,
-                "news_item_push_translation_timeout",
-                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
-            )
-        except Exception:
-            return _fallback_presentation(
-                original_title,
-                "news_item_push_translation_failed",
-                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
-            )
-        return {
-            "display_title": display_title,
-            "outcome": "translated",
-            "translation_duration_ms": max(0, self._clock_ms() - started_at_ms),
-            "translation_policy_version": PUSH_TRANSLATION_POLICY_VERSION,
-        }
 
     async def _terminalize(self, *, item_id: str, error_code: str) -> bool:
         try:
@@ -288,18 +212,12 @@ class NewsItemPush:
         with self.db.worker_session("news_item_push_peek", 3.0) as repos:
             return cast(dict[str, Any] | None, repos.news.peek_item_push())
 
-    def _fence_sync(
-        self,
-        item_id: str,
-        presentation_snapshot: Mapping[str, Any],
-        attempted_at_ms: int,
-    ) -> dict[str, Any] | None:
+    def _fence_sync(self, item_id: str, attempted_at_ms: int) -> dict[str, Any] | None:
         with self.db.worker_session("news_item_push_fence", 0.5) as repos:
             return cast(
                 dict[str, Any] | None,
                 repos.news.fence_item_push(
                     item_id=item_id,
-                    presentation_snapshot=presentation_snapshot,
                     attempted_at_ms=attempted_at_ms,
                 ),
             )
@@ -313,19 +231,10 @@ class NewsItemPush:
         with self.db.worker_session("news_item_push_complete", 0.5) as repos:
             return cast(
                 bool,
-                repos.news.complete_item_push(
-                    item_id=item_id,
-                    receipt=receipt,
-                    now_ms=now_ms,
-                ),
+                repos.news.complete_item_push(item_id=item_id, receipt=receipt, now_ms=now_ms),
             )
 
-    def _terminalize_sync(
-        self,
-        item_id: str,
-        error_code: str,
-        now_ms: int,
-    ) -> bool:
+    def _terminalize_sync(self, item_id: str, error_code: str, now_ms: int) -> bool:
         with self.db.worker_session("news_item_push_terminalize", 0.5) as repos:
             return cast(
                 bool,
@@ -337,97 +246,17 @@ class NewsItemPush:
             )
 
 
-def _source_title(source_payload: Mapping[str, Any]) -> str:
+def _validate_shared_presentation(
+    source_payload: Mapping[str, Any],
+    presentation: Mapping[str, Any],
+) -> None:
     if source_payload.get("schema_version") != PUSH_PAYLOAD_SCHEMA_VERSION:
         raise RuntimeError("news_item_push_source_schema_invalid")
-    title = str(source_payload.get("original_title") or "").strip()
-    if not title:
-        raise RuntimeError("news_item_push_source_title_invalid")
-    return title
-
-
-def _fallback_presentation(
-    original_title: str,
-    code: str,
-    *,
-    translation_duration_ms: int | None = None,
-) -> dict[str, Any]:
-    presentation: dict[str, Any] = {
-        "display_title": original_title,
-        "fallback_code": _sanitize_error(
-            code,
-            fallback="news_item_push_translation_failed",
-        ),
-        "outcome": "fallback",
-        "translation_policy_version": PUSH_TRANSLATION_POLICY_VERSION,
-    }
-    if translation_duration_ms is not None:
-        presentation["translation_duration_ms"] = max(
-            0,
-            int(translation_duration_ms),
-        )
-    return presentation
-
-
-def _translation_display_title(translated_title: object) -> str:
-    translated = " ".join(str(translated_title or "").split())
-    try:
-        translated.encode("utf-8")
-    except UnicodeEncodeError:
-        raise NewsPushExternalError("news_item_push_translation_output_invalid") from None
-    if (
-        not translated
-        or "\x00" in translated
-        or not _contains_han(translated)
-        or _grapheme_count_exceeds(translated, _MAX_TITLE_GRAPHEMES)
-    ):
-        raise NewsPushExternalError("news_item_push_translation_output_invalid")
-    return translated
-
-
-def _looks_chinese(value: str) -> bool:
-    letters = [character for character in value if character.isalpha()]
-    if not letters:
-        return False
-    han = sum(_is_han(character) for character in letters)
-    return han >= max(1, len(letters) // 2)
-
-
-def _contains_han(value: str) -> bool:
-    return any(_is_han(character) for character in value)
-
-
-def _is_han(character: str) -> bool:
-    return "CJK UNIFIED IDEOGRAPH" in unicodedata.name(character, "")
-
-
-def _grapheme_count_exceeds(value: str, limit: int) -> bool:
-    return len(_graphemes(value)) > limit
-
-
-def _graphemes(value: str) -> list[str]:
-    clusters: list[str] = []
-    current = ""
-    join_next = False
-    for character in value:
-        codepoint = ord(character)
-        extends = (
-            bool(unicodedata.combining(character)) or 0xFE00 <= codepoint <= 0xFE0F or 0x1F3FB <= codepoint <= 0x1F3FF
-        )
-        if not current:
-            current = character
-        elif character == "\u200d":
-            current += character
-            join_next = True
-        elif extends or join_next:
-            current += character
-            join_next = False
-        else:
-            clusters.append(current)
-            current = character
-    if current:
-        clusters.append(current)
-    return clusters
+    original_title = str(source_payload.get("original_title") or "")
+    if not original_title or presentation.get("original_title") != original_title:
+        raise RuntimeError("news_item_push_presentation_identity_invalid")
+    if not str(presentation.get("display_title") or ""):
+        raise RuntimeError("news_item_push_presentation_display_title_invalid")
 
 
 def _receipt_payload(receipt: NewsPushReceipt) -> dict[str, Any]:
@@ -455,7 +284,6 @@ def _now_ms() -> int:
 
 __all__ = [
     "PUSH_PAYLOAD_SCHEMA_VERSION",
-    "PUSH_TRANSLATION_POLICY_VERSION",
     "NewsItemPush",
     "NewsPushExternalError",
     "NewsPushReceipt",

@@ -7,16 +7,18 @@ import httpx
 import pytest
 
 from tracefold.integrations.feishu import generate_feishu_signature
-from tracefold.integrations.news_push import (
-    FeishuNewsPushSender,
-    OpenAICompatibleNewsPushTranslator,
+from tracefold.integrations.news_push import FeishuNewsPushSender
+from tracefold.integrations.news_title_presentation import (
+    DeepLTitleTranslationProvider,
+    OpenAICompatibleDeepSeekTitleProvider,
 )
-from tracefold.news.push import PUSH_TRANSLATION_DEADLINE_SECONDS, NewsPushExternalError
+from tracefold.news.push import NewsPushExternalError
+from tracefold.news.title_presentation import TitleTranslationError
 
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
 
 
-def test_translator_makes_one_plain_text_openai_compatible_request() -> None:
+def test_deepseek_makes_one_plain_text_openai_compatible_request() -> None:
     requests: list[httpx.Request] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -33,7 +35,7 @@ def test_translator_makes_one_plain_text_openai_compatible_request() -> None:
             },
         )
 
-    translator = OpenAICompatibleNewsPushTranslator(
+    translator = OpenAICompatibleDeepSeekTitleProvider(
         base_url="https://translator.test/v1/",
         api_key="secret",
         model="fast-translator",
@@ -54,7 +56,6 @@ def test_translator_makes_one_plain_text_openai_compatible_request() -> None:
     body = json.loads(requests[0].content)
     assert body["model"] == "fast-translator"
     assert body["temperature"] == 0
-    assert PUSH_TRANSLATION_DEADLINE_SECONDS == 5.0
     assert "response_format" not in body
     assert "只输出 JSON" not in body["messages"][0]["content"]
     assert "必须原样保留" not in body["messages"][0]["content"]
@@ -63,13 +64,13 @@ def test_translator_makes_one_plain_text_openai_compatible_request() -> None:
 @pytest.mark.parametrize(
     ("response", "code"),
     [
-        (httpx.Response(429, json={"error": "limit"}), "news_item_push_translation_rate_limited"),
-        (httpx.Response(500, text="secret upstream body"), "news_item_push_translation_http_error"),
-        (httpx.Response(200, json={"choices": []}), "news_item_push_translation_response_invalid"),
+        (httpx.Response(429, json={"error": "limit"}), "news_title_presentation_deepseek_rate_limited"),
+        (httpx.Response(500, text="secret upstream body"), "news_title_presentation_deepseek_http_error"),
+        (httpx.Response(200, json={"choices": []}), "news_title_presentation_deepseek_response_invalid"),
     ],
 )
-def test_translator_errors_are_sanitized(response: httpx.Response, code: str) -> None:
-    translator = OpenAICompatibleNewsPushTranslator(
+def test_deepseek_errors_are_sanitized(response: httpx.Response, code: str) -> None:
+    translator = OpenAICompatibleDeepSeekTitleProvider(
         base_url="https://translator.test/v1",
         api_key="secret",
         model="translator",
@@ -82,10 +83,75 @@ def test_translator_errors_are_sanitized(response: httpx.Response, code: str) ->
         finally:
             await translator.close()
 
-    with pytest.raises(NewsPushExternalError, match=code) as raised:
+    with pytest.raises(TitleTranslationError, match=code) as raised:
         asyncio.run(scenario())
 
     assert "secret upstream body" not in str(raised.value)
+
+
+def test_deepl_permanent_key_failure_rotates_only_for_future_items() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        authorization = request.headers["authorization"]
+        if authorization == "DeepL-Auth-Key first:fx":
+            return httpx.Response(403, text="do-not-leak")
+        return httpx.Response(200, json={"translations": [{"text": "比特币上涨"}]})
+
+    provider = DeepLTitleTranslationProvider(
+        api_keys=("first:fx", "second:fx"),
+        free_transport=httpx.MockTransport(respond),
+    )
+
+    async def scenario() -> str:
+        try:
+            with pytest.raises(
+                TitleTranslationError,
+                match="news_title_presentation_deepl_key_rejected",
+            ):
+                await provider.translate("Bitcoin rises")
+            return await provider.translate("Bitcoin rises again")
+        finally:
+            await provider.close()
+
+    assert asyncio.run(scenario()) == "比特币上涨"
+    assert [request.headers["authorization"] for request in requests] == [
+        "DeepL-Auth-Key first:fx",
+        "DeepL-Auth-Key second:fx",
+    ]
+
+
+def test_deepl_transient_failure_keeps_active_key_for_future_items() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(429, text="do-not-leak")
+        return httpx.Response(200, json={"translations": [{"text": "以太坊上涨"}]})
+
+    provider = DeepLTitleTranslationProvider(
+        api_keys=("first:fx", "second:fx"),
+        free_transport=httpx.MockTransport(respond),
+    )
+
+    async def scenario() -> str:
+        try:
+            with pytest.raises(
+                TitleTranslationError,
+                match="news_title_presentation_deepl_rate_limited",
+            ):
+                await provider.translate("Ether rises")
+            return await provider.translate("Ether rises again")
+        finally:
+            await provider.close()
+
+    assert asyncio.run(scenario()) == "以太坊上涨"
+    assert [request.headers["authorization"] for request in requests] == [
+        "DeepL-Auth-Key first:fx",
+        "DeepL-Auth-Key first:fx",
+    ]
 
 
 def test_sender_renders_translated_title_and_keeps_original_visible() -> None:

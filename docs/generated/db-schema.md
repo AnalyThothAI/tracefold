@@ -649,6 +649,25 @@
 | `identity_version` | `TEXT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_item_title_presentations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `item_id` | `TEXT` | False | `None` |
+| `source_title_fingerprint` | `TEXT` | False | `None` |
+| `original_title` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `display_title` | `TEXT` | True | `None` |
+| `outcome` | `TEXT` | True | `None` |
+| `provider` | `TEXT` | True | `None` |
+| `policy_version` | `TEXT` | True | `None` |
+| `fallback_code` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+| `attempted_at_ms` | `BIGINT` | True | `None` |
+| `resolved_at_ms` | `BIGINT` | True | `None` |
+| `duration_ms` | `BIGINT` | True | `None` |
+
 ## `news_items`
 
 | Column | Type | Nullable | Default |
@@ -732,8 +751,9 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `live_observed_at_ms` | `BIGINT` | False | `None` |
-| `presentation_snapshot` | `JSONB` | True | `None` |
+| `legacy_presentation_snapshot` | `JSONB` | True | `None` |
 | `attempted_at_ms` | `BIGINT` | True | `None` |
+| `source_title_fingerprint` | `TEXT` | True | `None` |
 
 ## `news_push_state`
 

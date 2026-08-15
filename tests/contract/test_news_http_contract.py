@@ -9,11 +9,12 @@ from tracefold.app.http.schemas import (
     NewsIngestStatusData,
     NewsOpenNewsStatusData,
     NewsPushDelivery24hData,
-    NewsPushTranslation24hData,
     NewsRssStatusData,
     NewsSourceData,
     NewsStoryData,
     NewsStoryStatusData,
+    NewsTitlePresentation24hData,
+    NewsTitlePresentationStatusData,
 )
 
 
@@ -40,6 +41,7 @@ def test_news_story_contract_has_no_push_notification_state() -> None:
     assert not hasattr(schemas, "NewsNotificationData")
     assert "notification" not in NewsStoryData.model_fields
     assert "push_delivery_state" not in NewsStoryData.model_fields
+    assert {"title", "original_title"} <= set(NewsStoryData.model_fields)
 
 
 def test_news_brief_http_contract_is_one_slot_and_one_sealed_payload() -> None:
@@ -146,16 +148,34 @@ def test_news_health_contract_separates_current_wss_from_strategy_history() -> N
     }
 
 
-def test_news_push_slo_contract_reports_the_24h_sample_complete_flag() -> None:
-    assert set(NewsPushTranslation24hData.model_fields) == {
+def test_news_title_presentation_and_push_slo_contracts_are_separate() -> None:
+    assert set(NewsTitlePresentation24hData.model_fields) == {
         "total",
         "attempted",
         "translated",
         "not_needed",
         "fallback",
+        "provider_counts",
         "latency_p95_ms",
         "fallback_counts",
         "sample_complete",
+    }
+    assert set(NewsTitlePresentationStatusData.model_fields) == {
+        "status",
+        "reasons",
+        "deepl_configured",
+        "deepl_key_count",
+        "deepseek_configured",
+        "policy_version",
+        "deepl_deadline_ms",
+        "deepseek_deadline_ms",
+        "pending_count",
+        "resolving_count",
+        "oldest_pending_at_ms",
+        "oldest_push_blocking_at_ms",
+        "oldest_resolving_at_ms",
+        "resolution_24h",
+        "measured_at_ms",
     }
     assert set(NewsPushDelivery24hData.model_fields) == {
         "completed",

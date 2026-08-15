@@ -583,7 +583,10 @@ def _cancelled_delivery_hashes_from_rows(expected: dict[str, str]) -> dict[str, 
 def _news_state_snapshot(conn) -> dict[str, dict[str, object]]:
     snapshot: dict[str, dict[str, object]] = {}
     for table_name in NEWS_TABLES:
-        if table_name == "news_opennews_incidents":
+        if table_name in {
+            "news_item_title_presentations",
+            "news_opennews_incidents",
+        }:
             continue
         row = conn.execute(
             f"""

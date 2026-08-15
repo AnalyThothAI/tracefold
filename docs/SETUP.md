@@ -88,25 +88,28 @@ lanes report explicit degradation or unavailable evidence:
   deterministic degraded Top Stories. An absent direct DeepSeek triple or
   optional Groq key can reduce synthesis availability but does not empty the
   public selection;
-- absent the direct DeepSeek triple leaves optional News Push title translation
-  unavailable; Push still sends the selected Item's original OpenNews headline;
+- absent both DeepL keys and the direct DeepSeek triple makes shared title
+  presentation resolve to the original title; Feed/detail and Push remain
+  available;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
-`tracefold config` reports the effective file paths, configured booleans, and
-`opennews_strategy_count`; it never prints provider tokens, Strategy-ID values,
-webhook URLs, signing secrets, or model keys.
+`tracefold config` reports the effective file paths, configured booleans,
+`opennews_strategy_count`, and the DeepL key count; it never prints provider
+tokens, Strategy-ID values, webhook URLs, signing secrets, or model keys.
 
 `news.push.feishu_signing_secret` is optional. When present, the Adapter adds
 the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
 configured booleans. Feishu delivery has no model-credential dependency.
-Optional translation reuses the direct DeepSeek `llm.api_key`, `llm.base_url`,
-and `llm.news_brief_model`; it has no independent endpoint, key, model, or
-provider fallback chain. That triple must be entirely present or entirely
-absent. Translation makes one bounded attempt and sends the frozen original
-immediately on failure.
+Shared title presentation uses ordered DeepL keys first and the direct DeepSeek
+triple second. It is independent of Feishu availability: every newly accepted
+exact OpenNews, recovery, or RSS title receives one durable decision, while
+Push merely waits for the same decision used by Feed/detail. A permanent
+DeepL authentication/quota error advances the process-local active key for
+future Items only; the current Item falls through to DeepSeek. Transient DeepL
+errors do not rotate the key. No provider call is retried.
 
 An unsigned operator configuration uses the existing generated fields; do not
 add another secrets file or environment variable:
@@ -124,6 +127,10 @@ news:
   opennews_strategy_ids:
     - "1018" # News Score > 70
     - "1019" # OI Event Monitor
+  title_presentation:
+    deepl_api_keys:
+      - "<DeepL key 1>"
+      - "<DeepL key 2>"
   push:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
@@ -131,11 +138,11 @@ news:
 ```
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
-not commit the populated operator config. With Push enabled, a configured
-direct DeepSeek triple enables the one-attempt presentation translation; do
-not add a `news.push.translation` block or duplicate the credential. The target
-language, 5-second absolute translation deadline, zero-retry policy, and title
-limits are code-owned. Missing or invalid delivery configuration is fail-soft:
+not commit the populated operator config. Do not add a
+`news.push.translation` block: title presentation belongs to News, not Push.
+The DeepL/DeepSeek order, 1.5/5-second absolute deadlines, zero-retry policy,
+target language, and title limits are code-owned. Missing or invalid delivery
+configuration is fail-soft:
 Serve and Workers still start, while secret-free diagnostics report requested
 and effective availability plus a sanitized reason.
 
@@ -154,9 +161,10 @@ The `llm` block owns one all-or-none direct DeepSeek triple—`api_key`,
 `base_url`, and `news_brief_model`—plus optional `groq_api_key`. The Brief order
 is Ollama, configured direct DeepSeek, then Groq. Worker timeouts, token budgets,
 cadence, and resource limits are code-owned; there is no environment-variable
-credential path or inferred DeepSeek URL/model. Item Push reuses only that
-direct triple for its outbound title-presentation adapter; it does not use
-Ollama or Groq and does not enter the serial model arbiter.
+credential path or inferred DeepSeek URL/model. Shared title presentation uses
+`news.title_presentation.deepl_api_keys` followed by that direct DeepSeek
+triple; it does not use Ollama or Groq and does not enter the serial model
+arbiter.
 
 News correctness does not depend on the model. The code-owned public
 WorldMonitor catalog contributes 179 physical RSS feeds and 183 category
@@ -336,13 +344,20 @@ mode. It removes the Push eligibility clocks/cursor/ring, renames the baseline
 to the enablement epoch, terminalizes incompatible unsent v1 rows, and installs
 the historical live-only v2 Story outbox contract. After restart, current WSS state and
 latency are independent of incident recovery.
-Stop Serve and Workers before applying current migration `20260814_0270`. It
+Stop Serve and Workers before applying migration `20260814_0270`. It
 hard-cuts the existing two Push tables to Item identity and zero retry,
 terminalizes legacy unsent Story-policy work, preserves completed legacy card
 audit, and removes Story, retry, lease, and translation-preparation columns.
 The migration performs no backfill or outbound call. Restart only the new
 runtime; startup reconciles effective availability and terminalizes any
 interrupted current-schema `sending` row before acquisition begins.
+Stop Serve and Workers before applying current migration `20260815_0271`. It
+adds the shared title-presentation table, terminalizes pre-cut nonterminal Push
+work, renames the old Push presentation JSON to audit-only legacy data, and
+binds future Push rows to the exact title fingerprint. It performs no history
+backfill or provider/outbound call. Restart only the current runtime; startup
+resolves interrupted title work to the original and terminalizes interrupted
+Push without repeating an external call.
 Token Radar migration `20260810_0249` removed the retired Radar projection
 tables and temporary replay-only schema, then installed the compact singleton.
 It preserved material Events, intents, resolutions, identities, and market

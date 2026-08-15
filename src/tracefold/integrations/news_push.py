@@ -8,12 +8,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from tracefold.news.push import (
-    PUSH_PAYLOAD_SCHEMA_VERSION,
-    PUSH_TRANSLATION_DEADLINE_SECONDS,
-    NewsPushExternalError,
-    NewsPushReceipt,
-)
+from tracefold.news.push import PUSH_PAYLOAD_SCHEMA_VERSION, NewsPushExternalError, NewsPushReceipt
 
 from .feishu import (
     FeishuDeliveryError,
@@ -22,80 +17,6 @@ from .feishu import (
 
 _FEISHU = "feishu"
 _TEXT_LIMIT = 500
-
-
-class OpenAICompatibleNewsPushTranslator:
-    """One title-only OpenAI-compatible request with no retry policy."""
-
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        api_key: str,
-        model: str,
-        transport: httpx.AsyncBaseTransport | None = None,
-    ) -> None:
-        self._model = str(model).strip()
-        self._client = httpx.AsyncClient(
-            base_url=str(base_url).strip().rstrip("/") + "/",
-            timeout=httpx.Timeout(PUSH_TRANSLATION_DEADLINE_SECONDS),
-            headers={
-                "Authorization": f"Bearer {str(api_key).strip()}",
-                "Content-Type": "application/json",
-            },
-            follow_redirects=False,
-            transport=transport,
-        )
-
-    async def translate(self, title: str) -> str:
-        try:
-            response = await self._client.post(
-                "chat/completions",
-                json={
-                    "model": self._model,
-                    "temperature": 0,
-                    "max_tokens": 256,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "将金融新闻标题忠实翻译为简体中文。不得总结、解释、补充事实；"
-                                "只输出翻译后的单行标题，不要 JSON、引号、Markdown 或解释。"
-                            ),
-                        },
-                        {"role": "user", "content": str(title)},
-                    ],
-                },
-            )
-        except httpx.TimeoutException:
-            raise NewsPushExternalError("news_item_push_translation_timeout") from None
-        except httpx.HTTPError:
-            raise NewsPushExternalError("news_item_push_translation_http_error") from None
-        if response.status_code == 429:
-            raise NewsPushExternalError("news_item_push_translation_rate_limited")
-        try:
-            response.raise_for_status()
-            payload = response.json()
-            choice = payload["choices"][0]
-            if not isinstance(choice, Mapping) or choice.get("finish_reason") != "stop":
-                raise ValueError("translation_choice_invalid")
-            message = choice["message"]
-            if not isinstance(message, Mapping):
-                raise TypeError("translation_message_invalid")
-            content = message["content"]
-            if not isinstance(content, str):
-                raise TypeError("translation_content_invalid")
-            translated = content.strip()
-            if not translated:
-                raise TypeError("translation_title_invalid")
-            return translated
-        except httpx.HTTPStatusError:
-            raise NewsPushExternalError("news_item_push_translation_http_error") from None
-        except (KeyError, IndexError, TypeError, ValueError):
-            raise NewsPushExternalError("news_item_push_translation_response_invalid") from None
-
-    async def close(self) -> None:
-        await self._client.aclose()
 
 
 class FeishuNewsPushSender:
@@ -119,9 +40,9 @@ class FeishuNewsPushSender:
     def send(
         self,
         source_payload: Mapping[str, Any],
-        presentation_snapshot: Mapping[str, Any],
+        presentation: Mapping[str, Any],
     ) -> NewsPushReceipt:
-        card = _item_card(source_payload, presentation_snapshot)
+        card = _item_card(source_payload, presentation)
         try:
             receipt = self._client.send(
                 card,
@@ -246,4 +167,4 @@ def _preview(value: str, limit: int = _TEXT_LIMIT) -> str:
     return normalized if len(normalized) <= limit else normalized[: limit - 1].rstrip() + "…"
 
 
-__all__ = ["FeishuNewsPushSender", "OpenAICompatibleNewsPushTranslator"]
+__all__ = ["FeishuNewsPushSender"]

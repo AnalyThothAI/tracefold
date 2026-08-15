@@ -195,6 +195,111 @@ def test_0270_rejects_duplicate_legacy_selected_item_identity() -> None:
         command.upgrade(config, "20260814_0270")
 
 
+def test_0271_retires_unsettled_push_and_does_not_invent_presentation_history() -> None:
+    config = _reset_to_0270()
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute(
+            """
+            INSERT INTO news_push_deliveries(
+              item_id, live_observed_at_ms, source_payload,
+              presentation_snapshot, status, attempted_at_ms,
+              receipt, last_error, sent_at_ms, created_at_ms, updated_at_ms
+            ) VALUES
+              (
+                'news_item_11111111111111111111111111111111', 100,
+                jsonb_build_object(
+                  'schema_version', 'news_item_push_v1',
+                  'item_id', 'news_item_11111111111111111111111111111111',
+                  'provider_event_id', 'pending-legacy',
+                  'live_observed_at_ms', 100,
+                  'original_title', 'Pending legacy title',
+                  'reporting_origin', 'OpenNews',
+                  'provider_published_at_ms', 90,
+                  'strategy_labels', jsonb_build_array('1018 News Score > 70'),
+                  'assets', '[]'::jsonb
+                ),
+                NULL, 'pending', NULL, NULL, NULL, NULL, 100, 100
+              ),
+              (
+                'news_item_22222222222222222222222222222222', 200,
+                jsonb_build_object(
+                  'schema_version', 'news_item_push_v1',
+                  'item_id', 'news_item_22222222222222222222222222222222',
+                  'provider_event_id', 'sent-legacy',
+                  'live_observed_at_ms', 200,
+                  'original_title', 'Sent legacy title',
+                  'reporting_origin', 'OpenNews',
+                  'provider_published_at_ms', 190,
+                  'strategy_labels', jsonb_build_array('1018 News Score > 70'),
+                  'assets', '[]'::jsonb
+                ),
+                '{"display_title":"旧译文","outcome":"translated"}'::jsonb,
+                'sent', 210, '{"provider":"feishu"}'::jsonb,
+                NULL, 220, 200, 220
+              )
+            """
+        )
+        conn.commit()
+
+        command.upgrade(config, "20260815_0271")
+
+        rows = conn.execute(
+            """
+            SELECT item_id, source_title_fingerprint,
+                   legacy_presentation_snapshot, status, last_error
+              FROM news_push_deliveries
+             ORDER BY item_id
+            """
+        ).fetchall()
+        presentation_count = conn.execute("SELECT count(*) AS value FROM news_item_title_presentations").fetchone()[
+            "value"
+        ]
+        columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                """
+                SELECT column_name
+                  FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'news_push_deliveries'
+                """
+            ).fetchall()
+        }
+        news_table_count = conn.execute(
+            """
+            SELECT count(*) AS value
+              FROM information_schema.tables
+             WHERE table_schema = 'public'
+               AND table_name LIKE 'news_%'
+            """
+        ).fetchone()["value"]
+    finally:
+        conn.close()
+
+    assert dict(rows[0]) == {
+        "item_id": "news_item_11111111111111111111111111111111",
+        "source_title_fingerprint": None,
+        "legacy_presentation_snapshot": None,
+        "status": "terminal",
+        "last_error": "news_item_title_presentation_policy_retired",
+    }
+    assert dict(rows[1]) == {
+        "item_id": "news_item_22222222222222222222222222222222",
+        "source_title_fingerprint": None,
+        "legacy_presentation_snapshot": {
+            "display_title": "旧译文",
+            "outcome": "translated",
+        },
+        "status": "sent",
+        "last_error": None,
+    }
+    assert presentation_count == 0
+    assert "presentation_snapshot" not in columns
+    assert {"legacy_presentation_snapshot", "source_title_fingerprint"} <= columns
+    assert news_table_count == 11
+
+
 def _reset_to_0269():
     config = alembic_config()
     config.attributes["database_url"] = _test_postgres_dsn()
@@ -207,4 +312,10 @@ def _reset_to_0269():
     finally:
         conn.close()
     command.upgrade(config, "20260814_0269")
+    return config
+
+
+def _reset_to_0270():
+    config = _reset_to_0269()
+    command.upgrade(config, "20260814_0270")
     return config

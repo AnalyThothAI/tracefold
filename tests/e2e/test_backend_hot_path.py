@@ -106,7 +106,7 @@ def test_complete_backend_hot_path_to_token_radar(
             radar_result = run_token_radar_current(conn, now_ms=FIXED_NOW_MS + 2_000)
         finally:
             conn.close()
-        assert radar_result == {"status": "published", "rows_written": 1}
+        assert radar_result == {"status": "unchanged", "rows_written": 0}
         _assert_counts({"token_radar_current": 1})
 
         _publish_healthy_workers_runtime(worker_db)

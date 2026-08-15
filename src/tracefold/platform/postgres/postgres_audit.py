@@ -78,6 +78,7 @@ NEWS_TABLES = (
     "news_brief_current",
     "news_push_state",
     "news_push_deliveries",
+    "news_item_title_presentations",
     "news_opennews_incidents",
 )
 

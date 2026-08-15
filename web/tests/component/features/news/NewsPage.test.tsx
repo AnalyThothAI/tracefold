@@ -557,7 +557,7 @@ describe("NewsPage", () => {
     expect(screen.queryByText("公共 RSS 覆盖与交叉印证")).not.toBeInTheDocument();
   });
 
-  it("renders the four public News layers on the standalone Status view", async () => {
+  it("renders the four public News layers and informational title presentation status", async () => {
     renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
 
     expect(await screen.findByRole("heading", { name: "新闻运行状态" })).toBeInTheDocument();
@@ -565,10 +565,14 @@ describe("NewsPage", () => {
     const ingest = (await screen.findByRole("heading", { name: "公开采集" })).closest("article");
     const story = screen.getByRole("heading", { name: "新闻事件" }).closest("article");
     const brief = screen.getByRole("heading", { name: "公共简报" }).closest("article");
+    const presentation = screen
+      .getByRole("heading", { name: "标题呈现（信息）" })
+      .closest("article");
     const push = screen.getByRole("heading", { name: "新闻推送" }).closest("article");
     expect(ingest).not.toBeNull();
     expect(story).not.toBeNull();
     expect(brief).not.toBeNull();
+    expect(presentation).not.toBeNull();
     expect(push).not.toBeNull();
     const primaryFact = within(ingest!).getByText("WSS 当前状态");
     const corroborationFact = within(ingest!).getByText("RSS 印证成功来源");
@@ -578,7 +582,7 @@ describe("NewsPage", () => {
     expect(within(ingest!).getByText("179/179")).toBeInTheDocument();
     expect(within(story!).getByText("当前事件").parentElement).toHaveTextContent("1");
     expect(within(brief!).getByText("公开状态").parentElement).toHaveTextContent("当前");
-    expect(within(push!).getByText("24 小时标题呈现").parentElement).toHaveTextContent(
+    expect(within(presentation!).getByText("24 小时呈现").parentElement).toHaveTextContent(
       "译文 1 · 无需 0 · 原文 0",
     );
     expect(within(push!).queryByRole("button")).not.toBeInTheDocument();
@@ -587,7 +591,7 @@ describe("NewsPage", () => {
   it("does not present capped 24-hour push samples as complete SLO evidence", async () => {
     const status = newsStatusFixture();
     status.layers.push.delivery_24h.sample_complete = false;
-    status.layers.push.translation_24h.sample_complete = false;
+    status.title_presentation.resolution_24h.sample_complete = false;
     server.use(
       http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
     );
@@ -595,8 +599,13 @@ describe("NewsPage", () => {
     renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
 
     const push = (await screen.findByRole("heading", { name: "新闻推送" })).closest("article");
+    const presentation = screen
+      .getByRole("heading", { name: "标题呈现（信息）" })
+      .closest("article");
     expect(push).not.toBeNull();
-    expect(within(push!).getAllByText("超过采样上限")).toHaveLength(2);
+    expect(presentation).not.toBeNull();
+    expect(within(push!).getAllByText("超过采样上限")).toHaveLength(1);
+    expect(within(presentation!).getAllByText("超过采样上限")).toHaveLength(1);
     expect(within(push!).queryByText("30.0 秒")).not.toBeInTheDocument();
     expect(within(push!).queryByText("1/1")).not.toBeInTheDocument();
   });

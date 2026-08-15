@@ -53,6 +53,7 @@ export function NewsStatusRoute({ token }: { token: string }) {
 
 function StatusDocument({ status }: { status: NewsStatus }) {
   const { brief, ingest, push, story } = status.layers;
+  const titlePresentation = status.title_presentation;
   const opennews = ingest.opennews;
   return (
     <div className="news-status-document">
@@ -151,10 +152,51 @@ function StatusDocument({ status }: { status: NewsStatus }) {
           />
         </StatusLayer>
 
+        <StatusLayer
+          title="标题呈现（信息）"
+          status={titlePresentation.status}
+          reasons={titlePresentation.reasons}
+        >
+          <StatusFact
+            label="DeepL"
+            value={
+              titlePresentation.deepl_configured
+                ? `已配置 ${titlePresentation.deepl_key_count} Key`
+                : "未配置"
+            }
+          />
+          <StatusFact
+            label="DeepSeek 降级"
+            value={titlePresentation.deepseek_configured ? "已配置" : "未配置"}
+          />
+          <StatusFact label="策略版本" value={titlePresentation.policy_version} />
+          <StatusFact label="待处理" value={String(titlePresentation.pending_count)} />
+          <StatusFact label="处理中" value={String(titlePresentation.resolving_count)} />
+          <StatusFact
+            label="最早阻塞 Push"
+            value={optionalTime(titlePresentation.oldest_push_blocking_at_ms)}
+          />
+          <StatusFact
+            label="DeepL / DeepSeek 时限"
+            value={`${optionalDuration(titlePresentation.deepl_deadline_ms)} / ${optionalDuration(titlePresentation.deepseek_deadline_ms)}`}
+          />
+          <StatusFact
+            label="24 小时呈现"
+            value={
+              titlePresentation.resolution_24h.sample_complete
+                ? `译文 ${titlePresentation.resolution_24h.translated} · 无需 ${titlePresentation.resolution_24h.not_needed} · 原文 ${titlePresentation.resolution_24h.fallback}`
+                : "超过采样上限"
+            }
+          />
+          <StatusFact
+            label="24 小时时延 P95"
+            value={optionalDuration(titlePresentation.resolution_24h.latency_p95_ms)}
+          />
+        </StatusLayer>
+
         <StatusLayer title="新闻推送" status={push.status} reasons={push.reasons}>
           <StatusFact label="配置意图" value={push.requested ? "已请求" : "未请求"} />
           <StatusFact label="飞书投递" value={push.delivery_available ? "可用" : "不可用"} />
-          <StatusFact label="标题翻译" value={push.translation_available ? "可用" : "原文降级"} />
           <StatusFact label="待发送" value={String(push.pending_count)} />
           <StatusFact label="发送中" value={String(push.sending_count)} />
           <StatusFact label="已发送" value={String(push.sent_count)} />
@@ -164,14 +206,6 @@ function StatusDocument({ status }: { status: NewsStatus }) {
             value={
               push.delivery_24h.sample_complete
                 ? optionalDuration(push.delivery_24h.latency_p95_ms)
-                : "超过采样上限"
-            }
-          />
-          <StatusFact
-            label="24 小时标题呈现"
-            value={
-              push.translation_24h.sample_complete
-                ? `译文 ${push.translation_24h.translated} · 无需 ${push.translation_24h.not_needed} · 原文 ${push.translation_24h.fallback}`
                 : "超过采样上限"
             }
           />

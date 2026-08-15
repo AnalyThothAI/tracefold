@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.platform.config.settings import Settings, news_push_availability
+from tracefold.platform.config.settings import (
+    Settings,
+    news_push_availability,
+    news_title_presentation_availability,
+)
 
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
 
@@ -40,13 +44,15 @@ def test_invalid_push_configuration_degrades_without_blocking_startup(
 
     assert availability.requested is True
     assert availability.delivery_available is False
-    assert availability.translation_available is False
     assert availability.reason == reason
 
 
-def test_push_and_translation_availability_are_independent() -> None:
+def test_push_and_title_presentation_availability_are_independent() -> None:
     settings = Settings(
-        news={"push": {"enabled": True, "feishu_webhook_url": _FEISHU_TEST_URL}},
+        news={
+            "title_presentation": {"deepl_api_keys": ["first:fx", "second:fx"]},
+            "push": {"enabled": True, "feishu_webhook_url": _FEISHU_TEST_URL},
+        },
         llm={
             "api_key": "secret",
             "base_url": "https://translator.test/v1",
@@ -58,12 +64,16 @@ def test_push_and_translation_availability_are_independent() -> None:
 
     assert availability.requested is True
     assert availability.delivery_available is True
-    assert availability.translation_available is True
     assert availability.reason is None
     assert availability.feishu_webhook_url_configured is True
     assert availability.feishu_signing_secret_configured is False
 
-    unrequested = news_push_availability(
+    presentation = news_title_presentation_availability(settings)
+    assert presentation.deepl_configured is True
+    assert presentation.deepl_key_count == 2
+    assert presentation.deepseek_configured is True
+
+    unrequested = news_title_presentation_availability(
         Settings(
             llm={
                 "api_key": "secret",
@@ -72,12 +82,12 @@ def test_push_and_translation_availability_are_independent() -> None:
             }
         )
     )
-    assert unrequested.requested is False
-    assert unrequested.delivery_available is False
-    assert unrequested.translation_available is True
+    assert unrequested.deepl_configured is False
+    assert unrequested.deepl_key_count == 0
+    assert unrequested.deepseek_configured is True
 
 
-def test_invalid_global_llm_url_disables_only_best_effort_translation() -> None:
+def test_invalid_global_llm_url_disables_only_deepseek_fallback() -> None:
     settings = Settings(
         news={"push": {"enabled": True, "feishu_webhook_url": _FEISHU_TEST_URL}},
         llm={
@@ -87,8 +97,18 @@ def test_invalid_global_llm_url_disables_only_best_effort_translation() -> None:
         },
     )
 
-    availability = news_push_availability(settings)
+    push_availability = news_push_availability(settings)
+    presentation = news_title_presentation_availability(settings)
 
-    assert availability.delivery_available is True
-    assert availability.translation_available is False
-    assert availability.reason is None
+    assert push_availability.delivery_available is True
+    assert push_availability.reason is None
+    assert presentation.deepseek_configured is False
+
+
+def test_deepl_keys_preserve_order_and_reject_duplicates() -> None:
+    settings = Settings(news={"title_presentation": {"deepl_api_keys": [" first:fx ", "second"]}})
+
+    assert settings.news.title_presentation.deepl_api_keys == ("first:fx", "second")
+
+    with pytest.raises(ValueError, match="news_title_presentation_deepl_api_keys_duplicate"):
+        Settings(news={"title_presentation": {"deepl_api_keys": ["same", " same "]}})

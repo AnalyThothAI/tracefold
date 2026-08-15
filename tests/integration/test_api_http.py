@@ -1023,7 +1023,6 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
             "reasons",
             "requested",
             "delivery_available",
-            "translation_available",
             "availability_reason",
             "state_synchronized",
             "feishu_webhook_url_configured",
@@ -1040,7 +1039,6 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         "reasons": [],
         "requested": False,
         "delivery_available": False,
-        "translation_available": False,
         "availability_reason": None,
         "state_synchronized": True,
         "feishu_webhook_url_configured": False,
@@ -1240,16 +1238,25 @@ def test_api_news_status_reports_item_push_without_secrets_or_story_state(tmp_pa
                 now_ms=now_ms,
                 error_code=None,
             )
+            repos.conn.execute(
+                """
+                UPDATE news_item_title_presentations
+                   SET state = 'resolved',
+                       display_title = original_title,
+                       outcome = 'fallback',
+                       policy_version = 'news_title_zh_v1',
+                       fallback_code = 'news_title_presentation_provider_unavailable',
+                       resolved_at_ms = %s,
+                       duration_ms = 0,
+                       updated_at_ms = %s
+                 WHERE state = 'pending'
+                """,
+                (now_ms, now_ms),
+            )
             pending = repos.news.peek_item_push()
             assert pending is not None
             repos.news.fence_item_push(
                 item_id=str(pending["item_id"]),
-                presentation_snapshot={
-                    "display_title": "Bitcoin issuer announces a spot fund decision",
-                    "outcome": "fallback",
-                    "fallback_code": "news_item_push_translation_unavailable",
-                    "translation_policy_version": "title_zh_v3",
-                },
                 attempted_at_ms=now_ms,
             )
             repos.news.terminalize_item_push(
@@ -1273,8 +1280,9 @@ def test_api_news_status_reports_item_push_without_secrets_or_story_state(tmp_pa
     assert push["sending_count"] == 0
     assert push["terminal_count"] == 1
     assert push["delivery_24h"]["terminal"] == 1
-    assert push["translation_24h"]["fallback"] == 1
     assert push["reasons"] == ["news_item_push_recent_terminal"]
+    presentation = status_response.json()["data"]["title_presentation"]
+    assert presentation["resolution_24h"]["fallback"] == 1
     rendered = json.dumps(status_response.json())
     assert "must-not-leak" not in rendered
     assert "item-status-hook" not in rendered
@@ -1350,6 +1358,87 @@ def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
         "error": "unsupported_query_param",
         "field": "view",
     }
+
+
+def test_news_feed_uses_exact_shared_title_without_changing_story_identity_or_search(tmp_path):
+    app = create_app(settings=make_settings(tmp_path))
+    now_ms = int(time.time() * 1000)
+    source = opennews_source()
+    original_title = "Bitcoin issuer announces a spot fund decision"
+
+    with TestClient(app) as client:
+        with write_repositories() as repos, repos.transaction():
+            repos.news.sync_sources((source,), now_ms=now_ms - 1_000)
+            repos.news.record_opennews_events(
+                source=source,
+                events=(
+                    _opennews_event(
+                        provider_record_id="shared-title-feed",
+                        title=original_title,
+                        description="The issuer published the decision.",
+                        published_at_ms=now_ms - 500,
+                        reporting_origin="issuer",
+                        provider_metadata={"score": 91},
+                    ),
+                ),
+                observed_at_ms=now_ms,
+            )
+            _rebuild_news_projection(repos, now_ms=now_ms)
+
+        headers = {"Authorization": "Bearer secret"}
+        before = client.get("/api/news/feed", headers=headers)
+        before_story = before.json()["data"]["stories"][0]
+        story_id = before_story["story_id"]
+        assert before_story["title"] == original_title
+        assert before_story["original_title"] == original_title
+
+        with write_repositories() as repos, repos.transaction():
+            repos.conn.execute(
+                """
+                UPDATE news_item_title_presentations
+                   SET state = 'resolved',
+                       display_title = '比特币发行方宣布现货基金决定',
+                       outcome = 'translated', provider = 'deepl',
+                       policy_version = 'news_title_zh_v1',
+                       attempted_at_ms = %s, resolved_at_ms = %s,
+                       duration_ms = 100, updated_at_ms = %s
+                 WHERE original_title = %s AND state = 'pending'
+                """,
+                (now_ms + 1, now_ms + 101, now_ms + 101, original_title),
+            )
+
+        after = client.get(
+            "/api/news/feed",
+            headers={**headers, "If-None-Match": before.headers["etag"]},
+        )
+        after_story = after.json()["data"]["stories"][0]
+        unchanged = client.get(
+            "/api/news/feed",
+            headers={**headers, "If-None-Match": after.headers["etag"]},
+        )
+        detail = client.get(f"/api/news/stories/{story_id}", headers=headers).json()["data"]
+        english_search = client.get(
+            "/api/news/feed",
+            params={"q": "spot fund decision"},
+            headers=headers,
+        ).json()["data"]
+        chinese_search = client.get(
+            "/api/news/feed",
+            params={"q": "比特币发行方"},
+            headers=headers,
+        ).json()["data"]
+
+    assert after.status_code == 200
+    assert before.headers["etag"] != after.headers["etag"]
+    assert unchanged.status_code == 304
+    assert after_story["title"] == "比特币发行方宣布现货基金决定"
+    assert after_story["original_title"] == original_title
+    assert detail["title"] == "比特币发行方宣布现货基金决定"
+    assert detail["original_title"] == original_title
+    assert detail["members"][0]["title"] == "比特币发行方宣布现货基金决定"
+    assert detail["members"][0]["original_title"] == original_title
+    assert [story["story_id"] for story in english_search["stories"]] == [story_id]
+    assert chinese_search["stories"] == []
 
 
 def test_api_news_feed_priority_search_reporting_origin_and_cursor_filters_are_server_authoritative(tmp_path):

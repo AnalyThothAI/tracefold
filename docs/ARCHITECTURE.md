@@ -112,11 +112,15 @@ likewise queue policy, not profile facts.
 The sealed `news_brief_current.served_payload` and rows in
 `macro_document_analyses` are derived model outputs bound to frozen evidence;
 they are not material facts.
+`news_item_title_presentations` is durable presentation state keyed by the
+Item and the exact UTF-8 SHA-256 of its original title. It is shared by Feed,
+Story detail, and Push, but never participates in acquisition, Story identity,
+classification, search, scoring, selection, or Brief input.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
 they freeze a no-backfill delivery epoch and one immutable `news_item_push_v1`
-snapshot for each eligible first-live OpenNews Item. A private turn may freeze
-one Chinese-title or original-title presentation decision, fence one Feishu
-attempt, and persist a sanitized sent or terminal outcome. There is no retry,
+snapshot for each eligible first-live OpenNews Item. Push references the exact
+shared title identity, fences one Feishu attempt, and persists a sanitized sent
+or terminal outcome. It owns no translation state. There is no retry,
 lease, rendered-card persistence, Story identity, or public notification
 product in this ledger.
 
@@ -453,9 +457,8 @@ OpenNews account Strategies
   -> authenticated persistent WSS; server automatically sends strategy.triggered
   -> no application subscribe/request; literal ping/pong and RFC control heartbeat only
   -> exact configured multi-Strategy allowlist
+  -> each accepted new/current title atomically creates one title-presentation intent
   -> first live Item insert + same-transaction Item Push outbox when available
-     -> one best-effort Chinese-title attempt or immediate original fallback
-     -> one signed or explicitly unsigned Feishu attempt; sent or terminal
   -> operator-bound, Strategy-qualified 12-hour current facts
   -> disconnect/overflow/outage records an explicit incident interval
   -> official Strategy list/hits recovery; no ordinary-news Search
@@ -465,6 +468,14 @@ WorldMonitor full/en + INTEL RSS catalog
   -> 179 physical feeds / 183 category memberships
   -> first five entries per feed before validation
   -> 96-hour breadth and corroboration snapshots
+  -> each accepted new/current title atomically creates the same presentation intent
+
+Title presentation turn
+  -> prioritize an exact title that blocks a live Push, then FIFO
+  -> DeepL once within 1.5 s -> DeepSeek once within 5 s -> original fallback
+  -> persist one immutable exact-title decision
+  -> Feed/detail use the display title and expose the original title
+  -> Push waits for that same decision, then attempts Feishu once
 
 RSS category membership expansion
   -> deterministic score before per-category Top 20
@@ -594,10 +605,10 @@ detail route returns not found. The separate `canonical_key` records the
 caller-owned public `titleHash` used by the digest first stage. Distinct lexical
 components may share that value, but never membership or selector grouping.
 There is no archived Story product, embedding, full-article extraction,
-browser clustering, revision product, per-Story AI analysis, or localized-title
-state. Outbound Push may independently freeze a Chinese presentation copy of
-its selected OpenNews Item headline, but that delivery-local adapter adds no
-model-derived NewsItem or Story state.
+browser clustering, revision product, or per-Story AI analysis. Shared title
+presentation is an exact-title display projection only; it adds no model-derived
+NewsItem or Story state and cannot change the original-text search/Story/Brief
+closure.
 
 Threat level and category use WorldMonitor's deterministic keyword classifier,
 including exclusions and historical downgrade. There is no item-level AI
@@ -680,7 +691,9 @@ exactly `unavailable`, `current`, `degraded`, or `last_known_good`.
 `NewsItemPush` is a News-owned durable outbound capability, not a model
 candidate or generic Notifications service. The sole OpenNews Item writer
 creates one outbox row in the same short transaction that first inserts an
-eligible live Item. Identity is the deterministic `item_id` over
+eligible live Item. The same Item transaction creates a title-presentation
+intent for every newly written exact title, whether it came from OpenNews, RSS,
+or recovery. Identity is the deterministic `item_id` over
 `(source_id, source_item_key)`; OpenNews uses `params.id`. Strategy overlap
 therefore creates one alert, while distinct provider IDs remain distinct even
 when Story later clusters them together. Recovery-first, pre-epoch, RSS, and
@@ -692,24 +705,38 @@ finish against its captured prior closure while a new Item/outbox commits; the
 post-commit dirty signal schedules the next deterministic closure. This keeps
 Story publication time and failure outside Item Push admission.
 
-One private `NewsItemPush.turn()` peeks FIFO pending work, optionally translates
-the title outside a transaction through a cancellable asynchronous request under
-a 5-second absolute deadline, conditionally
-fences `pending -> sending` with the minimal presentation snapshot, renders the
-Feishu card, performs at most one request, and settles `sent` or `terminal`.
-Translation failure always falls back to the original title, which remains
-visible. Feishu `code == 0` is the only success. There is no delivery retry,
+One private `NewsItemTitlePresentation.turn()` prioritizes an exact pending
+title that blocks Push and otherwise resolves FIFO. Chinese input and titles
+over 500 graphemes resolve without a provider. Other titles call the active
+DeepL key once under a 1.5-second absolute deadline, then call the configured
+DeepSeek adapter once under a 5-second deadline if DeepL fails. A permanently
+rejected or quota-exhausted DeepL key is retired in process for future Items;
+the current Item never retries with another DeepL key. Both provider failures
+resolve to the original. Startup resolves every interrupted `resolving` row to
+an explicit original-title fallback.
+
+`NewsItemPush.turn()` can see only a pending delivery whose exact shared title
+decision is resolved. It fences `pending -> sending`, renders the Feishu card,
+performs at most one request, and settles `sent` or `terminal`. Feishu
+`code == 0` is the only success. There is no delivery retry,
 backoff, lease, reaper, or exactly-once provider claim. A pre-fence crash leaves
 pending work; a post-fence or ambiguous interruption is terminalized at startup
 and never resent. Story projection never reads, writes, configures, or joins
 Push state, and Feed/detail expose no Push field.
 
-The complete live News storage boundary is exactly ten tables:
+After any external DeepL, DeepSeek, or Feishu call, failure to settle its fenced
+outcome is fatal to the Workers process root. This is not an application-wide
+business failure: Serve continues from PostgreSQL. It prevents the same process
+from continuing with an unknowable side-effect state; the supervisor restarts
+Workers, whose startup reconciliation converts `resolving`/`sending` ambiguity
+to deterministic fallback/terminal state without repeating the external call.
+
+The complete live News storage boundary is exactly eleven tables:
 `news_sources`, `news_items`, `news_stories`,
 `news_story_members`, `news_projection_summary`,
 `news_brief_selection_current`,
 `news_brief_current`,
-`news_push_state`, `news_push_deliveries`, and
+`news_item_title_presentations`, `news_push_state`, `news_push_deliveries`, and
 `news_opennews_incidents`. The
 `20260801_0234` migration removes incremental Story machinery,
 `20260801_0238` adds the durable push baseline and delivery ledger.
@@ -753,6 +780,11 @@ existing Push tables in place to Item identity. It preserves completed legacy
 audit and old rendered payloads as audit-only data, terminalizes incompatible
 unsent work, removes Story/retry/lease fields, resets enablement, and adds no
 table.
+`20260815_0271` is the current offline title-presentation hard cut. It adds the
+eleventh table, terminalizes every pre-cut nonterminal Push row, renames the old
+Push-owned presentation JSON to audit-only legacy data, and binds new Push rows
+to the exact shared title key. It does not backfill old Items or translations,
+call a provider, or retain a compatibility writer/reader.
 `20260813_0261` replaces Radar's expression index with the STORED generated
 fingerprint and its narrow covering index, preserving all facts and the current
 payload with no dual path.

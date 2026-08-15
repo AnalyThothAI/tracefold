@@ -700,6 +700,12 @@ function StoryHero({ story }: { story: NewsStory }) {
           {displayTitleIsLong ? <p>{displayTitle}</p> : null}
         </details>
       ) : null}
+      {story.original_title !== displayTitle ? (
+        <p className="news-original-title">
+          <span>原标题</span>
+          {story.original_title}
+        </p>
+      ) : null}
       {summary ? <p className="news-story-lead">{summary}</p> : null}
       <div className="news-story-support">
         <RelatedAssets assets={story.provider_evidence?.provider_metadata.assets} />
@@ -822,6 +828,12 @@ function StoryMemberCard({
         {isScoring ? <span>评分依据</span> : null}
       </header>
       <h3>{title}</h3>
+      {member.original_title !== member.title ? (
+        <p className="news-member-original-title">
+          <span>原标题</span>
+          {normalizeMemberEvidence(member.original_title)}
+        </p>
+      ) : null}
       {summary ? <p>{summary}</p> : null}
       <div className="news-member-actions">
         {member.url ? (

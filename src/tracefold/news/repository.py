@@ -24,6 +24,11 @@ from .models import (
 )
 from .opennews import OpenNewsEvent
 from .sources import OPENNEWS_SOURCE_ID
+from .title_presentation import (
+    DEEPL_DEADLINE_SECONDS,
+    DEEPSEEK_DEADLINE_SECONDS,
+    TITLE_PRESENTATION_POLICY_VERSION,
+)
 
 _ACTIVE_WINDOW_MS = 96 * 60 * 60 * 1000
 _STORY_ACTIVE_WINDOW_MS = 12 * 60 * 60 * 1000
@@ -50,6 +55,10 @@ def deterministic_id(namespace: str, *parts: object) -> str:
 def _sha256_json(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _title_fingerprint(title: str) -> str:
+    return hashlib.sha256(title.encode("utf-8")).hexdigest()
 
 
 def _canonical_url(value: str) -> str:
@@ -259,13 +268,14 @@ def _percentile_cont_ms(values: Sequence[int], percentile: float) -> int | None:
     return (numerator + 99) // 100
 
 
-def _incomplete_translation_sample() -> dict[str, Any]:
+def _incomplete_title_presentation_sample() -> dict[str, Any]:
     return {
         "total": 0,
         "attempted": 0,
         "translated": 0,
         "not_needed": 0,
         "fallback": 0,
+        "provider_counts": {},
         "latency_p95_ms": None,
         "fallback_counts": {},
         "sample_complete": False,
@@ -604,6 +614,7 @@ class NewsRepository:
                 "canonical_url": canonical_url,
                 "reporting_origin": source.name,
                 "title": title,
+                "source_title_fingerprint": _title_fingerprint(title),
                 "description": description,
                 "lang": language,
                 "published_at_ms": int(published_at_ms),
@@ -685,6 +696,19 @@ class NewsRepository:
             ).fetchone()
             if outcome is None:
                 continue
+            self.conn.execute(
+                """
+                INSERT INTO news_item_title_presentations (
+                  item_id, source_title_fingerprint, original_title, state,
+                  created_at_ms, updated_at_ms
+                ) VALUES (
+                  %(item_id)s, %(source_title_fingerprint)s, %(title)s,
+                  'pending', %(observed_at_ms)s, %(observed_at_ms)s
+                )
+                ON CONFLICT (item_id, source_title_fingerprint) DO NOTHING
+                """,
+                values,
+            )
             if bool(outcome["inserted"]):
                 inserted += 1
             else:
@@ -1018,6 +1042,7 @@ class NewsRepository:
                     "canonical_url": winner["canonical_url"],
                     "reporting_origin": winner["reporting_origin"],
                     "title": winner["title"],
+                    "source_title_fingerprint": _title_fingerprint(str(winner["title"])),
                     "description": winner["description"],
                     "lang": winner["lang"],
                     "published_at_ms": winner["published_at_ms"],
@@ -1052,6 +1077,7 @@ class NewsRepository:
                       canonical_url text,
                       reporting_origin text,
                       title text,
+                      source_title_fingerprint text,
                       description text,
                       lang text,
                       published_at_ms bigint,
@@ -1124,19 +1150,41 @@ class NewsRepository:
                   RETURNING current_item.item_id,
                             current_item.first_ingest_mode,
                             (xmax = 0) AS inserted
+                ), presentation_written AS (
+                  INSERT INTO news_item_title_presentations (
+                    item_id, source_title_fingerprint, original_title, state,
+                    display_title, outcome, provider, policy_version,
+                    fallback_code, created_at_ms, updated_at_ms,
+                    attempted_at_ms, resolved_at_ms, duration_ms
+                  )
+                  SELECT written.item_id, incoming.source_title_fingerprint,
+                         incoming.title, 'pending',
+                         NULL, NULL, NULL, NULL, NULL,
+                         incoming.observed_at_ms, incoming.observed_at_ms,
+                         NULL, NULL, NULL
+                    FROM written
+                    JOIN incoming USING (item_id)
+                   ORDER BY written.item_id, incoming.source_title_fingerprint
+                  ON CONFLICT (item_id, source_title_fingerprint) DO NOTHING
+                  RETURNING item_id, source_title_fingerprint
                 ), push_written AS (
                   INSERT INTO news_push_deliveries (
-                    item_id, live_observed_at_ms, source_payload,
-                    legacy_delivery_payload, presentation_snapshot,
+                    item_id, source_title_fingerprint,
+                    live_observed_at_ms, source_payload,
+                    legacy_delivery_payload, legacy_presentation_snapshot,
                     status, attempted_at_ms, receipt, last_error,
                     sent_at_ms, created_at_ms, updated_at_ms
                   )
-                  SELECT written.item_id, incoming.observed_at_ms,
+                  SELECT written.item_id, incoming.source_title_fingerprint,
+                         incoming.observed_at_ms,
                          incoming.push_payload, NULL, NULL,
                          'pending', NULL, NULL, NULL, NULL,
                          incoming.observed_at_ms, incoming.observed_at_ms
                     FROM written
                     JOIN incoming USING (item_id)
+                    JOIN presentation_written USING (
+                      item_id, source_title_fingerprint
+                    )
                     CROSS JOIN push_state
                    WHERE written.inserted
                      AND written.first_ingest_mode = 'live'
@@ -1979,7 +2027,7 @@ class NewsRepository:
                      last_error = 'news_item_push_interrupted_unknown',
                      updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
                WHERE status = 'sending'
-                 AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+                 AND source_title_fingerprint IS NOT NULL
               RETURNING item_id
             ), interrupted_count AS MATERIALIZED (
               SELECT count(*)::bigint AS value FROM interrupted
@@ -2038,11 +2086,27 @@ class NewsRepository:
     def peek_item_push(self) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT item_id, source_payload, live_observed_at_ms, created_at_ms
-              FROM news_push_deliveries
-             WHERE status = 'pending'
-               AND source_payload ->> 'schema_version' = 'news_item_push_v1'
-             ORDER BY live_observed_at_ms, item_id
+            SELECT delivery.item_id, delivery.source_payload,
+                   delivery.source_title_fingerprint,
+                   delivery.live_observed_at_ms, delivery.created_at_ms,
+                   jsonb_build_object(
+                     'display_title', presentation.display_title,
+                     'original_title', presentation.original_title,
+                     'outcome', presentation.outcome,
+                     'provider', presentation.provider,
+                     'policy_version', presentation.policy_version,
+                     'fallback_code', presentation.fallback_code,
+                     'duration_ms', presentation.duration_ms
+                   ) AS presentation
+              FROM news_push_deliveries delivery
+              JOIN news_item_title_presentations presentation
+                ON presentation.item_id = delivery.item_id
+               AND presentation.source_title_fingerprint =
+                   delivery.source_title_fingerprint
+               AND presentation.state = 'resolved'
+             WHERE delivery.status = 'pending'
+               AND delivery.source_title_fingerprint IS NOT NULL
+             ORDER BY delivery.live_observed_at_ms, delivery.item_id
              LIMIT 1
             """
         ).fetchone()
@@ -2052,7 +2116,6 @@ class NewsRepository:
         self,
         *,
         item_id: str,
-        presentation_snapshot: Mapping[str, Any],
         attempted_at_ms: int,
     ) -> dict[str, Any] | None:
         row = self.conn.execute(
@@ -2060,13 +2123,12 @@ class NewsRepository:
             WITH changed AS (
               UPDATE news_push_deliveries
                  SET status = 'sending',
-                     presentation_snapshot = %(presentation)s,
                      attempted_at_ms = %(attempted_at_ms)s,
                      updated_at_ms = greatest(updated_at_ms, %(attempted_at_ms)s)
                WHERE item_id = %(item_id)s
                  AND status = 'pending'
-                 AND source_payload ->> 'schema_version' = 'news_item_push_v1'
-              RETURNING item_id, source_payload, presentation_snapshot
+                 AND source_title_fingerprint IS NOT NULL
+              RETURNING item_id, source_payload, source_title_fingerprint
             ), summary AS (
               UPDATE news_push_state
                  SET pending_count = pending_count - 1,
@@ -2082,7 +2144,6 @@ class NewsRepository:
             """,
             {
                 "item_id": str(item_id),
-                "presentation": Jsonb(dict(presentation_snapshot)),
                 "attempted_at_ms": int(attempted_at_ms),
             },
         ).fetchone()
@@ -2105,7 +2166,7 @@ class NewsRepository:
                      updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
                WHERE item_id = %(item_id)s
                  AND status = 'sending'
-                 AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+                 AND source_title_fingerprint IS NOT NULL
               RETURNING item_id
             ), summary AS (
               UPDATE news_push_state
@@ -2152,7 +2213,7 @@ class NewsRepository:
                      updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
                WHERE item_id = %(item_id)s
                  AND status = 'sending'
-                 AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+                 AND source_title_fingerprint IS NOT NULL
               RETURNING item_id
             ), summary AS (
               UPDATE news_push_state
@@ -2233,17 +2294,65 @@ class NewsRepository:
             "latest_error_at_ms": (
                 int(state["latest_error_at_ms"]) if state["latest_error_at_ms"] is not None else None
             ),
-            "translation_24h": self._push_translation_24h_snapshot(now_ms=now_ms),
             "delivery_24h": self._push_delivery_24h_snapshot(now_ms=now_ms),
             "measured_at_ms": int(now_ms),
         }
 
-    def _push_translation_24h_snapshot(self, *, now_ms: int) -> dict[str, Any]:
-        query = query_specs.push_translation_samples_query(now_ms=now_ms)
+    def title_presentation_health_snapshot(
+        self,
+        *,
+        now_ms: int,
+        deepl_configured: bool,
+        deepl_key_count: int,
+        deepseek_configured: bool,
+    ) -> dict[str, Any]:
+        state_query = query_specs.title_presentation_state_query()
+        state = self.conn.execute(state_query.sql, state_query.params).fetchone()
+        if state is None:
+            raise RuntimeError("news_title_presentation_state_missing")
+        sample = self._title_presentation_24h_snapshot(now_ms=now_ms)
+        oldest_push_blocking_at_ms = (
+            int(state["oldest_push_blocking_at_ms"]) if state["oldest_push_blocking_at_ms"] is not None else None
+        )
+        oldest_resolving_at_ms = (
+            int(state["oldest_resolving_at_ms"]) if state["oldest_resolving_at_ms"] is not None else None
+        )
+        reasons: list[str] = []
+        if not deepl_configured and not deepseek_configured:
+            reasons.append("news_title_presentation_provider_unconfigured")
+        if oldest_push_blocking_at_ms is not None and now_ms - oldest_push_blocking_at_ms > 15_000:
+            reasons.append("news_title_presentation_push_blocking_slo_breached")
+        if oldest_resolving_at_ms is not None and now_ms - oldest_resolving_at_ms > 7_000:
+            reasons.append("news_title_presentation_resolving_stale")
+        if not bool(sample["sample_complete"]):
+            reasons.append("news_title_presentation_sample_overflow")
+        return {
+            "status": "degraded" if reasons else "ready",
+            "reasons": reasons,
+            "deepl_configured": bool(deepl_configured),
+            "deepl_key_count": int(deepl_key_count),
+            "deepseek_configured": bool(deepseek_configured),
+            "policy_version": TITLE_PRESENTATION_POLICY_VERSION,
+            "deepl_deadline_ms": round(DEEPL_DEADLINE_SECONDS * 1_000),
+            "deepseek_deadline_ms": round(DEEPSEEK_DEADLINE_SECONDS * 1_000),
+            "pending_count": int(state["pending_count"] or 0),
+            "resolving_count": int(state["resolving_count"] or 0),
+            "oldest_pending_at_ms": (
+                int(state["oldest_pending_at_ms"]) if state["oldest_pending_at_ms"] is not None else None
+            ),
+            "oldest_push_blocking_at_ms": oldest_push_blocking_at_ms,
+            "oldest_resolving_at_ms": oldest_resolving_at_ms,
+            "resolution_24h": sample,
+            "measured_at_ms": int(now_ms),
+        }
+
+    def _title_presentation_24h_snapshot(self, *, now_ms: int) -> dict[str, Any]:
+        query = query_specs.title_presentation_samples_query(now_ms=now_ms)
         rows = self.conn.execute(query.sql, query.params).fetchall()
         if len(rows) > query_specs.SLO_SAMPLE_LIMIT:
-            return _incomplete_translation_sample()
+            return _incomplete_title_presentation_sample()
         outcomes = Counter(str(row["outcome"] or "fallback") for row in rows)
+        providers = Counter(str(row["provider"]) for row in rows if row["provider"] is not None)
         durations = [
             int(row["duration_ms"]) for row in rows if row["duration_ms"] is not None and int(row["duration_ms"]) >= 0
         ]
@@ -2251,13 +2360,16 @@ class NewsRepository:
         for row in rows:
             if str(row["outcome"]) != "fallback":
                 continue
-            fallback_counts[_public_push_error(str(row["fallback_code"] or "news_item_push_translation_failed"))] += 1
+            fallback_counts[
+                _public_push_error(str(row["fallback_code"] or "news_title_presentation_provider_failed"))
+            ] += 1
         return {
             "total": len(rows),
-            "attempted": len(durations),
+            "attempted": sum(row["attempted_at_ms"] is not None for row in rows),
             "translated": outcomes["translated"],
             "not_needed": outcomes["not_needed"],
             "fallback": outcomes["fallback"],
+            "provider_counts": dict(sorted(providers.items())),
             "latency_p95_ms": _percentile_cont_95_ms(durations),
             "fallback_counts": dict(sorted(fallback_counts.items())),
             "sample_complete": True,
@@ -2312,10 +2424,12 @@ class NewsRepository:
         configured_strategy_count: int,
         push_requested: bool = False,
         push_delivery_available: bool = False,
-        push_translation_available: bool = False,
         push_unavailable_reason: str | None = None,
         feishu_webhook_url_configured: bool = False,
         feishu_signing_secret_configured: bool = False,
+        title_deepl_configured: bool = False,
+        title_deepl_key_count: int = 0,
+        title_deepseek_configured: bool = False,
         workers_state: str | None = None,
         workers_reason: str | None = None,
     ) -> dict[str, Any]:
@@ -2466,7 +2580,6 @@ class NewsRepository:
             "reasons": push_reasons,
             "requested": bool(push_requested),
             "delivery_available": bool(push_delivery_available),
-            "translation_available": bool(push_translation_available),
             "availability_reason": push_unavailable_reason,
             "state_synchronized": state_synchronized,
             "feishu_webhook_url_configured": (bool(feishu_webhook_url_configured)),
@@ -2517,6 +2630,12 @@ class NewsRepository:
             statuses.append(push_status)
         overall = "degraded" if "degraded" in statuses else "warming" if "warming" in statuses else "ready"
         operating_state = "stalled" if runtime_stalled else "recovering" if overall != "ready" else "live"
+        title_presentation = self.title_presentation_health_snapshot(
+            now_ms=now_ms,
+            deepl_configured=title_deepl_configured,
+            deepl_key_count=title_deepl_key_count,
+            deepseek_configured=title_deepseek_configured,
+        )
         return {
             "status": overall,
             "operating_state": operating_state,
@@ -2524,6 +2643,7 @@ class NewsRepository:
             "reasons": [f"{name}:{reason}" for name, details in layers.items() for reason in details["reasons"]],
             "realtime": realtime,
             "layers": layers,
+            "title_presentation": title_presentation,
             "measured_at_ms": now_ms,
         }
 
@@ -2584,7 +2704,8 @@ class NewsRepository:
 def _story_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "story_id": str(row["story_id"]),
-        "title": str(row["representative_title"]),
+        "title": str(row["display_title"]),
+        "original_title": str(row["representative_title"]),
         "description": str(row["representative_description"]),
         "url": str(row["representative_url"]) if row["representative_url"] else None,
         "source_id": str(row["representative_source_id"]),
@@ -2674,7 +2795,8 @@ def _item_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "source_name": str(row["source_name"]),
         "reporting_origin": str(row["reporting_origin"]),
         "tier": int(row["tier"]),
-        "title": str(row["title"]),
+        "title": str(row["display_title"]),
+        "original_title": str(row["title"]),
         "description": str(row["description"]),
         "url": str(row["canonical_url"]) if row["canonical_url"] else None,
         "lang": str(row["lang"]),

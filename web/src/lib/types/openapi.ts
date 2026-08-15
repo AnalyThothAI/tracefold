@@ -3076,30 +3076,6 @@ export interface components {
             terminal_count: number;
             /** Total Count */
             total_count: number;
-            translation_24h: components["schemas"]["NewsPushTranslation24hData"];
-            /** Translation Available */
-            translation_available: boolean;
-        };
-        /** NewsPushTranslation24hData */
-        NewsPushTranslation24hData: {
-            /** Attempted */
-            attempted: number;
-            /** Fallback */
-            fallback: number;
-            /** Fallback Counts */
-            fallback_counts: {
-                [key: string]: number;
-            };
-            /** Latency P95 Ms */
-            latency_p95_ms: number | null;
-            /** Not Needed */
-            not_needed: number;
-            /** Sample Complete */
-            sample_complete: boolean;
-            /** Total */
-            total: number;
-            /** Translated */
-            translated: number;
         };
         /** NewsRealtimeLatencyData */
         NewsRealtimeLatencyData: {
@@ -3253,6 +3229,7 @@ export interface components {
              * @enum {string}
              */
             status: "ready" | "warming" | "degraded";
+            title_presentation: components["schemas"]["NewsTitlePresentationStatusData"];
         };
         /** NewsStatusLayersData */
         NewsStatusLayersData: {
@@ -3284,6 +3261,8 @@ export interface components {
              * @enum {string}
              */
             level: "critical" | "high" | "medium" | "low" | "info";
+            /** Original Title */
+            original_title: string;
             provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
             /** Representative Item Id */
             representative_item_id: string;
@@ -3330,6 +3309,8 @@ export interface components {
             /** Members */
             members: components["schemas"]["NewsStoryMemberData"][];
             members_page: components["schemas"]["NewsStoryMembersPageData"];
+            /** Original Title */
+            original_title: string;
             provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
             /** Representative Item Id */
             representative_item_id: string;
@@ -3371,6 +3352,8 @@ export interface components {
              * @enum {string}
              */
             level: "critical" | "high" | "medium" | "low" | "info";
+            /** Original Title */
+            original_title: string;
             provider_metadata: components["schemas"]["NewsProviderMetadataData"];
             /** Provider Record Id */
             provider_record_id: string | null;
@@ -3435,6 +3418,66 @@ export interface components {
              * @enum {string}
              */
             status: "ready" | "warming" | "degraded";
+        };
+        /** NewsTitlePresentation24hData */
+        NewsTitlePresentation24hData: {
+            /** Attempted */
+            attempted: number;
+            /** Fallback */
+            fallback: number;
+            /** Fallback Counts */
+            fallback_counts: {
+                [key: string]: number;
+            };
+            /** Latency P95 Ms */
+            latency_p95_ms: number | null;
+            /** Not Needed */
+            not_needed: number;
+            /** Provider Counts */
+            provider_counts: {
+                [key: string]: number;
+            };
+            /** Sample Complete */
+            sample_complete: boolean;
+            /** Total */
+            total: number;
+            /** Translated */
+            translated: number;
+        };
+        /** NewsTitlePresentationStatusData */
+        NewsTitlePresentationStatusData: {
+            /** Deepl Configured */
+            deepl_configured: boolean;
+            /** Deepl Deadline Ms */
+            deepl_deadline_ms: number;
+            /** Deepl Key Count */
+            deepl_key_count: number;
+            /** Deepseek Configured */
+            deepseek_configured: boolean;
+            /** Deepseek Deadline Ms */
+            deepseek_deadline_ms: number;
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Oldest Pending At Ms */
+            oldest_pending_at_ms: number | null;
+            /** Oldest Push Blocking At Ms */
+            oldest_push_blocking_at_ms: number | null;
+            /** Oldest Resolving At Ms */
+            oldest_resolving_at_ms: number | null;
+            /** Pending Count */
+            pending_count: number;
+            /** Policy Version */
+            policy_version: string;
+            /** Reasons */
+            reasons: string[];
+            resolution_24h: components["schemas"]["NewsTitlePresentation24hData"];
+            /** Resolving Count */
+            resolving_count: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "degraded";
         };
         /** ProviderOperationalData */
         ProviderOperationalData: {

@@ -855,6 +855,10 @@ def test_news_item_push_delivery_overrun_terminalizes_and_stops_overlap() -> Non
                         "schema_version": "news_item_push_v1",
                         "original_title": "Bitcoin rises",
                     },
+                    "presentation": {
+                        "original_title": "Bitcoin rises",
+                        "display_title": "比特币上涨",
+                    },
                 }
             if operation_name == "news_item_push_fence":
                 return {"item_id": args[0]}
@@ -867,7 +871,6 @@ def test_news_item_push_delivery_overrun_terminalizes_and_stops_overlap() -> Non
     push = NewsItemPush(
         db=database,
         finite_operations=_SubmittedOverrunFiniteOperations(),
-        translator=None,
         sender=SimpleNamespace(
             send=lambda *_args, **_kwargs: NewsPushReceipt(provider="feishu"),
             close=lambda: None,

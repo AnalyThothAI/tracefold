@@ -35,9 +35,10 @@ from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
 from tracefold.integrations.news_feeds import RssFeedReader, parse_rss_feed_wire
-from tracefold.integrations.news_push import (
-    FeishuNewsPushSender,
-    OpenAICompatibleNewsPushTranslator,
+from tracefold.integrations.news_push import FeishuNewsPushSender
+from tracefold.integrations.news_title_presentation import (
+    DeepLTitleTranslationProvider,
+    OpenAICompatibleDeepSeekTitleProvider,
 )
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.macro import (
@@ -71,7 +72,12 @@ from tracefold.news import (
 )
 from tracefold.news.push import NewsItemPush
 from tracefold.news.sources import opennews_source, public_rss_sources
-from tracefold.platform.config.settings import Settings, news_push_availability
+from tracefold.news.title_presentation import NewsItemTitlePresentation
+from tracefold.platform.config.settings import (
+    Settings,
+    news_push_availability,
+    news_title_presentation_availability,
+)
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
@@ -165,6 +171,7 @@ class _Components:
     news: NewsAcquisition | None
     news_story: NewsStoryProjection | None
     news_brief: NewsBriefCandidate | None
+    news_title_presentation: NewsItemTitlePresentation | None
     news_push: NewsItemPush | None
     macro_source: MacroSourceClient | None
     macro_turns: tuple[MacroAcquisition, ...]
@@ -839,14 +846,25 @@ async def _wire_components(
     news_story: NewsStoryProjection | None = None
     news_brief: NewsBriefCandidate | None = None
     push_availability = news_push_availability(settings)
-    push_translator = (
-        OpenAICompatibleNewsPushTranslator(
+    title_availability = news_title_presentation_availability(settings)
+    deepl = (
+        DeepLTitleTranslationProvider(
+            api_keys=settings.news.title_presentation.deepl_api_keys,
+        )
+        if settings.news.enabled and title_availability.deepl_configured
+        else None
+    )
+    deepseek = (
+        OpenAICompatibleDeepSeekTitleProvider(
             base_url=str(settings.llm.base_url),
             api_key=str(settings.llm.api_key),
             model=str(settings.llm.news_brief_model),
         )
-        if push_availability.delivery_available and push_availability.translation_available
+        if settings.news.enabled and title_availability.deepseek_configured
         else None
+    )
+    news_title_presentation = (
+        NewsItemTitlePresentation(db=db, deepl=deepl, deepseek=deepseek) if settings.news.enabled else None
     )
     push_sender = (
         FeishuNewsPushSender(
@@ -859,7 +877,6 @@ async def _wire_components(
     news_push = NewsItemPush(
         db=db,
         finite_operations=finite,
-        translator=push_translator,
         sender=push_sender,
         delivery_available=push_availability.delivery_available,
     )
@@ -911,6 +928,7 @@ async def _wire_components(
         # The acquisition turn always advances bounded Item expiry. With RSS
         # disabled it has no claimable source and performs no network request.
         due_turns.append((news.turn, _NEWS_RSS_IDLE_SECONDS))
+        due_turns.append((news_title_presentation.turn, _DEFAULT_DUE_IDLE_SECONDS))
         model_candidates.append(news_brief)
         if push_availability.delivery_available:
             due_turns.append((news_push.turn, _DEFAULT_DUE_IDLE_SECONDS))
@@ -1036,6 +1054,7 @@ async def _wire_components(
         news=news,
         news_story=news_story,
         news_brief=news_brief,
+        news_title_presentation=news_title_presentation,
         news_push=news_push,
         macro_source=macro_source,
         macro_turns=tuple(macro_turns),
@@ -1052,6 +1071,8 @@ async def _reconcile_once(components: _Components) -> None:
     await components.asset_profile_refresh.reconcile()
     if components.news is not None:
         await components.news.reconcile()
+    if components.news_title_presentation is not None:
+        await components.news_title_presentation.reconcile(now_ms=_now_ms())
     if components.news_push is not None:
         await components.news_push.reconcile(now_ms=_now_ms())
     for turn in components.macro_turns:
@@ -1090,6 +1111,8 @@ async def _graceful_cleanup(
             await _within(components.news.close(), started_at)
         if components.news_brief is not None:
             await _within(components.news_brief.close(), started_at)
+        if components.news_title_presentation is not None:
+            await _within(components.news_title_presentation.close(), started_at)
         if components.news_push is not None:
             await _within(components.news_push.close(), started_at)
         if components.macro_source is not None:

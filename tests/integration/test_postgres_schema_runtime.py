@@ -87,6 +87,7 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_projection_summary",
     "news_brief_selection_current",
     "news_brief_current",
+    "news_item_title_presentations",
     "news_push_state",
     "news_push_deliveries",
     "news_opennews_incidents",
@@ -405,8 +406,11 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                 """,
                 (
                     [
+                        "ix_news_item_title_presentations_pending",
+                        "ix_news_item_title_presentations_resolving",
+                        "ix_news_item_title_presentations_resolved",
                         "ix_news_push_deliveries_pending",
-                        "ix_news_push_deliveries_translation_attempted",
+                        "ix_news_push_deliveries_attempted",
                         "ix_news_push_deliveries_completed",
                     ],
                 ),
@@ -608,12 +612,16 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert "INCLUDE (resolution_status, target_type, target_id)" in radar_resolution_index["indexdef"]
     assert news_member_score_index is None
     assert set(news_push_read_indexes) == {
+        "ix_news_item_title_presentations_pending",
+        "ix_news_item_title_presentations_resolving",
+        "ix_news_item_title_presentations_resolved",
         "ix_news_push_deliveries_pending",
-        "ix_news_push_deliveries_translation_attempted",
+        "ix_news_push_deliveries_attempted",
         "ix_news_push_deliveries_completed",
     }
-    assert "attempted_at_ms" in news_push_read_indexes["ix_news_push_deliveries_translation_attempted"]
-    assert "news_item_push_v1" in news_push_read_indexes["ix_news_push_deliveries_translation_attempted"]
+    assert "attempted_at_ms" in news_push_read_indexes["ix_news_push_deliveries_attempted"]
+    assert "source_title_fingerprint" in news_push_read_indexes["ix_news_push_deliveries_attempted"]
+    assert "state = 'pending'" in news_push_read_indexes["ix_news_item_title_presentations_pending"]
     assert projection_eligibility_indexes == {
         "idx_macro_module_frontiers_eligible",
         "idx_token_profile_projection_frontiers_eligible",
@@ -628,7 +636,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260814_0270"
+    assert version == latest_migration_version() == "20260815_0271"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -653,7 +661,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260814_0270"
+    assert version == latest_migration_version() == "20260815_0271"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -1105,7 +1113,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260814_0270"
+        assert version == latest_migration_version() == "20260815_0271"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

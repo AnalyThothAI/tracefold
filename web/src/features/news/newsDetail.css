@@ -97,6 +97,22 @@
     line-height: 1.6;
   }
 
+  .news-original-title,
+  .news-member-original-title {
+    max-width: 82ch;
+    margin: 0.55rem 0 0;
+    color: var(--muted-foreground);
+    font: 0.72rem/1.55 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  .news-original-title span,
+  .news-member-original-title span {
+    margin-right: 0.55rem;
+    color: var(--foreground);
+    font-weight: 650;
+  }
+
   .news-story-hero-footer {
     display: flex;
     gap: 1rem;

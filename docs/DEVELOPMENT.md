@@ -211,7 +211,7 @@ transaction; all five endpoints; generated contracts; and the responsive real
 labels L1/L2 as an enhancement, preserves linkless evidence, and exposes no
 publication history or personalized ranking.
 
-Current `20260814_0270` acceptance proves one fail-soft effective-availability
+Historical `20260814_0270` acceptance proves one fail-soft effective-availability
 epoch, same-transaction first-live Item/outbox creation, recovery/RSS/pre-epoch
 exclusion, immutable source snapshots, and two independent Push attempts for
 two provider Item IDs even when Story later merges them. It proves optional
@@ -223,6 +223,22 @@ terminalizes incompatible legacy unsent Story-policy rows while preserving
 completed legacy card audit and the Push enablement fence;
 absence of a signing secret is an explicit unsigned mode, never a fallback
 after a signed attempt fails.
+
+Current `20260815_0271` acceptance proves one durable exact-title presentation
+decision shared by Feed/detail and Push, with no history backfill or
+compatibility reader/writer. Every newly accepted OpenNews, recovery, or RSS
+title creates its intent atomically; current live Push-blocking work outranks
+the FIFO remainder. Chinese/oversized input bypasses providers. Other titles
+make at most one call with the active DeepL key, then at most one direct
+DeepSeek call, then settle the original. Permanent DeepL authentication/quota
+failure rotates only future Items; transient failure retains the key and the
+current Item never tries another DeepL key. Tests prove exact fingerprint
+matching, original-title search/Story/Brief semantics, provider deadlines,
+fallback visibility, startup reconciliation, and fatal Workers termination if
+a fenced external outcome cannot be settled. The hard cut adds the eleventh
+News table, terminalizes pre-cut nonterminal Push, preserves renamed legacy
+presentation JSON as audit only, and performs no migration-time provider or
+outbound call.
 
 Production cutover review records exactly `1018` (News Score > 70) and `1019`
 (OI Event Monitor), a redacted configured count of `2`, one redacted real

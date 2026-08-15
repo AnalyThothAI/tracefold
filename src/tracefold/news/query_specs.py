@@ -80,10 +80,19 @@ def feed_rows_query(
         name="news_feed_focus_rows",
         sql=f"""
             SELECT st.*, representative.reporting_origin
-                         AS representative_source_name
+                         AS representative_source_name,
+                   coalesce(presentation.display_title, st.representative_title)
+                     AS display_title
               FROM news_stories st
               JOIN news_items representative
                 ON representative.item_id = st.representative_item_id
+              LEFT JOIN news_item_title_presentations presentation
+                ON presentation.item_id = st.representative_item_id
+               AND presentation.source_title_fingerprint = encode(
+                     sha256(convert_to(st.representative_title, 'UTF8')),
+                     'hex'
+                   )
+               AND presentation.state = 'resolved'
              WHERE {" AND ".join(where)}
              ORDER BY {order}
              LIMIT %s
@@ -239,10 +248,19 @@ def story_query(*, story_id: str) -> ReadQuerySpec:
         name="news_story",
         sql="""
             SELECT st.*, representative.reporting_origin
-                         AS representative_source_name
+                         AS representative_source_name,
+                   coalesce(presentation.display_title, st.representative_title)
+                     AS display_title
               FROM news_stories st
               JOIN news_items representative
                 ON representative.item_id = st.representative_item_id
+              LEFT JOIN news_item_title_presentations presentation
+                ON presentation.item_id = st.representative_item_id
+               AND presentation.source_title_fingerprint = encode(
+                     sha256(convert_to(st.representative_title, 'UTF8')),
+                     'hex'
+                   )
+               AND presentation.state = 'resolved'
              WHERE st.story_id = %s
         """,
         params=(story_id,),
@@ -275,10 +293,18 @@ def story_members_query(
     return ReadQuerySpec(
         name="news_story_members",
         sql=f"""
-            SELECT i.*, i.reporting_origin AS source_name, src.tier
+            SELECT i.*, i.reporting_origin AS source_name, src.tier,
+                   coalesce(presentation.display_title, i.title) AS display_title
               FROM news_story_members m
               JOIN news_items i ON i.item_id = m.item_id
               JOIN news_sources src ON src.source_id = i.source_id
+              LEFT JOIN news_item_title_presentations presentation
+                ON presentation.item_id = i.item_id
+               AND presentation.source_title_fingerprint = encode(
+                     sha256(convert_to(i.title, 'UTF8')),
+                     'hex'
+                   )
+               AND presentation.state = 'resolved'
              WHERE {" AND ".join(where)}
              ORDER BY i.published_at_ms DESC, i.item_id
              LIMIT %s
@@ -459,31 +485,70 @@ def push_oldest_pending_query() -> ReadQuerySpec:
             SELECT live_observed_at_ms
               FROM news_push_deliveries
              WHERE status = 'pending'
-               AND source_payload ->> 'schema_version' = 'news_item_push_v1'
+               AND source_title_fingerprint IS NOT NULL
              ORDER BY live_observed_at_ms, item_id
              LIMIT 1
         """,
     )
 
 
-def push_translation_samples_query(*, now_ms: int) -> ReadQuerySpec:
+def title_presentation_state_query() -> ReadQuerySpec:
     return ReadQuerySpec(
-        name="news_push_translation_24h",
+        name="news_title_presentation_state",
         sql="""
-            SELECT presentation_snapshot ->> 'outcome' AS outcome,
-                   presentation_snapshot ->> 'fallback_code' AS fallback_code,
-                   CASE
-                     WHEN jsonb_typeof(
-                       presentation_snapshot -> 'translation_duration_ms'
-                     ) = 'number'
-                       THEN (
-                         presentation_snapshot ->> 'translation_duration_ms'
-                       )::bigint
-                   END AS duration_ms
-              FROM news_push_deliveries
-             WHERE source_payload ->> 'schema_version' = 'news_item_push_v1'
-               AND attempted_at_ms BETWEEN %s AND %s
-             ORDER BY attempted_at_ms DESC, item_id DESC
+            SELECT (
+                     SELECT count(*)
+                       FROM news_item_title_presentations
+                      WHERE state = 'pending'
+                   ) AS pending_count,
+                   (
+                     SELECT count(*)
+                       FROM news_item_title_presentations
+                      WHERE state = 'resolving'
+                   ) AS resolving_count,
+                   (
+                     SELECT created_at_ms
+                       FROM news_item_title_presentations
+                      WHERE state = 'pending'
+                      ORDER BY created_at_ms, item_id, source_title_fingerprint
+                      LIMIT 1
+                   ) AS oldest_pending_at_ms,
+                   (
+                     SELECT presentation.created_at_ms
+                       FROM news_item_title_presentations presentation
+                       JOIN news_push_deliveries delivery
+                         ON delivery.item_id = presentation.item_id
+                        AND delivery.source_title_fingerprint =
+                            presentation.source_title_fingerprint
+                        AND delivery.status = 'pending'
+                      WHERE presentation.state = 'pending'
+                      ORDER BY delivery.live_observed_at_ms,
+                               delivery.item_id
+                      LIMIT 1
+                   ) AS oldest_push_blocking_at_ms,
+                   (
+                     SELECT attempted_at_ms
+                       FROM news_item_title_presentations
+                      WHERE state = 'resolving'
+                      ORDER BY attempted_at_ms, item_id,
+                               source_title_fingerprint
+                      LIMIT 1
+                   ) AS oldest_resolving_at_ms
+        """,
+    )
+
+
+def title_presentation_samples_query(*, now_ms: int) -> ReadQuerySpec:
+    return ReadQuerySpec(
+        name="news_title_presentation_24h",
+        sql="""
+            SELECT outcome, provider, fallback_code, duration_ms,
+                   attempted_at_ms
+              FROM news_item_title_presentations
+             WHERE state = 'resolved'
+               AND resolved_at_ms BETWEEN %s AND %s
+             ORDER BY resolved_at_ms DESC, item_id DESC,
+                      source_title_fingerprint DESC
              LIMIT %s
         """,
         params=(int(now_ms) - _SLO_WINDOW_MS, int(now_ms), SLO_SAMPLE_LIMIT + 1),
@@ -548,7 +613,8 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         status_projection_query(),
         push_state_query(),
         push_oldest_pending_query(),
-        push_translation_samples_query(now_ms=now_ms),
+        title_presentation_state_query(),
+        title_presentation_samples_query(now_ms=now_ms),
         push_delivery_samples_query(now_ms=now_ms),
     )
 
@@ -670,7 +736,6 @@ __all__ = [
     "push_delivery_samples_query",
     "push_oldest_pending_query",
     "push_state_query",
-    "push_translation_samples_query",
     "sources_query",
     "status_inbound_latency_query",
     "status_opennews_incidents_query",
@@ -681,4 +746,6 @@ __all__ = [
     "story_members_query",
     "story_provider_evidence_query",
     "story_query",
+    "title_presentation_samples_query",
+    "title_presentation_state_query",
 ]

@@ -8,6 +8,7 @@ from tracefold.app.runtime_capabilities import macro_document_analysis_runtime
 from tracefold.platform.config.settings import (
     load_settings,
     news_push_availability,
+    news_title_presentation_availability,
     write_default_config,
 )
 from tracefold.platform.paths import config_path
@@ -38,6 +39,7 @@ def handle_init(args: object) -> tuple[int, dict[str, Any]]:
 def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     push_availability = news_push_availability(settings)
+    title_availability = news_title_presentation_availability(settings)
     return (
         0,
         {
@@ -82,10 +84,14 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "direct_configured": bool(settings.llm.api_key),
                         "groq_configured": bool(settings.llm.groq_api_key),
                     },
+                    "title_presentation": {
+                        "deepl_configured": title_availability.deepl_configured,
+                        "deepl_key_count": title_availability.deepl_key_count,
+                        "deepseek_configured": title_availability.deepseek_configured,
+                    },
                     "push": {
                         "requested": push_availability.requested,
                         "delivery_available": push_availability.delivery_available,
-                        "translation_available": push_availability.translation_available,
                         "reason": push_availability.reason,
                         "feishu_webhook_url_configured": (push_availability.feishu_webhook_url_configured),
                         "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),

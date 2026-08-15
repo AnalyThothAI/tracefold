@@ -199,6 +199,7 @@ class NewsImportanceFactorsData(ExactApiSchema):
 class NewsStoryData(ExactApiSchema):
     story_id: str
     title: str
+    original_title: str
     description: str
     url: str | None
     source_id: str
@@ -271,6 +272,7 @@ class NewsStoryMemberData(ExactApiSchema):
     reporting_origin: str
     tier: int
     title: str
+    original_title: str
     description: str
     url: str | None
     lang: str
@@ -570,12 +572,13 @@ class NewsBriefStatusData(ExactApiSchema):
     latest_run: NewsBriefRunData | None
 
 
-class NewsPushTranslation24hData(ExactApiSchema):
+class NewsTitlePresentation24hData(ExactApiSchema):
     total: int
     attempted: int
     translated: int
     not_needed: int
     fallback: int
+    provider_counts: dict[str, int]
     latency_p95_ms: int | None
     fallback_counts: dict[str, int]
     sample_complete: bool
@@ -595,7 +598,6 @@ class NewsPushStatusData(ExactApiSchema):
     reasons: list[str]
     requested: bool
     delivery_available: bool
-    translation_available: bool
     availability_reason: str | None
     state_synchronized: bool
     feishu_webhook_url_configured: bool
@@ -610,8 +612,25 @@ class NewsPushStatusData(ExactApiSchema):
     latest_sent_at_ms: int | None
     latest_error: str | None
     latest_error_at_ms: int | None
-    translation_24h: NewsPushTranslation24hData
     delivery_24h: NewsPushDelivery24hData
+    measured_at_ms: int
+
+
+class NewsTitlePresentationStatusData(ExactApiSchema):
+    status: Literal["ready", "degraded"]
+    reasons: list[str]
+    deepl_configured: bool
+    deepl_key_count: int
+    deepseek_configured: bool
+    policy_version: str
+    deepl_deadline_ms: int
+    deepseek_deadline_ms: int
+    pending_count: int
+    resolving_count: int
+    oldest_pending_at_ms: int | None
+    oldest_push_blocking_at_ms: int | None
+    oldest_resolving_at_ms: int | None
+    resolution_24h: NewsTitlePresentation24hData
     measured_at_ms: int
 
 
@@ -650,6 +669,7 @@ class NewsStatusData(ExactApiSchema):
     reasons: list[str]
     realtime: NewsRealtimeStatusData
     layers: NewsStatusLayersData
+    title_presentation: NewsTitlePresentationStatusData
     measured_at_ms: int
 
 

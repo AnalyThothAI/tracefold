@@ -341,17 +341,25 @@ UTC half-hour slot
   -> whole sealed English Insights payload or whole LKG
   -> /api/news/brief
 
+Every newly accepted exact OpenNews, recovery, or RSS title transaction
+  -> persist one NewsItem fact and one exact title-presentation intent together
+  -> no history backfill
+
+Independent title-presentation turn
+  -> prioritize one exact pending title blocking current live Push, else FIFO
+  -> Chinese/oversized title resolves directly to original
+  -> active DeepL key once within 1.5 s -> DeepSeek once within 5 s -> original
+  -> settle one shared resolved decision; interrupted resolving uses original
+
 First-inserted live OpenNews Item transaction
-  -> persist one immutable NewsItem fact
   -> when delivery is available and the observation is post-epoch, insert one
-     `news_item_push_v1` outbox row keyed by `(source_id, source_item_key)`
-  -> commit Item and outbox together; recovery, RSS, pre-epoch, and disabled or
-     unavailable delivery create no Push work and are never backfilled
+     `news_item_push_v1` outbox row bound to the exact title fingerprint
+  -> recovery, RSS, pre-epoch, and disabled or unavailable delivery create no
+     Push work and are never backfilled
 
 Independent Item Push turn
-  -> inspect one pending row
-  -> attempt title-only Chinese translation asynchronously once within 1.5 s, or use original
-  -> commit the immutable presentation and `sending` fence
+  -> inspect one pending row only after its exact shared title resolves
+  -> commit `sending` fence
   -> make one signed or explicitly unsigned Feishu attempt within 7.5 s
   -> settle once as `sent` or `terminal`; no retry, lease, or reaper
 
@@ -525,21 +533,20 @@ With a signing secret, each request carries the Feishu timestamp/signature pair;
 without one, the request deliberately carries neither. A signed request that
 fails is never retried unsigned.
 
-Optional translation reuses the configured direct DeepSeek `llm.api_key`,
-`llm.base_url`, and `llm.news_brief_model` triple; there is no independent
-`news.push.translation` endpoint, key, engine, inferred default, or fallback
-provider. It is an outbound presentation adapter outside the serial model
-arbiter and shared synchronous finite-operation threads. Each non-Chinese Item
-title receives at most one cancellable asynchronous provider call under a
-5-second absolute deadline. Chinese input bypasses the endpoint. Missing
-configuration, timeout, invalid output, and titles over 500 graphemes use the
-original immediately. Validation is structural only; acronyms, numbers, and
-asset-like text are not semantically anchored. A non-empty bounded Chinese
-result becomes the header and the original always remains visible. Translation outcomes are informational and
-never degrade delivery health.
+Title presentation is a shared News projection, not a Push step. Every newly
+accepted exact OpenNews, recovery, or RSS title creates one durable intent. One
+resolver prioritizes an exact title blocking live Push and otherwise processes
+FIFO. Non-Chinese titles call the active ordered
+`news.title_presentation.deepl_api_keys` entry once under 1.5 seconds and then
+the direct DeepSeek triple once under 5 seconds. Permanent DeepL auth/quota
+failure rotates the key for future Items only; transient failure does not, and
+the current Item never retries another key. Chinese/oversized input bypasses
+providers; missing configuration, timeout, or invalid output resolves to the
+original. Validation is structural only. Outcomes are informational and never
+degrade the four News health layers.
 
 The compact card is rendered only from the immutable Item source snapshot and
-frozen presentation. It shows reporting origin, provider publication time,
+its exact resolved shared presentation. It shows reporting origin, provider publication time,
 Strategy labels, available asset labels, optional score/signal/grade, and one
 `查看原文` button when a canonical HTTP(S) Item URL exists. A missing URL omits
 the button. No Story ID, Story score, cluster title, or derived summary is
@@ -547,9 +554,10 @@ rendered. `tracefold config`, status, and logs expose only requested/effective
 booleans and sanitized reason/error codes, never the webhook, signing secret,
 card, or title.
 
-The live News schema is exactly ten tables: `news_sources`, `news_items`,
+The live News schema is exactly eleven tables: `news_sources`, `news_items`,
 `news_stories`, `news_story_members`, `news_projection_summary`,
-`news_brief_selection_current`, `news_brief_current`, `news_push_state`, and
+`news_brief_selection_current`, `news_brief_current`,
+`news_item_title_presentations`, `news_push_state`, and
 `news_push_deliveries`, plus `news_opennews_incidents`.
 
 Diagnose News in this order:
@@ -561,24 +569,27 @@ Diagnose News in this order:
    breadth/corroboration schedule, claim, and outcome counts;
 3. `news_items`: source-local identity, immutable `first_ingest_mode`, source position, canonical
    headline/description/origin, bounded metadata, and content fingerprint;
-4. `news_story_members` and `news_stories`: current membership closure,
+4. `news_item_title_presentations`: exact title fingerprint, pending/resolving/
+   resolved state, shared display/original title, provider/outcome, sanitized
+   fallback code, and resolution age; prioritize any row blocking current Push;
+5. `news_story_members` and `news_stories`: current membership closure,
    full-SHA Story ID, state fingerprint, reporting-origin count, deterministic
    source/origin `facet_facts`, and score factors;
-5. `news_brief_selection_current`: singleton projection revision, complete
+6. `news_brief_selection_current`: singleton projection revision, complete
    Top Story evidence, selection fingerprints/statistics, and server order;
-6. `/api/news/feed`: flat global keyset order, server filters/search, and
+7. `/api/news/feed`: flat global keyset order, server filters/search, and
    complete filter-bound cursor;
-7. `news_brief_current`: UTC half-hour slot, frozen `active_selection`, fenced
+8. `news_brief_current`: UTC half-hour slot, frozen `active_selection`, fenced
    lease, bounded attempt/outcome/pointer telemetry, and whole
    current/LKG `served_payload`;
-8. `/api/news/brief`: ETag and truthful public state;
-9. `news_push_state` and `news_push_deliveries`: effective availability,
-   enablement epoch, immutable Item source/presentation snapshots, one delivery
-   fence, and explicit sent/terminal outcome;
-10. `/api/news/status`: warming/ready/degraded layer health plus
+9. `/api/news/brief`: ETag and truthful public state;
+10. `news_push_state` and `news_push_deliveries`: effective availability,
+   enablement epoch, immutable Item source snapshot, exact shared-presentation
+   reference, one delivery fence, and explicit sent/terminal outcome;
+11. `/api/news/status`: warming/ready/degraded layer health plus
    `live`/`recovering`/`stalled`, RSS/OpenNews ingest evidence, Story last success, Brief
    slot/current/LKG state, current Item Push counts, delivery latency, and
-   informational translation outcomes.
+   informational title-presentation queue/outcomes outside those layers.
 
 News health has four layers:
 
@@ -587,7 +598,7 @@ News health has four layers:
 | ingest | OpenNews has a live authenticated WSS, accepted configured Strategy facts when any have arrived, and no current transport error; RSS reports explicit enablement and, when enabled, breadth/corroboration counters | missing token/configuration is degraded, connected but never-seen is warming, and current disconnect/error is degraded; historical incident recovery is separate and does not turn a connected WSS red; enabled empty/warming/unavailable/partially failed RSS is corroboration evidence without masking or overriding OpenNews; disabled RSS adds no degradation reason |
 | story | the selected RSS/OpenNews population closes into coherent current Story aggregates and the Workers runtime is healthy | missing/duplicate ownership, aggregate mismatch, projection failure, Workers failure, or no current Stories yet |
 | brief | the current half-hour slot completed with healthy output | no payload is `warming`; degraded output or a whole last-known-good fallback is `degraded`, with bounded slot reason/next due visible |
-| push | disabled, or effective delivery is synchronized with an initialized enablement epoch, no recent terminal outcome, and current-policy delivery P95 is at most 15 seconds | requested but unavailable, unsynchronized state, missing epoch, a recent terminal outcome, delivery P95 above 15 seconds, or bounded-sample overflow; translation never degrades Push |
+| push | disabled, or effective delivery is synchronized with an initialized enablement epoch, no recent terminal outcome, and current-policy delivery P95 is at most 15 seconds | requested but unavailable, unsynchronized state, missing epoch, a recent terminal outcome, delivery P95 above 15 seconds, or bounded-sample overflow; title presentation never degrades Push |
 
 The operator state is `stalled` only when the persisted Workers runtime is no
 longer fresh/running.
@@ -733,17 +744,30 @@ incompatible unsent v1 deliveries; and makes Story publication the atomic v2
 outbox writer. After restart verify current WSS state, inbound/Story-visible
 P50/P95, official history availability, and incident recovery independently.
 
-Migration `20260814_0270` is the current offline News Item Push hard cut. Stop
+Migration `20260814_0270` is the historical offline News Item Push hard cut. Stop
 Serve and Workers before applying it. It reuses `news_push_state` and
 `news_push_deliveries`, requires an unambiguous legacy selected Item identity,
 terminalizes all incompatible unsent Story-policy rows, preserves completed
 legacy card audit, and removes Story identity, eligibility, retry, lease, and
-translation-preparation columns. Current rows are keyed by Item and carry only
-immutable source/presentation snapshots plus `pending`, `sending`, `sent`, or
-`terminal`. There is no backfill, compatibility reader, dual writer, provider
+translation-preparation columns. Rows from that schema were keyed by Item and
+carried `pending`, `sending`, `sent`, or `terminal`. There is no backfill,
+compatibility reader, dual writer, provider
 call, or outbound send during migration. Restart first reconciles effective
 availability and terminalizes interrupted `sending` rows, then only new live
 OpenNews Item transactions may create `news_item_push_v1` work.
+
+Migration `20260815_0271` is the current offline title-presentation hard cut.
+Stop Serve and Workers and take a PostgreSQL backup before applying it. It adds
+the eleventh News table, terminalizes pre-cut nonterminal Push rows, renames the
+old Push presentation JSON to audit-only legacy data, and binds new Push rows
+to the exact shared title fingerprint. There is no backfill, dual reader/writer,
+provider call, or outbound send during migration. On restart, title
+presentation reconciliation converts interrupted `resolving` rows to original
+fallback and Push reconciliation terminalizes interrupted `sending` rows;
+neither repeats an external call. A settlement failure after DeepL, DeepSeek,
+or Feishu is fatal to Workers so a process with unknowable side-effect state
+cannot continue; Serve remains available and the supervisor restart executes
+those reconciliations.
 
 ## Operator actions and retention
 
@@ -985,11 +1009,16 @@ that interim coverage shape with the incident ledger and official Strategy-hit
 recovery, and replaces the Push scan with same-transaction live Story outbox
 creation. Verify new live Stories create outbox rows without score/assets, while
 recovery-only and pre-enablement Stories do not; then verify Push latency/SLO.
-Current `20260814_0270` replaces that Story policy with same-transaction live
+Historical `20260814_0270` replaces that Story policy with same-transaction live
 Item outbox creation and zero-retry settlement. Verify two distinct provider
 Item IDs that later merge into one Story still create two independent Push
 attempts; Story failure must not block Push, and Push failure must not change
 Story/Feed/Brief.
+Current `20260815_0271` adds the shared exact-title decision before Push. Verify
+one title presentation is reused by Feed/detail and every matching Push, search
+still matches the original title only, Push-blocking work outranks RSS/recovery
+backlog, permanent DeepL rejection rotates only future work, and both providers
+failing still resolve the original without blocking delivery.
 
 Migration `20260810_0251` is the historical Rates v7 hard cut. Migration
 `20260811_0252` converts legacy steady `stale`/`invalid` acquisition targets to

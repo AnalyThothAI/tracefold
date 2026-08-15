@@ -19,6 +19,10 @@ from tracefold.news.opennews import OpenNewsEvent
 from tracefold.news.push import NewsItemPush, NewsPushExternalError, NewsPushReceipt
 from tracefold.news.repository import NewsRepository
 from tracefold.news.sources import opennews_source
+from tracefold.news.title_presentation import (
+    NewsItemTitlePresentation,
+    TitleTranslationError,
+)
 from tracefold.platform.config.settings import Settings
 
 BASE_MS = 1_785_560_400_000
@@ -151,7 +155,7 @@ def test_story_publication_lock_does_not_block_item_and_push_commit() -> None:
     assert dict(counts) == {"items": 1, "pushes": 1}
 
 
-def test_item_push_translates_before_fence_and_sends_once() -> None:
+def test_resolved_item_title_is_shared_with_push_and_sent_once() -> None:
     conn = connect_postgres_test(read_only=False)
     database: WorkerDatabase | None = None
     finite: FiniteOperations | None = None
@@ -185,21 +189,36 @@ def test_item_push_translates_before_fence_and_sends_once() -> None:
             telemetry=None,
         )
         finite = FiniteOperations()
+        presentation = NewsItemTitlePresentation(
+            db=database,
+            deepl=translator,
+            deepseek=None,
+            clock_ms=lambda: BASE_MS + 2_000,
+        )
         push = NewsItemPush(
             db=database,
             finite_operations=finite,
-            translator=translator,
             sender=sender,
             delivery_available=True,
             clock_ms=lambda: BASE_MS + 2_000,
         )
 
+        assert asyncio.run(presentation.turn()) is True
         assert asyncio.run(push.turn()) is True
         row = conn.execute(
             """
-            SELECT item_id, status, source_payload, presentation_snapshot,
-                   attempted_at_ms, receipt, sent_at_ms
-              FROM news_push_deliveries
+            SELECT delivery.item_id, delivery.status, delivery.source_payload,
+                   delivery.legacy_presentation_snapshot,
+                   delivery.attempted_at_ms, delivery.receipt,
+                   delivery.sent_at_ms, presentation.display_title,
+                   presentation.original_title, presentation.outcome,
+                   presentation.provider, presentation.duration_ms,
+                   presentation.policy_version
+              FROM news_push_deliveries delivery
+              JOIN news_item_title_presentations presentation
+                ON presentation.item_id = delivery.item_id
+               AND presentation.source_title_fingerprint =
+                   delivery.source_title_fingerprint
             """
         ).fetchone()
     finally:
@@ -215,14 +234,21 @@ def test_item_push_translates_before_fence_and_sends_once() -> None:
     assert row is not None
     assert row["status"] == "sent"
     assert row["source_payload"]["schema_version"] == "news_item_push_v1"
-    assert row["presentation_snapshot"] == {
+    assert row["legacy_presentation_snapshot"] is None
+    assert sender.calls[0]["presentation_snapshot"] == {
         "display_title": "伊朗尚未决定恢复与美国谈判",
+        "original_title": "Iran has not decided to resume US talks",
         "outcome": "translated",
-        "translation_duration_ms": 0,
-        "translation_policy_version": "title_zh_v5",
+        "provider": "deepl",
+        "policy_version": "news_title_zh_v1",
+        "fallback_code": None,
+        "duration_ms": 0,
     }
     assert sender.calls[0]["source_payload"] == row["source_payload"]
-    assert sender.calls[0]["presentation_snapshot"] == row["presentation_snapshot"]
+    assert row["display_title"] == "伊朗尚未决定恢复与美国谈判"
+    assert row["outcome"] == "translated"
+    assert row["provider"] == "deepl"
+    assert row["policy_version"] == "news_title_zh_v1"
     assert row["attempted_at_ms"] == BASE_MS + 2_000
     assert row["receipt"] == {
         "provider": "feishu",
@@ -232,7 +258,7 @@ def test_item_push_translates_before_fence_and_sends_once() -> None:
     assert row["sent_at_ms"] == BASE_MS + 2_000
 
 
-def test_translation_failure_falls_back_and_feishu_failure_is_terminal_without_retry() -> None:
+def test_provider_fallback_then_feishu_failure_is_terminal_without_retry() -> None:
     conn = connect_postgres_test(read_only=False)
     database: WorkerDatabase | None = None
     finite: FiniteOperations | None = None
@@ -255,21 +281,33 @@ def test_translation_failure_falls_back_and_feishu_failure_is_terminal_without_r
             telemetry=None,
         )
         finite = FiniteOperations()
+        presentation = NewsItemTitlePresentation(
+            db=database,
+            deepl=_FailingTranslator(),
+            deepseek=None,
+            clock_ms=lambda: BASE_MS + 2_000,
+        )
         push = NewsItemPush(
             db=database,
             finite_operations=finite,
-            translator=_FailingTranslator(),
             sender=sender,
             delivery_available=True,
             clock_ms=lambda: BASE_MS + 2_000,
         )
 
+        assert asyncio.run(presentation.turn()) is True
         assert asyncio.run(push.turn()) is True
         assert asyncio.run(push.turn()) is False
         row = conn.execute(
             """
-            SELECT status, presentation_snapshot, last_error
-              FROM news_push_deliveries
+            SELECT delivery.status, delivery.legacy_presentation_snapshot,
+                   delivery.last_error, presentation.display_title,
+                   presentation.outcome, presentation.fallback_code
+              FROM news_push_deliveries delivery
+              JOIN news_item_title_presentations presentation
+                ON presentation.item_id = delivery.item_id
+               AND presentation.source_title_fingerprint =
+                   delivery.source_title_fingerprint
             """
         ).fetchone()
     finally:
@@ -284,13 +322,10 @@ def test_translation_failure_falls_back_and_feishu_failure_is_terminal_without_r
     assert row is not None
     assert row["status"] == "terminal"
     assert row["last_error"] == "news_item_push_feishu_transport_failed"
-    assert row["presentation_snapshot"] == {
-        "display_title": "Strategy report fallback-terminal",
-        "fallback_code": "news_item_push_translation_rate_limited",
-        "outcome": "fallback",
-        "translation_duration_ms": 0,
-        "translation_policy_version": "title_zh_v5",
-    }
+    assert row["legacy_presentation_snapshot"] is None
+    assert row["display_title"] == "Strategy report fallback-terminal"
+    assert row["outcome"] == "fallback"
+    assert row["fallback_code"] == "news_title_presentation_deepl_rate_limited"
 
 
 def test_startup_terminalizes_preexisting_sending_even_when_delivery_is_unavailable() -> None:
@@ -311,15 +346,24 @@ def test_startup_terminalizes_preexisting_sending_even_when_delivery_is_unavaila
                 ingest_mode="live",
             )
             pending = repository.peek_item_push()
+            assert pending is None
+            conn.execute(
+                """
+                UPDATE news_item_title_presentations
+                   SET state = 'resolved', display_title = original_title,
+                       outcome = 'fallback', provider = NULL,
+                       policy_version = 'news_title_zh_v1',
+                       fallback_code = 'news_title_presentation_provider_unavailable',
+                       resolved_at_ms = %s, duration_ms = 0,
+                       updated_at_ms = %s
+                 WHERE state = 'pending'
+                """,
+                (BASE_MS + 2_000, BASE_MS + 2_000),
+            )
+            pending = repository.peek_item_push()
             assert pending is not None
             repository.fence_item_push(
                 item_id=str(pending["item_id"]),
-                presentation_snapshot={
-                    "display_title": "Strategy report interrupted",
-                    "outcome": "fallback",
-                    "fallback_code": "news_item_push_translation_unavailable",
-                    "translation_policy_version": "title_zh_v5",
-                },
                 attempted_at_ms=BASE_MS + 2_000,
             )
             outcome = repository.reconcile_item_push(
@@ -399,7 +443,7 @@ class _Sender:
 
 class _FailingTranslator:
     async def translate(self, _title: str) -> str:
-        raise NewsPushExternalError("news_item_push_translation_rate_limited")
+        raise TitleTranslationError("news_title_presentation_deepl_rate_limited")
 
     async def close(self) -> None:
         return None
@@ -499,7 +543,13 @@ def test_later_item_changes_and_live_replay_leave_first_push_snapshot_frozen() -
             row = conn.execute(
                 """
                 SELECT item.title, delivery.source_payload,
-                       (SELECT count(*) FROM news_push_deliveries) AS pushes
+                       delivery.source_title_fingerprint,
+                       (SELECT count(*) FROM news_push_deliveries) AS pushes,
+                       (
+                         SELECT count(*)
+                           FROM news_item_title_presentations
+                          WHERE item_id = item.item_id
+                       ) AS presentations
                   FROM news_items AS item
                   JOIN news_push_deliveries AS delivery USING (item_id)
                  WHERE item.provider_record_id = 'immutable-item'
@@ -513,7 +563,9 @@ def test_later_item_changes_and_live_replay_leave_first_push_snapshot_frozen() -
     assert changed_outcome["push_outbox_writes"] == 0
     assert row["title"] == "Later material title"
     assert row["pushes"] == 1
+    assert row["presentations"] == 2
     assert row["source_payload"]["original_title"] == "First accepted title"
+    assert row["source_title_fingerprint"] == ("027a0883971641943f78f331202dd50d9d0d0844f50d532ca7c4eea6669396fb")
     assert row["source_payload"]["score"] == 70
     assert row["source_payload"]["strategy_labels"] == ["1018 Strategy 1018"]
 
@@ -562,14 +614,22 @@ def test_two_items_that_merge_into_one_story_are_delivered_independently() -> No
             telemetry=None,
         )
         finite = FiniteOperations()
+        presentation = NewsItemTitlePresentation(
+            db=database,
+            deepl=None,
+            deepseek=None,
+            clock_ms=lambda: BASE_MS + 3_000,
+        )
         push = NewsItemPush(
             db=database,
             finite_operations=finite,
-            translator=None,
             sender=sender,
             delivery_available=True,
             clock_ms=lambda: BASE_MS + 3_000,
         )
+        assert asyncio.run(presentation.turn()) is True
+        assert asyncio.run(presentation.turn()) is True
+        assert asyncio.run(presentation.turn()) is False
         assert asyncio.run(push.turn()) is True
         assert asyncio.run(push.turn()) is True
         assert asyncio.run(push.turn()) is False

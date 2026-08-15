@@ -26,6 +26,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/app/workers.py": {
         "tracefold.news.push",
         "tracefold.news.sources",
+        "tracefold.news.title_presentation",
     },
     "src/tracefold/app/workers_runtime_collector.py": {
         "tracefold.market.radar.snapshot_repository",
@@ -40,6 +41,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.identity",
     },
     "src/tracefold/integrations/news_push.py": {"tracefold.news.push"},
+    "src/tracefold/integrations/news_title_presentation.py": {"tracefold.news.title_presentation"},
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
 }
 FORBIDDEN_CURRENT_IDENTITY_PARTS = {

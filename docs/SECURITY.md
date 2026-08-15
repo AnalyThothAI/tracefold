@@ -38,13 +38,13 @@ environment variables, or move code-owned safety budgets into
 
 `news_world_brief` and `macro_document_analysis` are the only production
 product-model consumers.
-Optional News Push title translation is an outbound presentation adapter, not
-a product model: it cannot write a NewsItem, Story, score, or read model.
+Shared News title translation is a bounded presentation adapter, not a product
+model: it cannot write a NewsItem, Story, score, or semantic read model.
 News acquisition, NewsItem classification, Story identity, importance
-scoring, membership, and ordering remain deterministic. Push preserves the
-selected OpenNews Item's original headline and freezes any translation only
-inside its Item-scoped presentation snapshot. The six Macro modules are also deterministic views
-over persisted facts.
+scoring, membership, search, and ordering remain deterministic. Its exact-title
+row preserves the original and adds only display metadata; Push references that
+same decision rather than owning or duplicating translation. The six Macro
+modules are also deterministic views over persisted facts.
 
 Token Radar publishes a canonical address for copying and source navigation;
 it does not publish a honeypot, holder, liquidity, Smart Money, contract-risk,
@@ -107,25 +107,27 @@ without one it deliberately sends an unsigned body containing neither field.
 Unsigned delivery has weaker request authentication and is an explicit
 operator choice, not a fallback after a signing error. In both modes the
 Adapter accepts only the configured Feishu webhook boundary and never follows
-redirects. Persisted Item source and presentation snapshots never contain the
+redirects. Persisted Item source snapshots and shared title-presentation rows never contain the
 webhook, signing secret, timestamp, signature, or complete rendered card. There
 is exactly one Feishu attempt after the durable `sending` fence and no retry.
 
-News Push title translation reuses the operator-owned direct DeepSeek
-`llm.api_key`, `llm.base_url`, and `llm.news_brief_model`; there is no
-`news.push.translation` secret, second copy, inferred endpoint/model, or
-fallback provider. When translation is available, only the immutable Item title is
-sent to DeepSeek; asset annotations, score, URL, description, Story data,
-Feishu webhook, and
-signing secret are never included. Configuration diagnostics expose only
-`requested`, `delivery_available`, `translation_available`, configured
-booleans, and a sanitized availability reason. The
-provider URL and key never enter logs, public status,
-generated artifacts, or frozen payloads. Frozen presentation metadata is
-non-secret and bounded to the display title, translated/not-needed/fallback
-outcome, translation policy version, optional sanitized fallback code, and
-optional elapsed milliseconds. The original title always remains visible in
-the final card.
+Shared title presentation uses the ordered operator-owned
+`news.title_presentation.deepl_api_keys` first and the direct DeepSeek
+`llm.api_key`, `llm.base_url`, and `llm.news_brief_model` triple second. DeepL
+keys are secrets: diagnostics expose only whether any key is configured and the
+key count, never values or the process-local active index. A permanent DeepL
+authentication or quota rejection advances that active index for future Items;
+it never exposes the rejected key or tries another key for the current Item.
+Only the exact immutable Item title is sent to either provider; asset
+annotations, score, URL, description, Story data, Feishu webhook, and signing
+secret are never included. Provider URLs and keys never enter logs, public
+status, generated artifacts, or presentation rows. Persisted presentation
+metadata is non-secret and bounded to original/display title,
+translated/not-needed/fallback outcome, policy/provider, a sanitized fallback
+code, and elapsed milliseconds. Feed/detail and every final card keep the
+original title visible when a distinct Chinese display title is used. Current
+Push rows reference the exact shared title decision and do not duplicate its
+presentation payload; the renamed legacy Push JSON remains audit-only.
 
 The public News Brief L1 model receives only ordered primary headlines,
 primary reporting origins, and distinct-source counts. It receives no Article

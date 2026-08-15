@@ -180,14 +180,15 @@ def test_news_story_load_captures_the_publish_fence_before_moving_facts(
     assert snapshot["current_input_fingerprint"] == "published-fingerprint"
 
 
-def test_news_story_publish_does_not_require_a_quiet_ingest_window(monkeypatch: Any) -> None:
+def test_news_story_publish_accepts_a_matching_locked_input_snapshot(monkeypatch: Any) -> None:
     conn = _NewsConnection(summary_fingerprint="previous-fingerprint")
     repository = NewsRepository(conn)
 
-    def moving_window_read(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise AssertionError("publication must not re-read the moving input window")
-
-    monkeypatch.setattr(story_store, "load_story_projection", moving_window_read)
+    monkeypatch.setattr(
+        story_store,
+        "load_story_projection",
+        lambda *_args, **_kwargs: {"input_fingerprint": "snapshot-fingerprint"},
+    )
     monkeypatch.setattr(story_store, "_publish_materialized_rows", lambda *_args, **_kwargs: (0, 0))
     for helper in ("_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
@@ -223,6 +224,11 @@ def test_news_story_publish_rejects_a_superseded_snapshot(monkeypatch: Any) -> N
 
     for helper in ("_publish_materialized_rows", "_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, unexpected_write)
+    monkeypatch.setattr(
+        story_store,
+        "load_story_projection",
+        lambda *_args, **_kwargs: {"input_fingerprint": "snapshot-fingerprint"},
+    )
 
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="snapshot-fingerprint",
@@ -252,6 +258,11 @@ def test_news_story_invariant_failure_is_not_hidden_as_a_moving_snapshot(monkeyp
     monkeypatch.setattr(story_store, "_publish_materialized_rows", lambda *_args, **_kwargs: (0, 0))
     for helper in ("_replace_memberships", "_delete_absent_stories"):
         monkeypatch.setattr(story_store, helper, lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        story_store,
+        "load_story_projection",
+        lambda *_args, **_kwargs: {"input_fingerprint": "snapshot-fingerprint"},
+    )
     snapshot = NewsProjectionSnapshot(
         input_fingerprint="snapshot-fingerprint",
         scoring_epoch_ms=0,

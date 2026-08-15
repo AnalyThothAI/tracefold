@@ -76,7 +76,8 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_brief",
         "news_push_state",
         "news_push_oldest_pending",
-        "news_push_translation_24h",
+        "news_title_presentation_state",
+        "news_title_presentation_24h",
         "news_push_delivery_24h",
     )
     assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
@@ -94,7 +95,7 @@ def test_app_catalog_rejects_aggregate_input_for_any_query_except_feed_facets():
                 amplification_basis="aggregate_input",
             ),
             ReadQuerySpec(
-                name="news_push_translation_24h",
+                name="news_title_presentation_24h",
                 sql="SELECT 1",
                 amplification_basis="aggregate_input",
             ),
@@ -117,10 +118,11 @@ _NEWS_QUERY_NAMES = (
     "news_status_projection",
     "news_push_state",
     "news_push_oldest_pending",
+    "news_title_presentation_state",
     "news_status_opennews_incidents",
     "news_status_inbound_latency",
     "news_status_story_latency",
-    "news_push_translation_24h",
+    "news_title_presentation_24h",
     "news_push_delivery_24h",
 )
 
@@ -160,7 +162,7 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert len(payload["news_schema"]["actual_tables"]) == 10
+    assert len(payload["news_schema"]["actual_tables"]) == 11
     assert "news_story_title_translations" not in payload["projection_schema"]
     assert "projection_offsets" not in payload["projection_schema"]
     assert "projection_runs" not in payload["projection_schema"]
@@ -496,7 +498,7 @@ def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_his
     assert facets["metrics"]["temp_written_blocks"] == 0
 
 
-def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_path):
+def test_news_push_and_title_presentation_health_audits_are_bounded(tmp_path):
     audit_now_ms = 1_800_000_000_000
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
@@ -513,9 +515,91 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
         )
         conn.execute(
             """
+            INSERT INTO news_sources(
+              source_id, name, tier, lang, enabled, consecutive_failures,
+              created_at_ms, updated_at_ms, source_kind, live_connected
+            ) VALUES (
+              'news-opennews', 'OpenNews', 1, 'en', true, 0,
+              0, 0, 'opennews', false
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO news_items(
+              item_id, source_id, source_item_key, provider_record_id,
+              provider_metadata, first_ingest_mode,
+              reporting_origin, title, description, lang,
+              published_at_ms, first_observed_at_ms, last_observed_at_ms,
+              content_fingerprint, level, category, classification_source,
+              classification_confidence, importance_score, importance_factors,
+              active, created_at_ms, updated_at_ms
+            )
+            SELECT 'news_item_' || md5(value::text), 'news-opennews',
+                   'provider-' || value, 'provider-' || value,
+                   jsonb_build_object(
+                     'strategies', jsonb_build_array(
+                       jsonb_build_object('id', '1018')
+                     )
+                   ), 'live', 'OpenNews', 'Title ' || value,
+                   '', 'en', %s - 61000, %s - 60000, %s - 60000,
+                   md5('content-' || value), 'info', 'general', 'keyword',
+                   1, 1, '{}'::jsonb, true, %s - 60000, %s - 60000
+              FROM generate_series(1, 12000) value
+            """,
+            (
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO news_item_title_presentations(
+              item_id, source_title_fingerprint, original_title, state,
+              display_title, outcome, provider, policy_version,
+              fallback_code, created_at_ms, updated_at_ms,
+              attempted_at_ms, resolved_at_ms, duration_ms
+            )
+            SELECT 'news_item_' || md5(value::text),
+                   encode(sha256(convert_to('Title ' || value, 'UTF8')), 'hex'),
+                   'Title ' || value, 'resolved',
+                   CASE WHEN value %% 10 = 0
+                     THEN 'Title ' || value ELSE '标题 ' || value END,
+                   CASE WHEN value %% 10 = 0 THEN 'fallback' ELSE 'translated' END,
+                   CASE WHEN value %% 10 = 0 THEN NULL ELSE 'deepl' END,
+                   'news_title_zh_v1',
+                   CASE WHEN value %% 10 = 0
+                     THEN 'news_title_presentation_deepl_rate_limited' END,
+                   CASE WHEN value <= 200 THEN %s - value - 1000
+                     ELSE %s - 172800000 - value - 1000 END,
+                   CASE WHEN value <= 200 THEN %s - value
+                     ELSE %s - 172800000 - value END,
+                   CASE WHEN value <= 200 THEN %s - value - 1000
+                     ELSE %s - 172800000 - value - 1000 END,
+                   CASE WHEN value <= 200 THEN %s - value
+                     ELSE %s - 172800000 - value END,
+                   1000
+              FROM generate_series(1, 12000) value
+            """,
+            (
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+                audit_now_ms,
+            ),
+        )
+        conn.execute(
+            """
             INSERT INTO news_push_deliveries(
               item_id, live_observed_at_ms, source_payload,
-              presentation_snapshot, status, attempted_at_ms,
+              source_title_fingerprint, status, attempted_at_ms,
               receipt, last_error, sent_at_ms, created_at_ms, updated_at_ms
             )
             SELECT 'news_item_' || md5(value::text),
@@ -531,15 +615,7 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
                      'strategy_labels', jsonb_build_array('1018 News Score > 70'),
                      'assets', '[]'::jsonb
                    ),
-                   jsonb_strip_nulls(jsonb_build_object(
-                     'display_title', '标题 ' || value,
-                     'outcome', CASE WHEN value %% 10 = 0 THEN 'fallback' ELSE 'translated' END,
-                     'translation_policy_version', 'title_zh_v3',
-                     'translation_duration_ms', 1000 + value %% 2500,
-                     'fallback_code', CASE
-                       WHEN value %% 10 = 0 THEN 'news_item_push_translation_rate_limited'
-                     END
-                   )),
+                   encode(sha256(convert_to('Title ' || value, 'UTF8')), 'hex'),
                    CASE WHEN value %% 2 = 0 THEN 'sent' ELSE 'terminal' END,
                    CASE
                      WHEN value <= 200 THEN %s - value
@@ -585,9 +661,17 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
             """
         )
         conn.commit()
+        _vacuum_analyze(conn, "news_item_title_presentations")
         _vacuum_analyze(conn, "news_push_deliveries")
 
-        snapshot = NewsRepository(conn).push_health_snapshot(now_ms=audit_now_ms)
+        repository = NewsRepository(conn)
+        snapshot = repository.push_health_snapshot(now_ms=audit_now_ms)
+        presentation_snapshot = repository.title_presentation_health_snapshot(
+            now_ms=audit_now_ms,
+            deepl_configured=True,
+            deepl_key_count=2,
+            deepseek_configured=True,
+        )
         payload = PostgresQueryAudit(
             conn,
             catalog=_composed_catalog(now_ms=audit_now_ms),
@@ -600,10 +684,13 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
     assert snapshot["pending_count"] == 0
     assert snapshot["sent_count"] == 6000
     assert snapshot["terminal_count"] == 6000
-    assert snapshot["translation_24h"]["total"] == 200
-    assert snapshot["translation_24h"]["attempted"] == 200
-    assert snapshot["translation_24h"]["translated"] == 180
-    assert snapshot["translation_24h"]["fallback_counts"] == {"news_item_push_translation_rate_limited": 20}
+    assert presentation_snapshot["resolution_24h"]["total"] == 200
+    assert presentation_snapshot["resolution_24h"]["attempted"] == 200
+    assert presentation_snapshot["resolution_24h"]["translated"] == 180
+    assert presentation_snapshot["resolution_24h"]["provider_counts"] == {"deepl": 180}
+    assert presentation_snapshot["resolution_24h"]["fallback_counts"] == {
+        "news_title_presentation_deepl_rate_limited": 20
+    }
     assert snapshot["delivery_24h"]["completed"] == 200
     assert snapshot["delivery_24h"]["sent"] == 100
     assert snapshot["delivery_24h"]["terminal"] == 100
@@ -611,7 +698,8 @@ def test_news_push_health_audit_is_bounded_and_preserves_snapshot_semantics(tmp_
     for query_name in (
         "news_push_state",
         "news_push_oldest_pending",
-        "news_push_translation_24h",
+        "news_title_presentation_state",
+        "news_title_presentation_24h",
         "news_push_delivery_24h",
     ):
         query = queries[query_name]

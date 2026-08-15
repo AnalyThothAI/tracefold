@@ -242,6 +242,31 @@ class NewsPushSettings(BaseModel):
         return normalized or None
 
 
+class NewsTitlePresentationSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    deepl_api_keys: tuple[str, ...] = Field(default=(), repr=False)
+
+    @field_validator("deepl_api_keys", mode="before")
+    @classmethod
+    def parse_deepl_api_keys(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, list | tuple):
+            raise ValueError("news_title_presentation_deepl_api_keys_invalid")
+        normalized: list[str] = []
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError("news_title_presentation_deepl_api_key_invalid")
+            key = raw.strip()
+            if not key or "\x00" in key or len(key) > 512:
+                raise ValueError("news_title_presentation_deepl_api_key_invalid")
+            normalized.append(key)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("news_title_presentation_deepl_api_keys_duplicate")
+        return tuple(normalized)
+
+
 class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -249,6 +274,7 @@ class NewsSettings(BaseModel):
     rss_enabled: bool = False
     opennews_token: str | None = None
     opennews_strategy_ids: tuple[str, ...] = ()
+    title_presentation: NewsTitlePresentationSettings = Field(default_factory=NewsTitlePresentationSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
 
     @field_validator("opennews_token", mode="before")
@@ -350,7 +376,6 @@ class Settings(BaseModel):
 class NewsPushAvailability:
     requested: bool
     delivery_available: bool
-    translation_available: bool
     reason: str | None
     feishu_webhook_url_configured: bool
     feishu_signing_secret_configured: bool
@@ -360,9 +385,6 @@ def news_push_availability(settings: Settings) -> NewsPushAvailability:
     push = settings.news.push
     requested = push.enabled
     webhook_configured = bool(push.feishu_webhook_url)
-    translation_available = bool(
-        settings.llm.api_key and settings.llm.news_brief_model and _is_http_base_url(settings.llm.base_url)
-    )
     reason: str | None = None
     if requested and not settings.news.enabled:
         reason = "news_item_push_news_disabled"
@@ -373,10 +395,30 @@ def news_push_availability(settings: Settings) -> NewsPushAvailability:
     return NewsPushAvailability(
         requested=requested,
         delivery_available=requested and reason is None,
-        translation_available=translation_available,
         reason=reason,
         feishu_webhook_url_configured=webhook_configured,
         feishu_signing_secret_configured=bool(push.feishu_signing_secret),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class NewsTitlePresentationAvailability:
+    deepl_configured: bool
+    deepl_key_count: int
+    deepseek_configured: bool
+
+
+def news_title_presentation_availability(
+    settings: Settings,
+) -> NewsTitlePresentationAvailability:
+    key_count = len(settings.news.title_presentation.deepl_api_keys)
+    deepseek_configured = bool(
+        settings.llm.api_key and settings.llm.news_brief_model and _is_http_base_url(settings.llm.base_url)
+    )
+    return NewsTitlePresentationAvailability(
+        deepl_configured=key_count > 0,
+        deepl_key_count=key_count,
+        deepseek_configured=deepseek_configured,
     )
 
 
@@ -513,6 +555,8 @@ news:
   rss_enabled: false
   opennews_token:
   opennews_strategy_ids: []
+  title_presentation:
+    deepl_api_keys: []
   push:
     enabled: false
     feishu_webhook_url:

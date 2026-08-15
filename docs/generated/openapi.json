@@ -8703,13 +8703,6 @@
           "total_count": {
             "title": "Total Count",
             "type": "integer"
-          },
-          "translation_24h": {
-            "$ref": "#/components/schemas/NewsPushTranslation24hData"
-          },
-          "translation_available": {
-            "title": "Translation Available",
-            "type": "boolean"
           }
         },
         "required": [
@@ -8717,7 +8710,6 @@
           "reasons",
           "requested",
           "delivery_available",
-          "translation_available",
           "availability_reason",
           "state_synchronized",
           "feishu_webhook_url_configured",
@@ -8732,70 +8724,10 @@
           "latest_sent_at_ms",
           "latest_error",
           "latest_error_at_ms",
-          "translation_24h",
           "delivery_24h",
           "measured_at_ms"
         ],
         "title": "NewsPushStatusData",
-        "type": "object"
-      },
-      "NewsPushTranslation24hData": {
-        "additionalProperties": false,
-        "properties": {
-          "attempted": {
-            "title": "Attempted",
-            "type": "integer"
-          },
-          "fallback": {
-            "title": "Fallback",
-            "type": "integer"
-          },
-          "fallback_counts": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Fallback Counts",
-            "type": "object"
-          },
-          "latency_p95_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latency P95 Ms"
-          },
-          "not_needed": {
-            "title": "Not Needed",
-            "type": "integer"
-          },
-          "sample_complete": {
-            "title": "Sample Complete",
-            "type": "boolean"
-          },
-          "total": {
-            "title": "Total",
-            "type": "integer"
-          },
-          "translated": {
-            "title": "Translated",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "total",
-          "attempted",
-          "translated",
-          "not_needed",
-          "fallback",
-          "latency_p95_ms",
-          "fallback_counts",
-          "sample_complete"
-        ],
-        "title": "NewsPushTranslation24hData",
         "type": "object"
       },
       "NewsRealtimeLatencyData": {
@@ -9336,6 +9268,9 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "title_presentation": {
+            "$ref": "#/components/schemas/NewsTitlePresentationStatusData"
           }
         },
         "required": [
@@ -9345,6 +9280,7 @@
           "reasons",
           "realtime",
           "layers",
+          "title_presentation",
           "measured_at_ms"
         ],
         "title": "NewsStatusData",
@@ -9432,6 +9368,10 @@
             "title": "Level",
             "type": "string"
           },
+          "original_title": {
+            "title": "Original Title",
+            "type": "string"
+          },
           "provider_evidence": {
             "anyOf": [
               {
@@ -9485,6 +9425,7 @@
         "required": [
           "story_id",
           "title",
+          "original_title",
           "description",
           "url",
           "source_id",
@@ -9575,6 +9516,10 @@
           "members_page": {
             "$ref": "#/components/schemas/NewsStoryMembersPageData"
           },
+          "original_title": {
+            "title": "Original Title",
+            "type": "string"
+          },
           "provider_evidence": {
             "anyOf": [
               {
@@ -9628,6 +9573,7 @@
         "required": [
           "story_id",
           "title",
+          "original_title",
           "description",
           "url",
           "source_id",
@@ -9707,6 +9653,10 @@
             "title": "Level",
             "type": "string"
           },
+          "original_title": {
+            "title": "Original Title",
+            "type": "string"
+          },
           "provider_metadata": {
             "$ref": "#/components/schemas/NewsProviderMetadataData"
           },
@@ -9766,6 +9716,7 @@
           "reporting_origin",
           "tier",
           "title",
+          "original_title",
           "description",
           "url",
           "lang",
@@ -9947,6 +9898,184 @@
           "last_error"
         ],
         "title": "NewsStoryStatusData",
+        "type": "object"
+      },
+      "NewsTitlePresentation24hData": {
+        "additionalProperties": false,
+        "properties": {
+          "attempted": {
+            "title": "Attempted",
+            "type": "integer"
+          },
+          "fallback": {
+            "title": "Fallback",
+            "type": "integer"
+          },
+          "fallback_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Fallback Counts",
+            "type": "object"
+          },
+          "latency_p95_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency P95 Ms"
+          },
+          "not_needed": {
+            "title": "Not Needed",
+            "type": "integer"
+          },
+          "provider_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Provider Counts",
+            "type": "object"
+          },
+          "sample_complete": {
+            "title": "Sample Complete",
+            "type": "boolean"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "translated": {
+            "title": "Translated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "attempted",
+          "translated",
+          "not_needed",
+          "fallback",
+          "provider_counts",
+          "latency_p95_ms",
+          "fallback_counts",
+          "sample_complete"
+        ],
+        "title": "NewsTitlePresentation24hData",
+        "type": "object"
+      },
+      "NewsTitlePresentationStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "deepl_configured": {
+            "title": "Deepl Configured",
+            "type": "boolean"
+          },
+          "deepl_deadline_ms": {
+            "title": "Deepl Deadline Ms",
+            "type": "integer"
+          },
+          "deepl_key_count": {
+            "title": "Deepl Key Count",
+            "type": "integer"
+          },
+          "deepseek_configured": {
+            "title": "Deepseek Configured",
+            "type": "boolean"
+          },
+          "deepseek_deadline_ms": {
+            "title": "Deepseek Deadline Ms",
+            "type": "integer"
+          },
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "oldest_pending_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Pending At Ms"
+          },
+          "oldest_push_blocking_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Push Blocking At Ms"
+          },
+          "oldest_resolving_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Resolving At Ms"
+          },
+          "pending_count": {
+            "title": "Pending Count",
+            "type": "integer"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "resolution_24h": {
+            "$ref": "#/components/schemas/NewsTitlePresentation24hData"
+          },
+          "resolving_count": {
+            "title": "Resolving Count",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reasons",
+          "deepl_configured",
+          "deepl_key_count",
+          "deepseek_configured",
+          "policy_version",
+          "deepl_deadline_ms",
+          "deepseek_deadline_ms",
+          "pending_count",
+          "resolving_count",
+          "oldest_pending_at_ms",
+          "oldest_push_blocking_at_ms",
+          "oldest_resolving_at_ms",
+          "resolution_24h",
+          "measured_at_ms"
+        ],
+        "title": "NewsTitlePresentationStatusData",
         "type": "object"
       },
       "ProviderOperationalData": {

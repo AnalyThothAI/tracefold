@@ -12,7 +12,10 @@ from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _validated_etag_json, _validated_json
 from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
-from tracefold.platform.config.settings import news_push_availability
+from tracefold.platform.config.settings import (
+    news_push_availability,
+    news_title_presentation_availability,
+)
 
 router = APIRouter()
 _FeedEnvelope = api_schemas.ApiEnvelope[api_schemas.NewsFeedData]
@@ -164,16 +167,19 @@ def get_news_status(
             now_ms=now_ms,
         )
         push_availability = news_push_availability(runtime.settings)
+        title_availability = news_title_presentation_availability(runtime.settings)
         data = repos.news.health_snapshot(
             now_ms=now_ms,
             rss_enabled=runtime.settings.news.rss_enabled,
             configured_strategy_count=len(runtime.settings.news.opennews_strategy_ids),
             push_requested=push_availability.requested,
             push_delivery_available=push_availability.delivery_available,
-            push_translation_available=push_availability.translation_available,
             push_unavailable_reason=push_availability.reason,
             feishu_webhook_url_configured=(push_availability.feishu_webhook_url_configured),
             feishu_signing_secret_configured=(push_availability.feishu_signing_secret_configured),
+            title_deepl_configured=title_availability.deepl_configured,
+            title_deepl_key_count=title_availability.deepl_key_count,
+            title_deepseek_configured=title_availability.deepseek_configured,
             workers_state=workers_state,
             workers_reason=workers_reason,
         )

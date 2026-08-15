@@ -29,7 +29,11 @@ MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<target>[^)]+)\)")
 
 def test_docs_have_one_current_surface() -> None:
     assert {path.name for path in DOCS.glob("*.md")} == CANONICAL_DOCS
-    assert {path.name for path in DOCS.iterdir() if path.is_dir()} == {"agents", "generated"}
+    assert {path.name for path in DOCS.iterdir() if path.is_dir()} == {
+        "agents",
+        "generated",
+        "research",
+    }
     assert not (DOCS / "sdd").exists()
     assert not (DOCS / "references").exists()
 
