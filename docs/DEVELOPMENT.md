@@ -213,7 +213,7 @@ completed legacy card audit and the Push enablement fence;
 absence of a signing secret is an explicit unsigned mode, never a fallback
 after a signed attempt fails.
 
-Current `20260815_0271` acceptance proves one durable exact-title presentation
+Historical `20260815_0271` acceptance proves one durable exact-title presentation
 decision shared by Feed/detail and Push, with no history backfill or
 compatibility reader/writer. Every newly accepted OpenNews, recovery, or RSS
 title creates its intent atomically; current live Push-blocking work outranks
@@ -228,6 +228,21 @@ a fenced external outcome cannot be settled. The hard cut adds the eleventh
 News table, terminalizes pre-cut nonterminal Push, preserves renamed legacy
 presentation JSON as audit only, and performs no migration-time provider or
 outbound call.
+
+Current `20260815_0273` acceptance is Issue #45 and is exercised at the existing
+OpenNews Item transaction plus real PostgreSQL/worker seam. Tests prove that
+three distinct provider IDs for one exact atom create three Items and title
+presentations but only one Feishu call; normalization-only variants suppress;
+numbers, percentages, amounts, and similar non-exact Story members do not;
+provider-time window boundaries, cross-transaction leaders, terminal leaders,
+replay, rollback, and batch permutation are deterministic; and suppressed rows
+never enter sender or restart recovery. Story V2 golden/permutation tests must
+stay byte-for-byte unchanged through the public `build_story_projection` seam.
+Schema tests cover the composite compatible-leader FK, counter invariant,
+partial leader/recent-suppression indexes, no new News table, and the 0273
+offline hard cut. Contract/frontend tests cover versioned aggregate status and
+bounded title-free evidence. Run the focused suites, `make check`, contract
+generation twice, and the selected backend/frontend gates before cutover.
 
 Production cutover review records exactly `1018` (News Score > 70) and `1019`
 (OI Event Monitor), a redacted configured count of `2`, one redacted real

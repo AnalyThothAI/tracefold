@@ -798,9 +798,17 @@ def test_scoreless_1019_market_strategy_reaches_story_brief_http_and_push(
                 now_ms=NOW_MS + 2,
             )
         assert publication_id is not None
-        deliveries = conn.execute("SELECT status, source_payload FROM news_push_deliveries ORDER BY item_id").fetchall()
+        deliveries = conn.execute(
+            """
+            SELECT item_id, status, source_payload, suppressed_by_item_id
+              FROM news_push_deliveries
+             ORDER BY item_id
+            """
+        ).fetchall()
         assert len(deliveries) == 2
-        assert all(delivery["status"] == "pending" for delivery in deliveries)
+        leader = next(delivery for delivery in deliveries if delivery["status"] == "pending")
+        suppressed = next(delivery for delivery in deliveries if delivery["status"] == "suppressed")
+        assert suppressed["suppressed_by_item_id"] == leader["item_id"]
         assert all(
             delivery["source_payload"]["strategy_labels"] == ["1019 OI Event Monitor"] for delivery in deliveries
         )

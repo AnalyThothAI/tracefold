@@ -87,6 +87,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_title_presentation_state",
         "news_title_presentation_24h",
         "news_push_delivery_24h",
+        "news_push_suppression_recent",
     )
     assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
         "news_feed_focus_facets",
@@ -133,6 +134,7 @@ _NEWS_QUERY_NAMES = (
     "news_status_story_latency",
     "news_title_presentation_24h",
     "news_push_delivery_24h",
+    "news_push_suppression_recent",
 )
 
 
@@ -623,13 +625,16 @@ def test_news_push_and_title_presentation_health_audits_are_bounded(tmp_path):
             """
             INSERT INTO news_push_deliveries(
               item_id, live_observed_at_ms, source_payload,
-              source_title_fingerprint, status, attempted_at_ms,
+              source_title_fingerprint, notification_fingerprint,
+              comparison_identity_version, admission_policy_version,
+              adjudicated_at_ms, admission_reason,
+              status, attempted_at_ms,
               receipt, last_error, sent_at_ms, created_at_ms, updated_at_ms
             )
             SELECT 'news_item_' || md5(value::text),
                    %s - 60000,
                    jsonb_build_object(
-                     'schema_version', 'news_item_push_v1',
+                     'schema_version', 'news_item_push_v2',
                      'item_id', 'news_item_' || md5(value::text),
                      'provider_event_id', 'provider-' || value,
                      'live_observed_at_ms', %s - 60000,
@@ -640,6 +645,11 @@ def test_news_push_and_title_presentation_health_audits_are_bounded(tmp_path):
                      'assets', '[]'::jsonb
                    ),
                    encode(sha256(convert_to('Title ' || value, 'UTF8')), 'hex'),
+                   encode(sha256(convert_to(lower('Title ' || value), 'UTF8')), 'hex'),
+                   'news_exact_atom_identity_v1',
+                   'news_push_exact_atom_admission_v1',
+                   %s - 60000,
+                   'exact_atom_leader',
                    CASE WHEN value %% 2 = 0 THEN 'sent' ELSE 'terminal' END,
                    CASE
                      WHEN value <= 200 THEN %s - value
@@ -671,12 +681,14 @@ def test_news_push_and_title_presentation_health_audits_are_bounded(tmp_path):
                 audit_now_ms,
                 audit_now_ms,
                 audit_now_ms,
+                audit_now_ms,
             ),
         )
         conn.execute(
             """
             UPDATE news_push_state
-               SET total_count = 12000,
+                   SET total_count = 12000,
+                       suppressed_count = 0,
                    pending_count = 0,
                    sending_count = 0,
                    sent_count = 6000,
@@ -701,6 +713,43 @@ def test_news_push_and_title_presentation_health_audits_are_bounded(tmp_path):
             catalog=_composed_catalog(now_ms=audit_now_ms),
         ).run(analyze=True)
         queries = {item["name"]: item for item in payload["queries"]}
+        exact_atom_leader_query = ReadQuerySpec(
+            name="news_push_exact_atom_leader_lookup_test",
+            sql="""
+                SELECT item_id, notification_fingerprint, adjudicated_at_ms,
+                       (source_payload ->> 'provider_published_at_ms')::bigint
+                         AS provider_published_at_ms
+                  FROM news_push_deliveries
+                 WHERE admission_policy_version = %s
+                   AND notification_fingerprint = ANY(%s)
+                   AND status IN ('pending', 'sending', 'sent', 'terminal')
+                   AND source_payload ->> 'schema_version' = 'news_item_push_v2'
+                   AND (source_payload ->> 'provider_published_at_ms')::bigint
+                         BETWEEN %s AND %s
+                 ORDER BY
+                       (source_payload ->> 'provider_published_at_ms')::bigint,
+                       item_id
+            """,
+            params=(
+                "news_push_exact_atom_admission_v1",
+                [
+                    conn.execute(
+                        """
+                        SELECT notification_fingerprint
+                          FROM news_push_deliveries
+                         ORDER BY item_id
+                         LIMIT 1
+                        """
+                    ).fetchone()["notification_fingerprint"]
+                ],
+                audit_now_ms - 12 * 60 * 60_000,
+                audit_now_ms,
+            ),
+        )
+        leader_lookup_audit = PostgresQueryAudit(
+            conn,
+            catalog=_single_query_catalog(exact_atom_leader_query),
+        ).run(analyze=True)["queries"][0]
     finally:
         conn.close()
 
@@ -718,6 +767,9 @@ def test_news_push_and_title_presentation_health_audits_are_bounded(tmp_path):
     assert snapshot["delivery_24h"]["completed"] == 200
     assert snapshot["delivery_24h"]["sent"] == 100
     assert snapshot["delivery_24h"]["terminal"] == 100
+    assert leader_lookup_audit["ok"] is True
+    assert leader_lookup_audit["metrics"]["large_seq_scans"] == []
+    assert "ix_news_push_deliveries_exact_atom_leader" in str(leader_lookup_audit["plan"])
 
     for query_name in (
         "news_push_state",
@@ -725,6 +777,7 @@ def test_news_push_and_title_presentation_health_audits_are_bounded(tmp_path):
         "news_title_presentation_state",
         "news_title_presentation_24h",
         "news_push_delivery_24h",
+        "news_push_suppression_recent",
     ):
         query = queries[query_name]
         assert query["ok"] is True

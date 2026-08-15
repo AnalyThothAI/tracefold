@@ -233,7 +233,7 @@ def test_resolved_item_title_is_shared_with_push_and_sent_once() -> None:
     assert len(sender.calls) == 1
     assert row is not None
     assert row["status"] == "sent"
-    assert row["source_payload"]["schema_version"] == "news_item_push_v1"
+    assert row["source_payload"]["schema_version"] == "news_item_push_v2"
     assert row["legacy_presentation_snapshot"] is None
     assert sender.calls[0]["presentation_snapshot"] == {
         "display_title": "伊朗尚未决定恢复与美国谈判",
@@ -570,7 +570,7 @@ def test_later_item_changes_and_live_replay_leave_first_push_snapshot_frozen() -
     assert row["source_payload"]["strategy_labels"] == ["1018 Strategy 1018"]
 
 
-def test_two_items_that_merge_into_one_story_are_delivered_independently() -> None:
+def test_three_exact_atoms_create_one_push_leader_and_two_suppressed_deliveries() -> None:
     conn = connect_postgres_test(read_only=False)
     database: WorkerDatabase | None = None
     finite: FiniteOperations | None = None
@@ -584,15 +584,21 @@ def test_two_items_that_merge_into_one_story_are_delivered_independently() -> No
                 source=opennews_source(),
                 events=(
                     _event(
-                        "cluster-item-a",
+                        "exact-atom-a",
                         strategy_id="1018",
                         score=91,
                         title="Bitcoin ETF inflows accelerate after approval",
                     ),
                     _event(
-                        "cluster-item-b",
+                        "exact-atom-b",
                         strategy_id="1019",
                         score=None,
+                        title="Bitcoin ETF inflows accelerate after approval",
+                    ),
+                    _event(
+                        "exact-atom-c",
+                        strategy_id="1018",
+                        score=92,
                         title="Bitcoin ETF inflows accelerate after approval",
                     ),
                 ),
@@ -604,7 +610,12 @@ def test_two_items_that_merge_into_one_story_are_delivered_independently() -> No
                 """
                 SELECT (SELECT count(*) FROM news_items) AS items,
                        (SELECT count(*) FROM news_stories) AS stories,
-                       (SELECT count(*) FROM news_push_deliveries) AS pushes
+                       (SELECT count(*) FROM news_push_deliveries) AS pushes,
+                       count(*) FILTER (WHERE status = 'pending') AS pending,
+                       count(*) FILTER (WHERE status = 'suppressed') AS suppressed,
+                       min(item_id) AS deterministic_leader_item_id,
+                       min(item_id) FILTER (WHERE status = 'pending') AS leader_item_id
+                  FROM news_push_deliveries
                 """
             ).fetchone()
 
@@ -629,8 +640,8 @@ def test_two_items_that_merge_into_one_story_are_delivered_independently() -> No
         )
         assert asyncio.run(presentation.turn()) is True
         assert asyncio.run(presentation.turn()) is True
+        assert asyncio.run(presentation.turn()) is True
         assert asyncio.run(presentation.turn()) is False
-        assert asyncio.run(push.turn()) is True
         assert asyncio.run(push.turn()) is True
         assert asyncio.run(push.turn()) is False
         counts_after = conn.execute(
@@ -648,16 +659,287 @@ def test_two_items_that_merge_into_one_story_are_delivered_independently() -> No
             asyncio.run(database.aclose())
         conn.close()
 
-    assert dict(counts_before) == {"items": 2, "stories": 1, "pushes": 2}
-    assert len(sender.calls) == 2
-    assert {call["source_payload"]["provider_event_id"] for call in sender.calls} == {
-        "cluster-item-a",
-        "cluster-item-b",
+    assert dict(counts_before) == {
+        "items": 3,
+        "stories": 1,
+        "pushes": 3,
+        "pending": 1,
+        "suppressed": 2,
+        "deterministic_leader_item_id": counts_before["leader_item_id"],
+        "leader_item_id": counts_before["leader_item_id"],
     }
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["source_payload"]["item_id"] == counts_before["leader_item_id"]
     assert [call["source_payload"]["item_id"] for call in sender.calls] == sorted(
         call["source_payload"]["item_id"] for call in sender.calls
     )
-    assert dict(counts_after) == {"stories": 1, "sent": 2}
+    assert dict(counts_after) == {"stories": 1, "sent": 1}
+
+
+def test_exact_atom_variants_are_suppressed_in_the_item_transaction() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        with conn.transaction():
+            repository.sync_sources((opennews_source(),), now_ms=BASE_MS)
+            repository.reconcile_item_push(delivery_available=True, now_ms=BASE_MS)
+            outcome = repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "variant-prefix-url",
+                        strategy_id="1018",
+                        score=91,
+                        title="BREAKING: Bitcoin ETF inflows accelerate after approval https://example.com/live",
+                    ),
+                    _event(
+                        "variant-case-space",
+                        strategy_id="1019",
+                        score=None,
+                        title="  bitcoin   ETF inflows accelerate after approval  ",
+                    ),
+                    _event(
+                        "variant-unicode-punctuation",
+                        strategy_id="1018",
+                        score=92,
+                        title="“Ｂｉｔｃｏｉｎ ETF inflows—accelerate after approval”",
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1_000,
+                ingest_mode="live",
+            )
+            rows = conn.execute(
+                """
+                SELECT item_id, status, notification_fingerprint,
+                       comparison_identity_version, admission_policy_version,
+                       admission_reason, suppressed_by_item_id
+                  FROM news_push_deliveries
+                 ORDER BY item_id
+                """
+            ).fetchall()
+            state = conn.execute(
+                """
+                SELECT total_count, pending_count, suppressed_count
+                  FROM news_push_state
+                 WHERE singleton_key = 'current'
+                """
+            ).fetchone()
+            health = repository.push_health_snapshot(now_ms=BASE_MS + 2_000)
+    finally:
+        conn.close()
+
+    leaders = [row for row in rows if row["status"] == "pending"]
+    suppressed = [row for row in rows if row["status"] == "suppressed"]
+    assert outcome["push_outbox_writes"] == 3
+    assert len(leaders) == 1
+    assert len(suppressed) == 2
+    assert len({row["notification_fingerprint"] for row in rows}) == 1
+    assert all(row["suppressed_by_item_id"] == leaders[0]["item_id"] for row in suppressed)
+    assert all(row["admission_reason"] == "exact_atom_suppressed" for row in suppressed)
+    assert dict(state) == {"total_count": 3, "pending_count": 1, "suppressed_count": 2}
+    assert health["payload_schema_version"] == "news_item_push_v2"
+    assert health["comparison_identity_version"] == "news_exact_atom_identity_v1"
+    assert health["admission_policy_version"] == "news_push_exact_atom_admission_v1"
+    assert health["suppressed_count"] == 2
+    assert health["delivery_24h"] == {
+        "completed": 0,
+        "sent": 0,
+        "terminal": 0,
+        "latency_p95_ms": None,
+        "slo_met": None,
+        "sample_complete": True,
+    }
+    assert health["suppression_sample_complete"] is True
+    assert len(health["recent_suppressions"]) == 2
+    assert all("original_title" not in evidence for evidence in health["recent_suppressions"])
+
+
+def test_numeric_changes_and_similar_nonexact_titles_remain_independent_alerts() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        with conn.transaction():
+            repository.sync_sources((opennews_source(),), now_ms=BASE_MS)
+            repository.reconcile_item_push(delivery_available=True, now_ms=BASE_MS)
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "quake-64",
+                        strategy_id="1018",
+                        score=91,
+                        title="Magnitude 6.4 earthquake strikes northern Chile",
+                    ),
+                    _event(
+                        "quake-68",
+                        strategy_id="1018",
+                        score=92,
+                        title="Magnitude 6.8 earthquake strikes northern Chile",
+                    ),
+                    _event(
+                        "similar-a",
+                        strategy_id="1019",
+                        score=None,
+                        title="Bitcoin ETF inflows accelerate after approval",
+                    ),
+                    _event(
+                        "similar-b",
+                        strategy_id="1019",
+                        score=None,
+                        title="Bitcoin ETF inflows accelerate following approval",
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1_000,
+                ingest_mode="live",
+            )
+            rebuild_news_projection(repository, now_ms=BASE_MS + 2_000)
+            rows = conn.execute(
+                """
+                SELECT source_payload ->> 'provider_event_id' AS provider_event_id,
+                       status, notification_fingerprint
+                  FROM news_push_deliveries
+                 ORDER BY provider_event_id
+                """
+            ).fetchall()
+            story_count = conn.execute("SELECT count(*) AS value FROM news_stories").fetchone()["value"]
+    finally:
+        conn.close()
+
+    assert {row["status"] for row in rows} == {"pending"}
+    assert len({row["notification_fingerprint"] for row in rows}) == 4
+    assert story_count < len(rows)
+
+
+def test_exact_atom_window_uses_first_durable_leader_and_suppressed_rows_do_not_extend_it() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        reset_postgres_schema(conn)
+        repository = NewsRepository(conn)
+        title = "Bitcoin ETF inflows accelerate after approval"
+        first_published_at_ms = BASE_MS + 500
+        with conn.transaction():
+            repository.sync_sources((opennews_source(),), now_ms=BASE_MS)
+            repository.reconcile_item_push(delivery_available=True, now_ms=BASE_MS)
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "window-leader",
+                        strategy_id="1018",
+                        score=91,
+                        title=title,
+                        published_at_ms=first_published_at_ms,
+                    ),
+                ),
+                observed_at_ms=BASE_MS + 1_000,
+                ingest_mode="live",
+            )
+            leader_id = conn.execute("SELECT item_id FROM news_push_deliveries WHERE status = 'pending'").fetchone()[
+                "item_id"
+            ]
+            assert repository.fence_item_push(item_id=leader_id, attempted_at_ms=BASE_MS + 2_000) is not None
+            assert repository.terminalize_item_push(
+                item_id=leader_id,
+                error_code="news_item_push_feishu_transport_failed",
+                now_ms=BASE_MS + 2_001,
+            )
+
+        boundary_published_at_ms = first_published_at_ms + 12 * 60 * 60_000
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "window-boundary",
+                        strategy_id="1019",
+                        score=None,
+                        title=title,
+                        published_at_ms=boundary_published_at_ms,
+                    ),
+                ),
+                observed_at_ms=boundary_published_at_ms + 500,
+                ingest_mode="live",
+            )
+        with conn.transaction():
+            repository.record_opennews_events(
+                source=opennews_source(),
+                events=(
+                    _event(
+                        "window-plus-one",
+                        strategy_id="1018",
+                        score=92,
+                        title=title,
+                        published_at_ms=boundary_published_at_ms + 1,
+                    ),
+                ),
+                observed_at_ms=boundary_published_at_ms + 501,
+                ingest_mode="live",
+            )
+            rows = conn.execute(
+                """
+                SELECT source_payload ->> 'provider_event_id' AS provider_event_id,
+                       status, suppressed_by_item_id, item_id
+                  FROM news_push_deliveries
+                 ORDER BY provider_event_id
+                """
+            ).fetchall()
+    finally:
+        conn.close()
+
+    by_provider = {str(row["provider_event_id"]): row for row in rows}
+    assert by_provider["window-leader"]["status"] == "terminal"
+    assert by_provider["window-boundary"]["status"] == "suppressed"
+    assert by_provider["window-boundary"]["suppressed_by_item_id"] == leader_id
+    assert by_provider["window-plus-one"]["status"] == "pending"
+    assert by_provider["window-plus-one"]["suppressed_by_item_id"] is None
+
+
+def test_exact_atom_batch_admission_is_invariant_to_frame_permutation() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+
+        def run(order: tuple[str, ...]) -> dict[str, str]:
+            reset_postgres_schema(conn)
+            repository = NewsRepository(conn)
+            with conn.transaction():
+                repository.sync_sources((opennews_source(),), now_ms=BASE_MS)
+                repository.reconcile_item_push(delivery_available=True, now_ms=BASE_MS)
+                repository.record_opennews_events(
+                    source=opennews_source(),
+                    events=tuple(
+                        _event(
+                            provider_id,
+                            strategy_id="1018",
+                            score=91,
+                            title="Bitcoin ETF inflows accelerate after approval",
+                        )
+                        for provider_id in order
+                    ),
+                    observed_at_ms=BASE_MS + 1_000,
+                    ingest_mode="live",
+                )
+                return {
+                    str(row["provider_event_id"]): str(row["status"])
+                    for row in conn.execute(
+                        """
+                        SELECT source_payload ->> 'provider_event_id' AS provider_event_id,
+                               status
+                          FROM news_push_deliveries
+                         ORDER BY provider_event_id
+                        """
+                    ).fetchall()
+                }
+
+        forward = run(("permutation-a", "permutation-b", "permutation-c"))
+        reverse = run(("permutation-c", "permutation-b", "permutation-a"))
+    finally:
+        conn.close()
+
+    assert reverse == forward
+    assert list(forward.values()).count("pending") == 1
+    assert list(forward.values()).count("suppressed") == 2
 
 
 def test_recovery_only_story_and_later_live_replay_never_create_push() -> None:
@@ -762,6 +1044,7 @@ def _event(
     strategy_id: str,
     score: int | None,
     title: str | None = None,
+    published_at_ms: int | None = None,
 ) -> OpenNewsEvent:
     metadata: dict[str, Any] = {
         "strategies": [{"id": strategy_id, "name": f"Strategy {strategy_id}"}],
@@ -777,7 +1060,7 @@ def _event(
             link=f"https://example.com/{provider_record_id}",
             title=title or f"Strategy report {provider_record_id}",
             description="",
-            published_at_ms=BASE_MS + 500,
+            published_at_ms=BASE_MS + 500 if published_at_ms is None else published_at_ms,
             reporting_origin="opennews",
         ),
     )

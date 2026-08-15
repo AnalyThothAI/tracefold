@@ -852,7 +852,7 @@ def test_news_item_push_delivery_overrun_terminalizes_and_stops_overlap() -> Non
                 return {
                     "item_id": "news_item_0123456789abcdef0123456789abcdef",
                     "source_payload": {
-                        "schema_version": "news_item_push_v1",
+                        "schema_version": "news_item_push_v2",
                         "original_title": "Bitcoin rises",
                     },
                     "presentation": {

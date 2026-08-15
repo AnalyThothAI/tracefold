@@ -22,6 +22,7 @@ BRIEF_WORKFLOW_VERSION = "worldmonitor_public_insights_workflow_0e8785c"
 BRIEF_COMPOSER_VERSION = "worldmonitor_public_insights_composer_0e8785c"
 BRIEF_SCHEMA_VERSION = "worldmonitor_public_insights_schema_v3"
 NEWS_LOCALE = "en"
+NEWS_PUSH_PAYLOAD_SCHEMA_VERSION = "news_item_push_v2"
 
 INSIGHTS_SYNTHESIS_PARSE = "INSIGHTS_SYNTHESIS_PARSE"
 INSIGHTS_SYNTHESIS_GATE = "INSIGHTS_SYNTHESIS_GATE"

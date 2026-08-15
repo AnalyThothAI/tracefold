@@ -356,7 +356,7 @@ def test_sender_rejects_render_auth_and_oversize_before_network() -> None:
 
 def _source_payload() -> dict[str, object]:
     return {
-        "schema_version": "news_item_push_v1",
+        "schema_version": "news_item_push_v2",
         "item_id": "news_item_0123456789abcdef0123456789abcdef",
         "provider_event_id": "provider-1",
         "live_observed_at_ms": 1_700_000_000_000,

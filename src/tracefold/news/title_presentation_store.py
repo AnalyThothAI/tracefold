@@ -41,6 +41,8 @@ class TitlePresentationStore:
                        presentation.source_title_fingerprint
                    AND delivery.status = 'pending'
                    AND delivery.source_title_fingerprint IS NOT NULL
+                   AND delivery.source_payload ->> 'schema_version' =
+                       'news_item_push_v2'
                  LIMIT 1
               ) push_wait ON true
              WHERE presentation.state = 'pending'

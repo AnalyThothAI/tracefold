@@ -9,7 +9,9 @@ from typing import Any, Protocol, cast
 
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
-PUSH_PAYLOAD_SCHEMA_VERSION = "news_item_push_v1"
+from .models import NEWS_PUSH_PAYLOAD_SCHEMA_VERSION
+
+PUSH_PAYLOAD_SCHEMA_VERSION = NEWS_PUSH_PAYLOAD_SCHEMA_VERSION
 
 _DELIVERY_TOTAL_TIMEOUT_SECONDS = 7.5
 _DELIVERY_OPERATION_TIMEOUT_SECONDS = 7.0

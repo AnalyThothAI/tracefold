@@ -10,6 +10,7 @@ from tracefold.platform.postgres.postgres_audit import ReadQuerySpec
 PUBLIC_LIST_LIMIT = 100
 _SLO_WINDOW_MS = 24 * 60 * 60 * 1000
 SLO_SAMPLE_LIMIT = 5_000
+SUPPRESSION_SAMPLE_LIMIT = 20
 _REALTIME_WINDOW_MS = 60 * 60 * 1_000
 
 
@@ -487,6 +488,7 @@ def push_oldest_pending_query() -> ReadQuerySpec:
               FROM news_push_deliveries
              WHERE status = 'pending'
                AND source_title_fingerprint IS NOT NULL
+               AND source_payload ->> 'schema_version' = 'news_item_push_v2'
              ORDER BY live_observed_at_ms, item_id
              LIMIT 1
         """,
@@ -522,6 +524,8 @@ def title_presentation_state_query() -> ReadQuerySpec:
                         AND delivery.source_title_fingerprint =
                             presentation.source_title_fingerprint
                         AND delivery.status = 'pending'
+                        AND delivery.source_payload ->> 'schema_version' =
+                            'news_item_push_v2'
                       WHERE presentation.state = 'pending'
                       ORDER BY delivery.live_observed_at_ms,
                                delivery.item_id
@@ -543,13 +547,20 @@ def title_presentation_samples_query(*, now_ms: int) -> ReadQuerySpec:
     return ReadQuerySpec(
         name="news_title_presentation_24h",
         sql="""
-            SELECT outcome, provider, fallback_code, duration_ms,
-                   attempted_at_ms
-              FROM news_item_title_presentations
-             WHERE state = 'resolved'
-               AND resolved_at_ms BETWEEN %s AND %s
-             ORDER BY resolved_at_ms DESC, item_id DESC,
-                      source_title_fingerprint DESC
+            SELECT presentation.outcome, presentation.provider,
+                   presentation.fallback_code, presentation.duration_ms,
+                   presentation.attempted_at_ms
+              FROM news_item_title_presentations presentation
+              LEFT JOIN news_push_deliveries delivery
+                ON delivery.item_id = presentation.item_id
+               AND delivery.source_title_fingerprint =
+                   presentation.source_title_fingerprint
+             WHERE presentation.state = 'resolved'
+               AND presentation.resolved_at_ms BETWEEN %s AND %s
+               AND coalesce(delivery.status, '') <> 'suppressed'
+             ORDER BY presentation.resolved_at_ms DESC,
+                      presentation.item_id DESC,
+                      presentation.source_title_fingerprint DESC
              LIMIT %s
         """,
         params=(int(now_ms) - _SLO_WINDOW_MS, int(now_ms), SLO_SAMPLE_LIMIT + 1),
@@ -565,7 +576,7 @@ def push_delivery_samples_query(*, now_ms: int) -> ReadQuerySpec:
                      THEN sent_at_ms - live_observed_at_ms
                    END AS latency_ms
               FROM news_push_deliveries
-             WHERE source_payload ->> 'schema_version' = 'news_item_push_v1'
+             WHERE source_payload ->> 'schema_version' = 'news_item_push_v2'
                AND source_title_fingerprint IS NOT NULL
                AND status IN ('sent', 'terminal')
                AND CASE
@@ -578,6 +589,28 @@ def push_delivery_samples_query(*, now_ms: int) -> ReadQuerySpec:
              LIMIT %s
         """,
         params=(int(now_ms) - _SLO_WINDOW_MS, int(now_ms), SLO_SAMPLE_LIMIT + 1),
+    )
+
+
+def push_suppression_samples_query() -> ReadQuerySpec:
+    return ReadQuerySpec(
+        name="news_push_suppression_recent",
+        sql="""
+            SELECT item_id, suppressed_by_item_id,
+                   notification_fingerprint,
+                   comparison_identity_version,
+                   admission_policy_version,
+                   adjudicated_at_ms,
+                   admission_reason,
+                   (source_payload ->> 'provider_published_at_ms')::bigint
+                     AS provider_published_at_ms
+              FROM news_push_deliveries
+             WHERE status = 'suppressed'
+               AND source_payload ->> 'schema_version' = 'news_item_push_v2'
+             ORDER BY adjudicated_at_ms DESC, item_id DESC
+             LIMIT %s
+        """,
+        params=(SUPPRESSION_SAMPLE_LIMIT + 1,),
     )
 
 
@@ -618,6 +651,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         title_presentation_state_query(),
         title_presentation_samples_query(now_ms=now_ms),
         push_delivery_samples_query(now_ms=now_ms),
+        push_suppression_samples_query(),
     )
 
 
@@ -731,6 +765,7 @@ def _feed_filter_where(
 __all__ = [
     "PUBLIC_LIST_LIMIT",
     "SLO_SAMPLE_LIMIT",
+    "SUPPRESSION_SAMPLE_LIMIT",
     "brief_query",
     "feed_facets_query",
     "feed_rows_query",
@@ -738,6 +773,7 @@ __all__ = [
     "push_delivery_samples_query",
     "push_oldest_pending_query",
     "push_state_query",
+    "push_suppression_samples_query",
     "sources_query",
     "status_inbound_latency_query",
     "status_opennews_incidents_query",

@@ -3034,8 +3034,12 @@ export interface components {
         };
         /** NewsPushStatusData */
         NewsPushStatusData: {
+            /** Admission Policy Version */
+            admission_policy_version: string;
             /** Availability Reason */
             availability_reason: string | null;
+            /** Comparison Identity Version */
+            comparison_identity_version: string;
             delivery_24h: components["schemas"]["NewsPushDelivery24hData"];
             /** Delivery Available */
             delivery_available: boolean;
@@ -3055,10 +3059,14 @@ export interface components {
             measured_at_ms: number;
             /** Oldest Pending At Ms */
             oldest_pending_at_ms: number | null;
+            /** Payload Schema Version */
+            payload_schema_version: string;
             /** Pending Count */
             pending_count: number;
             /** Reasons */
             reasons: string[];
+            /** Recent Suppressions */
+            recent_suppressions: components["schemas"]["NewsPushSuppressionEvidenceData"][];
             /** Requested */
             requested: boolean;
             /** Sending Count */
@@ -3072,10 +3080,32 @@ export interface components {
              * @enum {string}
              */
             status: "disabled" | "ready" | "degraded";
+            /** Suppressed Count */
+            suppressed_count: number;
+            /** Suppression Sample Complete */
+            suppression_sample_complete: boolean;
             /** Terminal Count */
             terminal_count: number;
             /** Total Count */
             total_count: number;
+        };
+        /** NewsPushSuppressionEvidenceData */
+        NewsPushSuppressionEvidenceData: {
+            /** Adjudicated At Ms */
+            adjudicated_at_ms: number;
+            /**
+             * Admission Reason
+             * @constant
+             */
+            admission_reason: "exact_atom_suppressed";
+            /** Item Id */
+            item_id: string;
+            /** Notification Fingerprint */
+            notification_fingerprint: string;
+            /** Provider Published At Ms */
+            provider_published_at_ms: number;
+            /** Suppressed By Item Id */
+            suppressed_by_item_id: string;
         };
         /** NewsRealtimeLatencyData */
         NewsRealtimeLatencyData: {

@@ -201,6 +201,9 @@ function StatusDocument({ status }: { status: NewsStatus }) {
           <StatusFact label="发送中" value={String(push.sending_count)} />
           <StatusFact label="已发送" value={String(push.sent_count)} />
           <StatusFact label="已终结" value={String(push.terminal_count)} />
+          <StatusFact label="重复抑制（信息）" value={String(push.suppressed_count)} />
+          <StatusFact label="Admission 策略" value={push.admission_policy_version} />
+          <StatusFact label="Exact Atom 身份" value={push.comparison_identity_version} />
           <StatusFact
             label="24 小时发送时延 P95"
             value={

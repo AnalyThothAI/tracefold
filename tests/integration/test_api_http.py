@@ -1057,6 +1057,12 @@ def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
         "sent_count": 0,
         "latest_sent_at_ms": None,
     }
+    assert disabled_push["payload_schema_version"] == "news_item_push_v2"
+    assert disabled_push["comparison_identity_version"] == "news_exact_atom_identity_v1"
+    assert disabled_push["admission_policy_version"] == "news_push_exact_atom_admission_v1"
+    assert disabled_push["suppressed_count"] == 0
+    assert disabled_push["recent_suppressions"] == []
+    assert disabled_push["suppression_sample_complete"] is True
     assert [response.status_code for response in retired_responses] == [404] * 5
 
 
@@ -1235,6 +1241,14 @@ def test_api_news_status_reports_item_push_without_secrets_or_story_state(tmp_pa
                         reporting_origin="issuer",
                         provider_metadata={"score": 91},
                     ),
+                    _opennews_event(
+                        provider_record_id="item-status-duplicate",
+                        title="Bitcoin issuer announces a spot fund decision",
+                        description="The issuer republished the decision.",
+                        published_at_ms=now_ms - 499,
+                        reporting_origin="issuer",
+                        provider_metadata={"score": 92},
+                    ),
                 ),
                 observed_at_ms=now_ms,
             )
@@ -1276,7 +1290,7 @@ def test_api_news_status_reports_item_push_without_secrets_or_story_state(tmp_pa
         status_response = client.get("/api/news/status", headers=headers)
         feed_response = client.get("/api/news/feed", headers=headers)
 
-    assert outcome["push_outbox_writes"] == 1
+    assert outcome["push_outbox_writes"] == 2
     assert status_response.status_code == 200
     push = status_response.json()["data"]["layers"]["push"]
     assert push["status"] == "degraded"
@@ -1286,6 +1300,9 @@ def test_api_news_status_reports_item_push_without_secrets_or_story_state(tmp_pa
     assert push["pending_count"] == 0
     assert push["sending_count"] == 0
     assert push["terminal_count"] == 1
+    assert push["suppressed_count"] == 1
+    assert len(push["recent_suppressions"]) == 1
+    assert push["recent_suppressions"][0]["admission_reason"] == "exact_atom_suppressed"
     assert push["delivery_24h"]["terminal"] == 1
     assert push["reasons"] == ["news_item_push_recent_terminal"]
     presentation = status_response.json()["data"]["title_presentation"]

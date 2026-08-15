@@ -353,8 +353,11 @@ Independent title-presentation turn
   -> settle one shared resolved decision; interrupted resolving uses original
 
 First-inserted live OpenNews Item transaction
-  -> when delivery is available and the observation is post-epoch, insert one
-     `news_item_push_v1` outbox row bound to the exact title fingerprint
+  -> when delivery is available and the observation is post-epoch, calculate
+     the shared exact-atom identity without reading Story
+  -> insert one `news_item_push_v2` row: first durable window leader is
+     `pending`; later exact duplicates are terminal `suppressed` and reference
+     that leader
   -> recovery, RSS, pre-epoch, and disabled or unavailable delivery create no
      Push work and are never backfilled
 
@@ -469,9 +472,15 @@ windows; diagnose `news_story_input_row_cap`, `news_story_input_byte_cap`,
 populations. Story failure does not mutate or block Item Push or title
 presentation state.
 
-Push outbox creation is part of the first live OpenNews Item insert. The same
-transaction reads the effective delivery state and enablement epoch, then
-inserts at most one immutable source snapshot using the stable Item identity.
+Push admission is part of the first live OpenNews Item insert. The same
+transaction reads the effective delivery state and enablement epoch, computes
+the shared Story-compatible exact identity, performs one bounded indexed leader
+lookup, and inserts at most one immutable source snapshot plus decision using
+the stable Item identity. Leaders are ordered by provider publication time and
+Item ID within a batch; across committed batches the first durable leader wins.
+Suppressed rows never become leaders or extend a window. Market telemetry uses
+two hours, disaster six hours, and filing/general twelve hours after the
+OpenNews horizon cap.
 Score, assets, signal, grade, URL, and provider publication time are optional
 presentation evidence, never gates. Recovery-first, RSS, pre-enablement,
 disabled, and unavailable observations never backfill. A transaction failure
@@ -481,7 +490,7 @@ OpenNews Item/outbox insertion does not acquire the Story publication advisory
 lock. A long or failed Story publish cannot hold a newly accepted live Item off
 the Push ledger; its post-commit dirty signal drives a later Story pass.
 
-The worker processes only existing Item rows. It never scans Stories or Items
+The worker processes only existing `pending` leader rows. It never scans Stories or Items
 to discover missed work. Translation precedes the durable delivery fence and
 never holds a database transaction. Once fenced, Feishu is attempted exactly
 once; any response, timeout, transport, render, auth, or size failure is
@@ -490,6 +499,8 @@ sanitized `news_item_push_interrupted_unknown` terminal outcome even when
 delivery is currently unavailable. Pending rows survive restart. The ordinary
 shared productive 250 ms repoll drains work; an empty Push turn waits one
 second. There is no Push-specific pacing mechanism.
+`suppressed` is terminal informational state: it has no attempt, receipt,
+error, sent clock, retry, promotion, reaper, or Push-priority presentation.
 
 The selector consumes the authoritative Story closure directly. The pinned
 JavaScript UTF-16 `title.length > 10` gate is only an admissibility and
@@ -593,7 +604,8 @@ Diagnose News in this order:
    reference, one delivery fence, and explicit sent/terminal outcome;
 11. `/api/news/status`: warming/ready/degraded layer health plus
    `live`/`recovering`/`stalled`, RSS/OpenNews ingest evidence, Story last success, Brief
-   slot/current/LKG state, current Item Push counts, delivery latency, and
+   slot/current/LKG state, current Item Push policy/version/counts including
+   informational suppression, delivery latency, and
    informational title-presentation queue/outcomes outside those layers.
 
 News health has four layers:
@@ -774,7 +786,7 @@ or Feishu is fatal to Workers so a process with unknowable side-effect state
 cannot continue; Serve remains available and the supervisor restart executes
 those reconciliations.
 
-Migration `20260815_0272` is the current offline Story V2 hard cut. Stop Serve
+Migration `20260815_0272` is the Story V2 hard cut. Stop Serve
 and Workers before applying it; old application code must never run against the
 new column shape. The migration acquires the maintenance gate, clears only
 Story memberships, Stories, public selection, and the Brief current/LKG
@@ -786,6 +798,19 @@ start/verify Serve. An empty News view before that projection is valid; a mixed
 generation is not. Verify old cursors fail, old Story URLs return 404, the next
 Brief uses V2 Story IDs, the News table count remains eleven, and a second
 unchanged Story turn writes zero serving rows.
+
+Migration `20260815_0273` is the current offline Push exact-atom hard cut. Stop
+Serve and Workers and take a PostgreSQL backup before applying it. It acquires
+the maintenance gate, preserves historical sent/terminal v1 audit, terminalizes
+incompatible pre-cut nonterminal work, adds the v2 admission columns and
+`suppressed` state in place, rebuilds bounded indexes, resets counters and the
+enablement epoch, and adds no table. It performs no history classification,
+provider call, translation, or send. Restart only the new Workers, confirm the
+new epoch, then verify one real repeated-title burst yields one leader and
+suppressed followers while a material numeric update yields a new leader.
+Confirm `/api/news/status` counts balance, suppression stays informational,
+Story projection is unchanged, and replaying committed provider IDs writes
+zero rows before starting/verifying Serve.
 
 ## Operator actions and retention
 
@@ -1027,23 +1052,31 @@ that interim coverage shape with the incident ledger and official Strategy-hit
 recovery, and replaces the Push scan with same-transaction live Story outbox
 creation. Verify new live Stories create outbox rows without score/assets, while
 recovery-only and pre-enablement Stories do not; then verify Push latency/SLO.
-Historical `20260814_0270` replaces that Story policy with same-transaction live
-Item outbox creation and zero-retry settlement. Verify two distinct provider
-Item IDs that later merge into one Story still create two independent Push
-attempts; Story failure must not block Push, and Push failure must not change
-Story/Feed/Brief.
+Historical `20260814_0270` replaced that Story policy with same-transaction live
+Item outbox creation and zero-retry settlement. Under current 0273 behavior,
+two similar non-exact provider Items that merge into one Story still create two
+independent Push attempts, while exact atoms inside the fixed window create one
+leader plus suppressed followers. Story failure must not block Push, and Push
+failure must not change Story/Feed/Brief.
 Historical `20260815_0271` adds the shared exact-title decision before Push. Verify
 one title presentation is reused by Feed/detail and every matching Push, search
 still matches the original title only, Push-blocking work outranks RSS/recovery
 backlog, permanent DeepL rejection rotates only future work, and both providers
 failing still resolve the original without blocking delivery.
-Current `20260815_0272` replaces Story identity with normalized Jaccard plus
+`20260815_0272` replaces Story identity with normalized Jaccard plus
 strong fact compatibility and fixed anchors. Verify the labelled SEC/OI splits,
 the complete golden corpus, bounded operator evidence on Story detail, compact
 Feed rows, candidate/input/evidence failures, old cursor/URL rejection, one
 coherent selection/Brief generation, analyzed Feed/detail plans, and unchanged
 zero-write publication. Attach the read-only shadow before cutover and the
 post-cutover distribution/health evidence to Issue #44.
+Current `20260815_0273` shares Story's exact comparison identity with synchronous
+Push admission without sharing Story clustering. Verify normalization variants,
+numeric non-suppression, exact window and +1 ms, batch permutation, committed
+leader precedence, terminal-leader suppression, rollback/replay, counter and FK
+invariants, bounded query plans, one sender call, and title-free Status evidence.
+Attach the real post-cut repeated burst, material-update, unchanged-Story, and
+zero-write replay evidence to Issue #45.
 The successful writer publishes content-free aggregate gauges as
 `tracefold_news_story_projection_value{measure="..."}` for physical/population
 Items, encoded bytes, exact atoms/memberships, candidate final/peak counts,

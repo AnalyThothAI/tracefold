@@ -14,9 +14,15 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from psycopg.types.json import Jsonb
 
 from . import brief_store, query_specs
+from .exact_atom_identity import (
+    EXACT_ATOM_IDENTITY_VERSION,
+    NEWS_PUSH_ADMISSION_POLICY_VERSION,
+    describe_exact_atom,
+)
 from .models import (
     CLASSIFIER_VERSION,
     IMPORTANCE_VERSION,
+    NEWS_PUSH_PAYLOAD_SCHEMA_VERSION,
     STORY_IDENTITY_VERSION,
     NewsBriefSynthesisResult,
     NewsFeedFetch,
@@ -210,7 +216,7 @@ def _news_item_push_source_payload(
             assets.append({"symbol": symbol, "market_type": market_type})
 
     payload: dict[str, Any] = {
-        "schema_version": "news_item_push_v1",
+        "schema_version": NEWS_PUSH_PAYLOAD_SCHEMA_VERSION,
         "item_id": str(item_id),
         "provider_event_id": str(provider_event_id),
         "live_observed_at_ms": int(live_observed_at_ms),
@@ -935,6 +941,8 @@ class NewsRepository:
         updated = 0
         source_provenance: object = []
         existing_by_record: dict[str, Mapping[str, Any]] = {}
+        push_delivery_available = False
+        push_enablement_epoch_at_ms: int | None = None
         if events:
             self.conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
@@ -947,6 +955,11 @@ class NewsRepository:
                     FROM news_sources AS source
                    WHERE source.source_id = %s
                      AND source.source_kind = 'opennews'
+                   FOR UPDATE
+                ), push_state AS MATERIALIZED (
+                  SELECT delivery_available, enablement_epoch_at_ms
+                    FROM news_push_state
+                   WHERE singleton_key = 'current'
                    FOR UPDATE
                 ), item_state AS MATERIALIZED (
                   SELECT item.provider_record_id, item.provider_metadata,
@@ -962,8 +975,11 @@ class NewsRepository:
                    FOR UPDATE
                 )
                 SELECT source_state.observed_strategy_provenance AS source_provenance,
+                       push_state.delivery_available AS push_delivery_available,
+                       push_state.enablement_epoch_at_ms AS push_enablement_epoch_at_ms,
                        item_state.*
                   FROM source_state
+                  CROSS JOIN push_state
                   LEFT JOIN item_state ON true
                  ORDER BY item_state.provider_record_id NULLS FIRST
                 """,
@@ -976,6 +992,12 @@ class NewsRepository:
             if not state_rows:
                 raise RuntimeError("opennews_source_not_synced")
             source_provenance = state_rows[0]["source_provenance"]
+            push_delivery_available = bool(state_rows[0]["push_delivery_available"])
+            push_enablement_epoch_at_ms = (
+                int(state_rows[0]["push_enablement_epoch_at_ms"])
+                if state_rows[0]["push_enablement_epoch_at_ms"] is not None
+                else None
+            )
             existing_by_record = {
                 str(row["provider_record_id"]): row for row in state_rows if row["provider_record_id"] is not None
             }
@@ -1050,6 +1072,26 @@ class NewsRepository:
                     "content_fingerprint": winner["content_fingerprint"],
                 }
             )
+            exact_atom = describe_exact_atom(str(winner["title"]))
+            write_rows[-1].update(
+                {
+                    "notification_fingerprint": exact_atom.comparison_fingerprint,
+                    "comparison_identity_version": exact_atom.identity_version,
+                    "exact_atom_trackable": bool(exact_atom.comparison_title),
+                    "duplicate_window_ms": exact_atom.duplicate_window_ms,
+                    "push_status": None,
+                    "admission_reason": None,
+                    "suppressed_by_item_id": None,
+                    "adjudicated_at_ms": None,
+                    "push_eligible": bool(
+                        existing is None
+                        and ingest_mode == "live"
+                        and push_delivery_available
+                        and push_enablement_epoch_at_ms is not None
+                        and int(observed_at_ms) >= push_enablement_epoch_at_ms
+                    ),
+                }
+            )
             write_rows[-1]["push_payload"] = _news_item_push_source_payload(
                 item_id=str(write_rows[-1]["item_id"]),
                 provider_event_id=provider_record_id,
@@ -1060,6 +1102,81 @@ class NewsRepository:
                 provider_published_at_ms=int(winner["published_at_ms"]),
                 source_url=(str(winner["canonical_url"]) if winner["canonical_url"] is not None else None),
             )
+
+        eligible_push_rows = [row for row in write_rows if bool(row["push_eligible"])]
+        if eligible_push_rows:
+            fingerprints = sorted({str(row["notification_fingerprint"]) for row in eligible_push_rows})
+            minimum_published_at_ms = min(int(row["published_at_ms"]) for row in eligible_push_rows)
+            maximum_published_at_ms = max(int(row["published_at_ms"]) for row in eligible_push_rows)
+            maximum_window_ms = max(int(row["duplicate_window_ms"]) for row in eligible_push_rows)
+            existing_leader_rows = self.conn.execute(
+                """
+                SELECT item_id, notification_fingerprint, adjudicated_at_ms,
+                       (source_payload ->> 'provider_published_at_ms')::bigint
+                         AS provider_published_at_ms
+                  FROM news_push_deliveries
+                 WHERE admission_policy_version = %(policy_version)s
+                   AND notification_fingerprint = ANY(%(fingerprints)s)
+                   AND status IN ('pending', 'sending', 'sent', 'terminal')
+                   AND source_payload ->> 'schema_version' = %(schema_version)s
+                   AND (source_payload ->> 'provider_published_at_ms')::bigint
+                         BETWEEN %(minimum_published_at_ms)s
+                             AND %(maximum_published_at_ms)s
+                 ORDER BY
+                       (source_payload ->> 'provider_published_at_ms')::bigint,
+                       item_id
+                """,
+                {
+                    "policy_version": NEWS_PUSH_ADMISSION_POLICY_VERSION,
+                    "schema_version": NEWS_PUSH_PAYLOAD_SCHEMA_VERSION,
+                    "fingerprints": fingerprints,
+                    "minimum_published_at_ms": minimum_published_at_ms - maximum_window_ms,
+                    "maximum_published_at_ms": maximum_published_at_ms + maximum_window_ms,
+                },
+            ).fetchall()
+            leaders_by_fingerprint: dict[str, list[dict[str, Any]]] = {}
+            for leader in existing_leader_rows:
+                leaders_by_fingerprint.setdefault(str(leader["notification_fingerprint"]), []).append(
+                    {
+                        "item_id": str(leader["item_id"]),
+                        "provider_published_at_ms": int(leader["provider_published_at_ms"]),
+                        "durable": True,
+                    }
+                )
+            for row in sorted(
+                eligible_push_rows,
+                key=lambda value: (int(value["published_at_ms"]), str(value["item_id"])),
+            ):
+                fingerprint = str(row["notification_fingerprint"])
+                published_at_ms = int(row["published_at_ms"])
+                duplicate_window_ms = int(row["duplicate_window_ms"])
+                compatible = (
+                    [
+                        leader
+                        for leader in leaders_by_fingerprint.get(fingerprint, [])
+                        if abs(published_at_ms - int(leader["provider_published_at_ms"])) <= duplicate_window_ms
+                    ]
+                    if bool(row["exact_atom_trackable"])
+                    else []
+                )
+                leader = next((value for value in compatible if bool(value["durable"])), None)
+                if leader is None and compatible:
+                    leader = compatible[0]
+                row["adjudicated_at_ms"] = int(observed_at_ms)
+                if leader is None:
+                    row["push_status"] = "pending"
+                    row["admission_reason"] = "exact_atom_leader"
+                    leaders_by_fingerprint.setdefault(fingerprint, []).append(
+                        {
+                            "item_id": str(row["item_id"]),
+                            "provider_published_at_ms": published_at_ms,
+                            "durable": False,
+                        }
+                    )
+                else:
+                    row["push_status"] = "suppressed"
+                    row["admission_reason"] = "exact_atom_suppressed"
+                    row["suppressed_by_item_id"] = str(leader["item_id"])
 
         push_outbox_writes = 0
         if write_rows:
@@ -1083,13 +1200,14 @@ class NewsRepository:
                       published_at_ms bigint,
                       observed_at_ms bigint,
                       content_fingerprint text,
-                      push_payload jsonb
+                      push_payload jsonb,
+                      notification_fingerprint text,
+                      comparison_identity_version text,
+                      push_status text,
+                      adjudicated_at_ms bigint,
+                      admission_reason text,
+                      suppressed_by_item_id text
                     )
-                ), push_state AS MATERIALIZED (
-                  SELECT delivery_available, enablement_epoch_at_ms
-                    FROM news_push_state
-                   WHERE singleton_key = 'current'
-                   FOR UPDATE
                 ), written AS (
                   INSERT INTO news_items AS current_item (
                     item_id, source_id, source_item_key, provider_record_id,
@@ -1171,53 +1289,66 @@ class NewsRepository:
                   INSERT INTO news_push_deliveries (
                     item_id, source_title_fingerprint,
                     live_observed_at_ms, source_payload,
+                    notification_fingerprint,
+                    comparison_identity_version,
+                    admission_policy_version,
+                    adjudicated_at_ms, admission_reason,
+                    suppressed_by_item_id,
                     legacy_delivery_payload, legacy_presentation_snapshot,
                     status, attempted_at_ms, receipt, last_error,
                     sent_at_ms, created_at_ms, updated_at_ms
                   )
                   SELECT written.item_id, incoming.source_title_fingerprint,
                          incoming.observed_at_ms,
-                         incoming.push_payload, NULL, NULL,
-                         'pending', NULL, NULL, NULL, NULL,
+                         incoming.push_payload,
+                         incoming.notification_fingerprint,
+                         incoming.comparison_identity_version,
+                         %(admission_policy_version)s,
+                         incoming.adjudicated_at_ms,
+                         incoming.admission_reason,
+                         incoming.suppressed_by_item_id,
+                         NULL, NULL,
+                         incoming.push_status, NULL, NULL, NULL, NULL,
                          incoming.observed_at_ms, incoming.observed_at_ms
                     FROM written
                     JOIN incoming USING (item_id)
                     JOIN presentation_written USING (
                       item_id, source_title_fingerprint
                     )
-                    CROSS JOIN push_state
                    WHERE written.inserted
                      AND written.first_ingest_mode = 'live'
-                     AND push_state.delivery_available
-                     AND push_state.enablement_epoch_at_ms IS NOT NULL
-                     AND incoming.observed_at_ms
-                           >= push_state.enablement_epoch_at_ms
+                     AND incoming.push_status IS NOT NULL
                   ON CONFLICT (item_id) DO NOTHING
-                  RETURNING item_id
+                  RETURNING item_id, status
                 ), push_count AS MATERIALIZED (
-                  SELECT count(*)::bigint AS value FROM push_written
+                  SELECT count(*)::bigint AS total,
+                         count(*) FILTER (WHERE status = 'pending')::bigint AS pending,
+                         count(*) FILTER (WHERE status = 'suppressed')::bigint AS suppressed
+                    FROM push_written
                 ), push_summary AS (
                   UPDATE news_push_state state
-                     SET total_count = total_count + push_count.value,
-                         pending_count = pending_count + push_count.value,
+                     SET total_count = total_count + push_count.total,
+                         pending_count = pending_count + push_count.pending,
+                         suppressed_count = suppressed_count + push_count.suppressed,
                          updated_at_ms = greatest(
                            state.updated_at_ms,
                            %(observed_at_ms)s
                          )
-                    FROM push_count
+                   FROM push_count
                    WHERE state.singleton_key = 'current'
-                     AND push_count.value > 0
+                     AND push_count.total > 0
                   RETURNING state.singleton_key
                 )
                 SELECT count(*) FILTER (WHERE inserted) AS inserted,
                        count(*) FILTER (WHERE NOT inserted) AS updated,
-                       (SELECT value FROM push_count) AS push_outbox_writes,
+                       (SELECT total FROM push_count) AS push_outbox_writes,
                        (SELECT count(*) FROM push_summary) AS push_summary_writes
                   FROM written
                 """,
                 {
                     "json": Jsonb(write_rows),
                     "observed_at_ms": int(observed_at_ms),
+                    "admission_policy_version": NEWS_PUSH_ADMISSION_POLICY_VERSION,
                 },
             ).fetchone()
             inserted = int(outcome["inserted"] or 0)
@@ -2029,6 +2160,7 @@ class NewsRepository:
                      updated_at_ms = greatest(updated_at_ms, %(now_ms)s)
                WHERE status = 'sending'
                  AND source_title_fingerprint IS NOT NULL
+                 AND source_payload ->> 'schema_version' = 'news_item_push_v2'
               RETURNING item_id
             ), interrupted_count AS MATERIALIZED (
               SELECT count(*)::bigint AS value FROM interrupted
@@ -2107,6 +2239,8 @@ class NewsRepository:
                AND presentation.state = 'resolved'
              WHERE delivery.status = 'pending'
                AND delivery.source_title_fingerprint IS NOT NULL
+               AND delivery.source_payload ->> 'schema_version' = 'news_item_push_v2'
+               AND delivery.admission_reason = 'exact_atom_leader'
              ORDER BY delivery.live_observed_at_ms, delivery.item_id
              LIMIT 1
             """
@@ -2129,6 +2263,8 @@ class NewsRepository:
                WHERE item_id = %(item_id)s
                  AND status = 'pending'
                  AND source_title_fingerprint IS NOT NULL
+                 AND source_payload ->> 'schema_version' = 'news_item_push_v2'
+                 AND admission_reason = 'exact_atom_leader'
               RETURNING item_id, source_payload, source_title_fingerprint
             ), summary AS (
               UPDATE news_push_state
@@ -2168,6 +2304,8 @@ class NewsRepository:
                WHERE item_id = %(item_id)s
                  AND status = 'sending'
                  AND source_title_fingerprint IS NOT NULL
+                 AND source_payload ->> 'schema_version' = 'news_item_push_v2'
+                 AND admission_reason = 'exact_atom_leader'
               RETURNING item_id
             ), summary AS (
               UPDATE news_push_state
@@ -2215,6 +2353,8 @@ class NewsRepository:
                WHERE item_id = %(item_id)s
                  AND status = 'sending'
                  AND source_title_fingerprint IS NOT NULL
+                 AND source_payload ->> 'schema_version' = 'news_item_push_v2'
+                 AND admission_reason = 'exact_atom_leader'
               RETURNING item_id
             ), summary AS (
               UPDATE news_push_state
@@ -2277,12 +2417,33 @@ class NewsRepository:
             oldest_query.sql,
             oldest_query.params,
         ).fetchone()
+        suppression_query = query_specs.push_suppression_samples_query()
+        suppression_rows = self.conn.execute(
+            suppression_query.sql,
+            suppression_query.params,
+        ).fetchall()
+        suppression_sample_complete = len(suppression_rows) <= query_specs.SUPPRESSION_SAMPLE_LIMIT
+        recent_suppressions = [
+            {
+                "item_id": str(row["item_id"]),
+                "suppressed_by_item_id": str(row["suppressed_by_item_id"]),
+                "notification_fingerprint": str(row["notification_fingerprint"]),
+                "provider_published_at_ms": int(row["provider_published_at_ms"]),
+                "adjudicated_at_ms": int(row["adjudicated_at_ms"]),
+                "admission_reason": str(row["admission_reason"]),
+            }
+            for row in suppression_rows[: query_specs.SUPPRESSION_SAMPLE_LIMIT]
+        ]
         return {
+            "payload_schema_version": NEWS_PUSH_PAYLOAD_SCHEMA_VERSION,
+            "comparison_identity_version": EXACT_ATOM_IDENTITY_VERSION,
+            "admission_policy_version": NEWS_PUSH_ADMISSION_POLICY_VERSION,
             "delivery_available": bool(state["delivery_available"]),
             "enablement_epoch_at_ms": (
                 int(state["enablement_epoch_at_ms"]) if state["enablement_epoch_at_ms"] is not None else None
             ),
             "total_count": int(state["total_count"] or 0),
+            "suppressed_count": int(state["suppressed_count"] or 0),
             "pending_count": int(state["pending_count"] or 0),
             "sending_count": int(state["sending_count"] or 0),
             "sent_count": int(state["sent_count"] or 0),
@@ -2296,6 +2457,8 @@ class NewsRepository:
                 int(state["latest_error_at_ms"]) if state["latest_error_at_ms"] is not None else None
             ),
             "delivery_24h": self._push_delivery_24h_snapshot(now_ms=now_ms),
+            "recent_suppressions": recent_suppressions,
+            "suppression_sample_complete": suppression_sample_complete,
             "measured_at_ms": int(now_ms),
         }
 

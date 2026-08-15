@@ -412,6 +412,8 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                         "ix_news_push_deliveries_pending",
                         "ix_news_push_deliveries_attempted",
                         "ix_news_push_deliveries_completed",
+                        "ix_news_push_deliveries_exact_atom_leader",
+                        "ix_news_push_deliveries_suppressed_recent",
                     ],
                 ),
             ).fetchall()
@@ -620,6 +622,8 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "ix_news_push_deliveries_pending",
         "ix_news_push_deliveries_attempted",
         "ix_news_push_deliveries_completed",
+        "ix_news_push_deliveries_exact_atom_leader",
+        "ix_news_push_deliveries_suppressed_recent",
     }
     assert "attempted_at_ms" in news_push_read_indexes["ix_news_push_deliveries_attempted"]
     assert "source_title_fingerprint" in news_push_read_indexes["ix_news_push_deliveries_attempted"]
@@ -638,7 +642,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260815_0272"
+    assert version == latest_migration_version() == "20260815_0273"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -663,7 +667,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260815_0272"
+    assert version == latest_migration_version() == "20260815_0273"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -1115,7 +1119,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260815_0272"
+        assert version == latest_migration_version() == "20260815_0273"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

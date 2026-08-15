@@ -109,6 +109,16 @@ visibly in the body.
 Push admission requires only the first insert of a live OpenNews Item observed
 after the current enablement epoch while delivery is available. Recovery-first,
 RSS, pre-enablement, disabled, and unavailable facts never backfill.
+Each eligible Item keeps its provider `params.id` fact identity and receives one
+synchronous `news_item_push_v2` admission in that Item transaction. The shared
+exact-atom identity normalizes only comparison noise and preserves material
+numbers. For the same admission-policy version, comparison fingerprint, and
+provider-publication-time window, the first durable row is the leader and later
+rows are terminal `suppressed` with `suppressed_by_item_id`. Suppressed rows do
+not extend the window, retry, promote, translate with Push priority, or reach
+Feishu. A terminal leader still consumes the slot. Similar non-exact titles and
+numeric changes remain separate alerts. Push never reads or waits for Story and
+never applies Story Jaccard.
 Provider score, assets, signal, grade, and publication age are optional
 presentation evidence, not gates. Its compact body shows the immutable Item
 snapshot's reporting origin, provider publication time, Strategy labels,
@@ -722,13 +732,23 @@ pre-epoch Items, and later annotation changes never create or mutate Push work.
 retains the renamed legacy Push presentation JSON as audit only, and binds new
 Push rows to the exact title fingerprint. It has no history backfill,
 compatibility reader/writer, or migration-time provider/outbound call.
-`20260815_0272` is the current Story V2 replace-not-layer hard cut. With Serve
+`20260815_0272` is the Story V2 replace-not-layer hard cut. With Serve
 and Workers stopped, it clears Story memberships, Stories, selection, and the
 Brief current/LKG payload; drops the old secondary identity column; adds the
 bounded non-null `identity_evidence` object; and resets the Story projection
 summary. It preserves NewsItem facts, title presentations, Item Push delivery
 audit, and incident state. The first Workers turn rebuilds one V2 closure; old
 Story URLs and cursor generations have no compatibility path.
+`20260815_0273` is the current Push exact-atom replace-not-layer hard cut. With
+Serve and Workers stopped, it preserves historical sent/terminal v1 audit,
+terminalizes incompatible pre-cut nonterminal work, resets the Push enablement
+epoch and current counters, adds versioned admission evidence and the terminal
+`suppressed` state in place, and leaves the News table count unchanged. It does
+not backfill, replay, reclassify, call a provider, or send. Status reports the
+payload/identity/admission versions, `suppressed_count`, and at most twenty
+recent title-free suppression evidence rows. Suppression is informational and
+is excluded from health degradation, delivery latency/failure, and title-
+translation outcome samples.
 `20260807_0246` is the irreversible public
 World Brief hard cut: it canonicalizes retained OpenNews facts, drops the
 retired Story display-title translation table and incompatible Brief state,

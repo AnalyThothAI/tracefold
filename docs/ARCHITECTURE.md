@@ -117,10 +117,13 @@ Item and the exact UTF-8 SHA-256 of its original title. It is shared by Feed,
 Story detail, and Push, but never participates in acquisition, Story identity,
 classification, search, scoring, selection, or Brief input.
 `news_push_state` and `news_push_deliveries` are durable outbound control state:
-they freeze a no-backfill delivery epoch and one immutable `news_item_push_v1`
-snapshot for each eligible first-live OpenNews Item. Push references the exact
-shared title identity, fences one Feishu attempt, and persists a sanitized sent
-or terminal outcome. It owns no translation state. There is no retry,
+they freeze a no-backfill delivery epoch and one immutable `news_item_push_v2`
+snapshot plus exact-atom admission decision for each eligible first-live
+OpenNews Item. A leader references the exact shared title presentation, fences
+one Feishu attempt, and persists a sanitized sent or terminal outcome. A later
+exact duplicate is terminal `suppressed`, references its durable leader, never
+extends the leader window, and never enters the sender. It owns no translation
+state. There is no retry,
 lease, rendered-card persistence, Story identity, or public notification
 product in this ledger.
 
@@ -709,8 +712,11 @@ eligible live Item. The same Item transaction creates a title-presentation
 intent for every newly written exact title, whether it came from OpenNews, RSS,
 or recovery. Identity is the deterministic `item_id` over
 `(source_id, source_item_key)`; OpenNews uses `params.id`. Strategy overlap
-therefore creates one alert, while distinct provider IDs remain distinct even
-when Story later clusters them together. Recovery-first, pre-epoch, RSS, and
+therefore creates one Item and one admission. Distinct provider IDs remain
+distinct Item facts, but the shared exact-atom comparison identity admits only
+the first durable leader inside its event-family window. Similar or numerically
+different non-exact atoms remain independent alerts even when Story later
+clusters them together. Recovery-first, pre-epoch, RSS, and
 delivery-unavailable Items never create work or backfill.
 
 The OpenNews Item writer uses its source-local transaction fence and does not
@@ -718,6 +724,14 @@ acquire the Story publication advisory lock. A Story publish may therefore
 finish against its captured prior closure while a new Item/outbox commits; the
 post-commit dirty signal schedules the next deterministic closure. This keeps
 Story publication time and failure outside Item Push admission.
+
+`tracefold.news.exact_atom_identity` is the shared pure comparison module used
+by both Story V2 and Push admission. It owns NFKC/Chinese-width/prefix/URL/
+punctuation/number normalization, the comparison fingerprint, event family,
+and fixed duplicate window. Push caps every family at the OpenNews 12-hour
+active horizon: market telemetry is two hours, disaster six hours, and filing
+or general twelve hours. Push does not import Story projection helpers, run
+Jaccard, read a Story row, or wait for Story publication.
 
 One private `NewsItemTitlePresentation.turn()` prioritizes an exact pending
 title that blocks Push and otherwise resolves FIFO. Chinese input and titles
@@ -794,11 +808,19 @@ existing Push tables in place to Item identity. It preserves completed legacy
 audit and old rendered payloads as audit-only data, terminalizes incompatible
 unsent work, removes Story/retry/lease fields, resets enablement, and adds no
 table.
-`20260815_0271` is the current offline title-presentation hard cut. It adds the
+`20260815_0271` is the historical offline title-presentation hard cut. It adds the
 eleventh table, terminalizes every pre-cut nonterminal Push row, renames the old
 Push-owned presentation JSON to audit-only legacy data, and binds new Push rows
 to the exact shared title key. It does not backfill old Items or translations,
 call a provider, or retain a compatibility writer/reader.
+`20260815_0272` is the Story V2 hard cut. It replaces Story identity and clears
+only rebuildable Story/selection/Brief state; Item Push remains asynchronous.
+`20260815_0273` is the current offline Push exact-atom hard cut. It reuses the
+same two Push tables, preserves settled v1 audit, terminalizes incompatible
+pre-cut nonterminal rows, resets the admission epoch, adds `suppressed` to the
+zero-retry state machine and an indexed leader lookup, and adds no News table.
+Only new post-epoch live Items receive v2 admission; there is no backfill,
+reclassification, dual reader/writer, migration-time provider call, or send.
 `20260813_0261` replaces Radar's expression index with the STORED generated
 fingerprint and its narrow covering index, preserving all facts and the current
 payload with no dual path.

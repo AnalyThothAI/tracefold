@@ -69,6 +69,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_title_presentation_state",
         "news_title_presentation_24h",
         "news_push_delivery_24h",
+        "news_push_suppression_recent",
     ),
     "/api/macro/overview": ("macro_modules_current",),
     "/api/macro/rates-fed": ("macro_module_current", "macro_modules_current"),

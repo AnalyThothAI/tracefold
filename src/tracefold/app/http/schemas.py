@@ -614,6 +614,15 @@ class NewsPushDelivery24hData(ExactApiSchema):
     sample_complete: bool
 
 
+class NewsPushSuppressionEvidenceData(ExactApiSchema):
+    item_id: str
+    suppressed_by_item_id: str
+    notification_fingerprint: str
+    provider_published_at_ms: int
+    adjudicated_at_ms: int
+    admission_reason: Literal["exact_atom_suppressed"]
+
+
 class NewsPushStatusData(ExactApiSchema):
     status: Literal["disabled", "ready", "degraded"]
     reasons: list[str]
@@ -623,8 +632,12 @@ class NewsPushStatusData(ExactApiSchema):
     state_synchronized: bool
     feishu_webhook_url_configured: bool
     feishu_signing_secret_configured: bool
+    payload_schema_version: str
+    comparison_identity_version: str
+    admission_policy_version: str
     enablement_epoch_at_ms: int | None
     total_count: int
+    suppressed_count: int
     pending_count: int
     sending_count: int
     sent_count: int
@@ -634,6 +647,8 @@ class NewsPushStatusData(ExactApiSchema):
     latest_error: str | None
     latest_error_at_ms: int | None
     delivery_24h: NewsPushDelivery24hData
+    recent_suppressions: list[NewsPushSuppressionEvidenceData]
+    suppression_sample_complete: bool
     measured_at_ms: int
 
 

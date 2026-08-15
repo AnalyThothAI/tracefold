@@ -8575,6 +8575,10 @@
       "NewsPushStatusData": {
         "additionalProperties": false,
         "properties": {
+          "admission_policy_version": {
+            "title": "Admission Policy Version",
+            "type": "string"
+          },
           "availability_reason": {
             "anyOf": [
               {
@@ -8585,6 +8589,10 @@
               }
             ],
             "title": "Availability Reason"
+          },
+          "comparison_identity_version": {
+            "title": "Comparison Identity Version",
+            "type": "string"
           },
           "delivery_24h": {
             "$ref": "#/components/schemas/NewsPushDelivery24hData"
@@ -8660,6 +8668,10 @@
             ],
             "title": "Oldest Pending At Ms"
           },
+          "payload_schema_version": {
+            "title": "Payload Schema Version",
+            "type": "string"
+          },
           "pending_count": {
             "title": "Pending Count",
             "type": "integer"
@@ -8669,6 +8681,13 @@
               "type": "string"
             },
             "title": "Reasons",
+            "type": "array"
+          },
+          "recent_suppressions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsPushSuppressionEvidenceData"
+            },
+            "title": "Recent Suppressions",
             "type": "array"
           },
           "requested": {
@@ -8696,6 +8715,14 @@
             "title": "Status",
             "type": "string"
           },
+          "suppressed_count": {
+            "title": "Suppressed Count",
+            "type": "integer"
+          },
+          "suppression_sample_complete": {
+            "title": "Suppression Sample Complete",
+            "type": "boolean"
+          },
           "terminal_count": {
             "title": "Terminal Count",
             "type": "integer"
@@ -8714,8 +8741,12 @@
           "state_synchronized",
           "feishu_webhook_url_configured",
           "feishu_signing_secret_configured",
+          "payload_schema_version",
+          "comparison_identity_version",
+          "admission_policy_version",
           "enablement_epoch_at_ms",
           "total_count",
+          "suppressed_count",
           "pending_count",
           "sending_count",
           "sent_count",
@@ -8725,9 +8756,51 @@
           "latest_error",
           "latest_error_at_ms",
           "delivery_24h",
+          "recent_suppressions",
+          "suppression_sample_complete",
           "measured_at_ms"
         ],
         "title": "NewsPushStatusData",
+        "type": "object"
+      },
+      "NewsPushSuppressionEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "adjudicated_at_ms": {
+            "title": "Adjudicated At Ms",
+            "type": "integer"
+          },
+          "admission_reason": {
+            "const": "exact_atom_suppressed",
+            "title": "Admission Reason",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "notification_fingerprint": {
+            "title": "Notification Fingerprint",
+            "type": "string"
+          },
+          "provider_published_at_ms": {
+            "title": "Provider Published At Ms",
+            "type": "integer"
+          },
+          "suppressed_by_item_id": {
+            "title": "Suppressed By Item Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "suppressed_by_item_id",
+          "notification_fingerprint",
+          "provider_published_at_ms",
+          "adjudicated_at_ms",
+          "admission_reason"
+        ],
+        "title": "NewsPushSuppressionEvidenceData",
         "type": "object"
       },
       "NewsRealtimeLatencyData": {

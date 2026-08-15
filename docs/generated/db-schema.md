@@ -754,6 +754,12 @@
 | `legacy_presentation_snapshot` | `JSONB` | True | `None` |
 | `attempted_at_ms` | `BIGINT` | True | `None` |
 | `source_title_fingerprint` | `TEXT` | True | `None` |
+| `notification_fingerprint` | `TEXT` | True | `None` |
+| `comparison_identity_version` | `TEXT` | True | `None` |
+| `admission_policy_version` | `TEXT` | True | `None` |
+| `adjudicated_at_ms` | `BIGINT` | True | `None` |
+| `admission_reason` | `TEXT` | True | `None` |
+| `suppressed_by_item_id` | `TEXT` | True | `None` |
 
 ## `news_push_state`
 
@@ -772,6 +778,7 @@
 | `latest_error_at_ms` | `BIGINT` | True | `None` |
 | `delivery_available` | `BOOLEAN` | False | `false` |
 | `sending_count` | `BIGINT` | False | `0` |
+| `suppressed_count` | `BIGINT` | False | `0` |
 
 ## `news_sources`
 

@@ -235,7 +235,7 @@ def test_stale_item_push_turn_that_loses_fence_sends_nothing() -> None:
                 return {
                     "item_id": "news_item_0123456789abcdef0123456789abcdef",
                     "source_payload": {
-                        "schema_version": "news_item_push_v1",
+                        "schema_version": "news_item_push_v2",
                         "original_title": "Bitcoin rises",
                     },
                     "presentation": {
