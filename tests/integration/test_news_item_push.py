@@ -212,7 +212,7 @@ def test_item_push_translates_before_fence_and_sends_once() -> None:
         "display_title": "比特币 ETF 资金流入加速",
         "outcome": "translated",
         "translation_duration_ms": 0,
-        "translation_policy_version": "title_zh_v3",
+        "translation_policy_version": "title_zh_v4",
     }
     assert sender.calls[0]["source_payload"] == row["source_payload"]
     assert sender.calls[0]["presentation_snapshot"] == row["presentation_snapshot"]
@@ -282,7 +282,7 @@ def test_translation_failure_falls_back_and_feishu_failure_is_terminal_without_r
         "fallback_code": "news_item_push_translation_rate_limited",
         "outcome": "fallback",
         "translation_duration_ms": 0,
-        "translation_policy_version": "title_zh_v3",
+        "translation_policy_version": "title_zh_v4",
     }
 
 
@@ -311,7 +311,7 @@ def test_startup_terminalizes_preexisting_sending_even_when_delivery_is_unavaila
                     "display_title": "Strategy report interrupted",
                     "outcome": "fallback",
                     "fallback_code": "news_item_push_translation_unavailable",
-                    "translation_policy_version": "title_zh_v3",
+                    "translation_policy_version": "title_zh_v4",
                 },
                 attempted_at_ms=BASE_MS + 2_000,
             )
@@ -357,11 +357,11 @@ class _Translator:
         self.result = result
         self.titles: list[str] = []
 
-    def translate(self, title: str) -> str:
+    async def translate(self, title: str) -> str:
         self.titles.append(title)
         return self.result
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
 
 
@@ -391,10 +391,10 @@ class _Sender:
 
 
 class _FailingTranslator:
-    def translate(self, _title: str) -> str:
+    async def translate(self, _title: str) -> str:
         raise NewsPushExternalError("news_item_push_translation_rate_limited")
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
 
 

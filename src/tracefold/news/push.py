@@ -14,10 +14,9 @@ from tracefold.platform.resource import (
 )
 
 PUSH_PAYLOAD_SCHEMA_VERSION = "news_item_push_v1"
-PUSH_TRANSLATION_POLICY_VERSION = "title_zh_v3"
+PUSH_TRANSLATION_POLICY_VERSION = "title_zh_v4"
 
-_TRANSLATION_TOTAL_TIMEOUT_SECONDS = 3.0
-_TRANSLATION_OPERATION_TIMEOUT_SECONDS = 2.5
+_TRANSLATION_TOTAL_TIMEOUT_SECONDS = 1.5
 _DELIVERY_TOTAL_TIMEOUT_SECONDS = 7.5
 _DELIVERY_OPERATION_TIMEOUT_SECONDS = 7.0
 _MAX_TITLE_GRAPHEMES = 500
@@ -33,9 +32,9 @@ class NewsPushReceipt:
 
 
 class NewsPushTranslator(Protocol):
-    def translate(self, title: str) -> str: ...
+    async def translate(self, title: str) -> str: ...
 
-    def close(self) -> None: ...
+    async def close(self) -> None: ...
 
 
 class NewsPushSender(Protocol):
@@ -197,17 +196,12 @@ class NewsItemPush:
         return True
 
     async def close(self) -> None:
-        seen: set[int] = set()
-        for name, adapter in (
-            ("news_item_push_translator_close", self.translator),
-            ("news_item_push_sender_close", self.sender),
-        ):
-            if adapter is None or id(adapter) in seen:
-                continue
-            seen.add(id(adapter))
+        if self.translator is not None:
+            await self.translator.close()
+        if self.sender is not None:
             await self.finite_operations.run(
-                name,
-                adapter.close,
+                "news_item_push_sender_close",
+                self.sender.close,
                 timeout_seconds=5.0,
                 allow_shutdown=True,
             )
@@ -234,12 +228,7 @@ class NewsItemPush:
         started_at_ms = self._clock_ms()
         try:
             async with asyncio.timeout(_TRANSLATION_TOTAL_TIMEOUT_SECONDS):
-                translated = await self.finite_operations.run(
-                    "news_item_push_translate_title",
-                    self.translator.translate,
-                    original_title,
-                    timeout_seconds=_TRANSLATION_OPERATION_TIMEOUT_SECONDS,
-                )
+                translated = await self.translator.translate(original_title)
             display_title = _validated_translation(
                 original_title=original_title,
                 translated_title=translated,
@@ -248,18 +237,6 @@ class NewsItemPush:
             return _fallback_presentation(
                 original_title,
                 exc.code,
-                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
-            )
-        except ResourceAdmissionTimeout:
-            return _fallback_presentation(
-                original_title,
-                "news_item_push_translation_admission_timeout",
-                translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
-            )
-        except ResourceOperationOverrun:
-            return _fallback_presentation(
-                original_title,
-                "news_item_push_translation_timeout",
                 translation_duration_ms=max(0, self._clock_ms() - started_at_ms),
             )
         except TimeoutError:

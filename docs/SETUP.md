@@ -134,7 +134,7 @@ Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. With Push enabled, a configured
 direct DeepSeek triple enables the one-attempt presentation translation; do
 not add a `news.push.translation` block or duplicate the credential. The target
-language, three-second total translation deadline, zero-retry policy, and title
+language, 1.5-second absolute translation deadline, zero-retry policy, and title
 limits are code-owned. Missing or invalid delivery configuration is fail-soft:
 Serve and Workers still start, while secret-free diagnostics report requested
 and effective availability plus a sanitized reason.
@@ -193,7 +193,7 @@ availability records one no-backfill epoch. The first live OpenNews Item insert
 atomically creates one outbox row keyed by `(source_id, source_item_key)`.
 Scoreless, assetless, linkless, and CL-labelled Items remain eligible;
 recovery-first, RSS, pre-enablement, disabled, and unavailable facts never
-backfill. Translation is one best-effort title-only call within three seconds;
+backfill. Translation is one best-effort title-only asynchronous call within 1.5 seconds;
 failure sends the original. The delivery worker then makes exactly one
 optionally signed Feishu attempt and settles it as sent or terminal. There is
 no retry, lease, reaper, generic Notifications product, or Story dependency.

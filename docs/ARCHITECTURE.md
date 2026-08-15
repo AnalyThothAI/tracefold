@@ -693,7 +693,8 @@ post-commit dirty signal schedules the next deterministic closure. This keeps
 Story publication time and failure outside Item Push admission.
 
 One private `NewsItemPush.turn()` peeks FIFO pending work, optionally translates
-the title outside a transaction under a three-second total bound, conditionally
+the title outside a transaction through a cancellable asynchronous request under
+a 1.5-second absolute deadline, conditionally
 fences `pending -> sending` with the minimal presentation snapshot, renders the
 Feishu card, performs at most one request, and settles `sent` or `terminal`.
 Translation failure always falls back to the original title, which remains

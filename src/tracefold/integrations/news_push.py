@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -20,7 +19,7 @@ from .feishu import (
     FeishuWebhookClient,
 )
 
-_TRANSLATION_REQUEST_TIMEOUT_SECONDS = 2.25
+_TRANSLATION_REQUEST_TIMEOUT_SECONDS = 1.5
 _FEISHU = "feishu"
 _TEXT_LIMIT = 500
 
@@ -34,10 +33,10 @@ class OpenAICompatibleNewsPushTranslator:
         base_url: str,
         api_key: str,
         model: str,
-        transport: httpx.BaseTransport | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._model = str(model).strip()
-        self._client = httpx.Client(
+        self._client = httpx.AsyncClient(
             base_url=str(base_url).strip().rstrip("/") + "/",
             timeout=httpx.Timeout(_TRANSLATION_REQUEST_TIMEOUT_SECONDS),
             headers={
@@ -48,22 +47,21 @@ class OpenAICompatibleNewsPushTranslator:
             transport=transport,
         )
 
-    def translate(self, title: str) -> str:
+    async def translate(self, title: str) -> str:
         try:
-            response = self._client.post(
+            response = await self._client.post(
                 "chat/completions",
                 json={
                     "model": self._model,
                     "temperature": 0,
                     "max_tokens": 256,
-                    "response_format": {"type": "json_object"},
                     "messages": [
                         {
                             "role": "system",
                             "content": (
                                 "将金融新闻标题忠实翻译为简体中文。不得总结、解释、补充事实；"
                                 "数字、百分比、金额、$TOKEN 和大写资产符号必须原样保留。"
-                                '只输出 JSON：{"translated_title":"单行标题"}'
+                                "只输出翻译后的单行标题，不要 JSON、引号、Markdown 或解释。"
                             ),
                         },
                         {"role": "user", "content": str(title)},
@@ -88,20 +86,17 @@ class OpenAICompatibleNewsPushTranslator:
             content = message["content"]
             if not isinstance(content, str):
                 raise TypeError("translation_content_invalid")
-            translated_payload = json.loads(content)
-            if not isinstance(translated_payload, Mapping):
-                raise TypeError("translation_payload_invalid")
-            translated = translated_payload.get("translated_title")
-            if not isinstance(translated, str):
+            translated = content.strip()
+            if not translated:
                 raise TypeError("translation_title_invalid")
             return translated
         except httpx.HTTPStatusError:
             raise NewsPushExternalError("news_item_push_translation_http_error") from None
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+        except (KeyError, IndexError, TypeError, ValueError):
             raise NewsPushExternalError("news_item_push_translation_response_invalid") from None
 
-    def close(self) -> None:
-        self._client.close()
+    async def close(self) -> None:
+        await self._client.aclose()
 
 
 class FeishuNewsPushSender:

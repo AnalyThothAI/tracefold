@@ -154,6 +154,102 @@ def test_push_due_turn_retries_after_database_admission_timeout() -> None:
     assert asyncio.run(push.turn()) is None
 
 
+def test_translation_absolute_deadline_cancels_without_using_finite_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Database:
+        def __init__(self) -> None:
+            self.presentation: dict[str, Any] | None = None
+
+        async def run_business(
+            self,
+            operation_name: str,
+            _function: Any,
+            /,
+            *args: Any,
+            **_kwargs: Any,
+        ) -> object:
+            if operation_name == "news_item_push_peek":
+                return {
+                    "item_id": "news_item_0123456789abcdef0123456789abcdef",
+                    "source_payload": {
+                        "schema_version": "news_item_push_v1",
+                        "original_title": "Bitcoin rises 5%",
+                    },
+                }
+            if operation_name == "news_item_push_fence":
+                self.presentation = dict(args[1])
+                return {"item_id": args[0]}
+            if operation_name == "news_item_push_complete":
+                return True
+            raise AssertionError(operation_name)
+
+    class _Finite:
+        def __init__(self) -> None:
+            self.operations: list[str] = []
+
+        async def run(
+            self,
+            operation_name: str,
+            function: Any,
+            /,
+            *args: Any,
+            **kwargs: Any,
+        ) -> object:
+            self.operations.append(operation_name)
+            assert operation_name == "news_item_push_feishu_send"
+            on_submitted = kwargs.get("on_submitted")
+            if on_submitted is not None:
+                on_submitted()
+            return function(*args)
+
+    class _Translator:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        async def translate(self, _title: str) -> str:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+        async def close(self) -> None:
+            return None
+
+    class _Sender:
+        def send(self, *_args: Any, **_kwargs: Any) -> NewsPushReceipt:
+            return NewsPushReceipt(provider="feishu")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("tracefold.news.push._TRANSLATION_TOTAL_TIMEOUT_SECONDS", 0.01)
+    database = _Database()
+    finite = _Finite()
+    translator = _Translator()
+    push = NewsItemPush(
+        db=database,
+        finite_operations=finite,
+        translator=translator,
+        sender=_Sender(),
+        delivery_available=True,
+    )
+
+    assert asyncio.run(push.turn()) is True
+    assert translator.cancelled is True
+    assert finite.operations == ["news_item_push_feishu_send"]
+    assert database.presentation is not None
+    duration_ms = database.presentation.pop("translation_duration_ms")
+    assert isinstance(duration_ms, int) and duration_ms >= 0
+    assert database.presentation == {
+        "display_title": "Bitcoin rises 5%",
+        "fallback_code": "news_item_push_translation_timeout",
+        "outcome": "fallback",
+        "translation_policy_version": "title_zh_v4",
+    }
+
+
 def test_stale_item_push_turn_that_loses_fence_sends_nothing() -> None:
     class _Database:
         def __init__(self) -> None:
@@ -233,10 +329,10 @@ def test_chinese_item_title_skips_translation_and_freezes_not_needed() -> None:
             return function(*args)
 
     class _Translator:
-        def translate(self, _title: str) -> str:
+        async def translate(self, _title: str) -> str:
             raise AssertionError("Chinese title must not be translated")
 
-        def close(self) -> None:
+        async def close(self) -> None:
             return None
 
     class _Sender:
@@ -259,7 +355,7 @@ def test_chinese_item_title_skips_translation_and_freezes_not_needed() -> None:
     assert database.presentation == {
         "display_title": "比特币现货 ETF 资金流入",
         "outcome": "not_needed",
-        "translation_policy_version": "title_zh_v3",
+        "translation_policy_version": "title_zh_v4",
     }
 
 
@@ -298,10 +394,10 @@ def test_long_item_title_skips_translation_and_falls_back_without_blocking() -> 
             return function(*args)
 
     class _Translator:
-        def translate(self, _title: str) -> str:
+        async def translate(self, _title: str) -> str:
             raise AssertionError("oversized title must not be translated")
 
-        def close(self) -> None:
+        async def close(self) -> None:
             return None
 
     class _Sender:
@@ -325,7 +421,7 @@ def test_long_item_title_skips_translation_and_falls_back_without_blocking() -> 
         "display_title": title,
         "fallback_code": "news_item_push_translation_input_too_long",
         "outcome": "fallback",
-        "translation_policy_version": "title_zh_v3",
+        "translation_policy_version": "title_zh_v4",
     }
 
 
@@ -567,10 +663,10 @@ def test_push_wiring_is_always_reconciled_and_reuses_global_llm(
         def __init__(self, **kwargs: Any) -> None:
             constructed.append(("translator", kwargs))
 
-        def translate(self, title: str) -> str:
+        async def translate(self, title: str) -> str:
             return title
 
-        def close(self) -> None:
+        async def close(self) -> None:
             return None
 
     class _BriefPublisher:
@@ -670,7 +766,7 @@ def test_empty_gmgn_channels_do_not_construct_a_collector(monkeypatch: pytest.Mo
     assert components.collector is None
 
 
-def test_news_item_push_closes_sender_through_finite_capability() -> None:
+def test_news_item_push_closes_async_translator_directly_and_sender_through_finite() -> None:
     calls: list[tuple[str, bool]] = []
     closed: list[str] = []
 
@@ -686,10 +782,17 @@ def test_news_item_push_closes_sender_through_finite_capability() -> None:
         def close(self) -> None:
             closed.append("sender")
 
+    class _Translator:
+        async def translate(self, _title: str) -> str:
+            raise AssertionError("not called")
+
+        async def close(self) -> None:
+            closed.append("translator")
+
     push = NewsItemPush(
         db=object(),
         finite_operations=_Capability(),
-        translator=None,
+        translator=_Translator(),
         sender=_Sender(),
         delivery_available=True,
     )
@@ -697,7 +800,7 @@ def test_news_item_push_closes_sender_through_finite_capability() -> None:
     asyncio.run(push.close())
 
     assert calls == [("news_item_push_sender_close", True)]
-    assert closed == ["sender"]
+    assert closed == ["translator", "sender"]
 
 
 def test_graceful_cleanup_closes_news_push_before_capability_drain() -> None:

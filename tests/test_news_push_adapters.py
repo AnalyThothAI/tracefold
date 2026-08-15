@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -15,7 +16,7 @@ from tracefold.news.push import NewsPushExternalError
 _FEISHU_TEST_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook-id"
 
 
-def test_translator_makes_one_bounded_openai_compatible_request() -> None:
+def test_translator_makes_one_plain_text_openai_compatible_request() -> None:
     requests: list[httpx.Request] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -26,7 +27,7 @@ def test_translator_makes_one_bounded_openai_compatible_request() -> None:
                 "choices": [
                     {
                         "finish_reason": "stop",
-                        "message": {"content": '{"translated_title":"比特币上涨 5%"}'},
+                        "message": {"content": "比特币上涨 5%"},
                     }
                 ]
             },
@@ -38,10 +39,14 @@ def test_translator_makes_one_bounded_openai_compatible_request() -> None:
         model="fast-translator",
         transport=httpx.MockTransport(respond),
     )
-    try:
-        assert translator.translate("Bitcoin rises 5%") == "比特币上涨 5%"
-    finally:
-        translator.close()
+
+    async def scenario() -> str:
+        try:
+            return await translator.translate("Bitcoin rises 5%")
+        finally:
+            await translator.close()
+
+    assert asyncio.run(scenario()) == "比特币上涨 5%"
 
     assert len(requests) == 1
     assert requests[0].url == "https://translator.test/v1/chat/completions"
@@ -49,7 +54,8 @@ def test_translator_makes_one_bounded_openai_compatible_request() -> None:
     body = json.loads(requests[0].content)
     assert body["model"] == "fast-translator"
     assert body["temperature"] == 0
-    assert body["response_format"] == {"type": "json_object"}
+    assert "response_format" not in body
+    assert "只输出 JSON" not in body["messages"][0]["content"]
 
 
 @pytest.mark.parametrize(
@@ -67,11 +73,15 @@ def test_translator_errors_are_sanitized(response: httpx.Response, code: str) ->
         model="translator",
         transport=httpx.MockTransport(lambda _request: response),
     )
-    try:
-        with pytest.raises(NewsPushExternalError, match=code) as raised:
-            translator.translate("Bitcoin rises")
-    finally:
-        translator.close()
+
+    async def scenario() -> None:
+        try:
+            await translator.translate("Bitcoin rises")
+        finally:
+            await translator.close()
+
+    with pytest.raises(NewsPushExternalError, match=code) as raised:
+        asyncio.run(scenario())
 
     assert "secret upstream body" not in str(raised.value)
 

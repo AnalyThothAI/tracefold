@@ -350,7 +350,7 @@ First-inserted live OpenNews Item transaction
 
 Independent Item Push turn
   -> inspect one pending row
-  -> attempt title-only Chinese translation once within 3 s, or use original
+  -> attempt title-only Chinese translation asynchronously once within 1.5 s, or use original
   -> commit the immutable presentation and `sending` fence
   -> make one signed or explicitly unsigned Feishu attempt within 7.5 s
   -> settle once as `sent` or `terminal`; no retry, lease, or reaper
@@ -529,8 +529,9 @@ Optional translation reuses the configured direct DeepSeek `llm.api_key`,
 `llm.base_url`, and `llm.news_brief_model` triple; there is no independent
 `news.push.translation` endpoint, key, engine, inferred default, or fallback
 provider. It is an outbound presentation adapter outside the serial model
-arbiter. Each non-Chinese Item title receives at most one provider call under a
-three-second total deadline. Chinese input bypasses the endpoint. Missing
+arbiter and shared synchronous finite-operation threads. Each non-Chinese Item
+title receives at most one cancellable asynchronous provider call under a
+1.5-second absolute deadline. Chinese input bypasses the endpoint. Missing
 configuration, timeout, invalid output, and titles over 500 graphemes use the
 original immediately. A valid Chinese result becomes the header and the
 original always remains visible. Translation outcomes are informational and
