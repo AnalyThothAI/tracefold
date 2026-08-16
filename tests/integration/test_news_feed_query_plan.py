@@ -147,7 +147,7 @@ def _insert_production_shaped_news(conn: Any) -> None:
                series_no,
                '{"source_ids":["feed-plan-source"],"reporting_origins":["Feed Plan Wire"]}'::jsonb,
                jsonb_build_object(
-                 'identity_version', 'news_story_identity_v2',
+                 'identity_version', 'news_story_identity_v3',
                  'feature_version', 'news_story_feature_v2',
                  'jaccard_version', 'news_story_jaccard_v2',
                  'event_policy_version', 'news_story_event_policy_v2',

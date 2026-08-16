@@ -100,7 +100,7 @@ export function newsStoryDetailFixture(overrides: Partial<NewsStoryDetail> = {})
       feature_version: "news_story_features_v2",
       grounded_provider_count: 0,
       grounded_provider_version: "news_story_grounded_provider_v2",
-      identity_version: "news_story_identity_v2",
+      identity_version: "news_story_identity_v3",
       jaccard_version: "news_story_jaccard_v2",
       location_keys: [],
       max_accepted_jaccard: 1,

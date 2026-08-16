@@ -629,9 +629,11 @@ never create one Item per Strategy. Original titles remain the sole Story,
 search, scoring, and Brief text facts; Item-scoped display-title presentation
 is a read-time join only.
 
-A Story ID is `SHA-256(identity_version || anchor_comparison_identity)`. The
-anchor is the fixed anchor of the final closure; untrackable titles use a
-per-Item sentinel. Each Story stores one bounded `identity_evidence` object with
+A Story ID is
+`SHA-256(news_story_identity_v3 || anchor_comparison_identity || anchor_item_id)`.
+The anchor is the fixed anchor of the final closure. The anchor Item uniquely
+qualifies every identity, including an empty comparison identity. Each Story
+stores one bounded `identity_evidence` object with
 versions, anchor Item, strong keys, accepted/rejected reason histograms,
 Jaccard diagnostics, and grounded-provider count. There is no second stored
 identity, alias, redirect, archived Story, membership history, similarity edge,

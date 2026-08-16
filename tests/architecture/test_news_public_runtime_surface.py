@@ -144,6 +144,38 @@ def test_story_v2_private_decision_seams_do_not_leak_to_callers() -> None:
     assert violations == []
 
 
+def test_semantic_qualification_cannot_become_a_production_authority() -> None:
+    production_root = ROOT / "src" / "tracefold"
+    forbidden_import_roots = {"sentence_transformers", "sklearn", "torch", "transformers"}
+    import_violations: list[str] = []
+    marker_violations: list[str] = []
+    builder_definitions: list[str] = []
+    for path in sorted(production_root.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                imported = [str(node.module or "")]
+            else:
+                imported = []
+            import_violations.extend(
+                f"{path.relative_to(ROOT)}:{name}" for name in imported if name.split(".")[0] in forbidden_import_roots
+            )
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "build_story_projection":
+                builder_definitions.append(str(path.relative_to(ROOT)))
+        marker_violations.extend(
+            f"{path.relative_to(ROOT)}:{marker}"
+            for marker in ("news_story_semantic_qualification", "semantic_ablation", "linear_verifier")
+            if marker in source
+        )
+
+    assert import_violations == []
+    assert marker_violations == []
+    assert builder_definitions == ["src/tracefold/news/story_projection.py"]
+
+
 def test_story_projection_has_no_push_interface_or_candidate_writer() -> None:
     from tracefold.news.repository import NewsRepository
 

@@ -485,7 +485,7 @@ def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_his
                    30000 + value, 30000 + value,
                    '{"source_ids":["audit-source"],"reporting_origins":["Audit Wire"]}'::jsonb,
                    jsonb_build_object(
-                     'identity_version', 'news_story_identity_v2',
+                     'identity_version', 'news_story_identity_v3',
                      'feature_version', 'news_story_feature_v2',
                      'jaccard_version', 'news_story_jaccard_v2',
                      'event_policy_version', 'news_story_event_policy_v2',

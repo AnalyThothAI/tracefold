@@ -1043,9 +1043,10 @@ def _materialize_stories(
         members = [projected.rows[index] for index in row_indices]
         anchor_row = projected.rows[cluster.anchor.row_indices[0]]
         comparison_identity = cluster.anchor.features.comparison_title
-        if not comparison_identity:
-            comparison_identity = f"untrackable:{anchor_row['item_id']}"
-        story_id = hashlib.sha256(f"{STORY_IDENTITY_VERSION}\0{comparison_identity}".encode()).hexdigest()
+        anchor_item_id = str(anchor_row["item_id"])
+        story_id = hashlib.sha256(
+            f"{STORY_IDENTITY_VERSION}\0{comparison_identity}\0{anchor_item_id}".encode()
+        ).hexdigest()
         representative = min(
             members,
             key=lambda member: (
@@ -1073,7 +1074,7 @@ def _materialize_stories(
         )
         category = cast(EventCategory, _mode([str(member["category"]) for member in members], _CATEGORY_ORDER))
         origins = {str(member["reporting_origin"]) for member in members}
-        evidence = _identity_evidence(cluster, anchor_item_id=str(anchor_row["item_id"]))
+        evidence = _identity_evidence(cluster, anchor_item_id=anchor_item_id)
         story = {
             "story_id": story_id,
             "canonical_title": str(anchor_row["title"]),

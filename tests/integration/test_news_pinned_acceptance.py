@@ -607,7 +607,7 @@ def _assert_story_v2_and_pinned_helpers(
     assert all(len(story["story_id"]) == 64 for story in stories)
     assert all(story["item_count"] == len(story["member_ids"]) for story in stories)
     assert all(story["source_count"] <= story["item_count"] for story in stories)
-    assert all(story["identity_evidence"]["identity_version"] == "news_story_identity_v2" for story in stories)
+    assert all(story["identity_evidence"]["identity_version"] == "news_story_identity_v3" for story in stories)
 
     actual_items = {
         row["provider_record_id"]: dict(row)

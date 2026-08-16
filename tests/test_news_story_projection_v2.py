@@ -178,6 +178,30 @@ def test_exact_atom_retains_grounded_evidence_from_every_physical_item() -> None
     assert projection.stories[0]["identity_evidence"]["grounded_provider_count"] == 2
 
 
+def test_repeated_exact_title_outside_event_window_has_unique_anchor_identity() -> None:
+    rows = (
+        _row(
+            "btc-oi-earlier",
+            "BTC OI Rise 3.4% OI Value $21B Whale/OI Ratio 1.2",
+            published_at_ms=NOW_MS - 4 * 60 * 60 * 1_000,
+        ),
+        _row(
+            "btc-oi-later",
+            "BTC OI Rise 3.4% OI Value $21B Whale/OI Ratio 1.2",
+            published_at_ms=NOW_MS - 1 * 60 * 60 * 1_000,
+        ),
+    )
+
+    projection = build_story_projection(_snapshot(*rows))
+    reversed_projection = build_story_projection(_snapshot(*reversed(rows)))
+
+    assert len(projection.stories) == 2
+    assert len({story["story_id"] for story in projection.stories}) == 2
+    assert projection.versions["identity"] == "news_story_identity_v3"
+    assert _partitions(projection) == [["btc-oi-earlier"], ["btc-oi-later"]]
+    assert reversed_projection.as_payload() == projection.as_payload()
+
+
 def test_rss_scores_physical_items_before_category_expansion_and_final_deduplication() -> None:
     _category, source = public_rss_membership_sources()[0]
     rows = tuple(

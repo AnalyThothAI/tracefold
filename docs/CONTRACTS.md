@@ -421,12 +421,13 @@ Snapshot loading passes only bounded provider `symbol`, `market_type`, and
 match text is grounded in the original title. Ungrounded labels cannot merge or
 veto.
 
-Story identity is `SHA-256(news_story_identity_v2 ||
-anchor_comparison_identity)`. The anchor comes from the deterministic
-fixed-anchor closure over normalized Jaccard plus compatible strong facts.
-Untrackable titles use a per-Item sentinel. There is one identity and one
-membership closure: no secondary tracking hash, alias, redirect, compatibility
-read, or public Item recluster. The JavaScript UTF-16 `title.length > 10` gate
+Story identity is `SHA-256(news_story_identity_v3 ||
+anchor_comparison_identity || anchor_item_id)`. The anchor comes from the
+deterministic fixed-anchor closure over normalized Jaccard plus compatible
+strong facts. The anchor Item uniquely qualifies every identity, including an
+empty comparison identity. There is one identity and one membership closure:
+no secondary tracking hash, alias, redirect, compatibility read, or public
+Item recluster. The JavaScript UTF-16 `title.length > 10` gate
 is only a public admissibility/representative rule over materialized Stories.
 The code-owned source catalog is the pinned WorldMonitor
 `full/en + INTEL_SOURCES` public population: exactly 179 physical HTTPS feeds,

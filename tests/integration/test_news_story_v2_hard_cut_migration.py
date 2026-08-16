@@ -165,7 +165,7 @@ def test_0272_hard_cuts_story_identity_shape_and_resets_identity_bearing_state()
         assert publication["projection_status"] == "rebuilt"
         assert conn.execute("SELECT count(*) AS count FROM news_stories").fetchone()["count"] == 1
         selection = conn.execute("SELECT identity_version, top_stories FROM news_brief_selection_current").fetchone()
-        assert selection["identity_version"] == "news_story_identity_v2"
+        assert selection["identity_version"] == "news_story_identity_v3"
         assert len(selection["top_stories"]) == 1
         conn.commit()
         with conn.transaction():
