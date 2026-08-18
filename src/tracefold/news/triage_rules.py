@@ -197,7 +197,7 @@ def fallback_verdict(facts: GateFacts, *, error_code: str) -> tuple[TriageVerdic
         confidence=0.0,
         decision=baseline,
         headline_zh="模型不可用（规则兜底）",
-        rationale=error_code[:160],
+        why_zh="",
     )
     return verdict, DecisionResult(baseline, "fail_closed_fallback", None, baseline)
 

@@ -197,15 +197,16 @@ Fingerprints of at most two tokens never share an Event.
 Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
 `event_type`, `assets[{symbol, market_type?, role}]`, `direction`, `scope`,
 `magnitude 0..3`, `actionable`, `confidence`, `decision` (model intent),
-`headline_zh`, `title_zh` (faithful Chinese title, at most 160 characters),
-`rationale`; the stored row adds `model_decision`,
-`rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
-`degraded`, `error_code`, `trace`. `AnalystVerdict` is `agrees_with_triage`,
-`revised_direction`, `revised_magnitude`, `novelty_assessment`,
-`context_evidence[]`, `thesis_zh`, `risks_zh`, `follow_up_needed`,
-`confidence`; it is stored only after `verify_verdict()` or as `degraded`.
-The current versions are `news_analyst_prompt_v3`, `news_analyst_policy_v3`,
-and `news_delivery_card_v5`.
+`audience`, `headline_zh`, `title_zh` (faithful Chinese title, at most 160
+characters), `why_zh` (one plain sentence, at most 120 characters); the stored
+row adds `model_decision`, `rule_baseline_decision`, `final_decision`,
+`override_rule`, `throttled_by`, `degraded`, `error_code`, `trace`.
+`AnalystVerdict` is `agrees_with_triage`, `revised_direction`,
+`revised_magnitude`, `novelty_assessment`, `context_evidence[]`, `thesis_zh`,
+`follow_up_needed`, `confidence`; it is stored only after `verify_verdict()`
+or as `degraded`. The current versions are `news_triage_prompt_v4`,
+`news_triage_policy_v2`, `news_analyst_prompt_v5`, `news_analyst_policy_v4`,
+and `news_delivery_card_v7`.
 
 Delivery identity is `(event_id, kind)` with `kind` in `first`, `followup`;
 states are `sending`, `sent`, `terminal`. There is exactly one HTTP attempt;

@@ -49,7 +49,7 @@ def _verdict() -> TriageVerdict:
         decision="push",
         headline_zh="英伟达投资",
         title_zh="英伟达将投资 1000 亿美元",
-        rationale="",
+        why_zh="",
     )
 
 

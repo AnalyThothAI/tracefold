@@ -375,19 +375,29 @@ Events and prior verdicts from the last 48 hours, the six macro module rows
 (read-only from `macro_module_current`), and the same `<event_status>` status
 bar Triage sees. Every citable row carries an `evidence_id` registered by the
 host; `verify_verdict()` rejects unknown evidence, disagreement without
-revision, and magnitude >= 2 without context evidence, and a rejection buys
-exactly one correction round with the reason appended. Before publishing a
-follow-up the consumer re-reads the storyline status: a push newer than the
-Analyst start supersedes the follow-up (`throttled_by =
-storyline:<key>:superseded`). Deep verdicts only produce follow-up cards after
-the first delivery was sent. `NEWS_ANALYST.md` is code-owned domain memory
-concatenated into the byte-frozen system prompt; the effective prompt sha is
-part of every trace.
+revision, magnitude >= 2 without context evidence, and a `rehash` that still
+asks for a follow-up; a rejection buys exactly one correction round with the
+reason appended. A follow-up card ships only when the Analyst adds something
+the reader would act on (`follow_up_adds_information`: a direction or
+magnitude revision, or a `followup` progression backed by history/verdict/macro
+evidence) — agreeing with Triage is not a second card. Before publishing the
+consumer re-reads the storyline status: a push newer than the Analyst start
+supersedes the follow-up (`throttled_by = storyline:<key>:superseded`), and a
+first card older than two hours (replays) never gets one. Deep verdicts only
+produce follow-up cards after the first delivery was sent. `NEWS_ANALYST.md`
+is code-owned domain memory concatenated into the byte-frozen system prompt
+(no risk boilerplate: the Analyst answers "what is new beyond the first card",
+nothing else); the effective prompt sha is part of every trace.
 
-Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders
-code facts (original title, `title_zh`, link, assets, direction, magnitude,
-sources) as the card body and sanitizes AI copy (URLs fall back to the
-code-owned title). There is no retry: `news_deliveries(event_id, kind)` is
+Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders a
+short human brief: the header is `title_zh` (the faithful Chinese title), the
+body is the original wire line, the one-sentence `why_zh`, and the facts in
+plain words (direction, magnitude, scope, the verdict's grounded primary
+assets, source and report count); the follow-up card carries only the delta
+(direction/magnitude revision) and the thesis. Pipeline internals (event type,
+scope enums, provider score, member counts, rule names) stay in the console
+and `tracefold news why`, and no card line is labelled as AI. AI copy is
+sanitized (URLs fall back to the code-owned title). There is no retry: `news_deliveries(event_id, kind)` is
 inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
 interrupted rows are terminalized at startup. Recovery items, suppressed
 events, and muted storylines never deliver; a paused lane settles

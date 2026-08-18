@@ -10,11 +10,11 @@ NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v4"
 STORYLINE_POLICY_VERSION = "news_storyline_v2"
-TRIAGE_PROMPT_VERSION = "news_triage_prompt_v3"
+TRIAGE_PROMPT_VERSION = "news_triage_prompt_v4"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v2"
-ANALYST_PROMPT_VERSION = "news_analyst_prompt_v4"
-ANALYST_POLICY_VERSION = "news_analyst_policy_v3"
-DELIVERY_CARD_VERSION = "news_delivery_card_v6"
+ANALYST_PROMPT_VERSION = "news_analyst_prompt_v5"
+ANALYST_POLICY_VERSION = "news_analyst_policy_v4"
+DELIVERY_CARD_VERSION = "news_delivery_card_v7"
 
 Admission = Literal[
     "candidate",
@@ -86,7 +86,7 @@ class TriageVerdict(BaseModel):
     audience: Audience = "none"
     headline_zh: str = Field(min_length=1, max_length=60)
     title_zh: str = Field(default="", max_length=160)
-    rationale: str = Field(default="", max_length=160)
+    why_zh: str = Field(default="", max_length=120)
 
 
 class AnalystVerdict(BaseModel):
@@ -99,8 +99,7 @@ class AnalystVerdict(BaseModel):
     revised_magnitude: int = Field(ge=0, le=3)
     novelty_assessment: Literal["new", "followup", "rehash"]
     context_evidence: list[str] = Field(default_factory=list, max_length=8)
-    thesis_zh: str = Field(min_length=1, max_length=800)
-    risks_zh: str = Field(default="", max_length=400)
+    thesis_zh: str = Field(min_length=1, max_length=600)
     follow_up_needed: bool
     confidence: float = Field(ge=0.0, le=1.0)
 
