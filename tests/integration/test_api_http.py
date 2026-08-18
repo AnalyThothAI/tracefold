@@ -233,16 +233,15 @@ def _sha256(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
-_SCHEMA_PREPARED = False
+_SCHEMA_STATE = {"prepared": False}
 
 
 def make_settings(tmp_path, *, reset: bool = True) -> Settings:
     """Reset the schema unless the test only exercises validation/auth paths (reset=False reuses head)."""
 
-    global _SCHEMA_PREPARED
-    if reset or not _SCHEMA_PREPARED:
+    if reset or not _SCHEMA_STATE["prepared"]:
         prepare_postgres_database()
-        _SCHEMA_PREPARED = True
+        _SCHEMA_STATE["prepared"] = True
     settings = Settings(
         ws_token="secret",
         news=NewsSettings(opennews_strategy_ids=("1018", "1019")),

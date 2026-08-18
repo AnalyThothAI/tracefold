@@ -14,8 +14,6 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
 from fastapi.testclient import TestClient
 from psycopg.errors import InsufficientPrivilege, ReadOnlySqlTransaction
 
@@ -39,6 +37,8 @@ from tracefold.platform.postgres.runtime_roles import (
     revoke_legacy_runtime_login,
     runtime_role_contract,
 )
+
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 RUNTIME_ID = "00000000-0000-0000-0000-000000000099"
 SECOND_RUNTIME_ID = "00000000-0000-0000-0000-000000000100"

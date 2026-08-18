@@ -238,7 +238,9 @@ def test_control_state_and_incidents(conn) -> None:
     control = repos.news.read_control(now_ms=5)
     assert control["paused"] is True and control["mutes"][0]["key"] == "rates"
     with repos.transaction():
-        repos.news.update_broker_snapshot(snapshot={"connected": True, "queues": {"news.raw": {"messages": 0, "consumers": 1}}}, now_ms=7)
+        repos.news.update_broker_snapshot(
+            snapshot={"connected": True, "queues": {"news.raw": {"messages": 0, "consumers": 1}}}, now_ms=7
+        )
     status = repos.news.status_snapshot(now_ms=10)
     assert status["broker"]["connected"] is True and status["broker"]["queues"]["news.raw"]["consumers"] == 1
     conn.commit()

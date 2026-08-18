@@ -1,6 +1,7 @@
 """RabbitMQ adapter tests: topology, confirmed publish, consume/ack, retry lane, control fanout.
 
-Requires a broker at TRACEFOLD_TEST_AMQP_URL (default amqp://tracefold:tracefold@127.0.0.1:5672/, the compose broker); skips otherwise.
+Requires a broker at TRACEFOLD_TEST_AMQP_URL (default amqp://tracefold:tracefold@127.0.0.1:5672/,
+the compose broker); skips otherwise.
 """
 
 from __future__ import annotations
