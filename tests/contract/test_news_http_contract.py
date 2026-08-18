@@ -43,6 +43,9 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
     }
 
 
+_OUTCOME = {"kind": "queued_publish", "text_zh": "待处理", "reason_zh": "已入库，等待送审", "group": "pending"}
+
+
 class _FakeNewsRepository:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -52,7 +55,7 @@ class _FakeNewsRepository:
         if kwargs.get("cursor") == "broken":
             raise ValueError("news_feed_cursor_invalid")
         return {
-            "events": [{**_event(), "title_zh": "铜价冲击纪录"}],
+            "events": [{**_event(), "title_zh": "铜价冲击纪录", "outcome": _OUTCOME}],
             "next_cursor": None,
             "filters": {
                 "family": kwargs["family"],
@@ -63,6 +66,8 @@ class _FakeNewsRepository:
                 "q": kwargs["q"],
                 "sort": kwargs["sort"],
                 "limit": kwargs["limit"],
+                "outcome": kwargs.get("outcome"),
+                "since_ms": kwargs.get("since_ms"),
             },
         }
 
@@ -72,6 +77,16 @@ class _FakeNewsRepository:
             return None
         return {
             "event": _event(),
+            "outcome": _OUTCOME,
+            "timeline": [
+                {
+                    "stage": "received",
+                    "title_zh": "收到",
+                    "at_ms": 1_800_000_000_000,
+                    "summary_zh": "来源 example.test",
+                    "facts": {},
+                }
+            ],
             "members": [],
             "verdicts": [],
             "deliveries": [],
@@ -160,22 +175,31 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "q",
         "sort",
         "limit",
+        "outcome",
+        "since_ms",
     }
     assert set(schemas_news.NewsFeedEventData.model_fields) - set(schemas_news.NewsEventData.model_fields) == {
         "title_zh",
+        "outcome",
         "triage",
         "delivery",
     }
     assert set(schemas_news.NewsEventDetailData.model_fields) == {
         "event",
+        "outcome",
+        "timeline",
         "members",
         "verdicts",
         "deliveries",
         "labels",
     }
+    assert set(schemas_news.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(schemas_news.NewsStatusData.model_fields) == {
         "state",
         "workers_state",
+        "health",
+        "funnel_24h",
+        "reasons_24h",
         "ingest",
         "broker",
         "pipeline",
@@ -228,11 +252,28 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
         "q": None,
         "sort": "priority",
         "limit": 5,
+        "outcome": None,
+        "since_ms": None,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
+    assert body["data"]["events"][0]["outcome"]["kind"] == "queued_publish"
     assert body["data"]["events"][0]["title_zh"] == "铜价冲击纪录"
     assert response.headers.get("etag")
     assert news.calls[0][1]["cursor"] is None
+
+
+def test_feed_forwards_outcome_group_and_hours_window(client) -> None:
+    http, news = client
+
+    response = http.get("/api/news/feed", params={"token": TOKEN, "outcome": "held", "hours": 6})
+
+    assert response.status_code == 200
+    forwarded = news.calls[0][1]
+    assert forwarded["outcome"] == "held"
+    assert forwarded["since_ms"] is not None and forwarded["since_ms"] > 0
+    # Pattern/bound violations are rejected by the FastAPI query validators (422), like the existing `priority` filter.
+    assert http.get("/api/news/feed", params={"token": TOKEN, "outcome": "bogus"}).status_code == 422
+    assert http.get("/api/news/feed", params={"token": TOKEN, "hours": 999}).status_code == 422
 
 
 @pytest.mark.parametrize(

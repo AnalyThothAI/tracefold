@@ -6360,6 +6360,17 @@
       "NewsDeliverySummaryData": {
         "additionalProperties": false,
         "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
           "settled_at_ms": {
             "anyOf": [
               {
@@ -6552,6 +6563,16 @@
             "title": "Members",
             "type": "array"
           },
+          "outcome": {
+            "$ref": "#/components/schemas/NewsOutcomeData"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/NewsTimelineStepData"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
           "verdicts": {
             "items": {
               "$ref": "#/components/schemas/NewsVerdictData"
@@ -6562,6 +6583,7 @@
         },
         "required": [
           "event",
+          "outcome",
           "members",
           "verdicts",
           "deliveries"
@@ -6760,6 +6782,9 @@
             "title": "Opened At Ms",
             "type": "integer"
           },
+          "outcome": {
+            "$ref": "#/components/schemas/NewsOutcomeData"
+          },
           "priority": {
             "title": "Priority",
             "type": "string"
@@ -6843,7 +6868,8 @@
           "priority",
           "engine_type",
           "asset_class",
-          "ingest_mode"
+          "ingest_mode",
+          "outcome"
         ],
         "title": "NewsFeedEventData",
         "type": "object"
@@ -6888,6 +6914,22 @@
             "title": "Limit",
             "type": "integer"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pushed",
+                  "held",
+                  "pending"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
           "priority": {
             "anyOf": [
               {
@@ -6909,6 +6951,17 @@
               }
             ],
             "title": "Q"
+          },
+          "since_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since Ms"
           },
           "sort": {
             "enum": [
@@ -6935,6 +6988,114 @@
           "limit"
         ],
         "title": "NewsFeedFiltersData",
+        "type": "object"
+      },
+      "NewsFunnelData": {
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "default": 0,
+            "title": "Candidates",
+            "type": "integer"
+          },
+          "decided_push": {
+            "default": 0,
+            "title": "Decided Push",
+            "type": "integer"
+          },
+          "delivered": {
+            "default": 0,
+            "title": "Delivered",
+            "type": "integer"
+          },
+          "delivered_1h": {
+            "default": 0,
+            "title": "Delivered 1H",
+            "type": "integer"
+          },
+          "received": {
+            "default": 0,
+            "title": "Received",
+            "type": "integer"
+          },
+          "received_1h": {
+            "default": 0,
+            "title": "Received 1H",
+            "type": "integer"
+          },
+          "triaged": {
+            "default": 0,
+            "title": "Triaged",
+            "type": "integer"
+          }
+        },
+        "title": "NewsFunnelData",
+        "type": "object"
+      },
+      "NewsHealthData": {
+        "additionalProperties": false,
+        "properties": {
+          "broker": {
+            "$ref": "#/components/schemas/NewsHealthItemData"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/NewsHealthItemData"
+          },
+          "ingest": {
+            "$ref": "#/components/schemas/NewsHealthItemData"
+          },
+          "model": {
+            "$ref": "#/components/schemas/NewsHealthItemData"
+          },
+          "overall": {
+            "enum": [
+              "ok",
+              "warn",
+              "bad",
+              "off"
+            ],
+            "title": "Overall",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ingest",
+          "broker",
+          "model",
+          "delivery",
+          "overall"
+        ],
+        "title": "NewsHealthData",
+        "type": "object"
+      },
+      "NewsHealthItemData": {
+        "additionalProperties": false,
+        "properties": {
+          "detail_zh": {
+            "default": "",
+            "title": "Detail Zh",
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              "ok",
+              "warn",
+              "bad",
+              "off"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "summary_zh": {
+            "title": "Summary Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "summary_zh"
+        ],
+        "title": "NewsHealthItemData",
         "type": "object"
       },
       "NewsIncidentData": {
@@ -7082,6 +7243,53 @@
         "title": "NewsLabelData",
         "type": "object"
       },
+      "NewsOutcomeData": {
+        "additionalProperties": false,
+        "description": "One human-readable conclusion per Event; ``kind`` is a stable enum, the texts are Chinese reader copy.",
+        "properties": {
+          "group": {
+            "enum": [
+              "pushed",
+              "held",
+              "pending"
+            ],
+            "title": "Group",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "held_recovery",
+              "held_gate",
+              "queued_publish",
+              "queued_triage",
+              "dropped",
+              "throttled",
+              "degraded_dropped",
+              "pending_delivery",
+              "delivered",
+              "delivery_failed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "reason_zh": {
+            "default": "",
+            "title": "Reason Zh",
+            "type": "string"
+          },
+          "text_zh": {
+            "title": "Text Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text_zh",
+          "group"
+        ],
+        "title": "NewsOutcomeData",
+        "type": "object"
+      },
       "NewsPipelineStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -7175,6 +7383,13 @@
             "title": "Triage Degraded 24H",
             "type": "integer"
           },
+          "triage_degraded_by_code_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Triage Degraded By Code 24H",
+            "type": "object"
+          },
           "triage_model": {
             "anyOf": [
               {
@@ -7212,6 +7427,42 @@
         "title": "NewsPipelineStatusData",
         "type": "object"
       },
+      "NewsReasonCountData": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label_zh": {
+            "title": "Label Zh",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "gate",
+              "drop",
+              "throttle",
+              "push",
+              "degraded"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "key",
+          "label_zh",
+          "count"
+        ],
+        "title": "NewsReasonCountData",
+        "type": "object"
+      },
       "NewsStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -7224,6 +7475,12 @@
           "delivery": {
             "$ref": "#/components/schemas/NewsDeliveryStatusData"
           },
+          "funnel_24h": {
+            "$ref": "#/components/schemas/NewsFunnelData"
+          },
+          "health": {
+            "$ref": "#/components/schemas/NewsHealthData"
+          },
           "ingest": {
             "$ref": "#/components/schemas/NewsIngestStatusData"
           },
@@ -7233,6 +7490,13 @@
           },
           "pipeline": {
             "$ref": "#/components/schemas/NewsPipelineStatusData"
+          },
+          "reasons_24h": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReasonCountData"
+            },
+            "title": "Reasons 24H",
+            "type": "array"
           },
           "state": {
             "enum": [
@@ -7265,6 +7529,8 @@
         },
         "required": [
           "state",
+          "health",
+          "funnel_24h",
           "ingest",
           "broker",
           "pipeline",
@@ -7273,6 +7539,47 @@
           "measured_at_ms"
         ],
         "title": "NewsStatusData",
+        "type": "object"
+      },
+      "NewsTimelineStepData": {
+        "additionalProperties": false,
+        "properties": {
+          "at_ms": {
+            "title": "At Ms",
+            "type": "integer"
+          },
+          "facts": {
+            "additionalProperties": true,
+            "title": "Facts",
+            "type": "object"
+          },
+          "stage": {
+            "enum": [
+              "received",
+              "gate",
+              "triage",
+              "decide",
+              "delivery"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "summary_zh": {
+            "title": "Summary Zh",
+            "type": "string"
+          },
+          "title_zh": {
+            "title": "Title Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "title_zh",
+          "at_ms",
+          "summary_zh"
+        ],
+        "title": "NewsTimelineStepData",
         "type": "object"
       },
       "NewsTriageSummaryData": {
@@ -7294,6 +7601,22 @@
             ],
             "title": "Direction"
           },
+          "direction_zh": {
+            "default": "",
+            "title": "Direction Zh",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
           "event_type": {
             "anyOf": [
               {
@@ -7304,6 +7627,11 @@
               }
             ],
             "title": "Event Type"
+          },
+          "event_type_zh": {
+            "default": "",
+            "title": "Event Type Zh",
+            "type": "string"
           },
           "final_decision": {
             "title": "Final Decision",
@@ -7330,6 +7658,11 @@
               }
             ],
             "title": "Magnitude"
+          },
+          "magnitude_zh": {
+            "default": "",
+            "title": "Magnitude Zh",
+            "type": "string"
           },
           "override_rule": {
             "anyOf": [
@@ -7374,6 +7707,17 @@
               }
             ],
             "title": "Title Zh"
+          },
+          "why_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Zh"
           }
         },
         "required": [
@@ -8391,6 +8735,29 @@
               "maxLength": 200,
               "title": "Cursor",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "default": "",
+              "pattern": "^(pushed|held|pending)?$",
+              "title": "Outcome",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 168,
+              "minimum": 0,
+              "title": "Hours",
+              "type": "integer"
             }
           }
         ],

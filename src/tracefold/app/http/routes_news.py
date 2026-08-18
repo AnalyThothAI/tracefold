@@ -13,6 +13,7 @@ from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _json, _validated_etag_json
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.news import status_health
 from tracefold.platform.config.settings import news_model_availability, news_push_availability
 
 router = APIRouter()
@@ -42,10 +43,25 @@ def get_news_feed(
     sort: Annotated[str, Query(pattern="^(latest|priority)$")] = "latest",
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str, Query(max_length=200)] = "",
+    outcome: Annotated[str, Query(pattern="^(pushed|held|pending)?$")] = "",
+    hours: Annotated[int, Query(ge=0, le=168)] = 0,
 ) -> Response:
     _validate_query_params(
         request,
-        supported={"family", "admission", "priority", "decision", "symbol", "q", "sort", "limit", "cursor", "token"},
+        supported={
+            "family",
+            "admission",
+            "priority",
+            "decision",
+            "symbol",
+            "q",
+            "sort",
+            "limit",
+            "cursor",
+            "outcome",
+            "hours",
+            "token",
+        },
     )
     if admission and admission not in _ADMISSIONS:
         raise ApiBadRequest("news_feed_admission_invalid", field="admission")
@@ -64,6 +80,8 @@ def get_news_feed(
                 sort=sort,
                 limit=limit,
                 cursor=cursor or None,
+                outcome=outcome or None,
+                since_ms=(int(time.time() * 1000) - hours * 3600_000) if hours else None,
             )
     except ValueError as exc:
         raise ApiBadRequest(str(exc), field="cursor") from exc
@@ -110,17 +128,30 @@ def get_news_status(request: Request) -> Response:
         "hourly_cap": int(settings.news.push.hourly_cap),
     }
     state = _derive_state(ingest=ingest, broker=broker_data, workers_state=workers_state, settings=settings)
+    control = {
+        "paused": bool(snapshot["control"].get("paused")),
+        "mutes": list(snapshot["control"].get("mutes") or []),
+    }
+    health = status_health(
+        ingest=ingest,
+        broker=broker_data,
+        pipeline=pipeline,
+        delivery=delivery,
+        control=control,
+        workers_state=workers_state,
+        now_ms=now_ms,
+        enabled=bool(settings.news.enabled),
+        model_configured=bool(models.triage_configured and models.triage_model),
+    )
     data = {
         "state": state,
         "workers_state": workers_state,
+        **health,
         "ingest": ingest,
         "broker": broker_data,
         "pipeline": pipeline,
         "delivery": delivery,
-        "control": {
-            "paused": bool(snapshot["control"].get("paused")),
-            "mutes": list(snapshot["control"].get("mutes") or []),
-        },
+        "control": control,
         "watchlist": sorted(settings.news.watchlist_symbols),
         "measured_at_ms": now_ms,
     }

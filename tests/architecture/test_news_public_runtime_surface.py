@@ -23,16 +23,22 @@ PUBLIC_NEWS_INTERFACE = {
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
     "OpenNewsStrategyHistory",
+    "Outcome",
     "TriageVerdict",
     "apply_control",
+    "event_outcome",
     "parse_control",
     "parse_opennews_message",
+    "status_health",
 }
 
 IO_MODULE_ROOTS = {"aio_pika", "psycopg", "httpx", "aiohttp", "websockets", "requests"}
 PURE_NEWS_MODULES = (
     "gate.py",
+    "health.py",
+    "outcome.py",
     "storyline.py",
+    "timeline.py",
     "triage_rules.py",
     "control.py",
     "tokens.py",

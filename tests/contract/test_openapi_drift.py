@@ -150,20 +150,31 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsPipelineStatusData",
         "NewsDeliveryStatusData",
         "NewsControlStateData",
+        "NewsOutcomeData",
+        "NewsTimelineStepData",
+        "NewsHealthData",
+        "NewsFunnelData",
+        "NewsReasonCountData",
     ):
         assert components[name]["additionalProperties"] is False
 
     assert set(components["NewsFeedData"]["properties"]) == {"events", "next_cursor", "filters"}
     assert set(components["NewsEventDetailData"]["properties"]) == {
         "event",
+        "outcome",
+        "timeline",
         "members",
         "verdicts",
         "deliveries",
         "labels",
     }
+    assert set(components["NewsOutcomeData"]["properties"]) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(components["NewsStatusData"]["properties"]) == {
         "state",
         "workers_state",
+        "health",
+        "funnel_24h",
+        "reasons_24h",
         "ingest",
         "broker",
         "pipeline",
@@ -204,15 +215,40 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     operation = schema["paths"]["/api/news/feed"]["get"]
     parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
 
-    assert set(parameters) == {"family", "admission", "priority", "decision", "symbol", "q", "sort", "limit", "cursor"}
+    assert set(parameters) == {
+        "family",
+        "admission",
+        "priority",
+        "decision",
+        "symbol",
+        "q",
+        "sort",
+        "limit",
+        "cursor",
+        "outcome",
+        "hours",
+    }
     assert parameters["q"]["schema"]["maxLength"] == 200
+    assert parameters["outcome"]["schema"]["pattern"] == "^(pushed|held|pending)?$"
+    assert parameters["hours"]["schema"]["maximum"] == 168
     assert parameters["priority"]["schema"]["pattern"] == "^(high|normal)?$"
     assert parameters["sort"]["schema"]["pattern"] == "^(latest|priority)$"
     limit = parameters["limit"]["schema"]
     assert limit == {"default": 50, "maximum": 100, "minimum": 1, "title": "Limit", "type": "integer"}
     assert {"reporting_origin", "provider_score_gt"}.isdisjoint(parameters)
     filters = schema["components"]["schemas"]["NewsFeedFiltersData"]
-    assert set(filters["properties"]) == {"family", "admission", "priority", "decision", "symbol", "q", "sort", "limit"}
+    assert set(filters["properties"]) == {
+        "family",
+        "admission",
+        "priority",
+        "decision",
+        "symbol",
+        "q",
+        "sort",
+        "limit",
+        "outcome",
+        "since_ms",
+    }
     assert set(filters["required"]) == {"sort", "limit"}
 
 

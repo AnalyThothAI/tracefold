@@ -216,6 +216,37 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
         cursor=None,
     )
     assert feed["events"] and any(e["event_id"] == event_id for e in feed["events"])
+    delivered_row = next(e for e in feed["events"] if e["event_id"] == event_id)
+    assert delivered_row["outcome"]["kind"] == "delivered" and delivered_row["outcome"]["group"] == "pushed"
+    assert detail["outcome"]["kind"] == "delivered"
+    # This test writes the delivery without a verdict, so the timeline has no triage/decide steps.
+    assert [step["stage"] for step in detail["timeline"]] == ["received", "gate", "delivery"]
+
+    def _feed(**over):
+        base = dict(
+            family=None,
+            admission=None,
+            priority=None,
+            decision=None,
+            symbol=None,
+            q=None,
+            sort="latest",
+            limit=10_000,
+            cursor=None,
+        )
+        base.update(over)
+        return repos.news.list_feed(**base)
+
+    pushed_ids = {e["event_id"] for e in _feed(outcome="pushed")["events"]}
+    held_ids = {e["event_id"] for e in _feed(outcome="held")["events"]}
+    pending_ids = {e["event_id"] for e in _feed(outcome="pending")["events"]}
+    everything = _feed()["events"]
+    all_ids = {e["event_id"] for e in everything}
+    assert event_id in pushed_ids and pushed_ids.isdisjoint(held_ids) and pushed_ids.isdisjoint(pending_ids)
+    assert held_ids.isdisjoint(pending_ids) and pushed_ids | held_ids | pending_ids == all_ids
+    for group, ids in (("pushed", pushed_ids), ("held", held_ids), ("pending", pending_ids)):
+        assert all(e["outcome"]["group"] == group for e in everything if e["event_id"] in ids)
+    assert _feed(since_ms=10_000_000_000_000)["events"] == []
     status = repos.news.status_snapshot(now_ms=10_000_000_000_000)
     assert status["delivery"]["sent_24h"] >= 0 and "pipeline" in status
     conn.commit()
@@ -365,6 +396,7 @@ def test_explain_event_prints_the_chain_with_a_one_line_outcome(conn) -> None:
     assert explained["chain"][0]["provider_coins"] is not None
     assert explained["outcome"]
     held = explain_event(repos, suppressed["event_id"])
-    assert held is not None and held["outcome"] == "held at gate: suppressed_pr_template"
+    assert held is not None and held["outcome"] == "未送审：律所推广模板，规则直接拦截"
+    assert held["outcome_kind"] == "held_gate" and [s["stage"] for s in held["timeline"]] == ["received", "gate"]
     assert [step["stage"] for step in held["chain"]] == ["item", "gate"]
     assert explain_event(repos, "does-not-exist") is None

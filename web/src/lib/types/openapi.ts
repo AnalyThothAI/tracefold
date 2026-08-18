@@ -2267,6 +2267,8 @@ export interface components {
         };
         /** NewsDeliverySummaryData */
         NewsDeliverySummaryData: {
+            /** Error Code */
+            error_code?: string | null;
             /** Settled At Ms */
             settled_at_ms?: number | null;
             /** State */
@@ -2343,6 +2345,9 @@ export interface components {
             labels?: components["schemas"]["NewsLabelData"][];
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
+            outcome: components["schemas"]["NewsOutcomeData"];
+            /** Timeline */
+            timeline?: components["schemas"]["NewsTimelineStepData"][];
             /** Verdicts */
             verdicts: components["schemas"]["NewsVerdictData"][];
         };
@@ -2422,6 +2427,7 @@ export interface components {
             member_count: number;
             /** Opened At Ms */
             opened_at_ms: number;
+            outcome: components["schemas"]["NewsOutcomeData"];
             /** Priority */
             priority: string;
             /** Provenance */
@@ -2456,10 +2462,14 @@ export interface components {
             family?: string | null;
             /** Limit */
             limit: number;
+            /** Outcome */
+            outcome?: ("pushed" | "held" | "pending") | null;
             /** Priority */
             priority?: string | null;
             /** Q */
             q?: string | null;
+            /** Since Ms */
+            since_ms?: number | null;
             /**
              * Sort
              * @enum {string}
@@ -2467,6 +2477,71 @@ export interface components {
             sort: "latest" | "priority";
             /** Symbol */
             symbol?: string | null;
+        };
+        /** NewsFunnelData */
+        NewsFunnelData: {
+            /**
+             * Candidates
+             * @default 0
+             */
+            candidates: number;
+            /**
+             * Decided Push
+             * @default 0
+             */
+            decided_push: number;
+            /**
+             * Delivered
+             * @default 0
+             */
+            delivered: number;
+            /**
+             * Delivered 1H
+             * @default 0
+             */
+            delivered_1h: number;
+            /**
+             * Received
+             * @default 0
+             */
+            received: number;
+            /**
+             * Received 1H
+             * @default 0
+             */
+            received_1h: number;
+            /**
+             * Triaged
+             * @default 0
+             */
+            triaged: number;
+        };
+        /** NewsHealthData */
+        NewsHealthData: {
+            broker: components["schemas"]["NewsHealthItemData"];
+            delivery: components["schemas"]["NewsHealthItemData"];
+            ingest: components["schemas"]["NewsHealthItemData"];
+            model: components["schemas"]["NewsHealthItemData"];
+            /**
+             * Overall
+             * @enum {string}
+             */
+            overall: "ok" | "warn" | "bad" | "off";
+        };
+        /** NewsHealthItemData */
+        NewsHealthItemData: {
+            /**
+             * Detail Zh
+             * @default
+             */
+            detail_zh: string;
+            /**
+             * Level
+             * @enum {string}
+             */
+            level: "ok" | "warn" | "bad" | "off";
+            /** Summary Zh */
+            summary_zh: string;
         };
         /** NewsIncidentData */
         NewsIncidentData: {
@@ -2512,6 +2587,29 @@ export interface components {
             label_version: string;
             /** Source */
             source: string;
+        };
+        /**
+         * NewsOutcomeData
+         * @description One human-readable conclusion per Event; ``kind`` is a stable enum, the texts are Chinese reader copy.
+         */
+        NewsOutcomeData: {
+            /**
+             * Group
+             * @enum {string}
+             */
+            group: "pushed" | "held" | "pending";
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "held_recovery" | "held_gate" | "queued_publish" | "queued_triage" | "dropped" | "throttled" | "degraded_dropped" | "pending_delivery" | "delivered" | "delivery_failed";
+            /**
+             * Reason Zh
+             * @default
+             */
+            reason_zh: string;
+            /** Text Zh */
+            text_zh: string;
         };
         /** NewsPipelineStatusData */
         NewsPipelineStatusData: {
@@ -2575,6 +2673,10 @@ export interface components {
              * @default 0
              */
             triage_degraded_24h: number;
+            /** Triage Degraded By Code 24H */
+            triage_degraded_by_code_24h?: {
+                [key: string]: number;
+            };
             /** Triage Model */
             triage_model?: string | null;
             /** Triage P50 Ms */
@@ -2582,15 +2684,33 @@ export interface components {
             /** Triage P95 Ms */
             triage_p95_ms?: number | null;
         };
+        /** NewsReasonCountData */
+        NewsReasonCountData: {
+            /** Count */
+            count: number;
+            /** Key */
+            key: string;
+            /** Label Zh */
+            label_zh: string;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "gate" | "drop" | "throttle" | "push" | "degraded";
+        };
         /** NewsStatusData */
         NewsStatusData: {
             broker: components["schemas"]["NewsBrokerStatusData"];
             control: components["schemas"]["NewsControlStateData"];
             delivery: components["schemas"]["NewsDeliveryStatusData"];
+            funnel_24h: components["schemas"]["NewsFunnelData"];
+            health: components["schemas"]["NewsHealthData"];
             ingest: components["schemas"]["NewsIngestStatusData"];
             /** Measured At Ms */
             measured_at_ms: number;
             pipeline: components["schemas"]["NewsPipelineStatusData"];
+            /** Reasons 24H */
+            reasons_24h?: components["schemas"]["NewsReasonCountData"][];
             /**
              * State
              * @enum {string}
@@ -2601,6 +2721,24 @@ export interface components {
             /** Workers State */
             workers_state?: string | null;
         };
+        /** NewsTimelineStepData */
+        NewsTimelineStepData: {
+            /** At Ms */
+            at_ms: number;
+            /** Facts */
+            facts?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "received" | "gate" | "triage" | "decide" | "delivery";
+            /** Summary Zh */
+            summary_zh: string;
+            /** Title Zh */
+            title_zh: string;
+        };
         /** NewsTriageSummaryData */
         NewsTriageSummaryData: {
             /**
@@ -2610,14 +2748,31 @@ export interface components {
             degraded: boolean;
             /** Direction */
             direction?: string | null;
+            /**
+             * Direction Zh
+             * @default
+             */
+            direction_zh: string;
+            /** Error Code */
+            error_code?: string | null;
             /** Event Type */
             event_type?: string | null;
+            /**
+             * Event Type Zh
+             * @default
+             */
+            event_type_zh: string;
             /** Final Decision */
             final_decision: string;
             /** Headline Zh */
             headline_zh?: string | null;
             /** Magnitude */
             magnitude?: number | null;
+            /**
+             * Magnitude Zh
+             * @default
+             */
+            magnitude_zh: string;
             /** Override Rule */
             override_rule?: string | null;
             /** Scope */
@@ -2626,6 +2781,8 @@ export interface components {
             throttled_by?: string | null;
             /** Title Zh */
             title_zh?: string | null;
+            /** Why Zh */
+            why_zh?: string | null;
         };
         /** NewsVerdictData */
         NewsVerdictData: {
@@ -3067,6 +3224,8 @@ export interface operations {
                 sort?: string;
                 limit?: number;
                 cursor?: string;
+                outcome?: string;
+                hours?: number;
             };
             header?: never;
             path?: never;

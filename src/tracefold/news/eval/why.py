@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-_HELD = frozenset({"drop", "throttled", "degraded"})
-
 
 def explain_event(repos: Any, event_id: str) -> dict[str, Any] | None:
     """Return the ordered chain for one Event, ending with a one-line ``outcome`` a person can read at a glance."""
@@ -90,31 +88,26 @@ def explain_event(repos: Any, event_id: str) -> dict[str, Any] | None:
         }
         for d in detail["deliveries"]
     )
+    outcome = dict(detail.get("outcome") or {})
     return {
         "event_id": event_id,
-        "outcome": _outcome_line(event, latest, detail["deliveries"]),
+        "outcome": outcome_line(outcome),
+        "outcome_kind": outcome.get("kind"),
+        "timeline": [
+            {"stage": s["stage"], "title_zh": s["title_zh"], "at_ms": s["at_ms"], "summary_zh": s["summary_zh"]}
+            for s in (detail.get("timeline") or [])
+        ],
         "chain": chain,
         "labels": detail.get("labels") or [],
     }
 
 
-def _outcome_line(event: Mapping[str, Any], latest: Mapping[str, Any] | None, deliveries: list[Any]) -> str:
-    admission = str(event.get("admission") or "")
-    if admission not in {"candidate", "listing_deterministic"}:
-        return f"held at gate: {admission}"
-    if latest is None:
-        return "admitted, waiting for triage" if event.get("published_at_ms") else "admitted, not yet published"
-    final = str(latest.get("final_decision") or "")
-    reason = latest.get("throttled_by") or latest.get("override_rule") or ""
-    if final in _HELD:
-        return f"held at decide: {final} ({reason})"
-    sent = [d for d in deliveries if d.get("state") == "sent"]
-    terminal = [d for d in deliveries if d.get("state") == "terminal"]
-    if sent:
-        return f"{final} ({reason}) -> delivered {', '.join(str(d.get('kind')) for d in sent)}"
-    if terminal:
-        return f"{final} ({reason}) -> delivery terminal: {terminal[-1].get('error_code')}"
-    return f"{final} ({reason}) -> awaiting delivery"
+def outcome_line(outcome: Mapping[str, Any]) -> str:
+    """The same sentence the console shows: text_zh, a full-width colon, reason_zh (reason omitted when empty)."""
+
+    text = str(outcome.get("text_zh") or "")
+    reason = str(outcome.get("reason_zh") or "")
+    return f"{text}：{reason}" if reason else text
 
 
-__all__ = ["explain_event"]
+__all__ = ["explain_event", "outcome_line"]
