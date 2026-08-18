@@ -30,3 +30,4 @@ web/test-results/
 .DS_Store
 *.swp
 .claire
+.claude/worktrees/

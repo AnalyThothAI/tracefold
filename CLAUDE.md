@@ -52,3 +52,50 @@ Frontend CSS is harness-constrained, not convention-only. Before changing `web/s
 CLI surface: `uv run tracefold --help` is the source of truth (snapshot at `docs/generated/cli-help.md`).
 
 <!-- END SHARED AGENT ROUTER -->
+
+## Claude-only protocol: worktrees, plan mode, skills
+
+### Worktree by default (do not switch the primary checkout)
+
+The primary checkout (`~/Documents/Code/tracefold`) is the deployment
+checkout: it stays on `main`, stays clean, and is the only place `make up` /
+`make status` / `make logs` run. Never `git checkout <branch>` there, never
+edit files there for a task, and never leave it dirty. Every code or docs
+change — including one-line fixes — starts in its own worktree so several
+tasks (and several sessions) can proceed at the same time:
+
+```bash
+git fetch origin main
+git worktree add -b claude/<issue-or-slug> .claude/worktrees/<slug> origin/main
+cd .claude/worktrees/<slug> && uv sync && (cd web && npm ci)   # per-worktree venv/node_modules
+```
+
+- `EnterWorktree` (Claude Code tool) is the same thing: it creates
+  `.claude/worktrees/<name>` from `origin/main` and moves the session there.
+  Sibling directories (`../tracefold-<slug>`, the historical `codex/*`
+  worktrees) are also fine; `.worktrees/` and `.claude/worktrees/` are
+  gitignored.
+- Branch from `origin/main`, not from local `main`; name branches
+  `claude/<issue>-<slug>` (or the agent's own prefix). One task, one worktree,
+  one branch, one PR.
+- Before editing, run `git worktree list` and `git status` — an existing
+  worktree belongs to its current task; do not reuse or clean it up.
+- Tests run inside the worktree (`make test`, focused lanes from
+  `docs/DEVELOPMENT.md`). The compose stack (`make up`, ports 8765/8766/5672,
+  the `tracefold-*` volumes) is shared and owned by the primary checkout: do
+  not run `make up`/`make down` from a worktree.
+- Finish: PR → merge → in the primary checkout `git pull --ff-only origin main`
+  → `make up` (deployment) → `git worktree remove .claude/worktrees/<slug>`
+  and `git branch -d claude/<slug>`; `git worktree prune` for stale entries.
+- Commit only on the task branch; never commit or push on `main` directly.
+
+### Plan mode and skills
+
+- Non-trivial changes (new table/worker/queue/prompt/policy, hard cuts) start
+  with the GitHub issue (`docs/agents/issue-tracker.md`) and a plan; use plan
+  mode to agree scope before editing.
+- Run `/code-review` on the branch before opening the PR; `/security-review`
+  when config, auth, credentials, or delivery code changes.
+- Live-data debugging follows "Runtime config for real data" above: read-only
+  SQL as the `tracefold_serve` role, `uv run tracefold config`, never print
+  secrets.
