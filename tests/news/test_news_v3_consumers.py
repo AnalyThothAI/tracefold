@@ -10,31 +10,20 @@ from typing import Any
 import pytest
 
 from tracefold.news import consumers as consumers_module
-from tracefold.news.agents.analyst import AnalystRunResult
-from tracefold.news.analyst_evidence import EvidenceBundle
-from tracefold.news.analyst_rules import VerifyResult
 from tracefold.news.bus import (
     RK_RAW_LIVE,
-    RK_VERDICT_DEEP,
-    RK_VERDICT_ESCALATE,
     RK_VERDICT_PUSH,
     BusMessage,
     DeferError,
     PermanentError,
 )
 from tracefold.news.consumers import (
-    AnalystConsumer,
     DeduperConsumer,
     DelivererConsumer,
     JanitorLoop,
     TriageConsumer,
 )
-from tracefold.news.models import (
-    ANALYST_POLICY_VERSION,
-    TRIAGE_POLICY_VERSION,
-    TRIAGE_PROMPT_VERSION,
-    AnalystVerdict,
-)
+from tracefold.news.models import TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
@@ -280,9 +269,9 @@ def test_triage_without_model_escalates_watchlist_or_high_score_and_persists_deg
     assert len(trace["prompt_sha256"]) == 64 and trace["status"] == status_row  # replayable snapshot
     assert "latency_ms" not in trace and "input_sha256" not in trace  # no model call happened
     assert "模型不可用" in news.kwargs_of("set_context_line")["context_line"]
+    # escalate is a high-importance push (⚡ + priority); there is no second lane to notify
     assert [(m.routing_key, m.payload) for m in bus.published] == [
         (RK_VERDICT_PUSH, {"event_id": "ev-strong", "kind": "first"}),
-        (RK_VERDICT_ESCALATE, {"event_id": "ev-strong"}),
     ]
     assert all(m.priority == 5 and m.trace_id == "trace-1" for m in bus.published)
     assert news.names()[-1] == "mark_verdict_published"
@@ -366,167 +355,6 @@ def test_triage_rejects_missing_event_id_and_missing_event() -> None:
         asyncio.run(triage.handle(_message("event", {"event_id": "ghost"})))
 
 
-# ---------------------------------------------------------------- Analyst
-def _bundle(status_row: dict[str, Any] | None = None) -> EvidenceBundle:
-    return EvidenceBundle(
-        event_id="ev-strong",
-        storyline_key="asset:NVDA",
-        payload={
-            "event": {"event_id": "ev-strong", "triage": {"direction": "bullish", "magnitude": 2}},
-            "event_status": {},
-        },
-        evidence={"history:abc": {"event_id": "ev-old"}},
-        status_row=dict(status_row or {}),
-    )
-
-
-class ScriptedAnalyst:
-    model_name = "test-analyst"
-    prompt_sha256 = "a" * 64
-
-    def __init__(self, result: AnalystRunResult) -> None:
-        self.result = result
-        self.calls: list[dict[str, Any]] = []
-
-    async def analyze(self, *, bundle: EvidenceBundle, triage_direction: str) -> AnalystRunResult:
-        self.calls.append({"bundle": bundle, "triage_direction": triage_direction})
-        return self.result
-
-
-def _analyst_verdict(**overrides: Any) -> AnalystVerdict:
-    fields: dict[str, Any] = {
-        "agrees_with_triage": True,
-        "revised_direction": "bullish",
-        "revised_magnitude": 2,
-        "novelty_assessment": "new",
-        "context_evidence": ["history:abc"],
-        "thesis_zh": "英伟达投资 OpenAI 数据中心，利多算力链。",
-        "follow_up_needed": True,
-        "confidence": 0.7,
-    }
-    fields.update(overrides)
-    return AnalystVerdict(**fields)
-
-
-def test_analyst_uses_one_prefetched_bundle_and_publishes_followup_after_first_card(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bundle = _bundle({"pushed_2h": 1, "last_push_ago_ms": 600_000})
-    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: bundle)
-    # the Analyst adds something: it revises the magnitude the first card carried
-    result = AnalystRunResult(
-        _analyst_verdict(revised_magnitude=3), VerifyResult(True), 1200, 1, None, 1, 900, 200, 500
-    )
-    analyst = ScriptedAnalyst(result)
-    news = RecordingNews(
-        get_verdict=None,
-        event_status={"last_push_ago_ms": 600_000},  # last push predates this run -> not superseded
-        insert_verdict=True,
-        delivery={"state": "sent"},
-    )
-    bus = FakeBus()
-
-    asyncio.run(
-        AnalystConsumer(bus=bus, db=FakeWorkerDatabase(news), analyst=analyst, concurrency=2).handle(
-            _message("verdict", {"event_id": "ev-strong"}, routing_key=RK_VERDICT_ESCALATE)
-        )
-    )
-
-    assert analyst.calls[0]["bundle"] is bundle and analyst.calls[0]["triage_direction"] == "bullish"
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["stage"] == "deep" and inserted["policy_version"] == ANALYST_POLICY_VERSION
-    assert inserted["final_decision"] == "push" and inserted["degraded"] is False
-    assert inserted["trace"]["attempts"] == 1 and inserted["trace"]["input_tokens"] == 900
-    assert inserted["trace"]["prompt_sha256"] == "a" * 64 and inserted["trace"]["status"] == bundle.status_row
-    assert bus.routing_keys() == [RK_VERDICT_DEEP]
-    assert bus.published[0].payload == {"event_id": "ev-strong", "kind": "followup"}
-    assert news.names()[-1] == "mark_verdict_published"
-
-
-def test_analyst_followup_without_new_information_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Agreeing with Triage, same direction and magnitude, novelty 'new': nothing to add -> no second card."""
-
-    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: _bundle())
-    analyst = ScriptedAnalyst(AnalystRunResult(_analyst_verdict(), VerifyResult(True), 900, 1, None, 1))
-    news = RecordingNews(get_verdict=None, event_status={"last_push_ago_ms": 600_000}, insert_verdict=True)
-    bus = FakeBus()
-
-    asyncio.run(
-        AnalystConsumer(bus=bus, db=FakeWorkerDatabase(news), analyst=analyst, concurrency=2).handle(
-            _message("verdict", {"event_id": "ev-strong"})
-        )
-    )
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop" and inserted["degraded"] is False
-    assert bus.published == []
-
-
-def test_analyst_followup_is_superseded_by_a_newer_push_in_the_same_storyline(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: _bundle())
-    analyst = ScriptedAnalyst(
-        AnalystRunResult(_analyst_verdict(revised_magnitude=3), VerifyResult(True), 900, 1, None, 1)
-    )
-    news = RecordingNews(get_verdict=None, event_status={"last_push_ago_ms": 0}, insert_verdict=True)
-    bus = FakeBus()
-
-    asyncio.run(
-        AnalystConsumer(bus=bus, db=FakeWorkerDatabase(news), analyst=analyst, concurrency=2).handle(
-            _message("verdict", {"event_id": "ev-strong"})
-        )
-    )
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "throttled"
-    assert inserted["throttled_by"] == "storyline:asset:NVDA:superseded"
-    assert bus.published == []
-
-
-def test_analyst_verify_failure_persists_degraded_and_never_publishes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: _bundle())
-    failed = AnalystRunResult(
-        _analyst_verdict(context_evidence=["history:fake"]),
-        VerifyResult(False, "context_evidence_unknown"),
-        1500,
-        2,
-        "news_analyst_verify:context_evidence_unknown",
-        1,
-    )
-    news = RecordingNews(get_verdict=None, insert_verdict=True)
-    bus = FakeBus()
-
-    asyncio.run(
-        AnalystConsumer(bus=bus, db=FakeWorkerDatabase(news), analyst=ScriptedAnalyst(failed), concurrency=1).handle(
-            _message("verdict", {"event_id": "ev-strong"})
-        )
-    )
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "degraded" and inserted["override_rule"] == "verify_failed"
-    assert inserted["degraded"] is True and inserted["trace"]["attempts"] == 2
-    assert bus.published == [] and "event_status" not in news.names()
-
-
-def test_analyst_without_model_or_bundle_settles_quietly(monkeypatch: pytest.MonkeyPatch) -> None:
-    news = RecordingNews(get_verdict=None)
-    asyncio.run(
-        AnalystConsumer(bus=FakeBus(), db=FakeWorkerDatabase(news), analyst=None, concurrency=1).handle(
-            _message("verdict", {"event_id": "ev-strong"})
-        )
-    )
-    assert news.calls == []
-
-    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: None)
-    analyst = ScriptedAnalyst(AnalystRunResult(None, VerifyResult(False, "not_run"), 0, 0, None, 0))
-    with pytest.raises(PermanentError, match="news_event_or_triage_missing"):
-        asyncio.run(
-            AnalystConsumer(bus=FakeBus(), db=FakeWorkerDatabase(news), analyst=analyst, concurrency=1).handle(
-                _message("verdict", {"event_id": "ghost"})
-            )
-        )
-    assert analyst.calls == []
-
-
 # ---------------------------------------------------------------- Deliverer
 def _deliverer(news: RecordingNews, bus: FakeBus, *, hourly_cap: int = 20) -> DelivererConsumer:
     return DelivererConsumer(
@@ -601,16 +429,10 @@ def test_deliverer_hourly_cap_settles_first_card_terminal_before_any_send() -> N
     assert settle["state"] == "terminal" and settle["error_code"] == "hourly_cap_reached"
 
 
-def test_deliverer_skips_dropped_first_cards_and_followups_without_push_deep_verdict() -> None:
+def test_deliverer_skips_dropped_first_cards() -> None:
     news = _delivery_news(latest_verdict=lambda *, event_id, stage: {"final_decision": "drop", "verdict": {}})
     asyncio.run(_deliverer(news, FakeBus()).handle(_message("verdict", {"event_id": "ev-strong"})))
     assert "begin_delivery" not in news.names()
-
-    followup = _delivery_news()
-    asyncio.run(
-        _deliverer(followup, FakeBus()).handle(_message("verdict", {"event_id": "ev-strong", "kind": "followup"}))
-    )
-    assert "begin_delivery" not in followup.names()
 
     with pytest.raises(PermanentError, match="news_event_id_missing"):
         asyncio.run(_deliverer(_delivery_news(), FakeBus()).handle(_message("verdict", {})))

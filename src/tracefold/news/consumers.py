@@ -1,4 +1,4 @@
-"""News V3 consumers: Receiver, Recovery, Deduper, Triage, Analyst, Deliverer, Janitor.
+"""News V3 consumers: Receiver, Recovery, Deduper, Triage, Deliverer, Janitor.
 
 Each consumer is one asyncio task; the broker is the only coordination plane; PostgreSQL holds
 facts/decisions/audit; every write is idempotent by key. Consumers coordinate only through the
@@ -18,21 +18,15 @@ from typing import Any
 
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
-from .agents.analyst import Analyst
 from .agents.prompts import TRIAGE_PROMPT_SHA256
 from .agents.triage_model import TriageModel, TriageModelError, build_triage_input
-from .analyst_evidence import build_evidence_bundle
-from .analyst_rules import follow_up_adds_information
 from .bus import (
-    Q_DEEP,
     Q_DELIVER,
     Q_RAW,
     Q_TRIAGE,
     RK_EVENT,
     RK_RAW_LIVE,
     RK_RAW_RECOVERY,
-    RK_VERDICT_DEEP,
-    RK_VERDICT_ESCALATE,
     RK_VERDICT_PUSH,
     BusMessage,
     DeferError,
@@ -42,11 +36,9 @@ from .bus import (
     now_ms,
 )
 from .control import is_muted
-from .delivery import render_first_card, render_followup_card
+from .delivery import render_first_card
 from .events import admit_item
 from .models import (
-    ANALYST_POLICY_VERSION,
-    ANALYST_PROMPT_VERSION,
     TRIAGE_POLICY_VERSION,
     TRIAGE_PROMPT_VERSION,
     json_ready,
@@ -69,7 +61,6 @@ _WS_RECONNECT_SECONDS = 3.0
 _OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
 _RETENTION_MS = 30 * 24 * 3600_000
-_FOLLOWUP_MAX_AGE_MS = 2 * 3600_000
 
 _WS_CAUSE = {
     "opennews_network_connect": "network_connect",
@@ -738,152 +729,11 @@ class TriageConsumer:
                 priority=amqp_priority,
             )
         )
-        if final == "escalate":
-            await self.bus.publish(
-                BusMessage(
-                    kind="verdict",
-                    message_id=f"escalate:{event_id}",
-                    routing_key=RK_VERDICT_ESCALATE,
-                    payload={"event_id": event_id},
-                    trace_id=trace_id,
-                    occurred_at_ms=stamp,
-                    priority=amqp_priority,
-                )
-            )
         with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
                 "news_triage_mark_published",
                 lambda repos: repos.news.mark_verdict_published(
                     event_id=event_id, stage="triage", policy_version=TRIAGE_POLICY_VERSION, now_ms=stamp
-                ),
-                timeout_seconds=1.0,
-            )
-
-
-# ---------------------------------------------------------------------------- Analyst
-class AnalystConsumer:
-    """One code-prefetched evidence bundle -> one structured call -> verify -> staleness check -> follow-up."""
-
-    def __init__(self, *, bus: Any, db: Any, analyst: Analyst | None, concurrency: int) -> None:
-        self.bus = bus
-        self.db = _Db(db)
-        self.analyst = analyst
-        self.concurrency = int(concurrency)
-
-    async def run(self, *, stop_event: asyncio.Event) -> None:
-        await self.bus.consume(Q_DEEP, self.handle, prefetch=self.concurrency, stop_event=stop_event)
-
-    async def handle(self, message: BusMessage) -> None:
-        event_id = str(message.payload.get("event_id") or "")
-        if not event_id:
-            raise PermanentError("news_event_id_missing")
-        analyst = self.analyst
-        if analyst is None:
-            return
-        stamp = now_ms()
-        existing = await self.db.read(
-            "news_analyst_existing",
-            lambda repos: repos.news.get_verdict(
-                event_id=event_id, stage="deep", policy_version=ANALYST_POLICY_VERSION
-            ),
-        )
-        if existing is not None:
-            if existing.get("published_at_ms") is None and existing["final_decision"] == "push":
-                await self._publish_followup(event_id, trace_id=message.trace_id)
-            return
-        queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
-        bundle = await self.db.read(
-            "news_analyst_bundle",
-            lambda repos: build_evidence_bundle(repos, event_id=event_id, now_ms=stamp, queue_lag_ms=queue_lag_ms),
-            timeout_seconds=5.0,
-        )
-        if bundle is None:
-            raise PermanentError("news_event_or_triage_missing")
-        triage_fields = dict(bundle.payload["event"].get("triage") or {})
-        triage_direction = str(triage_fields.get("direction") or "unclear")
-        triage_magnitude = int(triage_fields.get("magnitude") or 0)
-        result = await analyst.analyze(bundle=bundle, triage_direction=triage_direction)
-        verdict_payload = json_ready(result.verdict) if result.verdict is not None else {}
-        wants_push = bool(
-            result.verdict is not None
-            and result.verify.ok
-            and follow_up_adds_information(
-                result.verdict, triage_direction=triage_direction, triage_magnitude=triage_magnitude
-            )
-        )
-        final = "push" if wants_push else ("degraded" if not result.verify.ok else "drop")
-        throttled_by: str | None = None
-        if wants_push:
-            # Safe-point staleness check: a newer push in the same storyline supersedes this follow-up.
-            latest = await self.db.read(
-                "news_analyst_staleness",
-                lambda repos: repos.news.event_status(storyline_key=bundle.storyline_key, now_ms=now_ms()),
-            )
-            last_push_ago = latest.get("last_push_ago_ms") if latest else None
-            if last_push_ago is not None and int(last_push_ago) <= (now_ms() - stamp):
-                final, throttled_by = "throttled", f"storyline:{bundle.storyline_key}:superseded"
-        trace = {
-            "queue_lag_ms": queue_lag_ms,
-            "latency_ms": result.latency_ms,
-            "attempts": result.attempts,
-            "evidence_count": result.evidence_count,
-            "verify": result.verify.reason,
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
-            "cached_tokens": result.cached_tokens,
-            "prompt_sha256": analyst.prompt_sha256,
-            "status": json_ready(bundle.status_row),
-        }
-        await self.db.tx(
-            "news_analyst_persist",
-            lambda repos: repos.news.insert_verdict(
-                event_id=event_id,
-                stage="deep",
-                policy_version=ANALYST_POLICY_VERSION,
-                model_decision=("push" if result.verdict and result.verdict.follow_up_needed else "drop")
-                if result.verdict
-                else None,
-                rule_baseline_decision="drop",
-                final_decision=final,
-                override_rule=None if result.verify.ok else "verify_failed",
-                throttled_by=throttled_by,
-                verdict=verdict_payload,
-                model=analyst.model_name,
-                prompt_version=ANALYST_PROMPT_VERSION,
-                degraded=not result.verify.ok,
-                error_code=result.error_code,
-                trace=trace,
-                now_ms=stamp,
-            ),
-        )
-        if final == "push":
-            await self._publish_followup(event_id, trace_id=message.trace_id)
-
-    async def _publish_followup(self, event_id: str, *, trace_id: str) -> None:
-        stamp = now_ms()
-        first = await self.db.read(
-            "news_analyst_first_delivery", lambda repos: repos.news.delivery(event_id=event_id, kind="first")
-        )
-        if first is None or first.get("state") != "sent":
-            return  # follow-up only after the first card was actually sent
-        sent_at = first.get("settled_at_ms") or first.get("attempted_at_ms")
-        if sent_at is not None and stamp - int(sent_at) > _FOLLOWUP_MAX_AGE_MS:
-            return  # a replayed or very late analysis must not resurface an old story as a fresh card
-        await self.bus.publish(
-            BusMessage(
-                kind="verdict",
-                message_id=f"deep:{event_id}",
-                routing_key=RK_VERDICT_DEEP,
-                payload={"event_id": event_id, "kind": "followup"},
-                trace_id=trace_id,
-                occurred_at_ms=stamp,
-            )
-        )
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx(
-                "news_analyst_mark_published",
-                lambda repos: repos.news.mark_verdict_published(
-                    event_id=event_id, stage="deep", policy_version=ANALYST_POLICY_VERSION, now_ms=stamp
                 ),
                 timeout_seconds=1.0,
             )
@@ -920,37 +770,26 @@ class DelivererConsumer:
 
     async def handle(self, message: BusMessage) -> None:
         event_id = str(message.payload.get("event_id") or "")
-        kind = (
-            "followup"
-            if message.routing_key == RK_VERDICT_DEEP or message.payload.get("kind") == "followup"
-            else "first"
-        )
+        kind = "first"  # one Event, one card; there is no follow-up lane
         if not event_id:
             raise PermanentError("news_event_id_missing")
         stamp = now_ms()
-        bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, kind, stamp))
+        bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, deep_row, control, sent_last_hour = bundle
+        card, triage_row, control, sent_last_hour = bundle
         tv = dict(triage_row.get("verdict") or {})
-        if kind == "first":
-            if triage_row["final_decision"] not in {"push", "escalate"}:
-                return
-            if sent_last_hour >= self.hourly_cap and triage_row["final_decision"] != "escalate":
-                await self._settle_direct(event_id, kind, "hourly_cap_reached", stamp)
-                return
-            card_payload = render_first_card(
-                event=card,
-                verdict=tv,
-                decision=str(triage_row["final_decision"]),
-                grounded_assets=list(card.get("grounded_assets") or []),
-            )
-        else:
-            if deep_row is None or deep_row["final_decision"] != "push":
-                return
-            card_payload = render_followup_card(
-                event=card, triage_verdict=tv, analyst_verdict=dict(deep_row.get("verdict") or {})
-            )
+        if triage_row["final_decision"] not in {"push", "escalate"}:
+            return
+        if sent_last_hour >= self.hourly_cap and triage_row["final_decision"] != "escalate":
+            await self._settle_direct(event_id, kind, "hourly_cap_reached", stamp)
+            return
+        card_payload = render_first_card(
+            event=card,
+            verdict=tv,
+            decision=str(triage_row["final_decision"]),
+            grounded_assets=list(card.get("grounded_assets") or []),
+        )
         if control.get("paused"):
             # News is perishable: a paused lane drops instead of holding an unacked message.
             await self._settle_direct(event_id, kind, "delivery_paused", stamp)
@@ -1017,15 +856,14 @@ class DelivererConsumer:
         await self.db.tx("news_delivery_settle_direct", _fn)
 
     @staticmethod
-    def _load(repos: Any, event_id: str, kind: str, stamp: int) -> tuple[Any, ...] | None:
+    def _load(repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
         card = repos.news.event_card(event_id)
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if card is None or triage is None:
             return None
-        deep = repos.news.latest_verdict(event_id=event_id, stage="deep") if kind == "followup" else None
         control = repos.news.read_control(now_ms=stamp)
         sent = repos.news.sent_count_since(since_ms=stamp - 3600_000)
-        return card, triage, deep, control, sent
+        return card, triage, control, sent
 
     async def close(self) -> None:
         if self.sender is not None:
@@ -1137,7 +975,6 @@ class NewsPipeline:
     recovery: RecoveryRunner | None
     deduper: DeduperConsumer
     triage: TriageConsumer
-    analyst: AnalystConsumer
     deliverer: DelivererConsumer
     janitor: JanitorLoop
     tasks: list[tuple[str, Callable[..., Any]]] = field(default_factory=list)
@@ -1152,7 +989,6 @@ class NewsPipeline:
             [
                 ("news-deduper", lambda stop: self.deduper.run(stop_event=stop)),
                 ("news-triage", lambda stop: self.triage.run(stop_event=stop)),
-                ("news-analyst", lambda stop: self.analyst.run(stop_event=stop)),
                 ("news-deliverer", lambda stop: self.deliverer.run(stop_event=stop)),
                 ("news-janitor", lambda stop: self.janitor.run(stop_event=stop)),
             ]
@@ -1164,7 +1000,6 @@ class NewsPipeline:
 
 
 __all__ = [
-    "AnalystConsumer",
     "DeduperConsumer",
     "DelivererConsumer",
     "JanitorLoop",

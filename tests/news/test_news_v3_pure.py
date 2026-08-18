@@ -8,13 +8,12 @@ from pathlib import Path
 import pytest
 
 from tracefold.news import bus
-from tracefold.news.analyst_rules import verify_verdict
 from tracefold.news.control import apply_control, is_muted, parse_control
-from tracefold.news.delivery import card_assets, render_first_card, render_followup_card, sanitize_ai_text
+from tracefold.news.delivery import card_assets, render_first_card, sanitize_ai_text
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
-from tracefold.news.models import AnalystVerdict, TriageAsset, TriageVerdict
+from tracefold.news.models import TriageAsset, TriageVerdict
 from tracefold.news.storyline import final_storyline_key, preliminary_storyline_key, storyline_key
 from tracefold.news.titles import extract_title
 from tracefold.news.tokens import comparison_tokens, jaccard
@@ -441,40 +440,8 @@ def test_fallback_is_not_silent() -> None:
     assert fallback_verdict(strong, error_code="x")[1].final == "push"
 
 
-# ---------------------------------------------------------------- analyst verify
-def test_verify_verdict_rejects_fabricated_evidence() -> None:
-    evidence = {"history:abc": {"event_id": "e0", "final_decision": "push"}}
-    ok = AnalystVerdict(
-        agrees_with_triage=True,
-        revised_direction="bullish",
-        revised_magnitude=2,
-        novelty_assessment="new",
-        context_evidence=["history:abc"],
-        thesis_zh="ok",
-        follow_up_needed=True,
-        confidence=0.7,
-    )
-    assert verify_verdict(ok, tool_evidence=evidence, triage_direction="bullish").ok
-    unknown = ok.model_copy(update={"context_evidence": ["history:nope"]})
-    assert (
-        verify_verdict(unknown, tool_evidence=evidence, triage_direction="bullish").reason == "context_evidence_unknown"
-    )
-    unsupported = ok.model_copy(update={"context_evidence": []})
-    assert (
-        verify_verdict(unsupported, tool_evidence=evidence, triage_direction="bullish").reason
-        == "magnitude_without_evidence"
-    )
-    disagree = ok.model_copy(update={"agrees_with_triage": False})
-    assert (
-        verify_verdict(disagree, tool_evidence=evidence, triage_direction="bullish").reason
-        == "disagreement_without_revision"
-    )
-    with pytest.raises(ValueError):
-        AnalystVerdict.model_validate({**ok.model_dump(), "market_reaction": []})
-
-
 # ---------------------------------------------------------------- delivery / control / bus
-def test_card_uses_code_facts_and_sanitizes_ai_text() -> None:
+def test_card_is_the_reader_contract() -> None:
     assert sanitize_ai_text("看 https://evil.example 这里", limit=60, fallback="原标题") == "原标题"
     assert sanitize_ai_text("**加粗** @user 文本\x00", limit=60) == "加粗 文本"
     card = render_first_card(
@@ -485,11 +452,12 @@ def test_card_uses_code_facts_and_sanitizes_ai_text() -> None:
             "reporting_origin": "ft",
             "member_count": 3,
             "provider_score_max": 80,
+            "leader_published_at_ms": 1787064000000,  # 2026-08-18 14:40 UTC -> 22:40 in the reader's zone
         },
         verdict={
             "direction": "bullish",
             "magnitude": 2,
-            "headline_zh": "英伟达投资 https://x.y",
+            "headline_zh": "英伟达千亿美元投资 OpenAI 数据中心",
             "title_zh": "英伟达将投资 1000 亿美元",
             "why_zh": "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
             "event_type": "partnership",
@@ -499,13 +467,11 @@ def test_card_uses_code_facts_and_sanitizes_ai_text() -> None:
         decision="push",
         grounded_assets=["NVDA", "XYZ-NVDA"],
     )
-    # The header is the faithful Chinese title; the body is: original line, one plain sentence, facts in words.
-    assert card["header"]["title"]["content"] == "英伟达将投资 1000 亿美元"
-    body = card["elements"][0]["content"]
-    assert body.splitlines() == [
-        "Nvidia to invest $100bn",
+    # header = the model's factual headline; body = why sentence + facts in words; nothing else.
+    assert card["header"]["title"]["content"] == "英伟达千亿美元投资 OpenAI 数据中心"
+    assert card["elements"][0]["content"].splitlines() == [
         "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
-        "利多 · 影响明显 · 个别标的 · `NVDA` · ft（3 条报道）",
+        "利多 · 影响明显 · NVDA · ft（3 条报道） · 22:40",
     ]
     text = json.dumps(card, ensure_ascii=False)
     for machine_word in (
@@ -517,46 +483,23 @@ def test_card_uses_code_facts_and_sanitizes_ai_text() -> None:
         "partnership",
         "single_name",
         "原标题",
-        "标的：",
+        "个别标的",
     ):
         assert machine_word not in text
+    assert "Nvidia to invest $100bn" not in text and "英伟达将投资 1000 亿美元" not in text  # no title lines
     assert "打开来源" in text and "news_delivery_card" not in text
-    bare = render_first_card(
+    escalated = render_first_card(
         event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
-        verdict={"direction": "bullish", "magnitude": 2, "headline_zh": "x https://x.y"},
-        decision="push",
+        verdict={"direction": "bullish", "magnitude": 3, "headline_zh": "x https://x.y"},
+        decision="escalate",
         grounded_assets=[],
     )
-    assert bare["header"]["title"]["content"] == "Nvidia to invest $100bn"
-    assert bare["elements"][0]["content"] == "利多 · 影响明显 · -"
-    # Card assets are the verdict primaries the Gate grounded; provider-only tags never show alone when noisy.
+    assert escalated["header"]["title"]["content"] == "⚡ Nvidia to invest $100bn"  # URL in AI copy -> code fallback
+    assert escalated["elements"][0]["content"] == "利多 · 影响重大 · -"
+    # Card assets are the verdict primaries the Gate grounded; a small grounded set shows when the model named none.
     assert card_assets({"assets": [{"symbol": "CC", "role": "primary"}]}, ["CC"]) == ["CC"]
     assert card_assets({"assets": []}, ["A", "B", "C", "D", "E"]) == []
     assert card_assets({"assets": [{"symbol": "BTC", "role": "primary"}]}, ["BTC", "CL", "XYZ-CL"]) == ["BTC"]
-
-
-def test_followup_card_renders_only_the_delta_and_no_risk_boilerplate() -> None:
-    card = render_followup_card(
-        event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn"},
-        triage_verdict={"direction": "bullish", "magnitude": 2, "title_zh": "英伟达将投资 1000 亿美元"},
-        analyst_verdict={
-            "agrees_with_triage": True,
-            "revised_direction": "bullish",
-            "revised_magnitude": 3,
-            "novelty_assessment": "followup",
-            "thesis_zh": "这是 48 小时内英伟达第三次加码数据中心投资，规模是前两次之和",
-            "follow_up_needed": True,
-        },
-    )
-    assert card["header"]["title"]["content"] == "补充：英伟达将投资 1000 亿美元"
-    body = card["elements"][0]["content"]
-    assert body.splitlines() == [
-        "强度修正：影响明显 → 影响重大",
-        "这是 48 小时内英伟达第三次加码数据中心投资，规模是前两次之和",
-    ]
-    text = json.dumps(card, ensure_ascii=False)
-    for machine_word in ("风险", "新颖性", "followup", "原标题", "深度补充"):
-        assert machine_word not in text
 
 
 def test_control_commands() -> None:

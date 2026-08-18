@@ -588,89 +588,6 @@ class NewsRepository:
             (int(now_ms), event_id, stage, policy_version),
         )
 
-    def prior_verdicts(
-        self,
-        *,
-        symbols: Sequence[str],
-        storyline_key: str | None,
-        since_ms: int,
-        exclude_event_id: str | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Triage/Analyst verdicts of Events in the same storyline or sharing a grounded symbol (bounded)."""
-
-        symbol_list = [str(s).upper() for s in symbols]
-        rows = self.conn.execute(
-            """
-            SELECT v.event_id, v.stage, v.final_decision, v.created_at_ms, e.leader_title, e.storyline_key,
-                   v.verdict ->> 'direction' AS direction, (v.verdict ->> 'magnitude')::int AS magnitude,
-                   v.verdict ->> 'event_type' AS event_type, v.verdict ->> 'headline_zh' AS headline_zh
-              FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
-             WHERE v.created_at_ms >= %s
-               AND (%s::text IS NULL OR e.event_id <> %s)
-               AND ((%s::text IS NOT NULL AND e.storyline_key = %s)
-                    OR EXISTS (SELECT 1 FROM news_event_assets a
-                                WHERE a.event_id = e.event_id AND a.symbol = ANY(%s::text[])))
-             ORDER BY v.created_at_ms DESC LIMIT %s
-            """,
-            (
-                int(since_ms),
-                exclude_event_id,
-                exclude_event_id,
-                storyline_key or None,
-                storyline_key or None,
-                symbol_list,
-                int(limit),
-            ),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def storyline_history(
-        self,
-        *,
-        storyline_key: str,
-        symbols: Sequence[str],
-        since_ms: int,
-        exclude_event_id: str | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Recent Events in the same storyline or sharing a grounded symbol (bounded)."""
-
-        symbol_list = [str(s).upper() for s in symbols]
-        rows = self.conn.execute(
-            """
-            SELECT e.event_id, e.opened_at_ms, e.leader_title, e.context_line, e.storyline_key, e.grounded_assets
-              FROM news_events e
-             WHERE e.opened_at_ms >= %s
-               AND (%s::text IS NULL OR e.event_id <> %s)
-               AND ((%s::text <> '' AND e.storyline_key = %s)
-                    OR EXISTS (SELECT 1 FROM news_event_assets a
-                                WHERE a.event_id = e.event_id AND a.symbol = ANY(%s::text[])))
-             ORDER BY e.opened_at_ms DESC LIMIT %s
-            """,
-            (int(since_ms), exclude_event_id, exclude_event_id, storyline_key, storyline_key, symbol_list, int(limit)),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def macro_state(self) -> list[dict[str, Any]]:
-        """Compact projection of the six current Macro module rows for the Analyst evidence bundle."""
-
-        rows = self.conn.execute(
-            """
-            SELECT module_id,
-                   payload_json ->> 'label' AS label,
-                   current_health_state,
-                   history_depth_state,
-                   payload_json -> 'summary' ->> 'headline' AS headline,
-                   fact_cutoff_ms,
-                   updated_at_ms
-              FROM macro_module_current
-             ORDER BY module_id
-            """
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    # ------------------------------------------------------------------ deliveries
     def begin_delivery(self, *, event_id: str, kind: str, card: Mapping[str, Any], now_ms: int) -> str:
         """Returns 'new' when this process owns the send, otherwise the existing state."""
 
@@ -940,7 +857,6 @@ class NewsRepository:
               (SELECT count(*) FROM news_verdicts WHERE stage = 'triage' AND created_at_ms >= %s) AS triage_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND degraded AND created_at_ms >= %s) AS triage_degraded_24h,
-              (SELECT count(*) FROM news_verdicts WHERE stage = 'deep' AND created_at_ms >= %s) AS deep_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
                   AND created_at_ms >= %s) AS decided_push_24h,
@@ -956,7 +872,7 @@ class NewsRepository:
                  FROM news_verdicts
                 WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'queue_lag_ms') AS queue_lag_p95_ms
             """,
-            (hour_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago),
+            (hour_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago),
         ).fetchone()
         delivery = self.conn.execute(
             """

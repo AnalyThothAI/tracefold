@@ -80,12 +80,9 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                     },
                     "models": {
                         "triage_configured": model_availability.triage_configured,
-                        "analyst_configured": model_availability.analyst_configured,
                         "triage_model": model_availability.triage_model,
-                        "analyst_model": model_availability.analyst_model,
                     },
                     "triage": settings.news.triage.model_dump(),
-                    "analyst": settings.news.analyst.model_dump(),
                     "watchlist": sorted(settings.news.watchlist_symbols),
                     "policy": settings.news.policy.model_dump(),
                     "gate": settings.news.gate.model_dump(),

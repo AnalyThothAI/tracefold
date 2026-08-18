@@ -124,12 +124,12 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   item id, and original link; `NewsVerdictPanel` over `verdicts[]` (stage,
   final decision, degraded/error flags, rule baseline, model decision,
   `override_rule`, `throttled_by`, model/policy/prompt versions, publish time,
-  the typed Triage or Analyst payload fields, verdict assets, context
-  evidence, and a collapsed `trace` disclosure); `deliveries[]` rows (kind,
-  state, error code, attempted/settled clocks, receipt entries); and `labels[]`
-  under `操作者标注` (source, label payload, created time, or an explicit empty
-  state naming `tracefold news label`). `NewsEventDetailData` carries no market
-  marks and the page renders no market table.
+  the typed Triage payload fields, verdict assets, and a collapsed `trace`
+  disclosure); `deliveries[]` rows (kind, state, error code, attempted/settled
+  clocks, receipt entries); and `labels[]` under `操作者标注` (source, label
+  payload, created time, or an explicit empty state naming `tracefold news
+  label`). `NewsEventDetailData` carries no market marks and the page renders
+  no market table.
   The browser does not recompute any verdict, decision, or delivery state.
 
   `/news/status` reads `/api/news/status` and presents the single server
@@ -138,8 +138,8 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   last error, configured and provider-enabled Strategy counts, open incidents,
   strategy warnings), `broker` (configured, connected, error, per-queue
   messages/consumers), `pipeline` (1h/24h events, candidates, triage, degraded
-  triage, deep, decided push, throttled, Triage P50/P95, triage/analyst
-  models), and `delivery` (availability, 1h/24h sent, terminal, hourly cap,
+  triage, decided push, throttled, Triage P50/P95, the Triage model), and
+  `delivery` (availability, 1h/24h sent, terminal, hourly cap,
   end-to-end P95, last error) — plus read-only `control` (paused, mutes) and
   the read-only watch symbol list (`news-watch-*`). No layer computes a second
   health state; only the server `state` badge is coloured. There are no

@@ -228,7 +228,6 @@ class CliTests(unittest.TestCase):
                 "broker",
                 "models",
                 "triage",
-                "analyst",
                 "watchlist",
                 "policy",
                 "gate",
@@ -242,8 +241,6 @@ class CliTests(unittest.TestCase):
         self.assertFalse(news["broker"]["url_configured"])
         self.assertTrue(news["models"]["triage_configured"])
         self.assertEqual(news["models"]["triage_model"], "deepseek-chat")
-        self.assertTrue(news["models"]["analyst_configured"])
-        self.assertEqual(news["models"]["analyst_model"], "deepseek-chat")
         self.assertIsInstance(news["watchlist"], list)
         self.assertGreaterEqual(news["push"]["hourly_cap"], 1)
         self.assertNotIn("rss_enabled", news)

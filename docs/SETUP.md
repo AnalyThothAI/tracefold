@@ -76,12 +76,11 @@ contract is not valid.
 
 The credentials a live deployment can hold are exactly: the OpenNews token
 (`news.opennews_token`), the direct model triple (`llm.api_key`,
-`llm.base_url`, `llm.news_triage_model`, plus optional
-`llm.news_analyst_model` and the Fed document-analysis switch/model), the
-RabbitMQ URL (`news.broker.url`), the Feishu webhook and optional signing
-secret (`news.push.*`), and the PostgreSQL role password files. Macro sources
-are keyless; `providers.macro_sources` only enables the free families and sets
-the user agent.
+`llm.base_url`, `llm.news_triage_model`, plus the optional Fed
+document-analysis switch and model), the RabbitMQ URL (`news.broker.url`), the
+Feishu webhook and optional signing secret (`news.push.*`), and the PostgreSQL
+role password files. Macro sources are keyless; `providers.macro_sources` only
+enables the free families and sets the user agent.
 
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
@@ -94,8 +93,8 @@ lanes report explicit degradation or unavailable evidence:
   `news.enabled: false` to run Macro alone without RabbitMQ;
 - an absent direct DeepSeek triple (`llm.api_key`, `llm.base_url`,
   `llm.news_triage_model`) makes Triage fall back to fail-closed rules
-  (`triage_degraded_24h` grows) and disables the Analyst; a degraded verdict
-  carries no `title_zh`, so the feed and card show only the original title;
+  (`triage_degraded_24h` grows); a degraded verdict carries no Chinese text, so
+  the feed and card fall back to the original title;
   `llm.macro_document_analysis_enabled: false` (the default) keeps Fed
   document analysis `disabled` without lowering Rates/Fed health;
 - News push remains off until `news.push.enabled: true` and a supported
@@ -113,8 +112,8 @@ the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
 configured booleans. Feishu delivery has no model-credential dependency; the
-card's `**标题**` line is the Triage verdict's `title_zh` and `**原标题**` is the
-leader title.
+card header is the Triage verdict's `headline_zh` (the original title when
+Triage is degraded) and the body is `why_zh` plus the code-owned facts line.
 
 An operator configuration for live News uses the existing generated fields;
 do not add another secrets file or environment variable:
@@ -124,7 +123,6 @@ llm:
   api_key: "<operator model secret>"
   base_url: "https://api.deepseek.com/v1"
   news_triage_model: "deepseek-v4-flash"
-  news_analyst_model: "deepseek-v4-pro"
 
 news:
   enabled: true
@@ -185,11 +183,12 @@ provider-side enablement never silently edits Tracefold configuration.
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain only the News credentials above; the `llm` block
 owns one all-or-none direct DeepSeek triple (`api_key`, `base_url`,
-`news_triage_model`) plus optional `news_analyst_model`; there is no
-environment-variable credential path or inferred URL/model. Configs written
-before the GMGN lane removal must drop the `gmgn`, `upstream`,
-`providers.binance`, `api.heartbeat_interval`, and `api.replay_limit` keys;
-the schema rejects them.
+`news_triage_model`); there is no environment-variable credential path or
+inferred URL/model. Configs written before the GMGN lane removal must drop the
+`gmgn`, `upstream`, `providers.binance`, `api.heartbeat_interval`, and
+`api.replay_limit` keys, and configs written before the Analyst lane removal
+(#57) must drop `news.analyst.*` and `llm.news_analyst_model`; the schema
+rejects them.
 
 The OpenNews Receiver authenticates one WSS and sends zero application
 subscription frames; the server pushes the account owner's `strategy.triggered`
@@ -197,8 +196,8 @@ notifications and Tracefold publishes each accepted frame to RabbitMQ. A
 disconnect, broker backpressure, or process outage creates a typed incident;
 reconnect restores current WSS health and the official Strategy list/hits
 endpoints perform bounded idempotent recovery (recovered Items never deliver).
-Deduper, Triage, Analyst, and Deliverer are broker consumers; see
-`docs/ARCHITECTURE.md` and `docs/OPERATIONS.md` for the pipeline and diagnosis.
+Deduper, Triage, and Deliverer are broker consumers; see `docs/ARCHITECTURE.md`
+and `docs/OPERATIONS.md` for the pipeline and diagnosis.
 
 Use `uv run tracefold config` to inspect the active config path and redacted
 enablement. Inspect serve through authenticated `/api/status` and workers

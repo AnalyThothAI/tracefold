@@ -40,10 +40,8 @@ from tracefold.macro import (
     acquisition_loop_policy,
 )
 from tracefold.news import DecidePolicy
-from tracefold.news.agents.analyst import Analyst
 from tracefold.news.agents.triage_model import TriageModel
 from tracefold.news.consumers import (
-    AnalystConsumer,
     DeduperConsumer,
     DelivererConsumer,
     JanitorLoop,
@@ -820,19 +818,6 @@ async def _wire_news_pipeline(
             model=chat_model, model_name=effective, deadline_seconds=settings.news.triage.deadline_seconds
         )
 
-    analyst: Analyst | None = None
-    if models.analyst_configured and models.analyst_model:
-        pro_model, pro_effective = configured_chat_model(
-            settings,
-            model_name=models.analyst_model,
-            request_timeout_seconds=min(settings.news.analyst.deadline_seconds, 25.0),
-            max_tokens=2_000,
-            thinking=False,  # DeepSeek V4 thinking + function-calling structured output is not reliable together
-        )
-        analyst = Analyst(
-            model=pro_model, model_name=pro_effective, deadline_seconds=settings.news.analyst.deadline_seconds
-        )
-
     push = news_push_availability(settings)
     sender = (
         FeishuNewsPushSender(
@@ -864,7 +849,6 @@ async def _wire_news_pipeline(
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
             policy=DecidePolicy(**settings.news.policy.model_dump()),
         ),
-        analyst=AnalystConsumer(bus=bus, db=db, analyst=analyst, concurrency=settings.news.analyst.concurrency),
         deliverer=DelivererConsumer(
             bus=bus,
             db=db,

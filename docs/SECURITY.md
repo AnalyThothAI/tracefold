@@ -43,21 +43,18 @@ environment variables, or move code-owned safety budgets into
 
 ## Model capability boundary
 
-`news_triage`, `news_analyst`, and `macro_document_analysis` are the only
-production product-model consumers. News Triage is one structured call with a
+`news_triage` and `macro_document_analysis` are the only production
+product-model consumers. News Triage is one structured call with a
 byte-frozen system prompt whose output never decides delivery by itself: the
 pure `decide()` rules own the final decision, model failure is fail-closed,
-and every verdict row stores the model intent next to the rule baseline. The
-News Analyst is one structured call with a byte-frozen system prompt over a
-code-prefetched evidence bundle read in one read-only repository session; it
+and every verdict row stores the model intent next to the rule baseline. It
 has no tools, agent loop, filesystem, shell, network, subagent, or write
-capability, its evidence citations are verified by `verify_verdict()` against
-the bundle's own `evidence_id`s (one bounded correction round), and it can
-only add a follow-up card after a first card was sent. The Chinese title is
-the Triage verdict's `title_zh`; no separate title provider or adapter exists.
-Item identity, Event identity, Gate admission, storyline keys, and feed
-ordering remain deterministic. The six Macro modules are also deterministic
-views over persisted facts.
+capability, and one Event gets exactly one judgment and one card — the second
+model stage (the Analyst lane) was removed in #57. The card's Chinese text is
+the Triage verdict's `headline_zh` and `why_zh`; no separate title,
+translation, or follow-up provider exists. Item identity, Event identity, Gate
+admission, storyline keys, and feed ordering remain deterministic. The six
+Macro modules are also deterministic views over persisted facts.
 
 PostgreSQL runtime roles are code-owned:
 `src/tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
@@ -131,16 +128,12 @@ There is exactly one Feishu attempt after the durable `sending` row and no
 retry; a crash between send and ack terminalizes as `ambiguous_after_crash`.
 
 News Triage receives the Event title/content excerpt (wrapped as untrusted
-material), Gate facts, the storyline status bar, and the watchlist symbols;
-News Analyst receives Triage field conclusions (never the free-text
-rationale) and one code-built `<evidence>` bundle (event card, at most five
-members wrapped as external content, bounded storyline/symbol history, prior
-verdicts, six macro module rows, and the `<event_status>` bar), every citable
-row carrying an `evidence_id`. Neither
-receives credentials, webhook material, or unrelated corpus context; prompts
-are byte-frozen constants (`TRIAGE_SYSTEM_PROMPT` and `NEWS_ANALYST.md`) whose
-SHA-256 is recorded in each verdict trace, and raw model responses are never
-persisted beyond the validated verdict payload and bounded trace.
+material), Gate facts, the storyline status bar, and the watchlist symbols. It
+never receives credentials, webhook material, or unrelated corpus context; the
+system prompt is the byte-frozen constant `TRIAGE_SYSTEM_PROMPT` (English
+instructions, Chinese reader text) whose SHA-256 is recorded in each verdict
+trace, and raw model responses are never persisted beyond the validated
+verdict payload and bounded trace.
 
 RabbitMQ credentials live only in `news.broker.url`; the compose service binds
 AMQP and management ports to `127.0.0.1` by default and uses a

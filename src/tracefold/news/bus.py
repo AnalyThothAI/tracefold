@@ -17,7 +17,6 @@ RETRY_EXCHANGE: Final = "news.retry"
 
 Q_RAW: Final = "news.raw"
 Q_TRIAGE: Final = "news.triage"
-Q_DEEP: Final = "news.deep"
 Q_DELIVER: Final = "news.deliver"
 Q_RETRY: Final = "news.retry"
 Q_DEAD: Final = "news.dead"
@@ -26,8 +25,6 @@ RK_RAW_LIVE: Final = "raw.opennews.{strategy_id}"
 RK_RAW_RECOVERY: Final = "raw.recovery.{strategy_id}"
 RK_EVENT: Final = "event.{family}.{priority}"
 RK_VERDICT_PUSH: Final = "verdict.push"
-RK_VERDICT_ESCALATE: Final = "verdict.escalate"
-RK_VERDICT_DEEP: Final = "verdict.deep"
 
 RETRY_TTL_MS: Final = 30_000
 MAX_TRANSIENT_ATTEMPTS: Final = 3
@@ -131,7 +128,6 @@ __all__ = [
     "EXCHANGE",
     "MAX_TRANSIENT_ATTEMPTS",
     "Q_DEAD",
-    "Q_DEEP",
     "Q_DELIVER",
     "Q_RAW",
     "Q_RETRY",
@@ -141,8 +137,6 @@ __all__ = [
     "RK_EVENT",
     "RK_RAW_LIVE",
     "RK_RAW_RECOVERY",
-    "RK_VERDICT_DEEP",
-    "RK_VERDICT_ESCALATE",
     "RK_VERDICT_PUSH",
     "BusDecodeError",
     "BusMessage",

@@ -10,11 +10,9 @@ NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v4"
 STORYLINE_POLICY_VERSION = "news_storyline_v2"
-TRIAGE_PROMPT_VERSION = "news_triage_prompt_v4"
+TRIAGE_PROMPT_VERSION = "news_triage_prompt_v5"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v2"
-ANALYST_PROMPT_VERSION = "news_analyst_prompt_v5"
-ANALYST_POLICY_VERSION = "news_analyst_policy_v4"
-DELIVERY_CARD_VERSION = "news_delivery_card_v7"
+DELIVERY_CARD_VERSION = "news_delivery_card_v8"
 
 Admission = Literal[
     "candidate",
@@ -86,22 +84,7 @@ class TriageVerdict(BaseModel):
     audience: Audience = "none"
     headline_zh: str = Field(min_length=1, max_length=60)
     title_zh: str = Field(default="", max_length=160)
-    why_zh: str = Field(default="", max_length=120)
-
-
-class AnalystVerdict(BaseModel):
-    """Structured output of the Analyst deep agent."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    agrees_with_triage: bool
-    revised_direction: Literal["bullish", "bearish", "neutral", "unclear"]
-    revised_magnitude: int = Field(ge=0, le=3)
-    novelty_assessment: Literal["new", "followup", "rehash"]
-    context_evidence: list[str] = Field(default_factory=list, max_length=8)
-    thesis_zh: str = Field(min_length=1, max_length=600)
-    follow_up_needed: bool
-    confidence: float = Field(ge=0.0, le=1.0)
+    why_zh: str = Field(default="", max_length=140)
 
 
 def json_ready(value: Any) -> Any:
@@ -117,8 +100,6 @@ def json_ready(value: Any) -> Any:
 
 
 __all__ = [
-    "ANALYST_POLICY_VERSION",
-    "ANALYST_PROMPT_VERSION",
     "DELIVERY_CARD_VERSION",
     "EVENT_IDENTITY_VERSION",
     "GATE_POLICY_VERSION",
@@ -127,7 +108,6 @@ __all__ = [
     "TRIAGE_POLICY_VERSION",
     "TRIAGE_PROMPT_VERSION",
     "Admission",
-    "AnalystVerdict",
     "AssetClass",
     "Audience",
     "Decision",

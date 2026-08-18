@@ -28,19 +28,15 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.repository",
     },
     "src/tracefold/app/workers/__init__.py": {
-        "tracefold.news.agents.analyst",
         "tracefold.news.agents.triage_model",
         "tracefold.news.consumers",
     },
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
     "src/tracefold/integrations/rabbitmq.py": {"tracefold.news.bus"},
 }
-# News V3 read-only cross-domain reads: the Analyst evidence bundle reads the Macro
-# current module rows through SELECT only. Every edge is named; no News module may
-# write another business package's tables.
-ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES = {
-    "src/tracefold/news/repository.py": {"macro_module_current"},
-}
+# News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge
+# would have to be named here; no News module may write another business package's tables.
+ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES: dict[str, set[str]] = {}
 WRITE_SQL_TABLE_RE = re.compile(
     r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)",
     re.IGNORECASE,

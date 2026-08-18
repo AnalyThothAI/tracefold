@@ -96,7 +96,7 @@ tracefold workers
   -> spawn-only Pebble ProcessPool 1 for Macro
   -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
-     news-triage, news-analyst, news-deliverer, news-janitor); one durable-due
+     news-triage, news-deliverer, news-janitor); one durable-due
      task per Macro acquisition clock (macro_intraday_market, macro_settlements,
      macro_economic_releases, macro_official_state, macro_official_documents);
      projection-edf (Macro frontier coordinator); model-arbiter (Fed document
@@ -167,10 +167,10 @@ News consumers use a dedicated four-slot News DB lane
 business slots) for short idempotent transactions; each message is one
 transaction of a few milliseconds. `consume()` handles up to `prefetch`
 messages concurrently with a per-message ack, so `news.triage.concurrency`
-(default 4) and `news.analyst.concurrency` (default 2) are real concurrency and
-the only News concurrency knobs; single-active queues use prefetch 1. When the
-News lane cannot admit a message the consumer raises `DeferError` and the
-message requeues uncounted through the retry lane.
+(default 4) is real concurrency and the only News concurrency knob;
+single-active queues use prefetch 1. When the News lane cannot admit a message
+the consumer raises `DeferError` and the message requeues uncounted through
+the retry lane.
 
 Macro projection claims retain their 30-second lease envelope.
 News has no projection lease: the broker's single-active-consumer and
@@ -228,12 +228,9 @@ OpenNews account Strategy WSS (news.opennews_strategy_ids, validated at startup)
   -> q:news.raw [SAC] Deduper: Item upsert -> title/identity -> Event new|member
      -> Gate -> storyline key -> publish event.<family>.<priority> for candidates
   -> q:news.triage Triage (prefetch news.triage.concurrency): one structured
-     DeepSeek call (title_zh, headline_zh, ...) + decide() -> news_verdicts
-     -> verdict.push / verdict.escalate
-  -> q:news.deep Analyst (prefetch news.analyst.concurrency): one-session
-     evidence bundle -> one structured call -> verify_verdict() (one correction
-     round) -> deep verdict -> verdict.deep only after the first card was sent
-  -> q:news.deliver [SAC] Deliverer: one Feishu attempt per (event, kind);
+     DeepSeek call (headline_zh, why_zh, ...) + decide() -> news_verdicts
+     -> verdict.push (an escalate rides the same key at AMQP priority 5)
+  -> q:news.deliver [SAC] Deliverer: one Feishu attempt per Event (kind first);
      paused control settles terminal/delivery_paused
   -> tracefold news control -> news_control_state (read on every message)
   -> q:news.retry (30 s TTL) for TransientError/DeferError; q:news.dead for the rest
@@ -284,11 +281,10 @@ a retryable failure (timeout, rate limit, connection) gets one more attempt
 inside `deadline_seconds`, and three consecutive failures open a 60-second
 circuit and a `triage_circuit_open` incident. The verdict trace records
 `prompt_sha256`, `input_sha256`, the `event_status` snapshot,
-`model_attempts`, and `model_failure_retryable`. Analyst failures produce
-`degraded` deep verdicts and no follow-up; a first card pushed after the
-Analyst started makes the follow-up `throttled` with `throttled_by`
-`storyline:<key>:superseded`. `triage_degraded_24h` and `deep_24h` in status
-are the first place to look when pushes stop.
+`model_attempts`, and `model_failure_retryable`. There is no second model
+stage behind Triage — one Event gets one judgment and one card — so
+`triage_24h` next to `triage_degraded_24h` in status is the first place to
+look when pushes stop.
 
 Diagnose News in this order:
 

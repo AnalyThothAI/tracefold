@@ -103,7 +103,7 @@ def get_news_status(request: Request) -> Response:
         "observed_at_ms": observed.get("observed_at_ms"),
     }
     ingest = {**snapshot["ingest"], "token_configured": bool(settings.news.opennews_token)}
-    pipeline = {**snapshot["pipeline"], "triage_model": models.triage_model, "analyst_model": models.analyst_model}
+    pipeline = {**snapshot["pipeline"], "triage_model": models.triage_model}
     delivery = {
         **snapshot["delivery"],
         "delivery_available": push.delivery_available,

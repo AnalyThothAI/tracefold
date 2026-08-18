@@ -91,12 +91,11 @@ and publication checkpoints. `first_dirty_at_ms` records the causal change,
 eligibility clock for a scheduled recheck or retry. An eligible shard may run
 before its deadline; the deadline is never a start gate. Retry attempts and
 terminal reasons are likewise queue policy, not facts.
-`news_verdicts` (Triage and Analyst decisions bound to a policy version) and
-rows in `macro_document_analyses` are derived model outputs bound to frozen
-evidence; they are not material facts. `news_deliveries` is
-the one-attempt outbound ledger keyed by `(event_id, kind)`; there is no retry,
-lease, or backfill. `news_event_labels` is the learning-plane truth for
-evaluating decisions.
+`news_verdicts` (Triage decisions bound to a policy version) and rows in
+`macro_document_analyses` are derived model outputs bound to frozen evidence;
+they are not material facts. `news_deliveries` is the one-attempt outbound
+ledger keyed by `(event_id, kind)`; there is no retry, lease, or backfill.
+`news_event_labels` is the learning-plane truth for evaluating decisions.
 
 The current schema is exactly 28 tables: the eleven `news_*` tables, the ten
 `macro_*` tables plus the four general market fact tables owned by Macro, and
@@ -115,11 +114,9 @@ tracefold.news
   gate.py / storyline.py  deterministic admission, priority, grounded assets, storyline keys
   events.py           the Deduper transaction (admit_item)
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
-  analyst_evidence.py the Analyst evidence bundle (one DB session, evidence ids)
-  analyst_rules.py    verify_verdict() evidence gate
-  agents/             Triage and Analyst structured calls, byte-frozen prompts
+  agents/             the Triage structured call and its byte-frozen prompt
   delivery.py / control.py  cards, control commands
-  consumers.py        Receiver, Recovery, Deduper, Triage, Analyst, Deliverer, Janitor
+  consumers.py        Receiver, Recovery, Deduper, Triage, Deliverer, Janitor
   repository.py / query_specs.py  news_* access and audited reads
   eval/               offline label evaluation, decision replay, hits replay
 
@@ -189,11 +186,11 @@ the container restarts the single process.
 SQL ownership follows the same boundary: News owns `news_*`; Macro owns
 `macro_*` plus `market_instruments`, `market_observations`,
 `market_settlements`, and `market_position_facts`. Platform owns Alembic,
-`queue_terminal_events`, and `workers_runtime`. News reads exactly one
-cross-domain table, `macro_module_current`, through a named read-only seam
-(the Analyst's macro-state evidence) and never writes it. Macro has no live or
-hidden dependency on News. The architecture gate checks SQL table references
-against the generated current schema.
+`queue_terminal_events`, and `workers_runtime`. News makes no cross-domain
+read: its single read-only seam (`macro_module_current` as Analyst evidence)
+went with the Analyst lane in #57. Macro has no live or hidden dependency on
+News. The architecture gate checks SQL table references against the generated
+current schema.
 
 ## Transaction ownership
 
@@ -208,7 +205,7 @@ Important atomic units are:
 - current read-model write plus acknowledgement of the exact claim;
 - one accepted OpenNews frame: NewsItem upsert with provenance union plus its
   Event assignment (new Event, bands, assets, or membership);
-- one Triage/Analyst verdict insert; one delivery begin or settle;
+- one Triage verdict insert; one delivery begin or settle;
 - immutable Fed document analysis plus completion of its exact native job;
 - retry or terminal transition plus mutation of its source queue row.
 
@@ -248,8 +245,8 @@ single-active-consumer and per-message ack are their fences.
 The Workers root TaskGroup contains exactly: `workers-probe` (loopback
 health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
-`news-analyst`, `news-deliverer`, `news-janitor`), one `durable-due-N` task
-per Macro acquisition clock family, `projection-edf` (the Macro frontier
+`news-deliverer`, `news-janitor`), one `durable-due-N` task per Macro
+acquisition clock family, `projection-edf` (the Macro frontier
 coordinator), `model-arbiter` (Fed document analysis), and `workers-control`
 (singleton lock, heartbeat, runtime row). There is no periodic market poll,
 stream ingester, identity backfill, or universe sync task.
@@ -280,11 +277,7 @@ OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
        one bounded retry for a fast retryable model failure) -> final storyline key from the
        verdict (written back) -> decide() policy -> verdict row (title_zh, audience, prompt sha,
        input sha, preliminary + final status snapshots, named rule) -> publish verdict.push
-       (+ verdict.escalate)
-  -> q:news.deep (verdict.escalate) [prefetch = news.analyst.concurrency] Analyst:
-       one DB session builds the evidence bundle -> one structured call -> verify_verdict()
-       (one correction round) -> safe-point staleness check -> deep verdict
-       -> publish verdict.deep only after the first card was sent
+       (an escalate rides the same routing key at AMQP priority 5; there is no second model call)
   -> q:news.deliver [single-active-consumer] Deliverer: begin(sending) -> one Feishu attempt
        -> settle sent|terminal; paused -> terminal/delivery_paused; crash between send and ack
        -> ambiguous_after_crash
@@ -297,7 +290,7 @@ OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
 
 Ownership: `tracefold.integrations.rabbitmq` is the only module that imports
 `aio_pika`; `tracefold.news.bus` owns the envelope, routing keys, error classes,
-and Publisher/Consumer protocols. `tracefold.news.consumers` holds the seven
+and Publisher/Consumer protocols. `tracefold.news.consumers` holds the six
 consumers wired by `tracefold.app.workers._wire_news_pipeline`; they run as
 asyncio tasks in the single Workers process but coordinate only through the
 broker and PostgreSQL keys, so they can be scaled out without code changes.
@@ -335,19 +328,20 @@ is theme-first (`crypto_treasury`, `mideast_energy`, `rates`, `trade`,
 `china_macro`, `metals`, `us_equity_macro`, `us_macro_data`), then the first
 A/A+ or cashtag asset; the final key is computed after Triage from the
 verdict's grounded primaries and scope, written back to `news_events`, and
-used by every window query, throttle, mute, and the Analyst.
+used by every window query, throttle, and mute.
 
 Triage (`tracefold.news.agents.triage_model`, `tracefold.news.triage_rules`)
 never retrieves: the Deduper computes `event_status` (storyline window facts)
-and the consumer passes it last in the human message. The structured verdict
-carries `title_zh` (a faithful Chinese title; the card shows it next to the
-original) besides `headline_zh` and an `audience` (crypto / us_equity / macro /
-none). `decide()` owns the final decision under a `DecidePolicy` whose defaults
-are the live policy and whose values come from `news.policy`: mute -> drop;
-noise -> drop; magnitude >= 3 with a direction or macro scope -> escalate;
-high priority + push -> escalate; model push/escalate intent, actionable,
-magnitude >= `min_push_magnitude` (1) and a direction -> push
-(`model_push_actionable`); unclear direction with a clear event type
+and the consumer passes it last in the human message. The byte-frozen system
+prompt is English (instructions) and every text field the verdict returns is
+Chinese: `headline_zh` (the card header), `why_zh` (the one card sentence), a
+console-only `title_zh` (the faithful Chinese title), and an `audience`
+(crypto / us_equity / macro / none). `decide()` owns the final decision under
+a `DecidePolicy` whose defaults are the live policy and whose values come from
+`news.policy`: mute -> drop; noise -> drop; magnitude >= 3 with a direction or
+macro scope -> escalate; high priority + push -> escalate; model push/escalate
+intent, actionable, magnitude >= `min_push_magnitude` (1) and a direction ->
+push (`model_push_actionable`); unclear direction with a clear event type
 (product, listing, delisting, regulation, hack, exploit, partnership, filing)
 at magnitude >= 2 -> push (`unclear_but_clear_event`); other unclear -> drop;
 watchlist primary at magnitude >= 1 -> push; else drop (`below_threshold`).
@@ -355,49 +349,40 @@ Storyline throttling (switch `storyline_throttle`) keeps the window-max +
 direction-flip rule for `asset:` keys and caps `theme:`/`macro:` keys at
 `theme_cap_4h` (3) pushes per 4 h unless magnitude exceeds the window max or
 the direction flips; the hourly cap (switch `hourly_cap_enabled`,
-`news.push.hourly_cap`, default 30) throttles pushes only. Every path names its
-rule; nothing drops silently. A fast retryable model failure (timeout, rate
-limit, connection) earns one more attempt inside the deadline; model failure is
-degraded, not silent: `rule_baseline` (watchlist primary, or score >= 80 with
-a grounded asset) still pushes, everything else drops with `degraded=true`,
-and three consecutive failures open a 60-second circuit that also opens a
-`triage_circuit_open` incident. `news_verdicts` stores `model_decision`,
-`rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
-`degraded`, and a replayable trace (latency, tokens, model attempts, prompt
-sha, input sha, the preliminary and final status-bar snapshots, the final
-storyline key).
+`news.push.hourly_cap`, default 30) throttles pushes only. Every path names
+its rule; nothing drops silently. A fast retryable model failure (timeout,
+rate limit, connection) earns one more attempt inside the deadline; model
+failure is degraded, not silent: `rule_baseline` (watchlist primary, or score
+>= 80 with a grounded asset) still pushes, everything else drops with
+`degraded=true`, and three consecutive failures open a 60-second circuit that
+also opens a `triage_circuit_open` incident. `news_verdicts` stores
+`model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`,
+`throttled_by`, `degraded`, and a replayable trace (latency, tokens, model
+attempts, prompt sha, input sha, the preliminary and final status-bar
+snapshots, the final storyline key).
 
-Analyst (`tracefold.news.analyst_evidence`, `tracefold.news.agents.analyst`,
-`tracefold.news.analyst_rules`) is one structured LangChain call over a
-code-prefetched evidence bundle built in one database session: the Event card
-and Triage fields, up to five members, up to twenty storyline/symbol history
-Events and prior verdicts from the last 48 hours, the six macro module rows
-(read-only from `macro_module_current`), and the same `<event_status>` status
-bar Triage sees. Every citable row carries an `evidence_id` registered by the
-host; `verify_verdict()` rejects unknown evidence, disagreement without
-revision, magnitude >= 2 without context evidence, and a `rehash` that still
-asks for a follow-up; a rejection buys exactly one correction round with the
-reason appended. A follow-up card ships only when the Analyst adds something
-the reader would act on (`follow_up_adds_information`: a direction or
-magnitude revision, or a `followup` progression backed by history/verdict/macro
-evidence) — agreeing with Triage is not a second card. Before publishing the
-consumer re-reads the storyline status: a push newer than the Analyst start
-supersedes the follow-up (`throttled_by = storyline:<key>:superseded`), and a
-first card older than two hours (replays) never gets one. Deep verdicts only
-produce follow-up cards after the first delivery was sent. `NEWS_ANALYST.md`
-is code-owned domain memory concatenated into the byte-frozen system prompt
-(no risk boilerplate: the Analyst answers "what is new beyond the first card",
-nothing else); the effective prompt sha is part of every trace.
+There is no second model stage: one Event gets one structured judgment and one
+card (issue #57). `escalate` stays a `decide()` outcome — a high-importance
+push that rides the same `verdict.push` routing key at AMQP priority 5 and
+wears a ⚡ card header — and never triggers another model call. The retired
+Analyst lane (`q:news.deep`, the `verdict.escalate`/`verdict.deep` routing
+keys, the evidence bundle and its `verify_verdict()` gate, follow-up cards)
+left `stage='deep'` verdicts and `kind='followup'` deliveries as historical
+rows that are never written again, and topology declaration deletes an old
+`news.deep` queue at startup.
 
-Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders a
-short human brief: the header is `title_zh` (the faithful Chinese title), the
-body is the original wire line, the one-sentence `why_zh`, and the facts in
-plain words (direction, magnitude, scope, the verdict's grounded primary
-assets, source and report count); the follow-up card carries only the delta
-(direction/magnitude revision) and the thesis. Pipeline internals (event type,
-scope enums, provider score, member counts, rule names) stay in the console
-and `tracefold news why`, and no card line is labelled as AI. AI copy is
-sanitized (URLs fall back to the code-owned title). There is no retry: `news_deliveries(event_id, kind)` is
+Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders the
+reader contract (`news_delivery_card_v8`): the header is `headline_zh` (⚡ when
+the decision is escalate; it falls back to `title_zh`, then the original
+title), the first body line is `why_zh`, and the second is the facts in plain
+words — direction label, magnitude label, the tickers the model called primary
+and the Gate grounded, source（N 条报道）, and the leader item's publication
+time in the reader's zone (UTC+8) — followed by a 打开来源 button and a small
+`Tracefold · <event_id[:8]>` note. There is no original headline line, no
+translated title, no event type or scope enum, no provider score, and no line
+labelled as AI: those internals stay in the console and `tracefold news why`.
+AI copy is sanitized (URLs fall back to the code-owned title). There is no
+retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
 interrupted rows are terminalized at startup. Recovery items, suppressed
 events, and muted storylines never deliver; a paused lane settles
@@ -434,7 +419,7 @@ final storyline status snapshot; `tracefold news replay <hits.json>
 [--gate-policy]` replays provider hits through Deduper+Gate without a model or
 broker and lists every Event with its admission, grounded assets, and
 preliminary storyline; `tracefold news why <event_id>` prints one Event's whole
-chain (item, gate, triage, decide, analyst, delivery) with a one-line outcome.
+chain (item, gate, triage, decide, delivery) with a one-line outcome.
 `tests/fixtures/news_v3_hits_sample.json` and
 `news_v3_hits_recall_sample.json` are the golden replay corpora and
 `news_v3_expectations.json` the trajectory-prefix regression over them. There

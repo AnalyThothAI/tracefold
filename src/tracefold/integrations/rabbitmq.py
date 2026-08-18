@@ -11,7 +11,7 @@ import contextlib
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 import aio_pika
 from aio_pika import DeliveryMode, ExchangeType
@@ -23,7 +23,6 @@ from tracefold.news.bus import (
     EXCHANGE,
     MAX_TRANSIENT_ATTEMPTS,
     Q_DEAD,
-    Q_DEEP,
     Q_DELIVER,
     Q_RAW,
     Q_RETRY,
@@ -82,8 +81,11 @@ class Topology:
         return (self.exchange, self.dlx, self.retry_exchange)
 
 
+RETIRED_QUEUES: Final = ("news.deep",)
+
+
 def topology(prefix: str = "") -> Topology:
-    """One topic exchange, one DLX, one 30 s retry lane, four business queues and the dead-letter queue."""
+    """One topic exchange, one DLX, one 30 s retry lane, three business queues and the dead-letter queue."""
 
     ex = _q(prefix, EXCHANGE)
     dlx = _q(prefix, DLX)
@@ -101,10 +103,9 @@ def topology(prefix: str = "") -> Topology:
             },
         ),
         QueueSpec(_q(prefix, Q_TRIAGE), ("event.#",), {**base, "x-delivery-limit": 3}),
-        QueueSpec(_q(prefix, Q_DEEP), ("verdict.escalate",), {**base, "x-delivery-limit": 2}),
         QueueSpec(
             _q(prefix, Q_DELIVER),
-            ("verdict.push", "verdict.deep"),
+            ("verdict.push",),
             {**base, "x-single-active-consumer": True, "x-delivery-limit": 1},
         ),
         # Peeking the DLQ requeues; lift the quorum default delivery limit (20) so peeks never drop evidence.
@@ -182,6 +183,10 @@ class RabbitMQBus:
             },
         )
         await retry_queue.bind(retry_ex, routing_key="#")
+        for retired in RETIRED_QUEUES:
+            # The Analyst lane (news.deep) was retired in #57; drop its queue if an older deployment declared it.
+            with contextlib.suppress(Exception):
+                await ch.queue_delete(self.queue_name(retired), if_unused=False, if_empty=False)
         self._exchange = exchange
         self._retry_exchange = retry_ex
         return {

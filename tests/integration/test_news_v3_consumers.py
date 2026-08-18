@@ -20,7 +20,6 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.news.bus import (
     RK_RAW_LIVE,
-    RK_VERDICT_ESCALATE,
     RK_VERDICT_PUSH,
     BusMessage,
     PermanentError,
@@ -317,7 +316,7 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
     assert weak_row["published_at_ms"] is None
 
     routing = [(m.routing_key, m.payload["event_id"]) for m in bus.published]
-    assert routing == [(RK_VERDICT_PUSH, strong["event_id"]), (RK_VERDICT_ESCALATE, strong["event_id"])]
+    assert routing == [(RK_VERDICT_PUSH, strong["event_id"])]  # escalate = high-importance push, no second lane
     assert bus.published[0].message_id == f"push:{strong['event_id']}"
     assert bus.published[0].payload["kind"] == "first"
     context = conn.execute(

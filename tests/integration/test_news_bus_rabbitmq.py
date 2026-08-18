@@ -71,12 +71,12 @@ def _event(message_id: str, payload: dict[str, object], *, priority: int = 0) ->
 
 
 @skip_without_broker
-def test_topology_is_four_queues_one_dlq_one_retry_lane() -> None:
+def test_topology_is_three_queues_one_dlq_one_retry_lane() -> None:
     async def scenario() -> None:
         async with _bus() as bus:
             declared = await bus.declare_topology()
             names = {name.split(".", 1)[1] for name in declared["queues"]}
-            assert names == {"news.raw", "news.triage", "news.deep", "news.deliver", "news.dead", "news.retry"}
+            assert names == {"news.raw", "news.triage", "news.deliver", "news.dead", "news.retry"}  # no news.deep (#57)
             depths = await bus.queue_depths()
             assert set(depths) == set(declared["queues"])
 

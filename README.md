@@ -39,7 +39,7 @@ The Python package is deliberately shallow:
 
 ```text
 src/tracefold/
-  news/           broker-driven Event pipeline: Deduper, Gate, Triage, Analyst, delivery, labels
+  news/           broker-driven Event pipeline: Deduper, Gate, Triage, delivery, labels
   macro/          Dataset Registry, acquisition clocks, general market facts, six modules, Fed document analysis
   integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu, macro sources)
   platform/       config, PostgreSQL/Alembic, telemetry, bounded resource primitives

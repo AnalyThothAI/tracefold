@@ -126,8 +126,7 @@ News V3 is evaluated through public seams: `tracefold.news.eval.replay`
 hits; `tests/fixtures/news_v3_hits_sample.json` is the real, redacted golden
 corpus), `tracefold.news.triage_rules.decide()` (pure post-rules with an
 optional `DecidePolicy`, golden-tested in `tests/news/test_news_v3_pure.py`),
-`tracefold.news.analyst_rules.verify_verdict()`, and
-`tracefold.news.eval.offline` (`tracefold news eval` scores stored verdicts
+and `tracefold.news.eval.offline` (`tracefold news eval` scores stored verdicts
 against `news_event_labels` only; `tracefold news replay-decisions` re-runs
 `decide()` with a candidate policy and no model).
 Broker behavior is covered by `tests/integration/test_news_bus_rabbitmq.py`
