@@ -74,6 +74,9 @@ _CONTROL_RETRY_SECONDS = 0.250
 _CONTROL_HEARTBEAT_STALE_SECONDS = 15.0
 _DOCUMENT_MODEL_TIMEOUT_SECONDS = 180.0
 _MODEL_MAX_TOKENS = 6_000
+# One TriageVerdict is ~250-300 output tokens (JSON + three Chinese reader strings); successful calls were hitting a
+# 300 cap and truncated tool calls surfaced as `news_triage_output_invalid`. Keep ~2x headroom.
+_TRIAGE_MAX_TOKENS = 700
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
 _MACRO_CLOCKS = (
@@ -812,7 +815,7 @@ async def _wire_news_pipeline(
             settings,
             model_name=models.triage_model,
             request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
-            max_tokens=300,
+            max_tokens=_TRIAGE_MAX_TOKENS,
         )
         triage_model = TriageModel(
             model=chat_model, model_name=effective, deadline_seconds=settings.news.triage.deadline_seconds

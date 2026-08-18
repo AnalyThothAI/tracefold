@@ -86,8 +86,29 @@ def test_non_retryable_failure_and_exhausted_retry_are_classified() -> None:
 def test_missing_structured_output_is_not_retried() -> None:
     model = _StructuredModel([{"raw": AIMessage(content=""), "parsed": None, "parsing_error": ValueError("x")}])
     triage = TriageModel(model=model, model_name="m", deadline_seconds=6.0)  # type: ignore[arg-type]
-    with pytest.raises(TriageModelError, match="news_triage_output_invalid"):
+    with pytest.raises(TriageModelError, match="news_triage_output_invalid") as info:
         asyncio.run(triage.triage("<event/>"))
+    assert model.calls == 1
+    assert info.value.output_failure is True and info.value.retryable is False
+    assert info.value.finish_reason is None and info.value.detail == "ValueError: x"
+
+
+def test_truncated_tool_call_is_classified_as_output_truncated_with_diagnostics() -> None:
+    """A tool call cut by max_tokens (finish_reason=length) is an output failure: named, traced, never a circuit hit."""
+
+    raw = AIMessage(
+        content="",
+        response_metadata={"finish_reason": "length"},
+        usage_metadata={"input_tokens": 2700, "output_tokens": 300, "total_tokens": 3000},
+    )
+    model = _StructuredModel([{"raw": raw, "parsed": None, "parsing_error": ValueError("8 validation errors")}])
+    triage = TriageModel(model=model, model_name="m", deadline_seconds=6.0)  # type: ignore[arg-type]
+    with pytest.raises(TriageModelError) as info:
+        asyncio.run(triage.triage("<event/>"))
+    assert info.value.code == "news_triage_output_truncated"
+    assert info.value.output_failure is True and info.value.retryable is False
+    assert info.value.finish_reason == "length" and info.value.output_tokens == 300
+    assert info.value.detail == "ValueError: 8 validation errors"
     assert model.calls == 1
 
 

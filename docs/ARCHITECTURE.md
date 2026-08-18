@@ -354,8 +354,12 @@ its rule; nothing drops silently. A fast retryable model failure (timeout,
 rate limit, connection) earns one more attempt inside the deadline; model
 failure is degraded, not silent: `rule_baseline` (watchlist primary, or score
 >= 80 with a grounded asset) still pushes, everything else drops with
-`degraded=true`, and three consecutive failures open a 60-second circuit that
-also opens a `triage_circuit_open` incident. `news_verdicts` stores
+`degraded=true`, and three consecutive transport failures open a 60-second
+circuit that also opens a `triage_circuit_open` incident (closed by the next
+success); an output failure (`news_triage_output_truncated` when the tool call
+hit `max_tokens`, `news_triage_output_invalid` on a schema mismatch) is
+degraded but never counts toward the circuit and records `finish_reason`,
+`output_tokens`, and `parsing_error` in the trace. `news_verdicts` stores
 `model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`,
 `throttled_by`, `degraded`, and a replayable trace (latency, tokens, model
 attempts, prompt sha, input sha, the preliminary and final status-bar

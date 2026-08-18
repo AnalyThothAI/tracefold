@@ -278,10 +278,19 @@ silent (the rule baseline still pushes watchlist primaries and provider score
 >= 80 with a grounded asset; everything else drops with `degraded=true` and
 is counted in `triage_degraded_24h`);
 a retryable failure (timeout, rate limit, connection) gets one more attempt
-inside `deadline_seconds`, and three consecutive failures open a 60-second
-circuit and a `triage_circuit_open` incident. The verdict trace records
-`prompt_sha256`, `input_sha256`, the `event_status` snapshot,
-`model_attempts`, and `model_failure_retryable`. There is no second model
+inside `deadline_seconds`, and three consecutive transport failures open a
+60-second circuit and a `triage_circuit_open` incident (closed again by the
+next successful call). An *output* failure — the model answered but the tool
+call was cut by `max_tokens` (`news_triage_output_truncated`,
+`finish_reason=length`) or failed the schema (`news_triage_output_invalid`) —
+is degraded the same way but never counts toward the circuit; its trace
+carries `finish_reason`, `output_tokens`, and the `parsing_error` text, and
+the worker logs one warning per Event. Triage output is capped at
+`_TRIAGE_MAX_TOKENS` (700, code-owned): a full verdict is ~250-300 tokens, so
+a rising `news_triage_output_truncated` count means the prompt grew and the
+cap must follow. The verdict trace records `prompt_sha256`, `input_sha256`,
+the `event_status` snapshot, `model_attempts`, and `model_failure_retryable`.
+There is no second model
 stage behind Triage — one Event gets one judgment and one card — so
 `triage_24h` next to `triage_degraded_24h` in status is the first place to
 look when pushes stop.
