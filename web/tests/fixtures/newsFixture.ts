@@ -5,18 +5,30 @@ import type {
   NewsEventMember,
   NewsFeed,
   NewsFeedEvent,
+  NewsOutcome,
   NewsStatus,
+  NewsTimelineStep,
   NewsVerdict,
 } from "@features/news/useNewsPage";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
+
+export function newsOutcomeFixture(overrides: Partial<NewsOutcome> = {}): NewsOutcome {
+  return {
+    group: "pushed",
+    kind: "delivered",
+    reason_zh: "模型判断值得推送",
+    text_zh: "已推送",
+    ...overrides,
+  };
+}
 
 export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): NewsFeedEvent {
   return {
     admission: "candidate",
     asset_class: "crypto",
     context_line: "BTC · 首次出现 · 同 storyline 24h 内 1 条",
-    delivery: { settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
+    delivery: { error_code: null, settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
     engine_type: "news",
     event_id: "evt-global-policy",
     family: "general",
@@ -29,6 +41,7 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     macro_lexicon: true,
     member_count: 4,
     opened_at_ms: NEWS_NOW_MS - 120_000,
+    outcome: newsOutcomeFixture(),
     priority: "high",
     provenance: ["opennews:1018"],
     provider_score_max: 88,
@@ -39,13 +52,18 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     triage: {
       degraded: false,
       direction: "bearish",
+      direction_zh: "利空",
+      error_code: null,
       event_type: "macro",
+      event_type_zh: "宏观",
       final_decision: "push",
       headline_zh: "央行政策转向，风险资产承压",
       magnitude: 2,
-      override_rule: null,
+      magnitude_zh: "影响明显",
+      override_rule: "model_push_actionable",
       scope: "macro",
       throttled_by: null,
+      title_zh: "央行应对新的全球政策冲击",
     },
     watchlist_hits: ["BTC"],
     ...overrides,
@@ -60,8 +78,10 @@ export function newsFeedFixture(overrides: Partial<NewsFeed> = {}): NewsFeed {
       decision: null,
       family: null,
       limit: 25,
+      outcome: null,
       priority: null,
       q: null,
+      hours: null,
       sort: "latest",
       symbol: null,
     },
@@ -160,10 +180,65 @@ export function newsDeliveryFixture(overrides: Partial<NewsDelivery> = {}): News
   };
 }
 
+export function newsTimelineFixture(): NewsTimelineStep[] {
+  return [
+    {
+      at_ms: NEWS_NOW_MS - 120_000,
+      facts: {
+        member_count: 4,
+        origins: ["Bloomberg", "Reuters World"],
+        reporting_origin: "Reuters World",
+      },
+      stage: "received",
+      summary_zh: "来源 Reuters World · 归并 4 条同类报道（2 个来源）",
+      title_zh: "收到",
+    },
+    {
+      at_ms: NEWS_NOW_MS - 120_000,
+      facts: {
+        admission: "candidate",
+        grounded_assets: ["BTC", "ETH"],
+        priority: "high",
+        storyline_key: "asset:BTC",
+      },
+      stage: "gate",
+      summary_zh: "已送审 · 高优先级 · 关联 BTC ETH · 命中关注列表",
+      title_zh: "门禁",
+    },
+    {
+      at_ms: NEWS_NOW_MS - 90_000,
+      facts: { direction: "bearish", event_type: "macro", magnitude: 2, model: "triage-model-v1" },
+      stage: "triage",
+      summary_zh: "央行政策转向，风险资产承压 · 利空 / 影响明显 / 宏观 · 模型建议：推送",
+      title_zh: "审稿",
+    },
+    {
+      at_ms: NEWS_NOW_MS - 90_000,
+      facts: {
+        final_decision: "push",
+        override_rule: "model_push_actionable",
+        storyline_key: "asset:BTC",
+      },
+      stage: "decide",
+      summary_zh: "推送 · 模型判断值得推送",
+      title_zh: "决策",
+    },
+    {
+      at_ms: NEWS_NOW_MS - 20_000,
+      facts: { kind: "first", state: "sent" },
+      stage: "delivery",
+      summary_zh: "已推送到飞书",
+      title_zh: "推送",
+    },
+  ];
+}
+
 export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {}): NewsEventDetail {
   return {
     deliveries: [newsDeliveryFixture()],
     event: newsEventFixture(),
+    outcome: newsOutcomeFixture(),
+    timeline: newsTimelineFixture(),
     members: [
       newsEventMemberFixture(),
       newsEventMemberFixture({
@@ -196,10 +271,46 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       connected: true,
       error_code: null,
       queues: {
-        "news.triage": { consumers: 4, messages: 0 },
-        "news.deep": { consumers: 1, messages: 0 },
+        "news.raw": { consumers: 1, messages: 0 },
+        "news.triage": { consumers: 4, messages: 3 },
+        "news.deliver": { consumers: 1, messages: 0 },
       },
     },
+    funnel_24h: {
+      candidates: 180,
+      decided_push: 40,
+      delivered: 41,
+      delivered_1h: 2,
+      received: 320,
+      received_1h: 12,
+      triaged: 175,
+    },
+    health: {
+      broker: { detail_zh: "raw 0 · triage 3 · deliver 0", level: "ok", summary_zh: "队列畅通" },
+      delivery: { detail_zh: "", level: "ok", summary_zh: "24 小时已推送 41 条，最近 1 小时 2 条" },
+      ingest: { detail_zh: "最近一帧 0 分钟前", level: "ok", summary_zh: "已连接，正在收帧" },
+      model: { detail_zh: "p95 1.9 秒", level: "ok", summary_zh: "模型正常，24 小时降级 2/175" },
+      overall: "ok",
+    },
+    reasons_24h: [
+      { count: 60, key: "noise", label_zh: "模型判定为噪音", stage: "drop" },
+      { count: 30, key: "model_push_actionable", label_zh: "模型判断值得推送", stage: "push" },
+      { count: 20, key: "below_threshold", label_zh: "影响不够，未达推送标准", stage: "drop" },
+      { count: 10, key: "magnitude3", label_zh: "重大事件", stage: "push" },
+      {
+        count: 9,
+        key: "storyline:theme:mideast_energy:cap3",
+        label_zh: "「中东与能源」话题 4 小时内已推 3 条",
+        stage: "throttle",
+      },
+      {
+        count: 8,
+        key: "suppressed_pr_template",
+        label_zh: "律所推广模板，规则直接拦截",
+        stage: "gate",
+      },
+      { count: 2, key: "news_triage_timeout", label_zh: "模型超时", stage: "degraded" },
+    ],
     control: { mutes: [], paused: false },
     delivery: {
       delivery_available: true,
@@ -236,6 +347,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       throttled_by_key: { "storyline:theme:mideast_energy:cap3": 9 },
       triage_24h: 175,
       triage_degraded_24h: 2,
+      triage_degraded_by_code_24h: { news_triage_timeout: 2 },
       triage_model: "triage-model-v1",
       triage_p50_ms: 640,
       triage_p95_ms: 1_900,

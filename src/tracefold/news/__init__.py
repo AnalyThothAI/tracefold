@@ -1,6 +1,7 @@
 """Public News module interface (V3: broker-driven Event pipeline)."""
 
 from .control import apply_control, parse_control
+from .health import status_health
 from .models import (
     GATE_POLICY_VERSION,
     TRIAGE_POLICY_VERSION,
@@ -16,6 +17,7 @@ from .opennews import (
     OpenNewsStrategyHistory,
     parse_opennews_message,
 )
+from .outcome import Outcome, event_outcome
 from .triage_rules import DEFAULT_POLICY, DecidePolicy
 
 __all__ = [
@@ -30,8 +32,11 @@ __all__ = [
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
     "OpenNewsStrategyHistory",
+    "Outcome",
     "TriageVerdict",
     "apply_control",
+    "event_outcome",
     "parse_control",
     "parse_opennews_message",
+    "status_health",
 ]

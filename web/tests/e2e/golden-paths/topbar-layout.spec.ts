@@ -54,8 +54,8 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   const rows = page.locator(".news-event-row");
   await expect(rows).toHaveCount(6);
   await expect(page.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
-  await expect(page.locator(".news-provider-score")).toHaveCount(6);
-  await expect(page.locator(".news-provider-score").first()).toContainText("OpenNews88");
+  await expect(page.locator(".news-event-row .news-outcome")).toHaveCount(6);
+  await expect(page.locator(".news-event-row .news-outcome").first()).toContainText("已推送");
   const fullyVisible = await rows.evaluateAll(
     (elements) =>
       elements.filter((element) => {
@@ -67,7 +67,7 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   expect(fullyVisible).toBeGreaterThanOrEqual(4);
 });
 
-test("News missing-asset evidence remains readable at AA contrast", async ({ page }) => {
+test("News secondary row copy remains readable at AA contrast", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 720 });
   await installMockApi(page);
   const feed = newsFeedFixture({
@@ -95,8 +95,8 @@ test("News missing-asset evidence remains readable at AA contrast", async ({ pag
   );
   await page.goto("/news");
 
-  const reasons = page.locator(".news-grounded-assets-empty");
-  await expect(reasons).toHaveCount(1);
+  const reasons = page.locator(".news-event-original, .news-event-time, .news-event-meta");
+  await expect(reasons).toHaveCount(6);
   const contrastRatios = await reasons.evaluateAll((elements) => {
     const probe = document.createElement("span");
     document.body.append(probe);
@@ -137,7 +137,7 @@ test("desktop News detail keeps navigation adjacent to the event", async ({ page
   await page.goto("/news/events/evt-global-policy");
 
   const backLink = page.getByRole("link", { name: "返回新闻事件流" });
-  const hero = page.locator(".news-event-hero");
+  const hero = page.locator(".news-detail-hero");
   await expect(backLink).toBeVisible();
   await expect(hero).toBeVisible();
 
@@ -156,7 +156,7 @@ test("a 668-character News feed title renders at no more than two lines", async 
   await routeNewsFeed(page, [longTitle]);
   await page.goto("/news");
 
-  const headline = page.locator(".news-event-title h2");
+  const headline = page.locator(".news-event-headline a");
   await expect(headline).toHaveText(longTitle);
   const metrics = await headline.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -181,14 +181,15 @@ test("News card secondary actions stay interactive above the primary row link", 
   await routeNewsFeed(page, ["Readable News card with secondary evidence"]);
   await page.goto("/news");
 
-  const originalLink = page.getByRole("link", { name: /查看原文/ });
+  const originalLink = page.getByRole("link", { name: "打开原文" });
   const rowLink = page.getByRole("link", { name: "Readable News card with secondary evidence" });
 
   await expect(originalLink).toBeVisible();
   await expect(rowLink).toBeVisible();
   await originalLink.click({ trial: true });
-  await expect(page.locator(".news-event-triage")).toContainText("看空 · M2 · macro");
-  await expect(page.locator(".news-event-delivery")).toContainText("已发送");
+  await expect(page.locator(".news-event-facts")).toContainText("利空 · 影响明显 · 宏观");
+  await expect(page.locator(".news-event-outcome")).toContainText("已推送");
+  await expect(page.locator(".news-event-outcome")).toContainText("推送于");
 });
 
 async function routeNewsFeed(page: Page, titles: string[]) {
@@ -198,6 +199,7 @@ async function routeNewsFeed(page: Page, titles: string[]) {
         title_zh: null,
         event_id: `news-density-${index + 1}`,
         leader_title: title,
+        triage: { ...newsFeedEventFixture().triage!, headline_zh: null, title_zh: null },
       }),
     ),
   });

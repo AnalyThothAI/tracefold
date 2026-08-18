@@ -83,6 +83,8 @@ function newsFeedData() {
     events: Array.from({ length: 5 }, (_, index) => ({
       ...event,
       title_zh: null,
+      // No Chinese headline on the mock rows, so the wire line is the row headline (distinct per row).
+      triage: event.triage ? { ...event.triage, headline_zh: null, title_zh: null } : null,
       event_id: index === 0 ? event.event_id : `evt-global-policy-${index + 1}`,
       leader_title: index === 0 ? event.leader_title : `Global policy update ${index + 1}`,
     })),

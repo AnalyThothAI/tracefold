@@ -157,32 +157,59 @@ feature flag.
 News is an operator-bound, Strategy-qualified Event surface. The public
 surface is exactly three read-only routes:
 
-- `GET /api/news/feed?family={family}&admission={admission}&priority={high|normal}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&sort={latest|priority}&limit={limit}&cursor={cursor}`
+- `GET /api/news/feed?family={family}&admission={admission}&priority={high|normal}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&sort={latest|priority}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}`
   returns Events newest first (or high priority first) with the leader title,
   the Triage `title_zh` when a verdict carries one, admission, priority,
   asset class, grounded assets, watchlist hits, storyline key, context line,
+  **one `outcome`** (`kind` from the stable enum `held_recovery`, `held_gate`,
+  `queued_publish`, `queued_triage`, `dropped`, `throttled`,
+  `degraded_dropped`, `pending_delivery`, `delivered`, `delivery_failed`;
+  reader copy `text_zh` and `reason_zh`; `group` = `pushed|held|pending`),
   the latest Triage summary (final decision, override rule, throttle reason,
-  degraded flag, direction, magnitude, event type, scope, `headline_zh`,
-  `title_zh`), and the first delivery state. Unknown query parameters,
-  invalid admission or decision values, and malformed cursors return 400.
-  Recovery Events are visible with `admission=recovery`.
-- `GET /api/news/events/{event_id}` returns one Event, its member Items
-  (title, URL, origin, publication time, match kind, Jaccard estimate,
-  provenance, description), every Triage verdict (model decision, rule
-  baseline, final decision, override rule, throttle reason, verdict payload,
-  model, prompt version, degraded flag, trace), deliveries, and operator labels
-  (`label_version`, `source`, label payload, created time). Unknown ids return
-  404.
+  degraded flag, error code, direction, magnitude, event type, scope,
+  `headline_zh`, `title_zh`, `why_zh`, plus Chinese `direction_zh`,
+  `magnitude_zh`, `event_type_zh`), and the first delivery state with its
+  error code. `outcome` is the feed's task-tab filter (its SQL mirrors the
+  outcome groups); `hours` bounds `opened_at_ms` to the last N hours (`0`
+  or absent = no bound). Unknown query parameters, invalid admission or
+  decision values, and malformed cursors return 400; out-of-pattern
+  `priority`/`outcome`/`hours` return 422. Recovery Events are visible with
+  `admission=recovery`. `filters` echoes every parameter incl. `outcome` and
+  `hours` (never the wall-clock bound, so unchanged pages keep their ETag).
+- `GET /api/news/events/{event_id}` returns one Event, its `outcome`, a
+  `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
+  `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw
+  `facts` it was built from), its member Items (title, URL, origin,
+  publication time, match kind, Jaccard estimate, provenance, description),
+  every Triage verdict (model decision, rule baseline, final decision,
+  override rule, throttle reason, verdict payload, model, prompt version,
+  degraded flag, trace), deliveries, and operator labels (`label_version`,
+  `source`, label payload, created time). `tracefold news why` prints the same
+  `outcome` sentence and timeline. Unknown ids return 404.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
-  `unavailable`), the Workers state, and four layers: `ingest` (WSS connected,
-  last frame/publish, error, configured and provider-enabled Strategy IDs,
-  strategy warnings, open incidents, token configured), `broker` (configured,
-  connected, per-queue message/consumer counts when observed, error code),
-  `pipeline` (events and candidates per hour/day, Triage counts, degraded
-  counts, decided pushes, throttled, Triage p50/p95, queue lag p95, the Triage
-  model name), and `delivery` (sent/terminal counts, last error, end-to-end
-  p95, availability, hourly cap), plus `control` (paused, mutes) and the
-  watchlist symbols.
+  `unavailable`), the Workers state, `health` (four thresholded items
+  `ingest`/`broker`/`model`/`delivery` with `level` `ok|warn|bad|off`,
+  `summary_zh`, `detail_zh`, and `overall`; thresholds are code-owned, see
+  `docs/OPERATIONS.md`), `funnel_24h` (`received`, `candidates`, `triaged`,
+  `decided_push`, `delivered`, plus `received_1h`/`delivered_1h`),
+  `reasons_24h` (`stage` `gate|drop|throttle|push|degraded`, raw `key`,
+  `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
+  connected, last frame/publish, error, configured and provider-enabled
+  Strategy IDs, strategy warnings, open incidents, token configured), `broker`
+  (configured, connected, per-queue message/consumer counts when observed,
+  error code), `pipeline` (events and candidates per hour/day, Triage counts,
+  degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
+  throttled, Triage p50/p95, queue lag p95, the Triage model name, and the
+  named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
+  `throttled_by_key`, `pushed_by_rule`), and `delivery` (sent/terminal
+  counts, last error, end-to-end p95, availability, hourly cap), plus
+  `control` (paused, mutes) and the watchlist symbols.
+
+The Chinese vocabulary behind `outcome`, `*_zh`, and `label_zh` lives in
+`tracefold.news.outcome` (admissions, `decide()` rules, throttle keys, error
+codes, delivery errors, event types, directions, magnitudes, storyline
+themes); a new rule or error code lands there in the same change, so no
+surface renders a bare key.
 
 `/api/news/feed` and `/api/news/events/{event_id}` emit strong ETags and
 honor `If-None-Match`; `/api/news/status` uses a weak ETag that ignores

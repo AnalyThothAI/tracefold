@@ -65,10 +65,10 @@ describe("news route", () => {
   });
 
   it.each([
-    ["/news/status", "新闻运行状态", "/api/news/status"],
+    ["/news/status", "流水线状态", "/api/news/status"],
     [
       "/news/events/evt-global-policy",
-      "央行应对新的全球政策冲击",
+      "央行政策转向，风险资产承压",
       "/api/news/events/evt-global-policy",
     ],
   ] as const)("hard-loads the public News view at %s", async (path, heading, endpoint) => {
@@ -83,12 +83,12 @@ describe("news route", () => {
     await screen.findByRole("heading", { name: "新闻事件流" });
 
     fireEvent.click(screen.getByRole("link", { name: "状态" }));
-    expect(await screen.findByRole("heading", { name: "新闻运行状态" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "流水线状态" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "事件流" }));
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("link", { name: "央行应对新的全球政策冲击" }));
+    fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
     expect(await screen.findByRole("region", { name: "新闻事件详情" })).toBeInTheDocument();
     await waitFor(() =>
       expect(apiMock.readApi).toHaveBeenCalledWith(

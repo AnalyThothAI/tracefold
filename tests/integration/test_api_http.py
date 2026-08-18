@@ -163,6 +163,20 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "q": None,
         "sort": "latest",
         "limit": 10,
+        "outcome": None,
+        "hours": None,
+    }
+    assert {row["outcome"]["kind"] for row in feed_data["events"]} <= {
+        "held_recovery",
+        "held_gate",
+        "queued_publish",
+        "queued_triage",
+        "dropped",
+        "throttled",
+        "degraded_dropped",
+        "pending_delivery",
+        "delivered",
+        "delivery_failed",
     }
     assert 0 < len(feed_data["events"]) <= 10
     assert all("title_zh" in event for event in feed_data["events"])

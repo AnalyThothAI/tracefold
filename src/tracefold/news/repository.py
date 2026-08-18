@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
+from .outcome import direction_zh, event_outcome, event_type_zh, magnitude_zh
+from .timeline import event_timeline
 from .triage_rules import ESCALATE_WINDOW_MS, PUSH_WINDOW_MS
 
 _JSON_SEPARATORS = (",", ":")
@@ -718,10 +721,21 @@ class NewsRepository:
         sort: str,
         limit: int,
         cursor: str | None,
+        outcome: str | None = None,
+        hours: int | None = None,
+        now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
         params: list[Any] = []
         where = ["e.ingest_mode IN ('live', 'recovery')"]
+        window_hours = int(hours) if hours else None
+        if window_hours:
+            # The response echoes `hours`, never the wall-clock bound, so an unchanged page keeps its ETag.
+            since_ms = int(now_ms if now_ms is not None else time.time() * 1000) - window_hours * 3600_000
+            where.append("e.opened_at_ms >= %s")
+            params.append(since_ms)
+        if outcome in _OUTCOME_GROUP_SQL:
+            where.append(_OUTCOME_GROUP_SQL[outcome])
         if family:
             where.append("e.family = %s")
             params.append(family)
@@ -755,10 +769,11 @@ class NewsRepository:
                    e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
                    i.canonical_url AS leader_url, i.reporting_origin, i.provenance,
                    t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
+                   t.error_code AS triage_error_code,
                    t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
                    t.verdict ->> 'event_type' AS event_type, t.verdict ->> 'headline_zh' AS headline_zh,
                    t.verdict ->> 'scope' AS scope, t.verdict ->> 'title_zh' AS title_zh,
-                   d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms
+                   d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
               LEFT JOIN LATERAL (
@@ -789,6 +804,8 @@ class NewsRepository:
                 "q": q,
                 "sort": sort,
                 "limit": int(limit),
+                "outcome": outcome if outcome in _OUTCOME_GROUP_SQL else None,
+                "hours": window_hours,
             },
         }
 
@@ -811,35 +828,44 @@ class NewsRepository:
         deliveries = self.conn.execute(
             "SELECT * FROM news_deliveries WHERE event_id = %s ORDER BY created_at_ms", (event_id,)
         ).fetchall()
+        event = _event_public(card)
+        member_rows = [
+            {
+                "item_id": r["item_id"],
+                "title": r["title"],
+                "url": r["canonical_url"],
+                "reporting_origin": r["reporting_origin"],
+                "published_at_ms": int(r["published_at_ms"]),
+                "joined_at_ms": int(r["joined_at_ms"]),
+                "match_kind": r["match_kind"],
+                "jaccard_estimate": r["jaccard_estimate"],
+                "provenance": list(r["provenance"] or []),
+                "description": r["description"],
+            }
+            for r in members
+        ]
+        verdict_rows = [_verdict_public(dict(r)) for r in verdicts]
+        delivery_rows = [
+            {
+                "kind": r["kind"],
+                "state": r["state"],
+                "error_code": r["error_code"],
+                "attempted_at_ms": int(r["attempted_at_ms"]),
+                "settled_at_ms": r["settled_at_ms"],
+                "receipt": r["receipt"],
+            }
+            for r in deliveries
+        ]
+        outcome, timeline = event_timeline(
+            event=event, members=member_rows, verdicts=verdict_rows, deliveries=delivery_rows
+        )
         return {
-            "event": _event_public(card),
-            "members": [
-                {
-                    "item_id": r["item_id"],
-                    "title": r["title"],
-                    "url": r["canonical_url"],
-                    "reporting_origin": r["reporting_origin"],
-                    "published_at_ms": int(r["published_at_ms"]),
-                    "joined_at_ms": int(r["joined_at_ms"]),
-                    "match_kind": r["match_kind"],
-                    "jaccard_estimate": r["jaccard_estimate"],
-                    "provenance": list(r["provenance"] or []),
-                    "description": r["description"],
-                }
-                for r in members
-            ],
-            "verdicts": [_verdict_public(dict(r)) for r in verdicts],
-            "deliveries": [
-                {
-                    "kind": r["kind"],
-                    "state": r["state"],
-                    "error_code": r["error_code"],
-                    "attempted_at_ms": int(r["attempted_at_ms"]),
-                    "settled_at_ms": r["settled_at_ms"],
-                    "receipt": r["receipt"],
-                }
-                for r in deliveries
-            ],
+            "event": event,
+            "outcome": outcome.as_dict(),
+            "timeline": timeline,
+            "members": member_rows,
+            "verdicts": verdict_rows,
+            "deliveries": delivery_rows,
             "labels": self.labels_for_event(event_id),
         }
 
@@ -946,30 +972,33 @@ class NewsRepository:
             """,
             (day_ago,),
         ).fetchall()
-        dropped = self.conn.execute(
+        # One pass over the last 24 h of Triage verdicts; the four named maps are folded from it in Python.
+        verdict_groups = self.conn.execute(
             """
-            SELECT COALESCE(override_rule, 'unknown') AS rule, count(*) AS n FROM news_verdicts
-             WHERE stage = 'triage' AND final_decision = 'drop' AND created_at_ms >= %s
-             GROUP BY rule ORDER BY n DESC
+            SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
+                   COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
+                   count(*) AS n
+              FROM news_verdicts
+             WHERE stage = 'triage' AND created_at_ms >= %s
+             GROUP BY 1, 2, 3, 4, 5
             """,
             (day_ago,),
         ).fetchall()
-        throttled = self.conn.execute(
-            """
-            SELECT COALESCE(throttled_by, 'unknown') AS key, count(*) AS n FROM news_verdicts
-             WHERE stage = 'triage' AND final_decision = 'throttled' AND created_at_ms >= %s
-             GROUP BY key ORDER BY n DESC LIMIT 10
-            """,
-            (day_ago,),
-        ).fetchall()
-        pushed_by_rule = self.conn.execute(
-            """
-            SELECT COALESCE(override_rule, 'unknown') AS rule, count(*) AS n FROM news_verdicts
-             WHERE stage = 'triage' AND final_decision IN ('push', 'escalate') AND created_at_ms >= %s
-             GROUP BY rule ORDER BY n DESC
-            """,
-            (day_ago,),
-        ).fetchall()
+        dropped: dict[str, int] = {}
+        throttled: dict[str, int] = {}
+        pushed_by_rule: dict[str, int] = {}
+        degraded_by_code: dict[str, int] = {}
+        for row in verdict_groups:
+            n = int(row["n"])
+            final = str(row["final_decision"])
+            if final == "drop":
+                dropped[str(row["rule"])] = dropped.get(str(row["rule"]), 0) + n
+            elif final == "throttled":
+                throttled[str(row["key"])] = throttled.get(str(row["key"]), 0) + n
+            elif final in {"push", "escalate"}:
+                pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
+            if row["degraded"]:
+                degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
         missed = self.conn.execute(
             """
             SELECT count(DISTINCT l.event_id) AS n
@@ -990,12 +1019,30 @@ class NewsRepository:
         admitted = int(totals["admitted"] or 0) if totals else 0
         return {
             "suppressed_by_reason": {str(r["admission"]): int(r["n"]) for r in suppressed},
-            "dropped_by_rule": {str(r["rule"]): int(r["n"]) for r in dropped},
-            "throttled_by_key": {str(r["key"]): int(r["n"]) for r in throttled},
-            "pushed_by_rule": {str(r["rule"]): int(r["n"]) for r in pushed_by_rule},
+            "dropped_by_rule": dict(sorted(dropped.items(), key=lambda kv: -kv[1])),
+            "throttled_by_key": dict(sorted(throttled.items(), key=lambda kv: -kv[1])[:10]),
+            "pushed_by_rule": dict(sorted(pushed_by_rule.items(), key=lambda kv: -kv[1])),
+            "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
             "labeled_missed_24h": int(missed["n"] or 0) if missed else 0,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
         }
+
+
+# Feed task tabs (mirrors OUTCOME_GROUP in outcome.py, expressed over the feed's joined rows;
+# tests/integration/test_news_v3_pipeline.py asserts the three predicates partition the feed exactly like
+# event_outcome().group over the fixture corpus):
+# pushed = the first card was sent; pending = still moving (not yet triaged, or decided push and not yet settled);
+# held = everything that stopped short of a sent card (gate, drop, throttle, fallback drop, delivery failure).
+_PENDING_CORE_SQL: Final = (
+    "e.admission IN ('candidate', 'listing_deterministic')"
+    " AND (t.final_decision IS NULL"
+    "      OR (t.final_decision IN ('push', 'escalate') AND (d.state IS NULL OR d.state = 'sending')))"
+)
+_OUTCOME_GROUP_SQL: Final = {
+    "pushed": "d.state = 'sent'",
+    "pending": f"COALESCE(d.state, '') <> 'sent' AND ({_PENDING_CORE_SQL})",
+    "held": f"COALESCE(d.state, '') <> 'sent' AND NOT ({_PENDING_CORE_SQL})",
+}
 
 
 def _decode_cursor(cursor: str | None) -> tuple[int | None, str | None]:
@@ -1041,30 +1088,44 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    triage = (
+        {
+            "final_decision": row["final_decision"],
+            "override_rule": row.get("override_rule"),
+            "throttled_by": row.get("throttled_by"),
+            "degraded": bool(row.get("triage_degraded")),
+            "error_code": row.get("triage_error_code"),
+            "direction": row.get("direction"),
+            "magnitude": row.get("magnitude"),
+            "event_type": row.get("event_type"),
+            "scope": row.get("scope"),
+            "headline_zh": row.get("headline_zh"),
+            "title_zh": row.get("title_zh"),
+            "direction_zh": direction_zh(row.get("direction")),
+            "magnitude_zh": magnitude_zh(row.get("magnitude")),
+            "event_type_zh": event_type_zh(row.get("event_type")),
+        }
+        if row.get("final_decision")
+        else None
+    )
+    delivery = (
+        {
+            "state": row["delivery_state"],
+            "settled_at_ms": row.get("delivered_at_ms"),
+            "error_code": row.get("delivery_error_code"),
+        }
+        if row.get("delivery_state")
+        else None
+    )
+    outcome = event_outcome(
+        admission=row.get("admission"), published_at_ms=row.get("published_at_ms"), triage=triage, delivery=delivery
+    )
     return {
         **_event_public(row),
         "title_zh": (row.get("title_zh") or None),
-        "triage": (
-            {
-                "final_decision": row["final_decision"],
-                "override_rule": row.get("override_rule"),
-                "throttled_by": row.get("throttled_by"),
-                "degraded": bool(row.get("triage_degraded")),
-                "direction": row.get("direction"),
-                "magnitude": row.get("magnitude"),
-                "event_type": row.get("event_type"),
-                "scope": row.get("scope"),
-                "headline_zh": row.get("headline_zh"),
-                "title_zh": row.get("title_zh"),
-            }
-            if row.get("final_decision")
-            else None
-        ),
-        "delivery": (
-            {"state": row["delivery_state"], "settled_at_ms": row.get("delivered_at_ms")}
-            if row.get("delivery_state")
-            else None
-        ),
+        "outcome": outcome.as_dict(),
+        "triage": triage,
+        "delivery": delivery,
     }
 
 

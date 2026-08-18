@@ -9,22 +9,47 @@ from pydantic import Field
 from tracefold.app.http.schemas import ExactApiSchema
 
 
+class NewsOutcomeData(ExactApiSchema):
+    """One human-readable conclusion per Event; ``kind`` is a stable enum, the texts are Chinese reader copy."""
+
+    kind: Literal[
+        "held_recovery",
+        "held_gate",
+        "queued_publish",
+        "queued_triage",
+        "dropped",
+        "throttled",
+        "degraded_dropped",
+        "pending_delivery",
+        "delivered",
+        "delivery_failed",
+    ]
+    text_zh: str
+    reason_zh: str = ""
+    group: Literal["pushed", "held", "pending"]
+
+
 class NewsTriageSummaryData(ExactApiSchema):
     final_decision: str
     override_rule: str | None = None
     throttled_by: str | None = None
     degraded: bool = False
+    error_code: str | None = None
     direction: str | None = None
     magnitude: int | None = None
     event_type: str | None = None
     scope: str | None = None
     headline_zh: str | None = None
     title_zh: str | None = None
+    direction_zh: str = ""
+    magnitude_zh: str = ""
+    event_type_zh: str = ""
 
 
 class NewsDeliverySummaryData(ExactApiSchema):
     state: str
     settled_at_ms: int | None = None
+    error_code: str | None = None
 
 
 class NewsEventData(ExactApiSchema):
@@ -54,6 +79,7 @@ class NewsEventData(ExactApiSchema):
 
 class NewsFeedEventData(NewsEventData):
     title_zh: str | None = None
+    outcome: NewsOutcomeData
     triage: NewsTriageSummaryData | None = None
     delivery: NewsDeliverySummaryData | None = None
 
@@ -67,6 +93,8 @@ class NewsFeedFiltersData(ExactApiSchema):
     q: str | None = None
     sort: Literal["latest", "priority"]
     limit: int
+    outcome: Literal["pushed", "held", "pending"] | None = None
+    hours: int | None = None
 
 
 class NewsFeedData(ExactApiSchema):
@@ -122,8 +150,18 @@ class NewsLabelData(ExactApiSchema):
     created_at_ms: int
 
 
+class NewsTimelineStepData(ExactApiSchema):
+    stage: Literal["received", "gate", "triage", "decide", "delivery"]
+    title_zh: str
+    at_ms: int
+    summary_zh: str
+    facts: dict[str, Any] = Field(default_factory=dict)
+
+
 class NewsEventDetailData(ExactApiSchema):
     event: NewsEventData
+    outcome: NewsOutcomeData
+    timeline: list[NewsTimelineStepData] = Field(default_factory=list)
     members: list[NewsEventMemberData]
     verdicts: list[NewsVerdictData]
     deliveries: list[NewsDeliveryData]
@@ -180,6 +218,7 @@ class NewsPipelineStatusData(ExactApiSchema):
     pushed_by_rule: dict[str, int] = Field(default_factory=dict)
     labeled_missed_24h: int = 0
     candidate_share_24h: float | None = None
+    triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
 
 
 class NewsDeliveryStatusData(ExactApiSchema):
@@ -197,9 +236,43 @@ class NewsControlStateData(ExactApiSchema):
     mutes: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class NewsHealthItemData(ExactApiSchema):
+    level: Literal["ok", "warn", "bad", "off"]
+    summary_zh: str
+    detail_zh: str = ""
+
+
+class NewsHealthData(ExactApiSchema):
+    ingest: NewsHealthItemData
+    broker: NewsHealthItemData
+    model: NewsHealthItemData
+    delivery: NewsHealthItemData
+    overall: Literal["ok", "warn", "bad", "off"]
+
+
+class NewsFunnelData(ExactApiSchema):
+    received: int = 0
+    candidates: int = 0
+    triaged: int = 0
+    decided_push: int = 0
+    delivered: int = 0
+    received_1h: int = 0
+    delivered_1h: int = 0
+
+
+class NewsReasonCountData(ExactApiSchema):
+    stage: Literal["gate", "drop", "throttle", "push", "degraded"]
+    key: str
+    label_zh: str
+    count: int
+
+
 class NewsStatusData(ExactApiSchema):
     state: Literal["ready", "degraded", "warming", "unavailable"]
     workers_state: str | None = None
+    health: NewsHealthData
+    funnel_24h: NewsFunnelData
+    reasons_24h: list[NewsReasonCountData] = Field(default_factory=list)
     ingest: NewsIngestStatusData
     broker: NewsBrokerStatusData
     pipeline: NewsPipelineStatusData
@@ -222,11 +295,17 @@ __all__ = [
     "NewsFeedData",
     "NewsFeedEventData",
     "NewsFeedFiltersData",
+    "NewsFunnelData",
+    "NewsHealthData",
+    "NewsHealthItemData",
     "NewsIncidentData",
     "NewsIngestStatusData",
     "NewsLabelData",
+    "NewsOutcomeData",
     "NewsPipelineStatusData",
+    "NewsReasonCountData",
     "NewsStatusData",
+    "NewsTimelineStepData",
     "NewsTriageSummaryData",
     "NewsVerdictData",
 ]
