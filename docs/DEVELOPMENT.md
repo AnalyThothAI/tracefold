@@ -100,49 +100,35 @@ uv run pytest -q \
   tests/integration/test_compose_postgres.py
 ```
 
-### News Story V2 evaluation and pinned WorldMonitor helpers
+### Test lanes and speed
 
-Tracefold Story identity is owned by Issue #44 and is evaluated through one
-public computation seam: `build_story_projection(NewsStoryFactSnapshot)`.
-WorldMonitor commit `0e8785c43e6a693990a14181ae0a16066c15fc8c` remains pinned
-only for the 179-feed RSS catalog/parser, keyword classifier, importance/public
-selector, and Brief prompt/parser/composer helpers. Its Digest identity,
-browser grouping, semantic refinement, and tracking state are explicitly not
-Story parity targets.
+`make test` is the default regression (unit + architecture + contract +
+integration, excluding `slow`, `e2e`, and `golden`; ~4 minutes on an idle
+machine with the local test PostgreSQL). `make test-slow` runs the real-process
+Workers runtime tests (`tests/integration/test_workers_runtime_v2.py`, bounded
+by wall-clock deadlines, ~2 minutes), `make test-e2e`/`make test-golden` the
+service and corpus lanes, and `make test-all` everything (~6.5 minutes).
+Integration tests reset the schema per test through `prepare_postgres_database`
+only when they seed data; validation/auth-only API tests reuse the migrated
+head. Historical migration tests exist only for lanes that still ship; retired
+lanes keep no migration tests.
 
-`tests/fixtures/news_story_v2_golden.json` is the versioned original-title
-corpus. `tests/test_news_story_projection_v2.py` asserts all mandatory merge
-and split cases, reason codes, fixed-anchor non-transitivity, conservative
-multi-anchor ambiguity, untrackable per-Item identity, input-permutation
-invariance, provider grounding, exact candidate/evidence failures, and pairwise
-precision >= 0.98 and recall >= 0.90. The corpus includes the observed SEC and
-OI template failures plus Simplified/Traditional Chinese, numeric-format,
-Anthropic, wrapper/Unicode, disaster revision, cross-window, and noisy-provider
-cases. Tests of private feature seams may diagnose a rule, but acceptance must
-pass through the complete projection interface.
+### News V3 evaluation seams
 
-`tests/test_news_public_sources.py` and `tests/test_news_rss_adapter.py` retain
-the exact source/membership inventory and first-five parser gates.
-`tests/test_news_worldmonitor_parity.py` covers only pinned classifier,
-historical-marker, and importance behavior.
-`tests/test_news_pinned_worldmonitor_differential.py` executes the pinned
-selector and Brief helpers when the sibling checkout is present and otherwise
-uses the committed frozen output. It no longer claims Story-identity parity.
-Run the focused lane with:
+News V3 is evaluated through three public seams: `tracefold.news.eval.replay`
+(`tracefold news replay <hits.json>` runs Deduper+Gate in memory over provider
+hits; `tests/fixtures/news_v3_hits_sample.json` is the real, redacted golden
+corpus), `tracefold.news.triage_rules.decide()` (pure post-rules, golden-tested
+in `tests/news/test_news_v3_pure.py`), and `tracefold.news.analyst_rules.
+verify_verdict()`. Broker behavior is covered by
+`tests/integration/test_news_bus_rabbitmq.py` against the compose RabbitMQ
+(`TRACEFOLD_TEST_AMQP_URL`, default `amqp://tracefold:tracefold@127.0.0.1:5672/`;
+skipped when unreachable). Run the focused lane with:
 
 ```bash
-TRACEFOLD_WORLDMONITOR_REPO=/path/to/worldmonitor \
-  uv run pytest -q \
-    tests/test_news_story_projection_v2.py \
-    tests/test_news_public_sources.py \
-    tests/test_news_rss_adapter.py \
-    tests/test_news_pinned_worldmonitor_differential.py \
-    tests/test_news_worldmonitor_parity.py
+uv run pytest -q tests/news tests/integration/test_news_v3_pipeline.py \
+  tests/integration/test_news_v3_consumers.py tests/integration/test_news_bus_rabbitmq.py
 ```
-
-The repository defaults to sibling `../worldmonitor`; a present checkout at
-another commit fails the differential. Story V2 remains deterministic without
-that checkout or any network/model call.
 
 Before the hard cut, run a read-only shadow against the current 96-hour RSS and
 12-hour OpenNews fact population and attach the report to Issue #44. Record

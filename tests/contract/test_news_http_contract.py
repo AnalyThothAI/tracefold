@@ -292,7 +292,7 @@ def test_status_reports_unavailable_without_broker_or_token(client) -> None:
     assert data["state"] == "unavailable"
     assert data["workers_state"] is None
     assert data["ingest"]["token_configured"] is False
-    assert data["broker"] == {"configured": False, "connected": None, "queues": {}, "error_code": None}
+    assert data["broker"] == {"configured": False, "connected": None, "queues": {}, "error_code": None, "observed_at_ms": None}
     assert data["delivery"]["delivery_available"] is False
     assert data["delivery"]["hourly_cap"] >= 1
     assert data["control"] == {"paused": False, "mutes": []}

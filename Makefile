@@ -11,7 +11,7 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up status macro-acceptance logs down preflight sync install uninstall tool-path test lint compile check init config db-migrate db-health serve workers recent serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help up status macro-acceptance logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers recent serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -28,8 +28,14 @@ uninstall: ## uninstall the global CLI installed by uv tool
 tool-path: ## ensure uv tool executables are on PATH
 	@uv tool update-shell
 
-test: ## run tests
+test: ## fast regression: unit + architecture + contract + integration, excluding slow/e2e/golden
+	@uv run python -m pytest -m "not slow" --ignore=tests/e2e --ignore=tests/golden
+
+test-all: ## every lane including slow runtime, e2e, and golden
 	@uv run python -m pytest
+
+test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
+	@uv run python -m pytest tests/integration -m slow
 
 lint: ## run ruff
 	@uv run python -m ruff check .
@@ -48,8 +54,8 @@ check: ## run static, frontend, architecture, and public-contract checks
 	@uv run python -m pytest tests/architecture tests/contract -m "architecture or contract"
 	@uv run python -m compileall src tests
 
-test-integration: ## run only tests/integration/ (real PostgreSQL boundary)
-	@uv run python -m pytest tests/integration -m integration
+test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
+	@uv run python -m pytest tests/integration -m "integration and not slow"
 
 test-e2e: ## run only tests/e2e/ (running service boundary)
 	@uv run python -m pytest tests/e2e -m e2e

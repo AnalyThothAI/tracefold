@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 from fastapi.testclient import TestClient
 from psycopg.errors import InsufficientPrivilege, ReadOnlySqlTransaction
 

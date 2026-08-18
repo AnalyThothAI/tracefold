@@ -504,7 +504,7 @@ class CliTests(unittest.TestCase):
         self.assertIsInstance(report["sample_candidates"], list)
 
     def test_news_bus_check_reports_topology_or_fails_closed_without_broker(self):
-        amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://guest:guest@127.0.0.1:5672/")
+        amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
             config_path = write_runtime_config(home, db_path=home / ".tracefold" / "postgres_test_db")

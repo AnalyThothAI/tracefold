@@ -114,8 +114,9 @@ universal completion gate.
 
 ```bash
 make check
-make test-integration
-make test-contract
+make test            # default regression (~4 min): unit + architecture + contract + integration, no slow/e2e/golden
+make test-slow       # real-process Workers runtime tests
+make test-all        # everything (~6.5 min)
 cd web && npm run lint && npm run typecheck
 ```
 

@@ -77,7 +77,7 @@ def test_token_images_serves_ready_local_file_without_auth(tmp_path):
 
 
 def test_token_images_rejects_invalid_image_ids(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         responses = [client.get(f"/api/token-images/{image_id}") for image_id in ("a" * 63, "A" * 64, "g" * 64)]
@@ -127,7 +127,7 @@ def test_token_images_returns_404_when_ready_file_is_missing(tmp_path):
 
 
 def test_token_images_rejects_storage_path_traversal(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         runtime = client.app.state.service
@@ -233,8 +233,16 @@ def _sha256(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
-def make_settings(tmp_path) -> Settings:
-    prepare_postgres_database()
+_SCHEMA_PREPARED = False
+
+
+def make_settings(tmp_path, *, reset: bool = True) -> Settings:
+    """Reset the schema unless the test only exercises validation/auth paths (reset=False reuses head)."""
+
+    global _SCHEMA_PREPARED
+    if reset or not _SCHEMA_PREPARED:
+        prepare_postgres_database()
+        _SCHEMA_PREPARED = True
     settings = Settings(
         ws_token="secret",
         news=NewsSettings(opennews_strategy_ids=("1018", "1019")),
@@ -368,7 +376,7 @@ def test_api_bootstrap_exposes_frontend_runtime_config_without_token(tmp_path):
 
 
 def test_api_rejects_protected_reads_without_token(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         response = client.get("/api/recent")
@@ -444,7 +452,7 @@ def test_recent_uses_stable_cursor_and_rejects_filter_drift(tmp_path):
 
 
 def test_api_removed_token_signal_reads_are_not_registered(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         snapshots = client.get("/api/token-signal-snapshots", headers={"Authorization": "Bearer secret"})
@@ -457,7 +465,7 @@ def test_api_removed_token_signal_reads_are_not_registered(tmp_path):
 
 
 def test_api_search_rejects_removed_filter_params(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         response = client.get("/api/search", params={"symbol": "PEPE"}, headers={"Authorization": "Bearer secret"})
@@ -467,7 +475,7 @@ def test_api_search_rejects_removed_filter_params(tmp_path):
 
 
 def test_api_search_rejects_malformed_cursor(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         response = client.get(
@@ -753,7 +761,7 @@ def test_live_market_reads_durable_current_without_gateway(tmp_path):
 
 
 def test_api_notification_routes_are_not_registered(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -768,7 +776,7 @@ def test_api_notification_routes_are_not_registered(tmp_path):
 
 
 def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -853,7 +861,7 @@ def test_api_token_case_returns_404_when_target_not_found(tmp_path):
 
 
 def test_api_token_case_requires_auth(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         response = client.get("/api/token-case", params={"target_type": "Asset", "target_id": "asset:x"})
@@ -863,7 +871,7 @@ def test_api_token_case_requires_auth(tmp_path):
 
 
 def test_api_token_case_rejects_invalid_window_and_removed_scope(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         bad_window = client.get(
@@ -1004,7 +1012,7 @@ def test_api_target_posts_returns_full_post_pages_and_requires_target_identity(t
 
 
 def test_api_target_posts_rejects_malformed_cursor(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1023,7 +1031,7 @@ def test_api_target_posts_rejects_malformed_cursor(tmp_path):
 
 
 def test_api_target_posts_rejects_retired_sort_query(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1088,7 +1096,7 @@ def test_api_target_social_timeline_returns_buckets_authors_and_posts(tmp_path):
 
 
 def test_api_target_social_timeline_rejects_manual_bucket_param(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         response = client.get(
@@ -1230,7 +1238,7 @@ def test_api_status_separates_provider_freshness_circuit_and_unowned_backlog_fro
 
 
 def test_api_rejects_removed_narrative_product_surfaces(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
@@ -1285,7 +1293,7 @@ def test_social_events_by_ids_skips_missing(tmp_path):
 
 
 def test_social_events_by_ids_rejects_too_many(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
+    app = create_app(settings=make_settings(tmp_path, reset=False))
     huge = ",".join(f"id-{i}" for i in range(201))
     with TestClient(app) as client:
         response = client.get(
