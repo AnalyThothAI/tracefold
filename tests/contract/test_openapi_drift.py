@@ -80,82 +80,28 @@ def test_openapi_ts_matches_committed_artefact(tmp_path: Path) -> None:
 
 
 @pytest.mark.contract
-def test_token_radar_contract_declares_conditional_get() -> None:
-    from tracefold.app.http.app import create_app
-    from tracefold.platform.config.settings import Settings
-
-    operation = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()["paths"]["/api/token-radar"][
-        "get"
-    ]
-
-    assert operation["parameters"] == [
-        {
-            "in": "header",
-            "name": "If-None-Match",
-            "required": False,
-            "schema": {
-                "title": "If-None-Match",
-                "type": "string",
-            },
-        }
-    ]
-    assert operation["responses"] == {
-        "200": {
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiEnvelope_TokenRadarData_"}}},
-            "description": "Successful Response",
-            "headers": {
-                "Cache-Control": {
-                    "description": "Requires revalidation before reuse.",
-                    "schema": {"type": "string"},
-                },
-                "ETag": {
-                    "description": "Strong validator for the complete served snapshot.",
-                    "schema": {"type": "string"},
-                },
-            },
-        },
-        "304": {
-            "description": "Not Modified",
-            "headers": {
-                "Cache-Control": {
-                    "description": "Requires revalidation before reuse.",
-                    "schema": {"type": "string"},
-                },
-                "ETag": {
-                    "description": "Strong validator for the complete served snapshot.",
-                    "schema": {"type": "string"},
-                },
-            },
-        },
-    }
-
-
-@pytest.mark.contract
-def test_token_radar_v5_is_exact_top50_and_stocks_surface_is_absent() -> None:
+def test_token_radar_surface_is_absent_and_live_market_contract_is_unchanged() -> None:
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.settings import Settings
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     components = schema["components"]["schemas"]
-    radar = components["TokenRadarData"]
-    market = components["TokenRadarMarketData"]
 
+    assert "/api/token-radar" not in schema["paths"]
     assert "/api/stocks-radar" not in schema["paths"]
-    assert all(not name.startswith("StocksRadar") for name in components)
-    assert radar["properties"]["schema_version"]["const"] == "token_radar_snapshot_v5"
-    assert set(radar["properties"]) == {
-        "schema_version",
-        "social_evidence_as_of_ms",
-        "eligible_total",
-        "items",
+    assert all(not name.startswith(("TokenRadar", "StocksRadar")) for name in components)
+
+    live_market = schema["paths"]["/api/live-market"]["get"]
+    assert [parameter["name"] for parameter in live_market["parameters"]] == ["target_type", "target_id"]
+    assert live_market["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApiEnvelope_LiveMarketData_"
     }
-    assert radar["properties"]["items"]["maxItems"] == 50
-    assert set(market["required"]) == {
+    assert set(components["LiveMarketData"]["required"]) >= {
+        "target_type",
+        "target_id",
+        "status",
         "price_usd",
-        "price_observed_at_ms",
-        "price_change_since_signal",
-        "market_cap_usd",
-        "market_cap_observed_at_ms",
+        "price_basis",
     }
 
 
@@ -167,97 +113,81 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     expected = {
         "/api/news/feed": "ApiEnvelope_NewsFeedData_",
-        "/api/news/stories/{story_id}": "ApiEnvelope_NewsStoryDetailData_",
-        "/api/news/brief": "ApiEnvelope_NewsBriefData_",
-        "/api/news/sources": "ApiEnvelope_NewsSourcesData_",
+        "/api/news/events/{event_id}": "ApiEnvelope_NewsEventDetailData_",
         "/api/news/status": "ApiEnvelope_NewsStatusData_",
     }
 
     assert {path for path in schema["paths"] if path.startswith("/api/news/")} == set(expected)
 
     for path, envelope in expected.items():
-        response_schema = schema["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-        if path == "/api/news/status":
-            assert response_schema["anyOf"] == [
-                {"$ref": f"#/components/schemas/{envelope}"},
-                {"$ref": "#/components/schemas/ApiEnvelope_NewsRealtimeStatusResponseData_"},
-            ]
-        else:
-            assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
-
-    for name in (
-        "NewsFeedData",
-        "NewsStoryData",
-        "NewsStoryDetailData",
-        "NewsProviderMetadataData",
-        "NewsBriefData",
-        "NewsSourcesData",
-        "NewsStatusData",
-    ):
-        assert schema["components"]["schemas"][name]["additionalProperties"] is False
+        operation = schema["paths"][path]
+        assert set(operation) == {"get"}
+        response_schema = operation["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
 
     components = schema["components"]["schemas"]
-    metadata_properties = components["NewsProviderMetadataData"]["properties"]
-    assert "NewsProviderAssetData" in components
-    assert "NewsProviderCoinData" not in components
-    assert set(metadata_properties) == {"score", "source", "signal", "grade", "assets"}
-    assert metadata_properties["assets"]["anyOf"][0]["items"] == {"$ref": "#/components/schemas/NewsProviderAssetData"}
-    assert set(components["NewsProviderAssetData"]["properties"]) == {
-        "symbol",
-        "market_type",
-        "match",
-        "score",
-        "signal",
-        "grade",
+    for name in (
+        "NewsFeedData",
+        "NewsFeedEventData",
+        "NewsEventData",
+        "NewsEventDetailData",
+        "NewsEventMemberData",
+        "NewsVerdictData",
+        "NewsDeliveryData",
+        "NewsStatusData",
+        "NewsIngestStatusData",
+        "NewsBrokerStatusData",
+        "NewsPipelineStatusData",
+        "NewsDeliveryStatusData",
+        "NewsControlStateData",
+    ):
+        assert components[name]["additionalProperties"] is False
+
+    assert set(components["NewsFeedData"]["properties"]) == {"events", "next_cursor", "filters"}
+    assert set(components["NewsEventDetailData"]["properties"]) == {
+        "event",
+        "members",
+        "verdicts",
+        "deliveries",
+        "presentation",
+        "marks",
     }
-    story_properties = components["NewsStoryData"]["properties"]
-    assert "notification" not in story_properties
-    assert "push_delivery_state" not in story_properties
-    assert "NewsNotificationData" not in components
+    assert set(components["NewsStatusData"]["properties"]) == {
+        "state",
+        "workers_state",
+        "ingest",
+        "broker",
+        "pipeline",
+        "delivery",
+        "control",
+        "watchlist",
+        "measured_at_ms",
+    }
+    state = components["NewsStatusData"]["properties"]["state"]
+    assert state["enum"] == ["ready", "degraded", "warming", "unavailable"]
 
 
 @pytest.mark.contract
-def test_news_contract_hard_cuts_title_translation_and_old_brief_aggregates() -> None:
+def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces() -> None:
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.settings import Settings
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     components = schema["components"]["schemas"]
-    story_properties = components["NewsStoryData"]["properties"]
-    brief_properties = components["NewsBriefData"]["properties"]
-    publication_properties = components["NewsBriefPublicationData"]["properties"]
-    status_layers = components["NewsStatusLayersData"]["properties"]
 
-    assert "title_translation" not in story_properties
-    assert not {name for name in components if "TitleTranslation" in name}
-    assert set(brief_properties) == {
-        "state",
-        "slot_at_ms",
-        "next_due_at_ms",
-        "publication",
-        "latest_run",
-    }
-    assert {"top_stories", "brief_kind", "world_brief", "source_age_range", "provenance"} <= set(publication_properties)
-    validation = publication_properties["validation"]
-    assert {entry["$ref"] for entry in validation["anyOf"]} == {
-        "#/components/schemas/NewsBriefL1ValidationData",
-        "#/components/schemas/NewsBriefL2ValidationData",
-        "#/components/schemas/NewsBriefNoneValidationData",
-    }
-    for name in (
-        "NewsBriefL1ValidationData",
-        "NewsBriefL2ValidationData",
-        "NewsBriefNoneValidationData",
-    ):
-        assert components[name]["additionalProperties"] is False
-    assert {"history", "candidate_story_count", "candidate_source_count", "lead", "lines"}.isdisjoint(
-        brief_properties | publication_properties
-    )
-    assert "translation" not in status_layers
+    news_components = {name for name in components if "News" in name}
+    retired_markers = ("Story", "Brief", "Rss", "Source", "TitleTranslation", "TitlePresentation", "Notification")
+    assert not {name for name in news_components if any(marker in name for marker in retired_markers)}
+    for path in ("/api/news/stories/{story_id}", "/api/news/brief", "/api/news/sources", "/api/radar"):
+        assert path not in schema["paths"]
+
+    event_properties = components["NewsEventData"]["properties"]
+    assert {"story_id", "title_translation", "notification", "push_delivery_state"}.isdisjoint(event_properties)
+    assert {"event_id", "family", "leader_title", "admission", "priority", "storyline_key"} <= set(event_properties)
 
 
 @pytest.mark.contract
-def test_news_feed_contract_exposes_priority_search_and_reporting_origin_facets() -> None:
+def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.settings import Settings
 
@@ -265,16 +195,16 @@ def test_news_feed_contract_exposes_priority_search_and_reporting_origin_facets(
     operation = schema["paths"]["/api/news/feed"]["get"]
     parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
 
-    assert {"q", "reporting_origin", "provider_score_gt"}.issubset(parameters)
+    assert set(parameters) == {"family", "admission", "priority", "decision", "symbol", "q", "sort", "limit", "cursor"}
     assert parameters["q"]["schema"]["maxLength"] == 200
-    assert parameters["reporting_origin"]["schema"]["maxLength"] == 128
-    assert set(schema["components"]["schemas"]["NewsFeedFiltersData"]["required"]) >= {
-        "q",
-        "reporting_origin",
-        "provider_score_gt",
-    }
-    assert set(schema["components"]["schemas"]["NewsFeedFacetsData"]["required"]) >= {"reporting_origins"}
-    assert set(schema["components"]["schemas"]["NewsFeedFacetsPageData"]["required"]) >= {"reporting_origins_has_more"}
+    assert parameters["priority"]["schema"]["pattern"] == "^(high|normal)?$"
+    assert parameters["sort"]["schema"]["pattern"] == "^(latest|priority)$"
+    limit = parameters["limit"]["schema"]
+    assert limit == {"default": 50, "maximum": 100, "minimum": 1, "title": "Limit", "type": "integer"}
+    assert {"reporting_origin", "provider_score_gt"}.isdisjoint(parameters)
+    filters = schema["components"]["schemas"]["NewsFeedFiltersData"]
+    assert set(filters["properties"]) == {"family", "admission", "priority", "decision", "symbol", "q", "sort", "limit"}
+    assert set(filters["required"]) == {"sort", "limit"}
 
 
 @pytest.mark.contract

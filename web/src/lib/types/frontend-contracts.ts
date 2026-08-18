@@ -213,8 +213,7 @@ export type MarketReadiness = {
   stale_fields: string[];
 };
 
-// Token Case exposes post-quality evidence independently of retired Radar
-// admission/decision blocks.
+// Token Case exposes post-quality evidence independently of any admission/decision blocks.
 export type ScoreContribution = {
   feature: string;
   value: number;

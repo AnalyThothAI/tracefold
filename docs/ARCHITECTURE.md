@@ -20,16 +20,12 @@ providers / public streams
 `tracefold serve` initializes only public HTTP/static/WebSocket, read
 repositories, and serve telemetry. `tracefold workers` initializes ingestion,
 acquisition, the bounded external/model capabilities, one short-projection CPU
-lane, an isolated News Story CPU lane when News is enabled, singleton runtime
-status, dirty-triggered News Story and after-completion Token Radar writers, and one
-EDF projection coordinator for the remaining frontier-backed domains. The
-News Story load/full-publication work uses the fixed heavy-operation permit
-before the unchanged two-slot business executor. Token Radar uses ordinary
-business-database admission and an isolated CPU process turn, without a Radar
-permit, service deadline, executor, or configuration surface. Workers
-recover exclusively by re-reading PostgreSQL facts, typed Macro/Profile frontiers, native News
-Brief/Fed-document model state, the News Item Push ledger,
-and queues on bounded code-owned clocks.
+lane, singleton runtime status, the RabbitMQ-driven News consumers when News is
+enabled, and one EDF projection coordinator for the remaining frontier-backed
+domains. Market and Macro workers recover exclusively by re-reading PostgreSQL
+facts, typed Macro/Profile frontiers, native Fed-document model state, and
+queues on bounded code-owned clocks; News consumers recover by re-consuming
+durable broker queues plus database idempotency keys.
 There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
@@ -72,60 +68,41 @@ Material facts include:
   `registry_assets`, `asset_identity_evidence`, `asset_identity_current`;
 - market: `market_ticks`, `enriched_events`, `market_observations`,
   `market_settlements`, and `market_position_facts`;
-- news: canonical current Article facts admitted by the operator's exact
-  OpenNews Strategy allowlist and, when explicitly enabled, the code-owned
-  public RSS breadth/corroboration catalog in `news_items`;
+- news: canonical provider Item facts admitted by the operator's OpenNews
+  Strategy allowlist in `news_items` (provenance union, provider metadata,
+  raw first line, first ingest mode);
 - macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
   `macro_documents`.
 
-Current read models are `token_radar_current`, `token_profile_current`,
-`market_tick_current`, `news_stories`, `news_story_members`, and the six stable
-rows in `macro_module_current`. Each uses stable product/window/target identity,
-has exactly one runtime writer, is rebuildable from facts, and writes zero
-serving rows when its business payload is unchanged. `news_items` is a mixed
-Article row: acquisition alone owns the canonical title, description, URL,
-reporting origin, publication clock, and provider metadata, and initializes
-required deterministic serving columns. Story consumes that canonical title
-and persists only the full-window classification, importance, and activity
-values. It never overwrites acquisition-owned facts.
-OpenNews's raw `coins` annotation remains source evidence in `news_items`; the
-public News read adapter exposes that bounded annotation as generic `assets`
-because provider symbols can represent crypto, equities, or commodities. It
-does not classify, validate, or correct those labels. Each accepted provider
-event also retains a bounded, deterministic, sorted-unique union of the matching
-Strategy ID, name, source type, and observed engine type. It never persists the
-full Strategy definition or metrics payload.
+Current read models are `token_profile_current`,
+`market_tick_current`, `news_events` (plus `news_event_members`,
+`news_event_bands`, `news_event_assets`), and the six stable rows in
+`macro_module_current`. Each uses stable product/window/target identity, has
+exactly one runtime writer, is rebuildable from facts, and writes zero serving
+rows when its business payload is unchanged. `news_events` is rebuildable by
+replaying `news_items` through the Deduper (`tracefold news replay` performs
+the same computation in memory). OpenNews's raw `coins` annotation remains
+source evidence in `news_items.provider_metadata`; the Gate derives the bounded
+`grounded_assets` from it and the read API exposes both.
 
-Source connection and Strategy-history state in `news_sources`, explicit
-OpenNews incident intervals in `news_opennews_incidents`, queues, leases,
-retries, native model runs/jobs, and terminal events are control state. Typed Macro and Profile
+OpenNews connection state in `news_ingest_state`, explicit incident intervals
+in `news_opennews_incidents`, News control state (`news_control_state`),
+queues, leases, retries, native model runs/jobs, and terminal events are
+control state. Typed Macro and Profile
 frontiers store stable
 domain/shard identity, input fingerprint, earliest deadline, lease, failure,
 and publication checkpoints. `first_dirty_at_ms` records the causal change,
 `deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
 eligibility clock for a scheduled recheck or retry. An eligible shard may run
-before its deadline; the deadline is never a start gate. Token Radar has no
-durable source-edge row, dirty frontier, claim, lease, quarantine, failure, or
-source-stream state: its fixed-period writer rereads a bounded fact window and
-publishes only complete successful snapshots. Profile refresh heat tiers, retry attempts, provider circuits, and terminal reasons are
+before its deadline; the deadline is never a start gate. Profile refresh heat tiers, retry attempts, provider circuits, and terminal reasons are
 likewise queue policy, not profile facts.
-The sealed `news_brief_current.served_payload` and rows in
-`macro_document_analyses` are derived model outputs bound to frozen evidence;
-they are not material facts.
-`news_item_title_presentations` is durable presentation state keyed by the
-Item and the exact UTF-8 SHA-256 of its original title. It is shared by Feed,
-Story detail, and Push, but never participates in acquisition, Story identity,
-classification, search, scoring, selection, or Brief input.
-`news_push_state` and `news_push_deliveries` are durable outbound control state:
-they freeze a no-backfill delivery epoch and one immutable `news_item_push_v2`
-snapshot plus exact-atom admission decision for each eligible first-live
-OpenNews Item. A leader references the exact shared title presentation, fences
-one Feishu attempt, and persists a sanitized sent or terminal outcome. A later
-exact duplicate is terminal `suppressed`, references its durable leader, never
-extends the leader window, and never enters the sender. It owns no translation
-state. There is no retry,
-lease, rendered-card persistence, Story identity, or public notification
-product in this ledger.
+`news_verdicts` (Triage and Analyst decisions bound to a policy version) and
+rows in `macro_document_analyses` are derived model outputs bound to frozen
+evidence; they are not material facts. `news_title_presentations` is durable
+presentation state keyed by the comparison fingerprint. `news_deliveries` is
+the one-attempt outbound ledger keyed by `(event_id, kind)`; there is no retry,
+lease, or backfill. `news_event_market_marks` and `news_event_labels` are the
+learning-plane truth for evaluating decisions.
 
 ## Package map
 
@@ -135,22 +112,23 @@ tracefold.market
   identity/      token and asset identity resolution
   pricing/       append-only market facts and current prices
   profiles/      source-backed token profiles and image state
-  radar/         bounded change reducers and compact current snapshots
   views/         persisted market read queries
 
 tracefold.news
-  sources.py        pinned WorldMonitor public RSS catalog and OpenNews identity
-  opennews.py       canonical OpenNews fact adapter
-  classification.py deterministic keyword threat/category classifier
-  identity.py       WorldMonitor-compatible 512-dimension title clustering
-  ranking.py        first-stage factors and public Insights selector
-  brief.py          public English L1/L2 composer and payload identities
-  brief_store.py    UTC half-hour frozen-slot/current-LKG singleton
-  repository.py     PostgreSQL current Item, Story, source-health, and Brief state
-  runtime.py        bounded RSS/OpenNews acquisition and native Brief candidate
-  projection.py     public population, Story, and selection calculation
-  story_store.py    current-only Story compare-and-publish store
-  push.py           Item-scoped durable one-attempt Feishu delivery
+  opennews.py         canonical OpenNews frame adapter (raw_text, provenance)
+  bus.py              broker envelope, routing keys, Publisher/Consumer protocols
+  titles.py           content-block title extraction + pinned prefix/suffix tables
+  exact_atom_identity.py comparison normalization, event family, windows
+  tokens.py / minhash.py  comparison tokens, MinHash 32x4 band keys
+  gate.py / storyline.py  deterministic admission, priority, grounded assets, storyline keys
+  events.py           the Deduper transaction (admit_item)
+  triage_rules.py     decide() post-rules, throttle, fail-closed fallback
+  analyst_rules.py    verify_verdict() evidence gate
+  agents/             Triage structured call, Analyst deepagents harness, tools, prompts
+  translation.py / delivery.py / control.py  waterfall, cards, control commands
+  consumers.py        Receiver, Recovery, Deduper, Triage, Analyst, Translator, Deliverer, Janitor, Control
+  repository.py / query_specs.py  news_* access and audited reads
+  eval/               market marks, offline evaluation, replay
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -212,7 +190,7 @@ unhandled child exception is deliberately a Workers-root failure and the
 container restarts the single process.
 
 SQL ownership follows the same boundary: Market owns the event, token, asset,
-profile, price, Radar, collector, general cross-asset observation, and
+profile, price, collector, general cross-asset observation, and
 settlement tables; News owns `news_*`; Macro owns `macro_*`. Platform owns
 Alembic, checkpoint, and generic terminal-evidence tables. Macro imports Market only through
 `tracefold.market`, has no live or hidden dependency on News, and never
@@ -232,12 +210,9 @@ Important atomic units are:
 - one Macro acquisition completion: normalized fact insert, cursor advance, and
   compare-and-set target completion;
 - current read-model write plus acknowledgement of the exact claim;
-- one RSS source snapshot or one accepted OpenNews Strategy trigger plus its
-  canonical current NewsItem fact and provenance union;
-- one coherent Story/member/selection closure plus every newly admitted v2
-  Push outbox row;
-- one fenced half-hour Brief slot completion against its frozen selection and
-  one whole served current/LKG payload;
+- one accepted OpenNews frame: NewsItem upsert with provenance union plus its
+  Event assignment (new Event, bands, assets, or membership);
+- one Triage/Analyst verdict insert; one delivery begin or settle;
 - immutable Fed document analysis plus completion of its exact native job;
 - retry or terminal transition plus mutation of its source queue row.
 
@@ -266,566 +241,157 @@ external provider seam may translate a finite-operation overrun into its
 existing durable retry, degradation, or terminal policy; doing so never
 releases the shared capability permit before the underlying future actually
 finishes. Frontier-backed projection turns therefore have phase-native
-deadlines and no aggregate fatal watchdog. Token Radar has no application-level
-phase or whole-turn deadline; native PostgreSQL statement safety remains in
-force.
+deadlines and no aggregate fatal watchdog.
 
 Projection claim leases cover the complete legal phase envelope: Profile and
-Macro use 30 seconds each. The after-completion Token Radar loop and fixed-period
-News Story writer have no frontier lease.
+Macro use 30 seconds each. News consumers have no frontier lease; the broker's
+single-active-consumer and per-message ack are their fences.
 
 ## Product flows
 
-### Market and Token Radar
+### Market
 
 `market_tick_current` is transactionally maintained from append-only
 `market_ticks`; it has no projection worker or dirty queue. Explicit bounded
-fact replay rebuilds it. The bounded market poll reserves its first batch slots
-for the current Radar target keys and fills the remainder by 24-hour activity.
-This is acquisition scheduling only: market presentation facts do not affect
-Radar admission or order, so the dependency cannot feed a market result back
-into queue membership. It does not create a 24-hour Radar window; the sole
-Radar product remains the fixed four-hour causal comparison.
+fact replay rebuilds it. The bounded market poll selects active targets by
+24-hour intent activity in stable order; there is no product-driven priority
+input, so no derived read model can feed a market result back into acquisition
+scheduling.
 
 ```text
-events + intent resolution revisions
-  -> bounded twelve-hour source-time/revision evidence read
-  -> seed adjacent four-hour prior/current state at t-4h from the first eight hours
-  -> replay availability-ordered changes over the final four-hour transition to t
-  -> boundaries/removals may close; positive additions may open only on Gate false -> true
-  -> four-hour episode TTL and suppression until a later positive false -> true crossing
-  -> qualified_at descending + stable target-key ties -> Top 50
-  -> bounded selected-target identity and market-presentation hydration
-  -> atomic token_radar_current v5 singleton (maximum 50 Items / 96 KiB)
-  -> Token Radar -> focused Token Case evidence
+events + intent resolution revisions + identity/profile facts + market ticks
+  -> Search (bounded lexical/substring fact reads)
+  -> Token Case (target dossier: profile, timeline, posts, live market)
+  -> /api/live-market (one durable market_tick_current row per target)
 ```
 
-Token Radar is a change-first research queue, not a score, trading action,
-market screener, security audit, or operational monitor. Every 30 seconds its
-sole writer streams at most 20,000 typed Event/resolution-revision rows and 16
-MiB from a twelve-hour source-time horizon, then runs one deterministic reducer.
-The evidence load selects only
-reducer fields in stable replay order against a source-time covering index and
-the covering resolution index. The material read selects the STORED generated
-`events.token_radar_text_fingerprint` column with the exact ASCII-lower,
-whitespace-normalization, and MD5 semantics of its fixed-width, non-security
-duplicate-text fingerprint. The partial source-time index INCLUDEs that column,
-so vacuum-visible history can remain an Index Only read without fetching or
-transferring the wide Event text payload. A turn always executes load, CPU
-reduction, presentation, then publish. Failures log bounded structured detail
-and the independent scheduler retries after its next natural 30-second wait;
-they do not write serving state or stop Workers. Source event time defines current `[t-4h, t]`
-and prior
-`(t-8h, t-4h)` windows. Replay starts at `t-4h`: the first eight hours of the
-source horizon seed the adjacent prior/current state at that boundary, and the
-last four hours are the replay transition to `t`. This causal reconstruction
-does not create a third public comparison window. A representative live
-twelve-hour raw-text read measured approximately 11,975 rows and 8.62 MiB;
-that observation motivated both the fixed-width fingerprint load and the
-increase of the code-owned input envelope to 20,000 rows and 16 MiB from the
-retired v3 envelope. A fact becomes available at the later of the Event
-creation clock
-and its eligible resolution creation clock;
-`evidence_available_at_ms = max(event.created_at_ms,
-eligible_resolution.created_at_ms)`, and that clock determines `qualified_at`.
-Received time is used only for the live boundary:
-`0 <= received_at_ms - source_event_at_ms <= 120000` and
-`0 <= resolution.created_at_ms - received_at_ms <= 120000`. Resolution revisions are
-replayed directly: a timely retarget removes the old binding and may add the
-new one, a late retarget only removes, and a same-target refresh preserves an
-already timely binding. There is no second availability ledger.
-
-The fixed four-hour period is product semantics, not configuration. The retired
-one-hour period made short sparse bursts and boundary movement too dominant and
-expired an episode before a slower operator investigation could finish; a
-twenty-four-hour comparison would mix old attention into `why_now` and weaken
-the false-to-true causal interpretation. Selectable periods would also require
-independent replay, Gate, episode-TTL, and serving identity per period rather
-than a harmless frontend filter. Tracefold therefore owns exactly one four-hour
-Radar product; longer-horizon fact inspection remains in Search and Token Case.
-
-The code-owned Gate remains four equal-weight Boolean rules: minimum attention
-delta, minimum independent authors, maximum duplicate-text share, and maximum
-time to the required author. At one effective millisecond, window boundaries
-and binding removals run first and can only close a case; positive additions
-then apply atomically and can qualify only when the complete Gate changes from
-false to true. When multiple additions share that millisecond, the stable
-Event/intent/resolution/target fact-key order chooses the representative
-trigger. A qualified episode leaves immediately when the Gate becomes false and
-expires four hours after qualification. Expiry while the Gate remains true
-suppresses the target until a later false state and new positive false-to-true
-crossing. This episode is reconstructed on each bounded replay;
-there is no episode, frontier, rejected-candidate, Gate-audit, or history table.
-Authors have equal weight. Within the admitted provenance/action set, action,
-follower, and provider labels cannot affect the Gate or order; neither can
-composite scores, fuzzy similarity, model output, or market facts.
-
-Items are ordered by `qualified_at` descending with stable target-key ties.
-Only after Top-50 selection does one bounded batch read load canonical identity,
-the exact trigger price anchor, optional profile presentation, current price,
-and recent market capitalization. The recent positive market-cap lookup makes
-at most one target-index LATERAL probe for each selected market key rather than
-a global recent-tick scan; it never performs one query per Item. Market
-values and their independent observation clocks are nullable presentation
-facts and cannot change membership or order. The compact public Item contains
-the causal trigger Event ID, trigger source-event time, qualification time,
-current/prior four-hour mention change, actual independent-author/text counts,
-propagation time, duplicate share, and that presentation packet. It contains
-no rank, decision, score, per-rule evaluation history, rejected candidates,
-source-event list, window, venue, pagination, archive, or user-adjustable
-parameter. The Radar Module exposes only its one-turn `sample` interface to
-Workers; evidence, presentation, publication, and serving operations remain
-private PostgreSQL Adapter seams.
-
-Publication locks the one stable product row and replaces the complete compact
-v5 payload atomically. The singleton contains only its key, complete payload,
-snapshot fingerprint, and changed-success timestamp. A business-identical
-payload writes zero serving rows. Load, reduction, presentation, or publication
-failure leaves the last successful snapshot untouched; no public state,
-failure counter, stale reason, attempt clock, or Radar telemetry is persisted.
-The hard-cut initial value is a valid empty v5 snapshot. Restart recovery is the
-next bounded PostgreSQL replay. Search and Token Case
-read their owning facts directly and never use Radar current state as evidence
-authority. Radar v5 changes no WebSocket route, message, or subscription
-behavior. There is no Stocks product, route, public read model, or writer.
-`us_equity_symbols` remains only an identity-collision guard for token
-resolution and does not constitute a Stocks surface. General cross-asset Market
-facts and the six Macro modules remain unchanged.
-
-Historical migration `20260810_0249` was the irreversible Radar serving hard
-cut. It removes the six retired Radar projection tables and their terminal rows,
-removes the temporary replay-only columns installed by `20260810_0248`, and
-creates the one empty compact singleton. Material Events, intents, resolutions,
-identities, and market facts are unchanged. At that revision the writer rebuilt
-from its then-current two-hour fact window; there was no history import, dual
-read/write, compatibility adapter, staging runtime, or legacy fallback.
-
-Historical migration `20260810_0250`, directly after `0249`, was the v2 product
-hard cut. It reset the v1 singleton to one empty
-`token_radar_snapshot_v2`, installed the fifty-Item schema invariant, and
-dropped the three Stocks-only derived tables
-`stock_attention_target_features`, `stocks_radar_current_rows`, and
-`stocks_radar_publication_state`. It preserved all material Events, intents,
-resolutions, identities, profile facts, and market facts, including the
-`us_equity_symbols` collision guard. No v1 or Stocks compatibility interface
-was retained.
-
-Historical migration `20260811_0254` superseded that serving contract with one
-irreversible v3 hard cut. It reset only the rebuildable singleton to initial
-`unavailable`, added the bounded source-time evidence index and v3 basic-shape
-constraints, and preserved Events, intents, all resolution revisions,
-identities, profiles, and market facts. At that revision the first successful
-Worker sample reconstructed causal state from a bounded three-hour horizon for
-one-hour current/prior windows and a one-hour episode TTL. No v2 trigger was
-imported, and no dual reader/writer, episode/frontier/history table, Gate audit,
-or compatibility path was installed.
-
-Historical migration `20260812_0255` was the irreversible v4 hard cut. It reset only the
-rebuildable singleton to initial `unavailable` with
-`token_radar_snapshot_v4`, rebuilds the bounded source-time index as the narrow
-fingerprint covering index, installs the covering resolution index for the
-optimized bounded load, and preserves all material Events, intents,
-resolution revisions, identities, profile facts, and market facts. The v4
-runtime has exactly one fixed four-hour causal product and no window query or
-control. Its first successful sample reconstructs state from the twelve-hour
-fact horizon by seeding at `t-4h` and replaying the final four-hour transition;
-it imports no v3 trigger or LKG payload. There is no dual reader/writer,
-feature flag, compatibility adapter, staging runtime, or history import.
-
-Migration `20260814_0269` is the irreversible v5 KISS hard cut. It preserves
-all material facts and replaces the rebuildable v4 singleton with the exact
-empty v5 payload plus its canonical snapshot fingerprint. The complete public
-root has exactly `schema_version`, `social_evidence_as_of_ms`,
-`eligible_total`, and `items`. It removes ruleset/input/state
-fingerprints, attempt/failure state, workload counts, evaluation/state-change
-clocks, and creation metadata. There is no public state envelope,
-compatibility reader, or dual write.
+Search and Token Case read their owning facts directly; there is no
+model-derived, scored, or ranked product layer between them and the persisted
+facts. There is no Token Radar or Stocks product, route, public read model,
+writer, or worker task; historical migrations `20260810_0249` through
+`20260814_0269` shaped the former Radar singleton and `20260818_0274` removed
+it together with its Radar-only Event/resolution covering indexes and the
+generated `events.token_radar_text_fingerprint` column. `us_equity_symbols`
+remains only an identity-collision guard for token resolution and does not
+constitute a Stocks surface. General cross-asset Market facts and the six Macro
+modules remain unchanged.
 
 Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
 error outcomes back off exponentially to a bounded terminal state, and only a
 new evidence fingerprint reactivates that target. Profile eligibility and
-invalidation come from identity/profile facts and Profile-owned policy; the
-Radar writer only batch-reads already published `token_profile_current` rows
-for optional name/icon presentation. It never calls a profile provider, performs
-per-Item hydration, or drives Profile lifecycle.
+invalidation come from identity/profile facts and Profile-owned policy.
 
 ### News
 
-News is a direct PostgreSQL-backed adaptation of the public WorldMonitor chain
-at commit `0e8785c43e6a693990a14181ae0a16066c15fc8c`, not an independent
-editorial ontology or the personalized Digest Magazine pipeline:
+News V3 is a broker-driven Event pipeline. RabbitMQ is the only transport,
+buffer, retry, concurrency, and dead-letter plane; PostgreSQL holds facts,
+decisions, and audit; every write is idempotent by key. The Story/Brief/RSS/
+pinned-WorldMonitor lane is retired.
 
 ```text
-OpenNews account Strategies
-  -> authenticated persistent WSS; server automatically sends strategy.triggered
-  -> no application subscribe/request; literal ping/pong and RFC control heartbeat only
-  -> exact configured multi-Strategy allowlist
-  -> each accepted new/current title atomically creates one title-presentation intent
-  -> first live Item insert + same-transaction Item Push outbox when available
-  -> operator-bound, Strategy-qualified 12-hour current facts
-  -> disconnect/overflow/outage records an explicit incident interval
-  -> official Strategy list/hits recovery; no ordinary-news Search
-
-WorldMonitor full/en + INTEL RSS catalog
-  -> disabled by default; enable only with news.rss_enabled: true
-  -> 179 physical feeds / 183 category memberships
-  -> first five entries per feed before validation
-  -> 96-hour breadth and corroboration snapshots
-  -> each accepted new/current title atomically creates the same presentation intent
-
-Title presentation turn
-  -> prioritize an exact title that blocks a live Push, then FIFO
-  -> DeepL once within 1.5 s -> DeepSeek once within 5 s -> original fallback
-  -> persist one immutable exact-title decision
-  -> Feed/detail use the display title and expose the original title
-  -> Push waits for that same decision, then attempts Feishu once
-
-Physical RSS facts
-  -> one preliminary Jaccard/fact-coherent closure and deterministic score
-  -> category expansion -> per-category Top 20 -> physical deduplication
-  -> physical union with every current OpenNews Item
-  -> coherent current-only Story + members after a 1-second dirty debounce
-     with a 5-minute safety pass
-  -> one final normalized-Jaccard + fact-compatibility + fixed-anchor closure
-  -> public UTF-16 Story admissibility gate; no Item recluster
-  -> authoritative Story evidence + importance/admissibility/recency selection
-  -> at most eight server-ordered Top Stories with corroborated-lead reservation
-  -> UTC half-hour slot freezes the current selection
-  -> Ollama -> configured direct DeepSeek -> Groq L1 waterfall
-  -> shared-budget L2 single-headline fallback
-  -> one whole sealed public Insights payload or whole LKG
-  -> one flat global cursor Feed with server-side filters
-  -> /api/news/feed + /api/news/stories/{story_id}
-     + /api/news/brief + /api/news/sources + /api/news/status
+OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
+  -> authenticated persistent WSS; server pushes strategy.triggered; no app subscribe frame
+  -> Receiver publishes each accepted frame to x:news with publisher confirms
+     (routing key raw.opennews.<strategy_id>; recovery frames use raw.recovery.<strategy_id>)
+  -> q:news.raw [single-active-consumer] Deduper:
+       Item upsert (provenance union) -> content-block title + pinned normalization
+       -> exact fingerprint / MinHash 32x4 LSH near-duplicate + strong-fact veto
+       -> Event new|member (family window) -> Gate (engine_type, asset_class,
+          grounded_assets, macro lexicon, PR-template) -> storyline key
+       -> publish event.<family>.<priority> only for admission=candidate
+  -> q:news.triage [prefetch N] Triage: one structured call (frozen system prompt,
+       <event> -> <gate> -> <event_status> status bar) -> decide() rules -> verdict row
+       -> publish verdict.push (+ verdict.escalate)
+  -> q:news.translate (verdict.push) Translator: DeepL -> DeepSeek -> original, keyed by fingerprint
+  -> q:news.deep (verdict.escalate) Analyst: minimal deepagents harness, 7 read-only tools,
+       verify_verdict() -> deep verdict -> publish verdict.deep only after the first card was sent
+  -> q:news.deliver [single-active-consumer] Deliverer: begin(sending) -> one Feishu attempt
+       -> settle sent|terminal; crash between send and ack -> ambiguous_after_crash
+  -> x:news.control (fanout) pause/resume/mute_theme/mute_symbol/drain -> news_control_state
+  -> retry lanes news.retry.{5s,30s,120s} (TTL -> back to x:news) for transient errors;
+     x:news.dlx -> q:news.dead for permanent/exhausted messages
+  -> Janitor: band expiry, 30-day retention, market marks (t0/+5m/+30m/+4h)
+  -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
 
-`NewsAcquisition` is the only writer of NewsItem Article facts and provider
-metadata. The Story projection owns only deterministic derived classification,
-importance, and active-window columns on those rows. RSS source identity is the
-HTTPS feed URL. The pinned catalog is exactly WorldMonitor
-`full/en + INTEL_SOURCES`: 179 physical feeds, 183 category memberships, 178
-reporting-source names, and 17 categories. `news.rss_enabled` is its only
-runtime switch and defaults to `false`; disabled reconciliation removes those
-sources from the active inventory and releases any prior claim. The acquisition
-clock still expires old Article facts but cannot claim or fetch RSS. When
-enabled, a bounded RSS turn claims one due
-source, conditionally fetches it, and takes the first five RSS/Atom entries
-before validation. A retained entry requires a non-empty title and a parseable
-date no more than one hour in the future; its link is optional but, when kept,
-must be HTTP(S). A first-five window with no titled entry is a parse failure,
-not a successful empty snapshot. The successful accepted set atomically
-replaces that source's current snapshot. `304` and unchanged accepted snapshots
-write no NewsItem facts. Fetch failure preserves the last successful snapshot
-until the 96-hour floor expires. Initial and bounded redirect hops are checked
-as public HTTPS and must resolve only to globally routable addresses before the
-Adapter sends them.
+Ownership: `tracefold.integrations.rabbitmq` is the only module that imports
+`aio_pika`; `tracefold.news.bus` owns the envelope, routing keys, and
+Publisher/Consumer protocols. `tracefold.news.consumers` holds the eight
+consumers wired by `app/workers.py::_wire_news_pipeline`; they run as asyncio
+tasks in the single Workers process but coordinate only through the broker and
+PostgreSQL keys, so they can be scaled out without code changes.
 
-OpenNews is an operator-bound, Strategy-qualified low-latency acquisition lane.
-Its persistent authenticated WSS receiver feeds one bounded queue. After the
-protocol handshake Tracefold sends no `news.subscribe`, `news.unsubscribe`,
-`strategy.subscribe`, `strategy.triggered`, or other application request. It
-may answer a provider literal `ping` with literal `pong` and use RFC WebSocket
-control-frame heartbeat; neither is a subscription. The provider automatically
-sends the account owner's `strategy.triggered` notifications. Admission requires a non-empty `params.id` plus a nested
-`params.strategy.id` in the exact configured `news.opennews_strategy_ids` set.
-Configured and wire IDs are trimmed opaque strings and mutable Strategy names
-are never admission keys. An allowlisted NEWS, MARKET, meme, or listing frame is
-accepted regardless of `engineType`; raw `news.update`, `news.ai_update`,
-acknowledgements, malformed frames, and unconfigured Strategies are ignored.
-The current cutover allowlist is exactly `1018` (News Score > 70) and `1019` (OI
-Event Monitor). Provider-side Listing/Storage Strategies are outside this input
-population unless a future explicit configuration change admits them.
-The account page remains the Strategy-definition authority, and Tracefold does
-not reproduce its score, OI, keyword, symbol, venue, or time-window rules.
+Identity: `news_items.item_id = sha256(source_id, params.id)`;
+`news_events.event_id` is the leader item id. `tracefold.news.titles`
+extracts the first content block (skipping URL-only, label-only, `reply/quote:`
+lines and pinned wire prefixes/suffixes), `tracefold.news.exact_atom_identity`
+normalizes for comparison, `tracefold.news.tokens` + `minhash` produce the
+band keys stored in `news_event_bands`, and `tracefold.news.events.admit_item`
+is the single Deduper transaction. Fingerprints of at most two tokens never
+share an Event.
 
-`params.id` remains the source-local material fact identity;
-`params.strategy.id` is provenance, never fact identity. Repeated delivery of
-the same provider event writes one NewsItem. Exact replay writes nothing, while
-the same event observed under multiple configured Strategies merges a
-deterministic sorted-unique provenance union without last-write erasure.
-If wrappers for one provider event disagree, one complete wrapper wins by a
-deterministic provider-evidence order (numeric score, non-empty assets, then
-canonical payload); fields from different wrappers are never spliced together.
-Different provider event IDs remain distinct facts even when their text is
-similar. Linkless MARKET/OI reports are valid, and neither `newsType=strategy`
-nor the wrapper Strategy name becomes the reporting origin. Provider score,
-signal, grade, assets, source, title, timestamp, and link remain bounded
-descriptive metadata. Strategy admission changes the material input population;
-it does not change Story identity, importance, ordering, or Brief. Numeric score
-remains only an optional explicit Feed focus filter and display label.
+Gate and storyline (`tracefold.news.gate`, `tracefold.news.storyline`) are pure
+functions with pinned lexicons: grounded assets are provider grade A/A+ tags
+whose symbol (or match text) appears in the title or A+ tags on non-CL assets;
+`CL`/`XYZ-CL` is grounded only in energy context; macro-lexicon items pass to
+Triage even without assets; ungrounded non-macro items and law-firm template
+notices are suppressed; `listing` frames are deterministic. Priority is
+`high` (AMQP priority 5) for score >= 90, watchlist hits, or rate/yield macro.
 
-The WSS receiver and PostgreSQL publisher are independent tasks joined by one
-bounded in-memory queue. Database admission/backpressure retains the connected
-socket and retries the same pending batch with its original observation clock;
-only overflow opens a `buffer_overflow` incident, and overflow itself does not
-falsely mark WSS disconnected. Transport close, authentication/protocol/idle
-failure, unexpected process restart, overflow, and planned shutdown have
-separate incident causes. Reconnect proves current connectivity and closes the
-transport interval but does not by itself assert historical completeness.
+Triage (`tracefold.news.agents.triage_model`, `tracefold.news.triage_rules`)
+never retrieves: the Deduper computes `event_status` (storyline window facts)
+and the consumer passes it last in the human message. `decide()` owns the
+final decision: noise -> drop; magnitude 3 -> escalate; high priority + push ->
+escalate; unclear direction -> drop; magnitude >= 2 and actionable -> push;
+watchlist primary and magnitude >= 1 -> push; storyline window-max throttle
+(2 h push / 4 h escalate); hourly cap; control mutes. Model failure is
+fail-closed (`rule_baseline`: watchlist primary or score >= 90 with grounded
+assets) and three consecutive failures open a 60-second circuit that also opens
+a `triage_circuit_open` incident. `news_verdicts` stores `model_decision`,
+`rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
+`degraded`, and a trace with latency and cached tokens.
 
-Closed incidents, including planned deploy intervals, are recovered only through the provider's official
-authenticated `/open/strategy_list` and `/open/strategy_hits` endpoints. The
-list call verifies the exact configured Strategies are enabled; history is
-page-bounded, overlap-safe, filtered to the incident interval, and persisted as
-`first_ingest_mode=recovery`. Fact identity makes overlap idempotent. Complete
-retention marks the incident recovered; a missing endpoint, retention boundary,
-or provider failure remains explicit as `unavailable` or `partial`. Recovered
-facts may enter Story/Brief but can never create outbound Push. OpenNews Search
-is not a recovery or parity authority.
+Analyst (`tracefold.news.agents.analyst`, `tools`, `analyst_rules`) uses
+`create_deep_agent` with seven read-only tools (event card, members, find
+events, prior verdicts, market reaction, macro state, watchlist), no subagents,
+no filesystem/todo/sandbox tools, no checkpointer, and `ToolStrategy` terminal
+output. Tool returns are bounded (2 s, 4 KB, clamped echoes) and register
+evidence ids; `verify_verdict()` rejects unknown evidence, market numbers that
+differ from tool output, disagreement without revision, and magnitude without
+evidence. Deep verdicts only produce follow-up cards after the first delivery
+was sent. `NEWS_ANALYST.md` is code-owned domain memory concatenated into the
+system prompt.
 
-The sole Story writer captures active RSS Items from the 96-hour window and
-Strategy-qualified OpenNews Items from the 12-hour window as one bounded
-`NewsStoryFactSnapshot`. The snapshot contains original Item facts, source and
-category fields, an exact title fingerprint, and only provider
-`symbol`/`market_type`/`match` fields; provider score, Strategy provenance, Push,
-and title-presentation state are excluded. `build_story_projection(snapshot)` is
-the only computation interface. It returns the complete Item updates, Story
-closure, membership closure, identity evidence, and ordered public selection.
-The application layer only loads, invokes, rechecks the opaque material
-fingerprint under the publication fence, and publishes one transaction.
+Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders
+code facts (original title, link, assets, direction, magnitude, sources) as
+the card body and sanitizes AI copy (URLs fall back to the original title).
+There is no retry: `news_deliveries(event_id, kind)` is inserted as `sending`
+before the single HTTP call and settled `sent`/`terminal`; interrupted rows are
+terminalized at startup. Recovery items, suppressed events, and paused/muted
+control state never deliver; the hourly cap lets only escalates through.
 
-News Story V2 has one Tracefold-owned identity algorithm. It normalizes source
-noise, Unicode width and punctuation, a pinned Simplified/Traditional Chinese
-comparison form, and equivalent numeric scales without changing the stored
-title. It calculates one lexical score: Jaccard over the normalized token set,
-with pinned CJK n-grams in that same set. Strong title-bounded actor, target,
-asset, action, instrument, period, numeric, location, and time facts constrain
-the same decision. Provider asset/market fields become strong only when the
-symbol or match text is present in the original title. Broad keywords and
-ungrounded labels may improve recall or classification but cannot merge or
-veto Stories. WorldMonitor's former vector/cosine Digest identity, browser
-greedy grouping, semantic refinement, and Redis canonical adoption are not
-Story authorities in Tracefold.
+Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
+backpressure/unavailability, and Triage circuit opens are rows in
+`news_opennews_incidents`; reconnect closes transport incidents and requests
+recovery, which pages the official Strategy hits endpoints for the closed
+interval and publishes `raw.recovery.*` frames (`admission=recovery`, never
+delivered).
 
-The module compresses compatible exact-title Items into deterministic atoms,
-builds at most 250,000 deduplicated candidates through bounded lexical and
-strong-signature indexes, and evaluates time conflicts and strong fact
-conflicts before exact, high-Jaccard, or strong-signature normal-Jaccard
-acceptance. Atoms are ordered by publication time, comparison-title Unicode
-order, and stable Item identity. The first unassigned atom is a fixed anchor;
-every fuzzy member must independently agree with that anchor and the complete
-accumulated strong signature. Members never become bridges. A candidate tied
-on the highest evidence across anchors remains a singleton. Candidate overflow
-fails explicitly; there is no all-pairs fallback, sampling, adaptive threshold,
-or second metric.
+Storage is exactly thirteen tables: `news_ingest_state`,
+`news_opennews_incidents`, `news_items`, `news_events`, `news_event_members`,
+`news_event_bands`, `news_event_assets`, `news_verdicts`,
+`news_title_presentations`, `news_deliveries`, `news_control_state`,
+`news_event_market_marks`, `news_event_labels`. Migration
+`20260818_0275_news_v3_event_bus_hard_cut` drops the eleven legacy Story/
+Brief/Push/Title tables and is irreversible. Read queries are registered in
+`tracefold.news.query_specs` for the query audit.
 
-RSS population selection first calculates features, one preliminary physical
-RSS closure, classification, corroboration, and importance. Only then are
-physical Items expanded through their code-owned category memberships for the
-stable Top 20 per category and deduplicated back to one physical RSS union. All
-current OpenNews Items are appended and the same private fixed-anchor algorithm
-builds the one final authoritative closure. The preliminary closure has no
-public identity. Accepted facts set one process-local dirty event; bursts
-coalesce for one second and a five-minute safety pass covers a lost wake. The
-turn is bounded by 10,000 rows, 8 MiB encoded input, 250,000 candidate atom
-pairs, an 8 KiB identity-evidence object per Story, and a 25-second isolated CPU
-envelope. Unchanged or superseded input writes zero serving rows.
-
-NewsItem identity remains `(source_id, source_item_key)`. RSS prefers a
-non-empty GUID, then canonical URL, then a deterministic title/publication key;
-OpenNews uses `params.id`. Tracking parameters are removed from links. Repeated
-configured Strategy frames union bounded provenance into the same Item and
-never create one Item per Strategy. Original titles remain the sole Story,
-search, scoring, and Brief text facts; Item-scoped display-title presentation
-is a read-time join only.
-
-A Story ID is
-`SHA-256(news_story_identity_v3 || anchor_comparison_identity || anchor_item_id)`.
-The anchor is the fixed anchor of the final closure. The anchor Item uniquely
-qualifies every identity, including an empty comparison identity. Each Story
-stores one bounded `identity_evidence` object with
-versions, anchor Item, strong keys, accepted/rejected reason histograms,
-Jaccard diagnostics, and grounded-provider count. There is no second stored
-identity, alias, redirect, archived Story, membership history, similarity edge,
-embedding, full-article extraction, or per-Story model output. IDs are
-current-window identities and may change when an anchor leaves, an earlier fact
-arrives, material evidence changes, or the identity version changes; old detail
-URLs return not found.
-
-Threat level and category continue to use the exact pinned WorldMonitor keyword
-classifier and historical downgrade. Importance retains the pinned 55%
-severity, 20% source tier, 15% corroboration, and 10% recency weights plus the
-narrow diplomacy/flashpoint boost. `source_count` is the distinct reporting
-origin count over complete physical membership. Representative, scoring Item,
-facets, first/last clocks, aggregates, and the Story state fingerprint all come
-from that same closure.
-
-The Story transaction is also the sole public-selection writer. Public Top
-Stories adapt authoritative Stories directly and never cluster Items again. The
-pinned JavaScript UTF-16 `title.length > 10` check remains only an
-admissibility/representative rule; it cannot change membership. The pinned
-WorldMonitor selector still derives public category/threat, effective-recency
-rank, a maximum-three primary-source cap, corroborated-lead reservation, and at
-most eight ordered Stories with drop statistics. WorldMonitor is pinned here
-only for the RSS catalog/parser, keyword classifier, importance/selector, and
-Brief prompt/parser/composer helpers—not for Tracefold Story identity.
-
-The selection table is one singleton captured-current snapshot, not rank rows.
-`selection_fingerprint` binds its projection revision/evaluation clock, every
-ordered Top Story field and selection statistic, plus selector/identity
-versions. A Brief slot freezes that complete selection JSON once.
-`publication_id` hashes the complete sealed served payload—slot, Top Stories,
-content kind, sources, source-age range, validation, provenance,
-provider/model, and versions—but not its own ID. There is no target identity,
-publication-history table, or request-time Story join.
-
-L1 sends only the ordered primary headlines, primary sources, and distinct-
-source counts. Its tolerant parser and citation-scoped composer are both the
-provider acceptance gate and final publisher: a rejected response advances to
-the next provider, while a missing or proper-noun-invalid per-Story line falls
-back only to that Story's headline. Accepted L1 output is English, has one
-index-locked line and source slot per Top Story, and retains an empty URL slot
-instead of shifting citations. The code-owned waterfall is Ollama
-`llama3.1:8b`, the configured direct DeepSeek endpoint/key/model, then optional
-Groq `llama-3.3-70b-versatile`. The direct slot exists only when
-`llm.base_url`, `llm.api_key`, and `llm.news_brief_model` are all present;
-partial configuration is invalid and no endpoint or model is inferred.
-
-L1 and the corroboration-gated single-headline L2 fallback share one 60-second
-budget with a five-second guard and bounded provider retries/Retry-After. L2
-accepts the first transport-valid minimum-length prose, then applies only its
-proper-noun/headline fallback; it has no L1 composer, no Story lines, and at
-most one valid source. L1 produces `quality=ok`; L2 or no-text produces
-`quality=degraded`. Empty selection publishes nothing, and a non-empty
-selection without an eligible lead makes no model call: it can advance a
-complete no-text degraded snapshot only when no healthy LKG exists.
-
-Brief persistence is exactly two singleton tables:
-`news_brief_selection_current` and `news_brief_current`. Slots are aligned to
-UTC half hours. Story publication never waits for an RSS catalog sweep, so a
-new OpenNews fact can enter the debounced Story turn immediately. An empty
-Top Story selection may open the current slot but is not claimable, makes no
-model call, and never completes or overwrites the served payload; a later
-non-empty selection in the same half hour remains claimable. At most the newest
-eligible slot is considered after restart, so older missed slots cannot
-manufacture catch-up churn. A claim freezes the current non-empty selection in
-`active_selection` and holds a 120-second fenced lease. Finalization checks
-that fence and publishes only against the frozen selection, never a later live
-selection. The same row owns bounded slot telemetry and the whole
-`served_payload`. Healthy output advances it; degraded output advances only
-when no healthy payload exists, otherwise it preserves the complete healthy
-LKG without mixing Top Stories, prose, sources, or clocks. The public state is
-exactly `unavailable`, `current`, `degraded`, or `last_known_good`.
-
-`NewsItemPush` is a News-owned durable outbound capability, not a model
-candidate or generic Notifications service. The sole OpenNews Item writer
-creates one outbox row in the same short transaction that first inserts an
-eligible live Item. The same Item transaction creates a title-presentation
-intent for every newly written exact title, whether it came from OpenNews, RSS,
-or recovery. Identity is the deterministic `item_id` over
-`(source_id, source_item_key)`; OpenNews uses `params.id`. Strategy overlap
-therefore creates one Item and one admission. Distinct provider IDs remain
-distinct Item facts, but the shared exact-atom comparison identity admits only
-the first durable leader inside its event-family window. Similar or numerically
-different non-exact atoms remain independent alerts even when Story later
-clusters them together. Recovery-first, pre-epoch, RSS, and
-delivery-unavailable Items never create work or backfill.
-
-The OpenNews Item writer uses its source-local transaction fence and does not
-acquire the Story publication advisory lock. A Story publish may therefore
-finish against its captured prior closure while a new Item/outbox commits; the
-post-commit dirty signal schedules the next deterministic closure. This keeps
-Story publication time and failure outside Item Push admission.
-
-`tracefold.news.exact_atom_identity` is the shared pure comparison module used
-by both Story V2 and Push admission. It owns NFKC/Chinese-width/prefix/URL/
-punctuation/number normalization, the comparison fingerprint, event family,
-and fixed duplicate window. Push caps every family at the OpenNews 12-hour
-active horizon: market telemetry is two hours, disaster six hours, and filing
-or general twelve hours. Push does not import Story projection helpers, run
-Jaccard, read a Story row, or wait for Story publication.
-
-One private `NewsItemTitlePresentation.turn()` prioritizes an exact pending
-title that blocks Push and otherwise resolves FIFO. Chinese input and titles
-over 500 graphemes resolve without a provider. Other titles call the active
-DeepL key once under a 1.5-second absolute deadline, then call the configured
-DeepSeek adapter once under a 5-second deadline if DeepL fails. A permanently
-rejected or quota-exhausted DeepL key is retired in process for future Items;
-the current Item never retries with another DeepL key. Both provider failures
-resolve to the original. Startup resolves every interrupted `resolving` row to
-an explicit original-title fallback.
-
-`NewsItemPush.turn()` can see only a pending delivery whose exact shared title
-decision is resolved. It fences `pending -> sending`, renders the Feishu card,
-performs at most one request, and settles `sent` or `terminal`. Feishu
-`code == 0` is the only success. There is no delivery retry,
-backoff, lease, reaper, or exactly-once provider claim. A pre-fence crash leaves
-pending work; a post-fence or ambiguous interruption is terminalized at startup
-and never resent. Story projection never reads, writes, configures, or joins
-Push state, and Feed/detail expose no Push field.
-
-After any external DeepL, DeepSeek, or Feishu call, failure to settle its fenced
-outcome is fatal to the Workers process root. This is not an application-wide
-business failure: Serve continues from PostgreSQL. It prevents the same process
-from continuing with an unknowable side-effect state; the supervisor restarts
-Workers, whose startup reconciliation converts `resolving`/`sending` ambiguity
-to deterministic fallback/terminal state without repeating the external call.
-
-The complete live News storage boundary is exactly eleven tables:
-`news_sources`, `news_items`, `news_stories`,
-`news_story_members`, `news_projection_summary`,
-`news_brief_selection_current`,
-`news_brief_current`,
-`news_item_title_presentations`, `news_push_state`, `news_push_deliveries`, and
-`news_opennews_incidents`. The
-`20260801_0234` migration removes incremental Story machinery,
-`20260801_0238` adds the durable push baseline and delivery ledger.
-`20260806_0244` adds dedicated provider-score and Story-success clocks.
-`20260807_0246` is historical input to the current cut.
-`20260809_0247` installs public RSS/OpenNews source controls, removes the
-persisted OpenNews gap columns and facet tables, replaces the former Brief
-run/publication tables with the two-singleton slot design, clears rebuildable
-Story/selection state, and deletes incompatible Push payload rows. It is
-irreversible and has no runtime compatibility lane.
-`20260813_0265` is the Strategy-only hard cut. It keeps the then nine-table ownership
-boundary but deactivates legacy full-corpus OpenNews Items, clears and normally
-rebuilds the Story/member/selection closure through the sole normal writer,
-clears incompatible Brief current/LKG state,
-cancels legacy pending/retry Push work, preserves immutable sent-delivery audit
-plus baseline/dedup evidence, and replaces obsolete REST-recovery telemetry with
-truthful unknown-coverage state. Old and new acquisition writers never overlap.
-`20260813_0256` keeps that historical nine-table boundary and adds deterministic,
-rebuildable source/origin `facet_facts` to each `news_stories` row. The sole
-Story writer derives them from the same complete membership closure before the
-Story fingerprint; Feed facets expand this bounded Story-local dimension
-instead of rereading every member Item. Provider-score qualification remains a
-dynamic membership-bounded read, including the short interval after an Item
-expires and before the next atomic Story replacement. Source/origin filters
-and facets bind to that same published Story snapshot, so an Item correction
-cannot mix old facet counts with a new filter identity before replacement.
-`20260813_0257` through `20260813_0260` are historical Story Push migrations;
-their eligibility clocks, scan cursor, and reconcile ring are removed by the
-current Item Push hard cut.
-`20260813_0266` adds the tenth
-News table for typed OpenNews incidents, replaces legacy coverage flags with
-official Strategy-history status, and records immutable live-versus-recovery
-ingest origin. It removes provider-score/assets/freshness Push gates and the
-cursor/reconcile ring, renames the baseline to an enablement epoch, terminalizes
-incompatible unsent v1 deliveries, and historically made Story publication the
-v2 outbox writer. The WSS receiver, database publisher, and status publisher run
-independently; current WSS state and one-hour inbound/Story-visible latency are
-separate from historical incident recovery.
-`20260814_0270` supersedes that Story Push boundary and hard-cuts the two
-existing Push tables in place to Item identity. It preserves completed legacy
-audit and old rendered payloads as audit-only data, terminalizes incompatible
-unsent work, removes Story/retry/lease fields, resets enablement, and adds no
-table.
-`20260815_0271` is the historical offline title-presentation hard cut. It adds the
-eleventh table, terminalizes every pre-cut nonterminal Push row, renames the old
-Push-owned presentation JSON to audit-only legacy data, and binds new Push rows
-to the exact shared title key. It does not backfill old Items or translations,
-call a provider, or retain a compatibility writer/reader.
-`20260815_0272` is the Story V2 hard cut. It replaces Story identity and clears
-only rebuildable Story/selection/Brief state; Item Push remains asynchronous.
-`20260815_0273` is the current offline Push exact-atom hard cut. It reuses the
-same two Push tables, preserves settled v1 audit, terminalizes incompatible
-pre-cut nonterminal rows, resets the admission epoch, adds `suppressed` to the
-zero-retry state machine and an indexed leader lookup, and adds no News table.
-Only new post-epoch live Items receive v2 admission; there is no backfill,
-reclassification, dual reader/writer, migration-time provider call, or send.
-`20260813_0261` replaces Radar's expression index with the STORED generated
-fingerprint and its narrow covering index, preserving all facts and the current
-payload with no dual path.
+Learning plane: `news_event_market_marks` capture t0/+5m/+30m/+4h price and OI
+for candidate events with CEX targets; `tracefold news eval` reports
+precision@push, missed-mover rate, and direction accuracy over stored verdicts;
+`tracefold news replay <hits.json>` replays provider hits through Deduper+Gate
+without a model or broker; `tests/fixtures/news_v3_hits_sample.json` is the
+golden replay corpus.
 
 ### Macro
 

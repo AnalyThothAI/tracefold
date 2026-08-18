@@ -36,7 +36,7 @@ def test_projection_edf_runs_one_earliest_deadline_with_stable_order(monkeypatch
         candidates = (
             _Candidate(ProjectionShard("macro", "rates", 200, 2), ran, stop_event),
             _Candidate(ProjectionShard("news", "bucket", 100, 2), ran, stop_event),
-            _Candidate(ProjectionShard("radar", "1h:all", 100, 1), ran, stop_event),
+            _Candidate(ProjectionShard("profile", "1h:all", 100, 1), ran, stop_event),
         )
         telemetry = TelemetryRegistry()
         clock = iter((500, 501))
@@ -46,7 +46,7 @@ def test_projection_edf_runs_one_earliest_deadline_with_stable_order(monkeypatch
         return telemetry.render_prometheus_text()
 
     metrics = asyncio.run(scenario())
-    assert 'tracefold_worker_projection_deadline_misses_total{domain="radar",worker="projection_edf"} 1.0' in metrics
+    assert 'tracefold_worker_projection_deadline_misses_total{domain="profile",worker="projection_edf"} 1.0' in metrics
 
 
 def test_projection_edf_rereads_all_domains_after_each_productive_turn() -> None:
@@ -71,7 +71,7 @@ def test_projection_edf_rereads_all_domains_after_each_productive_turn() -> None
     async def scenario() -> None:
         await run_projection_edf(
             (
-                _Backlog("radar", [100, 400], 10),
+                _Backlog("news", [100, 400], 10),
                 _Backlog("profile", [200], 20),
                 _Backlog("macro", [300], 30),
             ),
@@ -84,7 +84,7 @@ def test_projection_edf_rereads_all_domains_after_each_productive_turn() -> None
 
     asyncio.run(scenario())
 
-    assert ran == ["radar:100", "profile:200", "macro:300", "radar:400"]
+    assert ran == ["news:100", "profile:200", "macro:300", "news:400"]
 
 
 def test_productive_projection_repolls_without_idle_delay(monkeypatch) -> None:
@@ -95,7 +95,7 @@ def test_productive_projection_repolls_without_idle_delay(monkeypatch) -> None:
 
         async def peek(self, *, now_ms: int) -> ProjectionShard:
             del now_ms
-            return ProjectionShard("radar", "1h:all", 100, 1)
+            return ProjectionShard("profile", "1h:all", 100, 1)
 
         async def execute(self, shard: ProjectionShard) -> bool:
             del shard
@@ -130,7 +130,7 @@ def test_nonproductive_projection_uses_idle_delay(monkeypatch) -> None:
     class _NoProgressCandidate:
         async def peek(self, *, now_ms: int) -> ProjectionShard:
             del now_ms
-            return ProjectionShard("radar", "1h:all", 100, 1)
+            return ProjectionShard("profile", "1h:all", 100, 1)
 
         async def execute(self, shard: ProjectionShard) -> bool:
             del shard
@@ -160,14 +160,14 @@ def test_retained_worker_metric_names_and_labels_have_no_framework_dependency() 
     telemetry = TelemetryRegistry()
     telemetry.record_transaction_seconds("projection_edf", 0.1)
     telemetry.set_projection_rows("projection_edf", "source", 10)
-    telemetry.set_projection_bytes("token_radar_current", "output", 20_480)
+    telemetry.set_projection_bytes("news_brief_current", "output", 20_480)
     telemetry.record_projection_cache("projection_edf", "hit")
     telemetry.set_queue_oldest_delay_seconds("news_acquisition", "sources", 2.0)
 
     metrics = telemetry.render_prometheus_text()
     assert 'tracefold_worker_transaction_seconds_count{worker="projection_edf"} 1.0' in metrics
     assert 'tracefold_worker_projection_rows{stage="source",worker="projection_edf"} 10.0' in metrics
-    assert 'tracefold_worker_projection_bytes{direction="output",worker="token_radar_current"} 20480.0' in metrics
+    assert 'tracefold_worker_projection_bytes{direction="output",worker="news_brief_current"} 20480.0' in metrics
     assert 'tracefold_worker_projection_cache_total{outcome="hit",worker="projection_edf"} 1.0' in metrics
     assert 'tracefold_worker_queue_oldest_delay_seconds{queue="sources",worker="news_acquisition"} 2.0' in metrics
 

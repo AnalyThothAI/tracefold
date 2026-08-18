@@ -537,17 +537,17 @@ def test_real_workers_never_returning_control_operation_is_fatal() -> None:
         _ensure_process_stopped(process)
 
 
-def test_real_workers_news_story_native_timeout_recovers_without_root_restart() -> None:
+def test_real_workers_projection_cpu_native_timeout_recovers_without_root_restart() -> None:
     prepare_postgres_database()
     port = _free_port()
-    process = _start_workers_process("news_bounded_recovery", port)
+    process = _start_workers_process("cpu_bounded_recovery", port)
     try:
         _wait_ready(process, port)
         _wait_for_outputs(
             process,
             (
-                "NEWS_STORY_BOUNDED_TIMEOUT",
-                "NEWS_STORY_RECOVERED",
+                "CPU_BOUNDED_TIMEOUT",
+                "CPU_RECOVERED",
             ),
             timeout_seconds=12.0,
         )

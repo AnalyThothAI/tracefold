@@ -1,10 +1,9 @@
 import { getAuthToken } from "@lib/api/client";
-import { radarScrollTopFromState } from "@shared/routing/radarNavigationState";
 import { useMarketSubscription } from "@shared/socket/useMarketSubscription";
 import * as PageState from "@shared/ui/PageState";
 import { TokenCasePanel } from "@shared/ui/case-file";
 import { useMemo } from "react";
-import { useLocation, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 
 import type { TargetRef } from "../../../domain/tokenTarget";
 import {
@@ -21,7 +20,6 @@ import {
 } from "../state/tokenCaseRouteState";
 
 export function TokenCaseRoute({ token: tokenProp }: { token?: string } = {}) {
-  const location = useLocation();
   const { targetType, targetId } = useParams<{ targetType: string; targetId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const routeState = parseTokenCaseRouteState(searchParams);
@@ -102,7 +100,6 @@ export function TokenCaseRoute({ token: tokenProp }: { token?: string } = {}) {
   return (
     <TokenCasePanel
       vm={vm}
-      radarReturnScrollTop={radarScrollTopFromState(location.state)}
       onWindowChange={(window) => updateRoute({ window })}
       onLoadMorePosts={() => {
         if (postsQuery.hasNextPage) {

@@ -51,7 +51,6 @@ describe("data router architecture", () => {
     ].map(readSource);
     const importSources = shellSources.flatMap(importSpecifiers);
     const pageExportingFeatureBarrels = [
-      "@features/live",
       "@features/macro",
       "@features/news",
       "@features/search",
@@ -97,11 +96,16 @@ describe("data router architecture", () => {
   it("keeps only the current public News route family", () => {
     const routerSource = readSource("routes/router.tsx");
 
-    expect(routerSource).toContain('path: "news/stories/:storyId"');
-    expect(routerSource).toContain('path: "news/brief"');
+    expect(routerSource).toContain('path: "news"');
+    expect(routerSource).toContain('path: "news/events/:eventId"');
     expect(routerSource).toContain('path: "news/status"');
-    expect(routerSource).toContain('path: "news/sources"');
+    expect(routerSource).not.toContain('path: "news/stories/:storyId"');
+    expect(routerSource).not.toContain('path: "news/brief"');
+    expect(routerSource).not.toContain('path: "news/sources"');
     expect(routerSource).not.toContain('path: "news/items/:newsItemId"');
+    expect(routerSource).not.toContain("news/stories");
+    expect(routerSource).not.toContain("news/brief");
+    expect(routerSource).not.toContain("news/sources");
   });
 
   it("does not keep the retired Signal Lab page routes or navigation target", () => {

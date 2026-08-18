@@ -8,8 +8,8 @@ from fastapi import APIRouter
 from tracefold.app.http import (
     routes_events,
     routes_macro,
+    routes_market,
     routes_news,
-    routes_radar,
     routes_search,
     routes_status,
     routes_token_images,
@@ -22,7 +22,7 @@ def create_api_router(status_payload: Callable[[Any], dict[str, Any]]) -> APIRou
     router.include_router(routes_token_images.router)
     router.include_router(routes_events.router)
     router.include_router(routes_search.router)
-    router.include_router(routes_radar.router)
+    router.include_router(routes_market.router)
     router.include_router(routes_macro.router)
     router.include_router(routes_news.router)
     return router

@@ -26,7 +26,6 @@ from tracefold.app.workers_runtime_collector import (
     _validate_sample,
     validate_workers_runtime_collection,
 )
-from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.projection_frontier import FRONTIER_SPECS
@@ -161,14 +160,14 @@ def test_metrics_retry_is_finite_and_preserves_the_failure_stage(monkeypatch: py
     assert failure.value.cause_type == "TimeoutError"
 
 
-def test_collection_metadata_reports_only_remote_brief_key_booleans(monkeypatch, tmp_path: Path) -> None:
+def test_collection_metadata_reports_only_redacted_news_enablement_booleans(monkeypatch, tmp_path: Path) -> None:
     settings = Settings(
         llm={
             "api_key": "deepseek-secret",
             "base_url": "https://deepseek.test/v1",
-            "news_brief_model": "deepseek-chat",
-            "groq_api_key": "groq-secret",
-        }
+            "news_triage_model": "deepseek-chat",
+        },
+        news={"broker": {"url": "amqp://guest:guest@127.0.0.1:5672/"}},
     )
     settings.set_config_dir(tmp_path)
     monkeypatch.setattr(collector_module, "_git_head", lambda _root: "a" * 40)
@@ -177,9 +176,17 @@ def test_collection_metadata_reports_only_remote_brief_key_booleans(monkeypatch,
     enablement = metadata["configuration"]["redacted_enablement"]
 
     assert "model_configured" not in enablement
-    assert enablement["news_rss_enabled"] is False
-    assert enablement["news_brief_direct_configured"] is True
-    assert enablement["news_brief_groq_configured"] is True
+    assert set(enablement) == {
+        "collector_enabled",
+        "news_enabled",
+        "macro_enabled",
+        "news_broker_configured",
+        "news_triage_model_configured",
+    }
+    assert enablement["news_broker_configured"] is True
+    assert enablement["news_triage_model_configured"] is True
+    assert all(isinstance(value, bool) for value in enablement.values())
+    assert "amqp://" not in json.dumps(metadata)
 
 
 class _VirtualClock:
@@ -615,7 +622,7 @@ def test_collection_rejects_negative_restart_after_all_hashes_and_summary_are_re
         (("postgres", "worker_connections"), 5, "postgres_worker_connection_limit"),
         (
             ("postgres", "max_transaction_seconds"),
-            NEWS_STORY_PUBLISH_TIMEOUT_SECONDS + 0.1,
+            collector_module._MAX_TRANSACTION_SECONDS + 0.1,
             "postgres_transaction_duration",
         ),
         (("telemetry", "resource_active", "finite_operation"), 4.0, "worker_resource_active_limit"),

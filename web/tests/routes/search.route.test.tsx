@@ -2,7 +2,7 @@ import type { SearchInspectData } from "@lib/types";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { tokenCaseFixture } from "@tests/fixtures/tokenCaseFixture";
 import { ok } from "@tests/msw/fixtures";
-import { mockLiveRadarRoute } from "@tests/msw/scenarios";
+import { mockAppRoutes } from "@tests/msw/scenarios";
 import { renderAppRoute } from "@tests/render/renderRoute";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -15,7 +15,7 @@ describe("search route", () => {
 
   beforeEach(() => {
     setupAppRouteTest((mock) => {
-      mockLiveRadarRoute(mock);
+      mockAppRoutes(mock);
       const baseGetApi = mock.getApiImpl;
       mock.getApiImpl = async (path, options) => {
         if (path === "/api/search/inspect") {

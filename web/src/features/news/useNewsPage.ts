@@ -5,26 +5,45 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 type NewsSchemas = components["schemas"];
 
-export type NewsLevel = NewsSchemas["NewsStoryData"]["level"];
-export type NewsStory = NewsSchemas["NewsStoryData"];
 export type NewsFeed = NewsSchemas["NewsFeedData"];
-export type NewsStoryMember = NewsSchemas["NewsStoryMemberData"];
-export type NewsStoryDetail = NewsSchemas["NewsStoryDetailData"];
-export type BriefPublication = NewsSchemas["NewsBriefPublicationData"];
-export type BriefTopStory = NewsSchemas["NewsBriefTopStoryData"];
-export type NewsBrief = NewsSchemas["NewsBriefData"];
+export type NewsFeedEvent = NewsSchemas["NewsFeedEventData"];
+export type NewsFeedSort = NewsSchemas["NewsFeedFiltersData"]["sort"];
+export type NewsEvent = NewsSchemas["NewsEventData"];
+export type NewsEventDetail = NewsSchemas["NewsEventDetailData"];
+export type NewsEventMember = NewsSchemas["NewsEventMemberData"];
+export type NewsVerdict = NewsSchemas["NewsVerdictData"];
+export type NewsDelivery = NewsSchemas["NewsDeliveryData"];
+export type NewsDeliverySummary = NewsSchemas["NewsDeliverySummaryData"];
+export type NewsPresentation = NewsSchemas["NewsPresentationData"];
+export type NewsMarketMark = NewsSchemas["NewsMarketMarkData"];
+export type NewsTriageSummary = NewsSchemas["NewsTriageSummaryData"];
 export type NewsStatus = NewsSchemas["NewsStatusData"];
-export type NewsRealtimeStatus = NewsSchemas["NewsRealtimeStatusResponseData"];
-export type NewsSource = NewsSchemas["NewsSourceData"];
-export type NewsSources = NewsSchemas["NewsSourcesData"];
+export type NewsIncident = NewsSchemas["NewsIncidentData"];
+
+export type NewsFeedPriority = "high" | "normal";
+export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
+
+export const NEWS_FEED_PRIORITIES: readonly NewsFeedPriority[] = ["high", "normal"];
+export const NEWS_FEED_DECISIONS: readonly NewsFeedDecision[] = [
+  "push",
+  "escalate",
+  "drop",
+  "throttled",
+  "degraded",
+];
+export const NEWS_FEED_PAGE_SIZE = 25;
+export const NEWS_FEED_REFETCH_MS = 3_000;
+export const NEWS_STATUS_REFETCH_MS = 15_000;
+export const NEWS_EVENT_REFETCH_MS = 15_000;
 
 export type NewsFeedFilters = {
-  category: string | null;
-  level: NewsLevel | null;
-  providerScoreGt: number | null;
+  admission: string | null;
+  decision: NewsFeedDecision | null;
+  family: string | null;
+  priority: NewsFeedPriority | null;
   q: string;
-  reportingOrigin: string | null;
-  sort: "importance" | "latest";
+  sort: NewsFeedSort;
+  symbol: string | null;
 };
 
 const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: string | null) =>
@@ -32,22 +51,24 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
     await getApi<NewsFeed>("/api/news/feed", {
       etagKey: `news-feed:${JSON.stringify([
         filters.q,
-        filters.category,
-        filters.level,
-        filters.reportingOrigin,
-        filters.providerScoreGt,
+        filters.family,
+        filters.admission,
+        filters.priority,
+        filters.decision,
+        filters.symbol,
         filters.sort,
         cursor ?? "first",
       ])}`,
       params: {
-        category: filters.category,
+        admission: filters.admission,
         cursor,
-        level: filters.level,
-        limit: 25,
-        provider_score_gt: filters.providerScoreGt,
+        decision: filters.decision,
+        family: filters.family,
+        limit: NEWS_FEED_PAGE_SIZE,
+        priority: filters.priority,
         q: filters.q,
-        reporting_origin: filters.reportingOrigin,
         sort: filters.sort,
+        symbol: filters.symbol,
       },
       token,
     })
@@ -56,16 +77,9 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
 export const useNewsFeedWithToken = (token: string, filters: NewsFeedFilters) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.newsFeed(
-      filters.q,
-      filters.category,
-      filters.level,
-      filters.reportingOrigin,
-      filters.providerScoreGt,
-      filters.sort,
-    ),
+    queryKey: queryKeys.newsFeed(filters),
     queryFn: () => fetchNewsFeed(token, filters, null),
-    refetchInterval: 3_000,
+    refetchInterval: NEWS_FEED_REFETCH_MS,
     staleTime: 2_000,
   });
 
@@ -77,51 +91,26 @@ export const useNewsFeedHistoryWithToken = (
 ) =>
   useInfiniteQuery({
     enabled: Boolean(token && firstCursor && enabled),
-    queryKey: queryKeys.newsFeedHistory(
-      filters.q,
-      filters.category,
-      filters.level,
-      filters.reportingOrigin,
-      filters.providerScoreGt,
-      filters.sort,
-      firstCursor ?? "",
-    ),
+    queryKey: queryKeys.newsFeedHistory(filters, firstCursor ?? ""),
     queryFn: ({ pageParam }) => fetchNewsFeed(token, filters, pageParam),
     initialPageParam: firstCursor ?? "",
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     staleTime: Number.POSITIVE_INFINITY,
   });
 
-export const useNewsStoryWithToken = (token: string, storyId?: string | null) =>
-  useInfiniteQuery({
-    enabled: Boolean(token && storyId),
-    queryKey: queryKeys.newsStory(storyId ?? ""),
-    queryFn: async ({ pageParam }) =>
-      (
-        await getApi<NewsStoryDetail>(`/api/news/stories/${encodeURIComponent(storyId ?? "")}`, {
-          params: { members_cursor: pageParam, members_limit: 25 },
-          token,
-        })
-      ).data,
-    initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) => lastPage.members_page.next_cursor ?? undefined,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
-
-export const useNewsBriefWithToken = (token: string) =>
+export const useNewsEventWithToken = (token: string, eventId?: string | null) =>
   useQuery({
-    enabled: Boolean(token),
-    queryKey: queryKeys.newsBrief(),
+    enabled: Boolean(token && eventId),
+    queryKey: queryKeys.newsEvent(eventId ?? ""),
     queryFn: async () =>
       (
-        await getApi<NewsBrief>("/api/news/brief", {
-          etagKey: "news-brief",
+        await getApi<NewsEventDetail>(`/api/news/events/${encodeURIComponent(eventId ?? "")}`, {
+          etagKey: `news-event:${eventId ?? ""}`,
           token,
         })
       ).data,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: NEWS_EVENT_REFETCH_MS,
+    staleTime: 5_000,
   });
 
 export const useNewsStatusWithToken = (token: string) =>
@@ -135,39 +124,6 @@ export const useNewsStatusWithToken = (token: string) =>
           token,
         })
       ).data,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
-
-export const useNewsRealtimeStatusWithToken = (token: string) =>
-  useQuery({
-    enabled: Boolean(token),
-    queryKey: queryKeys.newsRealtimeStatus(),
-    queryFn: async () =>
-      (
-        await getApi<NewsRealtimeStatus>("/api/news/status", {
-          etagKey: "news-realtime-status",
-          params: { view: "realtime" },
-          token,
-        })
-      ).data,
-    refetchInterval: 3_000,
-    staleTime: 2_000,
-  });
-
-export const useNewsSourcesWithToken = (token: string) =>
-  useInfiniteQuery({
-    enabled: Boolean(token),
-    queryKey: queryKeys.newsSources(),
-    queryFn: async ({ pageParam }) =>
-      (
-        await getApi<NewsSources>("/api/news/sources", {
-          params: { cursor: pageParam, limit: 100 },
-          token,
-        })
-      ).data,
-    initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) => lastPage.page.next_cursor ?? undefined,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: NEWS_STATUS_REFETCH_MS,
+    staleTime: 5_000,
   });

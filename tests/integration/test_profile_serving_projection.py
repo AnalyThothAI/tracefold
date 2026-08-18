@@ -10,7 +10,7 @@ from tracefold.market.profiles.profile_projection import _load_profile_snapshot
 NOW_MS = 1_800_000_000_000
 
 
-def test_profile_serving_is_owned_by_stable_registry_identity_not_radar_or_recency() -> None:
+def test_profile_serving_is_owned_by_stable_registry_identity_not_recency() -> None:
     conn = connect_postgres_test()
     try:
         reset_postgres_schema(conn)
@@ -41,7 +41,7 @@ def test_profile_serving_is_owned_by_stable_registry_identity_not_radar_or_recen
     assert missing["serving"] is False
 
 
-def test_missing_profile_backfill_reads_registry_and_identity_without_radar_rows() -> None:
+def test_missing_profile_backfill_reads_registry_and_identity_only() -> None:
     conn = connect_postgres_test()
     try:
         reset_postgres_schema(conn)

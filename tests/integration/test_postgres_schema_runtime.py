@@ -9,6 +9,7 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.market.macro_market_repository import GeneralMarketRepository
+from tracefold.platform.postgres.postgres_audit import NEWS_TABLES
 from tracefold.platform.postgres.postgres_migrations import (
     alembic_config,
     latest_migration_version,
@@ -79,9 +80,9 @@ RETIRED_BACKEND_TABLES = {
     "news_story_agent_briefs",
     "news_story_agent_runs",
 }
-PROFESSIONAL_NEWS_TABLES = {
+PROFESSIONAL_NEWS_TABLES = set(NEWS_TABLES)
+LEGACY_NEWS_TABLES = {
     "news_sources",
-    "news_items",
     "news_stories",
     "news_story_members",
     "news_projection_summary",
@@ -90,9 +91,6 @@ PROFESSIONAL_NEWS_TABLES = {
     "news_item_title_presentations",
     "news_push_state",
     "news_push_deliveries",
-    "news_opennews_incidents",
-}
-LEGACY_NEWS_TABLES = {
     "news_story_facet_counts",
     "news_source_facet_counts",
     "news_brief_runs",
@@ -151,47 +149,47 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
             ).fetchall()
         }
-        news_source_columns = {
+        news_event_columns = {
             row["column_name"]
             for row in conn.execute(
                 """
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name = 'news_sources'
+                  AND table_name = 'news_events'
                 """
             ).fetchall()
         }
-        news_projection_summary_columns = {
+        news_delivery_columns = {
             row["column_name"]
             for row in conn.execute(
                 """
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name = 'news_projection_summary'
+                  AND table_name = 'news_deliveries'
                 """
             ).fetchall()
         }
-        news_story_columns = {
+        news_control_columns = {
             row["column_name"]
             for row in conn.execute(
                 """
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name = 'news_stories'
+                  AND table_name = 'news_control_state'
                 """
             ).fetchall()
         }
-        news_brief_current_columns = {
+        news_ingest_columns = {
             row["column_name"]
             for row in conn.execute(
                 """
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name = 'news_brief_current'
+                  AND table_name = 'news_ingest_state'
                 """
             ).fetchall()
         }
@@ -317,6 +315,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                 (
                     [
                         "token_profile_current_dirty_targets",
+                        "token_radar_current",
                         "token_radar_dirty_targets",
                         "token_radar_rank_source_events",
                         "token_radar_current_rows",
@@ -340,8 +339,9 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
                     'idx_asset_identity_evidence_profile_source',
                     'idx_asset_identity_evidence_asset_provider_lookup',
                     'idx_market_observations_projection_history',
-                    'ix_news_items_opennews_live_latency',
-                    'ix_news_stories_created'
+                    'ix_news_events_opened',
+                    'ix_news_events_search',
+                    'ix_news_event_bands_lookup'
                   )
                 """
             ).fetchall()
@@ -395,27 +395,15 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
               AND indexname = 'ix_news_items_member_provider_score'
             """
         ).fetchone()
-        news_push_read_indexes = {
+        news_v3_indexes = {
             str(row["indexname"]): str(row["indexdef"])
             for row in conn.execute(
                 """
                 SELECT indexname, indexdef
                   FROM pg_indexes
                  WHERE schemaname = 'public'
-                   AND indexname = ANY(%s)
-                """,
-                (
-                    [
-                        "ix_news_item_title_presentations_pending",
-                        "ix_news_item_title_presentations_resolving",
-                        "ix_news_item_title_presentations_resolved",
-                        "ix_news_push_deliveries_pending",
-                        "ix_news_push_deliveries_attempted",
-                        "ix_news_push_deliveries_completed",
-                        "ix_news_push_deliveries_exact_atom_leader",
-                        "ix_news_push_deliveries_suppressed_recent",
-                    ],
-                ),
+                   AND indexname LIKE 'ix_news_%%'
+                """
             ).fetchall()
         }
         projection_eligibility_indexes = {
@@ -464,7 +452,6 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "token_intent_resolutions",
         "market_ticks",
         "enriched_events",
-        "token_radar_current",
         "market_instruments",
         "market_observations",
         "market_settlements",
@@ -491,77 +478,43 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert RETIRED_MACRO_RESEARCH_TABLES.isdisjoint(tables)
     assert {table for table in tables if table.startswith("news_")} == PROFESSIONAL_NEWS_TABLES
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
-    assert news_source_columns == {
-        "source_id",
-        "name",
-        "tier",
-        "lang",
-        "source_kind",
-        "enabled",
-        "last_fetch_started_at_ms",
-        "last_fetch_finished_at_ms",
-        "last_success_at_ms",
-        "last_http_status",
-        "consecutive_failures",
-        "last_error",
-        "live_connected",
-        "last_connected_at_ms",
-        "last_disconnected_at_ms",
-        "last_accepted_strategy_trigger_at_ms",
-        "strategy_history_status",
-        "last_history_check_at_ms",
-        "observed_strategy_provenance",
-        "feed_url",
-        "refresh_interval_seconds",
-        "etag",
-        "last_modified",
-        "next_fetch_at_ms",
-        "claim_token",
-        "claim_lease_expires_at_ms",
-        "last_outcome",
-        "last_rejection_counts",
-        "last_items_seen",
-        "last_items_accepted",
+    assert {
+        "event_id",
+        "family",
+        "leader_item_id",
+        "leader_title",
+        "comparison_fingerprint",
+        "storyline_key",
+        "admission",
+        "priority",
+        "opened_at_ms",
+        "published_at_ms",
+        "ingest_mode",
+        "search_doc",
+    } <= news_event_columns
+    assert {"story_id", "canonical_key", "facet_facts", "identity_evidence"}.isdisjoint(news_event_columns)
+    assert news_delivery_columns == {
+        "event_id",
+        "kind",
+        "state",
+        "card",
+        "receipt",
+        "error_code",
+        "attempted_at_ms",
+        "settled_at_ms",
         "created_at_ms",
-        "updated_at_ms",
     }
-    assert news_projection_summary_columns == {
+    assert news_control_columns == {"singleton_key", "paused", "mutes", "updated_at_ms"}
+    assert news_ingest_columns == {
         "singleton_key",
-        "active_item_count",
-        "active_story_count",
-        "invalid_owner_count",
-        "invalid_story_aggregate_count",
-        "newest_item_at_ms",
-        "newest_story_at_ms",
-        "last_material_change_at_ms",
-        "updated_at_ms",
-        "input_fingerprint",
-        "projection_version",
-        "last_attempt_at_ms",
-        "last_error",
-        "last_success_at_ms",
-    }
-    assert "facet_facts" in news_story_columns
-    assert "identity_evidence" in news_story_columns
-    assert "canonical_key" not in news_story_columns
-    assert news_brief_current_columns == {
-        "singleton_key",
-        "slot_at_ms",
-        "slot_status",
-        "next_due_at_ms",
-        "completed_at_ms",
-        "lease_owner",
-        "lease_token",
-        "lease_expires_at_ms",
-        "attempt_count",
-        "failure_count",
-        "model_outcome",
-        "pointer_action",
+        "connected",
+        "last_frame_at_ms",
+        "last_publish_at_ms",
         "last_error_code",
-        "last_attempt_at_ms",
-        "active_selection",
-        "served_payload",
-        "created_at_ms",
+        "configured_strategy_ids",
+        "provider_enabled_strategy_ids",
+        "strategy_warnings",
+        "broker_snapshot",
         "updated_at_ms",
     }
     assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
@@ -573,29 +526,19 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     assert radar_publication_columns == set()
     assert radar_first_seen_columns == set()
     assert radar_frontier_columns == set()
-    assert radar_current_columns == {
-        "singleton_key",
-        "snapshot_fingerprint",
-        "served_payload",
-        "updated_at_ms",
-    }
+    assert radar_current_columns == set()
     assert retired_projection_tables == set()
     assert performance_indexes == {
         "idx_asset_identity_evidence_profile_source",
         "idx_asset_identity_evidence_asset_provider_lookup",
         "idx_market_observations_projection_history",
-        "ix_news_items_opennews_live_latency",
-        "ix_news_stories_created",
+        "ix_news_events_opened",
+        "ix_news_events_search",
+        "ix_news_event_bands_lookup",
     }
     assert resolution_lookup_index is not None
     assert "INCLUDE (event_id)" in resolution_lookup_index["indexdef"]
-    assert radar_event_index is not None
-    assert "(timestamp_ms, event_id)" in radar_event_index["indexdef"]
-    assert (
-        "INCLUDE (token_radar_text_fingerprint, received_at_ms, created_at_ms, action, author_handle)"
-        in radar_event_index["indexdef"]
-    )
-    assert "md5" not in radar_event_index["indexdef"]
+    assert radar_event_index is None
     assert macro_market_projection_index is not None
     assert (
         "(dataset_id, ((observed_at_ms / 86400000)) DESC, observed_at_ms DESC, "
@@ -605,29 +548,34 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "INCLUDE (instrument_id, source_id, field_name, value_numeric, unit, "
         "published_at_ms, trust_tier, source_url, fact_hash)" in macro_market_projection_index["indexdef"]
     )
-    assert radar_fingerprint_column is not None
-    assert radar_fingerprint_column["is_generated"] == "ALWAYS"
-    assert "md5" in radar_fingerprint_column["generation_expression"]
-    assert "regexp_replace" in radar_fingerprint_column["generation_expression"]
-    assert "translate" in radar_fingerprint_column["generation_expression"]
-    assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ" in radar_fingerprint_column["generation_expression"]
-    assert radar_resolution_index is not None
-    assert "(event_id, intent_id, decision_time_ms, created_at_ms, resolution_id)" in radar_resolution_index["indexdef"]
-    assert "INCLUDE (resolution_status, target_type, target_id)" in radar_resolution_index["indexdef"]
+    assert radar_fingerprint_column is None
+    assert radar_resolution_index is None
     assert news_member_score_index is None
-    assert set(news_push_read_indexes) == {
-        "ix_news_item_title_presentations_pending",
-        "ix_news_item_title_presentations_resolving",
-        "ix_news_item_title_presentations_resolved",
-        "ix_news_push_deliveries_pending",
-        "ix_news_push_deliveries_attempted",
-        "ix_news_push_deliveries_completed",
-        "ix_news_push_deliveries_exact_atom_leader",
-        "ix_news_push_deliveries_suppressed_recent",
-    }
-    assert "attempted_at_ms" in news_push_read_indexes["ix_news_push_deliveries_attempted"]
-    assert "source_title_fingerprint" in news_push_read_indexes["ix_news_push_deliveries_attempted"]
-    assert "state = 'pending'" in news_push_read_indexes["ix_news_item_title_presentations_pending"]
+    assert {
+        "ix_news_incidents_open",
+        "ix_news_incidents_recovery",
+        "ix_news_items_published",
+        "ix_news_events_opened",
+        "ix_news_events_admission",
+        "ix_news_events_expires",
+        "ix_news_events_storyline",
+        "ix_news_events_fingerprint",
+        "ix_news_events_search",
+        "ix_news_events_unpublished",
+        "ix_news_event_members_item",
+        "ix_news_event_bands_lookup",
+        "ix_news_event_bands_expires",
+        "ix_news_event_assets_symbol",
+        "ix_news_verdicts_stage_created",
+        "ix_news_verdicts_final",
+        "ix_news_deliveries_state",
+        "ix_news_deliveries_sent",
+        "ix_news_marks_due",
+    } <= set(news_v3_indexes)
+    retired_index_prefixes = ("ix_news_push_", "ix_news_item_title_", "ix_news_stories")
+    assert not any(name.startswith(retired_index_prefixes) for name in news_v3_indexes)
+    assert "state = 'sent'" in news_v3_indexes["ix_news_deliveries_sent"]
+    assert "gin" in news_v3_indexes["ix_news_events_search"].lower()
     assert projection_eligibility_indexes == {
         "idx_macro_module_frontiers_eligible",
         "idx_token_profile_projection_frontiers_eligible",
@@ -642,7 +590,7 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
     }
     assert terminal_owner_constraint is not None
     assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260815_0273"
+    assert version == latest_migration_version() == "20260818_0275"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -667,7 +615,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260815_0273"
+    assert version == latest_migration_version() == "20260818_0275"
 
 
 def test_projection_eligibility_migration_preserves_material_deadlines_and_schedules_rechecks(
@@ -1119,7 +1067,7 @@ def test_macro_exact_schema_hard_cut_repairs_an_already_applied_reader_migration
 
         assert conn.execute("SELECT count(*) AS count FROM macro_module_current").fetchone()["count"] == 0
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
-        assert version == latest_migration_version() == "20260815_0273"
+        assert version == latest_migration_version() == "20260818_0275"
         with pytest.raises(CheckViolation):
             conn.execute(
                 """

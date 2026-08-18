@@ -26,9 +26,10 @@ test("token route renders the HANSA case dossier and loads another post page", a
     return routeWindow.__routeBackSentinel;
   });
 
-  await tokenCase.getByRole("link", { name: "返回 Token Radar" }).click();
+  await tokenCase.getByRole("link", { name: "返回 Search" }).click();
 
-  await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
+  await expect(page).toHaveURL(/\/search\?q=%24HANSA/);
+  await expect(page.getByRole("region", { name: "Token case" })).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(

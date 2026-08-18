@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,73 +7,85 @@ import { describe, expect, it } from "vitest";
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 describe("News feed density contract", () => {
-  it("clamps feed headlines to two lines and overlong detail titles to four", () => {
-    const feedCss = readSource("src/features/news/newsFeed.css");
-    const detailCss = readSource("src/features/news/newsDetail.css");
-    const headlineRule = cssRule(feedCss, ".news-story-title h2");
-    const summaryRule = cssRule(feedCss, ".news-story-summary");
-    const detailTitleRule = cssRule(detailCss, ".news-story-hero h1.is-clamped");
+  it("clamps Event feed headlines and context lines to two lines", () => {
+    const rowCss = readSource("src/features/news/newsEventRow.css");
+    const headlineRule = cssRule(rowCss, ".news-event-title h2");
+    const contextRule = cssRule(rowCss, ".news-event-leader-title,\n  .news-event-context-line");
 
     expect(headlineRule).toContain("display: -webkit-box");
     expect(headlineRule).toContain("overflow: hidden");
     expect(headlineRule).toContain("-webkit-box-orient: vertical");
     expect(headlineRule).toContain("-webkit-line-clamp: 2");
-    expect(summaryRule).toContain("-webkit-line-clamp: 2");
-    expect(detailTitleRule).toContain("-webkit-line-clamp: 4");
+    expect(contextRule).toContain("-webkit-line-clamp: 2");
   });
 
   it("keeps News case-detail chrome and content in adjacent content-sized rows", () => {
-    const page = readSource("src/features/news/NewsPage.tsx");
+    const detailPage = readSource("src/features/news/NewsEventDetailPage.tsx");
+    const feedPage = readSource("src/features/news/NewsPage.tsx");
     const detailCss = readSource("src/features/news/newsDetail.css");
     const shellRule = cssRule(detailCss, ".news-panel.news-detail-shell");
 
-    expect(page.match(/className="radar-panel news-panel news-detail-shell"/g)).toHaveLength(2);
+    expect(detailPage.match(/className="news-panel news-detail-shell"/g)).toHaveLength(1);
+    expect(detailPage).toContain('data-page-archetype="case"');
+    expect(detailPage).toContain("RouteBackLink");
+    expect(feedPage).not.toContain("news-detail-shell");
+    expect(feedPage).not.toContain("radar-panel");
     expect(shellRule).toContain("grid-template-rows: none");
     expect(shellRule).toContain("grid-auto-rows: max-content");
   });
 
-  it("keeps compact cards readable and moves factor math behind a row-local disclosure", () => {
+  it("keeps compact Event rows readable with server-owned triage and delivery facts", () => {
     const page = readSource("src/features/news/NewsPage.tsx");
+    const row = readSource("src/features/news/NewsEventRow.tsx");
     const chromeCss = readSource("src/features/news/news.css");
 
     expect(page).toContain('data-feed-density="compact"');
     expect(page).toMatch(
       /className="news-feed-toolbar"[\s\S]*?<NewsSectionTabs[\s\S]*?<NewsFeedControls/,
     );
-    expect(cssRule(chromeCss, ".news-story-shell")).toContain("gap: 0.45rem");
+    expect(cssRule(chromeCss, ".news-feed-shell")).toContain("gap: 0.45rem");
     expect(cssRule(chromeCss, ".news-feed-toolbar")).toContain("justify-content: space-between");
-    expect(page).toMatch(
-      /className="news-story-classification"[\s\S]*?<OpenNewsScoreBadge[\s\S]*?news-severity/,
+    expect(row).toMatch(
+      /className="news-event-classification"[\s\S]*?news-event-priority[\s\S]*?news-event-decision[\s\S]*?news-event-admission[\s\S]*?<OpenNewsScoreBadge/,
     );
-    expect(page).toMatch(/<OpenNewsScoreBadge score={story\.provider_evidence/);
-    expect(page).toMatch(
-      /<details className="news-story-why">[\s\S]*?<summary>[\s\S]*?为什么重要[\s\S]*?Tracefold/,
-    );
-    expect(page).not.toContain('<details className="news-story-why" open>');
+    expect(row).toMatch(/<OpenNewsScoreBadge score={event\.provider_score_max}/);
+    expect(row).toMatch(/<NewsTriageStrip triage={triage}/);
+    expect(row).toMatch(/<NewsDeliveryState delivery={event\.delivery/);
+    expect(row).not.toMatch(/importance_score|identity_evidence|provider_evidence/);
   });
 
-  it("keeps the public Brief cards shrinkable and wraps its mobile header", () => {
-    const briefCss = readSource("src/features/news/newsBrief.css");
-    const responsiveCss = readSource("src/features/news/newsDetailResponsive.css");
+  it("splits the Event row owner CSS from the feed shell and keeps both under budget", () => {
+    const feedCss = readSource("src/features/news/newsFeed.css");
+    const rowCss = readSource("src/features/news/newsEventRow.css");
 
-    expect(cssRule(briefCss, ".news-brief-story")).toContain("min-width: 0");
-    expect(cssRule(briefCss, ".news-brief-story")).toContain("overflow-wrap: anywhere");
-    expect(cssRule(responsiveCss, ".news-brief-toolbar")).toContain("flex-direction: column");
+    expect(feedCss).not.toContain(".news-event-row");
+    expect(rowCss).toContain(".news-event-row");
+    expect(feedCss.split(/\r?\n/).length).toBeLessThanOrEqual(500);
+    expect(rowCss.split(/\r?\n/).length).toBeLessThanOrEqual(500);
+    for (const retired of [
+      "src/features/news/newsBrief.css",
+      "src/features/news/newsAudit.css",
+      "src/features/news/newsOperations.css",
+      "src/features/news/newsDetailResponsive.css",
+      "src/features/news/NewsOperationsPage.tsx",
+    ]) {
+      expect(existsSync(join(webRoot, retired)), `${retired} must stay deleted`).toBe(false);
+    }
   });
 
-  it("stacks public Status and Sources without a mobile horizontal scroller", () => {
-    const operationsCss = readSource("src/features/news/newsOperations.css");
+  it("stacks the four public Status layers without a mobile horizontal scroller", () => {
+    const statusCss = readSource("src/features/news/newsStatus.css");
+    const statusPage = readSource("src/features/news/NewsStatusPage.tsx");
 
-    expect(cssRule(operationsCss, ".news-status-layer-grid")).toContain(
+    expect(cssRule(statusCss, ".news-status-layer-grid,\n  .news-status-control-grid")).toContain(
       "grid-template-columns: repeat(2, minmax(0, 1fr))",
     );
-    expect(operationsCss).toMatch(
-      /@media \(max-width: 767px\)[\s\S]*?\.news-status-layer-grid\s*{[^}]*grid-template-columns:\s*1fr;/,
+    expect(statusCss).toMatch(
+      /@media \(max-width: 767px\)[\s\S]*?\.news-status-layer-grid,\s*\.news-status-control-grid\s*{[^}]*grid-template-columns:\s*1fr;/,
     );
-    expect(operationsCss).toMatch(
-      /@media \(max-width: 767px\)[\s\S]*?\.news-source-card > dl[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
-    );
-    expect(operationsCss).not.toContain("overflow-x: auto");
+    expect(statusCss).not.toContain("overflow-x: auto");
+    expect(statusPage.match(/<StatusLayer/g)).toHaveLength(4);
+    expect(statusPage).not.toMatch(/news-source-|newsSources|Brief/);
   });
 });
 

@@ -15,20 +15,12 @@ export function macroPath(): string {
   return "/macro";
 }
 
-export function newsStoryPath(storyId: string): string {
-  return `/news/stories/${encodeURIComponent(storyId)}`;
-}
-
-export function newsBriefPath(): string {
-  return "/news/brief";
+export function newsEventPath(eventId: string): string {
+  return `/news/events/${encodeURIComponent(eventId)}`;
 }
 
 export function newsStatusPath(): string {
   return "/news/status";
-}
-
-export function newsSourcesPath(): string {
-  return "/news/sources";
 }
 
 export function tokenTargetPath({

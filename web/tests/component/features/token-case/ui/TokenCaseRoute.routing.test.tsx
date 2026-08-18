@@ -78,7 +78,7 @@ function renderAt(url: string) {
 }
 
 describe("TokenCaseRoute", () => {
-  it("loads the token-case dossier without legacy Radar metrics", async () => {
+  it("loads the token-case dossier without legacy queue metrics", async () => {
     renderAt(
       `/token/Asset/${encodeURIComponent(targetId)}?window=24h&focus=trigger&trigger_event_id=event-hansa-3`,
     );
@@ -102,9 +102,6 @@ describe("TokenCaseRoute", () => {
         }),
       );
     });
-    expect(apiMock.getApi.mock.calls.filter(([path]) => path === "/api/token-radar")).toHaveLength(
-      0,
-    );
   });
 
   it("fetches a focused trigger missing from the first Case page by event id", async () => {

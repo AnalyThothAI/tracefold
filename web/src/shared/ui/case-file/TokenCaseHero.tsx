@@ -4,7 +4,6 @@ import type {
   TokenCaseViewModel,
   TokenCaseWindow,
 } from "@shared/model/tokenCaseViewModel";
-import { radarNavigationState } from "@shared/routing/radarNavigationState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
 import { ExternalLink, Search } from "lucide-react";
 
@@ -16,7 +15,6 @@ type TokenCaseHeroProps = {
   metrics: TokenCaseMetric[];
   route: TokenCaseViewModel["route"];
   target: TokenCaseViewModel["target"];
-  radarReturnScrollTop?: number | null;
   onWindowChange: (window: TokenCaseWindow) => void;
 };
 
@@ -28,7 +26,6 @@ export function TokenCaseHero({
   metrics,
   route,
   target,
-  radarReturnScrollTop = null,
   onWindowChange,
 }: TokenCaseHeroProps) {
   const mark = target.symbol?.slice(0, 2).toUpperCase() ?? "?";
@@ -36,14 +33,7 @@ export function TokenCaseHero({
   return (
     <header className={styles.hero}>
       <div className={styles.topBar}>
-        <RouteBackLink
-          to="/"
-          label="返回"
-          ariaLabel="返回 Token Radar"
-          state={
-            radarReturnScrollTop === null ? undefined : radarNavigationState(radarReturnScrollTop)
-          }
-        />
+        <RouteBackLink to={route.searchHref} label="返回" ariaLabel="返回 Search" />
         <div className={styles.controls}>
           <div className={styles.segmented} role="group" aria-label="case window">
             {WINDOWS.map((window) => (

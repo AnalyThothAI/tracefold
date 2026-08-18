@@ -29,7 +29,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     ),
     "/api/recent": ("recent_all", "events_by_ids"),
     "/api/events/by-ids": ("events_by_ids",),
-    "/api/token-radar": ("token_radar_latest",),
     "/api/live-market": ("live_market_current",),
     "/api/search": ("search_v2_lexical", "search_v2_substring"),
     "/api/search/inspect": (
@@ -44,32 +43,22 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/target-posts": ("target_posts_recent",),
     "/api/target-social-timeline": ("target_posts_recent",),
     "/api/news/feed": (
-        "news_feed_focus_rows",
-        "news_feed_focus_facets",
-        "news_story_provider_evidence",
+        "news_feed_events",
+        "news_feed_symbol_filter",
+        "news_feed_search",
     ),
-    "/api/news/stories/{story_id}": (
-        "news_story",
-        "news_story_members",
-        "news_story_provider_evidence",
+    "/api/news/events/{event_id}": (
+        "news_event_detail",
+        "news_event_members",
+        "news_event_verdicts",
     ),
-    "/api/news/brief": ("news_brief",),
-    "/api/news/sources": ("news_sources",),
     "/api/news/status": (
         "workers_runtime",
-        "news_status_opennews",
-        "news_status_opennews_incidents",
-        "news_status_inbound_latency",
-        "news_status_story_latency",
-        "news_status_rss",
-        "news_status_projection",
-        "news_brief",
-        "news_push_state",
-        "news_push_oldest_pending",
-        "news_title_presentation_state",
-        "news_title_presentation_24h",
-        "news_push_delivery_24h",
-        "news_push_suppression_recent",
+        "news_status_ingest",
+        "news_status_incidents_open",
+        "news_status_pipeline_24h",
+        "news_status_delivery_1h",
+        "news_control_state",
     ),
     "/api/macro/overview": ("macro_modules_current",),
     "/api/macro/rates-fed": ("macro_module_current", "macro_modules_current"),
@@ -101,10 +90,7 @@ def query_audit_catalog(
         *provider(now_ms=int(now_ms)),
     )
     aggregate_input_queries = [query.name for query in queries if query.amplification_basis == "aggregate_input"]
-    if aggregate_input_queries != [
-        "news_feed_focus_facets",
-        "news_status_story_latency",
-    ]:
+    if aggregate_input_queries:
         raise ValueError("only bounded aggregate reads may use aggregate-input amplification")
     return QueryAuditCatalog(
         queries=queries,

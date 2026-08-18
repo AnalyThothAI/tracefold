@@ -127,7 +127,7 @@ status: preflight ## fail closed unless database, API, Workers, and console are 
 	@docker compose ps --all
 	@set -eu; \
 		failed=0; \
-		for service in postgres serve workers; do \
+		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
 			if [ -z "$$container_id" ]; then \
 				echo "$$service: missing or stopped" >&2; \
@@ -170,8 +170,8 @@ status: preflight ## fail closed unless database, API, Workers, and console are 
 macro-acceptance: ## verify Macro overview, six typed modules, health, and conditional reads
 	@TRACEFOLD_API_URL="$(TRACEFOLD_API_URL)" uv run python scripts/check_macro_acceptance.py
 
-logs: preflight ## tail Serve, Workers, migration, and PostgreSQL logs
-	@docker compose logs -f --tail=100 serve workers migrate postgres
+logs: preflight ## tail Serve, Workers, migration, PostgreSQL, and RabbitMQ logs
+	@docker compose logs -f --tail=100 serve workers migrate postgres rabbitmq
 
 down: preflight ## stop the container stack without deleting PostgreSQL data
 	@docker compose down

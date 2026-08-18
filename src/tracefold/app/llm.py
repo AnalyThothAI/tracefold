@@ -11,12 +11,13 @@ def configured_chat_model(
     model_name: str,
     request_timeout_seconds: float,
     max_tokens: int,
+    thinking: bool = False,
 ) -> tuple[ChatLiteLLM, str]:
     effective_model = litellm_proxy_model_name(
         model_name,
         base_url=settings.llm.base_url,
     )
-    model_kwargs = _provider_model_kwargs(effective_model)
+    model_kwargs = _provider_model_kwargs(effective_model, thinking=thinking)
     return (
         ChatLiteLLM(
             model=effective_model,
@@ -43,8 +44,10 @@ def litellm_proxy_model_name(model_name: str, *, base_url: str) -> str:
     return f"openai/{normalized}"
 
 
-def _provider_model_kwargs(model_name: str) -> dict[str, Any]:
+def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[str, Any]:
     leaf = str(model_name or "").rsplit("/", maxsplit=1)[-1].lower()
+    if leaf.startswith("deepseek-v4-") and thinking:
+        return {"extra_body": {"thinking": {"type": "enabled"}}}
     if leaf.startswith("deepseek-v4-"):
         # This gateway enables thinking by default, while DeepAgents structured
         # output requires tool_choice. This is an OpenAI-compatible extension,

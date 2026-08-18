@@ -14,7 +14,8 @@ test("tablet shell keeps top-level route navigation in the sidebar drawer", asyn
   await page.goto("/");
 
   await expect(page.locator(".live-task-nav")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Radar" })).toBeVisible();
+  await expect(page).toHaveURL(/\/news(?:\?|$)/);
+  await expect(page.getByRole("heading", { name: "新闻事件流" })).toBeVisible();
 
   const sidebarTrigger = page.getByRole("button", { name: "Toggle Sidebar" });
   await expect(sidebarTrigger).toBeVisible();
@@ -23,10 +24,10 @@ test("tablet shell keeps top-level route navigation in the sidebar drawer", asyn
   await sidebarTrigger.click();
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(primaryNavigation).toBeVisible();
-  for (const routeName of ["Radar", "News", "Macro"]) {
+  for (const routeName of ["News", "Macro"]) {
     await expect(primaryNavigation.getByRole("link", { name: routeName })).toBeVisible();
   }
-  await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
+  await expect(primaryNavigation.getByRole("link")).toHaveCount(2);
 
   await primaryNavigation.getByRole("link", { name: "Macro" }).click();
   await expect(page).toHaveURL(/\/macro(?:\?|$)/);

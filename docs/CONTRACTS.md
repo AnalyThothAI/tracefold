@@ -26,8 +26,8 @@ mode `0700`; config and password files are `0600`. A normal rerun preserves
 existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
 existing database passwords. The generated config has a new WebSocket token
-but no live provider/model/webhook credential, and `news.push.enabled` is
-false. `news.rss_enabled` is also false.
+but no live provider/model/webhook credential, `news.push.enabled` is
+false, and `news.broker.url` points at the compose RabbitMQ service.
 
 The configuration schema uses typed nested models directly
 (`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, and `upstream`).
@@ -39,99 +39,52 @@ The default OKX DEX discovery/quote set includes chain index `4663`, whose
 canonical Tracefold chain ID is `robinhood`; no runtime alias or inferred
 fallback supplies that mapping.
 
-Top-level `handles`, top-level `notifications`, and `news.sources` are retired
-inputs. Any equivalent retired key fails
-validation; there is no alias, merge, or generated-source fallback.
+Top-level `handles`, top-level `notifications`, `news.sources`,
+`news.rss_enabled`, `news.title_presentation`, and `llm.news_brief_model` are
+retired inputs. Any equivalent retired key fails validation; there is no
+alias, merge, or generated-source fallback.
 
-`llm.api_key`, `llm.base_url`, and `llm.news_brief_model` are one direct
-DeepSeek configuration. They are all absent or all present; a partial triple
-fails validation, and Tracefold never supplies an implicit endpoint or model.
-The public News Brief waterfall is the code-owned Ollama endpoint/model, this
-configured direct DeepSeek slot, then optional Groq when
-`llm.groq_api_key` is present. Shared News title presentation uses the ordered
-`news.title_presentation.deepl_api_keys` first and this direct DeepSeek slot as
-fallback; Push owns no translation provider. Model execution policy,
-provider order, Groq endpoint/model, timeouts, token budgets, cadence, leases,
-retries, and reservations are code-owned.
-Environment variables are not a credential contract.
+`llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
+DeepSeek-compatible configuration. They are all absent or all present; a
+partial triple fails validation, and Tracefold never supplies an implicit
+endpoint or model. `llm.news_analyst_model` defaults to the triage model. News
+title translation uses the ordered `news.translation.deepl_api_keys` first and
+this direct slot as fallback. Model execution policy, timeouts, token budgets,
+cadence, retries, and reservations are code-owned. Environment variables are
+not a credential contract.
 
 `news.opennews_token` is the operator-owned secret for the production News
-source. `news.opennews_strategy_ids` is the exact non-empty, duplicate-free set
-of account Strategy IDs admitted by that source. IDs are trimmed opaque strings;
-configuration order has no business meaning, and mutable Strategy names are not
-admission keys. When News is enabled, a configured token with a missing or empty
-Strategy set fails closed. When the token is absent, News reports
-`opennews_token_missing`; no substitute credential path is used. `tracefold config`
-exposes only `opennews_token_configured`,
-`opennews_strategy_ids_configured`, and `opennews_strategy_count`; it never
-prints token or Strategy-ID values.
+source. `news.opennews_strategy_ids` is the operator-owned, duplicate-free
+allowlist of account Strategy IDs; IDs are trimmed opaque strings and mutable
+Strategy names are never admission keys. When News is enabled, a configured
+token with an empty Strategy set fails closed. Workers compare the configured
+list with the provider Strategy list at startup: configured-but-disabled and
+enabled-but-unconfigured IDs become `strategy_warnings` in `/api/news/status`;
+they never fail startup or recovery. The current operator set is `1018`,
+`1352`, `1353`; `1019` is disabled provider-side and not configured.
 
-The current production cutover set is exactly two IDs: `1018` (News Score > 70)
-and `1019` (OI Event Monitor), so redacted diagnostics report count `2`.
-Listing and Delisting Announcements and Storage News exist provider-side but are
-deliberately excluded from this cutover. A future Strategy is admitted only by
-an explicit `news.opennews_strategy_ids` configuration change; provider-side
-enablement alone has no effect. Disabling or deleting an allowlisted Strategy
-stops future triggers and must remain operationally visible.
+`news.broker.url` (`amqp://` or `amqps://`, a secret) is required for News to
+run; `news.broker.name_prefix` prefixes every exchange and queue name.
+`news.gate.*`, `news.triage.*` (`deadline_seconds`, `concurrency`,
+`circuit_failures`, `circuit_open_seconds`), `news.analyst.*` (`enabled`,
+`deadline_seconds`, `max_steps` (must not equal 25), `concurrency`),
+`news.push.*` (`enabled`, `feishu_webhook_url`, optional
+`feishu_signing_secret`, `min_interval_seconds`, `hourly_cap`),
+`news.budget.daily_model_cost_usd`, and `news.watchlist[]`
+(`{symbol, market_type, weight}`) are the only News knobs. Lexicons, prefix
+tables, LSH geometry, prompt texts, and policy versions are code constants.
+`tracefold config` exposes only redacted booleans, counts, model names, and
+watchlist symbols; it never prints the token, broker URL, keys, or webhook.
 
-`news.rss_enabled` is the sole public RSS activation switch and defaults to
-`false`. CLI diagnostics report the effective boolean. There is no source list,
-nested RSS configuration, environment override, or compatibility alias.
-
-`news.push` contains only `enabled`, `feishu_webhook_url`, and optional
-`feishu_signing_secret`. This is fail-soft configuration: requesting Push with
-News disabled, a missing webhook, or an invalid webhook does not prevent Serve
-or Workers startup. Instead `tracefold config` and `/api/news/status` expose
-only `requested`, `delivery_available`, a sanitized reason, and configured
-booleans. Delivery is available only for the supported
-Feishu HTTPS custom-bot v2 boundary. If a non-empty signing secret is present,
-delivery includes the computed `timestamp` and `sign`; if absent, delivery is
-explicitly unsigned and includes neither field.
-
-`news.title_presentation.deepl_api_keys` is an ordered duplicate-free list of
-operator secrets. Diagnostics expose only configured/count; no active key or
-key value is public. Every newly accepted exact OpenNews, recovery, or RSS title
-atomically creates one shared presentation intent. Non-Chinese input calls the
-active DeepL key at most once under a 1.5-second absolute deadline, then the
-configured direct DeepSeek adapter at most once under a 5-second deadline.
-Permanent DeepL authentication/quota rejection rotates the active key for
-future Items only; transient failure retains it, and the current Item never
-tries another DeepL key. Neither provider retries.
-Chinese input and titles over 500 graphemes bypass providers. Unavailable
-configuration, timeout, and empty/non-Chinese/oversized output select the
-original title. Presentation does not apply semantic anchor checks to acronyms,
-numbers, or asset-like text and never changes Story/search/Brief identity or
-News health. Feed/detail return both `title` and `original_title`; search and
-Story/Brief derivation remain bound to the original. A Push row references the
-exact resolved shared decision before its Feishu fence. The card uses a valid
-Chinese display title as its plain-text header and always shows the original
-visibly in the body.
-Push admission requires only the first insert of a live OpenNews Item observed
-after the current enablement epoch while delivery is available. Recovery-first,
-RSS, pre-enablement, disabled, and unavailable facts never backfill.
-Each eligible Item keeps its provider `params.id` fact identity and receives one
-synchronous `news_item_push_v2` admission in that Item transaction. The shared
-exact-atom identity normalizes only comparison noise and preserves material
-numbers. For the same admission-policy version, comparison fingerprint, and
-provider-publication-time window, the first durable row is the leader and later
-rows are terminal `suppressed` with `suppressed_by_item_id`. Suppressed rows do
-not extend the window, retry, promote, translate with Push priority, or reach
-Feishu. A terminal leader still consumes the slot. Similar non-exact titles and
-numeric changes remain separate alerts. Push never reads or waits for Story and
-never applies Story Jaccard.
-Provider score, assets, signal, grade, and publication age are optional
-presentation evidence, not gates. Its compact body shows the immutable Item
-snapshot's reporting origin, provider publication time, Strategy labels,
-available asset symbols, and optional score/signal/grade. A canonical
-HTTP(S) Item URL adds one `查看原文` button; a missing URL omits the button. The
-card has no Story fields or derived summary. The shared title decision is
-presentation-only: Item, Story, provider score, search, and Brief semantics
-remain unchanged; Feed/detail merely expose display and original title fields.
+Push delivery is available only when `news.push.enabled` is true and the
+webhook is a valid Feishu HTTPS custom-bot v2 URL; otherwise Serve and
+Workers still start and deliveries settle `terminal/delivery_unavailable`.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
-Worker topology, private due/periodic loops, the projection EDF, the serial
-native-state model arbiter, and all resource capacities are code-owned.
-Configuration cannot add another worker or derived product lane. Explicit
+Worker topology, News broker topology and consumer set, private due/periodic
+loops, the projection EDF, the serial native-state model arbiter, and all
+resource capacities are code-owned. Configuration cannot add another worker
+or derived product lane. Explicit
 Macro backfill is a synchronous CLI maintenance action and is absent from the
 steady Workers root.
 
@@ -164,7 +117,7 @@ The service exposes `/healthz`, `/readyz`, `/metrics`, `/ws`, static frontend as
 
 Status contains no provider/model credentials, base URLs, request policy,
 capacity counters, prompt contents, or raw model responses. Code-owned
-workflow/prompt versions may accompany bounded Brief run telemetry; they are
+prompt/policy versions may accompany bounded verdict telemetry; they are
 not operator configuration.
 
 API responses use a typed envelope:
@@ -182,371 +135,90 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | runtime composition, worker status, and persisted Provider operations |
 | Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
 | Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity, profile, and market facts owned by those readers |
-| Radar/market | `/api/token-radar`, `/api/live-market` | stable PostgreSQL current read models |
+| Market | `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
-| News | `/api/news/feed`, `/api/news/stories/{story_id}`, `/api/news/brief`, `/api/news/sources`, `/api/news/status` | operator-bound OpenNews Strategy facts plus optional public WorldMonitor RSS, deterministic Story/selection state, and one sealed half-hour Brief current/LKG payload |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status` | broker-driven Event feed, one Event with members/verdicts/deliveries/marks, and four-layer News status |
 | Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
 
 There is no CEX OI/detail product API. Generic exchange facts and provider adapters remain internal inputs to supported products.
 
-### Token Radar
+### Live market
 
-`GET /api/token-radar` reads the one `token_radar_current` singleton. It has
-no product query parameter: `window`, `venue`, `limit`,
-`scope`, sorting, filtering, and pagination are rejected rather than ignored or
-aliased. The existing authentication `token` query remains an authentication
-transport, not a Radar option. The product is one fixed four-hour causal view:
-current source time is `[t-4h, t]` and prior source time is `(t-8h, t-4h)`.
-The twelve-hour input horizon seeds the adjacent windows at `t-4h` from its
-first eight hours, then supplies the final four-hour replay transition to `t`;
-that reconstruction is neither a selectable nor a third public window. There
-is no one-hour or twenty-four-hour Radar variant.
+`GET /api/live-market?target_type=…&target_id=…` reads the durable
+`market_tick_current` row for one `Asset` or `CexToken` target and returns one
+`LiveMarketData` object (`status` is `live`, `stale`, or `missing`). It never
+calls a provider. Both query parameters are required and are validated exactly.
 
-The exact data payload is one `token_radar_snapshot_v5` object. The hard-cut
-initial value and any successful empty publication are:
-
-```json
-{
-  "schema_version": "token_radar_snapshot_v5",
-  "social_evidence_as_of_ms": 0,
-  "eligible_total": 0,
-  "items": []
-}
-```
-
-These four keys are the complete top-level contract; state, stale reasons,
-attempts, failures, ruleset metadata, and workload telemetry do not exist.
-`social_evidence_as_of_ms` is the latest persisted social fact-availability
-clock represented by a complete replay, never a market clock. A failed turn
-leaves the last successful payload untouched. A successful business-identical
-turn writes zero serving rows and does not advance `updated_at_ms`.
-
-`items` contains at most fifty entries in server-owned order. Each entry has
-exactly canonical `target` identity (`target_type`, `target_id`, `symbol`, and
-nullable `name`, same-origin `logo_url`, `chain`, `exchange`, `address`);
-`trigger_event_id`, `trigger_source_event_at_ms`, and `qualified_at_ms`;
-`why_now` current/prior four-hour mention counts and their difference;
-`evidence` actual independent-author count, independent-text count, time to the
-required author, and duplicate share; and one nullable presentation-only
-`market` packet:
-
-```json
-{
-  "price_usd": null,
-  "price_observed_at_ms": null,
-  "price_change_since_signal": null,
-  "market_cap_usd": null,
-  "market_cap_observed_at_ms": null
-}
-```
-
-`logo_url` is either `null` or the exact same-origin form
-`/api/token-images/{64-lowercase-hex-image-id}`. Each price or market-cap value
-is paired with its own observation clock; absence, staleness, future time,
-non-positive value, or non-finite value nulls only that presentation fact.
-`price_change_since_signal` additionally requires a valid current price and the
-persisted trigger price anchor, with its current-price observation no earlier
-than the trigger source-event time. Market presentation never changes admission,
-qualification, or order, and v5 has no market `status` or
-`counter_evidence`. `eligible_total` counts the complete eligible population
-before the maximum-fifty selection; Items contain that full population when it
-is at most fifty and exactly fifty otherwise. Order is `qualified_at_ms`
-descending with stable `(target_type, target_id)` ties. Trigger source time
-cannot exceed qualification time, qualification time cannot exceed
-`social_evidence_as_of_ms`, target keys are unique, and the complete
-uncompressed snapshot is capped at 96 KiB.
-
-Target identity is a closed discriminated contract. `Asset` requires non-empty
-`chain` and `address` with `exchange=null`; `CexToken` requires a non-empty
-`exchange` with `chain=null` and `address=null`. Robinhood Chain uses the single
-internal chain value `robinhood` (provider adapters map its external chain index
-`4663` at the OKX boundary); the public payload does not publish a second
-`eip155:4663` alias. When an exact-address Asset has no canonical symbol yet,
-`symbol` contains that same full address as a deterministic presentation
-fallback; clients present it as a contract address rather than a ticker.
-
-The response has `Cache-Control: private, no-cache` and a strong ETag bound to
-the complete served v5 object. A matching `If-None-Match` returns `304` with no
-body. The endpoint never calls a provider, recalculates the reducer, hydrates a
-profile, returns source-event lists, or falls back to a v4
-contract. The writer obtains identity/profile, exact trigger-price anchor,
-current-price, and independently fresh market-cap facts in one bounded batch
-read only after Top-50 selection; the browser makes no per-Item profile or
-live-market data request. Scores, ranks, decisions, factor families, per-rule
-Gate audits, rejected-candidate histories, normalization, security judgments,
-windows, venues, and compatibility fields do not exist. Radar v5 changes no
-WebSocket route, message, replay, or subscription contract.
-Search and Token Case remain independent fact readers; a Radar link may focus
-the exact trigger Event in Token Case, but Radar current state is not copied
-into the dossier.
-
-`/api/stocks-radar` is removed and returns `404`; there is no compatibility
-alias, redirect, or replacement Stocks contract. The retained US-equity identity
-catalog is an internal collision guard for token resolution, not a public
-Stocks interface.
+`/api/token-radar` and `/api/stocks-radar` are removed and return `404`; there
+is no compatibility alias, redirect, feature flag, or replacement Radar
+contract. Search and Token Case are the only token research readers. The
+retained US-equity identity catalog is an internal collision guard for token
+resolution, not a public Stocks interface.
 
 ### News
 
-News is an operator-bound, Strategy-qualified event surface, not a complete
-non-personalized OpenNews corpus. The NewsLiquid account owns Strategy
-definitions; Tracefold only admits automatic `strategy.triggered` notifications
-whose nested Strategy ID is in the configured allowlist and does not reproduce
-provider rules locally.
+News is an operator-bound, Strategy-qualified Event surface. The public
+surface is exactly three read-only routes:
 
-The News public surface is exactly five read-only routes:
+- `GET /api/news/feed?family={family}&admission={admission}&priority={high|normal}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&sort={latest|priority}&limit={limit}&cursor={cursor}`
+  returns Events newest first (or high priority first) with the leader title,
+  the shared display title when a presentation exists, admission, priority,
+  asset class, grounded assets, watchlist hits, storyline key, context line,
+  the latest Triage summary (final decision, override rule, throttle reason,
+  degraded flag, direction, magnitude, event type, scope, `headline_zh`), and
+  the first delivery state. Unknown query parameters, invalid admission or
+  decision values, and malformed cursors return 400. Recovery Events are
+  visible with `admission=recovery`.
+- `GET /api/news/events/{event_id}` returns one Event, its member Items
+  (title, URL, origin, publication time, match kind, Jaccard estimate,
+  provenance, description), every Triage/Analyst verdict (model decision, rule
+  baseline, final decision, override rule, throttle reason, verdict payload,
+  model, prompt version, degraded flag, trace), deliveries, the shared
+  presentation, and market marks. Unknown ids return 404.
+- `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
+  `unavailable`), the Workers state, and four layers: `ingest` (WSS connected,
+  last frame/publish, error, configured and provider-enabled Strategy IDs,
+  strategy warnings, open incidents, token configured), `broker` (configured,
+  connected, per-queue message/consumer counts when observed, error code),
+  `pipeline` (events and candidates per hour/day, Triage/Analyst counts,
+  degraded counts, decided pushes, throttled, Triage p50/p95, model names), and
+  `delivery` (sent/terminal counts, last error, end-to-end p95, availability,
+  hourly cap), plus `control` (paused, mutes) and the watchlist symbols.
 
-- `GET /api/news/feed?category={category}&level={level}&source_id={source_id}&reporting_origin={reporting_origin}&provider_score_gt={score}&q={query}&sort={importance|latest}&limit={limit}&cursor={cursor}`
-  returns one flat global Story page. `importance` remains the API default;
-  page size remains 50 by default and is capped at 100. Omitting filters returns
-  the complete materialized Story population. `provider_score_gt` is a strict
-  comparison against the backend-selected maximum numeric OpenNews score;
-  `reporting_origin` is a normalized exact match against the published Story
-  closure. `q` is normalized server-side search over current member title and
-  description, the Story-snapshot reporting origin, provider source, and asset
-  symbols. All search and filters run before deterministic keyset ordering and
-  pagination. Every cursor and ETag binds the complete
-  normalized filter identity. The response includes Stories, filtered facets
-  including reporting origins, `next_cursor`, and `has_more`.
-  Feed and Story-member cursors use the Story V2 cursor generation; older
-  cursor versions fail explicitly instead of crossing identity generations.
-  Source and reporting-origin facets expand deterministic dimensions stored in
-  the current Story read model; they preserve the same per-Story deduplication,
-  origin normalization, labels, and filtered counts without scanning member
-  Item history. Provider-score filtering still evaluates current persisted
-  metadata for the published Story membership closure; source/origin filters
-  and facets bind to the atomic Story snapshot until its next replacement.
+`/api/news/feed` and `/api/news/events/{event_id}` emit strong ETags and
+honor `If-None-Match`; `/api/news/status` uses a weak ETag that ignores
+`measured_at_ms`. All News routes require the operator token.
 
-  Each Story carries nullable `provider_evidence`, selected by the backend from
-  the member with the maximum numeric OpenNews provider score and deterministic
-  publication-time/Item-ID ties, or from the representative Item when no member
-  has a numeric score. It binds that Item ID, URL, and bounded
-  provider metadata together. Public provider metadata exposes the upstream
-  labels as `assets`; it never exposes the provider's misleadingly named raw
-  `coins` field. An asset is a provider label and may name crypto, an equity,
-  or a commodity such as oil; Tracefold does not infer or correct its class.
-  The browser does not cluster, score, select the maximum, classify assets, or
-  reorder them.
-  Stories expose no Push eligibility, delivery state, aggregate, or
-  `notification` field. Item Push identity and outcomes are intentionally not
-  mapped back through Story membership.
-- `GET /api/news/stories/{story_id}` returns one current Story and its complete
-  NewsItem evidence. It exposes representative/scoring item identity,
-  title/reporting-origin/time, classification, reporting-origin count,
-  importance score, the transparent factor breakdown, and bounded
-  `identity_evidence`: algorithm versions, fixed anchor, strong keys,
-  accepted/rejected reason histograms, Jaccard diagnostics, and grounded
-  provider count. Feed remains compact and does not include this audit object. Member and
-  representative URLs are nullable for linkless dispatches. An expired Story
-  ID returns not found; there is no archived Story contract, revision timeline,
-  or per-Story AI analysis.
-- `GET /api/news/brief` returns exactly one whole sealed public Insights
-  payload or no payload. `state` is `unavailable`, `current`, `degraded`,
-  or `last_known_good`; bounded current-slot telemetry remains separate.
-  The payload seals its UTC half-hour slot, server-ordered `top_stories`,
-  member-title/distinct-source evidence, selection-drop statistics, primary
-  source-age range, L1/L2/none content, source slots, versions, validation, and
-  provenance. It does not return publication history or request-time Story
-  joins. A degraded run never replaces or refreshes a healthy whole LKG.
-- `GET /api/news/sources` returns operator-bound OpenNews first, followed by the
-  enabled code-owned public RSS breadth/corroboration sources, with source kind, feed
-  schedule/claim state, latest outcome, bounded rejection/item counts, and
-  OpenNews connection, accepted-trigger, Strategy-history status, and recent
-  typed incident ledger. Its opaque
-  cursor is bound to that server order. Configured Strategy IDs are never listed.
-- `GET /api/news/status` derives warming/ready/degraded News health from
-  PostgreSQL source, Story-invariant, public Brief, and outbound push state. It also
-  exposes the operator-facing `live`, `recovering`, or `stalled` state and the
-  last successfully verified Story-closure clock. Ingest health is driven by the
-  OpenNews Strategy lane and reports current WSS
-  `connected|reconnecting|unavailable`, last
-  accepted configured trigger, configured Strategy count/boolean, bounded
-  observed Strategy names/types, last connect/disconnect, official history
-  check, and unresolved incidents. It separately reports one-hour P50/P95
-  provider-to-ingest and provider-to-Story-visible latency. Reconnect clears a
-  current transport error; incident recovery remains independently auditable. RSS
-  breadth/corroboration enablement plus totals/success/failure/claims remain
-  additional evidence; Story health reports only projection clocks, counts, and
-  invariant failures. Historical incidents do not turn a currently connected
-  WSS red; only unresolved recovery state remains visible in the ledger.
-  `view=realtime` is the shallow reader form of the same route. It returns only
-  `realtime` and its measurement clock, so the three-second Feed poll never runs
-  Story, Brief, Push, incident, or 24-hour delivery diagnostics. Omitting `view`
-  retains the complete Operations document.
+Item identity is `sha256(source_id, params.id)`; `params.strategy.id` is
+provenance, not fact identity. Event identity is the leader Item id; Events
+merge Items by exact comparison fingerprint or MinHash/LSH near-duplicate
+(estimated Jaccard >= 0.55 with strong-fact compatibility) inside the family
+window (market telemetry 2 h, disaster 6 h, filing 72 h, general 12 h).
+Fingerprints of at most two tokens never share an Event.
 
-`/api/news/feed` and `/api/news/brief` emit an ETag, honor
-`If-None-Match` with `304`, and use `Cache-Control: private, no-cache`.
-Every read is PostgreSQL-only: it never fetches a source, calls a model,
-reclusters, or repairs state.
+Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
+`event_type`, `assets[{symbol, market_type?, role}]`, `direction`, `scope`,
+`magnitude 0..3`, `actionable`, `confidence`, `decision` (model intent),
+`headline_zh`, `rationale`; the stored row adds `model_decision`,
+`rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
+`degraded`, `error_code`, `trace`. `AnalystVerdict` is `agrees_with_triage`,
+`revised_direction`, `revised_magnitude`, `novelty_assessment`,
+`market_reaction[]`, `context_evidence[]`, `thesis_zh`, `risks_zh`,
+`follow_up_needed`, `confidence`; it is stored only after `verify_verdict()`
+or as `degraded`.
 
-The React `/news` primary reading modes are public Feed plus Brief, alongside
-the Status and Sources evidence pages. The default Feed is the complete Story
-population; only explicit URL-owned `view=focus` applies fixed strict
-`provider_score_gt=70`.
-Both keep server order, and neither adds personalization or a user-adjustable
-threshold.
+Delivery identity is `(event_id, kind)` with `kind` in `first`, `followup`;
+states are `sending`, `sent`, `terminal`. There is exactly one HTTP attempt.
 
-NewsItem identity is `(source_id, source_item_key)`. RSS identity prefers GUID,
-then canonical URL, then a deterministic title/publication-time key. OpenNews
-uses the provider event `params.id` as its source item key; nested
-`params.strategy.id` is admission provenance, not fact identity. OpenNews
-Strategy reports upsert one canonical current fact. The title is the first non-empty logical plaintext
-block, capped at 500 JavaScript UTF-16 code units; a clamp that splits a
-surrogate pair is converted with Web scalar-value replacement before storage.
-A cleaned explicit description wins; otherwise remaining blocks form the
-description, with the 40-to-400 JavaScript UTF-16 code-unit contract,
-Web scalar-value replacement after truncation, and title-equality suppression.
-Reporting origin prefers the underlying bounded `source`, then the canonical URL
-host, then `opennews`; `newsType=strategy` and the wrapper Strategy name are not
-reporting origins. Linkless MARKET/OI reports remain valid. Provider
-metadata is limited to the provider-source label, `score`, `signal`, `grade`,
-provider-labelled `assets` details, and a deterministic sorted-unique
-`strategies` union of matching Strategy ID, name, source type, and observed
-engine type. The full Strategy definition and metrics payload are discarded.
-The OpenNews adapter persists the
-upstream raw `coins` member as source evidence, while every public News read
-maps it to `assets` and omits `coins`.
-Exact replay writes nothing. When the same `params.id` arrives under multiple
-configured Strategies, their provenance unions into the same Item without
-last-write erasure. Conflicting wrappers use one complete deterministic winner,
-ordered by numeric provider score, non-empty asset evidence, then canonical
-payload; Tracefold never creates a hybrid fact from fields of several wrappers.
-Different event IDs remain different material facts.
-`news.update`, `news.ai_update`, acknowledgements, malformed frames, and
-unconfigured Strategy frames are discarded. Provider score, Strategy
-provenance, signal, and grade are descriptive and do not affect Story identity,
-classification, ordering, Brief, or Push admission. A numeric score may qualify
-an already projected Story only for the read-time `provider_score_gt` filter.
-Snapshot loading passes only bounded provider `symbol`, `market_type`, and
-`match` fields to Story V2; they become strong evidence only when the symbol or
-match text is grounded in the original title. Ungrounded labels cannot merge or
-veto.
-
-Story identity is `SHA-256(news_story_identity_v3 ||
-anchor_comparison_identity || anchor_item_id)`. The anchor comes from the
-deterministic fixed-anchor closure over normalized Jaccard plus compatible
-strong facts. The anchor Item uniquely qualifies every identity, including an
-empty comparison identity. There is one identity and one membership closure:
-no secondary tracking hash, alias, redirect, compatibility read, or public
-Item recluster. The JavaScript UTF-16 `title.length > 10` gate
-is only a public admissibility/representative rule over materialized Stories.
-The code-owned source catalog is the pinned WorldMonitor
-`full/en + INTEL_SOURCES` public population: exactly 179 physical HTTPS feeds,
-183 category memberships, 178 reporting-source names, and 17 categories. The
-RSS/Atom parser considers the first five wire entries before any gate. A kept
-entry requires a title and a parseable publication time no more than one hour
-in the future; a link is optional and retained only when HTTP(S). Successful
-fetches atomically replace one source snapshot. If none of those first five
-entries has a title, parsing fails instead of publishing a successful empty
-snapshot. Unchanged snapshots write zero NewsItem facts, failures preserve the
-prior snapshot, and RSS facts expire at 96 hours. The reader follows at most two
-redirects itself; the initial URL and every redirect target must be public HTTPS
-and every resolved address must be globally routable before a request is sent.
-
-Story calculation first builds one preliminary physical RSS closure with the
-same private Story V2 algorithm, then classifies and scores physical Items
-before category expansion and the stable Top 20 per category. The selected RSS
-rows are deduplicated back to physical Items and unioned with every current
-12-hour OpenNews Item. `build_story_projection` then returns the one final
-Story/member closure and public selection. Jaccard is the only lexical score;
-typed entity/action/numeric/location/time facts constrain its `same_event`
-decision, and fixed anchors prevent accepted members from becoming transitive
-bridges. Public selection consumes those Stories directly and derives
-importance/admissibility, 16-hour effective recency, the maximum-three
-primary-source cap, and corroborated-lead reservation. It emits at most eight
-Stories in stable server order with drop statistics. `source_count` and
-`unique_source_count` reflect distinct reporting origins in the authoritative
-physical closure. There is no personalization, embedding, topic grouping,
-client reorder, or guaranteed topic/multi-source quota.
-
-L1 receives only ordered primary headlines, primary sources, and distinct
-source counts. Every provider response must pass the same citation-scoped
-composer used for publication; rejection advances the waterfall
-`Ollama llama3.1:8b -> configured direct DeepSeek -> Groq
-llama-3.3-70b-versatile`. The direct slot uses the exact configured endpoint,
-key, and model triple; partial configuration is rejected and no URL/model is
-inferred. L1 and the corroboration-gated single-headline
-L2 fallback share one 60-second budget. An L1 publication is `quality=ok` with
-one indexed line and one source slot per Top Story. L2 or no-text output is
-`quality=degraded`; L2 has no Story lines and at most one valid source. Empty
-selection makes no model call or publication, and a non-empty selection with
-no eligible lead makes no model call. That target records `brief_kind=none` and
-can advance its complete degraded Top Story snapshot only when no healthy LKG
-exists.
-
-`selection_fingerprint` binds the complete current selection snapshot.
-Brief persistence is exactly `news_brief_selection_current` plus
-`news_brief_current`, both singleton rows. UTC half-hour slot identity is the
-only run identity. Story publication does not wait for RSS bootstrap. An empty
-Top Story selection is not claimable, makes no model call, and cannot complete
-a slot or replace the served payload; if OpenNews or RSS later supplies an
-eligible Story in the same half hour, that selection can still be frozen. A
-claim freezes the complete non-empty selection in the current row, uses one
-120-second fenced lease, and finalizes only that frozen selection even if live
-Story selection changes meanwhile. The current slot is attempted first;
-restart never replays every missed slot. `publication_id` hashes the complete
-sealed served payload except its own ID. The current row also owns bounded
-attempt/failure/outcome/pointer telemetry and the whole current/LKG payload.
-Healthy output advances it; degraded output preserves a healthy whole LKG and
-otherwise advances one complete degraded payload. There is no target
-fingerprint, run table, publication table, publication history, or
-compatibility reader.
-
-`/api/news/status` exposes four independent News health layers: `ingest`,
-`story`, `brief`, and `push`. Brief reports the same public state, current
-slot/publication identity, and bounded latest-run telemetry. Its top-level
-`realtime` object reports current WSS state plus one-hour inbound and
-Story-visible latency samples. Push reports `disabled`, `ready`, or `degraded`;
-requested and effective availability; enablement epoch; current
-`pending`/`sending`/`sent`/`terminal` counts; latest sent/error clocks; and
-bounded sanitized 24-hour samples without exposing secrets or card content.
-`delivery_24h` reports sent/terminal completion and P95 from the immutable first
-live observation clock. Current-policy P95 above 15 seconds, a recent terminal
-outcome, unsynchronized availability, or sample overflow degrades Push. Exact
-`sample_complete=false` means the bounded read did not cover the whole window,
-so operators must not interpret partial values as complete metrics. Story and
-Brief remain readable while Push is disabled or degraded.
-The separate top-level informational `title_presentation` object reports
-provider configured/count booleans, queue/resolving/push-blocking ages,
-code-owned deadlines, and bounded 24-hour outcome/provider/latency samples. It
-is deliberately outside the four health layers: translation success, fallback,
-or backlog never changes ingest, Story, Brief, Push, or overall News health.
-
-Production News runs one authenticated OpenNews WSS for account Strategy facts.
-After the protocol handshake Tracefold sends no application subscribe/request:
-it never sends `news.subscribe`, `news.unsubscribe`, `strategy.subscribe`, or
-`strategy.triggered`. It may answer a provider literal `ping` with literal
-`pong` and use RFC WebSocket control-frame heartbeat; neither is a subscription.
-The server automatically pushes the account owner's Strategy notifications.
-Admission requires `method=strategy.triggered`, object
-`params`, object `params.strategy`, a non-empty provider event `params.id`, and a
-nested Strategy ID in `news.opennews_strategy_ids`. Matching NEWS, MARKET, meme,
-and listing frames share the same path; `engineType` does not exclude an
-allowlisted Strategy.
-
-There is no ordinary `/open/news_search` production call. Public advanced News
-Search is filtered ordinary news search and cannot reproduce Strategy trigger
-history, especially MARKET/OI events. Disconnect, queue overflow, and process
-outage create typed incident intervals. After reconnect, Tracefold verifies the
-exact allowlist through authenticated `/open/strategy_list` and reads bounded
-pages from `/open/strategy_hits` for each incident interval with a fixed overlap.
-Recovered writes are idempotent and marked `first_ingest_mode=recovery`; they
-can repair Story/Brief but cannot push. Missing endpoints, provider retention,
-or request failures remain explicit as partial/unavailable rather than being
-called recovered.
-
-The sole RSS switch is `news.rss_enabled`; it defaults to `false`, and only
-`true` schedules the exact code-owned public RSS breadth/corroboration catalog.
-When false, reconciliation disables prior RSS rows and releases their claims,
-`/api/news/sources` serves OpenNews only, Story uses its current Strategy-admitted
-OpenNews population, and status returns `rss.enabled=false` without an RSS
-degradation reason. Each RSS turn claims at most one due source and persists its
-conditional-fetch and bounded outcome state. Strategy admission does not alter
-deterministic Story scoring, selector ordering, or reporting-origin tier.
-
-There is no `/api/news/stories` collection, `view=latest|priority`, Brief
-history route, analysis request route, item route, News WebSocket payload,
-inbound/public webhook route, personalized Brief, compatibility alias, or
-alternate clustering path. Feishu is a Workers-only outbound Adapter.
+Broker contract (code-owned): topic exchange `news`, dead-letter exchange
+`news.dlx`, fanout `news.control`, quorum queues `news.raw` (single-active,
+`reject-publish` overflow), `news.triage`, `news.translate`, `news.deep`,
+`news.deliver` (single-active, delivery limit 1), `news.dead`, and retry lanes
+`news.retry.5s|30s|120s`; all names take `news.broker.name_prefix`. Message
+bodies are `news_bus_v1` JSON envelopes (`kind`, `message_id`, `trace_id`,
+`occurred_at_ms`, `payload`) with AMQP priority 0 or 5. Control payloads are
+`{action: pause_delivery|resume_delivery|mute_theme|mute_symbol|unmute|drain,
+key?, ttl_ms?}`.
 
 ### Macro
 
@@ -702,65 +374,17 @@ Macro has no second judgment, historical-session, or archive contract. Retired
 paths return the ordinary application `404`; there is no alias or fallback
 publication.
 
-Migrations `20260801_0235` and `20260801_0236` are irreversible: they remove
-retired News acquisition and Macro derived/control history while preserving
-current items, material facts, acquisition targets, Fed document analysis, and
-the six module rows.
-Historical migration `20260801_0237` added an OpenNews recovery boundary;
-historical migration `20260809_0247` replaced it with bounded 12-hour ordinary-
-news overlap. Neither is the current provider contract. `20260813_0265` hard-cuts
-to Strategy-only WSS, removes ordinary-news REST overlap, deactivates legacy
-full-corpus OpenNews Items, clears Story/member/selection so the sole normal
-writer rebuilds it from remaining enabled facts, clears
-incompatible Brief current/LKG state, cancels legacy pending/retry Push work,
-preserves immutable sent-delivery audit plus Push baseline/dedup evidence, and
-replaces obsolete recovery telemetry with unknown-coverage state. It has no
-dual writer or compatibility mode. `20260801_0238` adds the News push baseline
-and delivery ledger.
-`20260813_0266` historically added the typed incident ledger and official
-Strategy-history recovery, persisted immutable live/recovery ingest origin,
-and introduced a Story-scoped Push outbox. `20260814_0270` is the historical
-Item Push hard cut. It reuses the same two Push tables, terminalizes
-legacy unsent Story-policy rows, preserves completed legacy card audit, replaces
-Story identity with stable Item identity, removes retry/lease fields, and
-installs the `pending -> sending -> sent|terminal` zero-retry state machine.
-Applying the migration performs no provider or outbound call. Delivery begins
-only after effective webhook-backed availability and only for first-inserted
-live OpenNews Items observed after the enablement epoch. Recovery, RSS,
-pre-epoch Items, and later annotation changes never create or mutate Push work.
-`20260815_0271` is the historical offline title-presentation hard cut. It adds
-`news_item_title_presentations`, terminalizes pre-cut nonterminal Push work,
-retains the renamed legacy Push presentation JSON as audit only, and binds new
-Push rows to the exact title fingerprint. It has no history backfill,
-compatibility reader/writer, or migration-time provider/outbound call.
-`20260815_0272` is the Story V2 replace-not-layer hard cut. With Serve
-and Workers stopped, it clears Story memberships, Stories, selection, and the
-Brief current/LKG payload; drops the old secondary identity column; adds the
-bounded non-null `identity_evidence` object; and resets the Story projection
-summary. It preserves NewsItem facts, title presentations, Item Push delivery
-audit, and incident state. The first Workers turn rebuilds one V2 closure; old
-Story URLs and cursor generations have no compatibility path.
-`20260815_0273` is the current Push exact-atom replace-not-layer hard cut. With
-Serve and Workers stopped, it preserves historical sent/terminal v1 audit,
-terminalizes incompatible pre-cut nonterminal work, resets the Push enablement
-epoch and current counters, adds versioned admission evidence and the terminal
-`suppressed` state in place, and leaves the News table count unchanged. It does
-not backfill, replay, reclassify, call a provider, or send. Status reports the
-payload/identity/admission versions, `suppressed_count`, and at most twenty
-recent title-free suppression evidence rows. Suppression is informational and
-is excluded from health degradation, delivery latency/failure, and title-
-translation outcome samples.
-`20260807_0246` is the irreversible public
-World Brief hard cut: it canonicalizes retained OpenNews facts, drops the
-retired Story display-title translation table and incompatible Brief state,
-removes `normalized_title`/`brief_excluded`, rebuilds Story state, and installs
-the singleton selection plus discriminated L1/L2/none publication schema. It
-preserves the existing Story Push ledgers, pending/retry deliveries, and
-freshness fences. `20260809_0247` installs the pinned public RSS source state,
-removes the facet and former Brief run/publication tables, creates the
-half-hour `news_brief_current` singleton, clears rebuildable Story/selection
-state, and deletes incompatible Push payload rows. The live News schema is
-exactly eleven tables and has no mixed-schema reader or compatibility view.
+Migration history for the retired Story/Brief/RSS/Item-Push/Title lane
+(`20260801_0234` .. `20260815_0273`) is documented in the alembic version
+files only. `20260818_0275_news_v3_event_bus_hard_cut` is the current
+irreversible News migration: it drops `news_sources`, `news_stories`,
+`news_story_members`, `news_projection_summary`,
+`news_brief_selection_current`, `news_brief_current`, `news_push_state`,
+`news_push_deliveries`, `news_item_title_presentations`, the legacy
+`news_items`, and the legacy incident table, and creates the thirteen V3
+tables. It performs no provider, broker, or outbound call and has no
+compatibility reader/writer; the Feed starts from the first frames observed
+after deployment.
 
 ### Token images
 
@@ -787,8 +411,7 @@ per event or filter. Event replay and event pushes require at least one `cas`
 or `symbols` filter; an empty event filter returns and broadcasts no events.
 `market_targets` remains an independent subscription for
 `live_market_update` pushes. Push message families are `event` and
-`live_market_update`. Token Radar never registers `market_targets` and has no
-WebSocket patch path; Token Case may subscribe only its active target.
+`live_market_update`. Token Case may subscribe only its active target.
 
 Worker progress is recovered by bounded database catch-up. Provider frames are never emitted as business facts before persistence.
 
@@ -799,6 +422,7 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 - service/config: `serve`, `workers`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - Macro: `macro backfill|backfill-professional|status`;
+- News: `news bus-check|control|eval|replay`;
 - read models: `recent`, `search`;
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
 
@@ -834,8 +458,7 @@ observed process liveness.
 reconstructing `market_tick_current` from persisted `market_ticks`.
 News steady state and explicit maintenance use the same complete current
 12-hour WorldMonitor calculation from persisted Strategy-admitted and optional
-RSS NewsItems. Token Radar has no product-specific status command; its public
-read surface is the authenticated exact snapshot endpoint.
+RSS NewsItems.
 
 One-shot maintenance commands construct only the dependencies required by the
 named domain operation and invoke that bounded operation directly. The

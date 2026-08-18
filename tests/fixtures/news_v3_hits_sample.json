@@ -1,0 +1,6474 @@
+[
+ {
+  "id": 3621523,
+  "text": "reply https://www.theblock.co/news/defi/2026-08-17-tokenized-equities-triple-market-share-ondo-binance-xstocks-dominate-411996",
+  "link": "https://x.com/TheBlockCo/status/2089461863281041568",
+  "source": "The Block",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T05:18:23.93+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3620910,
+  "text": "reply https://www.theblock.co/news/business/2026-08-17-iren-delivers-first-four-ai-cloud-deployments-microsoft-under-9-7-billion-deal-412016",
+  "link": "https://x.com/TheBlockCo/status/2089440709518475469",
+  "source": "The Block",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T03:54:20.3+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "IREN"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "MSFT"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-MSFT"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3619435,
+  "text": "reply https://www.theblock.co/news/business/2026-08-17-bitcoin-production-slips-again-july-cleanspark-bitfufu-canaan-411985",
+  "link": "https://x.com/TheBlockCo/status/2089400761264247259",
+  "source": "The Block",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T01:15:35.883+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3619297,
+  "text": "reply https://www.theblock.co/news/regulation/2026-08-17-us-treasury-seeks-public-comment-genius-act-stablecoin-rules-411987",
+  "link": "https://x.com/TheBlockCo/status/2089396996083798106",
+  "source": "The Block",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T01:00:38.121+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "GENIUS"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "ACT"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XPL"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "CRCL"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-CRCL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617912,
+  "text": "reply https://www.war.gov/News/Releases/Release/Article/4573544/department-of-war-and-rtx-accelerate-critical-munitions-production-through-navy/",
+  "link": "https://x.com/WhiteHouse/status/2089366868968509579",
+  "source": "The White House",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T23:00:55.135+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "RTX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614292,
+  "text": "reply https://www.theblock.co/news/business/2026-08-17-bitcoin-miner-hive-inks-five-year-350-million-ai-cloud-contract-411940",
+  "link": "https://x.com/TheBlockCo/status/2089299589463486740",
+  "source": "The Block",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T18:33:34.622+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "HIVE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3619103,
+  "text": "BE Investor Alert: Bloom Energy Corporation Securities Class Action Notice - Contact Levi & Korsinsky",
+  "link": "",
+  "source": "",
+  "newsType": "GlobeNewswire",
+  "engineType": "news",
+  "ts": "2026-08-18T00:38:23.28064+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "XYZ-BE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617206,
+  "text": "Exelixis (EXEL) Securities Investigation Notice - Levi & Korsinsky",
+  "link": "https://rtpr.io/a/nPn7M43Ypa",
+  "source": "",
+  "newsType": "PRNewswire",
+  "engineType": "news",
+  "ts": "2026-08-17T22:09:01.029+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "EXEL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617207,
+  "text": "Papa John's International (PZZA) Securities Investigation Notice - Levi & Korsinsky",
+  "link": "https://rtpr.io/a/nPn5r9TCKa",
+  "source": "",
+  "newsType": "PRNewswire",
+  "engineType": "news",
+  "ts": "2026-08-17T22:09:01.23+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "PZZA"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617209,
+  "text": "LegalZoom.com, Inc. (LZ) Securities Investigation Notice - Levi & Korsinsky",
+  "link": "https://rtpr.io/a/nPnN14cNa",
+  "source": "",
+  "newsType": "PRNewswire",
+  "engineType": "news",
+  "ts": "2026-08-17T22:09:01.629+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "short",
+    "symbol": "LZ"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617208,
+  "text": "JBTM (JBTM) Securities Investigation Notice - Levi & Korsinsky",
+  "link": "https://rtpr.io/a/nPn12dScWa",
+  "source": "",
+  "newsType": "PRNewswire",
+  "engineType": "news",
+  "ts": "2026-08-17T22:09:01.43+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "JBTM"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617205,
+  "text": "Emergent BioSolutions (EBS) Securities Investigation Notice - Levi & Korsinsky",
+  "link": "https://rtpr.io/a/nPn4yFFfxa",
+  "source": "",
+  "newsType": "PRNewswire",
+  "engineType": "news",
+  "ts": "2026-08-17T22:09:00.829+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "EBS"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623910,
+  "text": "Binance Announcement:  \nBinance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24\n\n$CFX\nNotifer: @CexAlerts",
+  "link": "https://t.me/CexAlerts/38676",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T11:02:04+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "CEX Alerts"
+ },
+ {
+  "id": 3623891,
+  "text": "Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24",
+  "link": "https://www.treeofalpha.com/preview_article?id=1787022000000",
+  "source": "",
+  "newsType": "Binance",
+  "engineType": "news",
+  "ts": "2026-08-18T11:00:06.048171+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 25,
+    "signal": "long",
+    "symbol": "BNB"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623893,
+  "text": "Binance Will Support the Conflux Network (CFX) Network Upgrade &amp; Hard Fork - 2026-08-24\n币安将支持 Conflux Network (CFX) 网络升级和硬分叉 - 2026-08-24\n \n————————————\n2026-08-18 11:00:05\n\nhttps://news.6551.io/preview/67ec56ce5f486be3ed4c8c762b4fc321",
+  "link": "https://x.com/6551News/status/2089547857728852331",
+  "source": "6551News",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T11:00:06.759+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "AMP"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623892,
+  "text": "Binance: Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24",
+  "link": "https://www.treeofalpha.com/preview_article?id=1787022000000",
+  "source": "binance",
+  "newsType": "binance",
+  "engineType": "listing",
+  "ts": "2026-08-18T11:00:06.048171+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 25,
+    "signal": "long",
+    "symbol": "BNB"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623886,
+  "text": "Binance: Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24",
+  "link": "",
+  "source": "binance",
+  "newsType": "binance",
+  "engineType": "listing",
+  "ts": "2026-08-18T11:00:05.720421+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 25,
+    "signal": "long",
+    "symbol": "BNB"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623885,
+  "text": "Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24",
+  "link": "",
+  "source": "",
+  "newsType": "Binance",
+  "engineType": "news",
+  "ts": "2026-08-18T11:00:05.720421+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 25,
+    "signal": "long",
+    "symbol": "BNB"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623884,
+  "text": "Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24",
+  "link": "",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T11:00:05.69+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 25,
+    "signal": "long",
+    "symbol": "BNB"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24"
+ },
+ {
+  "id": 3623883,
+  "text": "Binance: Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24",
+  "link": "https://news.6551.io/preview/67ec56ce5f486be3ed4c8c762b4fc321",
+  "source": "binance",
+  "newsType": "binance",
+  "engineType": "listing",
+  "ts": "2026-08-18T11:00:05.473+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623882,
+  "text": "Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24",
+  "link": "https://news.6551.io/preview/67ec56ce5f486be3ed4c8c762b4fc321",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T11:00:05.473+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CFX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623890,
+  "text": "Binance: Binance Will Support the Conflux Network (CFX) Network Upgrade & Hard Fork - 2026-08-24",
+  "link": "https://www.binance.com/en/support/announcement",
+  "source": "binance",
+  "newsType": "binance",
+  "engineType": "listing",
+  "ts": "2026-08-18T11:00:00+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "CFX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623451,
+  "text": "Why Trump Is Threatening Again to Bomb Oman - WSJ https://www.wsj.com/world/middle-east/why-trump-oman-threats-5db5ab5f",
+  "link": "https://twitter.com/jdawsey1/status/2089535180784439369",
+  "source": "jdawsey1",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-18T10:09:44.042457+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "WSJ Reporter"
+ },
+ {
+  "id": 3621975,
+  "text": "美伊6月达成的60天停火安排周一已到期，特朗普表示不会寻求延期。他还警告阿曼不要干预美国对伊朗的行动，否则会被“炸个稀巴烂”。点击查看...",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-18T06:34:46+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "特朗普拒绝延长美伊停火协议，警告阿曼别“挡路”，否则将遭轰炸"
+ },
+ {
+  "id": 3621949,
+  "text": "<b>国内新闻：</b><br/><span class=\"section-news\">1. 李强主持召开国务院第十二次全体会议强调，深入贯彻落实党中央决策部署，努力完成全年经济社会发展目标任务。</span><br/><span class=\"section-news\">2. 宇树科技：将于8月19日在科创板上市。</span><br/><span class=\"section-news\">3. 发改委、国家能源局印发《石油天然气发展“十五五”规划》。</span><br/><span class=\"section-news\">4. 吉利汽车回应李书福卸任董事会主席：这是吉利汽车去家族化的宣言。</span><br/><span class=\"section-news\">5. 发改委部署加快2026年新型政策性金融工具投放工作，加大对民间投资项目支持力度。</span><br/><span class=\"section-news\">6. 统计局：1—7月份，全国房地产开发投资43009亿元，同比下降19.2%；社会消费品零售总额287744亿元，同比增长1.2%。</span><br/><span class=\"section-news\">7. 统计局：7月份，规模以上工业增加值同比实际增长4.5%；一线城市新建商品住宅销售价格环比由上月上涨0.1%转为持平。</span><br/><b>国际新闻：</b><br/><span class=\"section-news\">1. 民调显示特朗普支持率创第二任期内新低。</span><br/><span class=\"section-news\">2. 中英日在6月均减持美债。</span><br/><span class=\"section-news\">3. 隔夜行情—美国30年期国债收益率升至5.31%，创19年来新高、美股存储概念收高、原油涨3%，黄金涨0.9%。</span><br/><span class=\"section-news\">4. 英伟达：OpenAI承诺在2030年前大规模部署英伟达AI基础设施，对应约6000亿美元计算业务规模。</span><br/><span class=\"section-news\">5. 中东局势—<br/>①特朗普：美国不寻求延长与伊朗的谅解备忘录。伊朗想达成协议，但他们不会达成我认为必要的那种协议。<br/>②伊朗官员：伊朗已决定将其政策从防御性转变为全面进攻性。已为美国全面履行谅解备忘录设定了数周的最后期限，不会无限期等待美国继续实施海上封锁。若美履行承诺，霍尔木兹海峡将重新开放。<br/>③伊朗外交部：美国违反谅解备忘录后，60天期限“完全失去意义”<br/>④特朗普称若阿曼阻碍美方重开霍尔木兹海峡，将对其实施轰炸。<br/>⑤沙特从阿曼海岸附近供应石油，转运策略或悄然调整。<br/>⑥据悉伊朗在霍尔木兹海峡扣押一艘阿联酋所有的油轮。也门胡塞武装称袭击沙特军舰。<br/>⑦伊朗伊斯兰革命卫队否认与美国通过秘密渠道对话。<br/>⑧库什纳：美伊朗不同领域之间的对话比以往任何时候都更加活跃。双方尚未达成共识，特朗普将保持耐心。</span>",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-18T06:30:21+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-UNITREE"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-MU"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-SKHX"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "XYZ-SNDK"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-GOLD"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "OPENAI"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "UNITREE"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XAU"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "金十数据整理：昨日今晨重要新闻汇总（2026-08-18）"
+ },
+ {
+  "id": 3621578,
+  "text": "【金十数据整理：中东局势跟踪（8月18日）】<br/><b>冲突情况</b><br/><span class=\"section-news\">1. 也门方面表示，沙特政权任何加剧紧张局势的举动都将遭到对等回应。</span><br/><span class=\"section-news\">2. 特朗普威胁称，如果阿曼妨碍美国，美国将轰炸阿曼。</span><br/><span class=\"section-news\">3. 伊朗官员：伊朗已决定将其政策从防御性转变为全面进攻性。已为美国全面履行谅解备忘录设定了数周的最后期限。</span><br/><span class=\"section-news\">4. 伊媒称一艘阿联酋油轮在霍尔木兹海峡被扣押。 </span><br/><b>霍尔木兹海峡</b><br/><span class=\"section-news\">1. 伊朗称正在起草与阿曼的海上航线计划。</span><br/><span class=\"section-news\">2. 周末霍尔木兹海峡的船只通行量大幅减少。</span><br/><span class=\"section-news\">3. 伊朗：不要拿霍尔木兹海峡开玩笑。</span><br/><span class=\"section-news\">4. 伊朗重申对霍尔木兹海峡“主权权利”。</span><br/><span class=\"section-news\">5. 消息人士：五角大楼承认现有军事方案无法确保霍尔木兹海峡畅通。</span><br/><span class=\"section-news\">6. 美国能源部长赖特：（关于美军在霍尔木兹海峡的行动）美国每天正运出800万或900万桶石油。</span><br/><span class=\"section-news\">7. 美军中央司令部：截至8月17日，已迫使64艘商船改道，使3艘船只失去行动能力，并登临检查2艘船只，以确保其遵守相关要求。</span><br/><b>和平谈判</b><br/><span class=\"section-news\">1. 特朗普：美国不寻求延长与伊朗的谅解备忘录。</span><br/><span class=\"section-news\">2. 伊朗总统：伊美谅解备忘录“维护尊严、展现实力”。</span><br/><span class=\"section-news\">3. 伊朗外交部发言人巴加埃：我们与卡塔尔保持持续联系；与阿曼的谈判仍在进行中。</span><br/><span class=\"section-news\">4. 伊朗外交部发言人巴加埃：美国违反谅解备忘录后，60天期限“完全失去意义”。</span><br/><span class=\"section-news\">5. 伊朗革命卫队政治顾问：战争必须根据谅解备忘录结束。只有当美国履行其在《伊斯兰堡谅解备忘录》中的承诺时，霍尔木兹海峡才会重新开放。</span><br/><span class=\"section-news\">6. 沙特媒体：美伊60天谈判期限延长协议已获批准。</span><br/><span class=\"section-news\">7. 美国总统特朗普：伊朗想达成协议，但他们不会达成我认为必要的那种协议。</span><br/><span class=\"section-news\">8. 美国总统特朗普：美国不寻求延长与伊朗的谅解备忘录。</span><br/><span class=\"section-news\">9. 特朗普女婿库什纳：美国与伊朗政府不同领域之间的对话比以往任何时候都更加活跃，但目前我们尚未达成共识。</span><br/><b>其他事项</b><br/><span class=\"section-news\">1. 巴基斯坦总理：我们将继续与沙特和土耳其合作，在捍卫本国及地区安全方面发挥建设性作用。</span><br/><span class=\"section-news\">2. 伊朗：媒体即战场，我方成功抵御舆论攻势。</span><br/><span class=\"section-news\">3. 伊朗农业部长：粮食安全无虞，一切尽在掌控。</span><br/><span class=\"section-news\">4. 伊朗：美国所谓“前所未有”的制裁对伊朗立场毫无影响。</span><br/><span class=\"section-news\">5. 伊朗外交部发言人：美国造成的环境破坏损失达数万亿美元 伊朗将优先索赔。</span><br/><span class=\"section-news\">6. 霍尔木兹甘港口与海事总局表示，格什姆岛的油污清理工作已完成。</span><br/><span class=\"section-news\">7. 特朗普称与伊朗革命卫队秘密沟通 伊朗回应：幻觉。</span><br/><span class=\"section-news\">8. 美国特使库什纳敦促内塔尼亚胡推进特朗普支持的加沙停火计划，“不要制造障碍”。</span><br/><span class=\"section-news\">9. 伊朗外交部：在确认下落之前，我们将认定我方飞行员在卡塔尔处于被俘状态。</span><br/><span class=\"section-news\">10. 以色列政治消息人士称，内塔尼亚胡与库什纳达成协议，同意停止任何加沙重建计划，加沙重建将与哈马斯解除武装挂钩。</span><br/><span class=\"section-news\">11. 土耳其外交消息人士：土耳其外长与伊朗外长通电话，讨论了开放霍尔木兹海峡的努力以及延续美伊停火事宜。</span><br/><span class=\"section-news\">12. 美国能源部长赖特：未来几天将宣布一些措施，以帮助炼油厂增加燃料生产。美国战略石油储备仍然有3亿桶，伊朗冲突结束后储备量将高于冲突前。</span>",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-18T05:25:58+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3621310,
+  "text": "Trump says US won't seek to extend Iran deal, threatens to bomb Oman",
+  "link": "https://asia.nikkei.com/spotlight/iran-tensions/iran-war/trump-says-us-won-t-seek-to-extend-iran-deal-threatens-to-bomb-oman",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T04:38:28.921+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3619776,
+  "text": "OIL CLIMBED AS INVESTORS WEIGHED FRESH MIDDLE EAST TENSIONS AGAINST ONGOING SHIPMENTS THROUGH THE STRAIT OF HORMUZ, WITH BRENT RISING ABOVE $90 A BARREL, UP 3% TO $90.74, AND WTI 2% HIGHER AT $84.14, AFTER ENERGY SECRETARY WRIGHT SAID THE U.S. IS 'PLAYING THE LONG GAME' WITH IRAN AND FOX NEWS REPORTED TRUMP THREATENED TO BOMB OMAN IF IT INTERFERES WITH THE BLOCKADE.",
+  "link": "https://x.com/FirstSquawk/status/2089410588682432734",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T01:54:39.589+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3619308,
+  "text": "Trump threatens to bomb Oman as US-Iran ceasefire expires",
+  "link": "https://abcnews.com/video/135714316/",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T01:01:15.475+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3618547,
+  "text": "<b>国内新闻</b><br/><span class=\"section-news\">1. 李强主持召开国务院第十二次全体会议强调，深入贯彻落实党中央决策部署，努力完成全年经济社会发展目标任务。</span><br/><span class=\"section-news\">2. 国家统计局：7月份，规模以上工业增加值同比实际增长4.5%。</span><br/><span class=\"section-news\">3. 国家发展改革委、国家能源局印发《石油天然气发展“十五五”规划》。</span><br/><span class=\"section-news\">4. 国家统计局：1—7月份，全国房地产开发投资43009亿元，同比下降19.2%。</span><br/><span class=\"section-news\">5. 国家统计局：1—7月份，社会消费品零售总额287744亿元，同比增长1.2%。</span><br/><span class=\"section-news\">6. 国家统计局：2026年7月份，70个大中城市中，一线城市商品住宅销售价格环比总体上涨，二三线城市环比下降，一二三线城市同比降幅总体继续收窄。</span><br/><span class=\"section-news\">7. 国家发改委部署加快2026年新型政策性金融工具投放工作，加大对民间投资项目支持力度。</span><br/><b>国际新闻</b><br/><span class=\"section-news\">1. 涉中美AI，美被曝想逼多国“二选一”。</span><br/><span class=\"section-news\">2. 韩国产业部长：韩美寻求解决2000亿美元投资计划遗留问题。</span><br/><span class=\"section-news\">3. 沙特从阿曼海岸附近供应石油，转运策略或悄然调整。</span><br/><span class=\"section-news\">4. 英伟达：OpenAI承诺在2030年前大规模部署英伟达AI基础设施，对应约6000亿美元计算业务规模。</span><br/><span class=\"section-news\">5. 中东局势—</span>",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-17T23:54:44+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "OPENAI"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "金十数据整理：欧盘美盘重要新闻汇总（2026-08-17）"
+ },
+ {
+  "id": 3618041,
+  "text": "【期货热点追踪】尽管霍尔木兹海峡仍未通航，但阿联酋、沙特正疯狂运出原油！卫星显示150艘巨轮集结阿曼湾准备运送沙特产的原油，阿联酋更是已狂卖约1.35亿桶石油...",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-17T23:09:03+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3618040,
+  "text": "Trump threatens to bomb Oman if it ‘gets in the way’ ",
+  "link": "https://www.washingtonpost.com/world/2026/08/17/trump-threatens-bomb-oman-if-it-gets-way/",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-17T23:08:03.514+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Middle East"
+ },
+ {
+  "id": 3617949,
+  "text": "尽管霍尔木兹海峡仍未通航，但阿联酋、沙特正疯狂运出原油！ 卫星显示150艘巨轮集结阿曼湾准备运送沙特产原油，阿联酋更是已狂卖约1.35亿桶石油……点击查看",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-17T23:03:03+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "不止阿联酋，沙特也正秘密将油运出霍尔木兹！"
+ },
+ {
+  "id": 3617880,
+  "text": "1. 新华社消息，据伊朗媒体17日报道，伊朗伊斯兰革命卫队发言人说，革命卫队官员并未与美国方面通过秘密渠道进行对话。\n2. 上期能源对部分客户采取限制开仓监管措施。\n3. 截至8月17日，全国进口大豆港口库存为904.54万吨，8月10日为905.80万吨，环比减少1.26万吨。\n4. 据路透社报道，伊朗高级官员表示，伊朗已决定将其政策从防御转向“全面进攻性”。向美国施压或依靠调解人达成持久和平并不现实。伊朗已设定数周期限，要求美国全面执行谅解备忘录。\n5. 8月17日，证券时报记者获悉，宜春市生态环境局拟受理宜春时代新能源矿业有限公司江西省宜丰县圳口里—奉新县枧下窝锂矿采矿项目环境影响评价文件。目前，上述项目的环评文件及公众参与说明，正处于拟受理前公示环节。\n6. 沙特阿拉伯正提供从阿曼海岸附近装载的石油供应，这表明该国可能正追随阿联酋的脚步，通过霍尔木兹海峡转运更多原油。据知情人士透露，沙特阿美正以船对船方式提供从阿曼湾苏哈尔等地装载的原油船货。\n7. 农业咨询公司AgRural表示，截至上周四，巴西中南部地区2026年二茬玉米作物收割率达到85%，高于前一周的79%，但低于去年同期的94%。",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-17T23:00:00+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "2026年8月17日金十期货夜盘要闻汇总"
+ },
+ {
+  "id": 3623247,
+  "text": "美国30年期国债收益率攀升至5.321%，为2007年中以来最高水平。",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-18T09:45:05+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623234,
+  "text": "U.S. 30-Year Treasury Yield Climbs to 5.321%, Highest Since Mid-2007",
+  "link": "",
+  "source": "",
+  "newsType": "Reuters",
+  "engineType": "news",
+  "ts": "2026-08-18T09:44:01.711497+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3622072,
+  "text": "美国不寻求延长与伊朗的谅解备忘录；伊朗已为美全面履行备忘录设最后期限；中英日在6月均减持美债，30年期美债收益率创19年来新高…昨日今晨，全球都发生了哪些大事？",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-18T06:57:50+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "金十数据全球财经早餐 | 2026年8月18日"
+ },
+ {
+  "id": 3620207,
+  "text": "【美伊局势再添变数 30年期美债收益率创19年来新高】金十数据8月18日讯，当地时间周一，美国国债收益率普遍走高。对地缘政治事件通常较为敏感的30年期美债收益率上涨逾4个基点，升至5.311%，创2007年6月以来最高水平。10年期美债收益率——抵押贷款、汽车贷款和信用卡债务的主要基准利率——上涨逾2个基点，至4.724%。2年期美债收益率通常会跟随美联储短期利率决定波动，周一上涨逾1个基点，至4.182%。由于美国与伊朗达成和平协议的60天期限将于周一到期，而伊朗已排除延长该期限的可能性，油价走高。投资者正等待本周稍后时间公布的美联储会议纪要，以进一步了解美联储最新的货币政策决定和未来利率走势。美联储在7月29日的会议上以9比3的投票结果决定将利率维持在3.50%至3.75%的区间不变。三位投反对票的委员会成员——哈马克、卡什卡利和洛根——则呼吁加息25个基点。",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-18T02:33:42+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "B",
+    "market_type": "cex",
+    "score": 55,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "short",
+    "symbol": "XYZ-SP500"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3620034,
+  "text": "美国30年期国债收益率突破5.31%，创下19年来新高。",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-18T02:14:10+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614057,
+  "text": "Binance Announcement:  \nNotice of Removal of Margin Trading Pairs - 2026-08-21\n\nNotifer: @CexAlerts",
+  "link": "https://t.me/CexAlerts/38646",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-17T18:02:01+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "CEX Alerts"
+ },
+ {
+  "id": 3624077,
+  "text": "quote: UKMTO has received a report of an incident in the Strait of Hormuz.\n\nThe Company Security Officer has reported that the vessel was struck by an unknown projectile while conducting an outbound transit of the Strait of Hormuz. The impact caused damage to the engine room and resulted in a crew casualty. The remaining crew are currently being assisted by the Omani Coast Guard.\n\n#oott | 20260818 UKMTO WARNING ATTACK 115-26\n\nhttps://t.co/kIIL54QwUP\n\n#MaritimeSecurity #MarSec  ",
+  "link": "https://x.com/staunovo/status/2089554096529330472",
+  "source": "Giovanni Staunovo🛢",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T11:24:54.503+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3624031,
+  "text": "quote: Back-to-back. Are you in? $DGB 📶 https://x.com/CryptoDiariesAI/status/2089551107932520544 | SIGNAL DETECTED. 📡\n\nSomething is building around DigiByte.\n\nSeptember 16th.\n\nSeptember 17th.\n\nTwo different moves.\n\nBack-to-back.\n\nAnd if the community actually hits the targets being discussed...\n\nwe could be looking at 200 MILLION DGB changing its relationship with the liquid market in roughly 48 HOURS.\n\nInteresting.\n\nBut that’s not the signal I can’t stop thinking about.\n\nIt’s what could happen...\n\nafter.\n\nBecause if the market reacts...\n\nand this community really has 10-year conviction...\n\nwhat the hell happens on September 18th?\n\nI’ll leave you with that.\n\nThe signal is getting louder. 📡\n\nACD is watching.\n\n🎥 Watch until the end.\n\n$DGB #GlobalTimeLockDay\n\nStay Anonymous. Stay Curious. Question Everything.",
+  "link": "https://x.com/DigiByteCoin/status/2089552509773996370",
+  "source": "DigiByte",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T11:18:36.499+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "DGB"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "LIQUID"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623970,
+  "text": "quote: Moving Trillions. Empowering Billions.🔻 https://x.com/trondao/status/2089254503430439406 | 15 billion transactions on the TRON network.  \n\nA milestone built one block, one payment, and one interaction at a time.  \n\nMoving Trillions. Empowering Billions.🔻  ",
+  "link": "https://x.com/justinsuntron/status/2089550350735065375",
+  "source": "H.E. Justin Sun 👨‍🚀 🌞",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T11:10:01.224+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "TRX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623753,
+  "text": "quote: On-chain liquidity never sleeps. The latest TRON ECO Weekly is out. 🌐\n\nWhile $USDT supply on TRON just smashed past the $91B mark, the ecosystem is actively removing supply—over $34.75M burned in Q2.\n\nOn the $SUN front, we kept the focus on where the capital is heading next with two deep-dive SunFlash roundtables on TradFi's on-chain migration.\n\nDive into the numbers and weekly Alpha below. 👇 | 🔍TRON Eco Weekly | 8.10–8.16\n\nAnother week of momentum across the #TRON ecosystem, with DeFi incentives, ecosystem deflation, and continued infrastructure growth standing out this week.\n\nTRON DeFi Summer S2 is in full swing with an exclusive $1.2M TRX reward pool, while USDD 2.0 entered Supply Mining Phase 21.\n\nThe latest TRON Eco Deflationary Ecosystem Report highlighted more than $34.75M in Q2 burn value from $JST and $SUN, while new buyback mechanisms for $WIN and $BTT are adding to the ecosystem’s broader deflationary efforts.\n\nMeanwhile, BitTorrent reached 584M+ global installations. On JustLend DAO, $WIN supply reached $941.65K, with total borrows at $89.90K as of Aug 14.\n\nMore from across #TRONEco below 👇",
+  "link": "https://x.com/OfficialSUNio/status/2089543866244538763",
+  "source": "SUN.io",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:44:17.321+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "TRX"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "SUN"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "MMT"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "BTT"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623672,
+  "text": "quote: 724 US stocks and ETFs, including the entire S&amp;P 500, now open to eligible US investors for the first time ever.\n\nEach dShare™ is backed by a security held with licensed custodians. Cash dividends, corporate actions, and the right to redeem at NBBO.\n\nDinari 🤝 @avax | Dinari is now open to U.S. investors.\n\n@DinariGlobal recently opened access to its 724 tokenized U.S. stocks and ETFs, including the entire S&amp;P 500, for eligible U.S. investors.\n\nAll trades settle on Dinari’s Avalanche L1.  ",
+  "link": "https://x.com/avax/status/2089541814751813788",
+  "source": "Avalanche🔺",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:36:06.539+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "AMP"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "AVAX"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623450,
+  "text": "quote: UBS on $MU: We do believe MU will ultimately buy back a very large amount of stock, but the tone in our meetings around this issue (“gradually”, “over time” to returning 100% excess cash) make us wonder whether investors should keep expectations in check around the timing of any announcement.\n\"On near-term business dynamics, we heard: \n(1) MU's latest demand commentary was consistent with recent remarks at an investor conference, citing that demand has strengthened further since earnings.\n(2) on HBM ASPs, MU confirmed its intention to drive HBM gross margins higher, reflecting HBM's higher value as a product and the fact that existing HBM contracts were signed a long time ago, with pricing effectively lagging the increases in DDR pricing\nMU provided greater granularity around its goal of 50%+ of revenue under strategic customer agreements (SCAs). Specifically, it expects ~10% of the revenue under SCAs to be sold via take-or-pay agreements without fixed/pre-contracted pricing. Of the remaining 40%, an undisclosed portion will carry fixed pricing while another portion will be sold with bands\" | UBS on $MU: \"now model MU HBM ASP up ~72% Y/Y (vs. +61% Y/Y prior) along with broadly unchanged MU HBM bit shipments of ~11.65B Gb for C2027. This comes despite changes to $NVDA Rubin Ultra specs, where our checks suggest a first VR300 variant is expected to use 384GB of HBM4 per GPU (8-Hi × 24Gb × 8 × 2 dies), with a subsequent version moving to 512GB of HBM4E per GPU (8-Hi × 32Gb × 8 × 2 dies) around C3Q27 - and the latter being below our previous estimate of 768GB of HBM4E per GPU.\"\n\"slightly trim estimates in the near-term due to a wider range of potential pricing outcomes for NAND through year-end and into C1H27.\"\n\"For DRAM, we believe HBM supply/demand has actually tightened with pricing for both HBM4 and HBM4E even stronger than our prior expectations.\"\n\"Overall HBM consumption for C2027 is actually increasing from 58.7B Gb to 61.5B Gb. We are also getting confirmation that memory suppliers are re-widening the HBM/DDR price premium...\"",
+  "link": "https://x.com/sean_________/status/2089535138078085578",
+  "source": "Sean",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:09:34.101+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "MU"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-MU"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "ASP"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XYZ-SKHX"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XYZ-SNDK"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-AMD"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "XYZ-INTC"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "NEAR"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "GPU"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "DRAM"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-DRAM"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623291,
+  "text": "quote: Arc’s bet on stablecoin-native settlement becomes much more interesting once liquidity starts arriving.\n\nDEX → lending → yield → payments → RWA.\n\nIf these primitives begin to stack around the same liquidity layer, Arc could become more than infrastructure for moving stablecoins.\n\nIt could become infrastructure for deploying them. | Liquidity infrastructure is live on Arc.\n\n@Uniswap will deploy on the upcoming Arc Mainnet, bringing the most widely used onchain AMM protocol to Arc’s stablecoin-native settlement layer.\n\nBuilders have been asking about liquidity since testnet launched. This is a key unlock for building a broader range of  DeFi applications on Arc.\n\narc.io/blog/how-unisw…",
+  "link": "https://x.com/dForcenet/status/2089530469339763062",
+  "source": "dForce",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T09:51:01.093+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "ARC"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "STACK"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "LAYER"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "XPL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "CRCL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "XYZ-CRCL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "UNI"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623133,
+  "text": "quote: UPDATE: ETH WHALE STAKES $3.84M ETH\n\nThe wallet we tracked yesterday has now staked 2.02K $ETH (~$3.84M) through the Ethereum Beacon Deposit Contract.\n\nIt also withdrew another 5K $ETH (~$9.53M) from Kraken four hours ago.\n\nOver the last day, the wallet has withdrawn 10.3K $ETH (~$19.5M) from Kraken.\n\nAddress: 0x8447A06F34e251ABeb55A0B7d5e01554F5072E0D | WALLET WITHDRAWS $10M ETH, LIKELY TO STAKE\n\nA wallet withdrew 5.3K $ETH (~$9.98M) from Kraken.\n\nLast month:\n\n· Withdrew 357.1 ETH (~$566K) from Kraken\n· Staked 224 ETH (~$351K)\n\nThe wallet currently holds 5.43K ETH (~$10.25M), with another 224 ETH staked.\n\nAddress: 0x8447A06F34e251ABeb55A0B7d5e01554F5072E0D",
+  "link": "https://x.com/OnchainLens/status/2089525185313694109",
+  "source": "Onchain Lens",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T09:30:01.27+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "ETH"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3618311,
+  "text": "Nvidia to invest $100bn for OpenAI data centre in Ohio\nChipmaker also invests $1.5bn into SB Energy, an energy company founded as part of SoftBank Group https://www.ft.com/content/82a4b183-7201-4789-95b7-e39e81c827bc?syn-25a6b1a6=1",
+  "link": "https://x.com/staunovo/status/2089375357199606257",
+  "source": "Giovanni Staunovo🛢",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T23:34:39.597+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "OPENAI"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "SOFTBANK"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "XYZ-SOFTBANK"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "SYN"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617041,
+  "text": "NVIDIA TO INVEST $100BN FOR OPENAI DATA CENTRE IN OHIO - FT",
+  "link": "https://x.com/FirstSquawk/status/2089351504109146370",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T21:59:52.171+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "OPENAI"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617039,
+  "text": "$NVDA  -  NVIDIA TO INVEST $100BN FOR OPENAI DATA CENTRE IN OHIO - FT",
+  "link": "https://twitter.com/deitaone/status/2089351453655642588",
+  "source": "deitaone",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T21:59:40.33292+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "WLD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "OPENAI"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "NVDA"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Walter Bloomberg"
+ },
+ {
+  "id": 3617037,
+  "text": "Nvidia to Invest $100bn for OpenAI Data Centre in Ohio - FT",
+  "link": "",
+  "source": "",
+  "newsType": "Reuters",
+  "engineType": "news",
+  "ts": "2026-08-17T21:59:24.341687+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "WLD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "OPENAI"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "NVDA"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617027,
+  "text": "Nvidia to invest $100bn for OpenAI data centre in Ohio ",
+  "link": "https://www.ft.com/content/82a4b183-7201-4789-95b7-e39e81c827bc",
+  "source": "",
+  "newsType": "FT",
+  "engineType": "news",
+  "ts": "2026-08-17T21:58:12.115683+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "WLD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "OPENAI"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3617029,
+  "text": "Nvidia to invest $100bn for OpenAI data centre in Ohio ",
+  "link": "https://www.ft.com/content/82a4b183-7201-4789-95b7-e39e81c827bc?syn-25a6b1a6=1",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-17T21:58:10.599+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "OPENAI"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3621919,
+  "text": "Robinhood: THE BLOCK: Robinhood Chain TVL surges 45% in August as tokenized RWAs lose ground",
+  "link": "",
+  "source": "robinhood",
+  "newsType": "robinhood",
+  "engineType": "listing",
+  "ts": "2026-08-18T06:26:06.283+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "THE BLOCK: Robinhood Chain TVL surges 45% in August as tokenized RWAs lose ground"
+ },
+ {
+  "id": 3621918,
+  "text": "THE BLOCK: Robinhood Chain TVL surges 45% in August as tokenized RWAs lose ground",
+  "link": "",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T06:26:06.283+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "THE BLOCK: Robinhood Chain TVL surges 45% in August as tokenized RWAs lose ground"
+ },
+ {
+  "id": 3621916,
+  "text": "Robinhood: Robinhood Chain TVL surges 45% in August as tokenized RWAs lose ground",
+  "link": "https://www.theblock.co/news/ecosystems/2026-08-17-robinhood-chain-tvl-surges-45-august-tokenized-rwas-lose-ground-411998",
+  "source": "robinhood",
+  "newsType": "robinhood",
+  "engineType": "listing",
+  "ts": "2026-08-18T06:25:32.209927+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3621913,
+  "text": "Robinhood Chain TVL surges 45% in August as tokenized RWAs lose ground",
+  "link": "https://www.theblock.co/news/ecosystems/2026-08-17-robinhood-chain-tvl-surges-45-august-tokenized-rwas-lose-ground-411998",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T06:25:27.082+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3621914,
+  "text": "Robinhood: Robinhood Chain TVL surges 45% in August as tokenized RWAs lose ground",
+  "link": "https://www.theblock.co/news/ecosystems/2026-08-17-robinhood-chain-tvl-surges-45-august-tokenized-rwas-lose-ground-411998",
+  "source": "robinhood",
+  "newsType": "robinhood",
+  "engineType": "listing",
+  "ts": "2026-08-18T06:25:27.082+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "HOOD"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3616378,
+  "text": "Iran Shifts From Defensive To 'Fully Offensive' Posture, Denies Trump Has Backchannel With IRGC https://www.zerohedge.com/geopolitical/trump-threatens-bomb-st-out-oman-touts-irgc-backchannel",
+  "link": "https://twitter.com/zerohedge/status/2089340492433494330",
+  "source": "zerohedge",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T21:16:06.750026+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3615291,
+  "text": "*STRATEGY REBUYS $132M STRC, ADDS $150M TO USD RESERVE  ",
+  "link": "https://x.com/arkham/status/2089322714003595288",
+  "source": "Arkham",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T20:05:28.25+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "STRC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-STRC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3611919,
+  "text": "Naftogaz says Russia attacked its facilities in Ukraine 13 times over past week",
+  "link": "https://x.com/FirstSquawk/status/2089232062670856475",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T14:05:15.65+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3616207,
+  "text": "Staying Low<br/><br/>Equities hit record highs and crypto lagged. The S&P rose 0.44% to 7,785.76, a third straight weekly gain, and the Russell 2000 added 3.15%. BTC fell 3.08% to $62.8K and total market cap fell 2.22% to $2.160T.<br/>CPI landed exactly on consensus and rate hike expectations have lowered. Headline 3.4% y/y, core 2.5%. Polymarket now prices 75% hold against 25% hike, versus 56% and 41% on August 10.<br/>Regulation Crypto proposal vote delayed. No replacement date for the back up proposal for CLARITY. CLARITY sits at 20% on Polymarket, down from 25%. Both the legislative and regulatory paths are now stalled.<br/>Q2 13Fs show banks growing ETH exposure three times faster than BTC. Morgan Stanley added 18.6% to ETH against 3.7% to BTC in coin terms; JPMorgan added 67.3% to ETH against 12.2% to BTC.<br/>Volatility compressed for a fourth week. DVOL 34.83, with the VIX and MOVE both down 7.8%. Aggregate OI built 2.7% to $118.07B, the long/short ratio ran to 61.68% before falling back to 54%, and September puts cost 1.27x calls of equal delta.<br/>BTC ETFs saw $385.2M in net outflows. ETH ETFs lost $3.0M. ETH continues to hold up better than BTC.<br/>Equities Hit New Highs<br/>The S&P 500 rose 0.44% from Monday's 7.751.74 open to Friday's 7,785.76 close, a new high and its third consecutive weekly gain. The Nasdaq added 0.18%, the Russell 2000 gained 3.15%, and the Dow lost 0.6%. Small caps outperformed large caps while crypto dipped.<br/> <br/>BTC opened the week at $64.8K and finished Sunday at $62.8K, down 3.08%. ETH held up marginally better at -1.80%. Total market cap fell 2.22% to $2.160T. Brent gained 3.58% and gold added 0.84%. BTC has now held its $60K to $66K range since June.<br/>Inflation, SEC Delays and 13Fs<br/>Consensus CPI<br/>Headline CPI rose 0.1% m/m and 3.4% y/y, down from 3.5%. Core rose 0.2% m/m and 2.5% y/y, down from 2.6%. Both exactly in line with consensus.<br/>Core at 2.5% is close to target. The gap between it and the 3.7% headline PCE print from two weeks ago is energy costs rather than the labour market, which is why a hike is now hard to justify on the inflation data alone. Polymarket now prices 75% hold against 25% hike, versus 56% and 41% on 10 August.<br/> <br/>SEC Delays<br/>The SEC cancelled the open meeting scheduled for 10am ET Friday, August 14 at which the Regulation Crypto proposal was to be voted on. The cancellation notice cited an unforeseen scheduling issue and gave no replacement date.<br/>The roughly 400-page proposal contains three pathways:<br/>Startup exemption. Sell up to roughly $5M of tokens to US buyers over a four-year window without registering the offering. Disclosure is a public whitepaper rather than audited accounts, and the issuer notifies the SEC on entering and exiting the window.<br/>Fundraising exemption. Sell up to $75M in any twelve-month period without registering, in exchange for audited financials and semiannual reporting. The cap is lifted directly from Regulation A+ Tier 2, the SEC's existing mini-IPO route for smaller companies.<br/>Decentralization safe harbor. Once a network's founders have permanently stopped the managerial work they promised buyers, the token exits securities classification entirely.<br/>The proposal has not been withdrawn. A vote would only have opened a notice-and-comment period, so the cancellation delays the start of rulemaking rather than killing the policy. Our July 27 issue described Regulation Crypto as the weaker fallback if CLARITY fails. Both paths are now stalled. CLARITY sits at 20% on Polymarket, down from 25% last week.<br/> <br/>Institutional Purchases<br/>We saw several institutions increase their crypto holdings after the Q2 13Fs were released on August 14. Morgan Stanley's bitcoin holdings fell 11% in value but rose 3.7% in BTC terms to 11,510 coins, with its IBIT reduction more than offset by 739 BTC in its own newly launched trust. Its ETH exposure rose 18.6% to 84,243 ETH. JPMorgan added 12.2% to bitcoin, reaching 10,513 BTC, and 67.3% to ETH, at 19,148 ETH. Between them the two banks added roughly 1,556 BTC (~$91M) and 20,897 ETH (~$33M) over the quarter. ETH grew more than three times faster in proportional terms, though bitcoin still took the larger share of the money. Druckenmillerâ€™s Duquesne Family Office disclosed a new position in Hyperliquid Strategies (PURR) of 2,941,500 shares worth $23.15M, 0.44% of its $5.21B book.<br/>Note: A bank's 13F is largely client custody, not a proprietary book, and it captures only long positions in reportable securities.<br/>OI Building Up<br/>Deribit DVOL sits at 34.83 compared to 36.21 in our previous article. Volatility has dropped even further and is near its 12 month lows. The VIX and MOVE are both down 7.8%, so cross-asset volatility is falling alongside crypto.<br/> <br/>Aggregate crypto futures OI reached $118.07B on August 16 against $115B last issue, up 2.7% and the highest since June. Coinglass's 24-hour long/short ratio ran as high as 61.68% / 38.32% into the weekend against 49.74% / 50.26% last week, and has since unwound to 54% / 46%. In the BTC options market, we see traders are paying a premium for downside protection. Puts expiring in September costs 1.27x that of calls of equal delta.<br/>ETF Flows Flip Positive<br/>BTC and ETH ETFs saw $388M of outflows last week. BTC ETFs saw $385.2M, the worst in 5 weeks and a reversal of last week. ETH ETFs had a very slow week with $3M of net outflows, extending the pattern of the past four months where ETH holds up better than BTC.<br/> <br/>Key Events for the Week Ahead<br/>Monday, August 17<br/>US: Empire State Manufacturing, NAHB Housing Market Index.<br/>Tuesday, August 18<br/>UK: Labour market, 7am BST.<br/>Wednesday, August 19<br/>UK: July CPI, 7am BST.<br/>Thursday, August 20<br/>US: Initial jobless claims, Philadelphia Fed, existing home sales<br/>CFTC Innovation Advisory Committee meets with crypto regulation first on the agenda, the only live regulatory venue left this month after the SEC cancellation.<br/>China: PBOC Loan Prime Rate fixing.<br/>Friday, August 21<br/>Japan: July national CPI.<br/>Global: S&P Global flash manufacturing and services PMIs across the US, UK, Eurozone and Japan.<br/>UK: July retail sales",
+  "link": "https://twitter.com/dwflabs/status/2089337076684640304",
+  "source": "dwflabs",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T21:02:33.26734+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "HYPE"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "NET"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "CROSS"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "PRIME"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "XYZ-SP500"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "CAP"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "CORE"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "ETH"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "NASDAQ"
+   },
+   {
+    "expired": false,
+    "grade": "B",
+    "market_type": "cex",
+    "score": 55,
+    "signal": "long",
+    "symbol": "XAU"
+   },
+   {
+    "expired": false,
+    "grade": "B",
+    "market_type": "cex",
+    "score": 55,
+    "signal": "long",
+    "symbol": "XYZ-GOLD"
+   },
+   {
+    "expired": false,
+    "grade": "B",
+    "market_type": "cex",
+    "score": 55,
+    "signal": "short",
+    "symbol": "COIN"
+   },
+   {
+    "expired": false,
+    "grade": "B",
+    "market_type": "cex",
+    "score": 55,
+    "signal": "short",
+    "symbol": "XYZ-COIN"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "PURR"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 35,
+    "signal": "short",
+    "symbol": "XYZ-PURRDAT"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "NEAR"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3616390,
+  "text": "Get to know Stephanie Chan of @wyostable.\n\nThe Commission issues FRNT, the first fiat-backed and fully-reserved stable token issued by a U.S. public entity. They choose Polygon as one of their settlement chains.\n\nThe full story: https://polygon.technology/customers/wyoming-stable-token-commission  ",
+  "link": "https://x.com/0xPolygon/status/2089340784449298870",
+  "source": "Polygon | POL",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T21:17:16.489+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "STABLE"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "POL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3615764,
+  "text": "德国10年期国债收益率日内上涨1.5个基点，升至自2011年5月以来的最高水平3.2138%。",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-17T20:35:57+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614950,
+  "text": "Italy’s Intesa Sanpaolo holds stake in SpaceX worth nearly $1 billion in second quarter",
+  "link": "",
+  "source": "",
+  "newsType": "Reuters",
+  "engineType": "news",
+  "ts": "2026-08-17T19:38:52.82482+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-SPCX"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "SPACEX"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "SPCX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3620707,
+  "text": "AARD Investors Have Opportunity to Lead Aardvark Therapeutics, Inc. Securities Fraud Lawsuit",
+  "link": "https://rtpr.io/a/nPn3j3FNja",
+  "source": "",
+  "newsType": "PRNewswire",
+  "engineType": "news",
+  "ts": "2026-08-18T03:27:00.035+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "AARD"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3620803,
+  "text": "Deadline Alert: Bloom Energy Corporation (BE) Shareholders Who Lost Money Urged To Contact Glancy Prongay Wolke & Rotter LLP About Securities Fraud Lawsuit",
+  "link": "",
+  "source": "",
+  "newsType": "GlobeNewswire",
+  "engineType": "news",
+  "ts": "2026-08-18T03:40:00.262592+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "XYZ-BE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3611358,
+  "text": "This Week in Crypto (August 10–17): The SEC Cancels Its Own Crypto Vote, ETFs Give Back $389.7M in Five Sessions, and Strategy Sells Another 1,690 BTC.<br/>The biggest item in crypto news this week is a meeting that didn't happen. The SEC was scheduled to propose crypto-specific rules for the first time on August 14, then pulled the meeting the day before and named no new date. Around that: a Bank of Japan signal did more to move bitcoin than anything on-chain, spot ETFs erased the best inflow week since April in five sessions, and Strategy's 2026 selling reached nearly 7,000 BTC. Here's the week, story by story. The week at a glance Story",
+  "link": "https://blog.coin98.com/blog/this-week-in-crypto-august-10-17-the-sec-cancels-its-own-crypto-vote-etfs-give-back-389-7m-in-five-sessions-and-strategy-sells-another-1-690-btc",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-17T12:47:24.716242+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "C98"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "SPOT"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3615751,
+  "text": "NVIDIA HAS COMMITTED TO SB ENERGY'S PORTS-PIKE TECHNOLOGY CAMPUS IN OHIO TO SOLELY UTILIZE FOR NVIDIA AI COMPUTING.",
+  "link": "https://x.com/FirstSquawk/status/2089330287234908213",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T20:35:34.065+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-NVDA"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3616056,
+  "text": "H World Group Reports Strong Second-Quarter 2026 Performance and Announces New Shareholder Return Plan",
+  "link": "https://rtpr.io/a/nPn5sMv6La",
+  "source": "",
+  "newsType": "PRNewswire",
+  "engineType": "news",
+  "ts": "2026-08-17T20:56:28.035+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "HTHT"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "1179"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614349,
+  "text": "TRUMP CUTS KOREA DRILLS TO REVIVE KIM TALKS<br/><br/>President Trump ordered reductions to U.S.-South Korea military exercises, reviving a strategy used during his first-term nuclear talks with Kim Jong Un.<br/><br/>The move comes as North Korea has significantly expanded its nuclear arsenal, missile capabilities and military experience, aided by Russia and China.<br/><br/>Critics warn scaling back drills could weaken deterrence and raise concerns among U.S. allies.<br/><br/>Kim has so far rejected Trump’s diplomatic outreach, demanding recognition of North Korea as a nuclear state.",
+  "link": "https://twitter.com/deitaone/status/2089302168738181575",
+  "source": "deitaone",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T18:43:49.663249+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "short",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "short",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 35,
+    "signal": "long",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Walter Bloomberg"
+ },
+ {
+  "id": 3614576,
+  "text": "Bitfufu Inc: Bitcoin Held by Co Decreased by 6.8% to 1,671 BTC as of June 30, 2026",
+  "link": "",
+  "source": "",
+  "newsType": "Reuters",
+  "engineType": "news",
+  "ts": "2026-08-17T19:06:44.585154+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3611622,
+  "text": "Deadline to reach deal to end US-Iran war passes with no end to conflict in sight",
+  "link": "https://www.cnn.com/2026/08/17/world/live-news/iran-war-trump",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-17T13:29:15.862+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3620761,
+  "text": "GRAINS-Soybeans rise with crude oil price jump, strong soybean crush",
+  "link": "",
+  "source": "",
+  "newsType": "Reuters",
+  "engineType": "news",
+  "ts": "2026-08-18T03:33:53.24615+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3622599,
+  "text": "日本5年期国债收益率上升2个基点，达到2.18%，创历史新高。",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-18T08:11:15+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3616437,
+  "text": "As previously announced, we have suspended trading for the following perpetual futures. Any remaining open positions have been settled automatically using the final settlement noted.<br/><br/>AZTEC-PERP - $0.01161 USDC<br/><br/>The prices are calculated as the average index price over the 60 minutes prior to the trading suspension.",
+  "link": "https://twitter.com/coinbasemarkets/status/2089341603320066085",
+  "source": "coinbasemarkets",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T21:20:31.959177+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "AZTEC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "PERP"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3618958,
+  "text": "quote: Grok @Bot https://x.com/gavinsbaker/status/2089379355692527813 | I think @bot is another “Claude Code” moment for AI.\n\nI would estimate my personal AI usage is up something like 100x.\n\nAnd for everyone who reached out about how to build a “podcast summarizer” it took me about 15 seconds in Grok Bot and is better than what I had before.  ",
+  "link": "https://x.com/elonmusk/status/2089388021154283625",
+  "source": "Elon Musk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T00:24:58.765+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "BOT"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-BOT"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3621660,
+  "text": "ERDOGAN TOLD TRUMP IT IS IMPORTANT TO CONTINUE TALKS WITH IRAN TO TAKE ADVANTAGE OF DIPLOMACY, WITH TURKEY READY TO CONTRIBUTE, AND SAID ISRAEL IS ATTACKING PALESTINIANS IN GAZA WHEN THE SECOND PHASE OF THE PEACE PLAN WAS SUPPOSED TO TAKE EFFECT.\n\nSEPARATELY, A TURKISH DIPLOMATIC SOURCE SAYS THE TURKISH FOREIGN MINISTER DISCUSSED EFFORTS TO OPEN THE STRAIT OF HORMUZ AND CONTINUE THE U.S.-IRAN CEASEFIRE IN A CALL WITH HIS IRANIAN COUNTERPART.",
+  "link": "https://x.com/FirstSquawk/status/2089467008559808903",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T05:38:51.15+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 35,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3622630,
+  "text": "WTI NEARS $85 AS HORMUZ TALKS REMAIN STALLED; OIL HAS SURGED ALMOST 50% THIS YEAR AS THE WAR DISRUPTS MIDDLE EAST ENERGY FLOWS.",
+  "link": "https://x.com/FirstSquawk/status/2089506777096425636",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T08:16:52.699+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B",
+    "market_type": "cex",
+    "score": 55,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3615567,
+  "text": "SENIOR IRANIAN OFFICIAL TO REUTERS: IRAN HAS DECIDED TO SHIFT ITS POLICY FROM DEFENSIVE TO A 'FULLY OFFENSIVE' ONE",
+  "link": "https://twitter.com/deitaone/status/2089328061892252016",
+  "source": "deitaone",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T20:26:42.827905+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Walter Bloomberg"
+ },
+ {
+  "id": 3611184,
+  "text": "ProShares UltraPro QQQ ($TQQQx) Found in OKX \nNetworks:  TQQQx-X Layer`\nTQQQx-Solana`\n\nNotifer: @CexAlerts",
+  "link": "https://t.me/CexAlerts/38607",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-17T12:19:38+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "QQQ"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "LAYER"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 25,
+    "signal": "long",
+    "symbol": "SOL"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "TQQQ"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "OKB"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "CEX Alerts"
+ },
+ {
+  "id": 3613348,
+  "text": "JUST IN: @GoldmanSachs calls a September Fed rate hike very unlikely, citing soft retail sales, slowing inflation and weak employment data. https://t.co/yiXYYsvOvV",
+  "link": "https://twitter.com/coindesk/status/2089272109964882128",
+  "source": "coindesk",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T16:44:23.107279+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-SP500"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614263,
+  "text": "🔍TRON Eco Weekly | 8.10–8.16<br/><br/>Another week of momentum across the #TRON ecosystem, with DeFi incentives, ecosystem deflation, and continued infrastructure growth standing out this week.<br/><br/>TRON DeFi Summer S2 is in full swing with an exclusive $1.2M TRX reward pool, while USDD 2.0 entered Supply Mining Phase 21.<br/><br/>The latest TRON Eco Deflationary Ecosystem Report highlighted more than $34.75M in Q2 burn value from $JST and $SUN, while new buyback mechanisms for $WIN and $BTT are adding to the ecosystem’s broader deflationary efforts.<br/><br/>Meanwhile, BitTorrent reached 584M+ global installations. On JustLend DAO, $WIN supply reached $941.65K, with total borrows at $89.90K as of Aug 14.<br/><br/>More from across #TRONEco below 👇",
+  "link": "https://twitter.com/defi_just/status/2089298944413093956",
+  "source": "defi_just",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T18:31:01.828552+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "TRX"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "MMT"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "SUN"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "BTT"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "defi_just"
+ },
+ {
+  "id": 3623550,
+  "text": "Pres. Trump has threatened to bomb U.S. ally Oman if they interfere with objectives in the Strait of Hormuz. It comes as Trump tells the Pentagon to scale-back military exercises with South Korea, citing \"very good\" ties with Kim Jong Un. @JonKarl reports. https://t.co/gMTaytrSMO  ",
+  "link": "https://x.com/jonkarl/status/2089537947288658260",
+  "source": "Jonathan Karl",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:20:44.53+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614881,
+  "text": "President Trump told Fox News that Iran should \"put up the white flag of surrender.\"<br/><br/>\"I have no time schedule,\" Trump added. \"I'm not in a hurry...the midterms have nothing to do with my thinking.\"<br/><br/>The President confirmed there is a direct backchannel with IRGC officials.<br/><br/>\"They're good poker players, but they're dying.\"<br/><br/>President Trump also reacted to the ongoing talks between Iran and Oman regarding control of the Strait.<br/><br/>\"If Oman gets in the way, we'll bomb the shit out of them.\"<br/><br/>Regarding Israeli elections, the President did not issue an endorsement of any candidate. <br/><br/>\"I think it's most appropriate for me to stay out of Israeli elections, but I may endorse somebody.\"<br/><br/>President Trump indicated positive progress on getting Hamas to disarm, but said that Israel should not be striking Gaza right now.<br/><br/>\"We have our own relationship with Hamas. They are giving up their guns.\"",
+  "link": "https://twitter.com/treyyingst/status/2089314268558618803",
+  "source": "treyyingst",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T19:31:55.069873+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Fox Reporter"
+ },
+ {
+  "id": 3617444,
+  "text": "August 17 Update:<br/><br/>#Bitcoin ETFs:<br/>1D NetFlow: -1,010 $BTC(-$64.25M)🔴<br/>7D NetFlow: -6,631 $BTC(-$421.76M)🔴<br/><br/>#Ethereum ETFs:<br/>1D NetFlow: +3,457 $ETH(+$6.58M)🟢<br/>7D NetFlow: -3,549 $ETH(-$6.75M)🔴 https://t.co/yCg3K5jR0L",
+  "link": "https://twitter.com/lookonchain/status/2089357626232717630",
+  "source": "lookonchain",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T22:24:13.720017+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 35,
+    "signal": "short",
+    "symbol": "ETH"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3616379,
+  "text": "Iran Shifts From Defensive To 'Fully Offensive' Posture, Denies Trump Has Backchannel With IRGC https://www.zerohedge.com/geopolitical/trump-threatens-bomb-st-out-oman-touts-irgc-backchannel",
+  "link": "https://x.com/zerohedge/status/2089340492433494330",
+  "source": "zerohedge",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T21:16:06.892+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614016,
+  "text": "Binance: Notice of Removal of Margin Trading Pairs - 2026-08-21",
+  "link": "https://www.treeofalpha.com/preview_article?id=1786960813377",
+  "source": "binance",
+  "newsType": "binance",
+  "engineType": "listing",
+  "ts": "2026-08-17T18:00:14.785214+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3612646,
+  "text": "Qatar Denies Holding Iranian Pilots As Tehran Demands Answers Over Missing Airmen https://www.zerohedge.com/geopolitical/qatar-denies-holding-iranian-pilots-tehran-demands-answers-over-missing-airmen",
+  "link": "https://twitter.com/zerohedge/status/2089253424130875397",
+  "source": "zerohedge",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T15:30:07.958261+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614559,
+  "text": "Imagine being this guy\n\nThis trader fumbled $3M by selling #牛来 one day before it pumped\n\nHe owned 7% of the supply across 10 wallets  ",
+  "link": "https://x.com/bubblemaps/status/2089307627444662394",
+  "source": "Bubblemaps",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T19:05:31.724+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "牛来"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614026,
+  "text": "Pendle Print #123\n\n• PT looping incentives go live: +2% APY for PTs before leverage.\n• The Pendle Ecosystem USDC vault go live with PENDLE incentives on Morpho\n• PT looping input increases from $500k to $1.5M\n• Pendle launches on X Layer: USDG OCT2026\n• Lido onboards PT-srUSDe into their EarnUSD",
+  "link": "https://x.com/pendle_fi/status/2089291233911071052",
+  "source": "Pendle",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T18:00:23.296+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "MORPHO"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "LAYER"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "USDG"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "PENDLE"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "VAULT"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3621379,
+  "text": "reply @nchantreshunter @jessepollak https://www.clanker.world/clanker/0x7B6E0B1c2928e80Ac4c8969339b6d10736e68B07\nblue hard hat (BHH) is live on Base. Liquidity locked, 100B supply.",
+  "link": "https://x.com/clanker_world/status/2089455409476034683",
+  "source": "clanker",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T04:52:45.646+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "CLANKER"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614436,
+  "text": "\"Ballpark To Battlefield\": Ondas' M&amp;A Blitz Builds Drone And Ground Robotics Empire  https://www.zerohedge.com/markets/ballpark-battlefield-ondas-ma-blitz-builds-drone-and-ground-robotics-empire",
+  "link": "https://x.com/zerohedge/status/2089305012664979860",
+  "source": "zerohedge",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T18:55:07.688+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "MA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "ONDS"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "AMP"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3624011,
+  "text": "China conducts suspected marine research within Japan's EEZ - KYODO",
+  "link": "https://x.com/FirstSquawk/status/2089552003202683040",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T11:16:35.182+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623955,
+  "text": "Memory Chip Stocks Surge Amid Low VIX: Why Storage Remains the Strongest Sector in US Markets.<br/>Introduction The VIX index has fallen steadily since early August 2026, dropping from near 20 to around 15, with a recent low of",
+  "link": "https://www.kucoin.com/blog/memory-chip-stocks-surge-amid-low-vix-why-storage-remains-the-strongest-sector-in-us-markets",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T11:08:04.019627+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XYZ-SKHX"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XYZ-SNDK"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "NEAR"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-MU"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#dccb09",
+   "id": 1352,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "Storage News",
+   "soundId": 34,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3615639,
+  "text": "<b>加拿大7月CPI月率 0.5%，预期0.40%，前值-0.40%。</b>",
+  "link": "",
+  "source": "jin10",
+  "newsType": "jin10",
+  "engineType": "news",
+  "ts": "2026-08-17T20:30:02+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623126,
+  "text": "Farcaster Seeks New Operator Again Less Than Seven Months After Neynar Takeover<br/><br/>Neynar is seeking a new team to take over the Farcaster protocol, token-launch platform Clanker and its developer platform, less than seven months after acquiring Farcaster from Merkle Manufactory. Farcaster’s gross protocol revenue has fallen sharply from $35.43 million in the first quarter of 2026 to about $377,000 between July 1 and Aug. 17.",
+  "link": "https://twitter.com/wublockchain/status/2089524972150837740",
+  "source": "wublockchain",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-18T09:29:10.743532+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "CLANKER"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623246,
+  "text": "reply @elonmusk We wrote more about this and flex on the haters here👇️ (2/2) https://newsletter.semianalysis.com/p/spacex-10gw-in-2027-why-its-real",
+  "link": "https://x.com/SemiAnalysis_/status/2089528971293553011",
+  "source": "SemiAnalysis",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T09:45:03.99+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "FLEX"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "SPCX"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-SPCX"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "SPACEX"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623666,
+  "text": "Jane Street Discloses Over $1 Billion in Bitcoin ETF Holdings, Led by BlackRock’s IBIT\n\nQuant trading giant Jane Street disclosed more than $1 billion in U.S. spot Bitcoin ETF holdings as of June 30, with roughly $828 million invested in BlackRock’s IBIT and the remainder spread across products including Fidelity’s FBTC and Grayscale’s GBTC. The positions are holdings of ETF shares rather than direct Bitcoin ownership.",
+  "link": "https://x.com/WuBlockchain/status/2089541715082494002",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T10:35:41.808+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "QNT"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "QUANT"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "SPOT"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "G"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Wu Blockchain (@WuBlockchain)"
+ },
+ {
+  "id": 3620700,
+  "text": "Tesla Readies August Launch of Cybercab, Its Robotaxi Without a Steering Wheel",
+  "link": "https://www.theinformation.com/articles/tesla-readies-august-launch-cybercab-robotaxi-without-steering-wheel",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T03:26:25.715+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-TSLA"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "TSLA"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3620004,
+  "text": "*TRUMP REPEATS 'IDEA' OF DECLARING HORMUZ AS US TERRITORY",
+  "link": "",
+  "source": "",
+  "newsType": "Bloomberg",
+  "engineType": "news",
+  "ts": "2026-08-18T02:12:05.147534+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614779,
+  "text": "From open agent models to enterprise infrastructure and safety governance, the past two weeks brought major moves across the AI-agent stack.\n\nHere's your biweekly recap of everything that happened in the space, in the latest edition of AI Agents Pulse:\n\n1️⃣ AMD is acquiring Taalas, a startup whose technology bakes a neural network's architecture and trained parameters directly into silicon. AMD plans to incorporate the technology into its accelerator roadmap; the deal is subject to standard regulatory approvals.\nthe-decoder.com/amd-acquires-t…\n\n2️⃣ DeepSeek moved V4-Pro out of testing and released DeepSeek Harness v0.1, its agent software, as an MIT-licensed Developer Preview. The tool supports resumable, branchable, and replayable runs.\nthe-decoder.com/deepseek-launc…\n\n3️⃣ Qwen released open weights for Qwen3.8-27B and Qwen3.8-2.4T-A95B under the Apache 2.0 license. Qwen3.8-27B is a 27-billion-parameter multimodal dense model; Qwen says its agent planning and task-completion capabilities have improved.\nthe-decoder.com/alibabas-qwen-…\n\n4️⃣ AP reported that Meta released Muse Glimmer, an open-source AI model that can run on a personal computer. Meta said it would also provide developers access to a more powerful model, Muse Spark 1.2.\napnews.com/article/meta-a…\n\n5️⃣ Databricks closed a $5 billion funding round at a $190 billion valuation. The company said it will use the money to invest in enterprise AI capabilities, and highlighted Lakebase, a database for AI agents; Genie, its business agent; and AI Gateway.\ncnbc.com/2026/08/13/dat…\n\n6️⃣ Bloomberg reported that Stripe finalized a deal to acquire OpenRouter for more than $7 billion. Stripe declined to comment on the report.\ntechcrunch.com/2026/08/16/str…\n\n7️⃣ NVIDIA said the Linux Foundation shared a Request for Comments on Shared AI Findings Exchange, or SAFE, a proposed set of guidelines for turning agentic cybersecurity incidents into shared protection. The guidelines are being drafted by an Open Secure AI Alliance working group whose members now number more than 120 organizations.\nblogs.nvidia.com/blog/open-secu…\n\n8️⃣ OpenAI made its cybersecurity-specific GPT-5.6-Cyber available through Daybreak Red. Daybreak Red is for authorized vulnerability research, exploit validation, and security testing.\nopenai.com/index/expandin…\n\n9️⃣ Google Research and Google DeepMind reported a randomized study of AMIE in simulated clinical video consultations. They said AMIE is being advanced toward real-time clinical video consultations, but remains a research system requiring more work before responsible real-world deployment.\nblog.google/innovation-and…",
+  "link": "https://x.com/GoKiteAI/status/2089312278202220940",
+  "source": "KITE AI",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T19:24:01.772+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "CYBER"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "SPK"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "XYZ-NVDA"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "OPENAI"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "STACK"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "SPACE"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "AMD"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-AMD"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "META"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "signal": "long",
+    "symbol": "XYZ-META"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3623863,
+  "text": "Others were on the call, including USTR Greer and Commerce Secretary Lutnick. <br/><br/>Auto tariffs remain a sticking point, with the U.S. not wanting to go below 15, we’re told. A deadline of sorts looms at 12:01 a.m. Wednesday. <br/><br/>https://www.bloomberg.com/news/articles/2026-08-17/trump-tariffs-on-canada-auto-rules-block-deal-before-aug-19-deadline",
+  "link": "https://twitter.com/josh_wingrove/status/2089547360036892771",
+  "source": "josh_wingrove",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-18T10:58:08.29975+08:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 35,
+    "signal": "short",
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 80
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Bloomberg Reporter"
+ },
+ {
+  "id": 3611940,
+  "text": "FACTBOX-Trump seeks cuts to US-South Korea drills, reviving earlier objections",
+  "link": "",
+  "source": "",
+  "newsType": "Reuters",
+  "engineType": "news",
+  "ts": "2026-08-17T14:08:08.582071+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 35,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3616225,
+  "text": "Algoma Steel warns of shipment impact after outage shuts EAF operations",
+  "link": "",
+  "source": "",
+  "newsType": "Reuters",
+  "engineType": "news",
+  "ts": "2026-08-17T21:03:32.269248+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "STEEL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3618575,
+  "text": "The through-line connecting a Nigerian exchange, a BlackRock fund and a stablecoin used for cross-border payments is that tokenization is no longer a question of \"if.\" It is a question of who makes it accessible. 👇",
+  "link": "https://x.com/FLOKI/status/2089381391440007256",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-17T23:58:37.613+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "FLOKI"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "XPL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CRCL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CRCL"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "CROSS"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "ONDO"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "FLOKI (@FLOKI)"
+ },
+ {
+  "id": 3616473,
+  "text": "Diesel crack spread $100 any second. <br/><br/>This is the real Hormuz hedge, diesel prices around the world exploding and industrial economy relies entirely on diesel not gasoline https://t.co/nV47ZpTW5r",
+  "link": "https://twitter.com/zerohedge/status/2089342558400872766",
+  "source": "zerohedge",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T21:24:19.314795+08:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 90
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614920,
+  "text": "reply 6⃣Google Releases Gemini 3.7 Flash: the Strongest Flash Model Yet for Coding and Agent Tasks\n\n📟Google has released #Gemini 3.7 Flash only three weeks after version 3.6. It is now the strongest Flash model for coding and agent scenarios, lifting the DeepSWE v1.1 score from 49% to 65.3%. Pricing is half of the previous generation, it supports a 1M context window, and it outperforms same-tier models from Anthropic and #OpenAI across nine public benchmarks.\n\n🎩DA’s Take: A three-week iteration cycle, price cut in half, and a 16-point performance jump. Google has entered full crush mode on the Flash line. The key phrase is “coding and agent scenarios.” This is no longer about how well a model chats. It is about how well it gets work done. Model competition has shifted from conversation quality to task execution. The stronger agent models become, the greater the need for verifiable on-chain reasoning, because agents must not only act but also leave an auditable trail. DeAgentAI’s distributed inference network is built exactly for that gap.\n\n⭐️What do you think: Iterating every three weeks. Is this the speed of real progress, or the rhythm of an industry spinning out of control?",
+  "link": "https://x.com/DeAgentAI/status/2089315099899257306",
+  "source": "DeAgentAI",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T19:35:13.282+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "short",
+    "symbol": "OPENAI"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "ACT"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "AIA"
+   },
+   {
+    "expired": false,
+    "market_type": "cex",
+    "symbol": "ANTHROPIC"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3621258,
+  "text": "COINBASE: Assets added to the roadmap today: Cluster Protocol (CP)\nhttps://www.coinbase.com/blog/increasing-transparency-for-new-asset-listings-on-coinbase",
+  "link": "https://x.com/CoinbaseMarkets/status/2089450690603028862",
+  "source": "coinbase",
+  "newsType": "coinbase",
+  "engineType": "listing",
+  "ts": "2026-08-18T04:33:59.804+08:00",
+  "aiRating": {
+   "score": 10,
+   "signal": "neutral",
+   "status": "done"
+  },
+  "coins": [],
+  "strategy": {
+   "bgColor": "#22c55e",
+   "id": 1353,
+   "metrics": {
+    "keyword_hit_count": 1,
+    "keyword_hits": [
+     "added to the roadmap"
+    ],
+    "matched_group_id": "listing_coinbase",
+    "matched_group_name": "Coinbase"
+   },
+   "name": "Listing and Delisting Announcements",
+   "sourceType": "news"
+  },
+  "description": "Coinbase Markets 🛡️ (@CoinbaseMarkets)"
+ },
+ {
+  "id": 3620648,
+  "text": "Trump says Iran won’t agree to the deal US says is needed, he’s not looking to extend MOU https://www.timesofisrael.com/liveblog_entry/trump-says-iran-wont-agree-to-the-deal-us-says-is-needed-hes-not-looking-to-extend-mou/",
+  "link": "https://x.com/staunovo/status/2089432058783219769",
+  "source": "Giovanni Staunovo🛢",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T03:19:57.671+08:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 85
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3615708,
+  "text": "CANADA CPI (YOY) (JUL) ACTUAL: 3.0% VS 2.8% PREVIOUS; EST 2.9%",
+  "link": "https://x.com/FirstSquawk/status/2089329489176355287",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T20:32:23.916+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3620075,
+  "text": "quote: Aave V4 active loans are ATH. Still early and great to see momemtum. https://x.com/aave/status/2089393197092921595 | Active loans on Aave V4 are approaching $150 million.  ",
+  "link": "https://x.com/StaniKulechov/status/2089416165030289688",
+  "source": "Stani",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T02:16:48.623+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "AAVE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3614173,
+  "text": "TRUMP- IRAN CANNOT HAVE, IN ANY WAY, SHAPE, OR FORM, A NUCLEAR WEAPON",
+  "link": "https://twitter.com/deitaone/status/2089295965437993070",
+  "source": "deitaone",
+  "newsType": "Twitter",
+  "engineType": "news",
+  "ts": "2026-08-17T18:19:10.476877+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 35,
+    "signal": "short",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "short",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Walter Bloomberg"
+ },
+ {
+  "id": 3619109,
+  "text": "A new phase of growth for Ondo.\n\nSince launch, Ondo Stocks has reached $1.01B in TVL and processed $27B in cumulative volume across 440+ stocks and ETFs.\n\nAcross the Ondo ecosystem, volume, asset value, and participation continue to grow:\n\n→ Transfers: $2.82B, up 25% MoM\n→ USDY: $2.15B across 12 networks\n→ Holders: 200K+, up 20% in 30 days\n→ Ondo Perps: $8B in cumulative volume (Powered by Ondo Finance technology)\n\nTogether, these milestones reflect a growing, maturing tokenized asset market. Ondo will continue to build the infrastructure to make the global financial system more accessible.",
+  "link": "https://x.com/Ondo/status/2089391643912753598",
+  "source": "",
+  "newsType": "6551News",
+  "engineType": "news",
+  "ts": "2026-08-18T00:39:22.221+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "USDY"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": "Ondo Finance (@Ondo)"
+ },
+ {
+  "id": 3615818,
+  "text": "Futures Rise On Fresh Push Higher In Tech  https://www.zerohedge.com/markets/futures-rise-fresh-push-higher-tech",
+  "link": "https://x.com/zerohedge/status/2089331433043087480",
+  "source": "zerohedge",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T20:40:06.811+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3624197,
+  "text": "Japan 5-Yr JGB Auction Bid-to-Cover 4.15 Highest Since June 2025",
+  "link": "",
+  "source": "",
+  "newsType": "Reuters",
+  "engineType": "news",
+  "ts": "2026-08-18T11:38:13.929045+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "signal": "neutral",
+    "symbol": "AUCTION"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3613882,
+  "text": "IRAN’S JUDICIARY CHIEF GHOLAMHOSSEIN MOHSENI-EJEI SAID ON MONDAY THAT THE COUNTRY MUST GUARD AGAINST ATTEMPTS BY FOREIGN ADVERSARIES TO UNDERMINE NATIONAL UNITY.",
+  "link": "https://x.com/FirstSquawk/status/2089286898993049817",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-17T17:43:09.987+08:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "signal": "neutral",
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 75
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ },
+ {
+  "id": 3622729,
+  "text": "Japan’s 2-year government bond yield edges up 1 basis point to 1.7%.",
+  "link": "https://x.com/FirstSquawk/status/2089510469413523889",
+  "source": "First Squawk",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T08:31:32.927+08:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "signal": "long",
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "bgColor": "#d70f0f",
+   "id": 1018,
+   "metrics": {
+    "matched_group_id": "default",
+    "news_score": {
+     "unit": "score",
+     "value": 70
+    }
+   },
+   "name": "News Score > 70",
+   "soundId": 27,
+   "sourceType": "news"
+  },
+  "description": ""
+ }
+]

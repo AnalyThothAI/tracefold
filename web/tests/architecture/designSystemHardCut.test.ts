@@ -79,9 +79,9 @@ describe("Tracefold design-system hard cut", () => {
     expect([...css.matchAll(/#[0-9a-fA-F]{6}/g)]).toEqual([]);
   });
 
-  it("exposes three primary research destinations with no duplicate Macro tree", () => {
+  it("exposes two primary research destinations with no duplicate Macro tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
-    expect(items.map((item) => item.to)).toEqual(["/", "/news", "/macro"]);
+    expect(items.map((item) => item.to)).toEqual(["/news", "/macro"]);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);
 
     const sidebar = readSource("features/cockpit/ui/AppSidebar.tsx");
@@ -102,9 +102,13 @@ describe("Tracefold design-system hard cut", () => {
 
   it("assigns every supported route family to a page archetype", () => {
     const owners = {
-      case: ["features/search/ui/SearchIntelPage.tsx", "shared/ui/case-file/TokenCasePanel.tsx"],
+      case: [
+        "features/search/ui/SearchIntelPage.tsx",
+        "shared/ui/case-file/TokenCasePanel.tsx",
+        "features/news/NewsEventDetailPage.tsx",
+      ],
       decision: ["features/macro/ui/MacroDecisionPage.tsx"],
-      scan: ["features/live/ui/RadarPage.tsx", "features/news/NewsPage.tsx"],
+      scan: ["features/news/NewsPage.tsx", "features/news/NewsStatusPage.tsx"],
     } as const;
 
     for (const [archetype, paths] of Object.entries(owners)) {
@@ -112,7 +116,7 @@ describe("Tracefold design-system hard cut", () => {
         expect(readSource(path)).toContain(`data-page-archetype="${archetype}"`);
       }
     }
-    expect(readSource("features/news/NewsPage.tsx")).toContain('data-page-archetype="case"');
+    expect(readSource("features/news/NewsPage.tsx")).not.toContain('data-page-archetype="case"');
   });
 
   it("keeps shell geometry centralized and route content scrollable", () => {

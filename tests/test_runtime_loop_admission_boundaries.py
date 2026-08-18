@@ -12,7 +12,6 @@ from tracefold.app import workers as workers_module
 from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.workers import (
     _MARKET_TICK_POLL_SECONDS,
-    _run_after_completion,
     _run_due,
     _run_periodic,
 )
@@ -34,8 +33,6 @@ from tracefold.market.provider_contracts import (
     DexProviderTemporarilyUnavailable,
     MarketProviderExpectedError,
 )
-from tracefold.news.push import NewsItemPush, NewsPushReceipt
-from tracefold.news.runtime import NewsBriefCandidate
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
@@ -136,43 +133,6 @@ def test_periodic_loop_can_defer_its_first_sample_without_changing_cadence(
 
     assert samples == 1
     assert waits[0] == 30.0
-
-
-def test_token_radar_loop_samples_immediately_then_waits_after_completion(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sequence: list[str] = []
-
-    async def wait(stop_event: asyncio.Event, seconds: float) -> None:
-        sequence.append(f"wait:{seconds:g}")
-        stop_event.set()
-
-    async def scenario() -> None:
-        stop_event = asyncio.Event()
-
-        async def sample() -> None:
-            sequence.extend(("sample:start", "sample:end"))
-
-        await _run_after_completion(sample, period_seconds=30.0, stop_event=stop_event)
-
-    monkeypatch.setattr(workers_module, "_wait_or_stop", wait)
-    asyncio.run(scenario())
-
-    assert sequence == ["sample:start", "sample:end", "wait:30"]
-
-
-def test_token_radar_loop_propagates_cancellation() -> None:
-    async def sample() -> None:
-        raise asyncio.CancelledError
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(
-            _run_after_completion(
-                sample,
-                period_seconds=30.0,
-                stop_event=asyncio.Event(),
-            )
-        )
 
 
 def test_recurring_database_overruns_wait_for_each_loops_normal_cadence(
@@ -365,7 +325,7 @@ def test_productive_model_candidate_has_a_minimum_repoll_cadence() -> None:
 
         async def peek(self, *, now_ms: int) -> ModelCandidate:
             return ModelCandidate(
-                kind="news_brief",
+                kind="macro_fed_document",
                 target_key="fingerprint",
                 due_at_ms=now_ms,
                 stable_order=1,
@@ -388,249 +348,6 @@ def test_productive_model_candidate_has_a_minimum_repoll_cadence() -> None:
 
     assert len(started_at) == 2
     assert started_at[1] - started_at[0] >= 0.20
-
-
-def test_news_brief_candidate_uses_the_utc_slot_as_its_only_target_key() -> None:
-    class _Database:
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            assert operation_name == "news_brief_peek"
-            return {"slot_at_ms": 1_800_000, "next_due_at_ms": 1_800_000}
-
-    async def scenario() -> ModelCandidate | None:
-        candidate = NewsBriefCandidate(
-            db=_Database(),
-            model_adapter=object(),
-            publisher=object(),
-            runtime_id="runtime-1",
-        )
-        return await candidate.peek(now_ms=1_800_001)
-
-    assert asyncio.run(scenario()) == ModelCandidate(
-        kind="news_brief",
-        target_key="1800000",
-        due_at_ms=1_800_000,
-        stable_order=20,
-    )
-
-
-def test_news_brief_prepare_watchdog_covers_both_bounded_database_sessions() -> None:
-    class _Database:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, float]] = []
-
-        async def run_business(self, operation_name, _function, /, *_args, **kwargs):
-            self.calls.append((operation_name, float(kwargs["operation_timeout_seconds"])))
-
-    async def scenario() -> list[tuple[str, float]]:
-        database = _Database()
-        candidate = NewsBriefCandidate(
-            db=database,
-            model_adapter=object(),
-            publisher=object(),
-            runtime_id="runtime-1",
-        )
-        completed = await candidate.execute(
-            ModelCandidate(
-                kind="news_brief",
-                target_key="fingerprint",
-                due_at_ms=1_000,
-                stable_order=20,
-            )
-        )
-        assert completed is False
-        return database.calls
-
-    assert asyncio.run(scenario()) == [("news_brief_prepare", 7.0)]
-
-
-def test_news_brief_publish_retries_after_pre_submission_database_pressure() -> None:
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-
-        async def run_business(self, operation_name, _function, /, *_args, **kwargs):
-            self.operations.append(operation_name)
-            if operation_name == "news_brief_prepare":
-                return {
-                    "completed_without_model": False,
-                    "claim": {"fingerprint": "fingerprint"},
-                    "stories": [],
-                }
-            if operation_name == "news_brief_start_model":
-                return True
-            if operation_name == "news_brief_publish":
-                raise ResourceAdmissionTimeout("worker_database_admission_timeout:news_brief_publish")
-            raise AssertionError(operation_name)
-
-    class _ModelAdapter:
-        async def run(self, _operation_name, _function, /, *_args, **kwargs):
-            await kwargs["before_submit"]()
-            kwargs["on_submitted"]()
-            return {"summary": "generated"}
-
-    async def scenario() -> tuple[bool, list[str]]:
-        database = _Database()
-        candidate = NewsBriefCandidate(
-            db=database,
-            model_adapter=_ModelAdapter(),
-            publisher=object(),
-            runtime_id="runtime-1",
-        )
-        completed = await candidate.execute(
-            ModelCandidate(
-                kind="news_brief",
-                target_key="fingerprint",
-                due_at_ms=1_000,
-                stable_order=20,
-            )
-        )
-        return completed, database.operations
-
-    assert asyncio.run(scenario()) == (
-        False,
-        ["news_brief_prepare", "news_brief_start_model", "news_brief_publish"],
-    )
-
-
-def test_news_brief_publish_propagates_post_submission_database_failure() -> None:
-    class _Database:
-        async def run_business(self, operation_name, _function, /, *_args, **kwargs):
-            if operation_name == "news_brief_prepare":
-                return {
-                    "completed_without_model": False,
-                    "claim": {"fingerprint": "fingerprint"},
-                    "stories": [],
-                }
-            if operation_name == "news_brief_start_model":
-                return True
-            if operation_name == "news_brief_publish":
-                kwargs["on_submitted"]()
-                raise ResourceAdmissionTimeout("worker_database_statement_timeout:news_brief_publish")
-            raise AssertionError(operation_name)
-
-    class _ModelAdapter:
-        async def run(self, _operation_name, _function, /, *_args, **kwargs):
-            await kwargs["before_submit"]()
-            kwargs["on_submitted"]()
-            return {"summary": "generated"}
-
-    async def scenario() -> None:
-        candidate = NewsBriefCandidate(
-            db=_Database(),
-            model_adapter=_ModelAdapter(),
-            publisher=object(),
-            runtime_id="runtime-1",
-        )
-        await candidate.execute(
-            ModelCandidate(
-                kind="news_brief",
-                target_key="fingerprint",
-                due_at_ms=1_000,
-                stable_order=20,
-            )
-        )
-
-    with pytest.raises(ResourceAdmissionTimeout, match="worker_database_statement_timeout"):
-        asyncio.run(scenario())
-
-
-def test_news_brief_model_operation_overrun_propagates_to_the_workers_root() -> None:
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-
-        async def run_business(self, operation_name, _function, /, *_args, **kwargs):
-            self.operations.append(operation_name)
-            if operation_name == "news_brief_prepare":
-                return {
-                    "completed_without_model": False,
-                    "claim": {"fingerprint": "fingerprint"},
-                    "stories": [],
-                }
-            if operation_name == "news_brief_start_model":
-                return True
-            raise AssertionError(operation_name)
-
-    class _ModelAdapter:
-        async def run(self, _operation_name, _function, /, *_args, **kwargs):
-            await kwargs["before_submit"]()
-            kwargs["on_submitted"]()
-            raise ResourceOperationOverrun(
-                capability=ResourceCapability.MODEL_ADAPTER,
-                operation_name="news_brief_inference",
-            )
-
-    async def scenario(database: _Database) -> None:
-        candidate = NewsBriefCandidate(
-            db=database,
-            model_adapter=_ModelAdapter(),
-            publisher=object(),
-            runtime_id="runtime-1",
-        )
-        await candidate.execute(
-            ModelCandidate(
-                kind="news_brief",
-                target_key="fingerprint",
-                due_at_ms=1_000,
-                stable_order=20,
-            )
-        )
-
-    database = _Database()
-    with pytest.raises(ResourceOperationOverrun, match="news_brief_inference"):
-        asyncio.run(scenario(database))
-    assert database.operations == ["news_brief_prepare", "news_brief_start_model"]
-
-
-def test_news_brief_lost_start_fence_never_submits_the_model() -> None:
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-
-        async def run_business(self, operation_name, _function, /, *_args, **kwargs):
-            self.operations.append(operation_name)
-            if operation_name == "news_brief_prepare":
-                return {
-                    "completed_without_model": False,
-                    "claim": {"fingerprint": "fingerprint"},
-                    "stories": [],
-                }
-            if operation_name == "news_brief_start_model":
-                return False
-            raise AssertionError(operation_name)
-
-    class _ModelAdapter:
-        def __init__(self) -> None:
-            self.submitted = False
-
-        async def run(self, _operation_name, _function, /, *_args, **kwargs):
-            await kwargs["before_submit"]()
-            self.submitted = True
-            raise AssertionError("model must remain unsubmitted")
-
-    async def scenario() -> tuple[bool, _Database, _ModelAdapter]:
-        database = _Database()
-        model_adapter = _ModelAdapter()
-        candidate = NewsBriefCandidate(
-            db=database,
-            model_adapter=model_adapter,
-            publisher=object(),
-            runtime_id="runtime-1",
-        )
-        result = await candidate.execute(
-            ModelCandidate(
-                kind="news_brief",
-                target_key="fingerprint",
-                due_at_ms=1_000,
-                stable_order=20,
-            )
-        )
-        return result, database, model_adapter
-
-    result, database, model_adapter = asyncio.run(scenario())
-    assert result is False
-    assert model_adapter.submitted is False
-    assert database.operations == ["news_brief_prepare", "news_brief_start_model"]
 
 
 def test_due_loop_propagates_post_work_admission_timeout() -> None:
@@ -838,54 +555,6 @@ def test_macro_malformed_success_json_is_published_as_a_source_failure() -> None
     assert isinstance(database.failure, MacroSourceError)
     assert str(database.failure) == "bls_release_payload_invalid"
     assert database.operations == ["macro_target_claim", "macro_publish_failure"]
-
-
-def test_news_item_push_delivery_overrun_terminalizes_and_stops_overlap() -> None:
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-            self.error_code: str | None = None
-
-        async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-            self.operations.append(operation_name)
-            if operation_name == "news_item_push_peek":
-                return {
-                    "item_id": "news_item_0123456789abcdef0123456789abcdef",
-                    "source_payload": {
-                        "schema_version": "news_item_push_v2",
-                        "original_title": "Bitcoin rises",
-                    },
-                    "presentation": {
-                        "original_title": "Bitcoin rises",
-                        "display_title": "比特币上涨",
-                    },
-                }
-            if operation_name == "news_item_push_fence":
-                return {"item_id": args[0]}
-            if operation_name == "news_item_push_terminalize":
-                self.error_code = str(args[1])
-                return True
-            raise AssertionError(operation_name)
-
-    database = _Database()
-    push = NewsItemPush(
-        db=database,
-        finite_operations=_SubmittedOverrunFiniteOperations(),
-        sender=SimpleNamespace(
-            send=lambda *_args, **_kwargs: NewsPushReceipt(provider="feishu"),
-            close=lambda: None,
-        ),
-        delivery_available=True,
-    )
-
-    with pytest.raises(RuntimeError, match="news_item_push_feishu_operation_overrun"):
-        asyncio.run(push.turn())
-    assert database.operations == [
-        "news_item_push_peek",
-        "news_item_push_fence",
-        "news_item_push_terminalize",
-    ]
-    assert database.error_code == "news_item_push_feishu_timeout"
 
 
 @pytest.mark.parametrize(
@@ -1116,7 +785,7 @@ def test_model_arbiter_propagates_post_model_admission_timeout() -> None:
     class _Candidate:
         async def peek(self, *, now_ms: int) -> ModelCandidate:
             return ModelCandidate(
-                kind="news_brief",
+                kind="macro_fed_document",
                 target_key="fingerprint",
                 due_at_ms=now_ms,
                 stable_order=1,

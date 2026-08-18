@@ -14,8 +14,6 @@ from tracefold.app import database as database_module
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
 from tracefold.app.worker_cpu_prewarm import (
-    news_cpu_modules_loaded,
-    prewarm_news_cpu_modules,
     prewarm_projection_cpu_modules,
     projection_cpu_modules_loaded,
 )
@@ -427,7 +425,7 @@ def test_coincident_heavy_database_operations_do_not_jointly_fill_both_business_
 
         def first_heavy() -> str:
             release_first.wait(timeout=2.0)
-            return "radar"
+            return "brief"
 
         def second_heavy() -> str:
             return "story"
@@ -435,7 +433,7 @@ def test_coincident_heavy_database_operations_do_not_jointly_fill_both_business_
         try:
             first = asyncio.create_task(
                 heavy.run_business(
-                    "radar_load",
+                    "brief_load",
                     first_heavy,
                     operation_timeout_seconds=0.5,
                     on_submitted=first_submitted.set,
@@ -463,7 +461,7 @@ def test_coincident_heavy_database_operations_do_not_jointly_fill_both_business_
             assert await asyncio.wait_for(fact, timeout=0.2) == "fact-written"
 
             release_first.set()
-            assert await first == "radar"
+            assert await first == "brief"
             assert await second == "story"
             assert second_submitted.is_set()
         finally:
@@ -495,7 +493,7 @@ def test_hung_heavy_database_operation_keeps_bulkhead_bounded(
         try:
             first = asyncio.create_task(
                 heavy.run_business(
-                    "radar_load",
+                    "brief_load",
                     first_heavy,
                     operation_timeout_seconds=0.001,
                 )
@@ -796,26 +794,3 @@ def test_projection_cpu_process_preloads_only_short_worker_compute_modules() -> 
 
     assert loaded
     assert "tracefold.news.projection" not in loaded
-
-
-def test_news_cpu_process_preloads_only_news_compute() -> None:
-    async def scenario() -> tuple[str, ...]:
-        capability = CpuProcess()
-        try:
-            await capability.prewarm()
-            expected = await capability.run(
-                "news_cpu_modules_prewarm",
-                prewarm_news_cpu_modules,
-                service_timeout_seconds=20.0,
-            )
-            loaded = await capability.run(
-                "news_cpu_modules_loaded",
-                news_cpu_modules_loaded,
-                service_timeout_seconds=2.0,
-            )
-            assert loaded == expected
-            return loaded
-        finally:
-            capability.close()
-
-    assert asyncio.run(scenario()) == ("tracefold.news.projection",)

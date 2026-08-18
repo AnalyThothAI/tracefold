@@ -256,20 +256,3 @@ def e2e_writer(e2e_postgres: str, e2e_ws_token: str) -> Callable[[str, str], Non
             )
 
     return _write
-
-
-@pytest.fixture
-def e2e_token_radar_browser_release(
-    e2e_postgres: str,
-    e2e_uvicorn: str,
-) -> Callable[[], None]:
-    """Run the v5 fact-to-browser flow against this isolated production stack."""
-    from tests.e2e.token_radar_release import run_token_radar_browser_release
-
-    def _run() -> None:
-        run_token_radar_browser_release(
-            postgres_dsn=e2e_postgres,
-            base_url=e2e_uvicorn,
-        )
-
-    return _run

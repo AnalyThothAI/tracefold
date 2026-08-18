@@ -6,22 +6,22 @@ import { describe, expect, it } from "vitest";
 
 describe("RouteBackLink", () => {
   it("renders an accessible return link", () => {
-    renderWithProviders(<RouteBackLink to="/" label="返回" ariaLabel="返回 Token Radar" />, {
+    renderWithProviders(<RouteBackLink to="/search" label="返回" ariaLabel="返回 Search" />, {
       route: "/token/Asset/x",
     });
 
-    const link = screen.getByRole("link", { name: "返回 Token Radar" });
-    expect(link).toHaveAttribute("href", "/");
+    const link = screen.getByRole("link", { name: "返回 Search" });
+    expect(link).toHaveAttribute("href", "/search");
     expect(link).toHaveTextContent("返回");
   });
 
   it("navigates through the active router instead of reloading the document", () => {
     const { container } = renderWithProviders(
       <Routes>
-        <Route path="/" element={<h1>Token Radar</h1>} />
+        <Route path="/search" element={<h1>Search</h1>} />
         <Route
           path="/token/:targetType/:targetId"
-          element={<RouteBackLink to="/" label="返回" ariaLabel="返回 Token Radar" />}
+          element={<RouteBackLink to="/search" label="返回" ariaLabel="返回 Search" />}
         />
       </Routes>,
       {
@@ -29,19 +29,19 @@ describe("RouteBackLink", () => {
       },
     );
 
-    fireEvent.click(within(container).getByRole("link", { name: "返回 Token Radar" }));
+    fireEvent.click(within(container).getByRole("link", { name: "返回 Search" }));
 
-    expect(within(container).getByRole("heading", { name: "Token Radar" })).toBeInTheDocument();
+    expect(within(container).getByRole("heading", { name: "Search" })).toBeInTheDocument();
   });
 
   it("does not require a router provider", () => {
     const { container } = render(
-      <RouteBackLink to="/" label="返回" ariaLabel="返回 Token Radar" />,
+      <RouteBackLink to="/search" label="返回" ariaLabel="返回 Search" />,
     );
 
-    expect(within(container).getByRole("link", { name: "返回 Token Radar" })).toHaveAttribute(
+    expect(within(container).getByRole("link", { name: "返回 Search" })).toHaveAttribute(
       "href",
-      "/",
+      "/search",
     );
   });
 });

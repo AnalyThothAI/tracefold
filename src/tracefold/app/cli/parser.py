@@ -52,6 +52,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="print acquisition and current-module status",
     )
 
+    news = subcommands.add_parser("news", help="News V3 broker, control, and evaluation commands")
+    news_subcommands = news.add_subparsers(dest="news_command", required=True)
+    news_subcommands.add_parser(
+        "bus-check", help="connect to RabbitMQ, declare the News topology, and print queue depths"
+    )
+    news_control = news_subcommands.add_parser("control", help="publish a control command to all News consumers")
+    news_control.add_argument(
+        "action",
+        choices=("pause_delivery", "resume_delivery", "mute_theme", "mute_symbol", "unmute", "drain"),
+    )
+    news_control.add_argument("--key", default="", help="theme name or symbol for mute/unmute")
+    news_control.add_argument("--ttl-minutes", type=_positive_int, default=360, help="mute duration")
+    news_eval = news_subcommands.add_parser(
+        "eval", help="offline evaluation of Triage decisions against market marks and labels"
+    )
+    news_eval.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
+    news_eval.add_argument("--policy-version", default="", help="restrict to one triage policy version")
+    news_replay = news_subcommands.add_parser(
+        "replay", help="replay a JSON file of provider hits through Deduper+Gate (no model, no broker)"
+    )
+    news_replay.add_argument("path", help="JSON file: {strategy_id: [hit, ...]} or [hit, ...]")
+
     recent = subcommands.add_parser("recent", help="print recent stored events")
     recent.add_argument("--limit", type=_positive_int, default=20)
     recent.add_argument("--handles", default="")

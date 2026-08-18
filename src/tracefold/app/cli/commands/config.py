@@ -7,8 +7,9 @@ from typing import Any
 from tracefold.app.runtime_capabilities import macro_document_analysis_runtime
 from tracefold.platform.config.settings import (
     load_settings,
+    news_model_availability,
     news_push_availability,
-    news_title_presentation_availability,
+    news_translation_availability,
     write_default_config,
 )
 from tracefold.platform.paths import config_path
@@ -39,7 +40,8 @@ def handle_init(args: object) -> tuple[int, dict[str, Any]]:
 def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     push_availability = news_push_availability(settings)
-    title_availability = news_title_presentation_availability(settings)
+    translation_availability = news_translation_availability(settings)
+    model_availability = news_model_availability(settings)
     return (
         0,
         {
@@ -76,25 +78,36 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                 },
                 "news": {
                     "enabled": settings.news.enabled,
-                    "rss_enabled": settings.news.rss_enabled,
                     "opennews_token_configured": bool(settings.news.opennews_token),
                     "opennews_strategy_ids_configured": bool(settings.news.opennews_strategy_ids),
                     "opennews_strategy_count": len(settings.news.opennews_strategy_ids),
-                    "brief": {
-                        "direct_configured": bool(settings.llm.api_key),
-                        "groq_configured": bool(settings.llm.groq_api_key),
+                    "broker": {
+                        "url_configured": bool(settings.news.broker.url),
+                        "name_prefix": settings.news.broker.name_prefix,
                     },
-                    "title_presentation": {
-                        "deepl_configured": title_availability.deepl_configured,
-                        "deepl_key_count": title_availability.deepl_key_count,
-                        "deepseek_configured": title_availability.deepseek_configured,
+                    "models": {
+                        "triage_configured": model_availability.triage_configured,
+                        "analyst_configured": model_availability.analyst_configured,
+                        "triage_model": model_availability.triage_model,
+                        "analyst_model": model_availability.analyst_model,
                     },
+                    "gate": settings.news.gate.model_dump(),
+                    "triage": settings.news.triage.model_dump(),
+                    "analyst": settings.news.analyst.model_dump(),
+                    "translation": {
+                        "deepl_configured": translation_availability.deepl_configured,
+                        "deepl_key_count": translation_availability.deepl_key_count,
+                        "deepseek_configured": translation_availability.deepseek_configured,
+                    },
+                    "watchlist": sorted(settings.news.watchlist_symbols),
                     "push": {
                         "requested": push_availability.requested,
                         "delivery_available": push_availability.delivery_available,
                         "reason": push_availability.reason,
                         "feishu_webhook_url_configured": (push_availability.feishu_webhook_url_configured),
                         "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),
+                        "hourly_cap": settings.news.push.hourly_cap,
+                        "min_interval_seconds": settings.news.push.min_interval_seconds,
                     },
                 },
                 "macro": {"document_analysis": macro_document_analysis_runtime(settings)},

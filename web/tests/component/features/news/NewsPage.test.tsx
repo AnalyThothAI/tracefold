@@ -3,11 +3,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
   NEWS_NOW_MS,
+  newsDeliveryFixture,
+  newsEventDetailFixture,
+  newsFeedEventFixture,
   newsFeedFixture,
-  newsGlobalBriefFixture,
-  newsSourcesFixture,
   newsStatusFixture,
-  newsStoryDetailFixture,
+  newsVerdictFixture,
 } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
@@ -21,1060 +22,587 @@ describe("NewsPage", () => {
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({ ok: true, data: newsFeedFixture() }),
       ),
-      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
-        HttpResponse.json({ ok: true, data: newsStoryDetailFixture() }),
-      ),
-      http.get(/.*\/api\/news\/brief$/, () =>
-        HttpResponse.json({ ok: true, data: newsGlobalBriefFixture() }),
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: newsEventDetailFixture() }),
       ),
       http.get(/.*\/api\/news\/status$/, () =>
         HttpResponse.json({ ok: true, data: newsStatusFixture() }),
-      ),
-      http.get(/.*\/api\/news\/sources$/, () =>
-        HttpResponse.json({ ok: true, data: newsSourcesFixture() }),
       ),
     );
   });
 
   afterEach(cleanup);
 
-  it("defaults to the complete latest Strategy Story feed with 25 rows", async () => {
-    const observed = {
-      limit: null as string | null,
-      providerScoreGt: null as string | null,
-      sort: null as string | null,
-    };
+  it("defaults to the latest Event feed with 25 rows and no hidden filters", async () => {
+    const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        observed.limit = params.get("limit");
-        observed.providerScoreGt = params.get("provider_score_gt");
-        observed.sort = params.get("sort");
+        for (const name of ["limit", "sort", "priority", "decision", "family", "admission"]) {
+          observed[name] = params.get(name);
+        }
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
       }),
     );
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    expect(await screen.findByRole("heading", { name: "全球新闻" })).toBeInTheDocument();
-    expect(screen.getByText("账户 Strategy 命中的新闻事件")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "全球新闻" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "全部" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "状态" })).not.toHaveAttribute("aria-current");
+    expect(screen.queryByRole("link", { name: "公共全球简报" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "来源" })).not.toBeInTheDocument();
     expect(observed.sort).toBe("latest");
     expect(observed.limit).toBe("25");
-    expect(observed.providerScoreGt).toBeNull();
+    expect(observed.priority).toBeNull();
+    expect(observed.decision).toBeNull();
+    expect(observed.family).toBeNull();
+    expect(observed.admission).toBeNull();
   });
 
-  it("keeps the score panel reachable through a URL-owned focus mode", async () => {
-    let providerScoreGt: string | null = "unobserved";
+  it("renders one Event row with server-owned triage, delivery, admission, and asset facts", async () => {
+    renderNews(<NewsPage token="test-token" view="feed" />);
+
+    const title = await screen.findByRole("heading", { name: "央行应对新的全球政策冲击" });
+    const row = title.closest("article");
+    expect(row).not.toBeNull();
+    expect(row).toHaveAttribute("data-priority", "high");
+    expect(row).toHaveAttribute("data-decision", "push");
+    expect(row).toHaveAttribute("data-direction", "bearish");
+    expect(title.closest(".news-event-title")).toHaveAttribute(
+      "href",
+      "/news/events/evt-global-policy",
+    );
+    const scoped = within(row as HTMLElement);
+    expect(scoped.getByText("高优先")).toBeInTheDocument();
+    expect(scoped.getByText("推送")).toBeInTheDocument();
+    expect(scoped.getByText("候选")).toBeInTheDocument();
+    expect(scoped.getByText("综合")).toBeInTheDocument();
+    expect(scoped.getByText("加密")).toBeInTheDocument();
+    expect(scoped.getByLabelText("OpenNews 分数 88")).toHaveTextContent("OpenNews88");
+    expect(scoped.getByText("Reuters World")).toBeInTheDocument();
+    expect(scoped.getByText("4 条报道")).toBeInTheDocument();
+    expect(scoped.getByText("原标题").parentElement).toHaveTextContent(
+      "Central banks respond to a new global policy shock",
+    );
+    expect(scoped.getByText("看空 · M2 · macro")).toBeInTheDocument();
+    expect(scoped.getByText("央行政策转向，风险资产承压")).toBeInTheDocument();
+    expect(scoped.getByLabelText("推送状态 已发送")).toBeInTheDocument();
+    const assets = scoped.getByText("落地资产").parentElement;
+    expect(
+      within(assets as HTMLElement)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["BTC", "ETH"]);
+    expect(within(assets as HTMLElement).getByText("BTC")).toHaveAttribute("data-watch", "hit");
+    expect(scoped.getByRole("link", { name: /查看原文/ })).toHaveAttribute(
+      "href",
+      "https://www.reuters.com/world/story",
+    );
+  });
+
+  it("marks untriaged Events as pending and omits absent delivery, assets, and links", async () => {
     server.use(
-      http.get(/.*\/api\/news\/feed$/, ({ request }) => {
-        providerScoreGt = new URL(request.url).searchParams.get("provider_score_gt");
-        return HttpResponse.json({ ok: true, data: newsFeedFixture() });
-      }),
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({
+                delivery: null,
+                display_title: "",
+                grounded_assets: [],
+                leader_url: null,
+                priority: "normal",
+                provider_score_max: null,
+                triage: null,
+                watchlist_hits: [],
+              }),
+            ],
+          }),
+        }),
+      ),
     );
 
-    renderNews(
-      <NewsPage token="test-token" view="feed" />,
-      "/news?view=focus&provider_score_gt=12",
-    );
+    renderNews(<NewsPage token="test-token" view="feed" />);
 
-    expect(await screen.findByRole("link", { name: /重点/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-    expect(providerScoreGt).toBe("70");
-    await waitFor(() =>
-      expect(screen.getByTestId("location")).not.toHaveTextContent("provider_score_gt"),
-    );
-  });
-
-  it("preserves active filters when switching from all News to focus", async () => {
-    renderNews(
-      <NewsPage token="test-token" view="feed" />,
-      "/news?sort=importance&q=bitcoin&category=economic&level=high&reporting_origin=reuters",
-    );
-
-    const focusLink = await screen.findByRole("link", { name: /重点/ });
-    const href = focusLink.getAttribute("href");
-    expect(href).not.toBeNull();
-    const params = new URL(href!, "https://tracefold.local").searchParams;
-    expect(params.get("view")).toBe("focus");
-    expect(params.get("sort")).toBe("importance");
-    expect(params.get("q")).toBe("bitcoin");
-    expect(params.get("category")).toBe("economic");
-    expect(params.get("level")).toBe("high");
-    expect(params.get("reporting_origin")).toBe("reuters");
+    const title = await screen.findByRole("heading", {
+      name: "Central banks respond to a new global policy shock",
+    });
+    const row = title.closest("article") as HTMLElement;
+    expect(row).toHaveAttribute("data-decision", "none");
+    expect(within(row).getByText("待判定")).toBeInTheDocument();
+    expect(within(row).getByText("未落地")).toBeInTheDocument();
+    expect(within(row).queryByLabelText(/OpenNews 分数/)).not.toBeInTheDocument();
+    expect(within(row).queryByLabelText(/推送状态/)).not.toBeInTheDocument();
+    expect(within(row).queryByRole("link", { name: /查看原文/ })).not.toBeInTheDocument();
   });
 
   it("keeps a 668-character feed headline accessible inside the compact density surface", async () => {
     const longTitle = "长".repeat(668);
-    const feed = newsFeedFixture();
-    feed.stories[0].title = longTitle;
-    feed.stories[0].description = "这是一条用于验证超长标题布局边界的有效摘要。";
-    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [newsFeedEventFixture({ display_title: longTitle, leader_title: longTitle })],
+          }),
+        }),
+      ),
+    );
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const surface = await screen.findByRole("region", { name: "全球新闻" });
+    const surface = await screen.findByRole("region", { name: "新闻事件流" });
     expect(surface).toHaveAttribute("data-feed-density", "compact");
     const heading = await within(surface).findByRole("heading", { name: longTitle });
     expect(heading).toHaveTextContent(longTitle);
-    expect(heading.closest(".news-story-title")).toHaveAttribute(
-      "href",
-      "/news/stories/story-global-policy",
-    );
   });
 
-  it("keeps search, category, severity, origin, and sort in URL-owned server state", async () => {
-    const observed = {
-      category: null as string | null,
-      level: null as string | null,
-      q: null as string | null,
-      reportingOrigin: null as string | null,
-      sort: null as string | null,
-    };
+  it("keeps search, family, admission, priority, decision, symbol, and sort in URL-owned server state", async () => {
+    const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        observed.category = params.get("category");
-        observed.level = params.get("level");
-        observed.q = params.get("q");
-        observed.reportingOrigin = params.get("reporting_origin");
-        observed.sort = params.get("sort");
+        for (const name of ["q", "family", "admission", "priority", "decision", "symbol", "sort"]) {
+          observed[name] = params.get(name);
+        }
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
       }),
     );
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?sort=importance&q=bitcoin&category=economic&level=high&reporting_origin=reuters",
+      "/news?q=bitcoin&family=general&admission=candidate&priority=high&decision=push&symbol=btc&sort=priority",
     );
 
-    await screen.findByText("Central banks respond to a new global policy shock");
-    expect(screen.getByRole("button", { name: "移除搜索：bitcoin" })).toBeInTheDocument();
-    expect(screen.getByLabelText("新闻分类")).toHaveValue("economic");
-    expect(screen.getByLabelText("新闻严重度")).toHaveValue("high");
-    expect(screen.getByLabelText("新闻报道来源")).toHaveValue("reuters");
-    expect(observed.q).toBe("bitcoin");
-    expect(observed.category).toBe("economic");
-    expect(observed.level).toBe("high");
-    expect(observed.reportingOrigin).toBe("reuters");
-    expect(observed.sort).toBe("importance");
-
-    const filterDisclosure = screen.getByText("筛选").closest("details");
-    expect(filterDisclosure).not.toHaveAttribute("open");
-    fireEvent.click(screen.getByRole("button", { name: "移除分类：经济" }));
-    await waitFor(() =>
-      expect(screen.getByTestId("location")).not.toHaveTextContent("category=economic"),
-    );
-  });
-
-  it("renders the canonical source title with its selected OpenNews score", async () => {
-    const feed = newsFeedFixture();
-    const story = feed.stories[0];
-    story.description = "多个央行正在重新评估政策路径。";
-    story.url = "https://representative.example/news";
-    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const sourceTitle = await screen.findByRole("heading", { name: story.title });
-    const row = sourceTitle.closest("article");
-    expect(row).not.toBeNull();
-    expect(within(row!).getByText("多个央行正在重新评估政策路径。")).toBeInTheDocument();
-    expect(within(row!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
-    expect(within(row!).getByText(story.source_name)).toBeInTheDocument();
-    expect(
-      within(row!).getByText(String(new Date(story.last_published_at_ms).getFullYear()), {
-        exact: false,
-      }),
-    ).toBeInTheDocument();
-    expect(within(row!).getByText("4 家独立来源")).toBeInTheDocument();
-    const whySummary = within(row!).getByText("为什么重要").closest("summary");
-    const whyDisclosure = whySummary?.closest("details");
-    expect(whySummary).not.toBeNull();
-    expect(whyDisclosure).not.toHaveAttribute("open");
-    fireEvent.click(whySummary!);
-    expect(whyDisclosure).toHaveAttribute("open");
-    expect(
-      within(row!).getByText(/严重度 41.3 · 来源 20 · 佐证 12 · 时效 9.8/),
-    ).toBeInTheDocument();
-    expect(within(row!).getByRole("link", { name: /查看原文/ })).toHaveAttribute(
-      "href",
-      "https://representative.example/news",
-    );
-  });
-
-  it("renders provider direction as accessible text and a semantic card tone", async () => {
-    const feed = newsFeedFixture();
-    const base = feed.stories[0];
-    feed.stories = [
-      base,
-      {
-        ...base,
-        provider_evidence: {
-          ...base.provider_evidence!,
-          provider_metadata: { ...base.provider_evidence!.provider_metadata, signal: "short" },
-        },
-        story_id: "story-short",
-        title: "A provider-rated downside event",
-      },
-      {
-        ...base,
-        provider_evidence: {
-          ...base.provider_evidence!,
-          provider_metadata: { ...base.provider_evidence!.provider_metadata, signal: "neutral" },
-        },
-        story_id: "story-neutral",
-        title: "A provider-rated neutral event",
-      },
-    ];
-    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const positiveRow = (await screen.findByRole("heading", { name: base.title })).closest(
-      "article",
-    );
-    const negativeRow = screen
-      .getByRole("heading", { name: "A provider-rated downside event" })
-      .closest("article");
-    const neutralRow = screen
-      .getByRole("heading", { name: "A provider-rated neutral event" })
-      .closest("article");
-    expect(positiveRow).toHaveAttribute("data-signal-tone", "positive");
-    expect(within(positiveRow!).getByLabelText("OpenNews 信号 利多")).toBeInTheDocument();
-    expect(negativeRow).toHaveAttribute("data-signal-tone", "negative");
-    expect(within(negativeRow!).getByLabelText("OpenNews 信号 利空")).toBeInTheDocument();
-    expect(neutralRow).toHaveAttribute("data-signal-tone", "neutral");
-    expect(within(neutralRow!).getByLabelText("OpenNews 信号 中性")).toBeInTheDocument();
-  });
-
-  it("keeps Story cards free of Push delivery state", async () => {
-    const feed = newsFeedFixture();
-    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    await screen.findByRole("heading", { name: feed.stories[0].title });
-    expect(screen.queryByLabelText(/通知状态/)).not.toBeInTheDocument();
-  });
-
-  it("shows provider-selected related assets in Feed order and labels missing upstream assets", async () => {
-    const feed = newsFeedFixture();
-    feed.stories[0].provider_evidence!.provider_metadata.assets = [
-      { symbol: "BTC", market_type: "spot", match: "Bitcoin" },
-      { symbol: "GOOGL", market_type: "stock", match: "Alphabet" },
-      { symbol: "CL", market_type: "futures", match: "Crude oil" },
-      { symbol: "NATGAS", market_type: "futures", match: "Natural gas" },
-    ];
-    feed.stories.push({
-      ...feed.stories[0],
-      provider_evidence: {
-        ...feed.stories[0].provider_evidence!,
-        provider_metadata: {
-          ...feed.stories[0].provider_evidence!.provider_metadata,
-          assets: null,
-        },
-      },
-      story_id: "story-without-assets",
-      title: "A second Story without related assets",
+    await screen.findByRole("heading", { name: "央行应对新的全球政策冲击" });
+    await waitFor(() => expect(observed.symbol).toBe("BTC"));
+    expect(observed).toEqual({
+      admission: "candidate",
+      decision: "push",
+      family: "general",
+      priority: "high",
+      q: "bitcoin",
+      sort: "priority",
+      symbol: "BTC",
     });
-    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const firstRow = (await screen.findByRole("heading", { name: feed.stories[0].title })).closest(
-      "article",
-    );
-    const secondRow = screen
-      .getByRole("heading", { name: feed.stories[1].title })
-      .closest("article");
-    expect(firstRow).not.toBeNull();
-    expect(secondRow).not.toBeNull();
-    expect(within(firstRow!).getByText("关联资产")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "事件排序" })).toHaveValue("priority");
+    expect(screen.getByRole("combobox", { name: "事件家族" })).toHaveValue("general");
+    expect(screen.getByRole("combobox", { name: "事件准入" })).toHaveValue("candidate");
+    expect(screen.getByRole("combobox", { name: "事件优先级" })).toHaveValue("high");
+    expect(screen.getByRole("combobox", { name: "Triage 判定" })).toHaveValue("push");
+    expect(screen.getByRole("textbox", { name: "落地资产" })).toHaveValue("BTC");
+    const chips = screen.getByRole("group", { name: "已启用筛选" });
     expect(
-      within(within(firstRow!).getByRole("list", { name: "关联资产" }))
-        .getAllByRole("listitem")
-        .map((item) => item.textContent),
-    ).toEqual(["BTC", "GOOGL", "CL", "NATGAS"]);
-    expect(within(firstRow!).queryByText("代币")).not.toBeInTheDocument();
-    const missingAssets = within(secondRow!).getByRole("group", { name: "关联资产" });
-    expect(missingAssets).toHaveTextContent("上游未标注");
+      within(chips)
+        .getAllByRole("button")
+        .map((chip) => chip.textContent),
+    ).toEqual([
+      "搜索：bitcoin×",
+      "家族：综合×",
+      "准入：候选×",
+      "优先级：高优先×",
+      "判定：推送×",
+      "资产：BTC×",
+    ]);
+
+    fireEvent.click(within(chips).getByRole("button", { name: "移除判定：推送" }));
+    await waitFor(() => expect(observed.decision).toBeNull());
+    expect(screen.getByTestId("location")).toHaveTextContent("priority=high");
+    expect(screen.getByTestId("location")).not.toHaveTextContent("decision=");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "事件优先级" }), {
+      target: { value: "" },
+    });
+    await waitFor(() => expect(observed.priority).toBeNull());
+    fireEvent.change(screen.getByRole("combobox", { name: "事件排序" }), {
+      target: { value: "latest" },
+    });
+    await waitFor(() => expect(observed.sort).toBe("latest"));
   });
 
-  it("omits the OpenNews score cleanly when provider evidence is unavailable", async () => {
-    const feed = newsFeedFixture();
-    feed.stories[0].provider_evidence = null;
-    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
+  it("ignores unknown priority and decision values instead of forwarding them", async () => {
+    const observed: Record<string, string | null> = {};
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        observed.priority = params.get("priority");
+        observed.decision = params.get("decision");
+        return HttpResponse.json({ ok: true, data: newsFeedFixture() });
+      }),
+    );
 
-    renderNews(<NewsPage token="test-token" view="feed" />, "/news?view=all");
+    renderNews(<NewsPage token="test-token" view="feed" />, "/news?priority=urgent&decision=maybe");
 
-    const title = await screen.findByRole("heading", { name: feed.stories[0].title });
-    const row = title.closest("article");
-    expect(row).not.toBeNull();
-    expect(within(row!).queryByLabelText(/OpenNews 评分/)).not.toBeInTheDocument();
-    expect(within(row!).queryByText(/暂无.*分数|未评分/)).not.toBeInTheDocument();
+    await screen.findByRole("heading", { name: "央行应对新的全球政策冲击" });
+    expect(observed.priority).toBeNull();
+    expect(observed.decision).toBeNull();
+    expect(screen.queryByRole("group", { name: "已启用筛选" })).not.toBeInTheDocument();
   });
 
-  it("omits invalid summaries instead of rendering placeholder copy", async () => {
-    const feed = newsFeedFixture();
-    feed.stories[0].description = "N/A";
-    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    await screen.findByText(feed.stories[0].title);
-    expect(screen.queryByText("N/A")).not.toBeInTheDocument();
-    expect(screen.queryByText(/未提供有效摘要/)).not.toBeInTheDocument();
-  });
-
-  it("omits a missing original-link placeholder", async () => {
-    const feed = newsFeedFixture();
-    const story = feed.stories[0];
-    story.url = null;
-    server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const title = await screen.findByRole("heading", { name: story.title });
-    const row = title.closest("article");
-    expect(row).not.toBeNull();
-    expect(within(row!).queryByRole("link", { name: /查看原文/ })).not.toBeInTheDocument();
-    expect(within(row!).queryByText(/暂无原文链接|未提供/)).not.toBeInTheDocument();
-  });
-
-  it("loads the next cursor and deduplicates repeated Story ids", async () => {
+  it("loads the next cursor and deduplicates repeated Event ids", async () => {
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const cursor = new URL(request.url).searchParams.get("cursor");
-        const feed = newsFeedFixture();
         if (!cursor) {
-          feed.has_more = true;
-          feed.next_cursor = "page-2";
-          return HttpResponse.json({ ok: true, data: feed });
+          return HttpResponse.json({ ok: true, data: newsFeedFixture({ next_cursor: "page-2" }) });
         }
-        feed.has_more = false;
-        feed.next_cursor = null;
-        feed.stories = [
-          feed.stories[0],
-          { ...feed.stories[0], story_id: "story-second-page", title: "Second page Story" },
-        ];
-        return HttpResponse.json({ ok: true, data: feed });
+        return HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture(),
+              newsFeedEventFixture({
+                display_title: "Second page Event",
+                event_id: "evt-second-page",
+              }),
+            ],
+            next_cursor: null,
+          }),
+        });
       }),
     );
     renderNews(<NewsPage token="test-token" view="feed" />);
-    await screen.findByText("Central banks respond to a new global policy shock");
+    await screen.findByText("央行应对新的全球政策冲击");
 
-    fireEvent.click(screen.getByRole("button", { name: "加载更多新闻" }));
+    fireEvent.click(screen.getByRole("button", { name: "加载更多事件" }));
 
-    expect(await screen.findByText("Second page Story")).toBeInTheDocument();
-    expect(screen.getAllByText("Central banks respond to a new global policy shock")).toHaveLength(
-      1,
-    );
+    expect(await screen.findByText("Second page Event")).toBeInTheDocument();
+    expect(screen.getAllByText("央行应对新的全球政策冲击")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "加载更多事件" })).not.toBeInTheDocument();
   });
 
-  it("shows new first-page stories immediately when the reader is at the top", async () => {
+  it("shows new first-page events immediately when the reader is at the top", async () => {
     let feed = newsFeedFixture();
     server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
     const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    await screen.findByText(feed.stories[0].title);
+    await screen.findByText(feed.events[0].display_title);
 
-    feed = {
-      ...newsFeedFixture(),
-      stories: [
-        {
-          ...newsFeedFixture().stories[0],
-          story_id: "story-new-at-top",
-          title: "New high-signal event at the top",
-        },
-        ...newsFeedFixture().stories,
+    feed = newsFeedFixture({
+      events: [
+        newsFeedEventFixture({
+          display_title: "New high-signal event at the top",
+          event_id: "evt-new-at-top",
+        }),
+        ...newsFeedFixture().events,
       ],
-    };
+    });
     await rendered.queryClient.invalidateQueries({ queryKey: ["news-feed"] });
 
     expect(await screen.findByText("New high-signal event at the top")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /条新新闻/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /条新事件/ })).not.toBeInTheDocument();
   });
 
   it("preserves the viewed event, defers new top ids, and still appends a loaded tail", async () => {
-    let feed = newsFeedFixture();
-    feed.has_more = true;
-    feed.next_cursor = "page-2";
+    let feed = newsFeedFixture({ next_cursor: "page-2" });
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const cursor = new URL(request.url).searchParams.get("cursor");
         if (!cursor) return HttpResponse.json({ ok: true, data: feed });
-        const tail = newsFeedFixture();
-        tail.stories = [
-          {
-            ...tail.stories[0],
-            story_id: "story-loaded-tail",
-            title: "Loaded non-deferred tail event",
-          },
-        ];
-        tail.has_more = false;
-        tail.next_cursor = null;
-        return HttpResponse.json({ ok: true, data: tail });
+        return HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [
+              newsFeedEventFixture({
+                display_title: "Loaded non-deferred tail event",
+                event_id: "evt-loaded-tail",
+              }),
+            ],
+            next_cursor: null,
+          }),
+        });
       }),
     );
     const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    const currentTitle = await screen.findByText(feed.stories[0].title);
+    const currentTitle = await screen.findByText(feed.events[0].display_title);
     const currentRow = currentTitle.closest("article");
     const scrollContainer = rendered.container.querySelector<HTMLElement>(".center-column");
     expect(scrollContainer).not.toBeNull();
     scrollContainer!.scrollTop = 320;
     fireEvent.scroll(scrollContainer!);
 
-    feed = {
-      ...newsFeedFixture(),
-      has_more: true,
-      next_cursor: "page-2",
-      stories: [
-        {
-          ...newsFeedFixture().stories[0],
-          story_id: "story-deferred-at-top",
-          title: "Deferred high-signal event",
-        },
-        ...newsFeedFixture().stories,
+    feed = newsFeedFixture({
+      events: [
+        newsFeedEventFixture({
+          display_title: "Deferred high-signal event",
+          event_id: "evt-deferred-at-top",
+        }),
+        ...newsFeedFixture().events,
       ],
-    };
+      next_cursor: "page-2",
+    });
     await rendered.queryClient.invalidateQueries({ queryKey: ["news-feed"] });
 
-    const notice = await screen.findByRole("button", {
-      name: "1 条新新闻 · 回到顶部",
-    });
+    const notice = await screen.findByRole("button", { name: "1 条新事件 · 回到顶部" });
     expect(screen.queryByText("Deferred high-signal event")).not.toBeInTheDocument();
-    expect(screen.getByText(newsFeedFixture().stories[0].title).closest("article")).toBe(
+    expect(screen.getByText(newsFeedFixture().events[0].display_title).closest("article")).toBe(
       currentRow,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "加载更多新闻" }));
+    fireEvent.click(screen.getByRole("button", { name: "加载更多事件" }));
 
     expect(await screen.findByText("Loaded non-deferred tail event")).toBeInTheDocument();
     expect(screen.queryByText("Deferred high-signal event")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "1 条新新闻 · 回到顶部" })).toBeInTheDocument();
-    expect(screen.getByText(newsFeedFixture().stories[0].title).closest("article")).toBe(
-      currentRow,
-    );
+    expect(screen.getByRole("button", { name: "1 条新事件 · 回到顶部" })).toBeInTheDocument();
 
     fireEvent.click(notice);
 
     expect(await screen.findByText("Deferred high-signal event")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /条新新闻/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /条新事件/ })).not.toBeInTheDocument();
   });
 
-  it("keeps only current WSS and both latency pairs inline", async () => {
+  it("keeps compact reader-facing pipeline health inline on the Feed header", async () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const state = await screen.findByText("WSS 已连接");
-    expect(state.closest('[role="status"]')).toHaveAttribute("data-state", "live");
-    expect(screen.getByText(/入站 P50\/P95/)).toBeInTheDocument();
-    expect(screen.getByText(/Story P50\/P95/)).toBeInTheDocument();
-    expect(screen.queryByText("公共 RSS 覆盖与交叉印证")).not.toBeInTheDocument();
-    expect(screen.queryByText("中文标题翻译")).not.toBeInTheDocument();
-    expect(screen.queryByText("暂无译文")).not.toBeInTheDocument();
+    const status = await screen.findByRole("status");
+    await waitFor(() => expect(status).toHaveTextContent("WSS 已连接"));
+    expect(status).toHaveAttribute("data-state", "live");
+    expect(status).toHaveTextContent("1h 事件 12 · Triage P95 1.9 s · 24h 推送 41");
   });
 
-  it("ignores Brief or Push overall state when reader-facing News layers are ready", async () => {
+  it("reports a lost WSS connection as stalled and a degraded pipeline as recovering", async () => {
     server.use(
       http.get(/.*\/api\/news\/status$/, () =>
         HttpResponse.json({
           ok: true,
-          data: newsStatusFixture({ operating_state: "stalled" }),
+          data: newsStatusFixture({
+            ingest: { ...newsStatusFixture().ingest, connected: false },
+            state: "degraded",
+          }),
+        }),
+      ),
+    );
+    const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
+    const status = await screen.findByRole("status");
+    await waitFor(() => expect(status).toHaveTextContent("WSS 未连接"));
+    expect(status).toHaveAttribute("data-state", "stalled");
+
+    server.use(
+      http.get(/.*\/api\/news\/status$/, () =>
+        HttpResponse.json({ ok: true, data: newsStatusFixture({ state: "degraded" }) }),
+      ),
+    );
+    await rendered.queryClient.invalidateQueries({ queryKey: ["news-status"] });
+    await waitFor(() => expect(status).toHaveTextContent("流水线降级"));
+    expect(status).toHaveAttribute("data-state", "recovering");
+  });
+
+  it("renders the four status layers plus read-only control and watch views", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsStatusFixture({
+            control: {
+              mutes: [{ symbol: "DOGE", until_ms: NEWS_NOW_MS + 3_600_000 }],
+              paused: true,
+            },
+            ingest: {
+              ...newsStatusFixture().ingest,
+              open_incidents: [
+                {
+                  cause_class: "provider_close",
+                  incident_id: 7,
+                  opened_at_ms: NEWS_NOW_MS - 600_000,
+                  planned: false,
+                },
+              ],
+              strategy_warnings: ["strategy 1019 disabled upstream"],
+            },
+          }),
         }),
       ),
     );
 
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    expect(await screen.findByText("WSS 已连接")).toBeInTheDocument();
-  });
-
-  it("keeps current WSS health separate from Story projection health", async () => {
-    const status = newsStatusFixture();
-    status.layers.story.status = "degraded";
-    server.use(
-      http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
-    );
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const connected = await screen.findByText("WSS 已连接");
-    expect(connected.closest('[role="status"]')).toHaveAttribute("data-state", "live");
-    expect(screen.queryByText(/Story 投影需要恢复/)).not.toBeInTheDocument();
-  });
-
-  it("presents an OpenNews Strategy transport failure as a degraded fact layer", async () => {
-    const status = newsStatusFixture();
-    status.layers.ingest.status = "degraded";
-    status.layers.ingest.opennews!.last_error = "opennews_live_disconnected";
-    status.layers.ingest.reasons = ["opennews_strategy_transport_error"];
-    status.realtime.wss_state = "unavailable";
-    server.use(
-      http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
-    );
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const degraded = await screen.findByText("WSS 不可用");
-    expect(degraded.closest('[role="status"]')).toHaveAttribute("data-state", "stalled");
-  });
-
-  it("keeps a healthy OpenNews primary readable while RSS corroboration warms", async () => {
-    const status = newsStatusFixture();
-    status.layers.ingest.rss.successful_source_count = 0;
-    status.layers.ingest.reasons = ["public_rss_corroboration_warming"];
-    server.use(
-      http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
-    );
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const ready = await screen.findByText("WSS 已连接");
-    expect(ready.closest('[role="status"]')).toHaveAttribute("data-state", "live");
-    expect(screen.queryByText("公共 RSS 覆盖与交叉印证")).not.toBeInTheDocument();
-  });
-
-  it("shows intentionally disabled RSS without treating it as an ingest failure", async () => {
-    const status = newsStatusFixture();
-    status.layers.ingest.rss = {
-      ...status.layers.ingest.rss,
-      enabled: false,
-      latest_success_at_ms: null,
-      next_due_at_ms: null,
-      source_count: 0,
-      successful_source_count: 0,
-    };
-    server.use(
-      http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
-    );
-
-    renderNews(<NewsPage token="test-token" view="feed" />);
-
-    const ready = await screen.findByText("WSS 已连接");
-    expect(ready.closest('[role="status"]')).toHaveAttribute("data-state", "live");
-    expect(screen.queryByText("公共 RSS 覆盖与交叉印证")).not.toBeInTheDocument();
-  });
-
-  it("renders the four public News layers and informational title presentation status", async () => {
     renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
 
     expect(await screen.findByRole("heading", { name: "新闻运行状态" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "状态" })).toHaveAttribute("aria-current", "page");
-    const ingest = (await screen.findByRole("heading", { name: "公开采集" })).closest("article");
-    const story = screen.getByRole("heading", { name: "新闻事件" }).closest("article");
-    const brief = screen.getByRole("heading", { name: "公共简报" }).closest("article");
-    const presentation = screen
-      .getByRole("heading", { name: "标题呈现（信息）" })
-      .closest("article");
-    const push = screen.getByRole("heading", { name: "新闻推送" }).closest("article");
-    expect(ingest).not.toBeNull();
-    expect(story).not.toBeNull();
-    expect(brief).not.toBeNull();
-    expect(presentation).not.toBeNull();
-    expect(push).not.toBeNull();
-    const primaryFact = within(ingest!).getByText("WSS 当前状态");
-    const corroborationFact = within(ingest!).getByText("RSS 印证成功来源");
+    expect(await screen.findAllByText("运行正常")).toHaveLength(2);
+    for (const layer of [
+      "接入 · OpenNews WSS",
+      "代理 · RabbitMQ",
+      "流水线 · Triage / Analyst",
+      "推送 · 飞书",
+    ]) {
+      expect(screen.getByRole("heading", { name: layer })).toBeInTheDocument();
+    }
+    expect(screen.getByText("队列 news.triage").nextElementSibling).toHaveTextContent(
+      "0 消息 · 4 消费者",
+    );
+    expect(screen.getByText("Triage P95").nextElementSibling).toHaveTextContent("1.9 s");
+    expect(screen.getByText("24h 已发送").nextElementSibling).toHaveTextContent("41");
+    expect(screen.getByText("小时上限").nextElementSibling).toHaveTextContent("12");
+    expect(screen.getByRole("list", { name: "状态原因" })).toHaveTextContent(
+      "strategy 1019 disabled upstream",
+    );
+    expect(screen.getByText("未结 WSS 事故 · 1")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "控制（只读）" })).toBeInTheDocument();
+    expect(screen.getByText("已暂停")).toBeInTheDocument();
+    expect(screen.getByText(/"symbol":"DOGE"/)).toBeInTheDocument();
+    const watchHeading = screen.getByRole("heading", { name: "关注名单（只读）" });
+    const watchCard = watchHeading.closest("article") as HTMLElement;
     expect(
-      primaryFact.compareDocumentPosition(corroborationFact) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(within(ingest!).getByText("179/179")).toBeInTheDocument();
-    expect(within(story!).getByText("当前事件").parentElement).toHaveTextContent("1");
-    expect(within(brief!).getByText("公开状态").parentElement).toHaveTextContent("当前");
-    expect(within(presentation!).getByText("24 小时呈现").parentElement).toHaveTextContent(
-      "译文 1 · 无需 0 · 原文 0",
-    );
-    expect(within(push!).queryByRole("button")).not.toBeInTheDocument();
-  });
-
-  it("does not present capped 24-hour push samples as complete SLO evidence", async () => {
-    const status = newsStatusFixture();
-    status.layers.push.delivery_24h.sample_complete = false;
-    status.title_presentation.resolution_24h.sample_complete = false;
-    server.use(
-      http.get(/.*\/api\/news\/status$/, () => HttpResponse.json({ ok: true, data: status })),
-    );
-
-    renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
-
-    const push = (await screen.findByRole("heading", { name: "新闻推送" })).closest("article");
-    const presentation = screen
-      .getByRole("heading", { name: "标题呈现（信息）" })
-      .closest("article");
-    expect(push).not.toBeNull();
-    expect(presentation).not.toBeNull();
-    expect(within(push!).getAllByText("超过采样上限")).toHaveLength(1);
-    expect(within(presentation!).getAllByText("超过采样上限")).toHaveLength(1);
-    expect(within(push!).queryByText("30.0 秒")).not.toBeInTheDocument();
-    expect(within(push!).queryByText("1/1")).not.toBeInTheDocument();
-  });
-
-  it("renders Sources in exact server page order and loads the next cursor explicitly", async () => {
-    const cursors: Array<string | null> = [];
-    server.use(
-      http.get(/.*\/api\/news\/sources$/, ({ request }) => {
-        const cursor = new URL(request.url).searchParams.get("cursor");
-        cursors.push(cursor);
-        return HttpResponse.json({
-          ok: true,
-          data: cursor
-            ? newsSourcesFixture({
-                items: [
-                  {
-                    ...newsSourcesFixture().items[0],
-                    name: "Third Source",
-                    source_id: "source-third",
-                  },
-                ],
-                page: { has_more: false, next_cursor: null, returned_count: 1 },
-              })
-            : newsSourcesFixture({
-                items: [
-                  {
-                    ...newsSourcesFixture().items[0],
-                    name: "First Source",
-                    source_id: "source-first",
-                  },
-                  {
-                    ...newsSourcesFixture().items[0],
-                    name: "Second Source",
-                    source_id: "source-second",
-                  },
-                ],
-                page: { has_more: true, next_cursor: "sources-2", returned_count: 2 },
-              }),
-        });
-      }),
-    );
-    renderNews(<NewsPage token="test-token" view="sources" />, "/news/sources");
-
-    expect(await screen.findByRole("heading", { name: "公开新闻来源" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "来源" })).toHaveAttribute("aria-current", "page");
-    const first = await screen.findByRole("heading", { name: "First Source" });
-    const second = screen.getByRole("heading", { name: "Second Source" });
-    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "加载更多来源" }));
-
-    const third = await screen.findByRole("heading", { name: "Third Source" });
-    expect(second.compareDocumentPosition(third) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(cursors).toEqual([null, "sources-2"]);
-  });
-
-  it("labels OpenNews as Strategy-only and reports a lost live connection", async () => {
-    const primary = newsSourcesFixture().items.find((source) => source.source_kind === "opennews");
-    if (!primary) throw new Error("OpenNews source fixture required");
-    server.use(
-      http.get(/.*\/api\/news\/sources$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsSourcesFixture({
-            items: [{ ...primary, live_connected: false }],
-            page: { has_more: false, next_cursor: null, returned_count: 1 },
-          }),
-        }),
-      ),
-    );
-
-    renderNews(<NewsPage token="test-token" view="sources" />, "/news/sources");
-
-    const heading = await screen.findByRole("heading", { name: "OpenNews" });
-    const card = heading.closest("article");
-    expect(card).not.toBeNull();
-    expect(within(card!).getByText("OPENNEWS · STRATEGY 自动推送")).toBeInTheDocument();
-    expect(within(card!).getByText("Strategy 连接异常")).toBeInTheDocument();
-    expect(within(card!).queryByText(/TIER 4/)).not.toBeInTheDocument();
-  });
-
-  it("keeps historical recovery evidence separate from current source health", async () => {
-    const primary = newsSourcesFixture().items.find((source) => source.source_kind === "opennews");
-    if (!primary) throw new Error("OpenNews source fixture required");
-    server.use(
-      http.get(/.*\/api\/news\/sources$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsSourcesFixture({
-            items: [
-              {
-                ...primary,
-                live_connected: true,
-                strategy_history_status: "partial",
-              },
-            ],
-            page: { has_more: false, next_cursor: null, returned_count: 1 },
-          }),
-        }),
-      ),
-    );
-
-    renderNews(<NewsPage token="test-token" view="sources" />, "/news/sources");
-
-    const card = (await screen.findByRole("heading", { name: "OpenNews" })).closest("article");
-    expect(card).not.toBeNull();
-    expect(within(card!).getByText("采集正常")).toBeInTheDocument();
-    expect(within(card!).getByText("Strategy 历史校验").parentElement).toHaveTextContent(
-      "部分恢复",
-    );
-  });
-
-  it("makes Story detail reading-first and keeps scoring internals in a disclosure", async () => {
-    const detail = newsStoryDetailFixture();
-    detail.url = "https://representative.example/detail";
-    detail.members[0].url = "https://scoring.example/detail";
-    server.use(
-      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
-        HttpResponse.json({ ok: true, data: detail }),
-      ),
-    );
-    renderNews(
-      <NewsPage storyId="story-global-policy" token="test-token" view="story" />,
-      "/news/stories/story-global-policy",
-    );
-
-    const title = await screen.findByRole("heading", {
-      level: 1,
-      name: "Central banks respond to a new global policy shock",
-    });
-    expect(screen.getByRole("link", { name: "状态" })).toHaveAttribute("href", "/news/status");
-    expect(screen.getByRole("link", { name: "来源" })).toHaveAttribute("href", "/news/sources");
-    const evidence = screen.getByRole("heading", { name: "4 家独立来源" });
-    const hero = title.closest(".news-story-hero") as HTMLElement | null;
-    expect(hero).not.toBeNull();
-    expect(within(hero!).getByText(detail.source_name)).toBeInTheDocument();
-    expect(within(hero!).getByLabelText("OpenNews 评分 88")).toBeInTheDocument();
-    expect(within(hero!).queryByLabelText(/通知状态/)).not.toBeInTheDocument();
-    const auditSummary = screen.getByText("查看 Tracefold 评分与新闻事件审计");
-    expect(title.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(
-      evidence.compareDocumentPosition(auditSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(auditSummary.closest("details")).not.toHaveAttribute("open");
-    expect(screen.getByRole("link", { name: "阅读代表原文" })).toHaveAttribute(
-      "href",
-      "https://representative.example/detail",
-    );
-    fireEvent.click(auditSummary);
-    expect(screen.getByText("聚合身份")).toBeInTheDocument();
-    expect(screen.getByText("Story V2 身份证据")).toBeInTheDocument();
-    expect(screen.getByText(/词法相似度只使用 Jaccard/)).toBeInTheDocument();
-    expect(screen.getByText("news_story_identity_v3")).toBeInTheDocument();
-    expect(screen.getByText("总重要度").parentElement).toHaveTextContent("83");
-    expect(screen.getByRole("link", { name: /评分报道原文/ })).toHaveAttribute(
-      "href",
-      "https://scoring.example/detail",
-    );
-  });
-
-  it("shows provider-selected related assets in the Story detail hero", async () => {
-    const detail = newsStoryDetailFixture();
-    detail.provider_evidence!.provider_metadata.assets = [
-      { symbol: "BTC", market_type: "spot", match: "Bitcoin" },
-      { symbol: "GOOGL", market_type: "stock", match: "Alphabet" },
-      { symbol: "CL", market_type: "futures", match: "Crude oil" },
-      { symbol: "NATGAS", market_type: "futures", match: "Natural gas" },
-    ];
-    server.use(
-      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
-        HttpResponse.json({ ok: true, data: detail }),
-      ),
-    );
-
-    renderNews(
-      <NewsPage storyId="story-global-policy" token="test-token" view="story" />,
-      "/news/stories/story-global-policy",
-    );
-
-    const title = await screen.findByRole("heading", { level: 1, name: detail.title });
-    const hero = title.closest(".news-story-hero") as HTMLElement | null;
-    expect(hero).not.toBeNull();
-    expect(within(hero!).getByText("关联资产")).toBeInTheDocument();
-    expect(
-      within(within(hero!).getByRole("list", { name: "关联资产" }))
+      within(watchCard)
         .getAllByRole("listitem")
         .map((item) => item.textContent),
-    ).toEqual(["BTC", "GOOGL", "CL", "NATGAS"]);
-    expect(within(hero!).queryByText("代币")).not.toBeInTheDocument();
+    ).toEqual(["BTC", "ETH", "SOL"]);
+    expect(screen.queryByRole("button", { name: /暂停|恢复|静音/ })).not.toBeInTheDocument();
   });
 
-  it("labels missing upstream assets in the Story detail hero", async () => {
-    const detail = newsStoryDetailFixture();
-    detail.provider_evidence!.provider_metadata.assets = null;
-    server.use(
-      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
-        HttpResponse.json({ ok: true, data: detail }),
-      ),
-    );
-
+  it("renders Event detail with members, verdicts, deliveries, presentation, and marks", async () => {
     renderNews(
-      <NewsPage storyId="story-global-policy" token="test-token" view="story" />,
-      "/news/stories/story-global-policy",
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
     );
 
-    const title = await screen.findByRole("heading", { level: 1, name: detail.title });
-    const hero = title.closest(".news-story-hero") as HTMLElement | null;
-    expect(hero).not.toBeNull();
-    expect(within(hero!).getByRole("group", { name: "关联资产" })).toHaveTextContent("上游未标注");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "央行应对新的全球政策冲击" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "新闻事件详情" })).toHaveAttribute(
+      "data-page-archetype",
+      "case",
+    );
+    expect(screen.getByRole("link", { name: "返回新闻事件流" })).toHaveAttribute("href", "/news");
+    expect(screen.getByText("原标题").parentElement).toHaveTextContent(
+      "Central banks respond to a new global policy shock",
+    );
+    expect(screen.getByText("Storyline key").nextElementSibling).toHaveTextContent("asset:BTC");
+    expect(screen.getByRole("link", { name: /阅读代表原文/ })).toHaveAttribute(
+      "href",
+      "https://www.reuters.com/world/story",
+    );
+
+    const members = screen.getByRole("region", { name: "4 条报道" });
+    expect(
+      within(members)
+        .getAllByRole("heading", { level: 3 })
+        .map((h) => h.textContent),
+    ).toEqual([
+      "Central banks respond to a new global policy shock",
+      "Central banks scramble after policy shock",
+    ]);
+    expect(within(members).getByText("Jaccard 0.710")).toBeInTheDocument();
+
+    const verdicts = screen.getByRole("region", { name: "判定记录" });
+    expect(within(verdicts).getByText("Triage")).toBeInTheDocument();
+    expect(within(verdicts).getByText("最终 推送")).toBeInTheDocument();
+    expect(within(verdicts).getByText("规则基线").nextElementSibling).toHaveTextContent("升级");
+    expect(within(verdicts).getByText("模型判定").nextElementSibling).toHaveTextContent("推送");
+    expect(within(verdicts).getByText("方向").nextElementSibling).toHaveTextContent("看空");
+    expect(within(verdicts).getByText("量级").nextElementSibling).toHaveTextContent("M2");
+    expect(within(verdicts).getByText("置信度").nextElementSibling).toHaveTextContent("82%");
+    expect(within(verdicts).getByText("央行政策转向，风险资产承压")).toBeInTheDocument();
+    expect(within(verdicts).getByText("trace · 2")).toBeInTheDocument();
+    expect(within(verdicts).getByRole("list", { name: "判定资产" })).toHaveTextContent("BTC");
+
+    const deliveries = screen.getByRole("region", { name: "推送记录" });
+    expect(within(deliveries).getByText("first")).toBeInTheDocument();
+    expect(within(deliveries).getByText("已发送")).toBeInTheDocument();
+    expect(within(deliveries).getByText("回执 message_id").nextElementSibling).toHaveTextContent(
+      "om_123",
+    );
+
+    const presentation = screen.getByRole("region", { name: "标题呈现" });
+    expect(within(presentation).getByText("呈现结果").nextElementSibling).toHaveTextContent(
+      "translated",
+    );
+    expect(within(presentation).getByText("提供方").nextElementSibling).toHaveTextContent("deepl");
+
+    const marks = screen.getByRole("region", { name: "市场标记" });
+    const marksTable = within(marks).getByRole("table");
+    expect(within(marksTable).getByText("t0")).toBeInTheDocument();
+    expect(within(marksTable).getByText("64,250.5")).toBeInTheDocument();
+    expect(within(marksTable).getAllByText("—")).toHaveLength(2);
   });
 
-  it("keeps an overlong detail title readable behind an explicit expansion", async () => {
-    const detail = newsStoryDetailFixture({
-      title: "中等长度标题".repeat(12),
-    });
+  it("shows degraded, throttled, and failed verdict/delivery facts without inventing state", async () => {
     server.use(
-      http.get(/.*\/api\/news\/stories\/story-global-policy$/, () =>
-        HttpResponse.json({ ok: true, data: detail }),
-      ),
-    );
-    renderNews(
-      <NewsPage storyId="story-global-policy" token="test-token" view="story" />,
-      "/news/stories/story-global-policy",
-    );
-
-    const title = await screen.findByRole("heading", { level: 1, name: detail.title });
-    expect(title).toHaveClass("is-clamped");
-    const expansion = screen.getByText("展开完整标题").closest("details");
-    expect(expansion).not.toHaveAttribute("open");
-    fireEvent.click(screen.getByText("展开完整标题"));
-    expect(expansion).toHaveAttribute("open");
-    expect(screen.getByText("收起完整标题")).toBeInTheDocument();
-  });
-
-  it("loads additional related reports from the member cursor", async () => {
-    const detail = newsStoryDetailFixture();
-    const secondMember = {
-      ...detail.members[0],
-      item_id: "news-item-second",
-      provider_record_id: "wire-second-2",
-      reporting_origin: "ap",
-      source_id: "wm-politics-ap",
-      source_name: "Associated Press",
-      title: "Markets < 10 &amp; <strong>policy</strong> update https://example.com/raw",
-      url: "https://apnews.com/example",
-    };
-    const observedCursors: Array<string | null> = [];
-    server.use(
-      http.get(/.*\/api\/news\/stories\/story-global-policy$/, ({ request }) => {
-        const cursor = new URL(request.url).searchParams.get("members_cursor");
-        observedCursors.push(cursor);
-        return HttpResponse.json({
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({
           ok: true,
-          data: cursor
-            ? newsStoryDetailFixture({
-                members: [secondMember],
-                members_page: { has_more: false, next_cursor: null, returned_count: 1 },
-              })
-            : newsStoryDetailFixture({
-                members_page: { has_more: true, next_cursor: "members-2", returned_count: 1 },
+          data: newsEventDetailFixture({
+            deliveries: [
+              newsDeliveryFixture({
+                error_code: "feishu_5xx",
+                receipt: null,
+                settled_at_ms: NEWS_NOW_MS - 10_000,
+                state: "terminal",
               }),
-        });
-      }),
+            ],
+            marks: [],
+            presentation: null,
+            verdicts: [
+              newsVerdictFixture({
+                degraded: true,
+                error_code: "model_timeout",
+                final_decision: "throttled",
+                model_decision: null,
+                override_rule: "storyline_window_max",
+                throttled_by: "evt-earlier",
+                verdict: {},
+              }),
+              newsVerdictFixture({
+                created_at_ms: NEWS_NOW_MS - 30_000,
+                final_decision: "push",
+                policy_version: "news_analyst_policy_v1",
+                stage: "deep",
+                verdict: {
+                  agrees_with_triage: false,
+                  confidence: 0.6,
+                  context_evidence: ["prior BTC OI spike 3h ago"],
+                  follow_up_needed: true,
+                  novelty_assessment: "followup",
+                  revised_direction: "neutral",
+                  revised_magnitude: 1,
+                  risks_zh: "流动性数据滞后。",
+                  thesis_zh: "市场已部分定价。",
+                },
+              }),
+            ],
+          }),
+        }),
+      ),
     );
+
     renderNews(
-      <NewsPage storyId="story-global-policy" token="test-token" view="story" />,
-      "/news/stories/story-global-policy",
-    );
-    const loadMore = await screen.findByRole("button", { name: "加载更多相关报道" });
-
-    fireEvent.click(loadMore);
-
-    expect(await screen.findByText("Markets < 10 & policy update")).toBeInTheDocument();
-    expect(observedCursors).toContain("members-2");
-    expect(screen.queryByRole("button", { name: "加载更多相关报道" })).not.toBeInTheDocument();
-  });
-
-  it("renders immutable top stories first in exact server order", async () => {
-    renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
-
-    const brief = await screen.findByRole("region", { name: "公共全球简报" });
-    expect(screen.getByRole("link", { name: "公共全球简报" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-    const stories = await within(brief).findAllByTestId("brief-top-story");
-    expect(stories).toHaveLength(2);
-    expect(within(stories[0]).getByRole("heading", { level: 2 })).toHaveTextContent(
-      "Ceasefire talks resume as delegations return",
-    );
-    expect(within(stories[1]).getByRole("heading", { level: 2 })).toHaveTextContent(
-      "Typhoon makes landfall near a major port",
-    );
-    expect(screen.queryByText(/历史发布|候选新闻|综合得分/)).not.toBeInTheDocument();
-  });
-
-  it("shows the sealed public selection funnel", async () => {
-    renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
-
-    const funnel = await screen.findByLabelText("公开精选漏斗");
-    expect(within(funnel).getByText("候选 4")).toBeInTheDocument();
-    expect(within(funnel).getByText("可作主线 1")).toBeInTheDocument();
-    expect(within(funnel).getByText("主线补位 未触发")).toBeInTheDocument();
-    expect(within(funnel).getByText("准入剔除 2")).toBeInTheDocument();
-    expect(within(funnel).getByText("来源上限剔除 0")).toBeInTheDocument();
-    expect(within(funnel).getByText("名额溢出剔除 0")).toBeInTheDocument();
-  });
-
-  it("shows primary and member evidence, counts, source age, and linkless state", async () => {
-    const brief = newsGlobalBriefFixture();
-    if (!brief.publication) throw new Error("brief publication fixture required");
-    server.use(
-      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
     );
 
-    renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
+    const verdicts = await screen.findByRole("region", { name: "判定记录" });
+    const cards = within(verdicts).getAllByRole("article");
+    expect(cards).toHaveLength(2);
+    const triage = within(cards[0]);
+    expect(triage.getByText("最终 节流")).toBeInTheDocument();
+    expect(triage.getByText("降级")).toBeInTheDocument();
+    expect(triage.getByText("model_timeout")).toBeInTheDocument();
+    expect(triage.getByText("覆写规则").nextElementSibling).toHaveTextContent(
+      "storyline_window_max",
+    );
+    expect(triage.getByText("节流来源").nextElementSibling).toHaveTextContent("evt-earlier");
+    expect(triage.getByText("模型判定").nextElementSibling).toHaveTextContent("无");
+    const analyst = within(cards[1]);
+    expect(analyst.getByText("Analyst")).toBeInTheDocument();
+    expect(analyst.getByText("市场已部分定价。")).toBeInTheDocument();
+    expect(analyst.getByText("流动性数据滞后。")).toBeInTheDocument();
+    expect(analyst.getByText("同意 Triage").nextElementSibling).toHaveTextContent("否");
+    expect(analyst.getByText("修订方向").nextElementSibling).toHaveTextContent("中性");
+    expect(analyst.getByText("上下文证据")).toBeInTheDocument();
+    expect(analyst.getByText("prior BTC OI spike 3h ago")).toBeInTheDocument();
 
-    const first = (await screen.findAllByTestId("brief-top-story"))[0];
-    expect(within(first).getByText("Reuters")).toBeInTheDocument();
-    expect(within(first).getByText("3 条报道")).toBeInTheDocument();
-    expect(within(first).getByText("2 家独立来源")).toBeInTheDocument();
-    expect(within(first).getByText("Reuters、Associated Press")).toBeInTheDocument();
+    const deliveries = screen.getByRole("region", { name: "推送记录" });
+    expect(within(deliveries).getByText("已终结")).toBeInTheDocument();
+    expect(within(deliveries).getByText("feishu_5xx")).toBeInTheDocument();
+    expect(screen.getByText("尚无标题呈现；显示原标题。")).toBeInTheDocument();
+    expect(screen.getByText("尚无市场标记。")).toBeInTheDocument();
     expect(
-      within(first).getByText("Delegations return to the negotiating table"),
+      screen.getByRole("heading", {
+        level: 1,
+        name: "Central banks respond to a new global policy shock",
+      }),
     ).toBeInTheDocument();
-    expect(within(first).getByRole("link", { name: "阅读主要来源" })).toHaveAttribute(
-      "href",
-      "https://www.reuters.com/world/ceasefire",
-    );
-    expect(within(first).getByText(/来源更新/)).toBeInTheDocument();
-
-    const second = (await screen.findAllByTestId("brief-top-story"))[1];
-    expect(within(second).getByText("无主要来源链接")).toBeInTheDocument();
-    expect(within(second).queryByRole("link", { name: "阅读主要来源" })).not.toBeInTheDocument();
-  });
-
-  it("keeps L1 output in a separately labelled AI enhancement", async () => {
-    renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
-
-    const topStories = await screen.findByRole("heading", { name: "公开重点新闻" });
-    const enhancement = screen.getByRole("heading", { name: "AI 增强概览" });
-    expect(
-      topStories.compareDocumentPosition(enhancement) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(screen.getByText(/Ceasefire talks and severe weather/)).toBeInTheDocument();
-    const summaries = screen.getByRole("list", { name: "AI 新闻事件摘要" });
-    expect(within(summaries).getAllByRole("listitem")[0]).toHaveTextContent(
-      "Ceasefire talks resume as delegations return [1]",
-    );
-    expect(screen.getByText("L1 · 完整校验")).toBeInTheDocument();
-  });
-
-  it("links valid lead citations to their immutable Story slots with native keyboard access", async () => {
-    const brief = newsGlobalBriefFixture();
-    if (!brief.publication) throw new Error("brief publication fixture required");
-    brief.publication.world_brief =
-      "Severe weather follows renewed diplomacy [2], while talks continue [1]; sealed unknown [9].";
-    server.use(
-      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
-    );
-
-    renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
-
-    const lead = await screen.findByText(
-      (_, element) =>
-        element?.tagName === "P" && element.textContent === brief.publication?.world_brief,
-    );
-    expect(lead.textContent).toBe(brief.publication.world_brief);
-    const citations = within(lead).getAllByRole("link");
-    expect(citations).toHaveLength(2);
-    expect(citations[0]).toHaveAccessibleName("引用 2：Typhoon makes landfall near a major port");
-    expect(citations[0]).toHaveTextContent("[2]");
-    expect(citations[0]).toHaveAttribute("href", "/news/stories/story-typhoon");
-    expect(citations[1]).toHaveAccessibleName(
-      "引用 1：Ceasefire talks resume as delegations return",
-    );
-    expect(citations[1]).toHaveTextContent("[1]");
-    expect(citations[1]).toHaveAttribute("href", "/news/stories/story-ceasefire");
-    expect(within(lead).queryByRole("link", { name: /引用 9/ })).not.toBeInTheDocument();
-
-    citations[0].focus();
-    expect(citations[0]).toHaveFocus();
-    expect(citations[0]).toHaveProperty("tabIndex", 0);
-    fireEvent.click(citations[0]);
-    await waitFor(() =>
-      expect(screen.getByTestId("location")).toHaveTextContent("/news/stories/story-typhoon"),
-    );
-  });
-
-  it("links each L1 Story-line citation marker to its immutable Story slot", async () => {
-    const brief = newsGlobalBriefFixture();
-    if (!brief.publication) throw new Error("brief publication fixture required");
-    brief.publication.brief_story_lines[1].text = "A typhoon reaches the coast [002]";
-    server.use(
-      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
-    );
-    renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
-
-    const summaries = await screen.findByRole("list", { name: "AI 新闻事件摘要" });
-    const items = within(summaries).getAllByRole("listitem");
-    expect(within(items[0]).getByRole("link", { name: /引用 1/ })).toHaveAttribute(
-      "href",
-      "/news/stories/story-ceasefire",
-    );
-    expect(within(items[1]).getByRole("link", { name: /引用 2/ })).toHaveAttribute(
-      "href",
-      "/news/stories/story-typhoon",
-    );
-  });
-
-  it("renders L2 prose without inventing Story lines and renders none with no prose", async () => {
-    const brief = newsGlobalBriefFixture();
-    if (!brief.publication) throw new Error("brief publication fixture required");
-    brief.state = "degraded";
-    brief.publication.brief_kind = "l2";
-    brief.publication.quality = "degraded";
-    brief.publication.world_brief =
-      "Ceasefire negotiations resume while a typhoon reaches the coast.";
-    brief.publication.brief_story_lines = [];
-    server.use(
-      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
-    );
-    const rendered = renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
-
-    expect(await screen.findByText("L2 · 降级概览")).toBeInTheDocument();
-    expect(screen.getByText(brief.publication.world_brief)).toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "AI 新闻事件摘要" })).not.toBeInTheDocument();
-
-    brief.publication.brief_kind = "none";
-    brief.publication.world_brief = "";
-    await rendered.queryClient.invalidateQueries({ queryKey: ["news-brief"] });
-    expect(await screen.findByText("本版没有 AI 增强")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "AI 增强概览" })).not.toBeInTheDocument();
-  });
-
-  it.each([
-    ["current", "当前公开快报"],
-    ["degraded", "当前快报 · AI 增强降级"],
-    ["last_known_good", "上一份完整公开快报"],
-  ] as const)("renders the %s publication state from one sealed payload", async (state, label) => {
-    const brief = newsGlobalBriefFixture({ state });
-    server.use(
-      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
-    );
-
-    renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
-
-    expect(await screen.findByText(label)).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Ceasefire talks resume as delegations return" }),
-    ).toBeInTheDocument();
-  });
-
-  it("renders unavailable without a synthetic publication", async () => {
-    const brief = newsGlobalBriefFixture({
-      latest_run: null,
-      next_due_at_ms: NEWS_NOW_MS + 1_800_000,
-      publication: null,
-      slot_at_ms: null,
-      state: "unavailable",
-    });
-    server.use(
-      http.get(/.*\/api\/news\/brief$/, () => HttpResponse.json({ ok: true, data: brief })),
-    );
-
-    renderNews(<NewsPage token="test-token" view="brief" />, "/news/brief");
-
-    expect(await screen.findByText("尚无公共全球简报")).toBeInTheDocument();
-    expect(screen.queryByTestId("brief-top-story")).not.toBeInTheDocument();
   });
 });
 

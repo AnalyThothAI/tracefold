@@ -5,7 +5,6 @@ import { normalizeMarketTargets } from "@shared/socket/marketTargets";
 import { useSocketSnapshot } from "@shared/socket/socketContext";
 import { useMarketSubscription } from "@shared/socket/useMarketSubscription";
 import { act, cleanup, waitFor } from "@testing-library/react";
-import { tokenRadarFixture } from "@tests/fixtures/appRouteFixtures";
 import { tokenCaseFixture } from "@tests/fixtures/tokenCaseFixture";
 import { renderWithProviders } from "@tests/render/renderWithProviders";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -78,8 +77,6 @@ describe("IntelSocketProvider", () => {
       ok: true,
       data: dossier,
     });
-    const radarSnapshot = tokenRadarFixture();
-    view.queryClient.setQueryData(queryKeys.tokenRadar(), radarSnapshot);
     const socket = websocketHarness.instances[0];
 
     act(() => {
@@ -117,7 +114,6 @@ describe("IntelSocketProvider", () => {
       view.queryClient.getQueryData<ApiResponse<TokenCaseDossier>>(caseKey)?.data.market_live
         .price_usd,
     ).toBe(42);
-    expect(view.queryClient.getQueryData(queryKeys.tokenRadar())).toBe(radarSnapshot);
   });
 });
 

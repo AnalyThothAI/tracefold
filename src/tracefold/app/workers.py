@@ -27,14 +27,12 @@ from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.projection_edf import run_projection_edf
 from tracefold.app.provider_ownership import configured_profile_provider_ids, gmgn_stream_enabled
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
-from tracefold.app.worker_cpu_prewarm import prewarm_news_cpu_modules, prewarm_projection_cpu_modules
+from tracefold.app.worker_cpu_prewarm import prewarm_projection_cpu_modules
 from tracefold.app.worker_http import _create_workers_probe_app
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
 from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
 from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
-from tracefold.integrations.news_ai import ProviderChainNewsBriefPublisher
-from tracefold.integrations.news_feeds import RssFeedReader, parse_rss_feed_wire
 from tracefold.integrations.news_push import FeishuNewsPushSender
 from tracefold.integrations.news_title_presentation import (
     DeepLTitleTranslationProvider,
@@ -52,7 +50,6 @@ from tracefold.macro import (
     acquisition_loop_policy,
 )
 from tracefold.market import (
-    TOKEN_RADAR_REFRESH_SECONDS,
     AssetProfileRefresh,
     CollectorService,
     EventAnchorBackfill,
@@ -63,20 +60,26 @@ from tracefold.market import (
     ResolutionRefresh,
     TickLookup,
     TokenImageMirror,
-    TokenRadarCurrentProjection,
 )
-from tracefold.news import (
-    NewsAcquisition,
-    NewsBriefCandidate,
-    NewsStoryProjectionWorker,
+from tracefold.news.agents.analyst import Analyst
+from tracefold.news.agents.triage_model import TriageModel
+from tracefold.news.consumers import (
+    AnalystConsumer,
+    ControlConsumer,
+    DeduperConsumer,
+    DelivererConsumer,
+    JanitorLoop,
+    NewsPipeline,
+    OpenNewsReceiver,
+    RecoveryRunner,
+    TranslatorConsumer,
+    TriageConsumer,
 )
-from tracefold.news.push import NewsItemPush
-from tracefold.news.sources import opennews_source, public_rss_sources
-from tracefold.news.title_presentation import NewsItemTitlePresentation
 from tracefold.platform.config.settings import (
     Settings,
+    news_model_availability,
     news_push_availability,
-    news_title_presentation_availability,
+    news_translation_availability,
 )
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
@@ -98,12 +101,10 @@ _CONTROL_HEARTBEAT_STALE_SECONDS = 15.0
 _EVENT_ANCHOR_ACTIVE_WINDOW_MS = 300_000
 _DOCUMENT_MODEL_TIMEOUT_SECONDS = 180.0
 _MODEL_MAX_TOKENS = 6_000
-_NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS = 60.0
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
 _DEFAULT_DUE_IDLE_SECONDS = 1.0
 _MARKET_TICK_POLL_SECONDS = 35.0
-_NEWS_RSS_IDLE_SECONDS = 30.0
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
     ("macro_settlements", "daily_settlement"),
@@ -168,16 +169,12 @@ class _Components:
     providers: AssetMarketProviders
     asset_profile_refresh: AssetProfileRefresh
     collector: CollectorService | None
-    news: NewsAcquisition | None
-    news_story: NewsStoryProjectionWorker | None
-    news_brief: NewsBriefCandidate | None
-    news_title_presentation: NewsItemTitlePresentation | None
-    news_push: NewsItemPush | None
+    news_pipeline: NewsPipeline | None
+    news_bus: Any | None
     macro_source: MacroSourceClient | None
     macro_turns: tuple[MacroAcquisition, ...]
     due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
     market_poll: MarketTickPoll | None
-    radar_current: TokenRadarCurrentProjection
     projections: tuple[Any, ...]
     models: tuple[Any, ...]
     document_model: MacroDocumentAnalysisService | None
@@ -206,7 +203,6 @@ async def run_workers(settings: Settings) -> None:
     finite = FiniteOperations(telemetry=telemetry)
     model_adapter = ModelAdapter(telemetry=telemetry)
     projection_cpu = CpuProcess(telemetry=telemetry)
-    news_cpu = CpuProcess(telemetry=telemetry) if settings.news.enabled else None
     components: _Components | None = None
     server: uvicorn.Server | None = None
     graceful = False
@@ -236,8 +232,6 @@ async def run_workers(settings: Settings) -> None:
         finite.close_admission()
         model_adapter.close_admission()
         projection_cpu.close_admission()
-        if news_cpu is not None:
-            news_cpu.close_admission()
         if db is not None:
             db.close_business_admission()
         fatal_watchdog = signal_loop.call_later(
@@ -261,13 +255,6 @@ async def run_workers(settings: Settings) -> None:
             prewarm_projection_cpu_modules,
             service_timeout_seconds=20.0,
         )
-        if news_cpu is not None:
-            await news_cpu.prewarm()
-            await news_cpu.run(
-                "news_cpu_modules_prewarm",
-                prewarm_news_cpu_modules,
-                service_timeout_seconds=20.0,
-            )
         began: bool = await db.run_control(
             "workers_runtime_begin",
             _runtime_begin,
@@ -283,8 +270,6 @@ async def run_workers(settings: Settings) -> None:
             finite.close()
             model_adapter.close()
             projection_cpu.close()
-            if news_cpu is not None:
-                news_cpu.close()
             await db.aclose()
             db.close_executors()
             raise _FreshRuntimeRowExists("workers_runtime_fresh_row_exists")
@@ -296,7 +281,6 @@ async def run_workers(settings: Settings) -> None:
             finite=finite,
             model_adapter=model_adapter,
             projection_cpu=projection_cpu,
-            news_cpu=news_cpu,
             runtime_id=runtime_id,
         )
         await _reconcile_once(components)
@@ -322,16 +306,14 @@ async def run_workers(settings: Settings) -> None:
                         name="gmgn-stream",
                     )
                 )
-            if components.news is not None and components.news.opennews_enabled:
-                business_tasks.append(
-                    group.create_task(
-                        _guard_child(
-                            components.news.run_opennews(stop_event=work_stop_event),
-                            on_fatal=enter_fatal,
-                        ),
-                        name="opennews-stream",
+            if components.news_pipeline is not None:
+                for task_name, runner in components.news_pipeline.runners():
+                    business_tasks.append(
+                        group.create_task(
+                            _guard_child(runner(work_stop_event), on_fatal=enter_fatal),
+                            name=task_name,
+                        )
                     )
-                )
             for index, (turn, idle_seconds) in enumerate(components.due_turns):
                 business_tasks.append(
                     group.create_task(
@@ -358,29 +340,6 @@ async def run_workers(settings: Settings) -> None:
                             on_fatal=enter_fatal,
                         ),
                         name="market-tick-poll",
-                    )
-                )
-            business_tasks.append(
-                group.create_task(
-                    _guard_child(
-                        _run_after_completion(
-                            components.radar_current.sample,
-                            period_seconds=TOKEN_RADAR_REFRESH_SECONDS,
-                            stop_event=work_stop_event,
-                        ),
-                        on_fatal=enter_fatal,
-                    ),
-                    name="token-radar-current",
-                )
-            )
-            if components.news_story is not None:
-                business_tasks.append(
-                    group.create_task(
-                        _guard_child(
-                            components.news_story.run(stop_event=work_stop_event),
-                            on_fatal=enter_fatal,
-                        ),
-                        name="news-story-projection",
                     )
                 )
             business_tasks.append(
@@ -502,7 +461,6 @@ async def run_workers(settings: Settings) -> None:
                     finite=finite,
                     model_adapter=model_adapter,
                     projection_cpu=projection_cpu,
-                    news_cpu=news_cpu,
                     components=components,
                 ),
                 on_fatal=enter_fatal,
@@ -569,7 +527,6 @@ async def run_workers(settings: Settings) -> None:
             finite=finite,
             model_adapter=model_adapter,
             projection_cpu=projection_cpu,
-            news_cpu=news_cpu,
             phase=phase,
         )
     finally:
@@ -651,17 +608,6 @@ async def _run_periodic(
         if deadline <= loop.time():
             deadline = loop.time() + float(period_seconds)
         await _wait_or_stop(stop_event, deadline - loop.time())
-
-
-async def _run_after_completion(
-    sample: Callable[[], Awaitable[None]],
-    *,
-    period_seconds: float,
-    stop_event: asyncio.Event,
-) -> None:
-    while not stop_event.is_set():
-        await sample()
-        await _wait_or_stop(stop_event, float(period_seconds))
 
 
 async def _run_recurring_database_overrun_boundary(
@@ -823,11 +769,9 @@ async def _wire_components(
     finite: FiniteOperations,
     model_adapter: ModelAdapter,
     projection_cpu: CpuProcess,
-    news_cpu: CpuProcess | None,
     runtime_id: str,
 ) -> _Components:
     providers = wire_asset_market(settings)
-    heavy_db = db.heavy_business()
     ingest = _PooledIngestStore(
         db,
         providers=providers,
@@ -842,97 +786,11 @@ async def _wire_components(
         )
 
     due_turns: list[tuple[Callable[[], Awaitable[bool | str | None]], float]] = []
-    news: NewsAcquisition | None = None
-    news_story: NewsStoryProjectionWorker | None = None
-    news_brief: NewsBriefCandidate | None = None
-    push_availability = news_push_availability(settings)
-    title_availability = news_title_presentation_availability(settings)
-    deepl = (
-        DeepLTitleTranslationProvider(
-            api_keys=settings.news.title_presentation.deepl_api_keys,
-        )
-        if settings.news.enabled and title_availability.deepl_configured
-        else None
-    )
-    deepseek = (
-        OpenAICompatibleDeepSeekTitleProvider(
-            base_url=str(settings.llm.base_url),
-            api_key=str(settings.llm.api_key),
-            model=str(settings.llm.news_brief_model),
-        )
-        if settings.news.enabled and title_availability.deepseek_configured
-        else None
-    )
-    news_title_presentation = (
-        NewsItemTitlePresentation(db=db, deepl=deepl, deepseek=deepseek) if settings.news.enabled else None
-    )
-    push_sender = (
-        FeishuNewsPushSender(
-            webhook_url=str(settings.news.push.feishu_webhook_url),
-            signing_secret=settings.news.push.feishu_signing_secret,
-        )
-        if push_availability.delivery_available
-        else None
-    )
-    news_push = NewsItemPush(
-        db=db,
-        finite_operations=finite,
-        sender=push_sender,
-        delivery_available=push_availability.delivery_available,
-    )
     model_candidates: list[Any] = []
+    news_pipeline: NewsPipeline | None = None
+    news_bus: Any | None = None
     if settings.news.enabled:
-        story_dirty = asyncio.Event()
-        source = opennews_source()
-        rss_sources = public_rss_sources() if settings.news.rss_enabled else ()
-        opennews_ws = (
-            OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
-        )
-        opennews_history = (
-            OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
-        )
-        news = NewsAcquisition(
-            db=db,
-            finite_operations=finite,
-            rss_sources=rss_sources,
-            rss_feed_reader=RssFeedReader(),
-            rss_feed_parser=parse_rss_feed_wire,
-            opennews_source=source,
-            opennews_strategy_ids=settings.news.opennews_strategy_ids,
-            opennews_ws_client=opennews_ws,
-            opennews_history_client=opennews_history,
-            story_dirty=story_dirty,
-        )
-        if news_cpu is None:
-            raise RuntimeError("news_cpu_missing")
-        news_story = NewsStoryProjectionWorker(
-            db=db,
-            heavy_db=heavy_db,
-            cpu=news_cpu,
-            telemetry=telemetry,
-            dirty=story_dirty,
-        )
-        news_brief = NewsBriefCandidate(
-            db=db,
-            model_adapter=model_adapter,
-            publisher=ProviderChainNewsBriefPublisher(
-                ollama_base_url=_NEWS_OLLAMA_BASE_URL,
-                configured_base_url=settings.llm.base_url,
-                configured_api_key=settings.llm.api_key,
-                configured_model=settings.llm.news_brief_model,
-                groq_api_key=settings.llm.groq_api_key,
-                total_timeout_seconds=_NEWS_BRIEF_TOTAL_TIMEOUT_SECONDS,
-            ),
-            runtime_id=runtime_id,
-            stable_order=20,
-        )
-        # The acquisition turn always advances bounded Item expiry. With RSS
-        # disabled it has no claimable source and performs no network request.
-        due_turns.append((news.turn, _NEWS_RSS_IDLE_SECONDS))
-        due_turns.append((news_title_presentation.turn, _DEFAULT_DUE_IDLE_SECONDS))
-        model_candidates.append(news_brief)
-        if push_availability.delivery_available:
-            due_turns.append((news_push.turn, _DEFAULT_DUE_IDLE_SECONDS))
+        news_bus, news_pipeline = await _wire_news_pipeline(settings=settings, db=db, finite=finite)
 
     document_model: MacroDocumentAnalysisService | None = None
     document_analysis_model_name: str | None = None
@@ -1034,10 +892,6 @@ async def _wire_components(
     wired_profile_provider_ids = tuple(source.provider for source in providers.dex_profile_sources)
     if wired_profile_provider_ids != active_profile_provider_ids:
         raise RuntimeError("profile_provider_wiring_mismatch")
-    token_radar_current = TokenRadarCurrentProjection(
-        db=db,
-        cpu=projection_cpu,
-    )
     projections = (
         ProfileProjectionCandidate(
             db=db,
@@ -1052,30 +906,155 @@ async def _wire_components(
         providers=providers,
         asset_profile_refresh=asset_profile_refresh,
         collector=collector,
-        news=news,
-        news_story=news_story,
-        news_brief=news_brief,
-        news_title_presentation=news_title_presentation,
-        news_push=news_push,
+        news_pipeline=news_pipeline,
+        news_bus=news_bus,
         macro_source=macro_source,
         macro_turns=tuple(macro_turns),
         due_turns=tuple(due_turns),
         market_poll=market_poll,
-        radar_current=token_radar_current,
         projections=projections,
         models=tuple(model_candidates),
         document_model=document_model,
     )
 
 
+async def _wire_news_pipeline(
+    *, settings: Settings, db: WorkerDatabase, finite: FiniteOperations
+) -> tuple[Any, NewsPipeline]:
+    """Broker-driven News V3: one RabbitMQ bus + consumers; models/providers are optional capabilities."""
+
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
+    broker_url = settings.news.broker.url
+    if not broker_url:
+        raise RuntimeError("news_broker_url_missing")
+    bus = RabbitMQBus(
+        url=broker_url,
+        name_prefix=settings.news.broker.name_prefix,
+        connect_timeout_seconds=settings.news.broker.connect_timeout_seconds,
+    )
+    await bus.connect()
+
+    strategy_ids = tuple(settings.news.opennews_strategy_ids)
+    watchlist_symbols = settings.news.watchlist_symbols
+    watchlist_entries = [entry.model_dump() for entry in settings.news.watchlist]
+    ws_client = OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
+    history_client = (
+        OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
+    )
+
+    recovery = (
+        RecoveryRunner(bus=bus, db=db, history_client=history_client, strategy_ids=strategy_ids) if ws_client else None
+    )
+    receiver = (
+        OpenNewsReceiver(
+            bus=bus,
+            db=db,
+            ws_client=ws_client,
+            history_client=history_client,
+            strategy_ids=strategy_ids,
+            recovery=recovery,
+        )
+        if ws_client
+        else None
+    )
+
+    models = news_model_availability(settings)
+    triage_model: TriageModel | None = None
+    if models.triage_configured and models.triage_model:
+        chat_model, effective = configured_chat_model(
+            settings,
+            model_name=models.triage_model,
+            request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
+            max_tokens=300,
+        )
+        triage_model = TriageModel(
+            model=chat_model, model_name=effective, deadline_seconds=settings.news.triage.deadline_seconds
+        )
+
+    def _run_read(name: str, fn: Callable[[Any], Any]) -> Awaitable[Any]:
+        def _sync() -> Any:
+            with db.worker_session(name, 2.0) as repos:
+                return fn(repos)
+
+        return db.run_business(name, _sync, operation_timeout_seconds=2.0)
+
+    analyst: Analyst | None = None
+    if models.analyst_configured and models.analyst_model:
+        pro_model, pro_effective = configured_chat_model(
+            settings,
+            model_name=models.analyst_model,
+            request_timeout_seconds=min(settings.news.analyst.deadline_seconds, 25.0),
+            max_tokens=2_000,
+            thinking=False,  # DeepSeek V4 thinking + forced tool_choice is not reliable for structured output yet
+        )
+        analyst = Analyst(
+            model=pro_model,
+            model_name=pro_effective,
+            profile_key=f"litellm:{pro_effective}",
+            deadline_seconds=settings.news.analyst.deadline_seconds,
+            max_steps=settings.news.analyst.max_steps,
+            run_read=_run_read,
+            watchlist=watchlist_entries,
+        )
+
+    translation = news_translation_availability(settings)
+    deepl = (
+        DeepLTitleTranslationProvider(api_keys=settings.news.translation.deepl_api_keys)
+        if translation.deepl_configured
+        else None
+    )
+    deepseek = (
+        OpenAICompatibleDeepSeekTitleProvider(
+            base_url=str(settings.llm.base_url),
+            api_key=str(settings.llm.api_key),
+            model=str(settings.llm.news_triage_model),
+        )
+        if translation.deepseek_configured
+        else None
+    )
+    push = news_push_availability(settings)
+    sender = (
+        FeishuNewsPushSender(
+            webhook_url=str(settings.news.push.feishu_webhook_url),
+            signing_secret=settings.news.push.feishu_signing_secret,
+        )
+        if push.delivery_available
+        else None
+    )
+    pipeline = NewsPipeline(
+        receiver=receiver,
+        recovery=recovery,
+        deduper=DeduperConsumer(bus=bus, db=db, strategy_ids=strategy_ids, watchlist_symbols=watchlist_symbols),
+        triage=TriageConsumer(
+            bus=bus,
+            db=db,
+            model=triage_model,
+            watchlist_symbols=watchlist_symbols,
+            watchlist=sorted(watchlist_symbols),
+            hourly_cap=settings.news.push.hourly_cap,
+            concurrency=settings.news.triage.concurrency,
+            circuit_failures=settings.news.triage.circuit_failures,
+            circuit_open_seconds=settings.news.triage.circuit_open_seconds,
+        ),
+        analyst=AnalystConsumer(bus=bus, db=db, analyst=analyst, concurrency=settings.news.analyst.concurrency),
+        translator=TranslatorConsumer(bus=bus, db=db, deepl=deepl, deepseek=deepseek),
+        deliverer=DelivererConsumer(
+            bus=bus,
+            db=db,
+            sender=sender,
+            finite_operations=finite,
+            min_interval_seconds=settings.news.push.min_interval_seconds,
+            hourly_cap=settings.news.push.hourly_cap,
+        ),
+        janitor=JanitorLoop(db=db, bus=bus),
+        control=ControlConsumer(bus=bus, db=db),
+    )
+    return bus, pipeline
+
+
 async def _reconcile_once(components: _Components) -> None:
     await components.asset_profile_refresh.reconcile()
-    if components.news is not None:
-        await components.news.reconcile()
-    if components.news_title_presentation is not None:
-        await components.news_title_presentation.reconcile(now_ms=_now_ms())
-    if components.news_push is not None:
-        await components.news_push.reconcile(now_ms=_now_ms())
     for turn in components.macro_turns:
         await turn.reconcile()
     if components.document_model is not None:
@@ -1096,7 +1075,6 @@ async def _graceful_cleanup(
     finite: FiniteOperations,
     model_adapter: ModelAdapter,
     projection_cpu: CpuProcess,
-    news_cpu: CpuProcess | None,
     components: _Components,
 ) -> None:
     try:
@@ -1104,18 +1082,12 @@ async def _graceful_cleanup(
         finite.close_admission()
         model_adapter.close_admission()
         projection_cpu.close_admission()
-        if news_cpu is not None:
-            news_cpu.close_admission()
         if components.collector is not None:
             await _within(components.collector.close(), started_at)
-        if components.news is not None:
-            await _within(components.news.close(), started_at)
-        if components.news_brief is not None:
-            await _within(components.news_brief.close(), started_at)
-        if components.news_title_presentation is not None:
-            await _within(components.news_title_presentation.close(), started_at)
-        if components.news_push is not None:
-            await _within(components.news_push.close(), started_at)
+        if components.news_pipeline is not None:
+            await _within(components.news_pipeline.close(), started_at)
+        if components.news_bus is not None:
+            await _within(components.news_bus.close(), started_at)
         if components.macro_source is not None:
             await _within(
                 finite.run(
@@ -1135,13 +1107,9 @@ async def _graceful_cleanup(
             raise RuntimeError("model_adapter_drain_timeout")
         if not await projection_cpu.drain(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("cpu_process_drain_timeout")
-        if news_cpu is not None and not await news_cpu.drain(timeout_seconds=_remaining(started_at)):
-            raise RuntimeError("news_cpu_process_drain_timeout")
         finite.close()
         model_adapter.close()
         projection_cpu.close()
-        if news_cpu is not None:
-            news_cpu.close()
     except TimeoutError as exc:
         raise RuntimeError("graceful_deadline_exceeded") from exc
     except Exception as exc:
@@ -1181,15 +1149,12 @@ async def _fatal_exit(
     finite: FiniteOperations,
     model_adapter: ModelAdapter,
     projection_cpu: CpuProcess,
-    news_cpu: CpuProcess | None,
     phase: str,
 ) -> None:
     logger.opt(exception=exc).critical("Workers runtime fatal exit")
     finite.close_admission()
     model_adapter.close_admission()
     projection_cpu.close_admission()
-    if news_cpu is not None:
-        news_cpu.close_admission()
     fatal_code = _fatal_code(exc, phase=phase)
     if db is not None:
         db.close_business_admission()

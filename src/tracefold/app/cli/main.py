@@ -41,6 +41,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         from .commands import macro
 
         return _finish(macro.handle_macro(args), stdout)
+    if command == "news":
+        from .commands import news
+
+        return _finish(news.handle_news(args), stdout)
     if command == "ops":
         from .commands import ops
 

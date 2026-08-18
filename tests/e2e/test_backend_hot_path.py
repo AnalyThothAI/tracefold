@@ -29,7 +29,6 @@ from tests.support.hot_path_runtime import (
     backend_hot_path_settings,
 )
 from tests.support.provider_fixtures import load_provider_fixture
-from tests.support.token_radar import run_token_radar_current
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.http.app import create_app
 from tracefold.app.market_providers import AssetMarketProviders
@@ -40,7 +39,7 @@ from tracefold.market import CollectorService, EventAnchorBackfill
 
 
 @pytest.mark.e2e
-def test_complete_backend_hot_path_to_token_radar(
+def test_complete_backend_hot_path_to_serving_surfaces(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     e2e_postgres: str,
@@ -101,14 +100,6 @@ def test_complete_backend_hot_path_to_token_radar(
         assert asyncio.run(backfill.turn()) is True
         _assert_counts({"market_ticks": 1, "ready_enriched_events": 1})
 
-        conn = connect_postgres_test(read_only=False)
-        try:
-            radar_result = run_token_radar_current(conn, now_ms=FIXED_NOW_MS + 2_000)
-        finally:
-            conn.close()
-        assert radar_result == {"status": "unchanged", "rows_written": 0}
-        _assert_counts({"token_radar_current": 1})
-
         _publish_healthy_workers_runtime(worker_db)
         with TestClient(app) as client:
             _assert_http_surfaces(client)
@@ -143,11 +134,15 @@ def _assert_http_surfaces(client: TestClient) -> None:
     assert EVENT_ID in json.dumps(recent.json(), default=str)
 
     radar = client.get("/api/token-radar", headers=auth_headers())
-    assert radar.status_code == 200, radar.text
-    radar_payload = radar.json()["data"]
-    assert radar_payload["schema_version"] == "token_radar_snapshot_v5"
-    assert radar_payload["eligible_total"] == 0
-    assert radar_payload["items"] == []
+    assert radar.status_code == 404, radar.text
+
+    live_market = client.get(
+        "/api/live-market",
+        params={"target_type": "Asset", "target_id": "asset:missing"},
+        headers=auth_headers(),
+    )
+    assert live_market.status_code == 200, live_market.text
+    assert live_market.json()["data"]["status"] == "missing"
 
 
 def _assert_websocket_surfaces(

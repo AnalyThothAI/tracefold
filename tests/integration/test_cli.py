@@ -1,8 +1,11 @@
 import io
 import json
+import os
+import socket
 import tempfile
 import time
 import unittest
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -13,7 +16,6 @@ from pydantic import ValidationError
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
-from tests.support.token_radar import run_token_radar_current
 from tracefold.app.cli.parser import build_parser
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.cli import main
@@ -28,6 +30,20 @@ from tracefold.market import (
 from tracefold.platform.config.settings import Settings, default_config_yaml
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
+NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
+
+
+def _amqp_reachable(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 5672
+    try:
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except OSError:
+        return False
 
 
 def make_event(
@@ -107,7 +123,6 @@ def seed_postgres(db_path: Path) -> None:
         )
         with repos.transaction():
             ingest.ingest_event(token_event)
-        run_token_radar_current(conn, now_ms=token_event.received_at_ms + 1)
     finally:
         conn.close()
 
@@ -142,7 +157,7 @@ def write_runtime_config(
         payload["llm"] = {
             "api_key": "sk-test",
             "base_url": "https://deepseek.test/v1",
-            "news_brief_model": "deepseek-chat",
+            "news_triage_model": "deepseek-chat",
         }
     if opennews_token is not None or opennews_strategy_ids:
         payload["news"] = {
@@ -325,10 +340,39 @@ class CliTests(unittest.TestCase):
             },
         )
         self.assertNotIn("gmgn-test", stdout.getvalue())
-        self.assertTrue(payload["data"]["news"]["opennews_strategy_ids_configured"])
-        self.assertEqual(payload["data"]["news"]["opennews_strategy_count"], 2)
-        self.assertNotIn("opennews_strategy_ids", payload["data"]["news"])
-        self.assertNotIn("opennews_token", payload["data"]["news"])
+        news = payload["data"]["news"]
+        self.assertTrue(news["opennews_strategy_ids_configured"])
+        self.assertEqual(news["opennews_strategy_count"], 2)
+        self.assertNotIn("opennews_strategy_ids", news)
+        self.assertNotIn("opennews_token", news)
+        self.assertEqual(
+            set(news),
+            {
+                "enabled",
+                "opennews_token_configured",
+                "opennews_strategy_ids_configured",
+                "opennews_strategy_count",
+                "broker",
+                "models",
+                "gate",
+                "triage",
+                "analyst",
+                "translation",
+                "watchlist",
+                "push",
+            },
+        )
+        self.assertEqual(set(news["broker"]), {"url_configured", "name_prefix"})
+        self.assertFalse(news["broker"]["url_configured"])
+        self.assertTrue(news["models"]["triage_configured"])
+        self.assertEqual(news["models"]["triage_model"], "deepseek-chat")
+        self.assertTrue(news["models"]["analyst_configured"])
+        self.assertEqual(news["models"]["analyst_model"], "deepseek-chat")
+        self.assertIsInstance(news["watchlist"], list)
+        self.assertGreaterEqual(news["push"]["hourly_cap"], 1)
+        self.assertNotIn("rss_enabled", news)
+        self.assertNotIn("brief", news)
+        self.assertNotIn("title_presentation", news)
         self.assertNotIn("private-strategy-alpha", stdout.getvalue())
         self.assertNotIn("private-strategy-beta", stdout.getvalue())
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")
@@ -347,9 +391,13 @@ class CliTests(unittest.TestCase):
         settings = Settings.model_validate(payload)
 
         self.assertTrue(settings.news.enabled)
-        self.assertFalse(settings.news.rss_enabled)
-        self.assertFalse(payload["news"]["rss_enabled"])
+        self.assertNotIn("rss_enabled", payload["news"])
+        self.assertNotIn("title_presentation", payload["news"])
+        self.assertNotIn("news_brief_model", payload.get("llm") or {})
         self.assertEqual(payload["news"]["opennews_strategy_ids"], [])
+        self.assertEqual(payload["news"]["broker"]["url"], "amqp://tracefold:tracefold@rabbitmq:5672/")
+        self.assertEqual(settings.news.broker.name_prefix, "")
+        self.assertFalse(settings.news.push.enabled)
         self.assertTrue(settings.providers.macro_sources.enabled)
         self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
         self.assertNotIn("request_timeout_seconds", payload["providers"]["macro_sources"])
@@ -403,7 +451,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(lines[0]["data"]["events"][0]["event_id"], "event-1")
         self.assertEqual(lines[1]["data"]["items"][0]["event"]["event_id"], "event-1")
 
-    def test_db_audit_query_audit_and_token_radar_ops_use_postgres_only(self):
+    def test_db_audit_query_audit_and_validate_projections_use_postgres_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
             db_path = home / ".tracefold" / "postgres_test_db"
@@ -429,13 +477,64 @@ class CliTests(unittest.TestCase):
             [0, 0, 0],
         )
         self.assertEqual(lines[0]["data"]["engine"], "postgresql")
-        self.assertTrue(lines[0]["data"]["projection_schema"]["token_radar_current"])
+        self.assertNotIn("token_radar_current", lines[0]["data"]["projection_schema"])
         self.assertNotIn("projection_offsets", lines[0]["data"]["projection_schema"])
         self.assertNotIn("projection_runs", lines[0]["data"]["projection_schema"])
         self.assertFalse(lines[1]["data"]["analyze"])
-        self.assertIn("token_radar_latest", {item["name"] for item in lines[1]["data"]["queries"]})
+        self.assertNotIn("token_radar_latest", {item["name"] for item in lines[1]["data"]["queries"]})
         self.assertEqual(lines[2]["data"]["sample"], 5)
         self.assertEqual(lines[2]["data"]["mismatch_count"], 0)
+
+    def test_news_replay_reports_offline_gate_counts_from_a_hits_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            write_runtime_config(home, db_path=home / ".tracefold" / "postgres_test_db")
+            stdout = io.StringIO()
+            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+                exit_code = main(["news", "replay", str(NEWS_V3_FIXTURE)], stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        report = payload["data"]
+        self.assertGreater(report["counts"]["items"], 0)
+        self.assertGreater(report["counts"]["events"], 0)
+        self.assertLessEqual(report["counts"]["events"], report["counts"]["items"])
+        self.assertIn("candidate_share_of_items", report)
+        self.assertIsInstance(report["sample_candidates"], list)
+
+    def test_news_bus_check_reports_topology_or_fails_closed_without_broker(self):
+        amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://guest:guest@127.0.0.1:5672/")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            config_path = write_runtime_config(home, db_path=home / ".tracefold" / "postgres_test_db")
+            stdout = io.StringIO()
+            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+                missing_code = main(["news", "bus-check"], stdout=stdout)
+            missing_payload = json.loads(stdout.getvalue())
+            self.assertEqual(missing_code, 1)
+            self.assertFalse(missing_payload["ok"])
+            self.assertEqual(missing_payload["error"], "ValueError")
+            self.assertIn("news_broker_url_missing", missing_payload["detail"])
+
+            if not _amqp_reachable(amqp_url):
+                self.skipTest("development RabbitMQ is not reachable")
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            payload["news"] = {
+                **(payload.get("news") or {}),
+                "broker": {"url": amqp_url, "name_prefix": f"tf_test_{uuid.uuid4().hex[:8]}"},
+            }
+            config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+            stdout = io.StringIO()
+            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+                exit_code = main(["news", "bus-check"], stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertIn("queues", payload["data"])
+        self.assertIn("declared", payload["data"])
+        self.assertNotIn("guest:guest", stdout.getvalue())
 
 
 def test_recent_defaults_to_runtime_postgres_store_without_ws_token(tmp_path, monkeypatch):

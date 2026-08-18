@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
-from typing import Any
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -28,146 +28,13 @@ from tracefold.market import (
     market_tick_id,
     parse_gmgn_token_payload,
 )
-from tracefold.market.radar.reducer import (
-    RadarEvidenceRevision,
-    enrich_token_radar,
-    reduce_token_radar,
-    token_radar_text_fingerprint,
-)
-from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
-from tracefold.news import (
-    NewsBriefSource,
-    NewsBriefStoryLine,
-    NewsBriefSynthesisResult,
-    NewsFeedEntry,
-    NewsFeedFetch,
-    OpenNewsEvent,
-)
+from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.projection import NewsStoryFactSnapshot, build_story_projection
-from tracefold.news.sources import opennews_source, public_rss_sources
 from tracefold.platform.config.settings import NewsSettings, Settings
 
 PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
-TOKEN_RADAR_TEST_REBUILD_OFFSET_MS = 60_000
+NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 OPENNEWS_STRATEGY_IDS = frozenset({"1018", "1019"})
-
-
-def _strategy_event(params: dict[str, Any]):
-    return parse_opennews_message(
-        {
-            "method": "strategy.triggered",
-            "params": {
-                **params,
-                "strategy": {
-                    "id": "1018",
-                    "name": "News Score > 70",
-                    "sourceType": "news",
-                },
-            },
-        },
-        strategy_ids=OPENNEWS_STRATEGY_IDS,
-    )
-
-
-def _opennews_event(
-    *,
-    provider_record_id: str,
-    title: str,
-    description: str,
-    published_at_ms: int,
-    reporting_origin: str,
-    provider_metadata: dict[str, object] | None = None,
-) -> OpenNewsEvent:
-    return OpenNewsEvent(
-        provider_record_id=provider_record_id,
-        observation_kind="report",
-        provider_metadata={
-            "strategies": [
-                {
-                    "id": "1018",
-                    "name": "News Score > 70",
-                    "source_type": "news",
-                    "engine_type": "news",
-                }
-            ],
-            **dict(provider_metadata or {}),
-        },
-        entry=NewsFeedEntry(
-            guid=provider_record_id,
-            link=f"https://example.test/{provider_record_id}",
-            title=title,
-            description=description,
-            published_at_ms=published_at_ms,
-            reporting_origin=reporting_origin,
-        ),
-    )
-
-
-def _rebuild_news_projection(
-    repos: Any,
-    *,
-    now_ms: int,
-) -> dict[str, Any]:
-    payload = repos.news.load_story_projection(now_ms=now_ms)
-    snapshot = NewsStoryFactSnapshot(
-        material_snapshot_fingerprint=str(payload["material_snapshot_fingerprint"]),
-        evaluation_time_ms=int(payload["evaluation_time_ms"]),
-        published_material_snapshot_fingerprint=(
-            str(payload["published_material_snapshot_fingerprint"])
-            if payload.get("published_material_snapshot_fingerprint")
-            else None
-        ),
-        rows=tuple(dict(row) for row in payload["rows"]),
-    )
-    if snapshot.unchanged:
-        return {
-            "projection_status": "unchanged_input",
-            "items": len(snapshot.rows),
-            "stories": 0,
-            "rows_written": 0,
-        }
-    projection = build_story_projection(snapshot)
-    return dict(
-        repos.news.publish_story_projection(
-            snapshot=snapshot,
-            projection=projection.as_payload(),
-            now_ms=now_ms,
-        )
-    )
-
-
-def _sync_public_news_sources(repos: Any, *, now_ms: int) -> None:
-    rss_sources = public_rss_sources()
-    repos.news.sync_sources((*rss_sources, opennews_source()), now_ms=now_ms)
-    sources_by_id = {source.source_id: source for source in rss_sources}
-    claim_token = "00000000-0000-0000-0000-000000000038"
-    for index in range(len(rss_sources)):
-        claimed = repos.news.claim_due_rss_source(
-            now_ms=now_ms,
-            claim_token=claim_token,
-            lease_expires_at_ms=now_ms + 10_000,
-        )
-        assert claimed is not None
-        if index == 0:
-            assert repos.news.record_rss_fetch(
-                source=sources_by_id[str(claimed["source_id"])],
-                claim_token=claim_token,
-                fetch=NewsFeedFetch(status_code=200),
-                finished_at_ms=now_ms + 1,
-            ) == {
-                "items_inserted": 0,
-                "items_updated": 0,
-                "items_deactivated": 0,
-            }
-        else:
-            assert repos.news.record_rss_failure(
-                source_id=str(claimed["source_id"]),
-                claim_token=claim_token,
-                finished_at_ms=now_ms + index + 1,
-                error_code="news_rss_http_503",
-                status_code=503,
-            )
 
 
 def test_api_json_response_encodes_decimal_payloads():
@@ -457,52 +324,6 @@ def make_token_event(
     )
 
 
-def rebuild_token_radar(client: TestClient, *, now_ms: int | None = None) -> None:
-    del client
-    base_now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repository = TokenRadarCurrentRepository(conn)
-        with conn.transaction():
-            reduced = reduce_token_radar(
-                repository.load_material_inputs(now_ms=base_now_ms),
-                now_ms=base_now_ms,
-            )
-            reduced = enrich_token_radar(
-                reduced,
-                repository.load_presentation_facts(
-                    list(reduced.selected_keys),
-                    now_ms=base_now_ms,
-                ),
-                now_ms=base_now_ms,
-            )
-            result = repository.publish(reduced, updated_at_ms=base_now_ms)
-        assert result["status"] in {"published", "unchanged", "recovered"}
-    finally:
-        conn.close()
-
-
-def token_radar_revision(*, target_id: str, event_index: int, now_ms: int) -> RadarEvidenceRevision:
-    source_event_at_ms = now_ms - (3 - event_index) * 60_000
-    event_id = f"event-{target_id}-{event_index}"
-    return RadarEvidenceRevision(
-        event_id=event_id,
-        intent_id=f"intent-{target_id}-{event_index}",
-        resolution_id=f"resolution-{target_id}-{event_index}",
-        source_event_at_ms=source_event_at_ms,
-        received_at_ms=source_event_at_ms + 1_000,
-        event_created_at_ms=source_event_at_ms + 2_000,
-        action="tweet",
-        author_key=f"author-{target_id}-{event_index}",
-        text_fingerprint=token_radar_text_fingerprint(f"independent text {target_id} {event_index}"),
-        resolution_status="EXACT",
-        target_type="Asset",
-        target_id=target_id,
-        resolution_decision_at_ms=source_event_at_ms + 2_000,
-        resolution_created_at_ms=source_event_at_ms + 3_000,
-    )
-
-
 def seed_resolved_asset_with_event(
     client: TestClient,
     *,
@@ -697,1043 +518,103 @@ def test_api_search_resolves_robinhood_contracts_by_canonical_chain(tmp_path):
     }
 
 
-def test_api_news_exposes_exact_worldmonitor_read_contract(tmp_path):
-    settings = make_settings(tmp_path)
-    settings.news.rss_enabled = True
-    app = create_app(settings=settings)
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            _sync_public_news_sources(repos, now_ms=now_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="story-1",
-                        title="Central bank raises interest rate after policy shock",
-                        description="Officials published a detailed policy response.",
-                        published_at_ms=now_ms - 60_000,
-                        reporting_origin="example-news",
-                        provider_metadata={
-                            "score": 76,
-                            "signal": "long",
-                            "grade": "A",
-                            "coins": [
-                                {
-                                    "symbol": "BTC",
-                                    "market_type": "spot",
-                                    "match": "Bitcoin",
-                                    "score": 91,
-                                    "signal": "bullish",
-                                    "grade": "A+",
-                                }
-                            ],
-                        },
-                    ),
-                    _opennews_event(
-                        provider_record_id="story-2",
-                        title="Major earthquake strikes coastal region",
-                        description="Emergency services reported widespread damage.",
-                        published_at_ms=now_ms - 50_000,
-                        reporting_origin="example-news",
-                    ),
-                    _opennews_event(
-                        provider_record_id="story-1-corroboration",
-                        title="Central bank raises interest rate after policy shock",
-                        description="A second wire independently confirmed the policy decision.",
-                        published_at_ms=now_ms - 70_000,
-                        reporting_origin="second-wire",
-                    ),
-                    _opennews_event(
-                        provider_record_id="story-3",
-                        title="Cyber attack disrupts regional infrastructure",
-                        description="Operators reported a sustained service disruption.",
-                        published_at_ms=now_ms - 40_000,
-                        reporting_origin="second-news",
-                    ),
-                ),
-                observed_at_ms=now_ms,
+def _seed_news_v3_events(*, now_ms: int) -> list[str]:
+    hits = json.loads(NEWS_V3_FIXTURE.read_text(encoding="utf-8"))
+    event_ids: list[str] = []
+    with write_repositories() as repos, repos.transaction():
+        for hit in sorted(hits, key=lambda h: str(h.get("ts") or ""))[:40]:
+            event = parse_opennews_message(
+                {"method": "strategy.triggered", "params": hit}, strategy_ids=frozenset({"1018", "1352", "1353"})
             )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-            candidate = repos.news.peek_brief_candidate(now_ms=now_ms)
-            assert candidate is not None
-            prepared = repos.news.prepare_brief_run(
-                slot_at_ms=candidate["slot_at_ms"],
-                lease_owner="test-runtime",
-                lease_token="test-lease",
+            if event is None:
+                continue
+            result = admit_item(
+                repos,
+                event=event,
+                ingest_mode="live",
+                observed_at_ms=now_ms,
+                trace_id="api-test",
+                watchlist_symbols=frozenset({"BTC"}),
                 now_ms=now_ms,
             )
-            assert prepared is not None and prepared["completed_without_model"] is False
-            claim = prepared["claim"]
-            stories = prepared["top_stories"]
-            assert repos.news.start_brief_model(
-                slot_at_ms=claim["slot_at_ms"],
-                lease_owner=claim["lease_owner"],
-                lease_token=claim["lease_token"],
-                now_ms=now_ms + 1,
-            )
-            publication_id = repos.news.publish_brief(
-                claim=claim,
-                result=NewsBriefSynthesisResult(
-                    brief_kind="l1",
-                    quality="ok",
-                    world_brief="Central bank policy and global emergencies lead the public brief [1].",
-                    brief_story_lines=tuple(
-                        NewsBriefStoryLine(n=index, text=f"{story['primary_title']} [{index}]")
-                        for index, story in enumerate(stories, 1)
-                    ),
-                    sources=tuple(
-                        NewsBriefSource(
-                            title=story["primary_title"],
-                            source=story["primary_source"],
-                            url=story["primary_link"] or "",
-                            published_at_ms=story["primary_published_at_ms"],
-                        )
-                        for story in stories
-                    ),
-                    provider="fixture",
-                    model="fixture-model",
-                    validation={
-                        "failure_code": None,
-                        "stripped_citations": 0,
-                        "line_fallbacks": [],
-                    },
-                ),
-                now_ms=now_ms + 2,
-            )
-            assert publication_id is not None
+            if result.event_created:
+                event_ids.append(result.event_id)
+    return event_ids
 
+
+def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
+    settings = make_settings(tmp_path)
+    app = create_app(settings=settings)
+    now_ms = int(time.time() * 1000)
+    event_ids = _seed_news_v3_events(now_ms=now_ms)
+    assert event_ids
+
+    with TestClient(app) as client:
         headers = {"Authorization": "Bearer secret"}
-        sources_response = client.get("/api/news/sources", headers=headers)
-        sources_cursor = sources_response.json()["data"]["page"]["next_cursor"]
-        sources_second_response = client.get(
-            "/api/news/sources",
-            params={"cursor": sources_cursor},
-            headers=headers,
-        )
-        feed_response = client.get("/api/news/feed", headers=headers)
-        latest_feed_response = client.get(
-            "/api/news/feed",
-            params={"sort": "latest"},
-            headers=headers,
-        )
-        feed_etag = feed_response.headers["etag"]
-        unchanged_feed = client.get(
-            "/api/news/feed",
-            headers={**headers, "If-None-Match": feed_etag},
-        )
-        stories = feed_response.json()["data"]["stories"]
-        story = next(
-            item for item in stories if item["title"] == "Central bank raises interest rate after policy shock"
-        )
-        story_id = story["story_id"]
-        detail_response = client.get(f"/api/news/stories/{story_id}", headers=headers)
-        pre_cut_story_response = client.get(
-            f"/api/news/stories/{'2' * 64}",
-            headers=headers,
-        )
-        brief_response = client.get("/api/news/brief", headers=headers)
-        status_response = client.get("/api/news/status", headers=headers)
-        realtime_status_response = client.get(
-            "/api/news/status",
-            params={"view": "realtime"},
-            headers=headers,
-        )
-        unchanged_realtime_status = client.get(
-            "/api/news/status",
-            params={"view": "realtime"},
-            headers={
-                **headers,
-                "If-None-Match": realtime_status_response.headers["etag"],
-            },
-        )
-        unchanged_status = client.get(
-            "/api/news/status",
-            headers={**headers, "If-None-Match": status_response.headers["etag"]},
-        )
-        unchanged_brief = client.get(
-            "/api/news/brief",
-            headers={**headers, "If-None-Match": brief_response.headers["etag"]},
-        )
-        retired_responses = [
-            client.get("/api/news/stories", headers=headers),
-            client.post(f"/api/news/stories/{story_id}/analysis-requests", headers=headers),
-            client.get("/api/news", headers=headers),
-            client.get("/api/news/items/news-1", headers=headers),
-            client.get("/api/news/sources/status", headers=headers),
+        feed = client.get("/api/news/feed?limit=10", headers=headers)
+        candidate_feed = client.get("/api/news/feed?admission=candidate&sort=priority&limit=100", headers=headers)
+        detail = client.get(f"/api/news/events/{event_ids[0]}", headers=headers)
+        missing = client.get("/api/news/events/does-not-exist", headers=headers)
+        bad_admission = client.get("/api/news/feed?admission=bogus", headers=headers)
+        bad_param = client.get("/api/news/feed?story_id=1", headers=headers)
+        status = client.get("/api/news/status", headers=headers)
+        retired = [
+            client.get("/api/news/brief", headers=headers),
+            client.get("/api/news/sources", headers=headers),
+            client.get(f"/api/news/stories/{'1' * 64}", headers=headers),
+            client.get("/api/radar", headers=headers),
         ]
 
-    assert sources_response.status_code == 200
-    assert sources_second_response.status_code == 200
-    source_items = [
-        *sources_response.json()["data"]["items"],
-        *sources_second_response.json()["data"]["items"],
-    ]
-    assert len(source_items) == 180
-    assert source_items[0]["source_kind"] == "opennews"
-    opennews = next(item for item in source_items if item["source_kind"] == "opennews")
-    assert opennews["source_id"] == "news-opennews"
-    assert opennews["last_success_at_ms"] == now_ms
-    rss_items = [item for item in source_items if item["source_kind"] == "rss"]
-    assert len(rss_items) == 179
-    assert all(item["feed_url"].startswith("https://") for item in rss_items)
-    assert sum(item["last_success_at_ms"] is not None for item in rss_items) == 1
-    assert sources_response.json()["data"]["page"] == {
-        "returned_count": 100,
-        "has_more": True,
-        "next_cursor": sources_cursor,
-    }
-    assert sources_second_response.json()["data"]["page"] == {
-        "returned_count": 80,
-        "has_more": False,
-        "next_cursor": None,
-    }
-
-    assert feed_response.status_code == 200
-    assert latest_feed_response.status_code == 200
-    assert latest_feed_response.json()["data"]["sort"] == "latest"
-    assert feed_response.headers["cache-control"] == "private, no-cache"
-    assert unchanged_feed.status_code == 304
-    assert story["title"] in {
-        "Central bank raises interest rate after policy shock",
-        "Major earthquake strikes coastal region",
-        "Cyber attack disrupts regional infrastructure",
-    }
-    assert story["source_count"] == 2
-    assert story["provider_evidence"] == {
-        "item_id": story["representative_item_id"],
-        "url": "https://example.test/story-1",
-        "provider_metadata": {
-            "score": 76,
-            "signal": "long",
-            "grade": "A",
-            "assets": [
-                {
-                    "symbol": "BTC",
-                    "market_type": "spot",
-                    "match": "Bitcoin",
-                    "score": 91,
-                    "signal": "bullish",
-                    "grade": "A+",
-                }
-            ],
-        },
-    }
-    assert "coins" not in story["provider_evidence"]["provider_metadata"]
-    assert set(story["provider_evidence"]) == {
-        "item_id",
-        "url",
-        "provider_metadata",
-    }
-    scoreless_story = next(item for item in stories if item["title"] == "Major earthquake strikes coastal region")
-    assert scoreless_story["provider_evidence"] == {
-        "item_id": scoreless_story["representative_item_id"],
-        "url": "https://example.test/story-2",
-        "provider_metadata": {},
-    }
-    assert set(story["importance_factors"]) >= {
-        "severity_points",
-        "source_points",
-        "corroboration_points",
-        "recency_points",
-        "total",
-    }
-
-    assert detail_response.status_code == 200
-    assert pre_cut_story_response.status_code == 404
-    detail = detail_response.json()["data"]
-    assert detail["story_id"] == story_id
-    assert detail["representative_item_id"]
-    assert detail["scoring_item_id"]
-    assert detail["provider_evidence"] == story["provider_evidence"]
-    assert "current" not in detail["members"][0]
-    assert "active" not in detail
-    assert detail["members"][0]["reporting_origin"]
-    assert detail["members"][0]["provider_record_id"]
-    assert detail["members"][0]["provider_metadata"] == story["provider_evidence"]["provider_metadata"]
-    assert "coins" not in detail["members"][0]["provider_metadata"]
-    assert detail["members_page"] == {
-        "returned_count": 2,
-        "has_more": False,
-        "next_cursor": None,
-    }
-    assert "analysis" not in detail
-    assert "revisions" not in detail
-
-    assert brief_response.status_code == 200
-    brief = brief_response.json()["data"]
-    assert brief["state"] == "current"
-    assert len(brief["publication"]["top_stories"]) == 3
-    assert brief["publication"]["locale"] == "en"
-    assert brief["publication"]["brief_kind"] == "l1"
-    assert brief["publication"]["validation"] == {
-        "failure_code": None,
-        "stripped_citations": 0,
-        "line_fallbacks": [],
-    }
-    assert len(brief["publication"]["top_stories"]) == len(brief["publication"]["brief_story_lines"])
-    assert len(brief["publication"]["top_stories"]) == len(brief["publication"]["sources"])
-    assert set(brief) == {
-        "state",
-        "slot_at_ms",
-        "next_due_at_ms",
-        "publication",
-        "latest_run",
-    }
-    assert brief["publication"]["slot_at_ms"] == brief["slot_at_ms"]
-    assert brief["latest_run"]["status"] == "completed"
-    assert unchanged_brief.status_code == 304
-    assert status_response.status_code == 200
-    status_layers = status_response.json()["data"]["layers"]
-    assert status_layers["ingest"]["rss"] == {
-        "enabled": True,
-        "source_count": 179,
-        "successful_source_count": 1,
-        "failed_source_count": 178,
-        "claimed_source_count": 0,
-        "next_due_at_ms": now_ms + 1_800_001,
-        "latest_success_at_ms": now_ms + 1,
-    }
-    assert status_layers["ingest"]["opennews"]["source_id"] == "news-opennews"
-    assert status_response.headers["etag"].startswith('W/"')
-    assert unchanged_status.status_code == 304
-    assert realtime_status_response.status_code == 200
-    realtime_status = realtime_status_response.json()["data"]
-    assert set(realtime_status) == {"realtime", "measured_at_ms"}
-    assert {
-        key: value
-        for key, value in realtime_status["realtime"].items()
-        if key not in {"inbound_latency", "story_visible_latency"}
-    } == {
-        key: value
-        for key, value in status_response.json()["data"]["realtime"].items()
-        if key not in {"inbound_latency", "story_visible_latency"}
-    }
-    for latency_key in ("inbound_latency", "story_visible_latency"):
-        assert {
-            key: value
-            for key, value in realtime_status["realtime"][latency_key].items()
-            if key not in {"measured_at_ms", "window_started_at_ms"}
-        } == {
-            key: value
-            for key, value in status_response.json()["data"]["realtime"][latency_key].items()
-            if key not in {"measured_at_ms", "window_started_at_ms"}
-        }
-    assert unchanged_realtime_status.status_code == 304
-    disabled_push = status_layers["push"]
-    assert {
-        key: disabled_push[key]
-        for key in (
-            "status",
-            "reasons",
-            "requested",
-            "delivery_available",
-            "availability_reason",
-            "state_synchronized",
-            "feishu_webhook_url_configured",
-            "feishu_signing_secret_configured",
-            "enablement_epoch_at_ms",
-            "pending_count",
-            "sending_count",
-            "terminal_count",
-            "sent_count",
-            "latest_sent_at_ms",
-        )
-    } == {
-        "status": "disabled",
-        "reasons": [],
-        "requested": False,
-        "delivery_available": False,
-        "availability_reason": None,
-        "state_synchronized": True,
-        "feishu_webhook_url_configured": False,
-        "feishu_signing_secret_configured": False,
-        "enablement_epoch_at_ms": None,
-        "pending_count": 0,
-        "sending_count": 0,
-        "terminal_count": 0,
-        "sent_count": 0,
-        "latest_sent_at_ms": None,
-    }
-    assert disabled_push["payload_schema_version"] == "news_item_push_v2"
-    assert disabled_push["comparison_identity_version"] == "news_exact_atom_identity_v1"
-    assert disabled_push["admission_policy_version"] == "news_push_exact_atom_admission_v1"
-    assert disabled_push["suppressed_count"] == 0
-    assert disabled_push["recent_suppressions"] == []
-    assert disabled_push["suppression_sample_complete"] is True
-    assert [response.status_code for response in retired_responses] == [404] * 5
-
-
-def test_api_news_status_treats_default_disabled_rss_as_intentional(tmp_path):
-    settings = make_settings(tmp_path)
-    assert settings.news.rss_enabled is False
-    app = create_app(settings=settings)
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="opennews-only-status",
-                        title="OpenNews primary publishes without RSS enabled",
-                        description="The primary lane remains independently usable.",
-                        published_at_ms=now_ms - 1_000,
-                        reporting_origin="authority",
-                    ),
-                ),
-                observed_at_ms=now_ms,
-            )
-            repos.news.update_opennews_live_status(
-                source_id=source.source_id,
-                connected=True,
-                now_ms=now_ms,
-                error_code=None,
-            )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-
-        response = client.get("/api/news/status", headers={"Authorization": "Bearer secret"})
-
-    assert response.status_code == 200
-    ingest = response.json()["data"]["layers"]["ingest"]
-    assert ingest["status"] == "ready"
-    assert ingest["reasons"] == []
-    assert ingest["rss"] == {
-        "enabled": False,
-        "source_count": 0,
-        "successful_source_count": 0,
-        "failed_source_count": 0,
-        "claimed_source_count": 0,
-        "next_due_at_ms": None,
-        "latest_success_at_ms": None,
-    }
-
-
-def test_api_news_canonicalizes_opennews_wire_headline_and_wrapper_origin(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-    event = _strategy_event(
-        {
-            "id": "twitter-canonical-wire",
-            "text": (
-                "Iran announces verified ceasefire talks&lt;br&gt;"
-                "Officials said the announcement followed two days of negotiations "
-                "and published a detailed timetable.&lt;br&gt;https://example.test/noise"
-            ),
-            "engineType": "news",
-            "source": "ReutersWorld",
-            "link": "https://example.test/twitter-canonical-wire",
-            "ts": now_ms,
-        }
-    )
-    assert event is not None
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(event,),
-                observed_at_ms=now_ms,
-            )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-
-        headers = {"Authorization": "Bearer secret"}
-        feed = client.get("/api/news/feed", headers=headers).json()["data"]
-        detail = client.get(
-            f"/api/news/stories/{feed['stories'][0]['story_id']}",
-            headers=headers,
-        ).json()["data"]
-
-    assert {
-        "story_title": feed["stories"][0]["title"],
-        "item_title": detail["members"][0]["title"],
-        "description": detail["members"][0]["description"],
-        "reporting_origin": detail["members"][0]["reporting_origin"],
-    } == {
-        "story_title": "Iran announces verified ceasefire talks",
-        "item_title": "Iran announces verified ceasefire talks",
-        "description": (
-            "Officials said the announcement followed two days of negotiations "
-            "and published a detailed timetable. https://example.test/noise"
-        ),
-        "reporting_origin": "reutersworld",
-    }
-
-
-def test_api_news_strips_wire_controls_and_bounds_strategy_text_description(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-    event = _strategy_event(
-        {
-            "id": "wire-controls-and-description",
-            "text": (
-                "Central bank approves policy\x00 today<br>"
-                "<p>Officials confirmed the decision &amp; published implementation details " + ("x" * 500) + "</p>"
-            ),
-            "source": "Reuters",
-            "engineType": "news",
-            "ts": now_ms,
-        }
-    )
-    assert event is not None
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(event,),
-                observed_at_ms=now_ms,
-            )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-        headers = {"Authorization": "Bearer secret"}
-        feed = client.get("/api/news/feed", headers=headers).json()["data"]
-        detail = client.get(
-            f"/api/news/stories/{feed['stories'][0]['story_id']}",
-            headers=headers,
-        ).json()["data"]
-
-    assert {
-        "title": detail["members"][0]["title"],
-        "description": detail["members"][0]["description"],
-        "description_length": len(detail["members"][0]["description"]),
-    } == {
-        "title": "Central bank approves policy today",
-        "description": ("Officials confirmed the decision & published implementation details " + ("x" * 332)),
-        "description_length": 400,
-    }
-
-
-def test_api_news_status_reports_item_push_without_secrets_or_story_state(tmp_path):
-    settings = make_settings(tmp_path)
-    settings.news.push = type(settings.news.push)(
-        enabled=True,
-        feishu_webhook_url=("https://open.feishu.cn/open-apis/bot/v2/hook/item-status-hook"),
-        feishu_signing_secret="must-not-leak",
-    )
-    app = create_app(settings=settings)
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms - 2_000)
-            repos.news.reconcile_item_push(
-                delivery_available=True,
-                now_ms=now_ms - 1_000,
-            )
-            outcome = repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="item-status",
-                        title="Bitcoin issuer announces a spot fund decision",
-                        description="The issuer published the decision.",
-                        published_at_ms=now_ms - 500,
-                        reporting_origin="issuer",
-                        provider_metadata={"score": 91},
-                    ),
-                    _opennews_event(
-                        provider_record_id="item-status-duplicate",
-                        title="Bitcoin issuer announces a spot fund decision",
-                        description="The issuer republished the decision.",
-                        published_at_ms=now_ms - 499,
-                        reporting_origin="issuer",
-                        provider_metadata={"score": 92},
-                    ),
-                ),
-                observed_at_ms=now_ms,
-            )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-            repos.news.update_opennews_live_status(
-                source_id=source.source_id,
-                connected=True,
-                now_ms=now_ms,
-                error_code=None,
-            )
-            repos.conn.execute(
-                """
-                UPDATE news_item_title_presentations
-                   SET state = 'resolved',
-                       display_title = original_title,
-                       outcome = 'fallback',
-                       policy_version = 'news_title_zh_v1',
-                       fallback_code = 'news_title_presentation_provider_unavailable',
-                       resolved_at_ms = %s,
-                       duration_ms = 0,
-                       updated_at_ms = %s
-                 WHERE state = 'pending'
-                """,
-                (now_ms, now_ms),
-            )
-            pending = repos.news.peek_item_push()
-            assert pending is not None
-            repos.news.fence_item_push(
-                item_id=str(pending["item_id"]),
-                attempted_at_ms=now_ms,
-            )
-            repos.news.terminalize_item_push(
-                item_id=str(pending["item_id"]),
-                error_code="news_item_push_feishu_failed",
-                now_ms=now_ms,
-            )
-
-        headers = {"Authorization": "Bearer secret"}
-        status_response = client.get("/api/news/status", headers=headers)
-        feed_response = client.get("/api/news/feed", headers=headers)
-
-    assert outcome["push_outbox_writes"] == 2
-    assert status_response.status_code == 200
-    push = status_response.json()["data"]["layers"]["push"]
-    assert push["status"] == "degraded"
-    assert push["requested"] is True
-    assert push["delivery_available"] is True
-    assert push["state_synchronized"] is True
-    assert push["pending_count"] == 0
-    assert push["sending_count"] == 0
-    assert push["terminal_count"] == 1
-    assert push["suppressed_count"] == 1
-    assert len(push["recent_suppressions"]) == 1
-    assert push["recent_suppressions"][0]["admission_reason"] == "exact_atom_suppressed"
-    assert push["delivery_24h"]["terminal"] == 1
-    assert push["reasons"] == ["news_item_push_recent_terminal"]
-    presentation = status_response.json()["data"]["title_presentation"]
-    assert presentation["resolution_24h"]["fallback"] == 1
-    rendered = json.dumps(status_response.json())
-    assert "must-not-leak" not in rendered
-    assert "item-status-hook" not in rendered
-    story = feed_response.json()["data"]["stories"][0]
-    assert "notification" not in story
-
-
-def test_api_news_feed_category_filter_is_server_authoritative(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="rates",
-                        title="Federal Reserve changes interest rate policy",
-                        description="Officials announced a new interest rate decision.",
-                        published_at_ms=now_ms - 30_000,
-                        reporting_origin="authority",
-                    ),
-                    _opennews_event(
-                        provider_record_id="earthquake",
-                        title="Major earthquake strikes coastal region",
-                        description="Emergency services reported widespread damage.",
-                        published_at_ms=now_ms - 20_000,
-                        reporting_origin="authority",
-                    ),
-                    _opennews_event(
-                        provider_record_id="ceasefire",
-                        title="Ceasefire talks begin between regional governments",
-                        description="Diplomats began formal negotiations.",
-                        published_at_ms=now_ms - 10_000,
-                        reporting_origin="standard",
-                    ),
-                ),
-                observed_at_ms=now_ms,
-            )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-
-        headers = {"Authorization": "Bearer secret"}
-        complete = client.get("/api/news/feed", headers=headers)
-        economic = client.get(
-            "/api/news/feed",
-            params={"category": "economic"},
-            headers=headers,
-        )
-        unsupported = client.get(
-            "/api/news/feed",
-            params={"view": "priority"},
-            headers=headers,
-        )
-
-    assert complete.status_code == 200
-    stories = complete.json()["data"]["stories"]
-    assert {story["category"] for story in stories} == {
-        "disaster",
-        "diplomatic",
-        "economic",
-    }
-    assert len(stories) == 3
-    assert economic.status_code == 200
-    assert [story["title"] for story in economic.json()["data"]["stories"]] == [
-        "Federal Reserve changes interest rate policy"
-    ]
-    assert unsupported.status_code == 400
-    assert unsupported.json() == {
-        "ok": False,
-        "error": "unsupported_query_param",
-        "field": "view",
-    }
-
-
-def test_news_feed_uses_exact_shared_title_without_changing_story_identity_or_search(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-    original_title = "Bitcoin issuer announces a spot fund decision"
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms - 1_000)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="shared-title-feed",
-                        title=original_title,
-                        description="The issuer published the decision.",
-                        published_at_ms=now_ms - 500,
-                        reporting_origin="issuer",
-                        provider_metadata={"score": 91},
-                    ),
-                ),
-                observed_at_ms=now_ms,
-            )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-
-        headers = {"Authorization": "Bearer secret"}
-        before = client.get("/api/news/feed", headers=headers)
-        before_story = before.json()["data"]["stories"][0]
-        story_id = before_story["story_id"]
-        assert before_story["title"] == original_title
-        assert before_story["original_title"] == original_title
-
-        with write_repositories() as repos, repos.transaction():
-            repos.conn.execute(
-                """
-                UPDATE news_item_title_presentations
-                   SET state = 'resolved',
-                       display_title = '比特币发行方宣布现货基金决定',
-                       outcome = 'translated', provider = 'deepl',
-                       policy_version = 'news_title_zh_v1',
-                       attempted_at_ms = %s, resolved_at_ms = %s,
-                       duration_ms = 100, updated_at_ms = %s
-                 WHERE original_title = %s AND state = 'pending'
-                """,
-                (now_ms + 1, now_ms + 101, now_ms + 101, original_title),
-            )
-
-        after = client.get(
-            "/api/news/feed",
-            headers={**headers, "If-None-Match": before.headers["etag"]},
-        )
-        after_story = after.json()["data"]["stories"][0]
-        unchanged = client.get(
-            "/api/news/feed",
-            headers={**headers, "If-None-Match": after.headers["etag"]},
-        )
-        detail = client.get(f"/api/news/stories/{story_id}", headers=headers).json()["data"]
-        english_search = client.get(
-            "/api/news/feed",
-            params={"q": "spot fund decision"},
-            headers=headers,
-        ).json()["data"]
-        chinese_search = client.get(
-            "/api/news/feed",
-            params={"q": "比特币发行方"},
-            headers=headers,
-        ).json()["data"]
-
-    assert after.status_code == 200
-    assert before.headers["etag"] != after.headers["etag"]
-    assert unchanged.status_code == 304
-    assert after_story["title"] == "比特币发行方宣布现货基金决定"
-    assert after_story["original_title"] == original_title
-    assert detail["title"] == "比特币发行方宣布现货基金决定"
-    assert detail["original_title"] == original_title
-    assert detail["members"][0]["title"] == "比特币发行方宣布现货基金决定"
-    assert detail["members"][0]["original_title"] == original_title
-    assert [story["story_id"] for story in english_search["stories"]] == [story_id]
-    assert chinese_search["stories"] == []
-
-
-def test_api_news_feed_priority_search_reporting_origin_and_cursor_filters_are_server_authoritative(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-    now_ms = int(time.time() * 1000)
-    source = opennews_source()
-
-    with TestClient(app) as client:
-        with write_repositories() as repos, repos.transaction():
-            repos.news.sync_sources((source,), now_ms=now_ms)
-            repos.news.record_opennews_events(
-                source=source,
-                events=(
-                    _opennews_event(
-                        provider_record_id="policy-primary",
-                        title="Bitcoin reserve policy approved by central bank",
-                        description="Market monitor officials released policy documents.",
-                        published_at_ms=now_ms - 40_000,
-                        reporting_origin="Reuters",
-                        provider_metadata={
-                            "score": 71,
-                            "source": "Wire Alpha",
-                            "coins": [{"symbol": "BTC", "market_type": "spot"}],
-                        },
-                    ),
-                    _opennews_event(
-                        provider_record_id="policy-corroboration",
-                        title="Bitcoin reserve policy approved by central bank",
-                        description="A unique corroboration marker from a second newsroom.",
-                        published_at_ms=now_ms - 30_000,
-                        reporting_origin="Bloomberg",
-                        provider_metadata={"score": 65, "source": "Wire Beta"},
-                    ),
-                    _opennews_event(
-                        provider_record_id="threshold",
-                        title="Regional power grid reports planned maintenance",
-                        description="Routine work will begin overnight.",
-                        published_at_ms=now_ms - 20_000,
-                        reporting_origin="Utility Times",
-                        provider_metadata={
-                            "score": 70,
-                            "source": "Boundary Desk",
-                            "coins": [{"symbol": "BOUNDARYCOIN", "market_type": "spot"}],
-                        },
-                    ),
-                    _opennews_event(
-                        provider_record_id="software",
-                        title="Software consortium releases open source database update",
-                        description="Market monitor teams published the release notes.",
-                        published_at_ms=now_ms - 10_000,
-                        reporting_origin="Bloomberg",
-                        provider_metadata={
-                            "score": 82,
-                            "source": "Provider Desk",
-                            "coins": [{"symbol": "ETH", "market_type": "spot"}],
-                        },
-                    ),
-                    _opennews_event(
-                        provider_record_id="unscored",
-                        title="Local library extends weekend opening hours",
-                        description="The updated public schedule starts next month.",
-                        published_at_ms=now_ms - 5_000,
-                        reporting_origin="Community News",
-                    ),
-                ),
-                observed_at_ms=now_ms,
-            )
-            _rebuild_news_projection(repos, now_ms=now_ms)
-            # Feed filters bind to the published Story membership closure. An
-            # acquisition expiry can precede the next atomic Story rebuild.
-            repos.conn.execute("UPDATE news_items SET active=false WHERE provider_record_id='software'")
-            # A repeated provider report may also update an Item origin before
-            # the minute-cadence Story writer republishes that closure.
-            repos.conn.execute("UPDATE news_items SET reporting_origin='reuters' WHERE provider_record_id='software'")
-
-        headers = {"Authorization": "Bearer secret"}
-        complete = client.get("/api/news/feed", headers=headers)
-        priority = client.get(
-            "/api/news/feed",
-            params={"provider_score_gt": 70, "sort": "latest"},
-            headers=headers,
-        )
-        by_title = client.get("/api/news/feed", params={"q": "BITCOIN RESERVE"}, headers=headers)
-        by_description = client.get(
-            "/api/news/feed",
-            params={"q": "corroboration marker"},
-            headers=headers,
-        )
-        by_reporting_origin = client.get("/api/news/feed", params={"q": "utility times"}, headers=headers)
-        by_provider_source = client.get("/api/news/feed", params={"q": "provider desk"}, headers=headers)
-        by_coin = client.get("/api/news/feed", params={"q": "boundarycoin"}, headers=headers)
-        exact_origin = client.get(
-            "/api/news/feed",
-            params={"reporting_origin": " BLOOMBERG ", "sort": "latest"},
-            headers=headers,
-        )
-        first_page = client.get(
-            "/api/news/feed",
-            params={
-                "provider_score_gt": 70,
-                "reporting_origin": "bloomberg",
-                "q": "market monitor",
-                "sort": "latest",
-                "limit": 1,
-            },
-            headers=headers,
-        )
-        cursor = first_page.json()["data"]["next_cursor"]
-        second_page = client.get(
-            "/api/news/feed",
-            params={
-                "provider_score_gt": 70,
-                "reporting_origin": "bloomberg",
-                "q": "market monitor",
-                "sort": "latest",
-                "limit": 1,
-                "cursor": cursor,
-            },
-            headers=headers,
-        )
-        mismatches = (
-            client.get(
-                "/api/news/feed",
-                params={
-                    "provider_score_gt": 69,
-                    "reporting_origin": "bloomberg",
-                    "q": "market monitor",
-                    "sort": "latest",
-                    "limit": 1,
-                    "cursor": cursor,
-                },
-                headers=headers,
-            ),
-            client.get(
-                "/api/news/feed",
-                params={
-                    "provider_score_gt": 70,
-                    "reporting_origin": "reuters",
-                    "q": "market monitor",
-                    "sort": "latest",
-                    "limit": 1,
-                    "cursor": cursor,
-                },
-                headers=headers,
-            ),
-            client.get(
-                "/api/news/feed",
-                params={
-                    "provider_score_gt": 70,
-                    "reporting_origin": "bloomberg",
-                    "q": "release notes",
-                    "sort": "latest",
-                    "limit": 1,
-                    "cursor": cursor,
-                },
-                headers=headers,
-            ),
-        )
-        with write_repositories() as repos, repos.transaction():
-            repos.conn.execute(
-                """
-                UPDATE news_items
-                   SET provider_metadata = jsonb_set(
-                         provider_metadata,
-                         '{score}',
-                         '69'::jsonb
-                       ),
-                       last_observed_at_ms = %s
-                 WHERE provider_record_id = 'software'
-                """,
-                (now_ms + 1,),
-            )
-            repos.conn.execute(
-                """
-                UPDATE news_items
-                   SET provider_metadata = jsonb_set(
-                         provider_metadata,
-                         '{score}',
-                         '83'::jsonb
-                       ),
-                       last_observed_at_ms = %s
-                 WHERE provider_record_id = 'threshold'
-                """,
-                (now_ms + 1,),
-            )
-        priority_after_score_update = client.get(
-            "/api/news/feed",
-            params={"provider_score_gt": 70, "sort": "latest"},
-            headers=headers,
-        )
-
-    assert complete.status_code == 200
-    complete_data = complete.json()["data"]
-    assert len(complete_data["stories"]) == 4
-    assert complete_data["filters"] == {
-        "category": None,
-        "level": None,
-        "source_id": None,
-        "reporting_origin": None,
-        "provider_score_gt": None,
+    assert feed.status_code == 200
+    feed_data = feed.json()["data"]
+    assert feed_data["filters"] == {
+        "family": None,
+        "admission": None,
+        "priority": None,
+        "decision": None,
+        "symbol": None,
         "q": None,
+        "sort": "latest",
+        "limit": 10,
     }
-    assert {facet["value"]: facet["count"] for facet in complete_data["facets"]["reporting_origins"]} == {
-        "bloomberg": 2,
-        "community news": 1,
-        "reuters": 1,
-        "utility times": 1,
-    }
-    assert complete_data["facets"]["page"]["reporting_origins_has_more"] is False
+    assert 0 < len(feed_data["events"]) <= 10
+    assert all(event["display_title"] for event in feed_data["events"])
+    assert {event["event_id"] for event in feed_data["events"]} <= set(event_ids)
+    if len(event_ids) > 10:
+        assert feed_data["next_cursor"]
+        with TestClient(app) as client:
+            page_two = client.get(
+                f"/api/news/feed?limit=10&cursor={feed_data['next_cursor']}", headers={"Authorization": "Bearer secret"}
+            )
+        assert page_two.status_code == 200
+        assert {e["event_id"] for e in page_two.json()["data"]["events"]}.isdisjoint(
+            {e["event_id"] for e in feed_data["events"]}
+        )
 
-    assert priority.status_code == 200
-    priority_data = priority.json()["data"]
-    assert priority_data["filters"]["provider_score_gt"] == 70
-    assert [story["provider_evidence"]["provider_metadata"]["score"] for story in priority_data["stories"]] == [
-        82,
-        71,
-    ]
-    assert all(story["provider_evidence"]["provider_metadata"]["score"] > 70 for story in priority_data["stories"])
-    assert {facet["value"] for facet in priority_data["facets"]["reporting_origins"]} == {
-        "bloomberg",
-        "reuters",
-    }
-    assert priority_after_score_update.status_code == 200
-    updated_priority = priority_after_score_update.json()["data"]
-    assert [story["provider_evidence"]["provider_metadata"]["score"] for story in updated_priority["stories"]] == [
-        83,
-        71,
-    ]
-    assert {facet["value"] for facet in updated_priority["facets"]["reporting_origins"]} == {
-        "bloomberg",
-        "reuters",
-        "utility times",
-    }
+    assert candidate_feed.status_code == 200
+    assert all(event["admission"] == "candidate" for event in candidate_feed.json()["data"]["events"])
 
-    expected_policy_title = "Bitcoin reserve policy approved by central bank"
-    assert [story["title"] for story in by_title.json()["data"]["stories"]] == [expected_policy_title]
-    assert [story["title"] for story in by_description.json()["data"]["stories"]] == [expected_policy_title]
-    assert [story["title"] for story in by_reporting_origin.json()["data"]["stories"]] == [
-        "Regional power grid reports planned maintenance"
-    ]
-    assert [story["title"] for story in by_provider_source.json()["data"]["stories"]] == [
-        "Software consortium releases open source database update"
-    ]
-    assert [story["title"] for story in by_coin.json()["data"]["stories"]] == [
-        "Regional power grid reports planned maintenance"
-    ]
+    assert detail.status_code == 200
+    detail_data = detail.json()["data"]
+    assert detail_data["event"]["event_id"] == event_ids[0]
+    assert detail_data["members"] and detail_data["verdicts"] == [] and detail_data["deliveries"] == []
+    assert missing.status_code == 404
+    assert missing.json() == {"ok": False, "error": "news_event_not_found"}
+    assert bad_admission.status_code == 400
+    assert bad_admission.json() == {"ok": False, "error": "news_feed_admission_invalid", "field": "admission"}
+    assert bad_param.status_code == 400
+    assert bad_param.json()["error"] == "unsupported_query_param"
 
-    assert exact_origin.status_code == 200
-    assert exact_origin.json()["data"]["filters"]["reporting_origin"] == "bloomberg"
-    assert [story["title"] for story in exact_origin.json()["data"]["stories"]] == [
-        "Software consortium releases open source database update",
-        expected_policy_title,
-    ]
-    assert exact_origin.json()["data"]["facets"]["reporting_origins"] == [
-        {"value": "bloomberg", "label": "bloomberg", "count": 2},
-        {"value": "reuters", "label": "reuters", "count": 1},
-    ]
-    assert first_page.status_code == 200
-    assert cursor
-    assert second_page.status_code == 200
-    first_story_id = first_page.json()["data"]["stories"][0]["story_id"]
-    second_story_id = second_page.json()["data"]["stories"][0]["story_id"]
-    assert first_story_id != second_story_id
-    assert second_page.json()["data"]["next_cursor"] is None
-    assert second_page.json()["data"]["has_more"] is False
-    assert [response.status_code for response in mismatches] == [400, 400, 400]
-    assert [response.json() for response in mismatches] == [
-        {"ok": False, "error": "news_feed_cursor_filter_mismatch", "field": "cursor"},
-        {"ok": False, "error": "news_feed_cursor_filter_mismatch", "field": "cursor"},
-        {"ok": False, "error": "news_feed_cursor_filter_mismatch", "field": "cursor"},
-    ]
+    assert status.status_code == 200
+    status_data = status.json()["data"]
+    assert status_data["state"] == "unavailable"
+    assert status_data["ingest"]["token_configured"] is False
+    assert status_data["broker"]["configured"] is False
+    assert status_data["pipeline"]["events_24h"] >= 1
+    assert status_data["delivery"]["delivery_available"] is False
+    assert status_data["control"] == {"paused": False, "mutes": []}
+    assert "amqp" not in json.dumps(status_data)
+    assert [response.status_code for response in retired] == [404, 404, 404, 404]
 
 
 def test_api_exposes_recent_search_and_token_read_models(tmp_path):
@@ -1741,7 +622,6 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
 
     with TestClient(app) as client:
         now_ms = int(time.time() * 1000)
-        rebuild_now_ms = now_ms + TOKEN_RADAR_TEST_REBUILD_OFFSET_MS
         event = make_token_event(
             "event-1",
             symbol="PEPE",
@@ -1750,7 +630,6 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
             received_at_ms=now_ms - 1_000,
         )
         ingest_event(event)
-        rebuild_token_radar(client, now_ms=rebuild_now_ms)
 
         headers = {"Authorization": "Bearer secret"}
         recent = client.get("/api/recent?limit=5", headers=headers)
@@ -1761,6 +640,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
             headers=headers,
         )
         radar = client.get("/api/token-radar", headers=headers)
+        stocks_radar = client.get("/api/stocks-radar", headers=headers)
         account_alerts = client.get("/api/account-alerts?window=24h&limit=5", headers=headers)
 
     assert recent.status_code == 200
@@ -1799,54 +679,9 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
     assert "discussion_digest" not in inspect_data["token_result"]
     assert "narrative_admission" not in inspect_data["token_result"]
 
-    assert radar.status_code == 200
-    assert radar.json()["data"] == {
-        "schema_version": "token_radar_snapshot_v5",
-        "social_evidence_as_of_ms": 0,
-        "eligible_total": 0,
-        "items": [],
-    }
-
+    assert radar.status_code == 404
+    assert stocks_radar.status_code == 404
     assert account_alerts.status_code == 404
-
-
-def test_token_radar_public_payload_excludes_unresolved_rows(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-
-    with TestClient(app) as client:
-        now_ms = int(time.time() * 1000)
-        rebuild_now_ms = now_ms + TOKEN_RADAR_TEST_REBUILD_OFFSET_MS
-        ingest_event(
-            make_token_event(
-                "event-pepe-diagnostics",
-                symbol="PEPE",
-                address=PEPE,
-                text=f"$PEPE {PEPE}",
-                received_at_ms=now_ms - 1_000,
-            ),
-        )
-        ingest_event(
-            make_event(
-                "event-unknown-diagnostics",
-                text="$NEWTOKEN soon",
-                received_at_ms=now_ms - 500,
-            ),
-        )
-        rebuild_token_radar(client, now_ms=rebuild_now_ms)
-
-        response = client.get(
-            "/api/token-radar",
-            headers={"Authorization": "Bearer secret"},
-        )
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data == {
-        "schema_version": "token_radar_snapshot_v5",
-        "social_evidence_as_of_ms": 0,
-        "eligible_total": 0,
-        "items": [],
-    }
 
 
 def test_live_market_reads_durable_current_without_gateway(tmp_path):
@@ -1925,18 +760,6 @@ def test_api_notification_routes_are_not_registered(tmp_path):
     assert [response.status_code for response in responses] == [404, 404, 404, 404]
 
 
-def test_api_stocks_radar_is_not_registered(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-
-    with TestClient(app) as client:
-        response = client.get(
-            "/api/stocks-radar",
-            headers={"Authorization": "Bearer secret"},
-        )
-
-    assert response.status_code == 404
-
-
 def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
 
@@ -1953,99 +776,6 @@ def test_api_deletes_social_enrichment_and_harness_routes(tmp_path):
         ]
 
     assert [response.status_code for response in deleted] == [404, 404, 404, 404, 404, 404, 404]
-
-
-def test_api_token_radar_rejects_all_product_queries_but_keeps_auth_token(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-
-    with TestClient(app) as client:
-        headers = {"Authorization": "Bearer secret"}
-        names = ("window", "venue", "limit", "scope", "arbitrary")
-        responses = [client.get("/api/token-radar", params={name: "value"}, headers=headers) for name in names]
-        auth_query = client.get("/api/token-radar", params={"token": "secret"})
-
-    assert [response.status_code for response in responses] == [400] * len(names)
-    assert [response.json() for response in responses] == [
-        {"ok": False, "error": "unsupported_query_param", "field": name} for name in names
-    ]
-    assert auth_query.status_code == 200
-    assert auth_query.json()["data"] == {
-        "schema_version": "token_radar_snapshot_v5",
-        "social_evidence_as_of_ms": 0,
-        "eligible_total": 0,
-        "items": [],
-    }
-
-
-def test_api_token_radar_serves_exact_packet_with_stable_etag(tmp_path):
-    now_ms = int(time.time() * 1_000)
-    settings = make_settings(tmp_path)
-    reduced = enrich_token_radar(
-        reduce_token_radar(
-            [
-                token_radar_revision(
-                    target_id="asset:test",
-                    event_index=index,
-                    now_ms=now_ms,
-                )
-                for index in range(3)
-            ],
-            now_ms=now_ms,
-        ),
-        [
-            {
-                "target_type": "Asset",
-                "target_id": "asset:test",
-                "symbol": "TEST",
-                "name": "Test Token",
-                "logo_url": None,
-                "chain": "eip155:1",
-                "exchange": None,
-                "address": "0xtest",
-                "signal_price_usd": "1",
-                "price_usd": "1.25",
-                "price_observed_at_ms": now_ms - 30_000,
-                "market_cap_usd": "1000000",
-                "market_cap_observed_at_ms": now_ms - 45_000,
-            }
-        ],
-        now_ms=now_ms,
-    )
-    with write_repositories() as repos, repos.transaction():
-        result = TokenRadarCurrentRepository(repos.conn).publish(
-            reduced,
-            updated_at_ms=now_ms,
-        )
-    assert result["status"] == "published"
-    app = create_app(settings=settings)
-
-    with TestClient(app) as client:
-        current = client.get(
-            "/api/token-radar",
-            headers={"Authorization": "Bearer secret"},
-        )
-        current_not_modified = client.get(
-            "/api/token-radar",
-            headers={
-                "Authorization": "Bearer secret",
-                "If-None-Match": current.headers["etag"],
-            },
-        )
-    assert current.status_code == 200
-    assert current.json() == {
-        "ok": True,
-        "data": {
-            "schema_version": "token_radar_snapshot_v5",
-            "social_evidence_as_of_ms": reduced.snapshot["social_evidence_as_of_ms"],
-            "eligible_total": 1,
-            "items": reduced.snapshot["items"],
-        },
-    }
-    assert current.headers["cache-control"] == "private, no-cache"
-    assert current.headers["etag"].startswith('"')
-    assert current_not_modified.status_code == 304
-    assert not current_not_modified.content
-    assert current_not_modified.headers["etag"] == current.headers["etag"]
 
 
 def test_api_live_market_returns_missing_without_durable_current_row(tmp_path):
@@ -2362,24 +1092,6 @@ def test_api_target_social_timeline_rejects_manual_bucket_param(tmp_path):
 
     assert response.status_code == 400
     assert response.json() == {"ok": False, "error": "unsupported_query_param", "field": "bucket"}
-
-
-def test_api_rejects_removed_1m_window(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-
-    with TestClient(app) as client:
-        response = client.get(
-            "/api/token-radar",
-            params={"window": "1m", "limit": 5},
-            headers={"Authorization": "Bearer secret"},
-        )
-
-    assert response.status_code == 400
-    assert response.json() == {
-        "ok": False,
-        "error": "unsupported_query_param",
-        "field": "window",
-    }
 
 
 def test_api_target_posts_requires_target_identity(tmp_path):

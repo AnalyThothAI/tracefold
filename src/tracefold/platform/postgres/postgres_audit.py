@@ -58,28 +58,24 @@ CORE_TABLES = (
     "token_intents",
     "token_intent_evidence",
     "token_intent_resolutions",
-    "token_radar_current",
 )
 
-PROJECTION_TABLES = (
-    "token_radar_current",
-    "news_projection_summary",
-    "news_brief_selection_current",
-    "news_brief_current",
-)
+PROJECTION_TABLES = ()
 
 NEWS_TABLES = (
-    "news_sources",
-    "news_items",
-    "news_stories",
-    "news_story_members",
-    "news_projection_summary",
-    "news_brief_selection_current",
-    "news_brief_current",
-    "news_push_state",
-    "news_push_deliveries",
-    "news_item_title_presentations",
+    "news_ingest_state",
     "news_opennews_incidents",
+    "news_items",
+    "news_events",
+    "news_event_members",
+    "news_event_bands",
+    "news_event_assets",
+    "news_verdicts",
+    "news_title_presentations",
+    "news_deliveries",
+    "news_control_state",
+    "news_event_market_marks",
+    "news_event_labels",
 )
 
 FOREIGN_KEY_CONSTRAINTS = {
@@ -167,15 +163,6 @@ _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
             "substring_pattern": "%pepe%",
             "search_cutoff_at_ms": None,
         },
-    },
-    {
-        "name": "token_radar_latest",
-        "sql": """
-            SELECT snapshot_fingerprint, served_payload, updated_at_ms
-            FROM token_radar_current
-            WHERE singleton_key = true
-        """,
-        "params": (),
     },
     {
         "name": "token_profile_target",
@@ -524,129 +511,56 @@ class ProjectionValidationAudit:
             sample,
             error_code="projection_validation_sample_required",
         )
-        row = self.conn.execute(
-            """
-            WITH sampled_radar_rows AS (
-              SELECT item
-              FROM token_radar_current current
-              CROSS JOIN LATERAL jsonb_array_elements(current.served_payload -> 'items') item
-              WHERE current.singleton_key = true
-              LIMIT %s
-            ),
-            reference_counts AS (
-              SELECT
-                COUNT(*) AS checked_count,
-                COUNT(*) FILTER (
-                  WHERE NULLIF(item ->> 'trigger_event_id', '') IS NULL
-                     OR NULLIF(item #>> '{target,target_id}', '') IS NULL
-                     OR item #>> '{target,target_type}' NOT IN ('Asset', 'CexToken')
-                     OR event.event_id IS NULL
-                     OR (
-                       item #>> '{target,target_type}' = 'Asset'
-                       AND asset.asset_id IS NULL
-                     )
-                     OR (
-                       item #>> '{target,target_type}' = 'CexToken'
-                       AND cex.cex_token_id IS NULL
-                     )
-                ) AS mismatch_count
-              FROM sampled_radar_rows
-              LEFT JOIN events event
-                ON event.event_id = sampled_radar_rows.item ->> 'trigger_event_id'
-              LEFT JOIN registry_assets asset
-                ON sampled_radar_rows.item #>> '{target,target_type}' = 'Asset'
-               AND asset.asset_id = sampled_radar_rows.item #>> '{target,target_id}'
-              LEFT JOIN cex_tokens cex
-                ON sampled_radar_rows.item #>> '{target,target_type}' = 'CexToken'
-               AND cex.cex_token_id = sampled_radar_rows.item #>> '{target,target_id}'
-            ),
-            latest_radar AS (
-              SELECT updated_at_ms AS computed_at_ms
-              FROM token_radar_current
-              WHERE singleton_key = true
-            )
-            SELECT
-              latest_radar.computed_at_ms,
-              COALESCE(reference_counts.checked_count, 0) AS checked_count,
-              COALESCE(reference_counts.mismatch_count, 0) AS mismatch_count
-            FROM reference_counts
-            CROSS JOIN latest_radar
-            """,
-            (sample_size,),
-        ).fetchone()
-        checked_count = int(row["checked_count"] if row else 0)
-        missing_refs = int(row["mismatch_count"] if row else 0)
-        latest_computed_at_ms = row["computed_at_ms"] if row else None
         bounded_models = self.conn.execute(
             """
-            WITH radar_mismatch AS (
+            WITH ingest_mismatch AS (
               SELECT CASE
                        WHEN count(*) <> 1 THEN 1
                        ELSE count(*) FILTER (
-                         WHERE NOT singleton_key
-                            OR snapshot_fingerprint !~ '^sha256:[0-9a-f]{64}$'
-                            OR served_payload ->> 'schema_version'
-                                 <> 'token_radar_snapshot_v5'
-                            OR COALESCE((served_payload ->> 'social_evidence_as_of_ms')::bigint, -1) < 0
-                            OR jsonb_typeof(served_payload -> 'items') <> 'array'
-                            OR jsonb_array_length(served_payload -> 'items') > 50
-                            OR COALESCE((served_payload ->> 'eligible_total')::bigint, -1)
-                                 < jsonb_array_length(served_payload -> 'items')
-                            OR octet_length(served_payload::text) > 98304
-                            OR updated_at_ms < 0
+                         WHERE singleton_key <> 'opennews'
+                            OR jsonb_typeof(configured_strategy_ids) <> 'array'
+                            OR jsonb_typeof(strategy_warnings) <> 'array'
+                            OR (
+                              provider_enabled_strategy_ids IS NOT NULL
+                              AND jsonb_typeof(provider_enabled_strategy_ids) <> 'array'
+                            )
                        )::integer
                      END AS count
-              FROM token_radar_current
+                FROM news_ingest_state
             ),
-            brief_mismatch AS (
+            control_mismatch AS (
+              SELECT CASE
+                       WHEN count(*) <> 1 THEN 1
+                       ELSE count(*) FILTER (
+                         WHERE singleton_key <> 'current'
+                            OR jsonb_typeof(mutes) <> 'array'
+                       )::integer
+                     END AS count
+                FROM news_control_state
+            ),
+            delivery_mismatch AS (
               SELECT count(*)::integer AS count
-              FROM news_brief_selection_current current
-              WHERE NOT current.singleton_key
-                 OR current.selection_fingerprint !~ '^[0-9a-f]{64}$'
-                 OR jsonb_typeof(current.top_stories) <> 'array'
-                 OR jsonb_array_length(current.top_stories) > 8
-                 OR jsonb_typeof(current.selection_stats) <> 'object'
-            ),
-            brief_current_mismatch AS (
-              SELECT CASE
-                       WHEN count(*) <> 1 THEN 1
-                       ELSE count(*) FILTER (
-                         WHERE NOT singleton_key
-                            OR slot_status NOT IN ('due', 'running', 'completed')
-                            OR (
-                              active_selection IS NOT NULL
-                              AND jsonb_typeof(active_selection) <> 'object'
-                            )
-                            OR (
-                              served_payload IS NOT NULL
-                              AND jsonb_typeof(served_payload) <> 'object'
-                            )
-                       )::integer
-                     END AS count
-                FROM news_brief_current
+              FROM news_deliveries
+              WHERE (state = 'sending' AND settled_at_ms IS NOT NULL)
+                 OR (state IN ('sent', 'terminal') AND settled_at_ms IS NULL)
+                 OR (state = 'sent' AND error_code IS NOT NULL)
+                 OR jsonb_typeof(card) <> 'object'
             )
             SELECT
-              (SELECT count FROM radar_mismatch)
-                AS token_radar_current_mismatch,
-              (SELECT count FROM brief_mismatch)
-                AS news_brief_selection_snapshot_mismatch,
-              (SELECT count FROM brief_current_mismatch)
-                AS news_brief_current_mismatch
+              (SELECT count FROM ingest_mismatch) AS news_ingest_state_mismatch,
+              (SELECT count FROM control_mismatch) AS news_control_state_mismatch,
+              (SELECT count FROM delivery_mismatch) AS news_delivery_state_mismatch
             """
         ).fetchone()
         bounded_checks = {str(name): int(value or 0) for name, value in dict(bounded_models or {}).items()}
-        mismatch_count = missing_refs + sum(bounded_checks.values())
-        status = "ready" if latest_computed_at_ms is not None else "projection_missing"
+        mismatch_count = sum(bounded_checks.values())
         return {
             "ok": mismatch_count == 0,
-            "status": status,
+            "status": "ready",
             "sample": sample_size,
-            "checked_count": checked_count,
+            "checked_count": len(bounded_checks),
             "mismatch_count": mismatch_count,
-            "checks": {
-                "token_radar_current_missing_refs": missing_refs,
-                **bounded_checks,
-            },
+            "checks": bounded_checks,
         }
 
 

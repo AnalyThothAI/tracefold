@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import { macroModuleFixture, macroOverviewFixture } from "@tests/fixtures/macroFixture";
 import { ok } from "@tests/msw/fixtures";
-import { mockLiveRadarRoute } from "@tests/msw/scenarios";
+import { mockAppRoutes } from "@tests/msw/scenarios";
 import { renderAppRoute } from "@tests/render/renderRoute";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -10,7 +10,7 @@ import { apiMock, setupAppRouteTest } from "./routeTestSetup";
 describe("Macro current-fact routes", () => {
   beforeEach(() => {
     setupAppRouteTest((mock) => {
-      mockLiveRadarRoute(mock);
+      mockAppRoutes(mock);
       const baseGetApi = mock.getApiImpl;
       mock.getApiImpl = async (path, options) => {
         if (path === "/api/macro/overview") return ok(macroOverviewFixture());

@@ -18,6 +18,8 @@ from .identity import (
 )
 from .models import NewsFeedEntry
 
+OPENNEWS_SOURCE_ID = "news-opennews"
+
 _TRACKING_PARAMS = frozenset(
     {
         "fbclid",
@@ -75,6 +77,7 @@ class OpenNewsEvent:
     observation_kind: Literal["report"]
     provider_metadata: dict[str, Any]
     entry: NewsFeedEntry
+    raw_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,7 +181,8 @@ def parse_opennews_message(
     if not provider_record_id:
         return None
     canonical_url = _article_url(_text(params.get("link")))
-    blocks = _logical_blocks(_content_text(params.get("text")))
+    raw_text = _content_text(params.get("text"))
+    blocks = _logical_blocks(raw_text)
     title = javascript_trim(web_usv_string(utf16_slice(blocks[0], _MAX_HEADLINE_LEN))) if blocks else ""
     entry = NewsFeedEntry(
         guid=provider_record_id,
@@ -201,6 +205,7 @@ def parse_opennews_message(
             strategy_id=strategy_id,
         ),
         entry=entry,
+        raw_text=raw_text[:20_000],
     )
 
 
@@ -402,6 +407,7 @@ def _content_text(value: object) -> str:
 
 
 __all__ = [
+    "OPENNEWS_SOURCE_ID",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
