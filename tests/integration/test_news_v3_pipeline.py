@@ -130,7 +130,7 @@ def test_storyline_status_and_verdict_idempotency(conn) -> None:
         confidence=0.7,
         decision="push",
         headline_zh="测试",
-        rationale="",
+        why_zh="",
     )
     facts = GateFacts(
         grounded_assets=tuple(row["grounded_assets"] or []),
@@ -298,7 +298,7 @@ def test_analyst_evidence_bundle_reads_macro_module_current_from_real_schema(con
                     confidence=0.8,
                     decision="escalate",
                     headline_zh="测试",
-                    rationale="",
+                    why_zh="",
                 ).model_dump(),
                 model="test",
                 prompt_version="p",

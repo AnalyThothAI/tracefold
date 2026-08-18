@@ -66,7 +66,7 @@ def explain_event(repos: Any, event_id: str) -> dict[str, Any] | None:
                 "actionable": verdict.get("actionable"),
                 "headline_zh": verdict.get("headline_zh"),
                 "title_zh": verdict.get("title_zh"),
-                "rationale": verdict.get("rationale"),
+                "why_zh": verdict.get("why_zh"),
             }
         )
         chain.append(

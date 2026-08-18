@@ -102,8 +102,20 @@ def final_storyline_key(
     macro scope always falls back to a theme."""
 
     grounded = {a.upper().replace("XYZ-", "") for a in grounded_assets}
-    primaries = [a for a in verdict_primaries if a.upper().replace("XYZ-", "") in grounded] or list(grounded_assets)
-    return storyline_key(title=title, headline_zh=headline_zh, scope=scope, primary_assets=primaries, family=family)
+    primaries = [a for a in verdict_primaries if a.upper().replace("XYZ-", "") in grounded]
+    if primaries and scope != "macro":
+        return storyline_key(title=title, headline_zh=headline_zh, scope=scope, primary_assets=primaries, family=family)
+    themed = storyline_key(title=title, headline_zh=headline_zh, scope="macro", primary_assets=(), family=family)
+    if themed.startswith("theme:"):
+        return themed
+    # No theme matched: a grounded asset is a better storyline than the `macro:<family>` catch-all, even when the
+    # model called the scope macro (a stock falling on a trial is still that stock's storyline).
+    fallback = sorted(a for a in grounded_assets if a.upper() not in _CL_SYMBOLS)
+    if fallback:
+        return storyline_key(
+            title=title, headline_zh=headline_zh, scope="single_name", primary_assets=fallback, family=family
+        )
+    return themed
 
 
 __all__ = [

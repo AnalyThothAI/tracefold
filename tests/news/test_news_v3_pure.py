@@ -10,7 +10,7 @@ import pytest
 from tracefold.news import bus
 from tracefold.news.analyst_rules import verify_verdict
 from tracefold.news.control import apply_control, is_muted, parse_control
-from tracefold.news.delivery import render_first_card, sanitize_ai_text
+from tracefold.news.delivery import card_assets, render_first_card, render_followup_card, sanitize_ai_text
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
@@ -308,7 +308,7 @@ def _verdict(**kw) -> TriageVerdict:
         confidence=0.8,
         decision="push",
         headline_zh="英伟达投资",
-        rationale="",
+        why_zh="",
     )
     base.update(kw)
     return TriageVerdict(**base)
@@ -451,7 +451,6 @@ def test_verify_verdict_rejects_fabricated_evidence() -> None:
         novelty_assessment="new",
         context_evidence=["history:abc"],
         thesis_zh="ok",
-        risks_zh="",
         follow_up_needed=True,
         confidence=0.7,
     )
@@ -492,17 +491,36 @@ def test_card_uses_code_facts_and_sanitizes_ai_text() -> None:
             "magnitude": 2,
             "headline_zh": "英伟达投资 https://x.y",
             "title_zh": "英伟达将投资 1000 亿美元",
-            "rationale": "利好",
+            "why_zh": "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
             "event_type": "partnership",
             "scope": "single_name",
+            "assets": [{"symbol": "NVDA", "role": "primary"}, {"symbol": "OPENAI", "role": "mentioned"}],
         },
         decision="push",
-        grounded_assets=["NVDA"],
+        grounded_assets=["NVDA", "XYZ-NVDA"],
     )
-    # URL in the AI headline -> fallback to the Triage title_zh, then to the original title.
+    # The header is the faithful Chinese title; the body is: original line, one plain sentence, facts in words.
     assert card["header"]["title"]["content"] == "英伟达将投资 1000 亿美元"
-    body = json.dumps(card, ensure_ascii=False)
-    assert "原标题" in body and "NVDA" in body and "打开来源" in body and "**标题**：英伟达将投资 1000 亿美元" in body
+    body = card["elements"][0]["content"]
+    assert body.splitlines() == [
+        "Nvidia to invest $100bn",
+        "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
+        "利多 · 影响明显 · 个别标的 · `NVDA` · ft（3 条报道）",
+    ]
+    text = json.dumps(card, ensure_ascii=False)
+    for machine_word in (
+        "AI 初判",
+        "类型：",
+        "范围：",
+        "成员：",
+        "Provider",
+        "partnership",
+        "single_name",
+        "原标题",
+        "标的：",
+    ):
+        assert machine_word not in text
+    assert "打开来源" in text and "news_delivery_card" not in text
     bare = render_first_card(
         event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
         verdict={"direction": "bullish", "magnitude": 2, "headline_zh": "x https://x.y"},
@@ -510,6 +528,35 @@ def test_card_uses_code_facts_and_sanitizes_ai_text() -> None:
         grounded_assets=[],
     )
     assert bare["header"]["title"]["content"] == "Nvidia to invest $100bn"
+    assert bare["elements"][0]["content"] == "利多 · 影响明显 · -"
+    # Card assets are the verdict primaries the Gate grounded; provider-only tags never show alone when noisy.
+    assert card_assets({"assets": [{"symbol": "CC", "role": "primary"}]}, ["CC"]) == ["CC"]
+    assert card_assets({"assets": []}, ["A", "B", "C", "D", "E"]) == []
+    assert card_assets({"assets": [{"symbol": "BTC", "role": "primary"}]}, ["BTC", "CL", "XYZ-CL"]) == ["BTC"]
+
+
+def test_followup_card_renders_only_the_delta_and_no_risk_boilerplate() -> None:
+    card = render_followup_card(
+        event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn"},
+        triage_verdict={"direction": "bullish", "magnitude": 2, "title_zh": "英伟达将投资 1000 亿美元"},
+        analyst_verdict={
+            "agrees_with_triage": True,
+            "revised_direction": "bullish",
+            "revised_magnitude": 3,
+            "novelty_assessment": "followup",
+            "thesis_zh": "这是 48 小时内英伟达第三次加码数据中心投资，规模是前两次之和",
+            "follow_up_needed": True,
+        },
+    )
+    assert card["header"]["title"]["content"] == "补充：英伟达将投资 1000 亿美元"
+    body = card["elements"][0]["content"]
+    assert body.splitlines() == [
+        "强度修正：影响明显 → 影响重大",
+        "这是 48 小时内英伟达第三次加码数据中心投资，规模是前两次之和",
+    ]
+    text = json.dumps(card, ensure_ascii=False)
+    for machine_word in ("风险", "新颖性", "followup", "原标题", "深度补充"):
+        assert machine_word not in text
 
 
 def test_control_commands() -> None:

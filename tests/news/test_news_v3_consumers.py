@@ -371,7 +371,10 @@ def _bundle(status_row: dict[str, Any] | None = None) -> EvidenceBundle:
     return EvidenceBundle(
         event_id="ev-strong",
         storyline_key="asset:NVDA",
-        payload={"event": {"event_id": "ev-strong", "triage": {"direction": "bullish"}}, "event_status": {}},
+        payload={
+            "event": {"event_id": "ev-strong", "triage": {"direction": "bullish", "magnitude": 2}},
+            "event_status": {},
+        },
         evidence={"history:abc": {"event_id": "ev-old"}},
         status_row=dict(status_row or {}),
     )
@@ -398,7 +401,6 @@ def _analyst_verdict(**overrides: Any) -> AnalystVerdict:
         "novelty_assessment": "new",
         "context_evidence": ["history:abc"],
         "thesis_zh": "英伟达投资 OpenAI 数据中心，利多算力链。",
-        "risks_zh": "",
         "follow_up_needed": True,
         "confidence": 0.7,
     }
@@ -411,7 +413,10 @@ def test_analyst_uses_one_prefetched_bundle_and_publishes_followup_after_first_c
 ) -> None:
     bundle = _bundle({"pushed_2h": 1, "last_push_ago_ms": 600_000})
     monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: bundle)
-    result = AnalystRunResult(_analyst_verdict(), VerifyResult(True), 1200, 1, None, 1, 900, 200, 500)
+    # the Analyst adds something: it revises the magnitude the first card carried
+    result = AnalystRunResult(
+        _analyst_verdict(revised_magnitude=3), VerifyResult(True), 1200, 1, None, 1, 900, 200, 500
+    )
     analyst = ScriptedAnalyst(result)
     news = RecordingNews(
         get_verdict=None,
@@ -438,9 +443,30 @@ def test_analyst_uses_one_prefetched_bundle_and_publishes_followup_after_first_c
     assert news.names()[-1] == "mark_verdict_published"
 
 
-def test_analyst_followup_is_superseded_by_a_newer_push_in_the_same_storyline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_analyst_followup_without_new_information_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Agreeing with Triage, same direction and magnitude, novelty 'new': nothing to add -> no second card."""
+
     monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: _bundle())
     analyst = ScriptedAnalyst(AnalystRunResult(_analyst_verdict(), VerifyResult(True), 900, 1, None, 1))
+    news = RecordingNews(get_verdict=None, event_status={"last_push_ago_ms": 600_000}, insert_verdict=True)
+    bus = FakeBus()
+
+    asyncio.run(
+        AnalystConsumer(bus=bus, db=FakeWorkerDatabase(news), analyst=analyst, concurrency=2).handle(
+            _message("verdict", {"event_id": "ev-strong"})
+        )
+    )
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "drop" and inserted["degraded"] is False
+    assert bus.published == []
+
+
+def test_analyst_followup_is_superseded_by_a_newer_push_in_the_same_storyline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: _bundle())
+    analyst = ScriptedAnalyst(
+        AnalystRunResult(_analyst_verdict(revised_magnitude=3), VerifyResult(True), 900, 1, None, 1)
+    )
     news = RecordingNews(get_verdict=None, event_status={"last_push_ago_ms": 0}, insert_verdict=True)
     bus = FakeBus()
 

@@ -22,6 +22,7 @@ from .agents.analyst import Analyst
 from .agents.prompts import TRIAGE_PROMPT_SHA256
 from .agents.triage_model import TriageModel, TriageModelError, build_triage_input
 from .analyst_evidence import build_evidence_bundle
+from .analyst_rules import follow_up_adds_information
 from .bus import (
     Q_DEEP,
     Q_DELIVER,
@@ -68,6 +69,7 @@ _WS_RECONNECT_SECONDS = 3.0
 _OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
 _RETENTION_MS = 30 * 24 * 3600_000
+_FOLLOWUP_MAX_AGE_MS = 2 * 3600_000
 
 _WS_CAUSE = {
     "opennews_network_connect": "network_connect",
@@ -797,10 +799,18 @@ class AnalystConsumer:
         )
         if bundle is None:
             raise PermanentError("news_event_or_triage_missing")
-        triage_direction = str((bundle.payload["event"].get("triage") or {}).get("direction") or "unclear")
+        triage_fields = dict(bundle.payload["event"].get("triage") or {})
+        triage_direction = str(triage_fields.get("direction") or "unclear")
+        triage_magnitude = int(triage_fields.get("magnitude") or 0)
         result = await analyst.analyze(bundle=bundle, triage_direction=triage_direction)
         verdict_payload = json_ready(result.verdict) if result.verdict is not None else {}
-        wants_push = bool(result.verdict is not None and result.verify.ok and result.verdict.follow_up_needed)
+        wants_push = bool(
+            result.verdict is not None
+            and result.verify.ok
+            and follow_up_adds_information(
+                result.verdict, triage_direction=triage_direction, triage_magnitude=triage_magnitude
+            )
+        )
         final = "push" if wants_push else ("degraded" if not result.verify.ok else "drop")
         throttled_by: str | None = None
         if wants_push:
@@ -856,6 +866,9 @@ class AnalystConsumer:
         )
         if first is None or first.get("state") != "sent":
             return  # follow-up only after the first card was actually sent
+        sent_at = first.get("settled_at_ms") or first.get("attempted_at_ms")
+        if sent_at is not None and stamp - int(sent_at) > _FOLLOWUP_MAX_AGE_MS:
+            return  # a replayed or very late analysis must not resurface an old story as a fresh card
         await self.bus.publish(
             BusMessage(
                 kind="verdict",
