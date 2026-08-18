@@ -19,7 +19,7 @@ import {
 import type { NewsDeliverySummary, NewsFeedEvent, NewsTriageSummary } from "./useNewsPage";
 
 export function NewsEventRow({ event }: { event: NewsFeedEvent }) {
-  const title = event.display_title.trim() || event.leader_title;
+  const title = event.title_zh?.trim() || event.leader_title;
   const showLeaderTitle = event.leader_title.trim() !== title.trim();
   const originalUrl = validExternalUrl(event.leader_url);
   const contextLine = validContextLine(event.context_line, title);

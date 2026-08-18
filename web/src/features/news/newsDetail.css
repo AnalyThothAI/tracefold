@@ -80,7 +80,6 @@
   }
 
   .news-event-facts,
-  .news-presentation-grid,
   .news-delivery-row dl {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -89,7 +88,6 @@
   }
 
   .news-event-facts div,
-  .news-presentation-grid div,
   .news-delivery-row dl div {
     display: grid;
     gap: 0.15rem;
@@ -100,19 +98,47 @@
   }
 
   .news-event-facts dt,
-  .news-presentation-grid dt,
   .news-delivery-row dt {
     color: var(--muted-foreground);
     font-size: 0.65rem;
   }
 
   .news-event-facts dd,
-  .news-presentation-grid dd,
   .news-delivery-row dd {
     margin: 0;
     color: var(--foreground);
     font: 600 0.74rem/1.4 var(--font-mono);
     overflow-wrap: anywhere;
+  }
+
+  .news-label-list {
+    display: grid;
+    gap: 0.4rem;
+    margin: 0.85rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-label-list li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: baseline;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font: 600 0.74rem/1.4 var(--font-mono);
+  }
+
+  .news-label-source {
+    color: var(--muted-foreground);
+    font-size: 0.65rem;
+  }
+
+  .news-label-time {
+    margin-left: auto;
+    color: var(--muted-foreground);
+    font-size: 0.65rem;
   }
 
   .news-primary-link {
@@ -319,7 +345,6 @@
     }
 
     .news-event-facts,
-    .news-presentation-grid,
     .news-delivery-row dl {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }

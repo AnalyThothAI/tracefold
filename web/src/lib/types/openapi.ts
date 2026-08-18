@@ -2598,11 +2598,12 @@ export interface components {
             /** Deliveries */
             deliveries: components["schemas"]["NewsDeliveryData"][];
             event: components["schemas"]["NewsEventData"];
+            /** Labels */
+            labels?: components["schemas"]["NewsLabelData"][];
             /** Marks */
             marks?: components["schemas"]["NewsMarketMarkData"][];
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
-            presentation?: components["schemas"]["NewsPresentationData"] | null;
             /** Verdicts */
             verdicts: components["schemas"]["NewsVerdictData"][];
         };
@@ -2652,8 +2653,6 @@ export interface components {
              */
             context_line: string;
             delivery?: components["schemas"]["NewsDeliverySummaryData"] | null;
-            /** Display Title */
-            display_title: string;
             /** Engine Type */
             engine_type: string;
             /** Event Id */
@@ -2684,8 +2683,6 @@ export interface components {
             member_count: number;
             /** Opened At Ms */
             opened_at_ms: number;
-            /** Presentation Outcome */
-            presentation_outcome?: string | null;
             /** Priority */
             priority: string;
             /** Provenance */
@@ -2704,6 +2701,8 @@ export interface components {
              * @default
              */
             storyline_key: string;
+            /** Title Zh */
+            title_zh?: string | null;
             triage?: components["schemas"]["NewsTriageSummaryData"] | null;
             /** Watchlist Hits */
             watchlist_hits?: string[];
@@ -2762,6 +2761,19 @@ export interface components {
             /** Token Configured */
             token_configured: boolean;
         };
+        /** NewsLabelData */
+        NewsLabelData: {
+            /** Created At Ms */
+            created_at_ms: number;
+            /** Label */
+            label?: {
+                [key: string]: unknown;
+            };
+            /** Label Version */
+            label_version: string;
+            /** Source */
+            source: string;
+        };
         /** NewsMarketMarkData */
         NewsMarketMarkData: {
             /** Captured At Ms */
@@ -2812,6 +2824,8 @@ export interface components {
              * @default 0
              */
             events_24h: number;
+            /** Queue Lag P95 Ms */
+            queue_lag_p95_ms?: number | null;
             /**
              * Throttled 24H
              * @default 0
@@ -2833,15 +2847,6 @@ export interface components {
             triage_p50_ms?: number | null;
             /** Triage P95 Ms */
             triage_p95_ms?: number | null;
-        };
-        /** NewsPresentationData */
-        NewsPresentationData: {
-            /** Display Title */
-            display_title: string;
-            /** Outcome */
-            outcome: string;
-            /** Provider */
-            provider?: string | null;
         };
         /** NewsStatusData */
         NewsStatusData: {
@@ -2885,6 +2890,8 @@ export interface components {
             scope?: string | null;
             /** Throttled By */
             throttled_by?: string | null;
+            /** Title Zh */
+            title_zh?: string | null;
         };
         /** NewsVerdictData */
         NewsVerdictData: {

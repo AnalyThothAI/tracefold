@@ -27,7 +27,6 @@ NEWS_TABLES = {
     "news_event_bands",
     "news_event_assets",
     "news_verdicts",
-    "news_title_presentations",
     "news_deliveries",
     "news_control_state",
     "news_event_market_marks",
@@ -67,6 +66,7 @@ def test_migration_creates_exact_news_tables_and_drops_legacy(conn) -> None:
         "news_brief_current",
         "news_sources",
         "news_item_title_presentations",
+        "news_title_presentations",
     ):
         assert legacy not in names
 

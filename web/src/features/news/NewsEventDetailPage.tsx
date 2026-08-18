@@ -24,8 +24,8 @@ import {
   type NewsEvent,
   type NewsEventDetail,
   type NewsEventMember,
+  type NewsLabel,
   type NewsMarketMark,
-  type NewsPresentation,
   useNewsEventWithToken,
 } from "./useNewsPage";
 
@@ -56,7 +56,10 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
 
 function EventDocument({ detail }: { detail: NewsEventDetail }) {
   const { event } = detail;
-  const displayTitle = detail.presentation?.display_title.trim() || event.leader_title;
+  const triageVerdict = detail.verdicts.find((verdict) => verdict.stage === "triage")?.verdict as
+    | { title_zh?: string }
+    | undefined;
+  const displayTitle = triageVerdict?.title_zh?.trim() || event.leader_title;
   return (
     <article className="news-event-detail">
       <EventHero displayTitle={displayTitle} event={event} />
@@ -101,17 +104,15 @@ function EventDocument({ detail }: { detail: NewsEventDetail }) {
           <p className="news-detail-empty">尚未产生推送。</p>
         )}
       </section>
-      <section
-        aria-labelledby="news-presentation-heading"
-        className="news-detail-card news-presentation-section"
-      >
+      <section aria-labelledby="news-labels-heading" className="news-detail-card news-labels-section">
         <header>
           <div>
-            <span className="news-eyebrow">PRESENTATION</span>
-            <h2 id="news-presentation-heading">标题呈现</h2>
+            <span className="news-eyebrow">LABELS</span>
+            <h2 id="news-labels-heading">操作者标注</h2>
           </div>
+          <span>{detail.labels?.length ?? 0} 条</span>
         </header>
-        <PresentationFacts event={event} presentation={detail.presentation ?? null} />
+        <LabelsList labels={detail.labels ?? []} />
       </section>
       <section aria-labelledby="news-marks-heading" className="news-detail-card news-marks-section">
         <header>
@@ -229,21 +230,20 @@ function DeliveryRow({ delivery }: { delivery: NewsDelivery }) {
   );
 }
 
-function PresentationFacts({
-  event,
-  presentation,
-}: {
-  event: NewsEvent;
-  presentation: NewsPresentation | null;
-}) {
-  if (!presentation) return <p className="news-detail-empty">尚无标题呈现；显示原标题。</p>;
+function LabelsList({ labels }: { labels: readonly NewsLabel[] }) {
+  if (!labels.length) {
+    return <p className="news-detail-empty">尚无标注；用 `tracefold news label` 记录。</p>;
+  }
   return (
-    <dl className="news-presentation-grid">
-      <Fact label="呈现结果" value={presentation.outcome} />
-      <Fact label="提供方" value={presentation.provider ?? "无"} />
-      <Fact label="展示标题" value={presentation.display_title} />
-      <Fact label="原文标题" value={event.leader_title} />
-    </dl>
+    <ul className="news-label-list">
+      {labels.map((label) => (
+        <li key={`${label.source}:${label.created_at_ms}`}>
+          <span className="news-label-source">{label.source}</span>
+          <span className="news-label-value">{compactValue(label.label)}</span>
+          <span className="news-label-time">{absoluteTime(label.created_at_ms)}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

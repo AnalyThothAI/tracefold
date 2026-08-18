@@ -27,7 +27,8 @@ from tracefold.news.bus import (
     new_trace_id,
     now_ms,
 )
-from tracefold.news.consumers import ControlConsumer, DeduperConsumer, DelivererConsumer, TriageConsumer
+from tracefold.news.consumers import DeduperConsumer, DelivererConsumer, TriageConsumer
+from tracefold.news.control import apply_control, parse_control
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 
 pytestmark = pytest.mark.integration
@@ -47,15 +48,12 @@ class FakeBus:
     async def publish(self, message: BusMessage) -> None:
         self.published.append(message)
 
-    async def publish_control(self, message: BusMessage) -> None:
-        self.published.append(message)
-
     def routing_keys(self) -> list[str]:
         return [message.routing_key for message in self.published]
 
 
 class FakeWorkerDatabase:
-    """WorkerDatabase-like adapter over one test connection: run_business calls inline."""
+    """WorkerDatabase-like adapter over one test connection: the News lane runs inline."""
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn
@@ -66,7 +64,7 @@ class FakeWorkerDatabase:
         del name
         yield repositories_for_connection(self.conn)
 
-    async def run_business(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
+    async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
         del operation_timeout_seconds
         self.operations.append(name)
         return fn(*args, **kwargs)
@@ -138,7 +136,6 @@ def _deliverer(conn: Any, bus: FakeBus) -> DelivererConsumer:
         min_interval_seconds=0.0,
         hourly_cap=20,
     )
-    deliverer._stop_event = asyncio.Event()  # normally set by run(); tests call handle() directly
     return deliverer
 
 
@@ -381,34 +378,27 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) ->
     assert detail is not None and detail["deliveries"][0]["state"] == "terminal"
 
 
-def test_control_consumer_writes_control_state(conn) -> None:
-    bus = FakeBus()
-    control = ControlConsumer(bus=bus, db=FakeWorkerDatabase(conn))
-    stamp = now_ms()
-
-    def _command(payload: dict[str, Any]) -> BusMessage:
-        return BusMessage(
-            kind="control",
-            message_id=f"control:{stamp}:{payload['action']}",
-            routing_key="",
-            payload=payload,
-            trace_id=new_trace_id(),
-            occurred_at_ms=stamp,
-        )
-
-    async def scenario() -> None:
-        await control.handle(_command({"action": "pause_delivery"}))
-        await control.handle(_command({"action": "mute_symbol", "key": "btc", "ttl_ms": 3_600_000}))
-        await control.handle(_command({"action": "mute_theme", "key": "rates", "ttl_ms": 3_600_000}))
-        with pytest.raises(PermanentError, match="news_control_action_invalid"):
-            await control.handle(_command({"action": "explode"}))
-        with pytest.raises(PermanentError, match="news_control_key_required"):
-            await control.handle(_command({"action": "mute_symbol"}))
-
-    asyncio.run(scenario())
-    conn.commit()
+def test_control_commands_write_control_state_directly(conn) -> None:
+    """The CLI writes news_control_state in one transaction; consumers read it on every message."""
 
     repos = repositories_for_connection(conn)
+    stamp = now_ms()
+
+    def _apply(payload: dict[str, Any]) -> None:
+        with repos.transaction():
+            state = repos.news.read_control(now_ms=stamp)
+            new_state = apply_control(state, parse_control(payload), now_ms=stamp)
+            repos.news.write_control(paused=new_state["paused"], mutes=new_state["mutes"], now_ms=stamp)
+
+    _apply({"action": "pause_delivery"})
+    _apply({"action": "mute_symbol", "key": "btc", "ttl_ms": 3_600_000})
+    _apply({"action": "mute_theme", "key": "rates", "ttl_ms": 3_600_000})
+    with pytest.raises(ValueError, match="news_control_action_invalid"):
+        parse_control({"action": "explode"})
+    with pytest.raises(ValueError, match="news_control_key_required"):
+        parse_control({"action": "mute_symbol"})
+    conn.commit()
+
     state = repos.news.read_control(now_ms=now_ms())
     assert state["paused"] is True
     assert {(m["kind"], m["key"]) for m in state["mutes"]} == {("symbol", "BTC"), ("theme", "rates")}
@@ -416,13 +406,9 @@ def test_control_consumer_writes_control_state(conn) -> None:
     rows = conn.execute("SELECT count(*) AS n FROM news_control_state").fetchone()
     assert rows["n"] == 1
 
-    async def resume() -> None:
-        await control.handle(_command({"action": "resume_delivery"}))
-        await control.handle(_command({"action": "unmute", "key": "BTC"}))
-
-    asyncio.run(resume())
+    _apply({"action": "resume_delivery"})
+    _apply({"action": "unmute", "key": "BTC"})
     conn.commit()
     state = repos.news.read_control(now_ms=now_ms())
     assert state["paused"] is False
     assert [(m["kind"], m["key"]) for m in state["mutes"]] == [("theme", "rates")]
-    assert bus.published == []

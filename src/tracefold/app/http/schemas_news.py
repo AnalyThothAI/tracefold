@@ -19,6 +19,7 @@ class NewsTriageSummaryData(ExactApiSchema):
     event_type: str | None = None
     scope: str | None = None
     headline_zh: str | None = None
+    title_zh: str | None = None
 
 
 class NewsDeliverySummaryData(ExactApiSchema):
@@ -52,8 +53,7 @@ class NewsEventData(ExactApiSchema):
 
 
 class NewsFeedEventData(NewsEventData):
-    display_title: str
-    presentation_outcome: str | None = None
+    title_zh: str | None = None
     triage: NewsTriageSummaryData | None = None
     delivery: NewsDeliverySummaryData | None = None
 
@@ -115,10 +115,11 @@ class NewsDeliveryData(ExactApiSchema):
     receipt: dict[str, Any] | None = None
 
 
-class NewsPresentationData(ExactApiSchema):
-    display_title: str
-    outcome: str
-    provider: str | None = None
+class NewsLabelData(ExactApiSchema):
+    label_version: str
+    source: str
+    label: dict[str, Any] = Field(default_factory=dict)
+    created_at_ms: int
 
 
 class NewsMarketMarkData(ExactApiSchema):
@@ -138,7 +139,7 @@ class NewsEventDetailData(ExactApiSchema):
     members: list[NewsEventMemberData]
     verdicts: list[NewsVerdictData]
     deliveries: list[NewsDeliveryData]
-    presentation: NewsPresentationData | None = None
+    labels: list[NewsLabelData] = Field(default_factory=list)
     marks: list[NewsMarketMarkData] = Field(default_factory=list)
 
 
@@ -185,6 +186,7 @@ class NewsPipelineStatusData(ExactApiSchema):
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None
+    queue_lag_p95_ms: float | None = None
     triage_model: str | None = None
     analyst_model: str | None = None
 
@@ -231,9 +233,9 @@ __all__ = [
     "NewsFeedFiltersData",
     "NewsIncidentData",
     "NewsIngestStatusData",
+    "NewsLabelData",
     "NewsMarketMarkData",
     "NewsPipelineStatusData",
-    "NewsPresentationData",
     "NewsStatusData",
     "NewsTriageSummaryData",
     "NewsVerdictData",

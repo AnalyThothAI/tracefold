@@ -110,7 +110,7 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 delivery: null,
-                display_title: "",
+                title_zh: null,
                 grounded_assets: [],
                 leader_url: null,
                 priority: "normal",
@@ -145,7 +145,7 @@ describe("NewsPage", () => {
         HttpResponse.json({
           ok: true,
           data: newsFeedFixture({
-            events: [newsFeedEventFixture({ display_title: longTitle, leader_title: longTitle })],
+            events: [newsFeedEventFixture({ title_zh: longTitle, leader_title: longTitle })],
           }),
         }),
       ),
@@ -254,7 +254,7 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture(),
               newsFeedEventFixture({
-                display_title: "Second page Event",
+                title_zh: "Second page Event",
                 event_id: "evt-second-page",
               }),
             ],
@@ -277,12 +277,12 @@ describe("NewsPage", () => {
     let feed = newsFeedFixture();
     server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
     const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    await screen.findByText(feed.events[0].display_title);
+    await screen.findByText(feed.events[0].title_zh ?? "");
 
     feed = newsFeedFixture({
       events: [
         newsFeedEventFixture({
-          display_title: "New high-signal event at the top",
+          title_zh: "New high-signal event at the top",
           event_id: "evt-new-at-top",
         }),
         ...newsFeedFixture().events,
@@ -305,7 +305,7 @@ describe("NewsPage", () => {
           data: newsFeedFixture({
             events: [
               newsFeedEventFixture({
-                display_title: "Loaded non-deferred tail event",
+                title_zh: "Loaded non-deferred tail event",
                 event_id: "evt-loaded-tail",
               }),
             ],
@@ -315,7 +315,7 @@ describe("NewsPage", () => {
       }),
     );
     const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    const currentTitle = await screen.findByText(feed.events[0].display_title);
+    const currentTitle = await screen.findByText(feed.events[0].title_zh ?? "");
     const currentRow = currentTitle.closest("article");
     const scrollContainer = rendered.container.querySelector<HTMLElement>(".center-column");
     expect(scrollContainer).not.toBeNull();
@@ -325,7 +325,7 @@ describe("NewsPage", () => {
     feed = newsFeedFixture({
       events: [
         newsFeedEventFixture({
-          display_title: "Deferred high-signal event",
+          title_zh: "Deferred high-signal event",
           event_id: "evt-deferred-at-top",
         }),
         ...newsFeedFixture().events,
@@ -336,7 +336,7 @@ describe("NewsPage", () => {
 
     const notice = await screen.findByRole("button", { name: "1 条新事件 · 回到顶部" });
     expect(screen.queryByText("Deferred high-signal event")).not.toBeInTheDocument();
-    expect(screen.getByText(newsFeedFixture().events[0].display_title).closest("article")).toBe(
+    expect(screen.getByText(newsFeedFixture().events[0].title_zh ?? "").closest("article")).toBe(
       currentRow,
     );
 
@@ -451,7 +451,7 @@ describe("NewsPage", () => {
     expect(screen.queryByRole("button", { name: /暂停|恢复|静音/ })).not.toBeInTheDocument();
   });
 
-  it("renders Event detail with members, verdicts, deliveries, presentation, and marks", async () => {
+  it("renders Event detail with members, verdicts, deliveries, labels, and marks", async () => {
     renderNews(
       <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
@@ -504,11 +504,9 @@ describe("NewsPage", () => {
       "om_123",
     );
 
-    const presentation = screen.getByRole("region", { name: "标题呈现" });
-    expect(within(presentation).getByText("呈现结果").nextElementSibling).toHaveTextContent(
-      "translated",
-    );
-    expect(within(presentation).getByText("提供方").nextElementSibling).toHaveTextContent("deepl");
+    const labels = screen.getByRole("region", { name: "操作者标注" });
+    expect(within(labels).getByText("human")).toBeInTheDocument();
+    expect(within(labels).getByText(/good/)).toBeInTheDocument();
 
     const marks = screen.getByRole("region", { name: "市场标记" });
     const marksTable = within(marks).getByRole("table");
@@ -531,8 +529,8 @@ describe("NewsPage", () => {
                 state: "terminal",
               }),
             ],
+            labels: [],
             marks: [],
-            presentation: null,
             verdicts: [
               newsVerdictFixture({
                 degraded: true,
@@ -595,7 +593,7 @@ describe("NewsPage", () => {
     const deliveries = screen.getByRole("region", { name: "推送记录" });
     expect(within(deliveries).getByText("已终结")).toBeInTheDocument();
     expect(within(deliveries).getByText("feishu_5xx")).toBeInTheDocument();
-    expect(screen.getByText("尚无标题呈现；显示原标题。")).toBeInTheDocument();
+    expect(screen.getByText(/尚无标注/)).toBeInTheDocument();
     expect(screen.getByText("尚无市场标记。")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", {

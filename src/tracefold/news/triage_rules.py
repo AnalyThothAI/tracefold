@@ -14,6 +14,18 @@ _DIRECTIONAL = frozenset({"bullish", "bearish"})
 
 
 @dataclass(frozen=True, slots=True)
+class DecidePolicy:
+    """Tunable thresholds of decide(); the defaults are the live policy (TRIAGE_POLICY_VERSION)."""
+
+    escalate_magnitude: int = 3
+    min_push_magnitude: int = 2
+    min_watchlist_magnitude: int = 1
+
+
+DEFAULT_POLICY = DecidePolicy()
+
+
+@dataclass(frozen=True, slots=True)
 class GateFacts:
     grounded_assets: tuple[str, ...]
     watchlist_symbols: frozenset[str]
@@ -73,6 +85,7 @@ def decide(
     *,
     hourly_cap_reached: bool = False,
     muted: bool = False,
+    policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
@@ -86,15 +99,17 @@ def decide(
 
     final: Decision
     rule: str | None = None
-    if verdict.magnitude == 3 and (verdict.direction in _DIRECTIONAL or verdict.scope == "macro"):
+    if verdict.magnitude >= policy.escalate_magnitude and (
+        verdict.direction in _DIRECTIONAL or verdict.scope == "macro"
+    ):
         final, rule = "escalate", "magnitude3"
     elif facts.priority == "high" and verdict.decision == "push":
         final, rule = "escalate", "high_priority_push"
     elif verdict.direction == "unclear":
         final, rule = "drop", "unclear_direction"
-    elif verdict.magnitude >= 2 and verdict.actionable:
+    elif verdict.magnitude >= policy.min_push_magnitude and verdict.actionable:
         final, rule = "push", "magnitude2_actionable"
-    elif watch_hits and verdict.magnitude >= 1:
+    elif watch_hits and verdict.magnitude >= policy.min_watchlist_magnitude:
         final, rule = "push", "watchlist"
     else:
         final, rule = "drop", "below_threshold"
@@ -146,8 +161,10 @@ def storyline_status_from_row(row: Mapping[str, Any] | None, key: str) -> Storyl
 
 
 __all__ = [
+    "DEFAULT_POLICY",
     "ESCALATE_WINDOW_MS",
     "PUSH_WINDOW_MS",
+    "DecidePolicy",
     "DecisionResult",
     "GateFacts",
     "StorylineStatus",

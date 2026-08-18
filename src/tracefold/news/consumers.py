@@ -1,13 +1,15 @@
-"""News V3 consumers: Receiver, Recovery, Deduper, Triage, Analyst, Translator, Deliverer, Janitor, Control.
+"""News V3 consumers: Receiver, Recovery, Deduper, Triage, Analyst, Deliverer, Janitor.
 
 Each consumer is one asyncio task; the broker is the only coordination plane; PostgreSQL holds
-facts/decisions/audit; every write is idempotent by key.
+facts/decisions/audit; every write is idempotent by key. Consumers coordinate only through the
+broker and database keys, so any of them can be scaled out without code changes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -17,12 +19,13 @@ from typing import Any
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 from .agents.analyst import Analyst
+from .agents.prompts import TRIAGE_PROMPT_SHA256
 from .agents.triage_model import TriageModel, TriageModelError, build_triage_input
+from .analyst_evidence import build_evidence_bundle
 from .bus import (
     Q_DEEP,
     Q_DELIVER,
     Q_RAW,
-    Q_TRANSLATE,
     Q_TRIAGE,
     RK_EVENT,
     RK_RAW_LIVE,
@@ -31,19 +34,19 @@ from .bus import (
     RK_VERDICT_ESCALATE,
     RK_VERDICT_PUSH,
     BusMessage,
+    DeferError,
     PermanentError,
     TransientError,
     new_trace_id,
     now_ms,
 )
-from .control import apply_control, is_muted, parse_control
+from .control import is_muted
 from .delivery import render_first_card, render_followup_card
 from .eval.marks import capture_due_marks
 from .events import admit_item
 from .models import (
     ANALYST_POLICY_VERSION,
     ANALYST_PROMPT_VERSION,
-    TITLE_PRESENTATION_POLICY_VERSION,
     TRIAGE_POLICY_VERSION,
     TRIAGE_PROMPT_VERSION,
     json_ready,
@@ -54,7 +57,6 @@ from .opennews import (
     parse_opennews_message,
     parse_opennews_strategy_hits,
 )
-from .translation import translate_title
 from .triage_rules import GateFacts, decide, fallback_verdict, storyline_status_from_row
 
 log = logging.getLogger("tracefold.news")
@@ -63,7 +65,7 @@ _HISTORY_PAGE_SIZE = 100
 _HISTORY_PAGE_CAP = 60
 _RECOVERY_OVERLAP_MS = 30_000
 _WS_RECONNECT_SECONDS = 3.0
-_STARTUP_CATCHUP_AGE_MS = 15_000
+_OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
 _RETENTION_MS = 30 * 24 * 3600_000
 
@@ -86,7 +88,7 @@ def _cause_for(code: str | None) -> str:
 
 
 class _Db:
-    """Thin adapter over WorkerDatabase: run a sync repository function inside one transaction."""
+    """Thin adapter over WorkerDatabase's News lane: run a sync repository function inside one session."""
 
     def __init__(self, db: Any) -> None:
         self._db = db
@@ -96,22 +98,20 @@ class _Db:
             with self._db.worker_session(name, timeout_seconds) as repos, repos.transaction():
                 return fn(repos)
 
-        try:
-            return await self._db.run_business(name, _run, operation_timeout_seconds=timeout_seconds)
-        except ResourceAdmissionTimeout as exc:
-            raise TransientError(f"db_admission_timeout:{name}") from exc
-        except ResourceOperationOverrun as exc:
-            raise TransientError(f"db_overrun:{name}") from exc
+        return await self._run(name, _run, timeout_seconds)
 
     async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
         def _run() -> Any:
             with self._db.worker_session(name, timeout_seconds) as repos:
                 return fn(repos)
 
+        return await self._run(name, _run, timeout_seconds)
+
+    async def _run(self, name: str, fn: Callable[[], Any], timeout_seconds: float) -> Any:
         try:
-            return await self._db.run_business(name, _run, operation_timeout_seconds=timeout_seconds)
+            return await self._db.run_news(name, fn, operation_timeout_seconds=timeout_seconds)
         except ResourceAdmissionTimeout as exc:
-            raise TransientError(f"db_admission_timeout:{name}") from exc
+            raise DeferError(f"db_admission_timeout:{name}") from exc
         except ResourceOperationOverrun as exc:
             raise TransientError(f"db_overrun:{name}") from exc
 
@@ -139,7 +139,7 @@ class OpenNewsReceiver:
         self._backpressure_open = False
 
     async def validate_strategies(self) -> None:
-        """Q8=(c): compare configured allowlist with provider-enabled strategies; warn, never fail."""
+        """Compare the configured allowlist with provider-enabled strategies; warn, never fail."""
 
         warnings: list[str] = []
         enabled: list[str] | None = None
@@ -163,7 +163,7 @@ class OpenNewsReceiver:
             except (OpenNewsHistoryError, Exception) as exc:
                 warnings.append(f"strategy_list_unavailable:{type(exc).__name__}")
         stamp = now_ms()
-        with contextlib.suppress(TransientError):
+        with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
                 "news_ingest_validate",
                 lambda repos: repos.news.update_ingest_state(
@@ -227,7 +227,7 @@ class OpenNewsReceiver:
             cause = "broker_backpressure" if type(exc).__name__ == "BrokerBackpressure" else "broker_unavailable"
             if not self._backpressure_open:
                 self._backpressure_open = True
-                with contextlib.suppress(TransientError):
+                with contextlib.suppress(TransientError, DeferError):
                     await self.db.tx(
                         "news_ingest_backpressure",
                         lambda repos: (
@@ -238,14 +238,14 @@ class OpenNewsReceiver:
             return
         if self._backpressure_open:
             self._backpressure_open = False
-            with contextlib.suppress(TransientError):
+            with contextlib.suppress(TransientError, DeferError):
                 await self.db.tx(
                     "news_ingest_backpressure_close",
                     lambda repos: repos.news.close_open_incidents(
                         cause_classes=["broker_backpressure", "broker_unavailable"], now_ms=stamp
                     ),
                 )
-        with contextlib.suppress(TransientError):
+        with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
                 "news_ingest_frame",
                 lambda repos: repos.news.update_ingest_state(
@@ -264,7 +264,7 @@ class OpenNewsReceiver:
             )
             repos.news.update_ingest_state(now_ms=stamp, connected=True, clear_error=True)
 
-        with contextlib.suppress(TransientError):
+        with contextlib.suppress(TransientError, DeferError):
             await self.db.tx("news_ingest_connected", _fn)
         if self.recovery is not None:
             self.recovery.request()
@@ -278,7 +278,7 @@ class OpenNewsReceiver:
             repos.news.open_incident(cause_class=cause, now_ms=stamp, planned=planned, close_code=close_code)
             repos.news.update_ingest_state(now_ms=stamp, connected=False, last_error_code=error_code)
 
-        with contextlib.suppress(TransientError):
+        with contextlib.suppress(TransientError, DeferError):
             await self.db.tx("news_ingest_disconnected", _fn)
 
 
@@ -312,7 +312,7 @@ class RecoveryRunner:
             self._requested.clear()
             try:
                 await self._recover_pending()
-            except TransientError:
+            except (TransientError, DeferError):
                 await _sleep_or_stop(stop_event, 5.0)
                 self._requested.set()
 
@@ -427,6 +427,29 @@ def _raw_params_from_history(payload: Mapping[str, Any], provider_record_id: str
 
 
 # ---------------------------------------------------------------------------- Deduper
+async def publish_event(bus: Any, db: _Db, *, event_id: str, family: str, priority: str, trace_id: str) -> None:
+    """Publish one candidate Event to Triage and mark it published (commit-then-publish outbox step)."""
+
+    stamp = now_ms()
+    await bus.publish(
+        BusMessage(
+            kind="event",
+            message_id=f"event:{event_id}",
+            routing_key=RK_EVENT.format(family=family, priority=priority),
+            payload={"event_id": event_id},
+            trace_id=trace_id,
+            occurred_at_ms=stamp,
+            priority=5 if priority == "high" else 0,
+        )
+    )
+    with contextlib.suppress(TransientError, DeferError):
+        await db.tx(
+            "news_event_mark_published",
+            lambda repos: repos.news.mark_event_published(event_id=event_id, now_ms=stamp),
+            timeout_seconds=1.0,
+        )
+
+
 class DeduperConsumer:
     def __init__(self, *, bus: Any, db: Any, strategy_ids: Sequence[str], watchlist_symbols: frozenset[str]) -> None:
         self.bus = bus
@@ -435,7 +458,6 @@ class DeduperConsumer:
         self.watchlist_symbols = watchlist_symbols
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
-        await self._catch_up_unpublished()
         await self.bus.consume(Q_RAW, self.handle, prefetch=1, stop_event=stop_event)
 
     async def handle(self, message: BusMessage) -> None:
@@ -464,61 +486,13 @@ class DeduperConsumer:
             timeout_seconds=5.0,
         )
         if result.event_created and result.admission == "candidate":
-            await self._publish_event(
-                result.event_id,
+            await publish_event(
+                self.bus,
+                self.db,
+                event_id=result.event_id,
                 family=result.family,
                 priority=result.gate.priority if result.gate else "normal",
                 trace_id=message.trace_id,
-                amqp_priority=result.gate.amqp_priority if result.gate else 0,
-            )
-
-    async def _publish_event(
-        self, event_id: str, *, family: str, priority: str, trace_id: str, amqp_priority: int
-    ) -> None:
-        stamp = now_ms()
-        await self.bus.publish(
-            BusMessage(
-                kind="event",
-                message_id=f"event:{event_id}",
-                routing_key=RK_EVENT.format(family=family, priority=priority),
-                payload={"event_id": event_id},
-                trace_id=trace_id,
-                occurred_at_ms=stamp,
-                priority=amqp_priority,
-            )
-        )
-        with contextlib.suppress(TransientError):
-            await self.db.tx(
-                "news_event_mark_published",
-                lambda repos: repos.news.mark_event_published(event_id=event_id, now_ms=stamp),
-                timeout_seconds=1.0,
-            )
-
-    async def _catch_up_unpublished(self) -> None:
-        """Commit-then-crash before publish: re-publish candidate events that never left the process."""
-
-        try:
-            rows = await self.db.read(
-                "news_deduper_catchup",
-                lambda repos: repos.news.unpublished_candidates(older_than_ms=now_ms() - _STARTUP_CATCHUP_AGE_MS),
-            )
-        except TransientError:
-            return
-        for row in rows:
-            event_id = str(row["event_id"])
-
-            def _card(repos: Any, e: str = event_id) -> Any:
-                return repos.news.event_card(e)
-
-            card = await self.db.read("news_deduper_catchup_card", _card)
-            if card is None:
-                continue
-            await self._publish_event(
-                str(card["event_id"]),
-                family=str(card["family"]),
-                priority=str(card["priority"]),
-                trace_id=str(card.get("trace_id") or new_trace_id()),
-                amqp_priority=5 if card["priority"] == "high" else 0,
             )
 
 
@@ -529,7 +503,6 @@ class _Circuit:
     open_until_ms: int = 0
     threshold: int = 3
     open_seconds: float = 60.0
-    incident_open: bool = False
 
     def is_open(self, at_ms: int) -> bool:
         return at_ms < self.open_until_ms
@@ -605,9 +578,12 @@ class TriageConsumer:
             control, storyline_key=status.key, grounded_assets=facts.grounded_assets, now_ms=stamp
         )
         cap_reached = sent_last_hour >= self.hourly_cap
+        queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         trace: dict[str, Any] = {
-            "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
+            "queue_lag_ms": queue_lag_ms,
             "attempt": message.attempt,
+            "prompt_sha256": TRIAGE_PROMPT_SHA256,
+            "status": json_ready(dict(status_row or {})),
         }
         model_name = self.model.model_name if self.model else None
         degraded = False
@@ -619,11 +595,7 @@ class TriageConsumer:
             verdict, decision = fallback_verdict(facts, error_code="news_triage_circuit_open")
             degraded, error_code = True, "news_triage_circuit_open"
         else:
-            status_payload = {
-                **dict(status_row or {}),
-                "storyline_key": status.key,
-                "queue_lag_ms": trace["queue_lag_ms"],
-            }
+            status_payload = {**dict(status_row or {}), "storyline_key": status.key, "queue_lag_ms": queue_lag_ms}
             human = build_triage_input(
                 event=card,
                 gate={
@@ -635,12 +607,13 @@ class TriageConsumer:
                 event_status=status_payload,
                 watchlist=self.watchlist,
             )
+            trace["input_sha256"] = hashlib.sha256(human.encode("utf-8")).hexdigest()
             try:
                 call = await self.model.triage(human)
             except TriageModelError as exc:
                 opened = self.circuit.record_failure(stamp)
                 if opened:
-                    with contextlib.suppress(TransientError):
+                    with contextlib.suppress(TransientError, DeferError):
                         await self.db.tx(
                             "news_triage_circuit",
                             lambda repos: repos.news.open_incident(cause_class="triage_circuit_open", now_ms=stamp),
@@ -736,7 +709,7 @@ class TriageConsumer:
                     priority=amqp_priority,
                 )
             )
-        with contextlib.suppress(TransientError):
+        with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
                 "news_triage_mark_published",
                 lambda repos: repos.news.mark_verdict_published(
@@ -748,6 +721,8 @@ class TriageConsumer:
 
 # ---------------------------------------------------------------------------- Analyst
 class AnalystConsumer:
+    """One code-prefetched evidence bundle -> one structured call -> verify -> staleness check -> follow-up."""
+
     def __init__(self, *, bus: Any, db: Any, analyst: Analyst | None, concurrency: int) -> None:
         self.bus = bus
         self.db = _Db(db)
@@ -775,54 +750,40 @@ class AnalystConsumer:
             if existing.get("published_at_ms") is None and existing["final_decision"] == "push":
                 await self._publish_followup(event_id, trace_id=message.trace_id)
             return
+        queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         bundle = await self.db.read(
-            "news_analyst_load",
-            lambda repos: (
-                repos.news.event_card(event_id),
-                repos.news.latest_verdict(event_id=event_id, stage="triage"),
-                repos.news.event_status(storyline_key="", now_ms=stamp),
-            ),
+            "news_analyst_bundle",
+            lambda repos: build_evidence_bundle(repos, event_id=event_id, now_ms=stamp, queue_lag_ms=queue_lag_ms),
+            timeout_seconds=5.0,
         )
-        card, triage, _ = bundle
-        if card is None or triage is None:
+        if bundle is None:
             raise PermanentError("news_event_or_triage_missing")
-        tv = dict(triage.get("verdict") or {})
-        analyst_input = {
-            "event_id": event_id,
-            "external_content": {
-                "title": card["leader_title"],
-                "content": str(card.get("leader_description") or "")[:600],
-                "source": card.get("reporting_origin"),
-            },
-            "gate": {
-                "family": card["family"],
-                "asset_class": card["asset_class"],
-                "grounded_assets": list(card.get("grounded_assets") or []),
-                "provider_score": card.get("provider_score_max"),
-                "storyline_key": card.get("storyline_key"),
-            },
-            "triage": {
-                k: tv.get(k) for k in ("event_type", "direction", "scope", "magnitude", "assets", "headline_zh")
-            },
-            "watchlist_hits": list(card.get("watchlist_hits") or []),
-        }
-        result = await analyst.analyze(
-            event_id=event_id,
-            analyst_input=analyst_input,
-            triage_direction=str(tv.get("direction") or "unclear"),
-            now_ms=stamp,
-        )
+        triage_direction = str((bundle.payload["event"].get("triage") or {}).get("direction") or "unclear")
+        result = await analyst.analyze(bundle=bundle, triage_direction=triage_direction)
         verdict_payload = json_ready(result.verdict) if result.verdict is not None else {}
-        final = (
-            "push"
-            if (result.verdict is not None and result.verify.ok and result.verdict.follow_up_needed)
-            else ("degraded" if not result.verify.ok else "drop")
-        )
+        wants_push = bool(result.verdict is not None and result.verify.ok and result.verdict.follow_up_needed)
+        final = "push" if wants_push else ("degraded" if not result.verify.ok else "drop")
+        throttled_by: str | None = None
+        if wants_push:
+            # Safe-point staleness check: a newer push in the same storyline supersedes this follow-up.
+            latest = await self.db.read(
+                "news_analyst_staleness",
+                lambda repos: repos.news.event_status(storyline_key=bundle.storyline_key, now_ms=now_ms()),
+            )
+            last_push_ago = latest.get("last_push_ago_ms") if latest else None
+            if last_push_ago is not None and int(last_push_ago) <= (now_ms() - stamp):
+                final, throttled_by = "throttled", f"storyline:{bundle.storyline_key}:superseded"
         trace = {
+            "queue_lag_ms": queue_lag_ms,
             "latency_ms": result.latency_ms,
-            "tool_calls": result.tool_calls,
+            "attempts": result.attempts,
             "evidence_count": result.evidence_count,
             "verify": result.verify.reason,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "cached_tokens": result.cached_tokens,
+            "prompt_sha256": analyst.prompt_sha256,
+            "status": json_ready(bundle.status_row),
         }
         await self.db.tx(
             "news_analyst_persist",
@@ -836,7 +797,7 @@ class AnalystConsumer:
                 rule_baseline_decision="drop",
                 final_decision=final,
                 override_rule=None if result.verify.ok else "verify_failed",
-                throttled_by=None,
+                throttled_by=throttled_by,
                 verdict=verdict_payload,
                 model=analyst.model_name,
                 prompt_version=ANALYST_PROMPT_VERSION,
@@ -866,7 +827,7 @@ class AnalystConsumer:
                 occurred_at_ms=stamp,
             )
         )
-        with contextlib.suppress(TransientError):
+        with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
                 "news_analyst_mark_published",
                 lambda repos: repos.news.mark_verdict_published(
@@ -874,49 +835,6 @@ class AnalystConsumer:
                 ),
                 timeout_seconds=1.0,
             )
-
-
-# ---------------------------------------------------------------------------- Translator
-class TranslatorConsumer:
-    def __init__(self, *, bus: Any, db: Any, deepl: Any | None, deepseek: Any | None) -> None:
-        self.bus = bus
-        self.db = _Db(db)
-        self.deepl = deepl
-        self.deepseek = deepseek
-
-    async def run(self, *, stop_event: asyncio.Event) -> None:
-        await self.bus.consume(Q_TRANSLATE, self.handle, prefetch=2, stop_event=stop_event)
-
-    async def handle(self, message: BusMessage) -> None:
-        event_id = str(message.payload.get("event_id") or "")
-        card = await self.db.read("news_translate_load", lambda repos: repos.news.event_card(event_id))
-        if card is None:
-            raise PermanentError("news_event_missing")
-        fingerprint = str(card["comparison_fingerprint"])
-        existing = await self.db.read("news_translate_existing", lambda repos: repos.news.get_presentation(fingerprint))
-        if existing is not None:
-            return
-        outcome = await translate_title(str(card["leader_title"]), deepl=self.deepl, deepseek=self.deepseek)
-        stamp = now_ms()
-        await self.db.tx(
-            "news_translate_persist",
-            lambda repos: repos.news.insert_presentation(
-                fingerprint=fingerprint,
-                original_title=str(card["leader_title"]),
-                display_title=outcome.display_title,
-                outcome=outcome.outcome,
-                provider=outcome.provider,
-                fallback_code=outcome.fallback_code,
-                policy_version=TITLE_PRESENTATION_POLICY_VERSION,
-                now_ms=stamp,
-            ),
-        )
-
-    async def close(self) -> None:
-        for provider in (self.deepl, self.deepseek):
-            if provider is not None:
-                with contextlib.suppress(Exception):
-                    await provider.close()
 
 
 # ---------------------------------------------------------------------------- Deliverer
@@ -942,11 +860,10 @@ class DelivererConsumer:
         self._last_send_at = 0.0
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
-        with contextlib.suppress(TransientError):
+        with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
                 "news_delivery_reconcile", lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms())
             )
-        self._stop_event = stop_event
         await self.bus.consume(Q_DELIVER, self.handle, prefetch=1, stop_event=stop_event)
 
     async def handle(self, message: BusMessage) -> None:
@@ -958,35 +875,22 @@ class DelivererConsumer:
         )
         if not event_id:
             raise PermanentError("news_event_id_missing")
-        while True:
-            control = await self.db.read(
-                "news_delivery_control", lambda repos: repos.news.read_control(now_ms=now_ms())
-            )
-            if not control.get("paused") or self._stop_event.is_set():
-                break
-            await _sleep_or_stop(self._stop_event, 5.0)
-        if self._stop_event.is_set():
-            raise TransientError("news_delivery_stopping")
         stamp = now_ms()
-        bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, kind))
+        bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, kind, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, deep_row, presentation, sent_last_hour = bundle
+        card, triage_row, deep_row, control, sent_last_hour = bundle
         tv = dict(triage_row.get("verdict") or {})
         if kind == "first":
             if triage_row["final_decision"] not in {"push", "escalate"}:
                 return
             if sent_last_hour >= self.hourly_cap and triage_row["final_decision"] != "escalate":
-                await self.db.tx(
-                    "news_delivery_capped",
-                    lambda repos: self._settle_direct(repos, event_id, kind, "hourly_cap_reached", stamp),
-                )
+                await self._settle_direct(event_id, kind, "hourly_cap_reached", stamp)
                 return
             card_payload = render_first_card(
                 event=card,
                 verdict=tv,
                 decision=str(triage_row["final_decision"]),
-                display_title=(presentation or {}).get("display_title"),
                 grounded_assets=list(card.get("grounded_assets") or []),
             )
         else:
@@ -995,11 +899,12 @@ class DelivererConsumer:
             card_payload = render_followup_card(
                 event=card, triage_verdict=tv, analyst_verdict=dict(deep_row.get("verdict") or {})
             )
+        if control.get("paused"):
+            # News is perishable: a paused lane drops instead of holding an unacked message.
+            await self._settle_direct(event_id, kind, "delivery_paused", stamp)
+            return
         if self.sender is None:
-            await self.db.tx(
-                "news_delivery_unavailable",
-                lambda repos: self._settle_direct(repos, event_id, kind, "delivery_unavailable", stamp),
-            )
+            await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
             return
         state = await self.db.tx(
             "news_delivery_begin",
@@ -1046,27 +951,29 @@ class DelivererConsumer:
                     now_ms=now_ms(),
                 ),
             )
-        except TransientError as exc:
+        except (TransientError, DeferError) as exc:
             raise RuntimeError("news_delivery_settlement_unavailable") from exc
 
-    @staticmethod
-    def _settle_direct(repos: Any, event_id: str, kind: str, error_code: str, stamp: int) -> None:
-        state = repos.news.begin_delivery(event_id=event_id, kind=kind, card={}, now_ms=stamp)
-        if state == "new":
-            repos.news.settle_delivery(
-                event_id=event_id, kind=kind, state="terminal", receipt=None, error_code=error_code, now_ms=stamp
-            )
+    async def _settle_direct(self, event_id: str, kind: str, error_code: str, stamp: int) -> None:
+        def _fn(repos: Any) -> None:
+            state = repos.news.begin_delivery(event_id=event_id, kind=kind, card={}, now_ms=stamp)
+            if state == "new":
+                repos.news.settle_delivery(
+                    event_id=event_id, kind=kind, state="terminal", receipt=None, error_code=error_code, now_ms=stamp
+                )
+
+        await self.db.tx("news_delivery_settle_direct", _fn)
 
     @staticmethod
-    def _load(repos: Any, event_id: str, kind: str) -> tuple[Any, ...] | None:
+    def _load(repos: Any, event_id: str, kind: str, stamp: int) -> tuple[Any, ...] | None:
         card = repos.news.event_card(event_id)
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if card is None or triage is None:
             return None
         deep = repos.news.latest_verdict(event_id=event_id, stage="deep") if kind == "followup" else None
-        presentation = repos.news.get_presentation(str(card["comparison_fingerprint"]))
-        sent = repos.news.sent_count_since(since_ms=now_ms() - 3600_000)
-        return card, triage, deep, presentation, sent
+        control = repos.news.read_control(now_ms=stamp)
+        sent = repos.news.sent_count_since(since_ms=stamp - 3600_000)
+        return card, triage, deep, control, sent
 
     async def close(self) -> None:
         if self.sender is not None:
@@ -1078,6 +985,8 @@ class DelivererConsumer:
 
 # ---------------------------------------------------------------------------- Janitor
 class JanitorLoop:
+    """Outbox catch-up, band expiry, retention, market marks, broker snapshot — one bounded turn per period."""
+
     def __init__(self, *, db: Any, bus: Any | None = None, period_seconds: float = _JANITOR_PERIOD_SECONDS) -> None:
         self.db = _Db(db)
         self.bus = bus
@@ -1085,62 +994,72 @@ class JanitorLoop:
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
-            stamp = now_ms()
-            with contextlib.suppress(TransientError):
-
-                def _janitor(repos: Any, s: int = stamp) -> None:
-                    repos.news.expire_bands(now_ms=s)
-                    repos.news.purge_before(cutoff_ms=s - _RETENTION_MS)
-
-                await self.db.tx("news_janitor", _janitor, timeout_seconds=10.0)
-            with contextlib.suppress(TransientError, Exception):
-
-                def _marks(repos: Any, s: int = stamp) -> int:
-                    return capture_due_marks(repos, now_ms=s)
-
-                await self.db.tx("news_marks", _marks, timeout_seconds=10.0)
-            if self.bus is not None:
-                snapshot: dict[str, Any] = {"configured": True, "connected": False, "queues": {}, "error_code": None}
-                try:
-                    depths = await asyncio.wait_for(self.bus.queue_depths(), timeout=5.0)
-                    prefix = f"{self.bus.prefix}." if getattr(self.bus, "prefix", "") else ""
-                    snapshot.update(
-                        connected=True,
-                        queues={name.removeprefix(prefix): value for name, value in depths.items()},
-                    )
-                except Exception as exc:
-                    snapshot["error_code"] = f"broker_snapshot_failed:{type(exc).__name__}"
-                with contextlib.suppress(TransientError):
-
-                    def _snapshot(repos: Any, s: int = stamp, snap: dict[str, Any] = snapshot) -> None:
-                        repos.news.update_broker_snapshot(snapshot=snap, now_ms=s)
-
-                    await self.db.tx("news_broker_snapshot", _snapshot, timeout_seconds=3.0)
+            await self.turn()
             await _sleep_or_stop(stop_event, self.period)
 
-
-# ---------------------------------------------------------------------------- Control
-class ControlConsumer:
-    def __init__(self, *, bus: Any, db: Any) -> None:
-        self.bus = bus
-        self.db = _Db(db)
-
-    async def run(self, *, stop_event: asyncio.Event) -> None:
-        await self.bus.consume_control(self.handle, stop_event=stop_event)
-
-    async def handle(self, message: BusMessage) -> None:
-        try:
-            command = parse_control(message.payload)
-        except ValueError as exc:
-            raise PermanentError(str(exc)) from exc
+    async def turn(self) -> None:
         stamp = now_ms()
+        if self.bus is not None:
+            with contextlib.suppress(TransientError, DeferError, Exception):
+                await self.republish_unpublished()
+        with contextlib.suppress(TransientError, DeferError):
 
-        def _apply(repos: Any) -> None:
-            state = repos.news.read_control(now_ms=stamp)
-            new_state = apply_control(state, command, now_ms=stamp)
-            repos.news.write_control(paused=new_state["paused"], mutes=new_state["mutes"], now_ms=stamp)
+            def _janitor(repos: Any, s: int = stamp) -> None:
+                repos.news.expire_bands(now_ms=s)
+                repos.news.purge_before(cutoff_ms=s - _RETENTION_MS)
 
-        await self.db.tx("news_control_apply", _apply)
+            await self.db.tx("news_janitor", _janitor, timeout_seconds=10.0)
+        with contextlib.suppress(TransientError, DeferError, Exception):
+
+            def _marks(repos: Any, s: int = stamp) -> int:
+                return capture_due_marks(repos, now_ms=s)
+
+            await self.db.tx("news_marks", _marks, timeout_seconds=10.0)
+        if self.bus is not None:
+            snapshot: dict[str, Any] = {"configured": True, "connected": False, "queues": {}, "error_code": None}
+            try:
+                depths = await asyncio.wait_for(self.bus.queue_depths(), timeout=5.0)
+                prefix = f"{self.bus.prefix}." if getattr(self.bus, "prefix", "") else ""
+                snapshot.update(
+                    connected=True,
+                    queues={name.removeprefix(prefix): value for name, value in depths.items()},
+                )
+            except Exception as exc:
+                snapshot["error_code"] = f"broker_snapshot_failed:{type(exc).__name__}"
+            with contextlib.suppress(TransientError, DeferError):
+
+                def _snapshot(repos: Any, s: int = stamp, snap: dict[str, Any] = snapshot) -> None:
+                    repos.news.update_broker_snapshot(snapshot=snap, now_ms=s)
+
+                await self.db.tx("news_broker_snapshot", _snapshot, timeout_seconds=3.0)
+
+    async def republish_unpublished(self) -> int:
+        """Commit-then-crash (or publish failure) before publish: re-publish candidate Events that never left."""
+
+        rows = await self.db.read(
+            "news_outbox_unpublished",
+            lambda repos: repos.news.unpublished_candidates(older_than_ms=now_ms() - _OUTBOX_MIN_AGE_MS),
+        )
+        republished = 0
+        for row in rows:
+            event_id = str(row["event_id"])
+
+            def _card(repos: Any, e: str = event_id) -> Any:
+                return repos.news.event_card(e)
+
+            card = await self.db.read("news_outbox_card", _card)
+            if card is None:
+                continue
+            await publish_event(
+                self.bus,
+                self.db,
+                event_id=str(card["event_id"]),
+                family=str(card["family"]),
+                priority=str(card["priority"]),
+                trace_id=str(card.get("trace_id") or new_trace_id()),
+            )
+            republished += 1
+        return republished
 
 
 # ---------------------------------------------------------------------------- helpers
@@ -1173,10 +1092,8 @@ class NewsPipeline:
     deduper: DeduperConsumer
     triage: TriageConsumer
     analyst: AnalystConsumer
-    translator: TranslatorConsumer
     deliverer: DelivererConsumer
     janitor: JanitorLoop
-    control: ControlConsumer
     tasks: list[tuple[str, Callable[..., Any]]] = field(default_factory=list)
 
     def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Any]]]:
@@ -1190,28 +1107,24 @@ class NewsPipeline:
                 ("news-deduper", lambda stop: self.deduper.run(stop_event=stop)),
                 ("news-triage", lambda stop: self.triage.run(stop_event=stop)),
                 ("news-analyst", lambda stop: self.analyst.run(stop_event=stop)),
-                ("news-translator", lambda stop: self.translator.run(stop_event=stop)),
                 ("news-deliverer", lambda stop: self.deliverer.run(stop_event=stop)),
                 ("news-janitor", lambda stop: self.janitor.run(stop_event=stop)),
-                ("news-control", lambda stop: self.control.run(stop_event=stop)),
             ]
         )
         return out
 
     async def close(self) -> None:
-        await self.translator.close()
         await self.deliverer.close()
 
 
 __all__ = [
     "AnalystConsumer",
-    "ControlConsumer",
     "DeduperConsumer",
     "DelivererConsumer",
     "JanitorLoop",
     "NewsPipeline",
     "OpenNewsReceiver",
     "RecoveryRunner",
-    "TranslatorConsumer",
     "TriageConsumer",
+    "publish_event",
 ]

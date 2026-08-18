@@ -7094,6 +7094,13 @@
           "event": {
             "$ref": "#/components/schemas/NewsEventData"
           },
+          "labels": {
+            "items": {
+              "$ref": "#/components/schemas/NewsLabelData"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
           "marks": {
             "items": {
               "$ref": "#/components/schemas/NewsMarketMarkData"
@@ -7107,16 +7114,6 @@
             },
             "title": "Members",
             "type": "array"
-          },
-          "presentation": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsPresentationData"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "verdicts": {
             "items": {
@@ -7266,10 +7263,6 @@
               }
             ]
           },
-          "display_title": {
-            "title": "Display Title",
-            "type": "string"
-          },
           "engine_type": {
             "title": "Engine Type",
             "type": "string"
@@ -7330,17 +7323,6 @@
             "title": "Opened At Ms",
             "type": "integer"
           },
-          "presentation_outcome": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Presentation Outcome"
-          },
           "priority": {
             "title": "Priority",
             "type": "string"
@@ -7384,6 +7366,17 @@
             "title": "Storyline Key",
             "type": "string"
           },
+          "title_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Zh"
+          },
           "triage": {
             "anyOf": [
               {
@@ -7413,8 +7406,7 @@
           "priority",
           "engine_type",
           "asset_class",
-          "ingest_mode",
-          "display_title"
+          "ingest_mode"
         ],
         "title": "NewsFeedEventData",
         "type": "object"
@@ -7624,6 +7616,35 @@
         "title": "NewsIngestStatusData",
         "type": "object"
       },
+      "NewsLabelData": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at_ms": {
+            "title": "Created At Ms",
+            "type": "integer"
+          },
+          "label": {
+            "additionalProperties": true,
+            "title": "Label",
+            "type": "object"
+          },
+          "label_version": {
+            "title": "Label Version",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label_version",
+          "source",
+          "created_at_ms"
+        ],
+        "title": "NewsLabelData",
+        "type": "object"
+      },
       "NewsMarketMarkData": {
         "additionalProperties": false,
         "properties": {
@@ -7747,6 +7768,17 @@
             "title": "Events 24H",
             "type": "integer"
           },
+          "queue_lag_p95_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Lag P95 Ms"
+          },
           "throttled_24h": {
             "default": 0,
             "title": "Throttled 24H",
@@ -7797,36 +7829,6 @@
           }
         },
         "title": "NewsPipelineStatusData",
-        "type": "object"
-      },
-      "NewsPresentationData": {
-        "additionalProperties": false,
-        "properties": {
-          "display_title": {
-            "title": "Display Title",
-            "type": "string"
-          },
-          "outcome": {
-            "title": "Outcome",
-            "type": "string"
-          },
-          "provider": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider"
-          }
-        },
-        "required": [
-          "display_title",
-          "outcome"
-        ],
-        "title": "NewsPresentationData",
         "type": "object"
       },
       "NewsStatusData": {
@@ -7980,6 +7982,17 @@
               }
             ],
             "title": "Throttled By"
+          },
+          "title_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Zh"
           }
         },
         "required": [

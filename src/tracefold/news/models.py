@@ -10,12 +10,11 @@ NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v3"
 GATE_POLICY_VERSION = "news_gate_v3"
 STORYLINE_POLICY_VERSION = "news_storyline_v1"
-TRIAGE_PROMPT_VERSION = "news_triage_prompt_v1"
+TRIAGE_PROMPT_VERSION = "news_triage_prompt_v2"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v1"
-ANALYST_PROMPT_VERSION = "news_analyst_prompt_v1"
-ANALYST_POLICY_VERSION = "news_analyst_policy_v1"
-TITLE_PRESENTATION_POLICY_VERSION = "news_title_zh_v2"
-DELIVERY_CARD_VERSION = "news_delivery_card_v3"
+ANALYST_PROMPT_VERSION = "news_analyst_prompt_v2"
+ANALYST_POLICY_VERSION = "news_analyst_policy_v2"
+DELIVERY_CARD_VERSION = "news_delivery_card_v4"
 
 Admission = Literal[
     "candidate",
@@ -87,6 +86,7 @@ class TriageVerdict(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     decision: Literal["push", "drop", "escalate"]
     headline_zh: str = Field(min_length=1, max_length=60)
+    title_zh: str = Field(default="", max_length=160)
     rationale: str = Field(default="", max_length=160)
 
 
@@ -137,7 +137,6 @@ __all__ = [
     "GATE_POLICY_VERSION",
     "NEWS_BUS_SCHEMA_VERSION",
     "STORYLINE_POLICY_VERSION",
-    "TITLE_PRESENTATION_POLICY_VERSION",
     "TRIAGE_POLICY_VERSION",
     "TRIAGE_PROMPT_VERSION",
     "Admission",

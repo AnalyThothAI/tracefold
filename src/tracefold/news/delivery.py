@@ -42,14 +42,14 @@ def render_first_card(
     event: Mapping[str, Any],
     verdict: Mapping[str, Any],
     decision: str,
-    display_title: str | None,
     grounded_assets: Sequence[str],
 ) -> dict[str, Any]:
     original_title = str(event.get("leader_title") or "")
     link = str(event.get("leader_url") or "")
     direction = str(verdict.get("direction") or "unclear")
     magnitude = int(verdict.get("magnitude") or 0)
-    headline = sanitize_ai_text(verdict.get("headline_zh"), limit=60, fallback=display_title or original_title)
+    title_zh = sanitize_ai_text(verdict.get("title_zh"), limit=160)
+    headline = sanitize_ai_text(verdict.get("headline_zh"), limit=60, fallback=title_zh or original_title)
     rationale = sanitize_ai_text(verdict.get("rationale"), limit=160)
     header_title = f"{'⚡ ' if decision == 'escalate' else ''}{headline}"
     facts_lines = [
@@ -60,8 +60,8 @@ def render_first_card(
         f"　**来源**：{event.get('reporting_origin') or '-'}　**成员**：{event.get('member_count') or 1}"
         f"　**Provider 分**：{event.get('provider_score_max') if event.get('provider_score_max') is not None else '-'}",
     ]
-    if display_title and display_title != original_title:
-        facts_lines.insert(0, f"**标题**：{display_title}")
+    if title_zh and title_zh != original_title:
+        facts_lines.insert(0, f"**标题**：{title_zh}")
     elements: list[dict[str, Any]] = [{"tag": "markdown", "content": "\n".join(facts_lines)}]
     if rationale:
         elements.append({"tag": "markdown", "content": f"AI 初判：{rationale}"})

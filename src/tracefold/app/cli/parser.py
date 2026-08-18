@@ -52,27 +52,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="print acquisition and current-module status",
     )
 
-    news = subcommands.add_parser("news", help="News V3 broker, control, and evaluation commands")
+    news = subcommands.add_parser("news", help="News V3 broker, control, label, and evaluation commands")
     news_subcommands = news.add_subparsers(dest="news_command", required=True)
     news_subcommands.add_parser(
         "bus-check", help="connect to RabbitMQ, declare the News topology, and print queue depths"
     )
-    news_control = news_subcommands.add_parser("control", help="publish a control command to all News consumers")
+    news_control = news_subcommands.add_parser("control", help="write a delivery control command to news_control_state")
     news_control.add_argument(
         "action",
-        choices=("pause_delivery", "resume_delivery", "mute_theme", "mute_symbol", "unmute", "drain"),
+        choices=("pause_delivery", "resume_delivery", "mute_theme", "mute_symbol", "unmute"),
     )
     news_control.add_argument("--key", default="", help="theme name or symbol for mute/unmute")
     news_control.add_argument("--ttl-minutes", type=_positive_int, default=360, help="mute duration")
+    news_label = news_subcommands.add_parser("label", help="record an operator label for one Event (learning plane)")
+    news_label.add_argument("event_id")
+    news_label.add_argument("label", choices=("good", "noise", "late", "wrong_direction", "dup"))
+    news_label.add_argument("--note", default="", help="free-text note (<=200 chars)")
     news_eval = news_subcommands.add_parser(
         "eval", help="offline evaluation of Triage decisions against market marks and labels"
     )
     news_eval.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
     news_eval.add_argument("--policy-version", default="", help="restrict to one triage policy version")
+    news_replay_decisions = news_subcommands.add_parser(
+        "replay-decisions", help="re-run decide() over stored verdicts with a candidate policy (no model)"
+    )
+    news_replay_decisions.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
+    news_replay_decisions.add_argument("--escalate-magnitude", type=_positive_int, default=3)
+    news_replay_decisions.add_argument("--min-push-magnitude", type=_positive_int, default=2)
+    news_replay_decisions.add_argument("--min-watchlist-magnitude", type=_positive_int, default=1)
     news_replay = news_subcommands.add_parser(
         "replay", help="replay a JSON file of provider hits through Deduper+Gate (no model, no broker)"
     )
     news_replay.add_argument("path", help="JSON file: {strategy_id: [hit, ...]} or [hit, ...]")
+    news_dlq = news_subcommands.add_parser("dlq", help="inspect, replay, or purge the News dead-letter queue")
+    news_dlq.add_argument("dlq_action", choices=("inspect", "replay", "purge"))
+    news_dlq.add_argument("--limit", type=_positive_int, default=20, help="messages to inspect/replay")
 
     recent = subcommands.add_parser("recent", help="print recent stored events")
     recent.add_argument("--limit", type=_positive_int, default=20)

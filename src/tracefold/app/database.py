@@ -60,8 +60,10 @@ _WORKER_HEAVY_ADMISSION_TIMEOUT_SECONDS = 16.0
 _WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS = 6.0
 _WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS = 6.0
 _WORKER_POOL_MIN_SIZE = 1
-_WORKER_POOL_MAX_SIZE = 4
+# 1 steady singleton lock + 2 business slots + 4 News-lane slots + 1 control slot.
+_WORKER_POOL_MAX_SIZE = 8
 _WORKER_POOL_MAX_WAITING = 3
+_NEWS_LANE_WIDTH = 4
 _RUNTIME_MAINTENANCE_GATE_LOCK_KEYS = (0x54524644, 0)
 _STEADY_WORKERS_SINGLETON_LOCK_KEYS = (0x54524644, 1)
 
@@ -150,7 +152,7 @@ class ServeDatabase:
 
 @dataclass(slots=True)
 class WorkerDatabase:
-    """One Workers pool with two business slots and one control slot."""
+    """One Workers pool with two business slots, a four-slot News lane, and one control slot."""
 
     worker_pool: Any
     telemetry: TelemetryRegistry | None = field(default_factory=TelemetryRegistry)
@@ -158,6 +160,12 @@ class WorkerDatabase:
         default_factory=lambda: ThreadPoolExecutor(
             max_workers=2,
             thread_name_prefix="tracefold-business-db",
+        )
+    )
+    _news_executor: ThreadPoolExecutor = field(
+        default_factory=lambda: ThreadPoolExecutor(
+            max_workers=_NEWS_LANE_WIDTH,
+            thread_name_prefix="tracefold-news-db",
         )
     )
     _control_executor: ThreadPoolExecutor = field(
@@ -168,6 +176,7 @@ class WorkerDatabase:
     )
     _business_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(2))
     _heavy_business_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
+    _news_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(_NEWS_LANE_WIDTH))
     _control_gate: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
     _pending_business: set[asyncio.Future[Any]] = field(default_factory=set)
     _pending_control: set[asyncio.Future[Any]] = field(default_factory=set)
@@ -225,6 +234,33 @@ class WorkerDatabase:
             kwargs,
             executor=self._business_executor,
             gates=((self._business_gate, _WORKER_ADMISSION_TIMEOUT_SECONDS),),
+            pending=self._pending_business,
+            capability=ResourceCapability.DATABASE_BUSINESS,
+            operation_timeout_seconds=operation_timeout_seconds,
+            on_submitted=on_submitted,
+        )
+
+    async def run_news[T](
+        self,
+        operation_name: str,
+        function: Callable[..., T],
+        /,
+        *args: Any,
+        operation_timeout_seconds: float,
+        on_submitted: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> T:
+        """The News consumers' own DB lane: Market/Macro backlog never starves a live Event."""
+
+        if not self._accepting_business or self._executors_closed:
+            raise RuntimeError("worker_database_business_closed")
+        return await self._run_executor(
+            operation_name,
+            function,
+            args,
+            kwargs,
+            executor=self._news_executor,
+            gates=((self._news_gate, _WORKER_ADMISSION_TIMEOUT_SECONDS),),
             pending=self._pending_business,
             capability=ResourceCapability.DATABASE_BUSINESS,
             operation_timeout_seconds=operation_timeout_seconds,
@@ -427,6 +463,7 @@ class WorkerDatabase:
         self._accepting_business = False
         self._accepting_control = False
         self._business_executor.shutdown(wait=False, cancel_futures=False)
+        self._news_executor.shutdown(wait=False, cancel_futures=False)
         self._control_executor.shutdown(wait=False, cancel_futures=False)
 
     def prewarm_control_connection(self) -> None:

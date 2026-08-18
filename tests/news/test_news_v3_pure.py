@@ -304,17 +304,25 @@ def test_card_uses_code_facts_and_sanitizes_ai_text() -> None:
             "direction": "bullish",
             "magnitude": 2,
             "headline_zh": "英伟达投资 https://x.y",
+            "title_zh": "英伟达将投资 1000 亿美元",
             "rationale": "利好",
             "event_type": "partnership",
             "scope": "single_name",
         },
         decision="push",
-        display_title=None,
         grounded_assets=["NVDA"],
     )
-    assert card["header"]["title"]["content"] == "Nvidia to invest $100bn"  # URL in headline -> fallback to original
+    # URL in the AI headline -> fallback to the Triage title_zh, then to the original title.
+    assert card["header"]["title"]["content"] == "英伟达将投资 1000 亿美元"
     body = json.dumps(card, ensure_ascii=False)
-    assert "原标题" in body and "NVDA" in body and "打开来源" in body
+    assert "原标题" in body and "NVDA" in body and "打开来源" in body and "**标题**：英伟达将投资 1000 亿美元" in body
+    bare = render_first_card(
+        event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
+        verdict={"direction": "bullish", "magnitude": 2, "headline_zh": "x https://x.y"},
+        decision="push",
+        grounded_assets=[],
+    )
+    assert bare["header"]["title"]["content"] == "Nvidia to invest $100bn"
 
 
 def test_control_commands() -> None:

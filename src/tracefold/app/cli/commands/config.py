@@ -9,7 +9,6 @@ from tracefold.platform.config.settings import (
     load_settings,
     news_model_availability,
     news_push_availability,
-    news_translation_availability,
     write_default_config,
 )
 from tracefold.platform.paths import config_path
@@ -40,7 +39,6 @@ def handle_init(args: object) -> tuple[int, dict[str, Any]]:
 def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     push_availability = news_push_availability(settings)
-    translation_availability = news_translation_availability(settings)
     model_availability = news_model_availability(settings)
     return (
         0,
@@ -69,7 +67,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         for role in ("serve", "workers", "migrate")
                     },
                     "serve_pool_max_size": 8,
-                    "workers_pool_max_size": 4,
+                    "workers_pool_max_size": 8,
                     "log_file": str(settings.log_file),
                 },
                 "upstream": {
@@ -91,14 +89,8 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "triage_model": model_availability.triage_model,
                         "analyst_model": model_availability.analyst_model,
                     },
-                    "gate": settings.news.gate.model_dump(),
                     "triage": settings.news.triage.model_dump(),
                     "analyst": settings.news.analyst.model_dump(),
-                    "translation": {
-                        "deepl_configured": translation_availability.deepl_configured,
-                        "deepl_key_count": translation_availability.deepl_key_count,
-                        "deepseek_configured": translation_availability.deepseek_configured,
-                    },
                     "watchlist": sorted(settings.news.watchlist_symbols),
                     "push": {
                         "requested": push_availability.requested,

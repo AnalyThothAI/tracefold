@@ -73,13 +73,13 @@ test("News missing-asset evidence remains readable at AA contrast", async ({ pag
   const feed = newsFeedFixture({
     events: [
       newsFeedEventFixture({
-        display_title: "News Event without grounded assets",
+        title_zh: null,
         event_id: "news-assetless-contrast",
         grounded_assets: [],
         watchlist_hits: [],
       }),
       newsFeedEventFixture({
-        display_title: "News Event with a grounded asset",
+        title_zh: null,
         event_id: "news-grounded-contrast",
         grounded_assets: ["CL"],
         watchlist_hits: [],
@@ -195,7 +195,7 @@ async function routeNewsFeed(page: Page, titles: string[]) {
   const feed = newsFeedFixture({
     events: titles.map((title, index) =>
       newsFeedEventFixture({
-        display_title: title,
+        title_zh: null,
         event_id: `news-density-${index + 1}`,
         leader_title: title,
       }),

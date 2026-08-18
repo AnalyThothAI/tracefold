@@ -13,11 +13,10 @@ from .models import NEWS_BUS_SCHEMA_VERSION
 
 EXCHANGE: Final = "news"
 DLX: Final = "news.dlx"
-CONTROL_EXCHANGE: Final = "news.control"
+RETRY_EXCHANGE: Final = "news.retry"
 
 Q_RAW: Final = "news.raw"
 Q_TRIAGE: Final = "news.triage"
-Q_TRANSLATE: Final = "news.translate"
 Q_DEEP: Final = "news.deep"
 Q_DELIVER: Final = "news.deliver"
 Q_RETRY: Final = "news.retry"
@@ -30,10 +29,10 @@ RK_VERDICT_PUSH: Final = "verdict.push"
 RK_VERDICT_ESCALATE: Final = "verdict.escalate"
 RK_VERDICT_DEEP: Final = "verdict.deep"
 
-RETRY_TTL_MS: Final = (5_000, 30_000, 120_000)
+RETRY_TTL_MS: Final = 30_000
 MAX_TRANSIENT_ATTEMPTS: Final = 3
 
-MessageKind = Literal["raw", "event", "verdict", "control"]
+MessageKind = Literal["raw", "event", "verdict"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +75,7 @@ def decode_body(body: bytes, *, routing_key: str, priority: int, headers: Mappin
     if not isinstance(raw, dict) or raw.get("schema_version") != NEWS_BUS_SCHEMA_VERSION:
         raise BusDecodeError("news_bus_schema_invalid")
     kind = raw.get("kind")
-    if kind not in {"raw", "event", "verdict", "control"}:
+    if kind not in {"raw", "event", "verdict"}:
         raise BusDecodeError("news_bus_kind_invalid")
     payload = raw.get("payload")
     if not isinstance(payload, dict):
@@ -105,7 +104,11 @@ def now_ms() -> int:
 
 
 class TransientError(RuntimeError):
-    """Retryable failure (DB unavailable, upstream 5xx); routed to the retry queue with backoff."""
+    """Retryable failure of this message (upstream 5xx, statement timeout); counted, dead-lettered after 3."""
+
+
+class DeferError(RuntimeError):
+    """The process could not admit the message right now (DB lane saturated); requeued uncounted via the retry lane."""
 
 
 class PermanentError(RuntimeError):
@@ -124,7 +127,6 @@ class Consumer(Protocol):
 
 
 __all__ = [
-    "CONTROL_EXCHANGE",
     "DLX",
     "EXCHANGE",
     "MAX_TRANSIENT_ATTEMPTS",
@@ -133,8 +135,8 @@ __all__ = [
     "Q_DELIVER",
     "Q_RAW",
     "Q_RETRY",
-    "Q_TRANSLATE",
     "Q_TRIAGE",
+    "RETRY_EXCHANGE",
     "RETRY_TTL_MS",
     "RK_EVENT",
     "RK_RAW_LIVE",
@@ -145,6 +147,7 @@ __all__ = [
     "BusDecodeError",
     "BusMessage",
     "Consumer",
+    "DeferError",
     "Handler",
     "PermanentError",
     "Publisher",

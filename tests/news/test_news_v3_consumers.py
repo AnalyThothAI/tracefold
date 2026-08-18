@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from typing import Any
@@ -11,16 +10,31 @@ from typing import Any
 import pytest
 
 from tracefold.news import consumers as consumers_module
+from tracefold.news.agents.analyst import AnalystRunResult
+from tracefold.news.analyst_evidence import EvidenceBundle
+from tracefold.news.analyst_rules import VerifyResult
 from tracefold.news.bus import (
     RK_RAW_LIVE,
+    RK_VERDICT_DEEP,
     RK_VERDICT_ESCALATE,
     RK_VERDICT_PUSH,
     BusMessage,
+    DeferError,
     PermanentError,
-    TransientError,
 )
-from tracefold.news.consumers import ControlConsumer, DeduperConsumer, DelivererConsumer, TriageConsumer
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
+from tracefold.news.consumers import (
+    AnalystConsumer,
+    DeduperConsumer,
+    DelivererConsumer,
+    JanitorLoop,
+    TriageConsumer,
+)
+from tracefold.news.models import (
+    ANALYST_POLICY_VERSION,
+    TRIAGE_POLICY_VERSION,
+    TRIAGE_PROMPT_VERSION,
+    AnalystVerdict,
+)
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
@@ -70,6 +84,8 @@ class RecordingNews:
 
 
 class FakeWorkerDatabase:
+    """Only the News lane exists on the fake; a consumer that reaches for run_business is a wiring bug."""
+
     def __init__(self, news: RecordingNews, *, admission_timeout_for: set[str] | None = None) -> None:
         self.news = news
         self.operations: list[str] = []
@@ -80,7 +96,7 @@ class FakeWorkerDatabase:
         del name
         yield SimpleNamespace(news=self.news, transaction=nullcontext)
 
-    async def run_business(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
+    async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
         del operation_timeout_seconds
         self.operations.append(name)
         if name in self.admission_timeout_for:
@@ -203,7 +219,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-1"
 
 
-def test_deduper_admission_timeout_is_transient_and_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(consumers_module, "admit_item", lambda *_a, **_k: pytest.fail("db never admitted"))
     news = RecordingNews()
     bus = FakeBus()
@@ -220,7 +236,7 @@ def test_deduper_admission_timeout_is_transient_and_publishes_nothing(monkeypatc
             "strategy_id": "1018",
         },
     )
-    with pytest.raises(TransientError, match="db_admission_timeout:news_deduper_admit"):
+    with pytest.raises(DeferError, match="db_admission_timeout:news_deduper_admit"):
         asyncio.run(deduper.handle(raw))
     assert bus.published == [] and news.calls == []
 
@@ -241,7 +257,10 @@ def _triage(news: RecordingNews, bus: FakeBus, *, hourly_cap: int = 20) -> Triag
 
 
 def test_triage_without_model_escalates_watchlist_or_high_score_and_persists_degraded_verdict() -> None:
-    news = RecordingNews(get_verdict=None, event_card=_card(), event_status={}, sent_count_since=0, insert_verdict=True)
+    status_row = {"pushed_2h": 0, "pushed_4h": 0, "max_magnitude_2h": 0, "max_magnitude_4h": 0}
+    news = RecordingNews(
+        get_verdict=None, event_card=_card(), event_status=status_row, sent_count_since=0, insert_verdict=True
+    )
     bus = FakeBus()
     triage = _triage(news, bus)
 
@@ -256,8 +275,10 @@ def test_triage_without_model_escalates_watchlist_or_high_score_and_persists_deg
     assert inserted["prompt_version"] == TRIAGE_PROMPT_VERSION
     assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "escalate"
     assert inserted["verdict"]["headline_zh"] == "模型不可用（规则兜底）"
-    assert inserted["trace"]["attempt"] == 1 and inserted["trace"]["queue_lag_ms"] >= 0
-    assert "latency_ms" not in inserted["trace"]
+    trace = inserted["trace"]
+    assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
+    assert len(trace["prompt_sha256"]) == 64 and trace["status"] == status_row  # replayable snapshot
+    assert "latency_ms" not in trace and "input_sha256" not in trace  # no model call happened
     assert "模型不可用" in news.kwargs_of("set_context_line")["context_line"]
     assert [(m.routing_key, m.payload) for m in bus.published] == [
         (RK_VERDICT_PUSH, {"event_id": "ev-strong", "kind": "first"}),
@@ -328,9 +349,145 @@ def test_triage_rejects_missing_event_id_and_missing_event() -> None:
         asyncio.run(triage.handle(_message("event", {"event_id": "ghost"})))
 
 
+# ---------------------------------------------------------------- Analyst
+def _bundle(status_row: dict[str, Any] | None = None) -> EvidenceBundle:
+    return EvidenceBundle(
+        event_id="ev-strong",
+        storyline_key="asset:NVDA",
+        payload={"event": {"event_id": "ev-strong", "triage": {"direction": "bullish"}}, "event_status": {}},
+        evidence={"history:abc": {"event_id": "ev-old"}},
+        status_row=dict(status_row or {}),
+    )
+
+
+class ScriptedAnalyst:
+    model_name = "test-analyst"
+    prompt_sha256 = "a" * 64
+
+    def __init__(self, result: AnalystRunResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+
+    async def analyze(self, *, bundle: EvidenceBundle, triage_direction: str) -> AnalystRunResult:
+        self.calls.append({"bundle": bundle, "triage_direction": triage_direction})
+        return self.result
+
+
+def _analyst_verdict(**overrides: Any) -> AnalystVerdict:
+    fields: dict[str, Any] = {
+        "agrees_with_triage": True,
+        "revised_direction": "bullish",
+        "revised_magnitude": 2,
+        "novelty_assessment": "new",
+        "market_reaction": [],
+        "context_evidence": ["history:abc"],
+        "thesis_zh": "英伟达投资 OpenAI 数据中心，利多算力链。",
+        "risks_zh": "",
+        "follow_up_needed": True,
+        "confidence": 0.7,
+    }
+    fields.update(overrides)
+    return AnalystVerdict(**fields)
+
+
+def test_analyst_uses_one_prefetched_bundle_and_publishes_followup_after_first_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle({"pushed_2h": 1, "last_push_ago_ms": 600_000})
+    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: bundle)
+    result = AnalystRunResult(_analyst_verdict(), VerifyResult(True), 1200, 1, None, 1, 900, 200, 500)
+    analyst = ScriptedAnalyst(result)
+    news = RecordingNews(
+        get_verdict=None,
+        event_status={"last_push_ago_ms": 600_000},  # last push predates this run -> not superseded
+        insert_verdict=True,
+        delivery={"state": "sent"},
+    )
+    bus = FakeBus()
+
+    asyncio.run(
+        AnalystConsumer(bus=bus, db=FakeWorkerDatabase(news), analyst=analyst, concurrency=2).handle(
+            _message("verdict", {"event_id": "ev-strong"}, routing_key=RK_VERDICT_ESCALATE)
+        )
+    )
+
+    assert analyst.calls[0]["bundle"] is bundle and analyst.calls[0]["triage_direction"] == "bullish"
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["stage"] == "deep" and inserted["policy_version"] == ANALYST_POLICY_VERSION
+    assert inserted["final_decision"] == "push" and inserted["degraded"] is False
+    assert inserted["trace"]["attempts"] == 1 and inserted["trace"]["input_tokens"] == 900
+    assert inserted["trace"]["prompt_sha256"] == "a" * 64 and inserted["trace"]["status"] == bundle.status_row
+    assert bus.routing_keys() == [RK_VERDICT_DEEP]
+    assert bus.published[0].payload == {"event_id": "ev-strong", "kind": "followup"}
+    assert news.names()[-1] == "mark_verdict_published"
+
+
+def test_analyst_followup_is_superseded_by_a_newer_push_in_the_same_storyline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: _bundle())
+    analyst = ScriptedAnalyst(AnalystRunResult(_analyst_verdict(), VerifyResult(True), 900, 1, None, 1))
+    news = RecordingNews(get_verdict=None, event_status={"last_push_ago_ms": 0}, insert_verdict=True)
+    bus = FakeBus()
+
+    asyncio.run(
+        AnalystConsumer(bus=bus, db=FakeWorkerDatabase(news), analyst=analyst, concurrency=2).handle(
+            _message("verdict", {"event_id": "ev-strong"})
+        )
+    )
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "throttled"
+    assert inserted["throttled_by"] == "storyline:asset:NVDA:superseded"
+    assert bus.published == []
+
+
+def test_analyst_verify_failure_persists_degraded_and_never_publishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: _bundle())
+    failed = AnalystRunResult(
+        _analyst_verdict(context_evidence=["history:fake"]),
+        VerifyResult(False, "context_evidence_unknown"),
+        1500,
+        2,
+        "news_analyst_verify:context_evidence_unknown",
+        1,
+    )
+    news = RecordingNews(get_verdict=None, insert_verdict=True)
+    bus = FakeBus()
+
+    asyncio.run(
+        AnalystConsumer(bus=bus, db=FakeWorkerDatabase(news), analyst=ScriptedAnalyst(failed), concurrency=1).handle(
+            _message("verdict", {"event_id": "ev-strong"})
+        )
+    )
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "degraded" and inserted["override_rule"] == "verify_failed"
+    assert inserted["degraded"] is True and inserted["trace"]["attempts"] == 2
+    assert bus.published == [] and "event_status" not in news.names()
+
+
+def test_analyst_without_model_or_bundle_settles_quietly(monkeypatch: pytest.MonkeyPatch) -> None:
+    news = RecordingNews(get_verdict=None)
+    asyncio.run(
+        AnalystConsumer(bus=FakeBus(), db=FakeWorkerDatabase(news), analyst=None, concurrency=1).handle(
+            _message("verdict", {"event_id": "ev-strong"})
+        )
+    )
+    assert news.calls == []
+
+    monkeypatch.setattr(consumers_module, "build_evidence_bundle", lambda repos, **kwargs: None)
+    analyst = ScriptedAnalyst(AnalystRunResult(None, VerifyResult(False, "not_run"), 0, 0, None, 0))
+    with pytest.raises(PermanentError, match="news_event_or_triage_missing"):
+        asyncio.run(
+            AnalystConsumer(bus=FakeBus(), db=FakeWorkerDatabase(news), analyst=analyst, concurrency=1).handle(
+                _message("verdict", {"event_id": "ghost"})
+            )
+        )
+    assert analyst.calls == []
+
+
 # ---------------------------------------------------------------- Deliverer
 def _deliverer(news: RecordingNews, bus: FakeBus, *, hourly_cap: int = 20) -> DelivererConsumer:
-    deliverer = DelivererConsumer(
+    return DelivererConsumer(
         bus=bus,
         db=FakeWorkerDatabase(news),
         sender=None,
@@ -338,8 +495,6 @@ def _deliverer(news: RecordingNews, bus: FakeBus, *, hourly_cap: int = 20) -> De
         min_interval_seconds=0.0,
         hourly_cap=hourly_cap,
     )
-    deliverer._stop_event = asyncio.Event()
-    return deliverer
 
 
 def _delivery_news(**overrides: Any) -> RecordingNews:
@@ -347,11 +502,13 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
     responses: dict[str, Any] = {
         "event_card": _card(),
         "latest_verdict": lambda *, event_id, stage: (
-            {"final_decision": "push", "verdict": {"direction": "bullish", "magnitude": 2, "headline_zh": "英伟达"}}
+            {
+                "final_decision": "push",
+                "verdict": {"direction": "bullish", "magnitude": 2, "headline_zh": "英伟达", "title_zh": "英伟达投资"},
+            }
             if stage == "triage"
             else None
         ),
-        "get_presentation": {"display_title": "英伟达投资", "outcome": "translated"},
         "sent_count_since": 0,
         "begin_delivery": lambda **_k: next(states),
         "settle_delivery": True,
@@ -372,7 +529,17 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable() -> Non
     assert settle["state"] == "terminal" and settle["error_code"] == "delivery_unavailable"
     assert settle["receipt"] is None
     assert bus.published == []
-    assert "sender" not in "".join(news.names())
+    assert "get_presentation" not in news.names()
+
+
+def test_deliverer_paused_lane_drops_instead_of_holding_the_message() -> None:
+    news = _delivery_news()
+    news.control_state = {"paused": True, "mutes": []}
+
+    asyncio.run(_deliverer(news, FakeBus()).handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
+
+    settle = news.kwargs_of("settle_delivery")
+    assert settle["state"] == "terminal" and settle["error_code"] == "delivery_paused"
 
 
 def test_deliverer_without_sender_leaves_existing_delivery_untouched() -> None:
@@ -411,29 +578,19 @@ def test_deliverer_skips_dropped_first_cards_and_followups_without_push_deep_ver
         )
 
 
-# ---------------------------------------------------------------- Control
-def test_control_consumer_applies_commands_to_control_state() -> None:
-    news = RecordingNews()
-    control = ControlConsumer(bus=FakeBus(), db=FakeWorkerDatabase(news))
+# ---------------------------------------------------------------- Janitor
+def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
+    news = RecordingNews(
+        unpublished_candidates=[{"event_id": "ev-lost"}, {"event_id": "ev-gone"}],
+        event_card=lambda event_id: (
+            _card(event_id="ev-lost", family="general", priority="normal") if event_id == "ev-lost" else None
+        ),
+    )
+    bus = FakeBus()
 
-    async def scenario() -> None:
-        await control.handle(_message("control", {"action": "pause_delivery"}))
-        await control.handle(_message("control", {"action": "mute_symbol", "key": "btc", "ttl_ms": 3_600_000}))
-        await control.handle(_message("control", {"action": "mute_theme", "key": "rates"}))
-        await control.handle(_message("control", {"action": "unmute", "key": "BTC"}))
-        await control.handle(_message("control", {"action": "resume_delivery"}))
-        with pytest.raises(PermanentError, match="news_control_action_invalid"):
-            await control.handle(_message("control", {"action": "explode"}))
-        with pytest.raises(PermanentError, match="news_control_key_required"):
-            await control.handle(_message("control", {"action": "mute_theme"}))
+    republished = asyncio.run(JanitorLoop(db=FakeWorkerDatabase(news), bus=bus).republish_unpublished())
 
-    asyncio.run(scenario())
-
-    writes = [kwargs for name, kwargs in news.calls if name == "write_control"]
-    assert [w["paused"] for w in writes] == [True, True, True, True, False]
-    assert [(m["kind"], m["key"]) for m in writes[1]["mutes"]] == [("symbol", "BTC")]
-    assert {(m["kind"], m["key"]) for m in writes[2]["mutes"]} == {("symbol", "BTC"), ("theme", "rates")}
-    assert [(m["kind"], m["key"]) for m in writes[3]["mutes"]] == [("theme", "rates")]
-    assert news.control_state == {"paused": False, "mutes": writes[4]["mutes"]}
-    assert all(m["until_ms"] > time.time() * 1000 for m in news.control_state["mutes"])
-    assert news.names().count("write_control") == 5
+    assert republished == 1
+    assert bus.routing_keys() == ["event.general.normal"]
+    assert bus.published[0].payload == {"event_id": "ev-lost"} and bus.published[0].trace_id == "trace-1"
+    assert news.kwargs_of("mark_event_published")["event_id"] == "ev-lost"

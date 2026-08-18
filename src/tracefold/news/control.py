@@ -1,4 +1,4 @@
-"""Control-plane messages: pause/resume/mute/drain (pure parsing + evaluation)."""
+"""Control-plane commands: pause/resume/mute/unmute (pure parsing + evaluation; the CLI writes news_control_state)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-CONTROL_ACTIONS = frozenset({"pause_delivery", "resume_delivery", "mute_theme", "mute_symbol", "unmute", "drain"})
+CONTROL_ACTIONS = frozenset({"pause_delivery", "resume_delivery", "mute_theme", "mute_symbol", "unmute"})
 DEFAULT_MUTE_TTL_MS = 6 * 3600_000
 
 
@@ -15,7 +15,6 @@ class ControlCommand:
     action: str
     key: str | None
     ttl_ms: int
-    queue: str | None = None
 
 
 def parse_control(payload: Mapping[str, Any]) -> ControlCommand:
@@ -30,7 +29,6 @@ def parse_control(payload: Mapping[str, Any]) -> ControlCommand:
         action=action,
         key=str(key).strip() if key else None,
         ttl_ms=max(60_000, min(ttl_ms, 7 * 24 * 3600_000)),
-        queue=payload.get("queue"),
     )
 
 

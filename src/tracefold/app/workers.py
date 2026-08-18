@@ -34,10 +34,6 @@ from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentA
 from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.news_push import FeishuNewsPushSender
-from tracefold.integrations.news_title_presentation import (
-    DeepLTitleTranslationProvider,
-    OpenAICompatibleDeepSeekTitleProvider,
-)
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
@@ -65,21 +61,18 @@ from tracefold.news.agents.analyst import Analyst
 from tracefold.news.agents.triage_model import TriageModel
 from tracefold.news.consumers import (
     AnalystConsumer,
-    ControlConsumer,
     DeduperConsumer,
     DelivererConsumer,
     JanitorLoop,
     NewsPipeline,
     OpenNewsReceiver,
     RecoveryRunner,
-    TranslatorConsumer,
     TriageConsumer,
 )
 from tracefold.platform.config.settings import (
     Settings,
     news_model_availability,
     news_push_availability,
-    news_translation_availability,
 )
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
@@ -937,7 +930,6 @@ async def _wire_news_pipeline(
 
     strategy_ids = tuple(settings.news.opennews_strategy_ids)
     watchlist_symbols = settings.news.watchlist_symbols
-    watchlist_entries = [entry.model_dump() for entry in settings.news.watchlist]
     ws_client = OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
     history_client = (
         OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
@@ -972,13 +964,6 @@ async def _wire_news_pipeline(
             model=chat_model, model_name=effective, deadline_seconds=settings.news.triage.deadline_seconds
         )
 
-    def _run_read(name: str, fn: Callable[[Any], Any]) -> Awaitable[Any]:
-        def _sync() -> Any:
-            with db.worker_session(name, 2.0) as repos:
-                return fn(repos)
-
-        return db.run_business(name, _sync, operation_timeout_seconds=2.0)
-
     analyst: Analyst | None = None
     if models.analyst_configured and models.analyst_model:
         pro_model, pro_effective = configured_chat_model(
@@ -986,33 +971,12 @@ async def _wire_news_pipeline(
             model_name=models.analyst_model,
             request_timeout_seconds=min(settings.news.analyst.deadline_seconds, 25.0),
             max_tokens=2_000,
-            thinking=False,  # DeepSeek V4 thinking + forced tool_choice is not reliable for structured output yet
+            thinking=False,  # DeepSeek V4 thinking + function-calling structured output is not reliable together
         )
         analyst = Analyst(
-            model=pro_model,
-            model_name=pro_effective,
-            profile_key=f"litellm:{pro_effective}",
-            deadline_seconds=settings.news.analyst.deadline_seconds,
-            max_steps=settings.news.analyst.max_steps,
-            run_read=_run_read,
-            watchlist=watchlist_entries,
+            model=pro_model, model_name=pro_effective, deadline_seconds=settings.news.analyst.deadline_seconds
         )
 
-    translation = news_translation_availability(settings)
-    deepl = (
-        DeepLTitleTranslationProvider(api_keys=settings.news.translation.deepl_api_keys)
-        if translation.deepl_configured
-        else None
-    )
-    deepseek = (
-        OpenAICompatibleDeepSeekTitleProvider(
-            base_url=str(settings.llm.base_url),
-            api_key=str(settings.llm.api_key),
-            model=str(settings.llm.news_triage_model),
-        )
-        if translation.deepseek_configured
-        else None
-    )
     push = news_push_availability(settings)
     sender = (
         FeishuNewsPushSender(
@@ -1038,7 +1002,6 @@ async def _wire_news_pipeline(
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
         ),
         analyst=AnalystConsumer(bus=bus, db=db, analyst=analyst, concurrency=settings.news.analyst.concurrency),
-        translator=TranslatorConsumer(bus=bus, db=db, deepl=deepl, deepseek=deepseek),
         deliverer=DelivererConsumer(
             bus=bus,
             db=db,
@@ -1048,7 +1011,6 @@ async def _wire_news_pipeline(
             hourly_cap=settings.news.push.hourly_cap,
         ),
         janitor=JanitorLoop(db=db, bus=bus),
-        control=ControlConsumer(bus=bus, db=db),
     )
     return bus, pipeline
 

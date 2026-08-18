@@ -538,8 +538,17 @@ class NewsRepository:
         )
 
     def prior_verdicts(
-        self, *, symbol: str | None, storyline_key: str | None, since_ms: int, limit: int
+        self,
+        *,
+        symbols: Sequence[str],
+        storyline_key: str | None,
+        since_ms: int,
+        exclude_event_id: str | None,
+        limit: int,
     ) -> list[dict[str, Any]]:
+        """Triage/Analyst verdicts of Events in the same storyline or sharing a grounded symbol (bounded)."""
+
+        symbol_list = [str(s).upper() for s in symbols]
         rows = self.conn.execute(
             """
             SELECT v.event_id, v.stage, v.final_decision, v.created_at_ms, e.leader_title, e.storyline_key,
@@ -547,44 +556,102 @@ class NewsRepository:
                    v.verdict ->> 'event_type' AS event_type, v.verdict ->> 'headline_zh' AS headline_zh
               FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
              WHERE v.created_at_ms >= %s
-               AND (%s::text IS NULL OR e.storyline_key = %s)
-               AND (%s::text IS NULL OR EXISTS (
-                     SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = %s))
+               AND (%s::text IS NULL OR e.event_id <> %s)
+               AND ((%s::text IS NOT NULL AND e.storyline_key = %s)
+                    OR EXISTS (SELECT 1 FROM news_event_assets a
+                                WHERE a.event_id = e.event_id AND a.symbol = ANY(%s::text[])))
              ORDER BY v.created_at_ms DESC LIMIT %s
             """,
-            (int(since_ms), storyline_key, storyline_key, symbol, symbol, int(limit)),
+            (
+                int(since_ms),
+                exclude_event_id,
+                exclude_event_id,
+                storyline_key or None,
+                storyline_key or None,
+                symbol_list,
+                int(limit),
+            ),
         ).fetchall()
         return [dict(r) for r in rows]
 
-    # ------------------------------------------------------------------ presentations
-    def get_presentation(self, fingerprint: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT * FROM news_title_presentations WHERE comparison_fingerprint = %s", (fingerprint,)
-        ).fetchone()
-        return dict(row) if row else None
-
-    def insert_presentation(
+    def storyline_history(
         self,
         *,
-        fingerprint: str,
-        original_title: str,
-        display_title: str,
-        outcome: str,
-        provider: str | None,
-        fallback_code: str | None,
-        policy_version: str,
-        now_ms: int,
-    ) -> bool:
-        cursor = self.conn.execute(
+        storyline_key: str,
+        symbols: Sequence[str],
+        since_ms: int,
+        exclude_event_id: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Recent Events in the same storyline or sharing a grounded symbol (bounded)."""
+
+        symbol_list = [str(s).upper() for s in symbols]
+        rows = self.conn.execute(
             """
-            INSERT INTO news_title_presentations (
-              comparison_fingerprint, original_title, display_title, outcome, provider, fallback_code,
-              policy_version, created_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
+            SELECT e.event_id, e.opened_at_ms, e.leader_title, e.context_line, e.storyline_key, e.grounded_assets
+              FROM news_events e
+             WHERE e.opened_at_ms >= %s
+               AND (%s::text IS NULL OR e.event_id <> %s)
+               AND ((%s::text <> '' AND e.storyline_key = %s)
+                    OR EXISTS (SELECT 1 FROM news_event_assets a
+                                WHERE a.event_id = e.event_id AND a.symbol = ANY(%s::text[])))
+             ORDER BY e.opened_at_ms DESC LIMIT %s
             """,
-            (fingerprint, original_title, display_title, outcome, provider, fallback_code, policy_version, int(now_ms)),
-        )
-        return bool(cursor.rowcount)
+            (int(since_ms), exclude_event_id, exclude_event_id, storyline_key, storyline_key, symbol_list, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def market_reaction(
+        self, *, symbol: str, anchor_ms: int, now_ms: int, windows_min: Sequence[int]
+    ) -> dict[str, Any]:
+        """Price/OI change for a CEX symbol from the anchor over elapsed windows; error_code when no target/tick."""
+
+        target = self.conn.execute(
+            "SELECT cex_token_id FROM cex_tokens WHERE upper(base_symbol) = %s ORDER BY updated_at_ms DESC LIMIT 1",
+            (symbol.upper(),),
+        ).fetchone()
+        if target is None:
+            return {"symbol": symbol, "error_code": "no_market_target"}
+        target_id = target["cex_token_id"]
+        base = self.conn.execute(
+            """
+            SELECT price_usd, open_interest_usd FROM market_ticks
+             WHERE target_type = 'CexToken' AND target_id = %s AND observed_at_ms <= %s AND observed_at_ms >= %s
+             ORDER BY observed_at_ms DESC LIMIT 1
+            """,
+            (target_id, int(anchor_ms), int(anchor_ms) - 30 * 60_000),
+        ).fetchone()
+        if base is None:
+            return {"symbol": symbol, "error_code": "no_anchor_tick"}
+        rows: list[dict[str, Any]] = []
+        for window in windows_min:
+            end = int(anchor_ms) + int(window) * 60_000
+            if end > int(now_ms):
+                continue
+            after = self.conn.execute(
+                """
+                SELECT price_usd, open_interest_usd FROM market_ticks
+                 WHERE target_type = 'CexToken' AND target_id = %s AND observed_at_ms <= %s AND observed_at_ms > %s
+                 ORDER BY observed_at_ms DESC LIMIT 1
+                """,
+                (target_id, end, int(anchor_ms)),
+            ).fetchone()
+            if after is None:
+                continue
+            rows.append(
+                {
+                    "window_min": int(window),
+                    "price_change_pct": _pct(base["price_usd"], after["price_usd"]),
+                    "oi_change_pct": _pct(base["open_interest_usd"], after["open_interest_usd"]),
+                }
+            )
+        return {"symbol": symbol, "anchor_ms": int(anchor_ms), "rows": rows}
+
+    def macro_state(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT module_key, health, headline, updated_at_ms FROM macro_module_current ORDER BY module_key"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------ deliveries
     def begin_delivery(self, *, event_id: str, kind: str, card: Mapping[str, Any], now_ms: int) -> str:
@@ -741,6 +808,22 @@ class NewsRepository:
         )
         return bool(cursor.rowcount)
 
+    def labels_for_event(self, event_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT label_version, source, label, created_at_ms FROM news_event_labels"
+            " WHERE event_id = %s ORDER BY created_at_ms",
+            (event_id,),
+        ).fetchall()
+        return [
+            {
+                "label_version": r["label_version"],
+                "source": r["source"],
+                "label": dict(r["label"] or {}),
+                "created_at_ms": int(r["created_at_ms"]),
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------ reads (Serve)
     def list_feed(
         self,
@@ -793,8 +876,7 @@ class NewsRepository:
                    t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
                    t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
                    t.verdict ->> 'event_type' AS event_type, t.verdict ->> 'headline_zh' AS headline_zh,
-                   t.verdict ->> 'scope' AS scope,
-                   p.display_title, p.outcome AS presentation_outcome,
+                   t.verdict ->> 'scope' AS scope, t.verdict ->> 'title_zh' AS title_zh,
                    d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
@@ -802,7 +884,6 @@ class NewsRepository:
                 SELECT * FROM news_verdicts v WHERE v.event_id = e.event_id AND v.stage = 'triage'
                  ORDER BY v.created_at_ms DESC LIMIT 1
               ) t ON true
-              LEFT JOIN news_title_presentations p ON p.comparison_fingerprint = e.comparison_fingerprint
               LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
              WHERE {" AND ".join(where)}
              ORDER BY {order}
@@ -849,7 +930,6 @@ class NewsRepository:
         deliveries = self.conn.execute(
             "SELECT * FROM news_deliveries WHERE event_id = %s ORDER BY created_at_ms", (event_id,)
         ).fetchall()
-        presentation = self.get_presentation(str(card["comparison_fingerprint"]))
         return {
             "event": _event_public(card),
             "members": [
@@ -879,15 +959,7 @@ class NewsRepository:
                 }
                 for r in deliveries
             ],
-            "presentation": (
-                {
-                    "display_title": presentation["display_title"],
-                    "outcome": presentation["outcome"],
-                    "provider": presentation["provider"],
-                }
-                if presentation
-                else None
-            ),
+            "labels": self.labels_for_event(event_id),
             "marks": self.marks_for_event(event_id),
         }
 
@@ -916,9 +988,12 @@ class NewsRepository:
                 WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'latency_ms') AS triage_p50_ms,
               (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY (trace ->> 'latency_ms')::double precision)
                  FROM news_verdicts
-                WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'latency_ms') AS triage_p95_ms
+                WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'latency_ms') AS triage_p95_ms,
+              (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY (trace ->> 'queue_lag_ms')::double precision)
+                 FROM news_verdicts
+                WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'queue_lag_ms') AS queue_lag_p95_ms
             """,
-            (hour_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago),
+            (hour_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago),
         ).fetchone()
         delivery = self.conn.execute(
             """
@@ -978,6 +1053,14 @@ class NewsRepository:
         }
 
 
+def _pct(before: Any, after: Any) -> float | None:
+    try:
+        b, a = float(before), float(after)
+    except (TypeError, ValueError):
+        return None
+    return None if b == 0 else round((a - b) / b * 100.0, 4)
+
+
 def _decode_cursor(cursor: str | None) -> tuple[int | None, str | None]:
     if not cursor:
         return None, None
@@ -1023,8 +1106,7 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
 def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         **_event_public(row),
-        "display_title": row.get("display_title") or row["leader_title"],
-        "presentation_outcome": row.get("presentation_outcome"),
+        "title_zh": (row.get("title_zh") or None),
         "triage": (
             {
                 "final_decision": row["final_decision"],
@@ -1036,6 +1118,7 @@ def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
                 "event_type": row.get("event_type"),
                 "scope": row.get("scope"),
                 "headline_zh": row.get("headline_zh"),
+                "title_zh": row.get("title_zh"),
             }
             if row.get("final_decision")
             else None

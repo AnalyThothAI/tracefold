@@ -256,31 +256,6 @@ class NewsPushSettings(BaseModel):
         return self
 
 
-class NewsTranslationSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    deepl_api_keys: tuple[str, ...] = Field(default=(), repr=False)
-
-    @field_validator("deepl_api_keys", mode="before")
-    @classmethod
-    def parse_deepl_api_keys(cls, value: Any) -> tuple[str, ...]:
-        if value is None:
-            return ()
-        if not isinstance(value, list | tuple):
-            raise ValueError("news_translation_deepl_api_keys_invalid")
-        normalized: list[str] = []
-        for raw in value:
-            if not isinstance(raw, str):
-                raise ValueError("news_translation_deepl_api_key_invalid")
-            key = raw.strip()
-            if not key or "\x00" in key or len(key) > 512:
-                raise ValueError("news_translation_deepl_api_key_invalid")
-            normalized.append(key)
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("news_translation_deepl_api_keys_duplicate")
-        return tuple(normalized)
-
-
 class NewsBrokerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -308,13 +283,6 @@ class NewsBrokerSettings(BaseModel):
         return normalized
 
 
-class NewsGateSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    market_telemetry_min_score: float = 80.0
-    general_min_score: float = 70.0
-
-
 class NewsTriageSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -337,24 +305,15 @@ class NewsAnalystSettings(BaseModel):
 
     enabled: bool = True
     deadline_seconds: float = 30.0
-    max_steps: int = 24
     concurrency: int = 2
 
     @model_validator(mode="after")
     def validate_bounds(self) -> NewsAnalystSettings:
         if not 5 <= self.deadline_seconds <= 300:
             raise ValueError("news_analyst_deadline_invalid")
-        if self.max_steps == 25 or not 4 <= self.max_steps <= 100:
-            raise ValueError("news_analyst_max_steps_invalid")
         if not 1 <= self.concurrency <= 8:
             raise ValueError("news_analyst_concurrency_invalid")
         return self
-
-
-class NewsBudgetSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    daily_model_cost_usd: float = 5.0
 
 
 class NewsWatchlistEntry(BaseModel):
@@ -362,7 +321,6 @@ class NewsWatchlistEntry(BaseModel):
 
     symbol: str
     market_type: str = "any"
-    weight: int = 1
 
     @field_validator("symbol", mode="before")
     @classmethod
@@ -380,12 +338,9 @@ class NewsSettings(BaseModel):
     opennews_token: str | None = None
     opennews_strategy_ids: tuple[str, ...] = ()
     broker: NewsBrokerSettings = Field(default_factory=NewsBrokerSettings)
-    gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
     analyst: NewsAnalystSettings = Field(default_factory=NewsAnalystSettings)
-    translation: NewsTranslationSettings = Field(default_factory=NewsTranslationSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
-    budget: NewsBudgetSettings = Field(default_factory=NewsBudgetSettings)
     watchlist: tuple[NewsWatchlistEntry, ...] = ()
 
     @field_validator("opennews_token", mode="before")
@@ -522,25 +477,6 @@ def news_push_availability(settings: Settings) -> NewsPushAvailability:
         reason=reason,
         feishu_webhook_url_configured=webhook_configured,
         feishu_signing_secret_configured=bool(push.feishu_signing_secret),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class NewsTranslationAvailability:
-    deepl_configured: bool
-    deepl_key_count: int
-    deepseek_configured: bool
-
-
-def news_translation_availability(settings: Settings) -> NewsTranslationAvailability:
-    key_count = len(settings.news.translation.deepl_api_keys)
-    deepseek_configured = bool(
-        settings.llm.api_key and settings.llm.news_triage_model and _is_http_base_url(settings.llm.base_url)
-    )
-    return NewsTranslationAvailability(
-        deepl_configured=key_count > 0,
-        deepl_key_count=key_count,
-        deepseek_configured=deepseek_configured,
     )
 
 
@@ -700,27 +636,19 @@ news:
   broker:
     url: "amqp://tracefold:tracefold@rabbitmq:5672/"
     name_prefix: ""
-  gate:
-    market_telemetry_min_score: 80
-    general_min_score: 70
   triage:
     deadline_seconds: 6.0
     concurrency: 4
   analyst:
     enabled: true
     deadline_seconds: 30
-    max_steps: 24
     concurrency: 2
-  translation:
-    deepl_api_keys: []
   push:
     enabled: false
     feishu_webhook_url:
     feishu_signing_secret:
     min_interval_seconds: 0.6
     hourly_cap: 20
-  budget:
-    daily_model_cost_usd: 5
   watchlist: []
 
 upstream:

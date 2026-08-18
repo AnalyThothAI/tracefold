@@ -87,7 +87,6 @@ function recordUnhandledApiRequest(page: Page, url: URL) {
 
 function newsFeedData() {
   const event = newsFeedEventFixture({
-    display_title: "Macro desk flags liquidity rotation",
     event_id: "evt-global-policy",
     leader_description:
       "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
@@ -97,7 +96,7 @@ function newsFeedData() {
     ...newsFeedFixture(),
     events: Array.from({ length: 5 }, (_, index) => ({
       ...event,
-      display_title: index === 0 ? event.display_title : `Global policy update ${index + 1}`,
+      title_zh: null,
       event_id: index === 0 ? event.event_id : `evt-global-policy-${index + 1}`,
       leader_title: index === 0 ? event.leader_title : `Global policy update ${index + 1}`,
     })),
@@ -113,11 +112,6 @@ function newsEventDetailData(path: string) {
         "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
       leader_title: "Macro desk flags liquidity rotation",
     }),
-    presentation: {
-      display_title: "Macro desk flags liquidity rotation",
-      outcome: "not_needed",
-      provider: null,
-    },
   });
 }
 
