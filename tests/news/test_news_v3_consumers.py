@@ -329,6 +329,108 @@ def test_triage_without_model_never_pushes_while_muted_or_paused() -> None:
     assert bus.published == []
 
 
+class _FailingTriageModel:
+    """TriageModel double: raises the scripted TriageModelError per call, or returns a fixed verdict."""
+
+    model_name = "fake"
+
+    def __init__(self, outcomes: list[Any]) -> None:
+        self.outcomes = list(outcomes)
+
+    async def triage(self, _human: str) -> Any:
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def _triage_with_model(news: RecordingNews, bus: FakeBus, model: Any) -> TriageConsumer:
+    triage = _triage(news, bus)
+    triage.model = model
+    return triage
+
+
+def test_triage_output_failure_is_traced_and_never_opens_the_circuit() -> None:
+    """max_tokens truncation / schema mismatch: degraded verdict with finish_reason + parsing_error in the trace, the
+    transport circuit stays closed (no incident), and the next Event still reaches the model."""
+
+    from tracefold.news.agents.triage_model import TriageModelError
+
+    card = _card()
+    news = RecordingNews(get_verdict=None, event_card=card, event_status={}, sent_count_since=0, insert_verdict=True)
+    bus = FakeBus()
+    truncated = [
+        TriageModelError(
+            "news_triage_output_truncated",
+            output_failure=True,
+            finish_reason="length",
+            output_tokens=300,
+            detail="ValidationError: 8 validation errors",
+        )
+        for _ in range(4)
+    ]
+    triage = _triage_with_model(news, bus, _FailingTriageModel(truncated))
+
+    for index in range(4):
+        asyncio.run(triage.handle(_message("event", {"event_id": f"ev-trunc-{index}"})))
+
+    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
+    assert len(inserted) == 4
+    assert all(row["degraded"] is True and row["error_code"] == "news_triage_output_truncated" for row in inserted)
+    assert inserted[0]["trace"]["finish_reason"] == "length" and inserted[0]["trace"]["output_tokens"] == 300
+    assert inserted[0]["trace"]["parsing_error"] == "ValidationError: 8 validation errors"
+    assert "open_incident" not in news.names()
+    assert not triage.circuit.is_open(NOW_MS * 2)
+    assert triage.circuit.failures == 0
+
+
+def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_incident() -> None:
+    from tracefold.news.agents.triage_model import TriageCallResult, TriageModelError
+    from tracefold.news.models import TriageVerdict
+
+    card = _card()
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=card,
+        event_status={},
+        sent_count_since=0,
+        insert_verdict=True,
+        open_incident=1,
+        close_open_incidents=1,
+    )
+    bus = FakeBus()
+    ok = TriageCallResult(
+        verdict=TriageVerdict(
+            event_type="partnership",
+            assets=[],
+            direction="bullish",
+            scope="single_name",
+            magnitude=1,
+            actionable=True,
+            confidence=0.6,
+            decision="push",
+            headline_zh="ok",
+        ),
+        latency_ms=10,
+        input_tokens=1,
+        output_tokens=1,
+        cached_tokens=None,
+        model="fake",
+    )
+    outcomes: list[Any] = [TriageModelError("news_triage_timeout", retryable=True) for _ in range(3)] + [ok]
+    triage = _triage_with_model(news, bus, _FailingTriageModel(outcomes))
+    triage.circuit.open_seconds = 0.0  # let the fourth call reach the model in the same test clock
+
+    for index in range(4):
+        asyncio.run(triage.handle(_message("event", {"event_id": f"ev-net-{index}"})))
+
+    assert news.names().count("open_incident") == 1
+    assert news.kwargs_of("open_incident")["cause_class"] == "triage_circuit_open"
+    assert news.kwargs_of("close_open_incidents")["cause_classes"] == ["triage_circuit_open"]
+    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
+    assert [row["degraded"] for row in inserted] == [True, True, True, False]
+
+
 def test_triage_replays_an_existing_unpublished_decision_without_reinserting() -> None:
     news = RecordingNews(
         get_verdict={"final_decision": "push", "published_at_ms": None},

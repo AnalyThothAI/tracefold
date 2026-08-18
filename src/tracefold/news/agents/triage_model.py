@@ -18,16 +18,42 @@ from .prompts import TRIAGE_SYSTEM_PROMPT
 
 _RETRYABLE_MARKERS = ("timeout", "ratelimit", "connect", "serviceunavailable", "internalserver", "remoteprotocol")
 _MIN_RETRY_BUDGET_SECONDS = 1.5
+_DETAIL_CHARS = 400
 
 
 class TriageModelError(RuntimeError):
-    """One classified model failure: retryable (transport/limits) or not (schema, 4xx); the trace records the class."""
+    """One classified model failure: retryable (transport/limits) or not (schema, 4xx); the trace records the class.
 
-    def __init__(self, code: str, *, retryable: bool = False, attempts: int = 1) -> None:
+    ``output_failure`` marks a call that *reached* the model but returned no usable verdict (truncated by
+    ``max_tokens``, or a schema mismatch); it carries ``finish_reason``/``output_tokens``/``detail`` for the trace and
+    never counts toward the transport circuit breaker.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        retryable: bool = False,
+        attempts: int = 1,
+        output_failure: bool = False,
+        finish_reason: str | None = None,
+        output_tokens: int | None = None,
+        detail: str | None = None,
+    ) -> None:
         self.code = code
         self.retryable = retryable
         self.attempts = attempts
+        self.output_failure = output_failure
+        self.finish_reason = finish_reason
+        self.output_tokens = output_tokens
+        self.detail = detail
         super().__init__(code)
+
+
+def _finish_reason(raw: Any) -> str | None:
+    meta = getattr(raw, "response_metadata", None) or {}
+    value = meta.get("finish_reason") if isinstance(meta, Mapping) else None
+    return str(value) if value else None
 
 
 def is_retryable_model_failure(exc: BaseException) -> bool:
@@ -140,11 +166,20 @@ class TriageModel:
                 raise TriageModelError(code, retryable=retryable, attempts=attempts) from exc
         latency_ms = int((time.perf_counter() - started) * 1000)
         parsed = out.get("parsed") if isinstance(out, Mapping) else None
-        if not isinstance(parsed, TriageVerdict):
-            raise TriageModelError("news_triage_output_invalid", attempts=attempts)
         raw = out.get("raw") if isinstance(out, Mapping) else None
         usage = getattr(raw, "usage_metadata", None) or {}
         details = usage.get("input_token_details") or {}
+        if not isinstance(parsed, TriageVerdict):
+            finish_reason = _finish_reason(raw)
+            parsing_error = out.get("parsing_error") if isinstance(out, Mapping) else None
+            raise TriageModelError(
+                "news_triage_output_truncated" if finish_reason == "length" else "news_triage_output_invalid",
+                attempts=attempts,
+                output_failure=True,
+                finish_reason=finish_reason,
+                output_tokens=usage.get("output_tokens"),
+                detail=(f"{type(parsing_error).__name__}: {parsing_error}"[:_DETAIL_CHARS] if parsing_error else None),
+            )
         return TriageCallResult(
             verdict=parsed,
             latency_ms=latency_ms,

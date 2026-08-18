@@ -545,6 +545,7 @@ class TriageConsumer:
         self.hourly_cap = int(hourly_cap)
         self.concurrency = int(concurrency)
         self.circuit = _Circuit(threshold=circuit_failures, open_seconds=circuit_open_seconds)
+        self._circuit_incident_open = False
         self.policy = policy
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
@@ -622,8 +623,26 @@ class TriageConsumer:
                 call = await self.model.triage(human)
             except TriageModelError as exc:
                 trace.update({"model_attempts": exc.attempts, "model_failure_retryable": exc.retryable})
-                opened = self.circuit.record_failure(stamp)
-                if opened:
+                if exc.output_failure:
+                    # The model answered but the verdict is unusable (max_tokens truncation, schema mismatch): record
+                    # why, and keep the transport circuit closed — falling back on every Event would be worse.
+                    trace.update(
+                        {
+                            "finish_reason": exc.finish_reason,
+                            "output_tokens": exc.output_tokens,
+                            "parsing_error": exc.detail,
+                        }
+                    )
+                    log.warning(
+                        "news triage output unusable event=%s code=%s finish_reason=%s output_tokens=%s detail=%s",
+                        event_id,
+                        exc.code,
+                        exc.finish_reason,
+                        exc.output_tokens,
+                        exc.detail,
+                    )
+                elif self.circuit.record_failure(stamp):
+                    self._circuit_incident_open = True
                     with contextlib.suppress(TransientError, DeferError):
                         await self.db.tx(
                             "news_triage_circuit",
@@ -633,6 +652,15 @@ class TriageConsumer:
                 degraded, error_code = True, exc.code
             else:
                 self.circuit.record_success()
+                if self._circuit_incident_open:
+                    self._circuit_incident_open = False
+                    with contextlib.suppress(TransientError, DeferError):
+                        await self.db.tx(
+                            "news_triage_circuit_close",
+                            lambda repos: repos.news.close_open_incidents(
+                                cause_classes=["triage_circuit_open"], now_ms=stamp
+                            ),
+                        )
                 verdict = call.verdict
                 trace.update(
                     {
