@@ -411,6 +411,57 @@ class NewsRepository:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def upgrade_event_admission(
+        self,
+        *,
+        event_id: str,
+        admission: str,
+        priority: str,
+        asset_class: str,
+        grounded_assets: Sequence[str],
+        watchlist_hits: Sequence[str],
+        macro_lexicon: bool,
+        now_ms: int,
+    ) -> None:
+        """A later, stronger member re-gated a suppressed Event: record the new Gate facts in place (idempotent)."""
+
+        row = self.conn.execute(
+            """
+            UPDATE news_events
+               SET admission = %s, priority = %s, asset_class = %s, grounded_assets = %s::jsonb,
+                   watchlist_hits = %s::jsonb, macro_lexicon = %s, updated_at_ms = %s
+             WHERE event_id = %s
+             RETURNING opened_at_ms
+            """,
+            (
+                admission,
+                priority,
+                asset_class,
+                _dumps(list(grounded_assets)),
+                _dumps(list(watchlist_hits)),
+                bool(macro_lexicon),
+                int(now_ms),
+                event_id,
+            ),
+        ).fetchone()
+        opened_at_ms = int(row["opened_at_ms"]) if row else int(now_ms)
+        for symbol in grounded_assets:
+            self.conn.execute(
+                """
+                INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms)
+                VALUES (%s, %s, NULL, %s) ON CONFLICT DO NOTHING
+                """,
+                (symbol.upper().replace("XYZ-", ""), event_id, opened_at_ms),
+            )
+
+    def set_storyline_key(self, *, event_id: str, storyline_key: str, now_ms: int) -> None:
+        """Triage refined the storyline (final key from verdict primaries/scope); windows use this key from now on."""
+
+        self.conn.execute(
+            "UPDATE news_events SET storyline_key = %s, updated_at_ms = %s WHERE event_id = %s AND storyline_key <> %s",
+            (storyline_key[:120], int(now_ms), event_id, storyline_key[:120]),
+        )
+
     def set_context_line(self, *, event_id: str, context_line: str, followup_of: str | None, now_ms: int) -> None:
         self.conn.execute(
             "UPDATE news_events SET context_line = %s, followup_of = COALESCE(%s, followup_of), updated_at_ms = %s"
@@ -924,6 +975,7 @@ class NewsRepository:
             (day_ago, hour_ago, day_ago, day_ago),
         ).fetchone()
         control = self.read_control(now_ms=now_ms)
+        funnel = self._funnel_24h(day_ago=day_ago)
         return {
             "ingest": {
                 "connected": bool(ingest["connected"]) if ingest else False,
@@ -948,8 +1000,11 @@ class NewsRepository:
                 ],
             },
             "pipeline": {
-                k: (float(v) if isinstance(v, float) else (int(v) if v is not None else None))
-                for k, v in dict(pipeline or {}).items()
+                **{
+                    k: (float(v) if isinstance(v, float) else (int(v) if v is not None else None))
+                    for k, v in dict(pipeline or {}).items()
+                },
+                **funnel,
             },
             "broker": dict(ingest["broker_snapshot"] or {}) if ingest else {},
             "delivery": {
@@ -962,6 +1017,68 @@ class NewsRepository:
                 else None,
             },
             "control": control,
+        }
+
+    def _funnel_24h(self, *, day_ago: int) -> dict[str, Any]:
+        """Where the last 24 h of Events went, by named reason: Gate admissions, decide() rules, storyline keys."""
+
+        suppressed = self.conn.execute(
+            """
+            SELECT admission, count(*) AS n FROM news_events
+             WHERE opened_at_ms >= %s AND admission NOT IN ('candidate', 'listing_deterministic')
+             GROUP BY admission ORDER BY n DESC
+            """,
+            (day_ago,),
+        ).fetchall()
+        dropped = self.conn.execute(
+            """
+            SELECT COALESCE(override_rule, 'unknown') AS rule, count(*) AS n FROM news_verdicts
+             WHERE stage = 'triage' AND final_decision = 'drop' AND created_at_ms >= %s
+             GROUP BY rule ORDER BY n DESC
+            """,
+            (day_ago,),
+        ).fetchall()
+        throttled = self.conn.execute(
+            """
+            SELECT COALESCE(throttled_by, 'unknown') AS key, count(*) AS n FROM news_verdicts
+             WHERE stage = 'triage' AND final_decision = 'throttled' AND created_at_ms >= %s
+             GROUP BY key ORDER BY n DESC LIMIT 10
+            """,
+            (day_ago,),
+        ).fetchall()
+        pushed_by_rule = self.conn.execute(
+            """
+            SELECT COALESCE(override_rule, 'unknown') AS rule, count(*) AS n FROM news_verdicts
+             WHERE stage = 'triage' AND final_decision IN ('push', 'escalate') AND created_at_ms >= %s
+             GROUP BY rule ORDER BY n DESC
+            """,
+            (day_ago,),
+        ).fetchall()
+        missed = self.conn.execute(
+            """
+            SELECT count(DISTINCT l.event_id) AS n
+              FROM news_event_labels l JOIN news_events e ON e.event_id = l.event_id
+             WHERE l.created_at_ms >= %s AND l.label ->> 'label' = 'missed'
+            """,
+            (day_ago,),
+        ).fetchone()
+        totals = self.conn.execute(
+            """
+            SELECT count(*) AS events,
+                   count(*) FILTER (WHERE admission IN ('candidate', 'listing_deterministic')) AS admitted
+              FROM news_events WHERE opened_at_ms >= %s
+            """,
+            (day_ago,),
+        ).fetchone()
+        events = int(totals["events"] or 0) if totals else 0
+        admitted = int(totals["admitted"] or 0) if totals else 0
+        return {
+            "suppressed_by_reason": {str(r["admission"]): int(r["n"]) for r in suppressed},
+            "dropped_by_rule": {str(r["rule"]): int(r["n"]) for r in dropped},
+            "throttled_by_key": {str(r["key"]): int(r["n"]) for r in throttled},
+            "pushed_by_rule": {str(r["rule"]): int(r["n"]) for r in pushed_by_rule},
+            "labeled_missed_24h": int(missed["n"] or 0) if missed else 0,
+            "candidate_share_24h": round(admitted / events, 4) if events else None,
         }
 
 

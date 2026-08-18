@@ -2517,6 +2517,8 @@ export interface components {
         NewsPipelineStatusData: {
             /** Analyst Model */
             analyst_model?: string | null;
+            /** Candidate Share 24H */
+            candidate_share_24h?: number | null;
             /**
              * Candidates 24H
              * @default 0
@@ -2532,6 +2534,10 @@ export interface components {
              * @default 0
              */
             deep_24h: number;
+            /** Dropped By Rule */
+            dropped_by_rule?: {
+                [key: string]: number;
+            };
             /**
              * Events 1H
              * @default 0
@@ -2542,13 +2548,30 @@ export interface components {
              * @default 0
              */
             events_24h: number;
+            /**
+             * Labeled Missed 24H
+             * @default 0
+             */
+            labeled_missed_24h: number;
+            /** Pushed By Rule */
+            pushed_by_rule?: {
+                [key: string]: number;
+            };
             /** Queue Lag P95 Ms */
             queue_lag_p95_ms?: number | null;
+            /** Suppressed By Reason */
+            suppressed_by_reason?: {
+                [key: string]: number;
+            };
             /**
              * Throttled 24H
              * @default 0
              */
             throttled_24h: number;
+            /** Throttled By Key */
+            throttled_by_key?: {
+                [key: string]: number;
+            };
             /**
              * Triage 24H
              * @default 0

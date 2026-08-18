@@ -331,3 +331,128 @@ def test_analyst_evidence_bundle_reads_macro_module_current_from_real_schema(con
     assert macro["evidence_id"] in bundle.evidence
     assert bundle.evidence[macro["evidence_id"]] == {"modules": ["rates_fed"]}
     conn.commit()
+
+
+def _hit(*, hit_id: int, text: str, engine: str, score: int, coins: list[dict], source: str, ts: str) -> dict:
+    return {
+        "id": hit_id,
+        "text": text,
+        "link": f"https://example.test/{hit_id}",
+        "source": source,
+        "newsType": "twitter" if engine == "meme" else "news",
+        "engineType": engine,
+        "ts": ts,
+        "aiRating": {"score": score, "signal": "long", "status": "done"},
+        "coins": [
+            {"expired": False, "grade": c.get("grade"), "market_type": "cex", "score": score, "symbol": c["symbol"]}
+            for c in coins
+        ],
+        "strategy": {"id": 1018, "name": "News Score > 70", "engine_type": engine, "source_type": "news"},
+    }
+
+
+def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn) -> None:
+    """A low-score ungrounded post opens a suppressed Event (low-signal switch on); the same headline arriving from a
+    news source with score 85 and a grade-A tag re-gates the Event to candidate and reports it as publishable once."""
+
+    repos = repositories_for_connection(conn)
+    text = "SafePal discloses a security breach exposing personal data of nearly 40,000 customers"
+    first = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": _hit(
+                hit_id=910001,
+                text=text,
+                engine="meme",
+                score=60,
+                coins=[],
+                source="someone",
+                ts="2026-08-18T20:00:00+08:00",
+            ),
+        },
+        strategy_ids=frozenset({"1018"}),
+    )
+    second = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": _hit(
+                hit_id=910002,
+                text=text,
+                engine="news",
+                score=85,
+                coins=[{"symbol": "SFP", "grade": "A"}],
+                source="CoinDesk",
+                ts="2026-08-18T20:01:00+08:00",
+            ),
+        },
+        strategy_ids=frozenset({"1018"}),
+    )
+    assert first is not None and second is not None
+    now_ms = int(second.entry.published_at_ms or 0) + 1000
+    with repos.transaction():
+        opened = admit_item(
+            repos,
+            event=first,
+            ingest_mode="live",
+            observed_at_ms=now_ms,
+            trace_id="t",
+            watchlist_symbols=frozenset(),
+            now_ms=now_ms,
+            suppress_low_signal=True,
+        )
+        assert opened.event_created and opened.admission == "suppressed_low_signal"
+        joined = admit_item(
+            repos,
+            event=second,
+            ingest_mode="live",
+            observed_at_ms=now_ms,
+            trace_id="t",
+            watchlist_symbols=frozenset(),
+            now_ms=now_ms,
+            suppress_low_signal=True,
+        )
+        assert joined.event_id == opened.event_id and joined.match_kind == "exact"
+        assert joined.admission == "candidate" and joined.event_created is True  # publish once, like a new candidate
+        again = admit_item(
+            repos,
+            event=second,
+            ingest_mode="live",
+            observed_at_ms=now_ms,
+            trace_id="t",
+            watchlist_symbols=frozenset(),
+            now_ms=now_ms,
+            suppress_low_signal=True,
+        )
+        assert again.event_created is False and again.admission == "candidate"  # idempotent replay
+    row = conn.execute(
+        "SELECT admission, grounded_assets, member_count, provider_score_max FROM news_events WHERE event_id = %s",
+        (opened.event_id,),
+    ).fetchone()
+    assert row["admission"] == "candidate" and list(row["grounded_assets"]) == ["SFP"]
+    assert row["member_count"] == 2 and float(row["provider_score_max"]) == 85.0
+    assets = conn.execute("SELECT symbol FROM news_event_assets WHERE event_id = %s", (opened.event_id,)).fetchall()
+    assert {r["symbol"] for r in assets} == {"SFP"}
+    conn.commit()
+
+
+def test_explain_event_prints_the_chain_with_a_one_line_outcome(conn) -> None:
+    from tracefold.news.eval.why import explain_event
+
+    repos = repositories_for_connection(conn)
+    with_verdict = conn.execute(
+        "SELECT event_id FROM news_verdicts WHERE stage = 'triage' ORDER BY created_at_ms LIMIT 1"
+    ).fetchone()
+    suppressed = conn.execute(
+        "SELECT event_id FROM news_events WHERE admission = 'suppressed_pr_template' ORDER BY opened_at_ms LIMIT 1"
+    ).fetchone()
+    assert with_verdict is not None and suppressed is not None
+    explained = explain_event(repos, with_verdict["event_id"])
+    assert explained is not None
+    stages = [step["stage"] for step in explained["chain"]]
+    assert stages[:4] == ["item", "gate", "triage", "decide"]
+    assert explained["chain"][0]["provider_coins"] is not None
+    assert explained["outcome"]
+    held = explain_event(repos, suppressed["event_id"])
+    assert held is not None and held["outcome"] == "held at gate: suppressed_pr_template"
+    assert [step["stage"] for step in held["chain"]] == ["item", "gate"]
+    assert explain_event(repos, "does-not-exist") is None

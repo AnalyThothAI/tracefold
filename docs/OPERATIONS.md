@@ -276,8 +276,10 @@ holding an unacked message; `resume_delivery` clears it. `mute_theme --key
 `decide()` drop matching events; `unmute --key <key>` removes a mute. State
 is visible in `/api/news/status.control`.
 
-Model failure: Triage timeouts/5xx produce fail-closed degraded verdicts
-(only watchlist primaries or score >= 90 with grounded assets still push);
+Model failure: Triage timeouts/5xx produce degraded verdicts that are never
+silent (the rule baseline still pushes watchlist primaries and provider score
+>= 80 with a grounded asset; everything else drops with `degraded=true` and
+is counted in `triage_degraded_24h`);
 a retryable failure (timeout, rate limit, connection) gets one more attempt
 inside `deadline_seconds`, and three consecutive failures open a 60-second
 circuit and a `triage_circuit_open` incident. The verdict trace records
@@ -295,22 +297,30 @@ Diagnose News in this order:
 2. `tracefold news bus-check`: consumers attached to every queue (Deduper and
    Deliverer show exactly one), `news.dead` depth, `news.retry` depth;
    `tracefold news dlq inspect` for the dead-letter bodies.
-3. `pipeline`: `events_1h` vs `candidates_24h` (Gate share ~30%),
-   `triage_24h` vs `triage_degraded_24h`, `triage_p95_ms`,
-   `queue_lag_p95_ms`, `throttled_24h`.
+3. `pipeline`: `candidate_share_24h` (the Gate now admits nearly every Item;
+   a share far below ~90% means the low-signal switch or a template flood),
+   `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
+   `pushed_by_rule`, `labeled_missed_24h`, `triage_24h` vs
+   `triage_degraded_24h`, `triage_p95_ms`, `queue_lag_p95_ms`,
+   `throttled_24h`. For one Event, `tracefold news why <event_id>` prints
+   raw first line -> normalized title -> gate facts -> triage verdict ->
+   decide rule / throttle key -> storyline status snapshots -> delivery.
 4. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
    (`delivery_unavailable` = push disabled or webhook invalid;
    `delivery_paused` = control pause; `ambiguous_after_crash` = a send whose
    ack was lost; `hourly_cap_reached`).
-5. `tracefold news eval --hours 168`: precision@push, missed movers, and
-   throttled movers from operator labels (`tracefold news label <event_id>
-   <good|noise|late|wrong_direction|dup>`; `good`/`wrong_direction`/`late`
-   count as moved, `noise`/`dup` as flat), with
-   per-`override_rule`/`throttled_by`/asset-class/event-type confusion tables.
-   `tracefold news replay-decisions --hours 168 --min-push-magnitude 2 ...`
-   re-runs `decide()` with a candidate policy over the same stored verdicts.
-6. `tracefold news replay <hits.json>`: reproduce Deduper+Gate on a saved
-   provider payload without broker or model.
+5. `tracefold news eval --hours 168`: precision@push, the guardrail
+   `missed_rate`/`false_push_rate`, and suppressed/missed/throttled movers from
+   operator labels (`tracefold news label <event_id>
+   <good|noise|late|wrong_direction|dup|missed>` on any Event;
+   `good`/`wrong_direction`/`late`/`missed` count as moved, `noise`/`dup` as
+   flat), with per-admission/`override_rule`/`throttled_by`/asset-class/
+   audience/event-type confusion tables. `tracefold news replay-decisions
+   --hours 168 --min-push-magnitude 2 --no-storyline-throttle ...` re-runs
+   `decide()` with a candidate policy over the same stored verdicts; change
+   `news.policy` only after the replay and the labels agree.
+6. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
+   Deduper+Gate on a saved provider payload without broker or model.
 
 Retention: `news_items`/`news_events` older than 30 days are purged by the
 Janitor; bands expire with their family window. Feed shows Events from the

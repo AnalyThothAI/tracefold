@@ -23,9 +23,6 @@ _StatusEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsStatusData]
 _ADMISSIONS = {
     "candidate",
     "listing_deterministic",
-    "suppressed_ungrounded",
-    "suppressed_ungrounded_meme",
-    "suppressed_meme_low",
     "suppressed_pr_template",
     "suppressed_low_signal",
     "recovery",

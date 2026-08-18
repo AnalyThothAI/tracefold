@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     news_control.add_argument("--ttl-minutes", type=_positive_int, default=360, help="mute duration")
     news_label = news_subcommands.add_parser("label", help="record an operator label for one Event (learning plane)")
     news_label.add_argument("event_id")
-    news_label.add_argument("label", choices=("good", "noise", "late", "wrong_direction", "dup"))
+    news_label.add_argument("label", choices=("good", "noise", "late", "wrong_direction", "dup", "missed"))
     news_label.add_argument("--note", default="", help="free-text note (<=200 chars)")
     news_eval = news_subcommands.add_parser("eval", help="offline evaluation of Triage decisions against labels")
     news_eval.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
@@ -75,13 +75,28 @@ def build_parser() -> argparse.ArgumentParser:
         "replay-decisions", help="re-run decide() over stored verdicts with a candidate policy (no model)"
     )
     news_replay_decisions.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
-    news_replay_decisions.add_argument("--escalate-magnitude", type=_positive_int, default=3)
-    news_replay_decisions.add_argument("--min-push-magnitude", type=_positive_int, default=2)
-    news_replay_decisions.add_argument("--min-watchlist-magnitude", type=_positive_int, default=1)
+    news_replay_decisions.add_argument("--escalate-magnitude", type=int, default=None, help="default: news.policy")
+    news_replay_decisions.add_argument("--min-push-magnitude", type=int, default=None, help="default: news.policy")
+    news_replay_decisions.add_argument("--min-watchlist-magnitude", type=int, default=None, help="default: news.policy")
+    news_replay_decisions.add_argument("--theme-cap-4h", type=_positive_int, default=None, help="default: news.policy")
+    news_replay_decisions.add_argument(
+        "--no-storyline-throttle", action="store_true", help="replay with storyline throttling switched off"
+    )
+    news_replay_decisions.add_argument(
+        "--no-unclear-push", action="store_true", help="replay without the unclear-but-clear-event push rule"
+    )
     news_replay = news_subcommands.add_parser(
         "replay", help="replay a JSON file of provider hits through Deduper+Gate (no model, no broker)"
     )
     news_replay.add_argument("path", help="JSON file: {strategy_id: [hit, ...]} or [hit, ...]")
+    news_replay.add_argument(
+        "--gate-policy",
+        choices=("config", "open", "strict"),
+        default="config",
+        help="Gate low-signal switch: config = news.gate.suppress_low_signal, open = off, strict = on",
+    )
+    news_why = news_subcommands.add_parser("why", help="print one Event's chain: item, gate, triage, decide, delivery")
+    news_why.add_argument("event_id")
     news_dlq = news_subcommands.add_parser("dlq", help="inspect, replay, or purge the News dead-letter queue")
     news_dlq.add_argument("dlq_action", choices=("inspect", "replay", "purge"))
     news_dlq.add_argument("--limit", type=_positive_int, default=20, help="messages to inspect/replay")

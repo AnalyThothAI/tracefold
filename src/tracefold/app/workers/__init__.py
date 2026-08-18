@@ -39,6 +39,7 @@ from tracefold.macro import (
     MacroProjectionCandidate,
     acquisition_loop_policy,
 )
+from tracefold.news import DecidePolicy
 from tracefold.news.agents.analyst import Analyst
 from tracefold.news.agents.triage_model import TriageModel
 from tracefold.news.consumers import (
@@ -844,7 +845,13 @@ async def _wire_news_pipeline(
     pipeline = NewsPipeline(
         receiver=receiver,
         recovery=recovery,
-        deduper=DeduperConsumer(bus=bus, db=db, strategy_ids=strategy_ids, watchlist_symbols=watchlist_symbols),
+        deduper=DeduperConsumer(
+            bus=bus,
+            db=db,
+            strategy_ids=strategy_ids,
+            watchlist_symbols=watchlist_symbols,
+            suppress_low_signal=settings.news.gate.suppress_low_signal,
+        ),
         triage=TriageConsumer(
             bus=bus,
             db=db,
@@ -855,6 +862,7 @@ async def _wire_news_pipeline(
             concurrency=settings.news.triage.concurrency,
             circuit_failures=settings.news.triage.circuit_failures,
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
+            policy=DecidePolicy(**settings.news.policy.model_dump()),
         ),
         analyst=AnalystConsumer(bus=bus, db=db, analyst=analyst, concurrency=settings.news.analyst.concurrency),
         deliverer=DelivererConsumer(

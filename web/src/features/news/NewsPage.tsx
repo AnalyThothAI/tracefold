@@ -42,10 +42,7 @@ const KNOWN_ADMISSIONS = [
   "listing_deterministic",
   "recovery",
   "suppressed_low_signal",
-  "suppressed_meme_low",
   "suppressed_pr_template",
-  "suppressed_ungrounded",
-  "suppressed_ungrounded_meme",
 ] as const;
 
 export function NewsPage(props: NewsPageProps) {

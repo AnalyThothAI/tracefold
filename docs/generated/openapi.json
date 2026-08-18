@@ -7096,6 +7096,17 @@
             ],
             "title": "Analyst Model"
           },
+          "candidate_share_24h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Share 24H"
+          },
           "candidates_24h": {
             "default": 0,
             "title": "Candidates 24H",
@@ -7111,6 +7122,13 @@
             "title": "Deep 24H",
             "type": "integer"
           },
+          "dropped_by_rule": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Dropped By Rule",
+            "type": "object"
+          },
           "events_1h": {
             "default": 0,
             "title": "Events 1H",
@@ -7120,6 +7138,18 @@
             "default": 0,
             "title": "Events 24H",
             "type": "integer"
+          },
+          "labeled_missed_24h": {
+            "default": 0,
+            "title": "Labeled Missed 24H",
+            "type": "integer"
+          },
+          "pushed_by_rule": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Pushed By Rule",
+            "type": "object"
           },
           "queue_lag_p95_ms": {
             "anyOf": [
@@ -7132,10 +7162,24 @@
             ],
             "title": "Queue Lag P95 Ms"
           },
+          "suppressed_by_reason": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Suppressed By Reason",
+            "type": "object"
+          },
           "throttled_24h": {
             "default": 0,
             "title": "Throttled 24H",
             "type": "integer"
+          },
+          "throttled_by_key": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Throttled By Key",
+            "type": "object"
           },
           "triage_24h": {
             "default": 0,

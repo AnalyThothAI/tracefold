@@ -176,6 +176,12 @@ class NewsPipelineStatusData(ExactApiSchema):
     queue_lag_p95_ms: float | None = None
     triage_model: str | None = None
     analyst_model: str | None = None
+    suppressed_by_reason: dict[str, int] = Field(default_factory=dict)
+    dropped_by_rule: dict[str, int] = Field(default_factory=dict)
+    throttled_by_key: dict[str, int] = Field(default_factory=dict)
+    pushed_by_rule: dict[str, int] = Field(default_factory=dict)
+    labeled_missed_24h: int = 0
+    candidate_share_24h: float | None = None
 
 
 class NewsDeliveryStatusData(ExactApiSchema):

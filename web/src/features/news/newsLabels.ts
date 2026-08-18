@@ -5,10 +5,7 @@ const ADMISSION_LABELS: Record<string, string> = {
   listing_deterministic: "上币（确定性）",
   recovery: "补录",
   suppressed_low_signal: "抑制 · 低信号",
-  suppressed_meme_low: "抑制 · Meme 低分",
-  suppressed_pr_template: "抑制 · PR 模板",
-  suppressed_ungrounded: "抑制 · 未落地",
-  suppressed_ungrounded_meme: "抑制 · Meme 未落地",
+  suppressed_pr_template: "抑制 · 律所模板",
 };
 
 const PRIORITY_LABELS: Record<string, string> = {

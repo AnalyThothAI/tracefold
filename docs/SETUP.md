@@ -139,11 +139,34 @@ news:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
     feishu_signing_secret:
-    hourly_cap: 20
+    hourly_cap: 30
+  policy:                     # decide() thresholds and switches (all optional; these are the defaults)
+    min_push_magnitude: 1
+    min_watchlist_magnitude: 1
+    escalate_magnitude: 3
+    unclear_push_min_magnitude: 2
+    unclear_push_event_types: [product, listing, delisting, regulation, hack, exploit, partnership, filing]
+    theme_cap_4h: 3
+    storyline_throttle: true
+    hourly_cap_enabled: true
+  gate:
+    suppress_low_signal: false  # true = drop ungrounded, non-macro social posts under score 70 without a model call
   watchlist:
     - {symbol: BTC}
+    - {symbol: ETH}
+    - {symbol: SOL}
     - {symbol: NVDA}
+    - {symbol: TSLA}
+    - {symbol: COIN}
 ```
+
+`news.policy` and `news.gate` are the operator's recall/precision knobs: the
+Gate admits nearly every Item (only recovery replays, deterministic listing
+frames, law-firm templates, and — behind `suppress_low_signal` — low-score
+ungrounded social posts skip the model), Triage is the semantic filter, and
+`decide()` applies these thresholds. Change them after `tracefold news
+replay-decisions` and operator labels agree; `tracefold config` prints the
+effective values.
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. Missing or invalid delivery

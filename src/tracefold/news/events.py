@@ -78,8 +78,13 @@ def admit_item(
     watchlist_symbols: frozenset[str],
     now_ms: int,
     text_override: str | None = None,
+    suppress_low_signal: bool = False,
 ) -> AdmitResult:
-    """Idempotent by Item identity. Returns the Event assignment for the (possibly pre-existing) Item."""
+    """Idempotent by Item identity. Returns the Event assignment for the (possibly pre-existing) Item.
+
+    A member that joins an existing non-candidate Event re-runs the Gate when it is stronger evidence (score >= 80,
+    an A/A+ grounded tag, or a different reporting origin); the Event is then upgraded in place and published once.
+    """
 
     news = repos.news
     metadata = dict(event.provider_metadata)
@@ -143,6 +148,8 @@ def admit_item(
             coins=coins,
             ingest_mode=ingest_mode,
             watchlist_symbols=watchlist_symbols,
+            raw_first_line=extracted.first_line,
+            suppress_low_signal=suppress_low_signal,
         )
     )
     tokens = comparison_tokens(comparison)
@@ -158,21 +165,21 @@ def admit_item(
                 joined_at_ms=published_at_ms,
                 match_kind="exact",
                 jaccard_estimate=1.0,
-                provider_score=gate and float(provider_score) if isinstance(provider_score, (int, float)) else None,
+                provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
                 now_ms=now_ms,
             )
-            return AdmitResult(
-                item_id,
-                inserted,
-                str(exact["event_id"]),
-                False,
-                str(exact["admission"]),
-                "exact",
-                gate,
-                family,
-                "",
-                fingerprint,
-                title,
+            return _member_result(
+                repos,
+                event_id=str(exact["event_id"]),
+                item_id=item_id,
+                inserted=inserted,
+                match_kind="exact",
+                gate=gate,
+                family=family,
+                fingerprint=fingerprint,
+                title=title,
+                reporting_origin=event.entry.reporting_origin or "opennews",
+                now_ms=now_ms,
             )
         signature = minhash_signature(tokens)
         keys = band_keys(signature)
@@ -195,27 +202,24 @@ def admit_item(
                 provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
                 now_ms=now_ms,
             )
-            ev = repos.conn.execute(
-                "SELECT admission, storyline_key FROM news_events WHERE event_id = %s", (best_id,)
-            ).fetchone()
-            return AdmitResult(
-                item_id,
-                inserted,
-                best_id,
-                False,
-                str(ev["admission"]) if ev else "candidate",
-                "near",
-                gate,
-                family,
-                str(ev["storyline_key"]) if ev else "",
-                fingerprint,
-                title,
+            return _member_result(
+                repos,
+                event_id=best_id,
+                item_id=item_id,
+                inserted=inserted,
+                match_kind="near",
+                gate=gate,
+                family=family,
+                fingerprint=fingerprint,
+                title=title,
+                reporting_origin=event.entry.reporting_origin or "opennews",
+                now_ms=now_ms,
             )
     else:
         keys = ()
 
     storyline = preliminary_storyline_key(
-        title=title, grounded_assets=gate.grounded_assets, asset_class=gate.asset_class, family=family
+        title=title, grounded_assets=gate.strong_assets, asset_class=gate.asset_class, family=family
     )
     context_line = f"[{gate.asset_class}/{family}/{_engine_type(metadata)}] " + " ".join(gate.grounded_assets)
     news.insert_event(
@@ -245,6 +249,85 @@ def admit_item(
     return AdmitResult(
         item_id, inserted, item_id, True, gate.admission, "leader", gate, family, storyline, fingerprint, title
     )
+
+
+_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "recovery"})
+_STRONG_MEMBER_SCORE = 80.0
+
+
+def _member_result(
+    repos: Any,
+    *,
+    event_id: str,
+    item_id: str,
+    inserted: bool,
+    match_kind: str,
+    gate: GateVerdict,
+    family: str,
+    fingerprint: str,
+    title: str,
+    reporting_origin: str,
+    now_ms: int,
+) -> AdmitResult:
+    """Attach a member and, when the member is stronger evidence than the leader, re-gate a suppressed Event."""
+
+    row = repos.conn.execute(
+        """
+        SELECT e.admission, e.storyline_key, e.priority, e.published_at_ms, i.reporting_origin AS leader_origin
+          FROM news_events e JOIN news_items i ON i.item_id = e.leader_item_id
+         WHERE e.event_id = %s
+        """,
+        (event_id,),
+    ).fetchone()
+    admission = str(row["admission"]) if row else "candidate"
+    upgraded = False
+    if row and admission not in _REGATE_ADMISSIONS and gate.admission == "candidate":
+        stronger = (
+            (gate.grounded_assets and _strong_tag(gate))
+            or _member_score(repos, item_id) >= _STRONG_MEMBER_SCORE
+            or (reporting_origin and reporting_origin != str(row["leader_origin"] or ""))
+        )
+        if stronger:
+            repos.news.upgrade_event_admission(
+                event_id=event_id,
+                admission="candidate",
+                priority=gate.priority,
+                asset_class=gate.asset_class,
+                grounded_assets=gate.grounded_assets,
+                watchlist_hits=gate.watchlist_hits,
+                macro_lexicon=gate.macro_lexicon,
+                now_ms=now_ms,
+            )
+            admission, upgraded = "candidate", True
+    return AdmitResult(
+        item_id,
+        inserted,
+        event_id,
+        upgraded,  # an upgraded Event is published exactly like a new candidate (idempotent by published_at_ms)
+        admission,
+        match_kind,
+        gate,
+        family,
+        str(row["storyline_key"]) if row else "",
+        fingerprint,
+        title,
+    )
+
+
+def _strong_tag(gate: GateVerdict) -> bool:
+    """A member whose Gate facts are strong on their own: high priority with a grounded asset, or a watchlist hit."""
+
+    return (bool(gate.grounded_assets) and gate.priority == "high") or bool(gate.watchlist_hits)
+
+
+def _member_score(repos: Any, item_id: str) -> float:
+    row = repos.conn.execute(
+        "SELECT provider_metadata ->> 'score' AS score FROM news_items WHERE item_id = %s", (item_id,)
+    ).fetchone()
+    try:
+        return float(row["score"]) if row and row["score"] is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _reconstruct_text(event: OpenNewsEvent) -> str:

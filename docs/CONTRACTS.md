@@ -410,7 +410,7 @@ observed after deployment.
 - service/config: `serve`, `workers`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - Macro: `macro backfill|backfill-professional|status`;
-- News: `news bus-check|control|label|eval|replay-decisions|replay|dlq`;
+- News: `news bus-check|control|label|eval|replay-decisions|replay|dlq|why`;
 - maintenance: `ops queue-inspect|queue-resolve|queue-resolve-bucket|validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -435,18 +435,26 @@ covers `/readyz`, `/api/status`, `/api/news/*`, and `/api/macro/*`;
 `news bus-check` connects, declares the topology idempotently, and prints
 per-queue message/consumer counts. `news control <action> [--key
 --ttl-minutes]` writes `news_control_state` through the Workers role. `news
-label <event_id> <good|noise|late|wrong_direction|dup> [--note]` inserts one
-`news_event_labels` row (`source` `human`, `label_version` `news_label_v1`).
-`news eval --hours --policy-version` scores stored Triage decisions against
-operator labels only (`good`/`wrong_direction`/`late` count as moved,
-`noise`/`dup` as flat): `precision_at_push`, `missed_movers_rate`,
-`throttled_movers_rate`, per-`override_rule`, `throttled_by`, asset-class,
-and event-type confusion tables, and storyline statistics. `news
-replay-decisions --hours --escalate-magnitude --min-push-magnitude
---min-watchlist-magnitude` re-runs `decide()` over stored verdicts with a
-candidate `DecidePolicy` and no model call. `news replay <hits.json>` runs
-Deduper+Gate over saved provider hits without broker or model. `news dlq
-inspect|replay|purge [--limit]` peeks, republishes, or purges `news.dead`.
+label <event_id> <good|noise|late|wrong_direction|dup|missed> [--note]`
+inserts one `news_event_labels` row (`source` `human`, `label_version`
+`news_label_v1`) on any Event, including Gate-suppressed, dropped, or
+throttled ones. `news eval --hours --policy-version` scores every Event of the
+window against operator labels only (`good`/`wrong_direction`/`late`/`missed`
+count as moved, `noise`/`dup` as flat; an Event without a verdict counts as
+`suppressed`): `precision_at_push`, `missed_rate`, `false_push_rate`,
+`missed_movers_rate`, `suppressed_movers_rate`, `throttled_movers_rate`,
+per-admission, `override_rule`, `throttled_by`, asset-class, audience, and
+event-type confusion tables, and storyline statistics. `news
+replay-decisions --hours [--escalate-magnitude --min-push-magnitude
+--min-watchlist-magnitude --theme-cap-4h --no-storyline-throttle
+--no-unclear-push]` re-runs `decide()` over stored verdicts with a candidate
+`DecidePolicy` (unspecified values come from `news.policy`) and no model
+call. `news replay <hits.json> [--gate-policy config|open|strict]` runs
+Deduper+Gate over saved provider hits without broker or model and lists every
+Event with admission, grounded assets, and preliminary storyline. `news why
+<event_id>` prints the Event's chain (item, gate, triage, decide, analyst,
+delivery) and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
+peeks, republishes, or purges `news.dead`.
 
 `macro status` separates steady acquisition from explicit maintenance. The
 steady summary reports actionable due work, future schedules, active and

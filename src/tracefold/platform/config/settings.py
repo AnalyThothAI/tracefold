@@ -129,7 +129,7 @@ class NewsPushSettings(BaseModel):
     feishu_webhook_url: str | None = None
     feishu_signing_secret: str | None = None
     min_interval_seconds: float = 0.6
-    hourly_cap: int = 20
+    hourly_cap: int = 30
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
     @classmethod
@@ -206,6 +206,55 @@ class NewsAnalystSettings(BaseModel):
         return self
 
 
+class NewsPolicySettings(BaseModel):
+    """Operator-owned decide() thresholds and switches (see tracefold.news.DecidePolicy)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    escalate_magnitude: int = 3
+    min_push_magnitude: int = 1
+    min_watchlist_magnitude: int = 1
+    unclear_push_min_magnitude: int = 2
+    unclear_push_event_types: tuple[str, ...] = (
+        "product",
+        "listing",
+        "delisting",
+        "regulation",
+        "hack",
+        "exploit",
+        "partnership",
+        "filing",
+    )
+    theme_cap_4h: int = 3
+    storyline_throttle: bool = True
+    hourly_cap_enabled: bool = True
+
+    @field_validator("unclear_push_event_types", mode="before")
+    @classmethod
+    def parse_event_types(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, list | tuple):
+            raise ValueError("news_policy_event_types_invalid")
+        return tuple(str(v).strip() for v in value if str(v).strip())
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsPolicySettings:
+        bounded = ("escalate_magnitude", "min_push_magnitude", "min_watchlist_magnitude", "unclear_push_min_magnitude")
+        for name in bounded:
+            if not 0 <= int(getattr(self, name)) <= 3:
+                raise ValueError(f"news_policy_{name}_invalid")
+        if not 1 <= self.theme_cap_4h <= 100:
+            raise ValueError("news_policy_theme_cap_invalid")
+        return self
+
+
+class NewsGateSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    suppress_low_signal: bool = False
+
+
 class NewsWatchlistEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -231,6 +280,8 @@ class NewsSettings(BaseModel):
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
     analyst: NewsAnalystSettings = Field(default_factory=NewsAnalystSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
+    policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
+    gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
     watchlist: tuple[NewsWatchlistEntry, ...] = ()
 
     @field_validator("opennews_token", mode="before")
@@ -504,7 +555,18 @@ news:
     feishu_webhook_url:
     feishu_signing_secret:
     min_interval_seconds: 0.6
-    hourly_cap: 20
+    hourly_cap: 30
+  policy:
+    escalate_magnitude: 3
+    min_push_magnitude: 1
+    min_watchlist_magnitude: 1
+    unclear_push_min_magnitude: 2
+    unclear_push_event_types: [product, listing, delisting, regulation, hack, exploit, partnership, filing]
+    theme_cap_4h: 3
+    storyline_throttle: true
+    hourly_cap_enabled: true
+  gate:
+    suppress_low_signal: false
   watchlist: []
 """
 

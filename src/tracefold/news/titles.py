@@ -9,7 +9,7 @@ from typing import Final
 
 from .exact_atom_identity import comparison_title
 
-TITLE_NORMALIZATION_VERSION: Final = "news_title_norm_v1"
+TITLE_NORMALIZATION_VERSION: Final = "news_title_norm_v2"
 MAX_TITLE_CHARS: Final = 500
 MIN_CONTENT_TOKENS: Final = 3
 
@@ -18,19 +18,25 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _SPACE_RE = re.compile(r"\s+")
 _LABEL_LINE_RE = re.compile(r"^.{0,40}[:：]\s*$")
+_SOURCE_LABELS: Final = (
+    "the block|decrypt|cointelegraph|coindesk|chainwire|prn|prnewswire|reuters|bloomberg|wsj|cnbc|first squawk"
+    "|new|breaking|latest|just in|update|insight|live updates|source|alert|urgent|developing|exclusive|ap|bbc|cnn"
+    "|techcrunch|fortune|crowdfundinsider|the street|jin10|金十数据|deitaone|walter bloomberg"
+)
+_EXCHANGES: Final = r"binance|bitget|robinhood|coinbase|okx|bybit|kraken|upbit|bithumb|gate\.io|kucoin|htx|mexc"
 _PREFIX_RE = re.compile(
     r"^(?:"
     r"(?:reply|quote:|rt)\s+"
-    r"|\.?@[\w]{1,32}[:\s]+"
     r"|\*+\s*"
-    r"|(?:the block|decrypt|cointelegraph|coindesk|chainwire|prn|prnewswire|reuters|bloomberg|wsj|cnbc|first squawk"
-    r"|binance|bitget|robinhood|coinbase|okx|bybit|new|breaking|latest|just in|update|insight|live updates|source"
-    r"|alert|urgent|developing|exclusive|ap|bbc|cnn|techcrunch|fortune|crowdfundinsider|the street)"
-    r"\s*[:|\-–—]\s*"
+    r"|(?:" + _SOURCE_LABELS + r")\s*[:|\-–—]\s*"
     r"|\$[A-Z]{1,6}\s*[-–—]\s*"
     r")+",
     re.IGNORECASE,
 )
+# An exchange name is a *subject*, not a source label: strip "Binance: ..." only when the remainder still names
+# the exchange (a redundant label such as "Binance: Binance Will List ..."); keep "Binance: Notice on ..." intact.
+_EXCHANGE_LABEL_RE = re.compile(r"^(?P<name>" + _EXCHANGES + r")\s*[:|\-–—]\s*(?P<rest>.+)$", re.IGNORECASE)
+_HANDLE_RE = re.compile(r"(?<![\w@])\.?@(?=[A-Za-z0-9_]{1,32}\b)")
 _SUFFIX_RE = re.compile(
     r"\s*[-–—|]\s*(?:ft|bbg|rtrs|reuters|wsj|cnbc|kyodo|ria|fox news|bloomberg|the block|decrypt|coindesk|source)"
     r"\s*\.?$",
@@ -52,7 +58,14 @@ def _clean_block(block: str) -> str:
 
 
 def _strip_noise(text: str) -> str:
+    """Drop URLs, source labels, and social decoration; keep every subject (exchange names, @handles as words)."""
+
     stripped = _URL_RE.sub(" ", text).strip()
+    stripped = _PREFIX_RE.sub("", stripped).strip()
+    label = _EXCHANGE_LABEL_RE.match(stripped)
+    if label and re.search(rf"\b{re.escape(label.group('name'))}\b", label.group("rest"), re.IGNORECASE):
+        stripped = label.group("rest").strip()
+    stripped = _HANDLE_RE.sub("", stripped)  # "@Krakenfx launches" -> "Krakenfx launches": the handle is the subject
     stripped = _PREFIX_RE.sub("", stripped).strip()
     stripped = _SUFFIX_RE.sub("", stripped).strip()
     return _SPACE_RE.sub(" ", stripped)
