@@ -602,8 +602,20 @@ class NewsRepository:
         return [dict(r) for r in rows]
 
     def macro_state(self) -> list[dict[str, Any]]:
+        """Compact projection of the six current Macro module rows for the Analyst evidence bundle."""
+
         rows = self.conn.execute(
-            "SELECT module_key, health, headline, updated_at_ms FROM macro_module_current ORDER BY module_key"
+            """
+            SELECT module_id,
+                   payload_json ->> 'label' AS label,
+                   current_health_state,
+                   history_depth_state,
+                   payload_json -> 'summary' ->> 'headline' AS headline,
+                   fact_cutoff_ms,
+                   updated_at_ms
+              FROM macro_module_current
+             ORDER BY module_id
+            """
         ).fetchall()
         return [dict(r) for r in rows]
 
