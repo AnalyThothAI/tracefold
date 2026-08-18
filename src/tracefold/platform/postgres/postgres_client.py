@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,11 +10,14 @@ from psycopg import Connection, conninfo, pq
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from tracefold.platform.docker_host import (
+    COMPOSE_POSTGRES_HOST as _COMPOSE_POSTGRES_HOST,
+)
+from tracefold.platform.docker_host import (
+    HOST_LOOPBACK as _HOST_LOOPBACK,
+)
+from tracefold.platform.docker_host import host_postgres_port, loopback_url_for_compose_host, running_in_container
 from tracefold.platform.validation import require_nonnegative_float
-
-_COMPOSE_POSTGRES_HOST = "postgres"
-_HOST_LOOPBACK = "127.0.0.1"
-_DEFAULT_HOST_POSTGRES_PORT = "56532"
 
 
 def with_password_from_file(dsn: str, password_file: Path | None) -> str:
@@ -125,26 +127,15 @@ def _seconds_to_ms(seconds: float) -> int:
 
 
 def _running_in_container() -> bool:
-    return Path("/.dockerenv").exists()
+    return running_in_container()
 
 
 def _host_postgres_port() -> str:
-    return os.environ.get("TRACEFOLD_POSTGRES_PORT") or _DEFAULT_HOST_POSTGRES_PORT
+    return host_postgres_port()
 
 
 def _url_dsn_with_local_docker_host(dsn: str) -> str:
-    parsed = urlsplit(dsn)
-    if parsed.hostname != _COMPOSE_POSTGRES_HOST:
-        return dsn
-    username = parsed.username or ""
-    password = parsed.password
-    auth = ""
-    if username and password is not None:
-        auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
-    elif username:
-        auth = f"{quote(username, safe='')}@"
-    host = f"{_HOST_LOOPBACK}:{_host_postgres_port()}"
-    return urlunsplit((parsed.scheme, f"{auth}{host}", parsed.path, parsed.query, parsed.fragment))
+    return loopback_url_for_compose_host(dsn, compose_host=_COMPOSE_POSTGRES_HOST, host_port=_host_postgres_port())
 
 
 def _url_dsn_with_password(dsn: str, password: str) -> str:

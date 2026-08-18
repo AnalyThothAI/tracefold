@@ -38,6 +38,7 @@ from tracefold.news.bus import (
     TransientError,
     decode_body,
 )
+from tracefold.platform.docker_host import local_docker_host_amqp_url
 
 log = logging.getLogger("tracefold.news.bus")
 
@@ -129,7 +130,7 @@ class RabbitMQBus:
         connect_timeout_seconds: float = 10.0,
         retry_ttl_ms: int = RETRY_TTL_MS,
     ) -> None:
-        self._url = url
+        self._url = local_docker_host_amqp_url(url)
         self._prefix = name_prefix
         self._connect_timeout = connect_timeout_seconds
         self._retry_ttl_ms = int(retry_ttl_ms)

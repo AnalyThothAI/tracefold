@@ -286,7 +286,11 @@ OpenNews account Strategy WSS (news.opennews_strategy_ids, validated at startup)
 Broker: RabbitMQ 4 (`rabbitmq:4-management` in compose; `news.broker.url` is
 the AMQP URL, `news.broker.name_prefix` prefixes every exchange/queue).
 `tracefold news bus-check` connects, declares the topology idempotently, and
-prints per-queue message/consumer counts. Consumers reconnect automatically
+prints per-queue message/consumer counts. Outside a container the compose
+host names resolve to the published loopback ports (`postgres` ->
+`127.0.0.1:${TRACEFOLD_POSTGRES_PORT:-56532}`, `rabbitmq` ->
+`127.0.0.1:${TRACEFOLD_RABBITMQ_PORT:-5672}`), so the same `config.yaml`
+serves `docker compose exec` and host-side CLI runs. Consumers reconnect automatically
 (robust connection); while the broker is unreachable the Receiver keeps the
 WSS open, drops frames, and opens a `broker_unavailable` incident that
 Recovery fills from the official Strategy hits after reconnect. Queue overflow
