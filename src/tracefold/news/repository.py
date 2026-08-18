@@ -602,7 +602,7 @@ class NewsRepository:
         return [dict(r) for r in rows]
 
     def cex_tick_target(self, symbol: str) -> str | None:
-        """market_ticks target of a CEX base symbol: its canonical Binance USDT perp feed (provider:native_market_id)."""
+        """market_ticks target of a CEX base symbol: the canonical Binance USDT perp feed (provider:market_id)."""
 
         row = self.conn.execute(
             """
