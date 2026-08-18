@@ -7085,17 +7085,6 @@
       "NewsPipelineStatusData": {
         "additionalProperties": false,
         "properties": {
-          "analyst_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analyst Model"
-          },
           "candidate_share_24h": {
             "anyOf": [
               {
@@ -7115,11 +7104,6 @@
           "decided_push_24h": {
             "default": 0,
             "title": "Decided Push 24H",
-            "type": "integer"
-          },
-          "deep_24h": {
-            "default": 0,
-            "title": "Deep 24H",
             "type": "integer"
           },
           "dropped_by_rule": {

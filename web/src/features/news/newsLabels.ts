@@ -50,7 +50,7 @@ const DELIVERY_STATE_LABELS: Record<string, string> = {
 };
 
 const STAGE_LABELS: Record<string, string> = {
-  deep: "Analyst",
+  deep: "Analyst（已退役）",
   triage: "Triage",
 };
 

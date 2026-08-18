@@ -63,7 +63,7 @@ def storyline_key(
 
     Called twice per Event: before Triage with the Gate's grounded assets (preliminary key, status bar only) and
     after Triage with the verdict's primary assets and scope (final key, written back to the Event and used by the
-    storyline windows, throttling, and the Analyst).
+    storyline windows and throttling).
     """
 
     primaries = sorted(a.upper().replace("XYZ-", "") for a in primary_assets if a.upper() not in _CL_SYMBOLS)

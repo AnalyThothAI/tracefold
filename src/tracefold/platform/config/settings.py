@@ -68,11 +68,10 @@ class LlmConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     news_triage_model: str | None = None
-    news_analyst_model: str | None = None
     macro_document_analysis_enabled: bool = False
     macro_document_analysis_model: str = "gpt-5.4-mini"
 
-    @field_validator("api_key", "news_triage_model", "news_analyst_model", mode="before")
+    @field_validator("api_key", "news_triage_model", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -99,8 +98,6 @@ class LlmConfig(BaseModel):
         configured = (self.api_key, self.base_url, self.news_triage_model)
         if any(configured) and not all(configured):
             raise ValueError("llm_direct_configuration_incomplete")
-        if self.news_analyst_model is None and self.news_triage_model is not None:
-            self.news_analyst_model = self.news_triage_model
         return self
 
 
@@ -190,22 +187,6 @@ class NewsTriageSettings(BaseModel):
         return self
 
 
-class NewsAnalystSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    deadline_seconds: float = 30.0
-    concurrency: int = 2
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> NewsAnalystSettings:
-        if not 5 <= self.deadline_seconds <= 300:
-            raise ValueError("news_analyst_deadline_invalid")
-        if not 1 <= self.concurrency <= 8:
-            raise ValueError("news_analyst_concurrency_invalid")
-        return self
-
-
 class NewsPolicySettings(BaseModel):
     """Operator-owned decide() thresholds and switches (see tracefold.news.DecidePolicy)."""
 
@@ -278,7 +259,6 @@ class NewsSettings(BaseModel):
     opennews_strategy_ids: tuple[str, ...] = ()
     broker: NewsBrokerSettings = Field(default_factory=NewsBrokerSettings)
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
-    analyst: NewsAnalystSettings = Field(default_factory=NewsAnalystSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
     policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
     gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
@@ -414,20 +394,14 @@ def news_push_availability(settings: Settings) -> NewsPushAvailability:
 @dataclass(frozen=True, slots=True)
 class NewsModelAvailability:
     triage_configured: bool
-    analyst_configured: bool
     triage_model: str | None
-    analyst_model: str | None
 
 
 def news_model_availability(settings: Settings) -> NewsModelAvailability:
     direct = bool(settings.llm.api_key and _is_http_base_url(settings.llm.base_url))
     triage = direct and bool(settings.llm.news_triage_model)
-    analyst = direct and bool(settings.llm.news_analyst_model) and settings.news.analyst.enabled
     return NewsModelAvailability(
-        triage_configured=triage,
-        analyst_configured=analyst,
-        triage_model=settings.llm.news_triage_model if triage else None,
-        analyst_model=settings.llm.news_analyst_model if analyst else None,
+        triage_configured=triage, triage_model=settings.llm.news_triage_model if triage else None
     )
 
 
@@ -522,7 +496,6 @@ llm:
   api_key:
   base_url:
   news_triage_model:
-  news_analyst_model:
   macro_document_analysis_enabled: false
   macro_document_analysis_model: "gpt-5.4-mini"
 
@@ -546,10 +519,6 @@ news:
   triage:
     deadline_seconds: 6.0
     concurrency: 4
-  analyst:
-    enabled: true
-    deadline_seconds: 30
-    concurrency: 2
   push:
     enabled: false
     feishu_webhook_url:

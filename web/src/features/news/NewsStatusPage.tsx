@@ -21,7 +21,7 @@ export function NewsStatusPage({ token }: { token: string }) {
         <div>
           <span className="news-eyebrow">NEWS PIPELINE STATUS</span>
           <h1>新闻运行状态</h1>
-          <p>OpenNews 接入、消息代理、Triage/Analyst 流水线与飞书推送的当前状态。</p>
+          <p>OpenNews 接入、消息代理、Triage 流水线与飞书推送的当前状态。</p>
         </div>
         {status ? (
           <span className="news-status-state" data-state={status.state}>
@@ -108,13 +108,12 @@ function StatusDocument({ status }: { status: NewsStatus }) {
           ))}
         </StatusLayer>
 
-        <StatusLayer title="流水线 · Triage / Analyst">
+        <StatusLayer title="流水线 · Triage">
           <StatusFact label="1h 事件" value={String(pipeline.events_1h)} />
           <StatusFact label="24h 事件" value={String(pipeline.events_24h)} />
           <StatusFact label="24h 候选" value={String(pipeline.candidates_24h)} />
           <StatusFact label="24h Triage" value={String(pipeline.triage_24h)} />
           <StatusFact label="24h Triage 降级" value={String(pipeline.triage_degraded_24h)} />
-          <StatusFact label="24h Analyst" value={String(pipeline.deep_24h)} />
           <StatusFact label="24h 判定推送" value={String(pipeline.decided_push_24h)} />
           <StatusFact label="24h 节流" value={String(pipeline.throttled_24h)} />
           <StatusFact
@@ -141,7 +140,6 @@ function StatusDocument({ status }: { status: NewsStatus }) {
           <StatusFact label="Triage P50" value={optionalDuration(pipeline.triage_p50_ms)} />
           <StatusFact label="Triage P95" value={optionalDuration(pipeline.triage_p95_ms)} />
           <StatusFact label="Triage 模型" value={pipeline.triage_model ?? "未配置"} />
-          <StatusFact label="Analyst 模型" value={pipeline.analyst_model ?? "未配置"} />
         </StatusLayer>
 
         <StatusLayer title="推送 · 飞书">

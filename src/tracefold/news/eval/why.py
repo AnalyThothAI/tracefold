@@ -18,7 +18,6 @@ def explain_event(repos: Any, event_id: str) -> dict[str, Any] | None:
     event = dict(detail["event"])
     metadata = dict(card.get("provider_metadata") or {})
     triage = [v for v in detail["verdicts"] if v["stage"] == "triage"]
-    deep = [v for v in detail["verdicts"] if v["stage"] == "deep"]
     latest = triage[-1] if triage else None
     chain: list[dict[str, Any]] = [
         {
@@ -84,17 +83,6 @@ def explain_event(repos: Any, event_id: str) -> dict[str, Any] | None:
                 "published_at_ms": latest.get("published_at_ms"),
             }
         )
-    chain.extend(
-        {
-            "stage": "analyst",
-            "final_decision": v.get("final_decision"),
-            "degraded": bool(v.get("degraded")),
-            "error_code": v.get("error_code"),
-            "throttled_by": v.get("throttled_by"),
-            "verdict": v.get("verdict"),
-        }
-        for v in deep
-    )
     chain.extend(
         {
             "stage": "delivery",

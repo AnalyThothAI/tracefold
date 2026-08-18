@@ -12,14 +12,11 @@ SRC = ROOT / "src" / "tracefold"
 NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {
-    "ANALYST_POLICY_VERSION",
-    "ANALYST_PROMPT_VERSION",
     "DEFAULT_POLICY",
     "GATE_POLICY_VERSION",
     "OPENNEWS_SOURCE_ID",
     "TRIAGE_POLICY_VERSION",
     "TRIAGE_PROMPT_VERSION",
-    "AnalystVerdict",
     "DecidePolicy",
     "NewsFeedEntry",
     "OpenNewsEvent",
@@ -37,13 +34,14 @@ PURE_NEWS_MODULES = (
     "gate.py",
     "storyline.py",
     "triage_rules.py",
-    "analyst_rules.py",
     "control.py",
     "tokens.py",
     "minhash.py",
     "titles.py",
 )
 RETIRED_NEWS_MODULES = (
+    "analyst_evidence.py",
+    "analyst_rules.py",
     "push.py",
     "runtime.py",
     "sources.py",
@@ -168,18 +166,19 @@ def test_news_package_does_not_import_retired_token_radar() -> None:
     assert offenders == []
 
 
-def test_analyst_evidence_bundle_and_call_are_read_only_and_tool_free() -> None:
-    evidence = NEWS_ROOT / "analyst_evidence.py"
-    analyst = NEWS_ROOT / "agents" / "analyst.py"
-    for path in (evidence, analyst):
-        modules = _imported_modules(path)
-        assert not any(module.startswith(("tracefold.news.consumers", "tracefold.news.events")) for module in modules)
-        assert not any(module.startswith("tracefold.integrations") for module in modules)
-        assert _imported_roots(path).isdisjoint(IO_MODULE_ROOTS | {"deepagents", "langgraph", "langchain"})
-        called = _called_attribute_names(path)
-        assert called.isdisjoint(set(WRITE_REPOSITORY_METHODS) | {"tx", "transaction", "publish"})
-    assert not (NEWS_ROOT / "agents" / "tools.py").exists()
-    assert "with_structured_output" in analyst.read_text(encoding="utf-8")
+def test_analyst_lane_is_retired() -> None:
+    """Issue #57: one Event, one judgment, one card — no second model stage, no follow-up lane."""
+
+    for retired in ("analyst_evidence.py", "analyst_rules.py"):
+        assert not (NEWS_ROOT / retired).exists()
+    for retired in ("analyst.py", "tools.py"):
+        assert not (NEWS_ROOT / "agents" / retired).exists()
+    assert not (NEWS_ROOT / "agents" / "prompts" / "NEWS_ANALYST.md").exists()
+    consumers = (NEWS_ROOT / "consumers.py").read_text(encoding="utf-8")
+    assert "AnalystConsumer" not in consumers
+    assert "news.deep" not in consumers and "render_followup_card" not in consumers
+    triage = NEWS_ROOT / "agents" / "triage_model.py"
+    assert "with_structured_output" in triage.read_text(encoding="utf-8")
 
 
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:

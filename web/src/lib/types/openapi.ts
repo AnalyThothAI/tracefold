@@ -2515,8 +2515,6 @@ export interface components {
         };
         /** NewsPipelineStatusData */
         NewsPipelineStatusData: {
-            /** Analyst Model */
-            analyst_model?: string | null;
             /** Candidate Share 24H */
             candidate_share_24h?: number | null;
             /**
@@ -2529,11 +2527,6 @@ export interface components {
              * @default 0
              */
             decided_push_24h: number;
-            /**
-             * Deep 24H
-             * @default 0
-             */
-            deep_24h: number;
             /** Dropped By Rule */
             dropped_by_rule?: {
                 [key: string]: number;

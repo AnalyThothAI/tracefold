@@ -17,16 +17,8 @@ const TRIAGE_FIELDS: readonly { key: string; label: string }[] = [
   { key: "scope", label: "范围" },
   { key: "actionable", label: "可操作" },
   { key: "confidence", label: "置信度" },
+  { key: "audience", label: "受众" },
   { key: "decision", label: "模型建议" },
-];
-
-const ANALYST_FIELDS: readonly { key: string; label: string }[] = [
-  { key: "agrees_with_triage", label: "同意 Triage" },
-  { key: "revised_direction", label: "修订方向" },
-  { key: "revised_magnitude", label: "修订量级" },
-  { key: "novelty_assessment", label: "新颖度" },
-  { key: "follow_up_needed", label: "需要跟进" },
-  { key: "confidence", label: "置信度" },
 ];
 
 export function NewsVerdictPanel({ verdicts }: { verdicts: readonly NewsVerdict[] }) {
@@ -56,9 +48,9 @@ export function NewsVerdictPanel({ verdicts }: { verdicts: readonly NewsVerdict[
 
 function NewsVerdictCard({ verdict }: { verdict: NewsVerdict }) {
   const payload = verdict.verdict ?? {};
-  const fields = verdict.stage === "deep" ? ANALYST_FIELDS : TRIAGE_FIELDS;
-  const headline = stringField(payload, verdict.stage === "deep" ? "thesis_zh" : "headline_zh");
-  const rationale = stringField(payload, verdict.stage === "deep" ? "risks_zh" : "rationale");
+  const fields = TRIAGE_FIELDS;
+  const headline = stringField(payload, "headline_zh");
+  const rationale = stringField(payload, "why_zh");
   const traceEntries = Object.entries(verdict.trace ?? {});
   return (
     <article

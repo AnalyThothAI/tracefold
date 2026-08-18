@@ -39,19 +39,21 @@ part of the configuration contract.
 `gmgn.*`, `upstream.*`, `providers.binance.*`, `providers.okx`,
 `api.heartbeat_interval`, `api.replay_limit`, top-level `handles`, top-level
 `notifications`, `news.sources`, `news.rss_enabled`,
-`news.title_presentation`, `news.translation`, `news.gate`, `news.budget`,
-and `llm.news_brief_model` are retired inputs. Any equivalent retired key
-fails validation; there is no alias, merge, or generated-source fallback.
-Remove them from an existing operator config before upgrading.
+`news.title_presentation`, `news.translation`, `news.budget`,
+`llm.news_brief_model`, and — with the Analyst lane (issue #57) —
+`news.analyst.*` and `llm.news_analyst_model` are retired inputs. Any
+equivalent retired key fails validation; there is no alias, merge, or
+generated-source fallback. Remove them from an existing operator config before
+upgrading.
 
 `llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
 DeepSeek-compatible configuration. They are all absent or all present; a
 partial triple fails validation, and Tracefold never supplies an implicit
-endpoint or model. `llm.news_analyst_model` defaults to the triage model.
-`llm.macro_document_analysis_enabled` and `llm.macro_document_analysis_model`
-admit the optional Fed document analysis on the same gateway. The
-Chinese card title is the Triage verdict's `title_zh`; no other model or
-provider produces titles. Model execution policy, timeouts, token budgets,
+endpoint or model. `llm.macro_document_analysis_enabled` and
+`llm.macro_document_analysis_model` admit the optional Fed document analysis
+on the same gateway. The card's Chinese text is the Triage verdict's
+`headline_zh` and `why_zh` (with `title_zh` for the console); no other model
+or provider produces copy. Model execution policy, timeouts, token budgets,
 cadence, retries, and reservations are code-owned. Environment variables are
 not a credential contract.
 
@@ -74,15 +76,14 @@ they never fail startup or recovery. The current operator set is `1018`,
 run; `news.broker.name_prefix` prefixes every exchange and queue name and
 `news.broker.connect_timeout_seconds` bounds the connect. `news.triage.*`
 (`deadline_seconds`, `concurrency`, `circuit_failures`,
-`circuit_open_seconds`), `news.analyst.*` (`enabled`, `deadline_seconds`,
-`concurrency`), `news.push.*` (`enabled`, `feishu_webhook_url`, optional
-`feishu_signing_secret`, `min_interval_seconds`, `hourly_cap`), and
+`circuit_open_seconds`), `news.push.*` (`enabled`, `feishu_webhook_url`,
+optional `feishu_signing_secret`, `min_interval_seconds`, `hourly_cap`), and
 `news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
-`news.triage.concurrency` (default 4) and `news.analyst.concurrency` (default
-2) are the real consumer widths of their queues. Lexicons, prefix tables, LSH
-geometry, prompt texts, and policy versions are code constants.
-`tracefold config` exposes only redacted booleans, counts, model names, and
-watchlist symbols; it never prints the token, broker URL, keys, or webhook.
+`news.triage.concurrency` (default 4) is the real consumer width of its queue.
+Lexicons, prefix tables, LSH geometry, prompt texts, and policy versions are
+code constants. `tracefold config` exposes only redacted booleans, counts,
+model names, and watchlist symbols; it never prints the token, broker URL,
+keys, or webhook.
 
 Push delivery is available only when `news.push.enabled` is true and the
 webhook is a valid Feishu HTTPS custom-bot v2 URL; otherwise Serve and
@@ -167,7 +168,7 @@ surface is exactly three read-only routes:
   Recovery Events are visible with `admission=recovery`.
 - `GET /api/news/events/{event_id}` returns one Event, its member Items
   (title, URL, origin, publication time, match kind, Jaccard estimate,
-  provenance, description), every Triage/Analyst verdict (model decision, rule
+  provenance, description), every Triage verdict (model decision, rule
   baseline, final decision, override rule, throttle reason, verdict payload,
   model, prompt version, degraded flag, trace), deliveries, and operator labels
   (`label_version`, `source`, label payload, created time). Unknown ids return
@@ -177,11 +178,11 @@ surface is exactly three read-only routes:
   last frame/publish, error, configured and provider-enabled Strategy IDs,
   strategy warnings, open incidents, token configured), `broker` (configured,
   connected, per-queue message/consumer counts when observed, error code),
-  `pipeline` (events and candidates per hour/day, Triage/Analyst counts,
-  degraded counts, decided pushes, throttled, Triage p50/p95, queue lag p95,
-  model names), and
-  `delivery` (sent/terminal counts, last error, end-to-end p95, availability,
-  hourly cap), plus `control` (paused, mutes) and the watchlist symbols.
+  `pipeline` (events and candidates per hour/day, Triage counts, degraded
+  counts, decided pushes, throttled, Triage p50/p95, queue lag p95, the Triage
+  model name), and `delivery` (sent/terminal counts, last error, end-to-end
+  p95, availability, hourly cap), plus `control` (paused, mutes) and the
+  watchlist symbols.
 
 `/api/news/feed` and `/api/news/events/{event_id}` emit strong ETags and
 honor `If-None-Match`; `/api/news/status` uses a weak ETag that ignores
@@ -197,32 +198,32 @@ Fingerprints of at most two tokens never share an Event.
 Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
 `event_type`, `assets[{symbol, market_type?, role}]`, `direction`, `scope`,
 `magnitude 0..3`, `actionable`, `confidence`, `decision` (model intent),
-`audience`, `headline_zh`, `title_zh` (faithful Chinese title, at most 160
-characters), `why_zh` (one plain sentence, at most 120 characters); the stored
-row adds `model_decision`, `rule_baseline_decision`, `final_decision`,
-`override_rule`, `throttled_by`, `degraded`, `error_code`, `trace`.
-`AnalystVerdict` is `agrees_with_triage`, `revised_direction`,
-`revised_magnitude`, `novelty_assessment`, `context_evidence[]`, `thesis_zh`,
-`follow_up_needed`, `confidence`; it is stored only after `verify_verdict()`
-or as `degraded`. The current versions are `news_triage_prompt_v4`,
-`news_triage_policy_v2`, `news_analyst_prompt_v5`, `news_analyst_policy_v4`,
-and `news_delivery_card_v7`.
+`audience`, `headline_zh` (the card header), `title_zh` (faithful Chinese
+title, console only, at most 160 characters), `why_zh` (one plain sentence, at
+most 140 characters); the stored row adds `model_decision`,
+`rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
+`degraded`, `error_code`, `trace`. `triage` is the only stage written; the
+retired Analyst lane's `deep` rows survive as history (issue #57). The current
+versions are `news_title_norm_v2`, `news_gate_v4` (lexicon
+`news_gate_lexicon_v2`), `news_storyline_v2`, `news_triage_prompt_v5`,
+`news_triage_policy_v2`, and `news_delivery_card_v8`.
 
-Delivery identity is `(event_id, kind)` with `kind` in `first`, `followup`;
-states are `sending`, `sent`, `terminal`. There is exactly one HTTP attempt;
-a paused control settles `terminal/delivery_paused` immediately instead of
-holding the message.
+Delivery identity is `(event_id, kind)`; `first` is the only kind written —
+one Event gets one card — and the retired lane's `followup` rows survive as
+history. States are `sending`, `sent`, `terminal`. There is exactly one HTTP
+attempt; a paused control settles `terminal/delivery_paused` immediately
+instead of holding the message.
 
 Broker contract (code-owned): topic exchange `news`, dead-letter exchange
-`news.dlx`, fanout retry exchange `news.retry`, quorum queues `news.raw`
-(`raw.#`; single-active, `reject-publish` overflow at 100,000, delivery limit
-3), `news.triage` (`event.#`; delivery limit 3), `news.deep`
-(`verdict.escalate`; delivery limit 2), `news.deliver` (`verdict.push`,
-`verdict.deep`; single-active, delivery limit 1), the single retry lane
-`news.retry` (30 s TTL, dead-letters back to `news`), and `news.dead`
-(delivery limit 1,000,000 so peeks never drop evidence); all names take
-`news.broker.name_prefix`. Message bodies are `news_bus_v1` JSON envelopes
-(`schema_version`, `kind`, `message_id`, `trace_id`, `occurred_at_ms`,
+`news.dlx`, fanout retry exchange `news.retry`, three quorum business queues —
+`news.raw` (`raw.#`; single-active, `reject-publish` overflow at 100,000,
+delivery limit 3), `news.triage` (`event.#`; delivery limit 3), and
+`news.deliver` (`verdict.push`; single-active, delivery limit 1) — plus the
+single retry lane `news.retry` (30 s TTL, dead-letters back to `news`) and
+`news.dead` (delivery limit 1,000,000 so peeks never drop evidence); all names
+take `news.broker.name_prefix`. Declaring the topology deletes the retired
+Analyst queue `news.deep` (issue #57). Message bodies are `news_bus_v1` JSON
+envelopes (`schema_version`, `kind`, `message_id`, `trace_id`, `occurred_at_ms`,
 `payload`) with AMQP priority 0 or 5 and `x-news-attempt`/`x-news-trace`
 headers. Consumer outcomes are typed: `TransientError` retries through the
 lane and dead-letters after 3 attempts, `DeferError` requeues uncounted when
@@ -453,8 +454,8 @@ replay-decisions --hours [--escalate-magnitude --min-push-magnitude
 call. `news replay <hits.json> [--gate-policy config|open|strict]` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
 Event with admission, grounded assets, and preliminary storyline. `news why
-<event_id>` prints the Event's chain (item, gate, triage, decide, analyst,
-delivery) and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
+<event_id>` prints the Event's chain (item, gate, triage, decide, delivery)
+and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
 peeks, republishes, or purges `news.dead`.
 
 `macro status` separates steady acquisition from explicit maintenance. The

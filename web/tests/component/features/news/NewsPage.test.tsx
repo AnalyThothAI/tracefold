@@ -423,7 +423,7 @@ describe("NewsPage", () => {
     for (const layer of [
       "接入 · OpenNews WSS",
       "代理 · RabbitMQ",
-      "流水线 · Triage / Analyst",
+      "流水线 · Triage",
       "推送 · 飞书",
     ]) {
       expect(screen.getByRole("heading", { name: layer })).toBeInTheDocument();
@@ -539,18 +539,15 @@ describe("NewsPage", () => {
               newsVerdictFixture({
                 created_at_ms: NEWS_NOW_MS - 30_000,
                 final_decision: "push",
-                policy_version: "news_analyst_policy_v1",
-                stage: "deep",
+                policy_version: "news_triage_policy_v2",
                 verdict: {
-                  agrees_with_triage: false,
+                  audience: "crypto",
                   confidence: 0.6,
-                  context_evidence: ["prior BTC OI spike 3h ago"],
-                  follow_up_needed: true,
-                  novelty_assessment: "followup",
-                  revised_direction: "neutral",
-                  revised_magnitude: 1,
-                  risks_zh: "流动性数据滞后。",
-                  thesis_zh: "市场已部分定价。",
+                  direction: "neutral",
+                  event_type: "macro",
+                  headline_zh: "央行转向已被部分定价",
+                  magnitude: 1,
+                  why_zh: "流动性数据滞后一个季度，市场已提前交易了这次转向",
                 },
               }),
             ],
@@ -576,14 +573,12 @@ describe("NewsPage", () => {
     );
     expect(triage.getByText("节流来源").nextElementSibling).toHaveTextContent("evt-earlier");
     expect(triage.getByText("模型判定").nextElementSibling).toHaveTextContent("无");
-    const analyst = within(cards[1]);
-    expect(analyst.getByText("Analyst")).toBeInTheDocument();
-    expect(analyst.getByText("市场已部分定价。")).toBeInTheDocument();
-    expect(analyst.getByText("流动性数据滞后。")).toBeInTheDocument();
-    expect(analyst.getByText("同意 Triage").nextElementSibling).toHaveTextContent("否");
-    expect(analyst.getByText("修订方向").nextElementSibling).toHaveTextContent("中性");
-    expect(analyst.getByText("上下文证据")).toBeInTheDocument();
-    expect(analyst.getByText("prior BTC OI spike 3h ago")).toBeInTheDocument();
+    const second = within(cards[1]);
+    expect(second.getByText("央行转向已被部分定价")).toBeInTheDocument();
+    expect(
+      second.getByText("流动性数据滞后一个季度，市场已提前交易了这次转向"),
+    ).toBeInTheDocument();
+    expect(second.getByText("受众").nextElementSibling).toHaveTextContent("crypto");
 
     const deliveries = screen.getByRole("region", { name: "推送记录" });
     expect(within(deliveries).getByText("已终结")).toBeInTheDocument();

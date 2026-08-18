@@ -168,14 +168,12 @@ class NewsPipelineStatusData(ExactApiSchema):
     candidates_24h: int = 0
     triage_24h: int = 0
     triage_degraded_24h: int = 0
-    deep_24h: int = 0
     decided_push_24h: int = 0
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None
     queue_lag_p95_ms: float | None = None
     triage_model: str | None = None
-    analyst_model: str | None = None
     suppressed_by_reason: dict[str, int] = Field(default_factory=dict)
     dropped_by_rule: dict[str, int] = Field(default_factory=dict)
     throttled_by_key: dict[str, int] = Field(default_factory=dict)
