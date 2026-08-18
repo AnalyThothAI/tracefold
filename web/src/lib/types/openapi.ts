@@ -2781,8 +2781,6 @@ export interface components {
             throttled_by?: string | null;
             /** Title Zh */
             title_zh?: string | null;
-            /** Why Zh */
-            why_zh?: string | null;
         };
         /** NewsVerdictData */
         NewsVerdictData: {

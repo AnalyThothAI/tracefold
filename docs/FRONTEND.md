@@ -277,19 +277,20 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 6. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, `/` lands on the News list, and no filter/Tape/task bar exists.
 7. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
 8. At `1920px`, `1366px`, `834px`, and `390px`, verify the default News Feed
-   requests complete latest 25-row pages with no hidden filter; `q`, family,
-   admission, priority, decision, symbol, and sort survive reload and alter
-   server results; headline rows remain readable; priority, Triage decision,
-   admission, asset class, the numeric OpenNews score, grounded assets, the
-   Triage strip, and the delivery state are visible; exact date/time remains
-   visible; current WSS state and pipeline latency are inline. On
-   `/news/events/:eventId`, verify the hero, members, verdicts, deliveries,
-   and operator labels appear in that order with no market-mark table, `trace`
-   starts collapsed, and the back link returns to `/news`. Verify `/news/status`
-   shows the overview plus the four `ingest/broker/pipeline/delivery` layers,
-   read-only control and watch views, and no operator controls. Confirm about
-   two News rows remain scannable at 390px and at least four at desktop height
-   without horizontal overflow.
+   requests latest 25-row pages for the last 24 h with no outcome tab and no
+   advanced filter; `q`, family, admission, priority, decision, symbol, sort,
+   `outcome`, and `hours` survive reload and alter server results; the header
+   shows the health pill and the 24 h funnel strip; every row shows time,
+   headline, meta line, and exactly one outcome badge with Chinese copy — no
+   rule, admission, decision, or score keys — and held rows show their
+   `reason_zh`. On `/news/events/:eventId`, verify hero (outcome + reason,
+   headline, why), timeline, 同类报道 / 运营标注, and a collapsed 技术详情 appear
+   in that order with no market-mark table, and the back link returns to
+   `/news`. Verify `/news/status` shows four coloured health cards, the overall
+   pill, the funnel, Chinese reason bars, read-only control (mute table),
+   Strategy counts (never IDs), a collapsed 技术指标, and no operator controls.
+   Confirm about two News rows remain scannable at 390px and at least four at
+   desktop height without horizontal overflow.
 9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps all six
    module summaries, latest fact time, coverage, History Depth, and Data Quality
    readable without horizontal overflow or machine-only labels. Verify each

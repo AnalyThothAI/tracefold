@@ -177,8 +177,10 @@ def event_timeline(
                     "rule_baseline_decision": latest.get("rule_baseline_decision"),
                     "storyline_key": trace.get("storyline_key") or event.get("storyline_key"),
                     "storyline_zh": storyline_key_zh(trace.get("storyline_key") or event.get("storyline_key")),
-                    "status_final": trace.get("status_final") or trace.get("status"),
+                    "status_preliminary": trace.get("status"),
+                    "status_final": trace.get("status_final"),
                     "queue_lag_ms": trace.get("queue_lag_ms"),
+                    "latency_ms": trace.get("latency_ms"),
                     "published_at_ms": latest.get("published_at_ms"),
                 },
             }

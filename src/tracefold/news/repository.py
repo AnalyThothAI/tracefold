@@ -773,7 +773,6 @@ class NewsRepository:
                    t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
                    t.verdict ->> 'event_type' AS event_type, t.verdict ->> 'headline_zh' AS headline_zh,
                    t.verdict ->> 'scope' AS scope, t.verdict ->> 'title_zh' AS title_zh,
-                   t.verdict ->> 'why_zh' AS why_zh,
                    d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
@@ -1029,7 +1028,9 @@ class NewsRepository:
         }
 
 
-# Feed task tabs (mirrors OUTCOME_GROUP in outcome.py, expressed over the feed's joined rows):
+# Feed task tabs (mirrors OUTCOME_GROUP in outcome.py, expressed over the feed's joined rows;
+# tests/integration/test_news_v3_pipeline.py asserts the three predicates partition the feed exactly like
+# event_outcome().group over the fixture corpus):
 # pushed = the first card was sent; pending = still moving (not yet triaged, or decided push and not yet settled);
 # held = everything that stopped short of a sent card (gate, drop, throttle, fallback drop, delivery failure).
 _PENDING_CORE_SQL: Final = (
@@ -1100,7 +1101,6 @@ def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
             "scope": row.get("scope"),
             "headline_zh": row.get("headline_zh"),
             "title_zh": row.get("title_zh"),
-            "why_zh": row.get("why_zh"),
             "direction_zh": direction_zh(row.get("direction")),
             "magnitude_zh": magnitude_zh(row.get("magnitude")),
             "event_type_zh": event_type_zh(row.get("event_type")),

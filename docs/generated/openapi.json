@@ -7707,17 +7707,6 @@
               }
             ],
             "title": "Title Zh"
-          },
-          "why_zh": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Why Zh"
           }
         },
         "required": [

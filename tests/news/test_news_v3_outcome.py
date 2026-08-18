@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
+from tracefold.news import triage_rules
 from tracefold.news.health import status_health
 from tracefold.news.outcome import (
     OUTCOME_GROUP,
@@ -16,7 +20,6 @@ from tracefold.news.outcome import (
     throttled_by_zh,
 )
 from tracefold.news.timeline import event_timeline
-from tracefold.news.triage_rules import decide  # noqa: F401  (imported so a new rule name below stays in sync)
 
 NOW = 1_800_000_000_000
 
@@ -107,6 +110,10 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
         delivery=None,
     )
     assert throttled.reason_zh == "「贸易与关税」话题 4 小时内已推 3 条"
+    paused = event_outcome(
+        admission="candidate", published_at_ms=NOW, triage=_triage("drop", override_rule="muted"), delivery=None
+    )
+    assert paused.reason_zh == "已被静音，或推送处于暂停"
     dropped = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
@@ -138,20 +145,22 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
 
 
 def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None:
-    # Every rule name decide() can emit must have a Chinese label; keep this list in sync with triage_rules.decide.
-    for rule in (
+    # Every rule name decide() can emit must have a Chinese label — read them from the source so a new rule
+    # in triage_rules.py fails this test until outcome.py names it.
+    source = (Path(triage_rules.__file__)).read_text(encoding="utf-8")
+    emitted = set(
+        re.findall(r'(?:final, rule = "[a-z]+", |DecisionResult\((?:"[a-z]+"|baseline), )"([a-z0-9_]+)"', source)
+    )
+    assert emitted >= {
         "muted",
         "noise",
         "magnitude3",
-        "high_priority_push",
         "model_push_actionable",
-        "unclear_but_clear_event",
-        "unclear_direction",
-        "watchlist",
         "below_threshold",
         "fail_closed_fallback",
-    ):
-        assert rule in OVERRIDE_RULE_ZH
+    }
+    missing = sorted(rule for rule in emitted if rule not in OVERRIDE_RULE_ZH)
+    assert missing == []
     assert override_rule_zh("brand_new_rule") == "brand_new_rule"
     # Keys that only exist on historical rows (retired policies/lanes) still get Chinese copy.
     assert override_rule_zh("magnitude2_actionable").startswith("影响明显")
@@ -160,7 +169,7 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
     assert admission_zh("candidate") == "已送审"
     assert error_code_zh("news_triage_model_failed:RateLimitError") == "模型调用失败（RateLimitError）"
     assert throttled_by_zh("hourly_cap") == "已达每小时推送上限"
-    assert throttled_by_zh("storyline:asset:XYZ-HD") == "XYZ-HD 同一话题 2 小时内已推过同等或更重要的消息"
+    assert throttled_by_zh("storyline:asset:XYZ-HD") == "XYZ-HD 同一话题在节流窗口内已推过同等或更重要的消息"
     assert throttled_by_zh("storyline:macro:general:cap3") == "「综合」类 4 小时内已推 3 条"
     assert storyline_key_zh("theme:mideast_energy") == "中东与能源" and storyline_key_zh("asset:BTC") == "BTC"
 

@@ -70,7 +70,7 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "noise": "模型判定为噪音",
     "unclear_direction": "方向不明，未达推送标准",
     "below_threshold": "影响不够，未达推送标准",
-    "muted": "该标的/话题已被静音",
+    "muted": "已被静音，或推送处于暂停",
     "model_push_actionable": "模型判断值得推送",
     "unclear_but_clear_event": "方向不明但事件明确",
     "watchlist": "命中关注列表",
@@ -167,9 +167,11 @@ DECISION_ZH: Final[dict[str, str]] = {
     "degraded": "降级",
 }
 
-_THROTTLE_ASSET_RE = re.compile(r"^storyline:asset:(?P<symbol>[^:]+)(?::(?P<tail>.+))?$")
-_THROTTLE_THEME_RE = re.compile(r"^storyline:theme:(?P<theme>[^:]+)(?::cap(?P<cap>\d+))?(?::(?P<tail>.+))?$")
-_THROTTLE_FAMILY_RE = re.compile(r"^storyline:macro:(?P<family>[^:]+)(?::cap(?P<cap>\d+))?(?::(?P<tail>.+))?$")
+# Asset windows are 2 h for a push and 4 h for an escalate (triage_rules._storyline_throttle) and the key does not
+# say which applied, so the copy names the window generically instead of guessing.
+_THROTTLE_ASSET_RE = re.compile(r"^storyline:asset:(?P<symbol>[^:]+)$")
+_THROTTLE_THEME_RE = re.compile(r"^storyline:theme:(?P<theme>[^:]+)(?::cap(?P<cap>\d+))?$")
+_THROTTLE_FAMILY_RE = re.compile(r"^storyline:macro:(?P<family>[^:]+)(?::cap(?P<cap>\d+))?$")
 
 
 def admission_zh(admission: str | None) -> str:
@@ -228,13 +230,9 @@ def throttled_by_zh(key: str | None) -> str:
     if text == "hourly_cap":
         return "已达每小时推送上限"
     if (m := _THROTTLE_ASSET_RE.match(text)) is not None:
-        if m.group("tail") == "superseded":
-            return f"{m.group('symbol')} 已有更新的推送"
-        return f"{m.group('symbol')} 同一话题 2 小时内已推过同等或更重要的消息"
+        return f"{m.group('symbol')} 同一话题在节流窗口内已推过同等或更重要的消息"
     if (m := _THROTTLE_THEME_RE.match(text)) is not None:
         theme = THEME_ZH.get(m.group("theme"), m.group("theme"))
-        if m.group("tail") == "superseded":
-            return f"「{theme}」已有更新的推送"
         cap = m.group("cap")
         return f"「{theme}」话题 4 小时内已推 {cap} 条" if cap else f"「{theme}」话题 4 小时内已推过更重要的消息"
     if (m := _THROTTLE_FAMILY_RE.match(text)) is not None:

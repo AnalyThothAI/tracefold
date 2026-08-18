@@ -62,6 +62,8 @@ def _pct(share: float) -> str:
 def ingest_health(ingest: Mapping[str, Any], *, now_ms: int, workers_state: str | None, enabled: bool) -> HealthItem:
     if not enabled or not ingest.get("token_configured", True):
         return HealthItem("off", "接入未配置", "news.enabled 或 OpenNews token 未设置")
+    if workers_state == "recovering":
+        return HealthItem("warn", "Workers 启动/恢复中", "等待心跳进入 running")
     if workers_state and workers_state != "running":
         return HealthItem("bad", "Workers 未运行", f"workers_state={workers_state}")
     # Model and broker incidents are reported by their own health items; the ingest item only owns the WSS lane.
@@ -88,11 +90,15 @@ def ingest_health(ingest: Mapping[str, Any], *, now_ms: int, workers_state: str 
     return HealthItem("ok", "已连接，正在收帧", "")
 
 
-def broker_health(broker: Mapping[str, Any]) -> HealthItem:
+def broker_health(broker: Mapping[str, Any], *, open_causes: frozenset[str] = frozenset()) -> HealthItem:
     if not broker.get("configured"):
         return HealthItem("off", "队列未配置", "")
-    if broker.get("connected") is False:
-        return HealthItem("bad", "RabbitMQ 未连接", str(broker.get("error_code") or ""))
+    if broker.get("connected") is False or "broker_unavailable" in open_causes:
+        return HealthItem(
+            "bad", "RabbitMQ 未连接", str(broker.get("error_code") or incident_cause_zh("broker_unavailable"))
+        )
+    if "broker_backpressure" in open_causes:
+        return HealthItem("bad", "队列背压：raw 队列已满，正在拒收", "断线补抄会在事故关闭后回填")
     queues = broker.get("queues") or {}
     depths = {name: int((queues.get(name) or {}).get("messages") or 0) for name in _BUSINESS_QUEUES}
     dead = int((queues.get("news.dead") or {}).get("messages") or 0)
@@ -114,9 +120,19 @@ def broker_health(broker: Mapping[str, Any]) -> HealthItem:
     return HealthItem("ok", "队列畅通", summary)
 
 
-def model_health(pipeline: Mapping[str, Any], *, model_configured: bool) -> HealthItem:
+def model_health(
+    pipeline: Mapping[str, Any],
+    *,
+    model_configured: bool,
+    enabled: bool = True,
+    open_causes: frozenset[str] = frozenset(),
+) -> HealthItem:
+    if not enabled:
+        return HealthItem("off", "News 未启用", "")
     if not model_configured:
         return HealthItem("bad", "未配置 Triage 模型", "所有事件按规则兜底")
+    if "triage_circuit_open" in open_causes:
+        return HealthItem("bad", "模型熔断中", "连续调用失败后暂停调用；此期间所有事件按规则兜底")
     total = int(pipeline.get("triage_24h") or 0)
     degraded = int(pipeline.get("triage_degraded_24h") or 0)
     by_code = dict(pipeline.get("triage_degraded_by_code_24h") or {})
@@ -169,10 +185,13 @@ def status_health(
 ) -> dict[str, Any]:
     """``health`` (four thresholded items + overall), ``funnel_24h`` and ``reasons_24h`` (Chinese-labelled)."""
 
+    open_causes = frozenset(
+        str(i.get("cause_class") or "") for i in (ingest.get("open_incidents") or []) if not i.get("planned")
+    )
     items = {
         "ingest": ingest_health(ingest, now_ms=now_ms, workers_state=workers_state, enabled=enabled),
-        "broker": broker_health(broker),
-        "model": model_health(pipeline, model_configured=model_configured),
+        "broker": broker_health(broker, open_causes=open_causes),
+        "model": model_health(pipeline, model_configured=model_configured, enabled=enabled, open_causes=open_causes),
         "delivery": delivery_health(delivery, control),
     }
     overall = _worst(*(item.level for item in items.values()))

@@ -64,7 +64,6 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
       scope: "macro",
       throttled_by: null,
       title_zh: "央行应对新的全球政策冲击",
-      why_zh: "利率指引与市场预期背离，风险资产定价需要重估",
     },
     watchlist_hits: ["BTC"],
     ...overrides,

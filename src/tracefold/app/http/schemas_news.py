@@ -41,7 +41,6 @@ class NewsTriageSummaryData(ExactApiSchema):
     scope: str | None = None
     headline_zh: str | None = None
     title_zh: str | None = None
-    why_zh: str | None = None
     direction_zh: str = ""
     magnitude_zh: str = ""
     event_type_zh: str = ""
