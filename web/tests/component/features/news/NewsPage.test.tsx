@@ -7,6 +7,7 @@ import {
   newsEventDetailFixture,
   newsFeedEventFixture,
   newsFeedFixture,
+  newsOutcomeFixture,
   newsStatusFixture,
   newsVerdictFixture,
 } from "@tests/fixtures/newsFixture";
@@ -33,12 +34,22 @@ describe("NewsPage", () => {
 
   afterEach(cleanup);
 
-  it("defaults to the latest Event feed with 25 rows and no hidden filters", async () => {
+  // ------------------------------------------------------------------ feed
+  it("defaults to the latest 24 h, every outcome, 25 rows, and no advanced filters", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        for (const name of ["limit", "sort", "priority", "decision", "family", "admission"]) {
+        for (const name of [
+          "limit",
+          "sort",
+          "priority",
+          "decision",
+          "family",
+          "admission",
+          "outcome",
+          "hours",
+        ]) {
           observed[name] = params.get(name);
         }
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
@@ -50,58 +61,63 @@ describe("NewsPage", () => {
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "状态" })).not.toHaveAttribute("aria-current");
-    expect(screen.queryByRole("link", { name: "公共全球简报" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "来源" })).not.toBeInTheDocument();
+    const tabs = screen.getByRole("tablist", { name: "按结局筛选" });
+    expect(
+      within(tabs)
+        .getAllByRole("tab")
+        .map((tab) => tab.textContent),
+    ).toEqual(["全部", "已推送", "被拦截", "处理中"]);
+    expect(within(tabs).getByRole("tab", { name: "全部" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("combobox", { name: "时间范围" })).toHaveValue("24");
+    await waitFor(() => expect(observed.hours).toBe("24"));
     expect(observed.sort).toBe("latest");
     expect(observed.limit).toBe("25");
+    expect(observed.outcome).toBeNull();
     expect(observed.priority).toBeNull();
     expect(observed.decision).toBeNull();
     expect(observed.family).toBeNull();
     expect(observed.admission).toBeNull();
   });
 
-  it("renders one Event row with server-owned triage, delivery, admission, and asset facts", async () => {
+  it("renders one Event row as when · what · one outcome, with server-labelled facts and no rule keys", async () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const title = await screen.findByRole("heading", { name: "央行应对新的全球政策冲击" });
-    const row = title.closest("article");
+    const row = (
+      await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
+    ).closest("article");
     expect(row).not.toBeNull();
-    expect(row).toHaveAttribute("data-priority", "high");
-    expect(row).toHaveAttribute("data-decision", "push");
-    expect(row).toHaveAttribute("data-direction", "bearish");
-    expect(title.closest(".news-event-title")).toHaveAttribute(
+    const inRow = within(row!);
+    expect(row).toHaveAttribute("data-outcome", "delivered");
+    expect(inRow.getByRole("link", { name: /央行政策转向，风险资产承压/ })).toHaveAttribute(
       "href",
       "/news/events/evt-global-policy",
     );
-    const scoped = within(row as HTMLElement);
-    expect(scoped.getByText("高优先")).toBeInTheDocument();
-    expect(scoped.getByText("推送")).toBeInTheDocument();
-    expect(scoped.getByText("候选")).toBeInTheDocument();
-    expect(scoped.getByText("综合")).toBeInTheDocument();
-    expect(scoped.getByText("加密")).toBeInTheDocument();
-    expect(scoped.getByLabelText("OpenNews 分数 88")).toHaveTextContent("OpenNews88");
-    expect(scoped.getByText("Reuters World")).toBeInTheDocument();
-    expect(scoped.getByText("4 条报道")).toBeInTheDocument();
-    expect(scoped.getByText("原标题").parentElement).toHaveTextContent(
-      "Central banks respond to a new global policy shock",
-    );
-    expect(scoped.getByText("看空 · M2 · macro")).toBeInTheDocument();
-    expect(scoped.getByText("央行政策转向，风险资产承压")).toBeInTheDocument();
-    expect(scoped.getByLabelText("推送状态 已发送")).toBeInTheDocument();
-    const assets = scoped.getByText("落地资产").parentElement;
     expect(
-      within(assets as HTMLElement)
-        .getAllByRole("listitem")
-        .map((item) => item.textContent),
-    ).toEqual(["BTC", "ETH"]);
-    expect(within(assets as HTMLElement).getByText("BTC")).toHaveAttribute("data-watch", "hit");
-    expect(scoped.getByRole("link", { name: /查看原文/ })).toHaveAttribute(
+      inRow.getByText("Central banks respond to a new global policy shock"),
+    ).toBeInTheDocument();
+    expect(inRow.getByText("Reuters World")).toBeInTheDocument();
+    expect(inRow.getByText("4 条报道")).toBeInTheDocument();
+    expect(inRow.getByText("利空 · 影响明显 · 宏观")).toBeInTheDocument();
+    expect(inRow.getByLabelText("关联资产")).toHaveTextContent("BTCETH");
+    expect(inRow.getByRole("link", { name: "打开原文" })).toHaveAttribute(
       "href",
       "https://www.reuters.com/world/story",
     );
+    // Exactly one outcome badge; its reason travels as the title, not as a second label.
+    const badges = row!.querySelectorAll(".news-outcome");
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent("已推送");
+    expect(badges[0]).toHaveAttribute("title", "模型判断值得推送");
+    expect(inRow.getByText(/推送于/)).toBeInTheDocument();
+    for (const raw of ["model_push_actionable", "candidate", "asset:BTC", "escalate", "general"]) {
+      expect(inRow.queryByText(raw)).not.toBeInTheDocument();
+    }
   });
 
-  it("marks untriaged Events as pending and omits absent delivery, assets, and links", async () => {
+  it("shows why a held Event was held, in Chinese, next to its single badge", async () => {
     server.use(
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({
@@ -110,13 +126,32 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 delivery: null,
-                title_zh: null,
-                grounded_assets: [],
-                leader_url: null,
-                priority: "normal",
-                provider_score_max: null,
+                event_id: "evt-throttled",
+                outcome: newsOutcomeFixture({
+                  group: "held",
+                  kind: "throttled",
+                  reason_zh: "BTC 同一话题 2 小时内已推过同等或更重要的消息",
+                  text_zh: "未推送（限流）",
+                }),
+                triage: {
+                  ...newsFeedEventFixture().triage!,
+                  final_decision: "throttled",
+                  throttled_by: "storyline:asset:BTC",
+                },
+              }),
+              newsFeedEventFixture({
+                delivery: null,
+                event_id: "evt-recovery",
+                admission: "recovery",
+                ingest_mode: "recovery",
+                outcome: newsOutcomeFixture({
+                  group: "held",
+                  kind: "held_recovery",
+                  reason_zh: "断线期间补抄的旧闻，仅用于去重与历史",
+                  text_zh: "补抄件，不推送",
+                }),
+                title_zh: "补抄回来的旧闻",
                 triage: null,
-                watchlist_hits: [],
               }),
             ],
           }),
@@ -126,26 +161,31 @@ describe("NewsPage", () => {
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const title = await screen.findByRole("heading", {
-      name: "Central banks respond to a new global policy shock",
-    });
-    const row = title.closest("article") as HTMLElement;
-    expect(row).toHaveAttribute("data-decision", "none");
-    expect(within(row).getByText("待判定")).toBeInTheDocument();
-    expect(within(row).getByText("未落地")).toBeInTheDocument();
-    expect(within(row).queryByLabelText(/OpenNews 分数/)).not.toBeInTheDocument();
-    expect(within(row).queryByLabelText(/推送状态/)).not.toBeInTheDocument();
-    expect(within(row).queryByRole("link", { name: /查看原文/ })).not.toBeInTheDocument();
+    const throttled = (await screen.findByText("未推送（限流）")).closest("article")!;
+    expect(throttled).toHaveAttribute("data-outcome-group", "held");
+    expect(
+      within(throttled).getByText("BTC 同一话题 2 小时内已推过同等或更重要的消息"),
+    ).toBeInTheDocument();
+    expect(within(throttled).queryByText("storyline:asset:BTC")).not.toBeInTheDocument();
+    const recovery = screen.getByText("补抄件，不推送").closest("article")!;
+    expect(within(recovery).getByText("断线期间补抄的旧闻，仅用于去重与历史")).toBeInTheDocument();
+    expect(within(recovery).getByRole("heading", { name: "补抄回来的旧闻" })).toBeInTheDocument();
   });
 
   it("keeps a 668-character feed headline accessible inside the compact density surface", async () => {
-    const longTitle = "长".repeat(668);
+    const longTitle = "Very long headline ".repeat(35).trim();
     server.use(
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({
           ok: true,
           data: newsFeedFixture({
-            events: [newsFeedEventFixture({ title_zh: longTitle, leader_title: longTitle })],
+            events: [
+              newsFeedEventFixture({
+                leader_title: longTitle,
+                title_zh: null,
+                triage: { ...newsFeedEventFixture().triage!, headline_zh: null },
+              }),
+            ],
           }),
         }),
       ),
@@ -153,18 +193,27 @@ describe("NewsPage", () => {
 
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const surface = await screen.findByRole("region", { name: "新闻事件流" });
-    expect(surface).toHaveAttribute("data-feed-density", "compact");
-    const heading = await within(surface).findByRole("heading", { name: longTitle });
-    expect(heading).toHaveTextContent(longTitle);
+    const heading = await screen.findByRole("heading", { level: 2, name: longTitle });
+    expect(heading.textContent).toHaveLength(longTitle.length);
+    expect(heading.closest("[data-feed-density='compact']")).not.toBeNull();
   });
 
-  it("keeps search, family, admission, priority, decision, symbol, and sort in URL-owned server state", async () => {
+  it("keeps outcome tab, time window, search, family, admission, priority, decision, symbol, and sort in URL-owned server state", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        for (const name of ["q", "family", "admission", "priority", "decision", "symbol", "sort"]) {
+        for (const name of [
+          "q",
+          "family",
+          "admission",
+          "priority",
+          "decision",
+          "symbol",
+          "sort",
+          "outcome",
+          "hours",
+        ]) {
           observed[name] = params.get(name);
         }
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
@@ -173,20 +222,24 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?q=bitcoin&family=general&admission=candidate&priority=high&decision=push&symbol=btc&sort=priority",
+      "/news?q=bitcoin&family=general&admission=candidate&priority=high&decision=push&symbol=btc&sort=priority&outcome=held&hours=6",
     );
 
-    await screen.findByRole("heading", { name: "央行应对新的全球政策冲击" });
+    await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
     await waitFor(() => expect(observed.symbol).toBe("BTC"));
     expect(observed).toEqual({
       admission: "candidate",
       decision: "push",
       family: "general",
+      hours: "6",
+      outcome: "held",
       priority: "high",
       q: "bitcoin",
       sort: "priority",
       symbol: "BTC",
     });
+    expect(screen.getByRole("tab", { name: "被拦截" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("combobox", { name: "时间范围" })).toHaveValue("6");
     expect(screen.getByRole("combobox", { name: "事件排序" })).toHaveValue("priority");
     expect(screen.getByRole("combobox", { name: "事件家族" })).toHaveValue("general");
     expect(screen.getByRole("combobox", { name: "事件准入" })).toHaveValue("candidate");
@@ -199,19 +252,29 @@ describe("NewsPage", () => {
         .getAllByRole("button")
         .map((chip) => chip.textContent),
     ).toEqual([
-      "搜索：bitcoin×",
-      "家族：综合×",
-      "准入：候选×",
-      "优先级：高优先×",
-      "判定：推送×",
-      "资产：BTC×",
+      "搜索：bitcoin",
+      "来源类别：综合",
+      "门禁：已送审",
+      "优先级：高优先级",
+      "决策：推送",
+      "资产：BTC",
     ]);
 
-    fireEvent.click(within(chips).getByRole("button", { name: "移除判定：推送" }));
+    fireEvent.click(within(chips).getByRole("button", { name: "移除决策：推送" }));
     await waitFor(() => expect(observed.decision).toBeNull());
     expect(screen.getByTestId("location")).toHaveTextContent("priority=high");
+    expect(screen.getByTestId("location")).toHaveTextContent("outcome=held");
     expect(screen.getByTestId("location")).not.toHaveTextContent("decision=");
 
+    fireEvent.click(screen.getByRole("tab", { name: "已推送" }));
+    await waitFor(() => expect(observed.outcome).toBe("pushed"));
+    fireEvent.click(screen.getByRole("tab", { name: "全部" }));
+    await waitFor(() => expect(observed.outcome).toBeNull());
+    fireEvent.change(screen.getByRole("combobox", { name: "时间范围" }), {
+      target: { value: "all" },
+    });
+    await waitFor(() => expect(observed.hours).toBeNull());
+    expect(screen.getByTestId("location")).toHaveTextContent("hours=all");
     fireEvent.change(screen.getByRole("combobox", { name: "事件优先级" }), {
       target: { value: "" },
     });
@@ -222,22 +285,27 @@ describe("NewsPage", () => {
     await waitFor(() => expect(observed.sort).toBe("latest"));
   });
 
-  it("ignores unknown priority and decision values instead of forwarding them", async () => {
+  it("ignores unknown priority, decision, outcome, and hours values instead of forwarding them", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        observed.priority = params.get("priority");
-        observed.decision = params.get("decision");
+        for (const name of ["priority", "decision", "outcome", "hours"])
+          observed[name] = params.get(name);
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
       }),
     );
 
-    renderNews(<NewsPage token="test-token" view="feed" />, "/news?priority=urgent&decision=maybe");
+    renderNews(
+      <NewsPage token="test-token" view="feed" />,
+      "/news?priority=urgent&decision=maybe&outcome=whatever&hours=999",
+    );
 
-    await screen.findByRole("heading", { name: "央行应对新的全球政策冲击" });
+    await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
     expect(observed.priority).toBeNull();
     expect(observed.decision).toBeNull();
+    expect(observed.outcome).toBeNull();
+    expect(observed.hours).toBe("24");
     expect(screen.queryByRole("group", { name: "已启用筛选" })).not.toBeInTheDocument();
   });
 
@@ -254,8 +322,8 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture(),
               newsFeedEventFixture({
-                title_zh: "Second page Event",
                 event_id: "evt-second-page",
+                triage: { ...newsFeedEventFixture().triage!, headline_zh: "Second page Event" },
               }),
             ],
             next_cursor: null,
@@ -264,12 +332,12 @@ describe("NewsPage", () => {
       }),
     );
     renderNews(<NewsPage token="test-token" view="feed" />);
-    await screen.findByText("央行应对新的全球政策冲击");
+    await screen.findByText(/央行政策转向，风险资产承压/);
 
     fireEvent.click(screen.getByRole("button", { name: "加载更多事件" }));
 
     expect(await screen.findByText("Second page Event")).toBeInTheDocument();
-    expect(screen.getAllByText("央行应对新的全球政策冲击")).toHaveLength(1);
+    expect(screen.getAllByText(/央行政策转向，风险资产承压/)).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "加载更多事件" })).not.toBeInTheDocument();
   });
 
@@ -277,13 +345,16 @@ describe("NewsPage", () => {
     let feed = newsFeedFixture();
     server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
     const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    await screen.findByText(feed.events[0].title_zh ?? "");
+    await screen.findByText(/央行政策转向，风险资产承压/);
 
     feed = newsFeedFixture({
       events: [
         newsFeedEventFixture({
-          title_zh: "New high-signal event at the top",
           event_id: "evt-new-at-top",
+          triage: {
+            ...newsFeedEventFixture().triage!,
+            headline_zh: "New high-signal event at the top",
+          },
         }),
         ...newsFeedFixture().events,
       ],
@@ -305,8 +376,11 @@ describe("NewsPage", () => {
           data: newsFeedFixture({
             events: [
               newsFeedEventFixture({
-                title_zh: "Loaded non-deferred tail event",
                 event_id: "evt-loaded-tail",
+                triage: {
+                  ...newsFeedEventFixture().triage!,
+                  headline_zh: "Loaded non-deferred tail event",
+                },
               }),
             ],
             next_cursor: null,
@@ -315,7 +389,7 @@ describe("NewsPage", () => {
       }),
     );
     const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    const currentTitle = await screen.findByText(feed.events[0].title_zh ?? "");
+    const currentTitle = await screen.findByText(/央行政策转向，风险资产承压/);
     const currentRow = currentTitle.closest("article");
     const scrollContainer = rendered.container.querySelector<HTMLElement>(".center-column");
     expect(scrollContainer).not.toBeNull();
@@ -325,8 +399,8 @@ describe("NewsPage", () => {
     feed = newsFeedFixture({
       events: [
         newsFeedEventFixture({
-          title_zh: "Deferred high-signal event",
           event_id: "evt-deferred-at-top",
+          triage: { ...newsFeedEventFixture().triage!, headline_zh: "Deferred high-signal event" },
         }),
         ...newsFeedFixture().events,
       ],
@@ -336,9 +410,7 @@ describe("NewsPage", () => {
 
     const notice = await screen.findByRole("button", { name: "1 条新事件 · 回到顶部" });
     expect(screen.queryByText("Deferred high-signal event")).not.toBeInTheDocument();
-    expect(screen.getByText(newsFeedFixture().events[0].title_zh ?? "").closest("article")).toBe(
-      currentRow,
-    );
+    expect(screen.getByText(/央行政策转向，风险资产承压/).closest("article")).toBe(currentRow);
 
     fireEvent.click(screen.getByRole("button", { name: "加载更多事件" }));
 
@@ -352,63 +424,66 @@ describe("NewsPage", () => {
     expect(screen.queryByRole("button", { name: /条新事件/ })).not.toBeInTheDocument();
   });
 
-  it("keeps compact reader-facing pipeline health inline on the Feed header", async () => {
+  it("keeps a thresholded health pill and the 24 h funnel on the Feed header", async () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
-    const status = await screen.findByRole("status");
-    await waitFor(() => expect(status).toHaveTextContent("WSS 已连接"));
-    expect(status).toHaveAttribute("data-state", "live");
-    expect(status).toHaveTextContent("1h 事件 12 · Triage P95 1.9 s · 24h 推送 41");
+    const pill = await screen.findByRole("link", { name: "查看流水线状态" });
+    expect(pill).toHaveTextContent("流水线正常");
+    expect(pill).toHaveAttribute("data-tone", "positive");
+    expect(pill).toHaveAttribute("href", "/news/status");
+    const funnel = screen.getByRole("list", { name: "过去 24 小时漏斗" });
+    expect(
+      within(funnel)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["收到320最近 1 小时 12", "送审175候选 180", "决定推送40", "已送达41最近 1 小时 2"]);
   });
 
-  it("reports a lost WSS connection as stalled and a degraded pipeline as recovering", async () => {
+  it("turns the health pill red when the model degrades and names the failing item", async () => {
     server.use(
       http.get(/.*\/api\/news\/status$/, () =>
         HttpResponse.json({
           ok: true,
           data: newsStatusFixture({
-            ingest: { ...newsStatusFixture().ingest, connected: false },
-            state: "degraded",
+            health: {
+              ...newsStatusFixture().health,
+              model: {
+                detail_zh: "模型输出被截断 30",
+                level: "bad",
+                summary_zh: "24 小时降级率 20%（30/150）",
+              },
+              overall: "bad",
+            },
           }),
         }),
       ),
     );
-    const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
-    const status = await screen.findByRole("status");
-    await waitFor(() => expect(status).toHaveTextContent("WSS 未连接"));
-    expect(status).toHaveAttribute("data-state", "stalled");
-
-    server.use(
-      http.get(/.*\/api\/news\/status$/, () =>
-        HttpResponse.json({ ok: true, data: newsStatusFixture({ state: "degraded" }) }),
-      ),
-    );
-    await rendered.queryClient.invalidateQueries({ queryKey: ["news-status"] });
-    await waitFor(() => expect(status).toHaveTextContent("流水线降级"));
-    expect(status).toHaveAttribute("data-state", "recovering");
+    renderNews(<NewsPage token="test-token" view="feed" />);
+    const pill = await screen.findByRole("link", { name: "查看流水线状态" });
+    await waitFor(() => expect(pill).toHaveTextContent("流水线异常"));
+    expect(pill).toHaveAttribute("data-tone", "negative");
+    expect(pill).toHaveTextContent("24 小时降级率 20%（30/150）");
   });
 
-  it("renders the four status layers plus read-only control and watch views", async () => {
+  // ------------------------------------------------------------------ status
+  it("renders four thresholded health cards, the funnel, named reasons, and control state", async () => {
     server.use(
       http.get(/.*\/api\/news\/status$/, () =>
         HttpResponse.json({
           ok: true,
           data: newsStatusFixture({
             control: {
-              mutes: [{ symbol: "DOGE", until_ms: NEWS_NOW_MS + 3_600_000 }],
+              mutes: [{ kind: "symbol", key: "DOGE", until_ms: NEWS_NOW_MS + 3_600_000 }],
               paused: true,
             },
-            ingest: {
-              ...newsStatusFixture().ingest,
-              open_incidents: [
-                {
-                  cause_class: "provider_close",
-                  incident_id: 7,
-                  opened_at_ms: NEWS_NOW_MS - 600_000,
-                  planned: false,
-                },
-              ],
-              strategy_warnings: ["strategy 1019 disabled upstream"],
+            health: {
+              ...newsStatusFixture().health,
+              delivery: {
+                detail_zh: "暂停期间应推的事件直接丢弃，不会补发",
+                level: "warn",
+                summary_zh: "推送已暂停",
+              },
+              overall: "warn",
             },
           }),
         }),
@@ -417,101 +492,110 @@ describe("NewsPage", () => {
 
     renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
 
-    expect(await screen.findByRole("heading", { name: "新闻运行状态" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "流水线状态" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "状态" })).toHaveAttribute("aria-current", "page");
-    expect(await screen.findAllByText("运行正常")).toHaveLength(2);
-    for (const layer of [
-      "接入 · OpenNews WSS",
-      "代理 · RabbitMQ",
-      "流水线 · Triage",
-      "推送 · 飞书",
-    ]) {
-      expect(screen.getByRole("heading", { name: layer })).toBeInTheDocument();
-    }
-    expect(screen.getByText("队列 news.triage").nextElementSibling).toHaveTextContent(
-      "0 消息 · 4 消费者",
+    expect(await screen.findByText("总体注意")).toBeInTheDocument();
+    const cards = document.querySelectorAll(".news-health-card");
+    expect(cards).toHaveLength(4);
+    expect(Array.from(cards).map((card) => card.getAttribute("data-level"))).toEqual([
+      "ok",
+      "ok",
+      "ok",
+      "warn",
+    ]);
+    expect(cards[3]).toHaveTextContent("推送已暂停");
+    expect(cards[3]).toHaveTextContent("暂停期间应推的事件直接丢弃，不会补发");
+    expect(cards[2]).toHaveTextContent("模型正常，24 小时降级 2/175");
+
+    const funnel = screen.getByRole("region", { name: "过去 24 小时漏斗" });
+    expect(within(funnel).getByRole("link", { name: /收到/ })).toHaveAttribute("href", "/news");
+    expect(within(funnel).getByRole("link", { name: /已送达/ })).toHaveAttribute(
+      "href",
+      "/news?outcome=pushed",
     );
-    expect(screen.getByText("Triage P95").nextElementSibling).toHaveTextContent("1.9 s");
-    expect(screen.getByText("24h 已发送").nextElementSibling).toHaveTextContent("41");
-    expect(screen.getByText("小时上限").nextElementSibling).toHaveTextContent("12");
-    expect(screen.getByRole("list", { name: "状态原因" })).toHaveTextContent(
-      "strategy 1019 disabled upstream",
-    );
-    expect(screen.getByText("未结 WSS 事故 · 1")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "控制（只读）" })).toBeInTheDocument();
-    expect(screen.getByText("已暂停")).toBeInTheDocument();
-    expect(screen.getByText(/"symbol":"DOGE"/)).toBeInTheDocument();
-    const watchHeading = screen.getByRole("heading", { name: "关注名单（只读）" });
-    const watchCard = watchHeading.closest("article") as HTMLElement;
+    expect(within(funnel).getByText("320")).toBeInTheDocument();
+
+    const reasons = screen.getByRole("region", { name: "拦截与推送原因" });
+    expect(within(reasons).getByText("模型判定为噪音")).toBeInTheDocument();
+    expect(within(reasons).getByText("「中东与能源」话题 4 小时内已推 3 条")).toBeInTheDocument();
+    expect(within(reasons).getByText("律所推广模板，规则直接拦截")).toBeInTheDocument();
     expect(
-      within(watchCard)
-        .getAllByRole("listitem")
-        .map((item) => item.textContent),
-    ).toEqual(["BTC", "ETH", "SOL"]);
-    expect(screen.queryByRole("button", { name: /暂停|恢复|静音/ })).not.toBeInTheDocument();
+      within(reasons).queryByText("storyline:theme:mideast_energy:cap3"),
+    ).not.toBeInTheDocument();
+    expect(within(reasons).queryByText("suppressed_pr_template")).not.toBeInTheDocument();
+
+    const control = screen.getByRole("region", { name: "控制状态" });
+    expect(within(control).getByText("已暂停")).toBeInTheDocument();
+    expect(within(control).getByRole("cell", { name: "DOGE" })).toBeInTheDocument();
+    expect(within(control).queryByText(/until_ms/)).not.toBeInTheDocument();
+    const watch = screen.getByRole("region", { name: "关注列表与策略" });
+    expect(within(watch).getByText("BTC")).toBeInTheDocument();
+    expect(within(watch).getByText("1018")).toBeInTheDocument();
+    // Raw metrics stay available, but folded away.
+    const technical = screen.getByText(/技术指标/).closest("details")!;
+    expect(technical).not.toHaveAttribute("open");
+    expect(within(technical).getByText("triage_p95_ms")).toBeInTheDocument();
   });
 
-  it("renders Event detail with members, verdicts, deliveries, and labels", async () => {
+  // ------------------------------------------------------------------ detail
+  it("renders Event detail as one conclusion, a timeline, members, labels, and folded technical details", async () => {
     renderNews(
       <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
     );
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "央行应对新的全球政策冲击" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "新闻事件详情" })).toHaveAttribute(
-      "data-page-archetype",
-      "case",
-    );
+    const region = await screen.findByRole("region", { name: "新闻事件详情" });
     expect(screen.getByRole("link", { name: "返回新闻事件流" })).toHaveAttribute("href", "/news");
-    expect(screen.getByText("原标题").parentElement).toHaveTextContent(
-      "Central banks respond to a new global policy shock",
-    );
-    expect(screen.getByText("Storyline key").nextElementSibling).toHaveTextContent("asset:BTC");
-    expect(screen.getByRole("link", { name: /阅读代表原文/ })).toHaveAttribute(
-      "href",
-      "https://www.reuters.com/world/story",
-    );
-
-    const members = screen.getByRole("region", { name: "4 条报道" });
+    await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
+    const badge = region.querySelector(".news-outcome")!;
+    expect(badge).toHaveTextContent("已推送");
+    expect(badge).toHaveTextContent("模型判断值得推送");
     expect(
-      within(members)
-        .getAllByRole("heading", { level: 3 })
-        .map((h) => h.textContent),
-    ).toEqual([
-      "Central banks respond to a new global policy shock",
-      "Central banks scramble after policy shock",
+      screen.getByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("利率指引与市场预期背离，风险资产定价需要重估")).toBeInTheDocument();
+    const hero = region.querySelector<HTMLElement>(".news-detail-hero")!;
+    expect(
+      within(hero).getByText("Central banks respond to a new global policy shock"),
+    ).toBeInTheDocument();
+
+    const timeline = screen.getByRole("region", { name: "处理时间线" });
+    const steps = within(timeline).getAllByRole("listitem");
+    expect(steps.map((step) => step.getAttribute("data-stage"))).toEqual([
+      "received",
+      "gate",
+      "triage",
+      "decide",
+      "delivery",
     ]);
-    expect(within(members).getByText("Jaccard 0.710")).toBeInTheDocument();
+    expect(steps[0]).toHaveTextContent("来源 Reuters World · 归并 4 条同类报道（2 个来源）");
+    expect(steps[3]).toHaveTextContent("推送 · 模型判断值得推送");
+    expect(within(steps[3]).queryByText("model_push_actionable")).not.toBeInTheDocument();
+    fireEvent.click(within(steps[3]).getByRole("button", { name: /展开字段/ }));
+    expect(within(steps[3]).getByText("override_rule")).toBeInTheDocument();
+    expect(within(steps[3]).getByText("model_push_actionable")).toBeInTheDocument();
 
-    const verdicts = screen.getByRole("region", { name: "判定记录" });
-    expect(within(verdicts).getByText("Triage")).toBeInTheDocument();
-    expect(within(verdicts).getByText("最终 推送")).toBeInTheDocument();
-    expect(within(verdicts).getByText("规则基线").nextElementSibling).toHaveTextContent("升级");
-    expect(within(verdicts).getByText("模型判定").nextElementSibling).toHaveTextContent("推送");
-    expect(within(verdicts).getByText("方向").nextElementSibling).toHaveTextContent("看空");
-    expect(within(verdicts).getByText("量级").nextElementSibling).toHaveTextContent("M2");
-    expect(within(verdicts).getByText("置信度").nextElementSibling).toHaveTextContent("82%");
-    expect(within(verdicts).getByText("央行政策转向，风险资产承压")).toBeInTheDocument();
-    expect(within(verdicts).getByText("trace · 2")).toBeInTheDocument();
-    expect(within(verdicts).getByRole("list", { name: "判定资产" })).toHaveTextContent("BTC");
+    const members = screen.getByRole("region", { name: "同类报道" });
+    expect(within(members).getAllByRole("listitem")).toHaveLength(2);
+    expect(
+      within(members).getByText("Central banks scramble after policy shock"),
+    ).toBeInTheDocument();
+    expect(within(members).queryByText(/0\.71/)).not.toBeInTheDocument();
 
-    const deliveries = screen.getByRole("region", { name: "推送记录" });
-    expect(within(deliveries).getByText("first")).toBeInTheDocument();
-    expect(within(deliveries).getByText("已发送")).toBeInTheDocument();
-    expect(within(deliveries).getByText("回执 message_id").nextElementSibling).toHaveTextContent(
-      "om_123",
-    );
+    const labels = screen.getByRole("region", { name: "运营标注" });
+    expect(within(labels).getByText("good")).toBeInTheDocument();
+    expect(within(labels).getByText(/tracefold news label evt-global-policy/)).toBeInTheDocument();
 
-    const labels = screen.getByRole("region", { name: "操作者标注" });
-    expect(within(labels).getByText("human")).toBeInTheDocument();
-    expect(within(labels).getByText(/good/)).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "市场标记" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    const technical = screen.getByText(/技术详情/).closest("details")!;
+    expect(technical).not.toHaveAttribute("open");
+    expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
+    expect(within(technical).getByText("asset:BTC")).toBeInTheDocument();
+    expect(within(technical).getByText("news_triage_policy_v1")).toBeInTheDocument();
+    // Internal identifiers do not leak into the first screen.
+    expect(within(hero).queryByText(/asset:BTC|evt-global-policy|jaccard/)).toBeNull();
   });
 
-  it("shows degraded, throttled, and failed verdict/delivery facts without inventing state", async () => {
+  it("explains a degraded, throttled, and failed-delivery Event without inventing state", async () => {
     server.use(
       http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
         HttpResponse.json({
@@ -519,36 +603,52 @@ describe("NewsPage", () => {
           data: newsEventDetailFixture({
             deliveries: [
               newsDeliveryFixture({
-                error_code: "feishu_5xx",
-                receipt: null,
+                error_code: "news_delivery_failed:FeishuServerError",
                 settled_at_ms: NEWS_NOW_MS - 10_000,
                 state: "terminal",
               }),
             ],
-            labels: [],
+            outcome: newsOutcomeFixture({
+              group: "held",
+              kind: "delivery_failed",
+              reason_zh: "飞书发送失败（FeishuServerError）",
+              text_zh: "未送达",
+            }),
+            timeline: [
+              ...newsEventDetailFixture().timeline!.slice(0, 2),
+              {
+                at_ms: NEWS_NOW_MS - 90_000,
+                facts: { degraded: true, error_code: "news_triage_output_truncated" },
+                stage: "triage",
+                summary_zh: "模型不可用：模型输出被截断，按规则兜底",
+                title_zh: "审稿",
+              },
+              {
+                at_ms: NEWS_NOW_MS - 90_000,
+                facts: { final_decision: "push", override_rule: "fail_closed_fallback" },
+                stage: "decide",
+                summary_zh: "推送 · 模型不可用，按规则兜底",
+                title_zh: "决策",
+              },
+              {
+                at_ms: NEWS_NOW_MS - 10_000,
+                facts: {
+                  error_code: "news_delivery_failed:FeishuServerError",
+                  kind: "first",
+                  state: "terminal",
+                },
+                stage: "delivery",
+                summary_zh: "未送达：飞书发送失败（FeishuServerError）",
+                title_zh: "推送",
+              },
+            ],
             verdicts: [
               newsVerdictFixture({
                 degraded: true,
-                error_code: "model_timeout",
-                final_decision: "throttled",
-                model_decision: null,
-                override_rule: "storyline_window_max",
-                throttled_by: "evt-earlier",
-                verdict: {},
-              }),
-              newsVerdictFixture({
-                created_at_ms: NEWS_NOW_MS - 30_000,
+                error_code: "news_triage_output_truncated",
                 final_decision: "push",
-                policy_version: "news_triage_policy_v2",
-                verdict: {
-                  audience: "crypto",
-                  confidence: 0.6,
-                  direction: "neutral",
-                  event_type: "macro",
-                  headline_zh: "央行转向已被部分定价",
-                  magnitude: 1,
-                  why_zh: "流动性数据滞后一个季度，市场已提前交易了这次转向",
-                },
+                model_decision: null,
+                override_rule: "fail_closed_fallback",
               }),
             ],
           }),
@@ -561,34 +661,23 @@ describe("NewsPage", () => {
       "/news/events/evt-global-policy",
     );
 
-    const verdicts = await screen.findByRole("region", { name: "判定记录" });
-    const cards = within(verdicts).getAllByRole("article");
-    expect(cards).toHaveLength(2);
-    const triage = within(cards[0]);
-    expect(triage.getByText("最终 节流")).toBeInTheDocument();
-    expect(triage.getByText("降级")).toBeInTheDocument();
-    expect(triage.getByText("model_timeout")).toBeInTheDocument();
-    expect(triage.getByText("覆写规则").nextElementSibling).toHaveTextContent(
-      "storyline_window_max",
-    );
-    expect(triage.getByText("节流来源").nextElementSibling).toHaveTextContent("evt-earlier");
-    expect(triage.getByText("模型判定").nextElementSibling).toHaveTextContent("无");
-    const second = within(cards[1]);
-    expect(second.getByText("央行转向已被部分定价")).toBeInTheDocument();
+    const region = await screen.findByRole("region", { name: "新闻事件详情" });
+    await screen.findByText("未送达");
+    const badge = region.querySelector(".news-outcome")!;
+    expect(badge).toHaveTextContent("未送达");
+    expect(badge).toHaveTextContent("飞书发送失败（FeishuServerError）");
+    expect(badge).toHaveAttribute("data-tone", "negative");
+    const timeline = screen.getByRole("region", { name: "处理时间线" });
     expect(
-      second.getByText("流动性数据滞后一个季度，市场已提前交易了这次转向"),
+      within(timeline).getByText("模型不可用：模型输出被截断，按规则兜底"),
     ).toBeInTheDocument();
-    expect(second.getByText("受众").nextElementSibling).toHaveTextContent("crypto");
-
-    const deliveries = screen.getByRole("region", { name: "推送记录" });
-    expect(within(deliveries).getByText("已终结")).toBeInTheDocument();
-    expect(within(deliveries).getByText("feishu_5xx")).toBeInTheDocument();
-    expect(screen.getByText(/尚无标注/)).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", {
-        level: 1,
-        name: "Central banks respond to a new global policy shock",
-      }),
+      within(timeline).getByText("未送达：飞书发送失败（FeishuServerError）"),
+    ).toBeInTheDocument();
+    const technical = screen.getByText(/技术详情/).closest("details")!;
+    expect(within(technical).getByText("news_triage_output_truncated")).toBeInTheDocument();
+    expect(
+      within(technical).getByText("news_delivery_failed:FeishuServerError"),
     ).toBeInTheDocument();
   });
 });

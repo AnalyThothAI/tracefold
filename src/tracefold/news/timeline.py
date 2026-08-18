@@ -86,8 +86,9 @@ def event_timeline(
     if event.get("priority") == "high":
         gate_bits.append("高优先级")
     grounded = list(event.get("grounded_assets") or [])
-    if grounded:
-        gate_bits.append("关联 " + " ".join(str(s).replace("XYZ-", "") for s in grounded[:4]))
+    shown = list(dict.fromkeys(str(s).replace("XYZ-", "") for s in grounded))
+    if shown:
+        gate_bits.append("关联 " + " ".join(shown[:4]))
     if event.get("watchlist_hits"):
         gate_bits.append("命中关注列表")
     steps.append(

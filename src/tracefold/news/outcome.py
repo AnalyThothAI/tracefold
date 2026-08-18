@@ -61,6 +61,9 @@ ADMISSION_ZH: Final[dict[str, str]] = {
     "suppressed_pr_template": "律所推广模板，规则直接拦截",
     "suppressed_low_signal": "低分社媒/盘口噪音，规则直接拦截",
     "recovery": "断线期间补抄的旧闻，仅用于去重与历史",
+    # Retired Gate admissions (pre-#53) still present on historical Events.
+    "suppressed_ungrounded": "无关联资产，旧规则拦截（已退役）",
+    "suppressed_ungrounded_meme": "无关联资产的社媒，旧规则拦截（已退役）",
 }
 
 OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
@@ -74,7 +77,9 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "magnitude3": "重大事件",
     "high_priority_push": "高优先级来源，模型建议推送",
     "fail_closed_fallback": "模型不可用，按规则兜底",
-    "verify_failed": "分析结果未通过校验",
+    # Retired rules (policy v1 / Analyst lane) still present on historical verdicts.
+    "magnitude2_actionable": "影响明显且可操作（旧规则）",
+    "verify_failed": "分析结果未通过校验（已退役）",
 }
 
 ERROR_CODE_ZH: Final[dict[str, str]] = {
@@ -83,6 +88,20 @@ ERROR_CODE_ZH: Final[dict[str, str]] = {
     "news_triage_output_invalid": "模型输出格式错误",
     "news_triage_circuit_open": "模型熔断中（连续失败后暂停调用）",
     "news_triage_model_unconfigured": "未配置模型",
+}
+
+INCIDENT_CAUSE_ZH: Final[dict[str, str]] = {
+    "planned_shutdown": "计划内重启",
+    "network_connect": "网络连接失败",
+    "authentication": "认证失败",
+    "provider_close": "provider 关闭连接",
+    "protocol_error": "协议错误",
+    "idle_timeout": "长时间无帧",
+    "broker_backpressure": "队列背压",
+    "broker_unavailable": "队列不可用",
+    "process_outage": "进程中断",
+    "triage_circuit_open": "模型熔断",
+    "unknown": "未知原因",
 }
 
 DELIVERY_ERROR_ZH: Final[dict[str, str]] = {
@@ -169,7 +188,13 @@ def error_code_zh(code: str | None) -> str:
         return ERROR_CODE_ZH[text]
     if text.startswith("news_triage_model_failed:"):
         return f"模型调用失败（{text.split(':', 1)[1]}）"
+    if text.startswith("news_analyst_"):
+        return "分析模型失败（已退役通道）"
     return text
+
+
+def incident_cause_zh(cause: str | None) -> str:
+    return INCIDENT_CAUSE_ZH.get(str(cause or ""), str(cause or ""))
 
 
 def delivery_error_zh(code: str | None) -> str:
@@ -316,6 +341,7 @@ __all__ = [
     "ERROR_CODE_ZH",
     "EVENT_TYPE_ZH",
     "FAMILY_ZH",
+    "INCIDENT_CAUSE_ZH",
     "MAGNITUDE_ZH",
     "OUTCOME_GROUP",
     "OUTCOME_VERSION",
@@ -333,6 +359,7 @@ __all__ = [
     "event_outcome",
     "event_type_zh",
     "family_zh",
+    "incident_cause_zh",
     "magnitude_zh",
     "override_rule_zh",
     "scope_zh",

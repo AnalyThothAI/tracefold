@@ -81,71 +81,73 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 
   Feed query state is URL-owned and mirrors the server contract exactly:
   `q`, `family`, `admission`, `priority` (`high|normal`), `decision`
-  (`push|escalate|drop|throttled|degraded`), `symbol`, and `sort`
-  (`latest|priority`). Unknown `priority`/`decision` values are dropped rather
-  than forwarded. The default request is `sort=latest` with `limit=25` and no
-  hidden filter. Topbar search writes `q` on `/news`; the browser never
-  resolves tokens or symbols itself. The backend searches and filters before
-  cursor pagination. Active filters are removable chips
-  beside one compact filter disclosure (family, admission, priority, decision,
-  symbol). Pagination is an explicit `加载更多事件` action, loaded pages
-  deduplicate by `event_id`, and there is no automatic infinite scroll or
-  client-side time-window control. A refreshed first page inserts new Events
-  at the top when the reader is already there; when the reader is scrolled
-  away, the route preserves the viewport and shows a bounded new-item
-  affordance that returns to the top.
+  (`push|escalate|drop|throttled|degraded`), `symbol`, `sort`
+  (`latest|priority`), `outcome` (`pushed|held|pending`, the task tabs
+  `全部 / 已推送 / 被拦截 / 处理中`), and `hours` (`1|6|24|72|all`; absent
+  means the default 24 h window, `all` means no bound). Unknown
+  `priority`/`decision`/`outcome`/`hours` values are dropped rather than
+  forwarded. The default request is `sort=latest`, `limit=25`, `hours=24`, no
+  outcome tab, and no advanced filter. Topbar search writes `q` on `/news`;
+  the browser never resolves tokens or symbols itself. The backend searches
+  and filters before cursor pagination. Advanced filters (family, admission,
+  priority, decision, symbol) live in one compact disclosure and appear as
+  removable chips; the time window and sort are always-visible selects.
+  Pagination is an explicit `加载更多事件` action, loaded pages deduplicate by
+  `event_id`, and there is no automatic infinite scroll. A refreshed first
+  page inserts new Events at the top when the reader is already there; when
+  the reader is scrolled away, the route preserves the viewport and shows a
+  bounded new-item affordance that returns to the top.
 
-  Feed rows (`NewsEventRow`) are compact reading cards over
-  `NewsFeedEventData`. The first metadata line renders server-owned priority,
-  Triage `final_decision` (or `待判定` when no verdict exists), admission,
-  family, asset class, and the numeric `provider_score_max` badge (omitted
-  without numeric evidence), followed by reporting origin, exact local
-  `opened_at_ms` date/time plus relative time, and `member_count`. The Triage
-  `title_zh` (or `leader_title` when the verdict has none) is the
-  primary two-line headline and links to `/news/events/:eventId`; a differing
-  `leader_title` appears as `原标题`, and a valid `context_line` is a two-line
-  secondary line. The footer renders `grounded_assets` under `落地资产`
-  (`未落地` when empty; `watchlist_hits` mark matching chips as `data-watch="hit"`),
-  the Triage strip (`direction · M<magnitude> · event_type`, `headline_zh`,
-  `override_rule`, `throttled_by`, and a `降级` flag), the delivery summary
-  state with its settled time, and a separate original link when a valid URL
-  exists. Missing values are omitted, never rendered as placeholder copy.
-  Row tone (`data-direction`, `data-priority`, `data-decision`) is styling
-  only. At 1280×720 the target is at least four rows, at 390×844 about two,
-  with no horizontal overflow.
+  The Feed header renders the shared status query as one thresholded health
+  pill (`流水线正常/注意/异常` from `health.overall`, the failing item's
+  `summary_zh`, linking to `/news/status`) and a four-cell 24 h funnel strip
+  (`收到 / 送审 / 决定推送 / 已送达` from `funnel_24h`).
 
-  `/news/events/:eventId` reads `/api/news/events/{event_id}` and renders
-  five server-owned sections in fixed order: the Event hero (badges, the Triage
-  verdict's `title_zh` (or `leader_title`) as `h1`, `原标题`, valid `leader_description`,
-  storyline `context_line`, grounded assets, source/opened/last-member/
-  published clocks, ingest mode, storyline key, macro lexicon, Event ID, and
-  the representative original link); `members[]` cards with reporting origin,
-  `match_kind`, `jaccard_estimate`, published time, title, valid description,
-  item id, and original link; `NewsVerdictPanel` over `verdicts[]` (stage,
-  final decision, degraded/error flags, rule baseline, model decision,
-  `override_rule`, `throttled_by`, model/policy/prompt versions, publish time,
-  the typed Triage payload fields, verdict assets, and a collapsed `trace`
-  disclosure); `deliveries[]` rows (kind, state, error code, attempted/settled
-  clocks, receipt entries); and `labels[]` under `操作者标注` (source, label
-  payload, created time, or an explicit empty state naming `tracefold news
-  label`). `NewsEventDetailData` carries no market marks and the page renders
-  no market table.
-  The browser does not recompute any verdict, decision, or delivery state.
+  Feed rows (`NewsEventRow`) are `when · what · one outcome`: the local
+  `HH:MM` of `opened_at_ms` (full timestamp and relative time in the title),
+  the Triage `headline_zh` (falling back to `title_zh`, then `leader_title`)
+  as the two-line primary headline linking to `/news/events/:eventId`, the
+  original wire line clamped to one line when it differs, a meta line
+  (reporting origin, `N 条报道` when merged, the server-labelled Triage facts
+  `direction_zh · magnitude_zh · event_type_zh`, up to four ticker chips from
+  `grounded_assets`, and an original link when a valid URL exists), and
+  exactly one `NewsOutcomeBadge` rendered from `outcome` (`text_zh` as the
+  badge, `reason_zh` as the title, and shown inline for held rows; the
+  delivered time for sent rows). Rows never render admission, family, asset
+  class, decision, rule, throttle, or score keys; `data-outcome`,
+  `data-outcome-group`, and `data-priority` are styling hooks only. Missing
+  values are omitted, never rendered as placeholder copy. At 1366×720 the
+  target is at least four rows, at 390×844 about two, with no horizontal
+  overflow.
 
-  `/news/status` reads `/api/news/status` and presents the single server
-  `state`/`workers_state`/`measured_at_ms` overview followed by four fact
-  layers in fixed order — `ingest` (token, WSS connection, last frame/publish,
-  last error, configured and provider-enabled Strategy counts, open incidents,
-  strategy warnings), `broker` (configured, connected, error, per-queue
-  messages/consumers), `pipeline` (1h/24h events, candidates, triage, degraded
-  triage, decided push, throttled, Triage P50/P95, the Triage model), and
-  `delivery` (availability, 1h/24h sent, terminal, hourly cap,
-  end-to-end P95, last error) — plus read-only `control` (paused, mutes) and
-  the read-only watch symbol list (`news-watch-*`). No layer computes a second
-  health state; only the server `state` badge is coloured. There are no
-  pause/resume/mute controls, no source inventory, and no Brief.
-  The Feed header renders compact reader-facing health from the same status
-  query (`WSS 已连接/未连接`, `1h 事件`, `Triage P95`, `24h 推送`).
+  `/news/events/:eventId` reads `/api/news/events/{event_id}` and renders,
+  in fixed order: the hero (the `outcome` badge with its `reason_zh`, the
+  Triage `headline_zh` as `h1`, `title_zh` when it differs, `why_zh` as a
+  callout, the original wire line with its link, origin, merged-report count,
+  and ticker chips); the timeline (`这条新闻经历了什么`) over the server
+  `timeline[]` — one `summary_zh` sentence per step with the raw `facts`
+  behind an `展开字段` toggle; `同类报道` (members: time, title, origin,
+  首条/归并, original link); `运营标注` (labels plus a copyable
+  `tracefold news label` command); and a collapsed `技术详情` disclosure that
+  holds `event_id`, `storyline_key`, family, admission, engine/ingest mode,
+  grounded assets, provenance, every verdict record (versions, model, rule
+  keys, `verdict` and `trace` JSON), delivery records with receipts, and member
+  ids with match kind/Jaccard. Internal identifiers do not appear above the
+  fold. The browser does not recompute any verdict, decision, or delivery
+  state.
+
+  `/news/status` reads `/api/news/status` and renders four thresholded
+  health cards (`接入 / 队列 / 模型 / 推送` from `health.*`: level colour,
+  `summary_zh`, `detail_zh`, and two server numbers each), an overall pill
+  (`总体正常/注意/异常`), the 24 h funnel (`funnel_24h`, each layer linking to
+  the matching feed tab), the reason ranking (`reasons_24h` grouped by stage
+  with `label_zh` bars — never raw keys), read-only `control` (paused state
+  and a mute table), the watchlist and configured Strategy chips with
+  `strategy_warnings`, and a collapsed `技术指标` disclosure with the raw
+  pipeline/ingest/broker facts (latency percentiles, queue depths, incidents,
+  counters). No layer computes a second health state; thresholds are the
+  server's. There are no pause/resume/mute controls, no source inventory, and
+  no Brief.
 
   Polling: Feed every 3 seconds; Event detail and Status every 15 seconds
   (one shared status query feeds both the Feed header and `/news/status`).
@@ -226,7 +228,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
-- **Score display.** Displayed scores (the OpenNews `provider_score_max` badge, Triage magnitude and confidence, Macro data quality) are server-owned values rendered as-is. The UI does not recompute, rank, or synthesize scores locally.
+- **Score display.** Displayed scores and labels (Triage magnitude and confidence, the News `outcome`/`*_zh`/`label_zh` copy, Macro data quality) are server-owned values rendered as-is. The UI does not recompute, rank, translate, or synthesize them locally; `features/news/newsLabels.ts` holds UI affordance copy and tone mapping only.
 - **No token or provider-image surfaces.** There is no token profile, logo, chain/address link, DEX/CEX market panel, or image proxy anywhere in `web/src`; the API exposes no image URL or image route. Do not add a frontend proxy, helper, or filter that loads or rewrites provider image URLs.
 
 ## Build And Test

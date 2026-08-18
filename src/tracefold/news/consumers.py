@@ -549,6 +549,12 @@ class TriageConsumer:
         self.policy = policy
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
+        # A fresh process starts with a closed circuit: an incident left open by a previous process is over.
+        with contextlib.suppress(TransientError, DeferError):
+            await self.db.tx(
+                "news_triage_circuit_reconcile",
+                lambda repos: repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms()),
+            )
         await self.bus.consume(Q_TRIAGE, self.handle, prefetch=self.concurrency, stop_event=stop_event)
 
     async def handle(self, message: BusMessage) -> None:

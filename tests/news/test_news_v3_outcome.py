@@ -153,6 +153,10 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
     ):
         assert rule in OVERRIDE_RULE_ZH
     assert override_rule_zh("brand_new_rule") == "brand_new_rule"
+    # Keys that only exist on historical rows (retired policies/lanes) still get Chinese copy.
+    assert override_rule_zh("magnitude2_actionable").startswith("影响明显")
+    assert admission_zh("suppressed_ungrounded").endswith("（已退役）")
+    assert error_code_zh("news_analyst_failed:GraphRecursionError") == "分析模型失败（已退役通道）"
     assert admission_zh("candidate") == "已送审"
     assert error_code_zh("news_triage_model_failed:RateLimitError") == "模型调用失败（RateLimitError）"
     assert throttled_by_zh("hourly_cap") == "已达每小时推送上限"
@@ -217,6 +221,10 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
     assert [s["stage"] for s in steps] == ["received", "gate", "triage", "decide", "delivery"]
     assert steps[0]["summary_zh"] == "来源 binance · 归并 3 条同类报道（2 个来源）"
     assert steps[1]["summary_zh"] == "已送审 · 高优先级 · 关联 XYZ"
+    _, cl_steps = event_timeline(
+        event=_event(grounded_assets=["CL", "XYZ-CL", "BTC"], priority="normal"), members=[], verdicts=[], deliveries=[]
+    )
+    assert cl_steps[1]["summary_zh"] == "已送审 · 关联 CL BTC"
     assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 影响明显 / 上币 · 模型建议：推送"
     assert steps[3]["summary_zh"] == "推送 · 高优先级来源，模型建议推送"
     assert steps[4]["summary_zh"] == "已推送到飞书" and steps[4]["at_ms"] == NOW + 9_500
@@ -314,6 +322,32 @@ def test_status_health_thresholds_turn_amber_and_red() -> None:
 
     stale = status_health(**_status_inputs(ingest={"connected": True, "last_frame_at_ms": NOW - 40 * 60_000}))  # type: ignore[arg-type]
     assert stale["health"]["ingest"]["level"] == "bad" and "40 分钟" in stale["health"]["ingest"]["summary_zh"]
+
+    # A lingering model-circuit incident belongs to the model item, not the WSS lane.
+    circuit = status_health(
+        **_status_inputs(
+            ingest={
+                "connected": True,
+                "last_frame_at_ms": NOW - 60_000,
+                "open_incidents": [{"cause_class": "triage_circuit_open", "planned": False}],
+            }
+        )
+    )  # type: ignore[arg-type]
+    assert circuit["health"]["ingest"]["level"] == "ok"
+    wss = status_health(
+        **_status_inputs(
+            ingest={
+                "connected": True,
+                "last_frame_at_ms": NOW - 60_000,
+                "open_incidents": [{"cause_class": "idle_timeout", "planned": False}],
+            }
+        )
+    )  # type: ignore[arg-type]
+    assert wss["health"]["ingest"] == {
+        "level": "warn",
+        "summary_zh": "已连接，有未关闭的接入事故",
+        "detail_zh": "长时间无帧",
+    }
 
     backlog = status_health(
         **_status_inputs(

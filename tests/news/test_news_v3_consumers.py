@@ -33,9 +33,13 @@ WATCHLIST = frozenset({"BTC", "NVDA"})
 class FakeBus:
     def __init__(self) -> None:
         self.published: list[BusMessage] = []
+        self.consumed: list[str] = []
 
     async def publish(self, message: BusMessage) -> None:
         self.published.append(message)
+
+    async def consume(self, queue: str, handler: Any, *, prefetch: int, stop_event: Any) -> None:
+        self.consumed.append(queue)
 
     def routing_keys(self) -> list[str]:
         return [message.routing_key for message in self.published]
@@ -382,6 +386,19 @@ def test_triage_output_failure_is_traced_and_never_opens_the_circuit() -> None:
     assert "open_incident" not in news.names()
     assert not triage.circuit.is_open(NOW_MS * 2)
     assert triage.circuit.failures == 0
+
+
+def test_triage_consumer_start_closes_incidents_left_open_by_a_previous_process() -> None:
+    news = RecordingNews(close_open_incidents=1)
+    bus = FakeBus()
+    triage = _triage(news, bus)
+    stop = asyncio.Event()
+    stop.set()
+
+    asyncio.run(triage.run(stop_event=stop))
+
+    assert news.kwargs_of("close_open_incidents")["cause_classes"] == ["triage_circuit_open"]
+    assert bus.consumed == ["news.triage"]
 
 
 def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_incident() -> None:

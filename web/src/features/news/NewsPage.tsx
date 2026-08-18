@@ -1,7 +1,8 @@
+import { newsStatusPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
-import { SlidersHorizontal } from "lucide-react";
-import { type RefObject, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { SlidersHorizontal, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 
 import "./news.css";
 import "./newsFeed.css";
@@ -10,18 +11,22 @@ import { NewsEventRow } from "./NewsEventRow";
 import { NewsSectionTabs } from "./NewsSectionTabs";
 import { NewsStatusPage } from "./NewsStatusPage";
 import {
-  admissionLabel,
-  decisionLabel,
-  familyLabel,
-  optionalDuration,
-  priorityLabel,
+  formatCount,
+  healthLevelLabel,
+  healthTone,
+  hoursLabel,
+  outcomeTabLabel,
 } from "./newsLabels";
+import { useAnchoredEventFeed } from "./useAnchoredEventFeed";
 import {
   NEWS_FEED_DECISIONS,
+  NEWS_FEED_DEFAULT_HOURS,
+  NEWS_FEED_HOURS,
+  NEWS_FEED_OUTCOMES,
   NEWS_FEED_PRIORITIES,
   type NewsFeedDecision,
-  type NewsFeedEvent,
   type NewsFeedFilters,
+  type NewsFeedOutcome,
   type NewsFeedPriority,
   type NewsFeedSort,
   type NewsStatus,
@@ -45,6 +50,32 @@ const KNOWN_ADMISSIONS = [
   "suppressed_pr_template",
 ] as const;
 
+// Power-user filter copy for the raw enums the feed still accepts (URL-owned; the API validates them).
+const FAMILY_FILTER_LABELS: Record<string, string> = {
+  market_telemetry: "盘口数据",
+  filing: "公告/申报",
+  disaster: "灾害",
+  general: "综合",
+};
+const ADMISSION_FILTER_LABELS: Record<string, string> = {
+  candidate: "已送审",
+  listing_deterministic: "上币/下币公告",
+  recovery: "补抄件",
+  suppressed_low_signal: "低分噪音（未送审）",
+  suppressed_pr_template: "律所模板（未送审）",
+};
+const PRIORITY_FILTER_LABELS: Record<NewsFeedPriority, string> = {
+  high: "高优先级",
+  normal: "普通",
+};
+const DECISION_FILTER_LABELS: Record<NewsFeedDecision, string> = {
+  push: "推送",
+  escalate: "重点推送",
+  drop: "不推",
+  throttled: "限流",
+  degraded: "降级",
+};
+
 export function NewsPage(props: NewsPageProps) {
   if (props.view === "status") return <NewsStatusPage token={props.token} />;
   if (props.view === "event")
@@ -65,6 +96,8 @@ function FeedRoute({ token }: { token: string }) {
     filters.decision ?? "",
     filters.symbol ?? "",
     filters.sort,
+    filters.outcome ?? "",
+    filters.hours == null ? "" : String(filters.hours),
   ].join("\u001f");
   const [historyAnchor, setHistoryAnchor] = useState<{
     cursor: string | null;
@@ -87,7 +120,7 @@ function FeedRoute({ token }: { token: string }) {
         .map((event) => [event.event_id, event]),
     ).values(),
   );
-  const hasActiveFilters = Boolean(
+  const hasAdvancedFilters = Boolean(
     filters.q ||
     filters.family ||
     filters.admission ||
@@ -133,10 +166,17 @@ function FeedRoute({ token }: { token: string }) {
       "symbol",
       changes.symbol === undefined ? filters.symbol : changes.symbol,
     );
+    setOptionalParam(
+      params,
+      "outcome",
+      changes.outcome === undefined ? filters.outcome : changes.outcome,
+    );
+    const hours = changes.hours === undefined ? filters.hours : changes.hours;
+    params.set("hours", hours == null ? "all" : String(hours));
     setSearchParams(params, { replace: true });
   };
 
-  const resetFilters = () =>
+  const resetAdvancedFilters = () =>
     updateFeedParams({
       admission: null,
       decision: null,
@@ -153,27 +193,35 @@ function FeedRoute({ token }: { token: string }) {
       data-feed-density="compact"
       data-page-archetype="scan"
     >
-      <header className="news-feed-header">
+      <header className="news-page-header">
         <div className="news-heading-copy">
           <h1>新闻事件流</h1>
-          <p>账户 Strategy 命中的新闻事件、Triage 判定与推送状态</p>
+          <p>每条新闻只有一个结论：推了、没推为什么、还在处理。</p>
         </div>
-        <NewsInlineStatus
-          error={statusQuery.isError}
-          fetching={statusQuery.isFetching}
-          status={statusQuery.data}
-        />
+        <NewsHealthPill error={statusQuery.isError} status={statusQuery.data} />
       </header>
 
+      <NewsFunnelStrip status={statusQuery.data} />
+
       <div className="news-feed-toolbar">
-        <NewsSectionTabs active="feed" />
-        <NewsFeedControls filters={filters} onChange={updateFeedParams} />
+        <div className="news-feed-toolbar-left">
+          <NewsSectionTabs active="feed" />
+          <OutcomeTabs
+            active={filters.outcome}
+            onChange={(outcome) => updateFeedParams({ outcome })}
+          />
+        </div>
+        <NewsFeedControls
+          filters={filters}
+          hasAdvancedFilters={hasAdvancedFilters}
+          onChange={updateFeedParams}
+        />
       </div>
 
       <ActiveFilterChips filters={filters} onRemove={updateFeedParams} />
 
       {query.isLoading && !query.data ? (
-        <PageState.Loading layout="panel" rows={5} label="正在读取新闻事件" />
+        <PageState.Loading layout="panel" rows={6} label="正在读取新闻事件" />
       ) : null}
       {query.isError && !query.data ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
@@ -181,18 +229,25 @@ function FeedRoute({ token }: { token: string }) {
       {!query.isLoading && !query.isError && !events.length ? (
         <PageState.Empty
           action={
-            hasActiveFilters ? (
-              <button className="news-reset-button" onClick={resetFilters} type="button">
-                清除筛选
+            hasAdvancedFilters || filters.hours != null ? (
+              <button
+                className="news-button"
+                onClick={() => {
+                  resetAdvancedFilters();
+                  if (filters.hours != null) updateFeedParams({ hours: null });
+                }}
+                type="button"
+              >
+                清除筛选，查看全部时间
               </button>
             ) : null
           }
           hint={
-            hasActiveFilters
-              ? "换个关键词或减少筛选条件后再试。"
+            hasAdvancedFilters || filters.outcome || filters.hours != null
+              ? "换个时间范围、切到「全部」标签或减少筛选条件后再试。"
               : "事件会在 Strategy 命中并完成入库后出现。"
           }
-          title={hasActiveFilters ? "没有匹配的事件" : "暂无事件"}
+          title={emptyTitle(filters)}
         />
       ) : null}
       {events.length ? (
@@ -228,11 +283,40 @@ function FeedRoute({ token }: { token: string }) {
   );
 }
 
+function OutcomeTabs({
+  active,
+  onChange,
+}: {
+  active: NewsFeedOutcome | null;
+  onChange: (value: NewsFeedOutcome | null) => void;
+}) {
+  const options: Array<NewsFeedOutcome | null> = [null, ...NEWS_FEED_OUTCOMES];
+  return (
+    <div aria-label="按结局筛选" className="news-segmented" role="tablist">
+      {options.map((value) => (
+        <button
+          aria-selected={active === value}
+          className="news-segmented-option"
+          data-outcome-group={value ?? "all"}
+          key={value ?? "all"}
+          onClick={() => onChange(value)}
+          role="tab"
+          type="button"
+        >
+          {outcomeTabLabel(value)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function NewsFeedControls({
   filters,
+  hasAdvancedFilters,
   onChange,
 }: {
   filters: NewsFeedFilters;
+  hasAdvancedFilters: boolean;
   onChange: (changes: FeedFilterChanges) => void;
 }) {
   const [symbolDraft, setSymbolDraft] = useState(filters.symbol ?? "");
@@ -241,49 +325,64 @@ function NewsFeedControls({
   }, [filters.symbol]);
   return (
     <div className="news-filter-bar">
-      <label className="news-sort-control">
-        <span>排序</span>
+      <label className="news-select">
+        <span className="sr-only">时间范围</span>
+        <select
+          aria-label="时间范围"
+          onChange={(event) => onChange({ hours: parseHours(event.target.value) })}
+          value={filters.hours == null ? "all" : String(filters.hours)}
+        >
+          {NEWS_FEED_HOURS.map((hours) => (
+            <option key={hours} value={String(hours)}>
+              {hoursLabel(hours)}
+            </option>
+          ))}
+          <option value="all">全部时间</option>
+        </select>
+      </label>
+      <label className="news-select">
+        <span className="sr-only">排序</span>
         <select
           aria-label="事件排序"
           onChange={(event) => onChange({ sort: parseSort(event.target.value) })}
           value={filters.sort}
         >
-          <option value="latest">最新</option>
-          <option value="priority">优先级</option>
+          <option value="latest">最新在前</option>
+          <option value="priority">高优先级在前</option>
         </select>
       </label>
       <details className="news-filter-disclosure">
-        <summary>
+        <summary data-active={hasAdvancedFilters || undefined}>
           <SlidersHorizontal aria-hidden />
           筛选
         </summary>
         <div>
           <label>
-            <span>家族</span>
+            <span>来源类别</span>
             <select
               aria-label="事件家族"
               onChange={(event) => onChange({ family: event.target.value || null })}
               value={filters.family ?? ""}
             >
-              <option value="">全部家族</option>
+              <option value="">全部</option>
               {withSelectedOption(KNOWN_FAMILIES, filters.family).map((value) => (
                 <option key={value} value={value}>
-                  {familyLabel(value)}
+                  {FAMILY_FILTER_LABELS[value] ?? value}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            <span>准入</span>
+            <span>门禁</span>
             <select
               aria-label="事件准入"
               onChange={(event) => onChange({ admission: event.target.value || null })}
               value={filters.admission ?? ""}
             >
-              <option value="">全部准入</option>
+              <option value="">全部</option>
               {withSelectedOption(KNOWN_ADMISSIONS, filters.admission).map((value) => (
                 <option key={value} value={value}>
-                  {admissionLabel(value)}
+                  {ADMISSION_FILTER_LABELS[value] ?? value}
                 </option>
               ))}
             </select>
@@ -295,31 +394,31 @@ function NewsFeedControls({
               onChange={(event) => onChange({ priority: parsePriority(event.target.value) })}
               value={filters.priority ?? ""}
             >
-              <option value="">全部优先级</option>
+              <option value="">全部</option>
               {NEWS_FEED_PRIORITIES.map((value) => (
                 <option key={value} value={value}>
-                  {priorityLabel(value)}
+                  {PRIORITY_FILTER_LABELS[value]}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            <span>判定</span>
+            <span>决策</span>
             <select
               aria-label="Triage 判定"
               onChange={(event) => onChange({ decision: parseDecision(event.target.value) })}
               value={filters.decision ?? ""}
             >
-              <option value="">全部判定</option>
+              <option value="">全部</option>
               {NEWS_FEED_DECISIONS.map((value) => (
                 <option key={value} value={value}>
-                  {decisionLabel(value)}
+                  {DECISION_FILTER_LABELS[value]}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            <span>资产</span>
+            <span>资产代码</span>
             <input
               aria-label="落地资产"
               autoCapitalize="characters"
@@ -352,23 +451,26 @@ function ActiveFilterChips({
   const chips = [
     filters.q ? { label: `搜索：${filters.q}`, remove: () => onRemove({ q: null }) } : null,
     filters.family
-      ? { label: `家族：${familyLabel(filters.family)}`, remove: () => onRemove({ family: null }) }
+      ? {
+          label: `来源类别：${FAMILY_FILTER_LABELS[filters.family] ?? filters.family}`,
+          remove: () => onRemove({ family: null }),
+        }
       : null,
     filters.admission
       ? {
-          label: `准入：${admissionLabel(filters.admission)}`,
+          label: `门禁：${ADMISSION_FILTER_LABELS[filters.admission] ?? filters.admission}`,
           remove: () => onRemove({ admission: null }),
         }
       : null,
     filters.priority
       ? {
-          label: `优先级：${priorityLabel(filters.priority)}`,
+          label: `优先级：${PRIORITY_FILTER_LABELS[filters.priority]}`,
           remove: () => onRemove({ priority: null }),
         }
       : null,
     filters.decision
       ? {
-          label: `判定：${decisionLabel(filters.decision)}`,
+          label: `决策：${DECISION_FILTER_LABELS[filters.decision]}`,
           remove: () => onRemove({ decision: null }),
         }
       : null,
@@ -387,54 +489,78 @@ function ActiveFilterChips({
           type="button"
         >
           {chip.label}
-          <span aria-hidden>×</span>
+          <X aria-hidden />
         </button>
       ))}
     </div>
   );
 }
 
-function NewsInlineStatus({
-  error,
-  fetching,
-  status,
-}: {
-  error: boolean;
-  fetching: boolean;
-  status?: NewsStatus;
-}) {
-  const readerStatus = readerFacingNewsStatus(error, status);
-  return (
-    <div className="news-inline-status" data-state={readerStatus.state} role="status">
-      <span aria-hidden className="news-status-dot" />
-      <span>
-        <b>{readerStatus.label}</b>
-        <small>{inlineStatusSummary(status, fetching)}</small>
+function NewsHealthPill({ error, status }: { error: boolean; status?: NewsStatus }) {
+  if (error) {
+    return (
+      <Link className="news-health-pill news-toned" data-tone="negative" to={newsStatusPath()}>
+        <span aria-hidden className="news-outcome-dot" />
+        <b>状态暂不可用</b>
+      </Link>
+    );
+  }
+  // `health` is required by the contract; the guard only covers the seconds of a rolling deploy where the
+  // console is newer than the API, so the feed keeps rendering instead of throwing.
+  const health = status?.health;
+  if (!status || !health) {
+    return (
+      <span className="news-health-pill news-toned" data-tone="neutral" role="status">
+        <span aria-hidden className="news-outcome-dot" />
+        <b>正在检查流水线</b>
       </span>
-    </div>
+    );
+  }
+  const level = health.overall;
+  const worst = (["ingest", "broker", "model", "delivery"] as const)
+    .map((key) => health[key])
+    .find((item) => item.level === level);
+  return (
+    <Link
+      aria-label="查看流水线状态"
+      className="news-health-pill news-toned"
+      data-tone={healthTone(level)}
+      to={newsStatusPath()}
+    >
+      <span aria-hidden className="news-outcome-dot" />
+      <b>流水线{healthLevelLabel(level)}</b>
+      <small>{worst?.summary_zh ?? ""}</small>
+    </Link>
   );
 }
 
-function readerFacingNewsStatus(
-  error: boolean,
-  status: NewsStatus | undefined,
-): { label: string; state: "live" | "recovering" | "stalled" } {
-  if (error) return { label: "状态暂不可用", state: "stalled" };
-  if (!status) return { label: "正在检查 WSS", state: "recovering" };
-  if (!status.ingest.connected) return { label: "WSS 未连接", state: "stalled" };
-  if (status.state === "ready") return { label: "WSS 已连接", state: "live" };
-  if (status.state === "unavailable") return { label: "流水线不可用", state: "stalled" };
-  return {
-    label: status.state === "degraded" ? "流水线降级" : "流水线预热中",
-    state: "recovering",
-  };
+function NewsFunnelStrip({ status }: { status?: NewsStatus }) {
+  const funnel = status?.funnel_24h;
+  if (!funnel) return null;
+  const cells = [
+    ["收到", funnel.received, `最近 1 小时 ${formatCount(funnel.received_1h)}`],
+    ["送审", funnel.triaged, `候选 ${formatCount(funnel.candidates)}`],
+    ["决定推送", funnel.decided_push, ""],
+    ["已送达", funnel.delivered, `最近 1 小时 ${formatCount(funnel.delivered_1h)}`],
+  ] as const;
+  return (
+    <ol aria-label="过去 24 小时漏斗" className="news-funnel-strip">
+      {cells.map(([label, value, hint]) => (
+        <li key={label}>
+          <span className="news-funnel-strip-label">{label}</span>
+          <b>{formatCount(value)}</b>
+          {hint ? <small>{hint}</small> : null}
+        </li>
+      ))}
+    </ol>
+  );
 }
 
-function inlineStatusSummary(status: NewsStatus | undefined, fetching: boolean): string {
-  if (!status) return fetching ? "正在检查" : "等待首次状态";
-  const prefix = fetching ? "刷新中 · " : "";
-  const pipeline = status.pipeline;
-  return `${prefix}1h 事件 ${pipeline.events_1h} · Triage P95 ${optionalDuration(pipeline.triage_p95_ms)} · 24h 推送 ${status.delivery.sent_24h}`;
+function emptyTitle(filters: NewsFeedFilters): string {
+  if (filters.outcome === "pushed") return `${hoursLabel(filters.hours)}没有推送`;
+  if (filters.outcome === "held") return `${hoursLabel(filters.hours)}没有被拦截的事件`;
+  if (filters.outcome === "pending") return "没有正在处理的事件";
+  return `${hoursLabel(filters.hours)}没有匹配的事件`;
 }
 
 function parseFeedFilters(searchParams: URLSearchParams): NewsFeedFilters {
@@ -442,6 +568,8 @@ function parseFeedFilters(searchParams: URLSearchParams): NewsFeedFilters {
     admission: searchParams.get("admission") || null,
     decision: parseDecision(searchParams.get("decision")),
     family: searchParams.get("family") || null,
+    hours: parseHours(searchParams.get("hours")),
+    outcome: parseOutcome(searchParams.get("outcome")),
     priority: parsePriority(searchParams.get("priority")),
     q: searchParams.get("q")?.trim() ?? "",
     sort: parseSort(searchParams.get("sort")),
@@ -461,6 +589,18 @@ function parseDecision(value: string | null): NewsFeedDecision | null {
   return NEWS_FEED_DECISIONS.find((candidate) => candidate === value) ?? null;
 }
 
+function parseOutcome(value: string | null): NewsFeedOutcome | null {
+  return NEWS_FEED_OUTCOMES.find((candidate) => candidate === value) ?? null;
+}
+
+/** `hours` absent → default window; `all` → whole retention; anything else must be a known window. */
+function parseHours(value: string | null): number | null {
+  if (value == null || value === "") return NEWS_FEED_DEFAULT_HOURS;
+  if (value === "all") return null;
+  const parsed = Number.parseInt(value, 10);
+  return NEWS_FEED_HOURS.includes(parsed) ? parsed : NEWS_FEED_DEFAULT_HOURS;
+}
+
 function normalizeSymbol(value: string | null | undefined): string | null {
   const normalized = value?.trim().toUpperCase() ?? "";
   return normalized ? normalized.slice(0, 16) : null;
@@ -474,117 +614,4 @@ function setOptionalParam(params: URLSearchParams, name: string, value: string |
 function withSelectedOption(options: readonly string[], selected: string | null): string[] {
   if (!selected || options.includes(selected)) return [...options];
   return [selected, ...options];
-}
-
-function useAnchoredEventFeed(
-  listRef: RefObject<HTMLDivElement | null>,
-  serverEvents: NewsFeedEvent[],
-  firstPageEvents: NewsFeedEvent[],
-  identity: string,
-) {
-  const [count, setCount] = useState(0);
-  const [, setRevision] = useState(0);
-  const acceptedEventsRef = useRef<NewsFeedEvent[]>(serverEvents);
-  const awayFromTopRef = useRef(false);
-  const deferredTopIdsRef = useRef<Set<string>>(new Set());
-  const deferredRef = useRef(false);
-  const identityRef = useRef<string | null>(null);
-  const knownIdsRef = useRef<Set<string>>(new Set());
-  const latestEventsRef = useRef<NewsFeedEvent[]>(serverEvents);
-  const scrollContainerRef = useRef<HTMLElement | null>(null);
-  const firstPageKey = firstPageEvents.map((event) => event.event_id).join("\u001f");
-  latestEventsRef.current = serverEvents;
-  const identityChanged = identityRef.current !== identity;
-  const addedTopIds = identityChanged
-    ? []
-    : firstPageEvents.flatMap((event) =>
-        knownIdsRef.current.has(event.event_id) ? [] : [event.event_id],
-      );
-  const startsDeferral = addedTopIds.length > 0 && awayFromTopRef.current;
-  const shouldDefer = deferredRef.current || startsDeferral;
-  const excludedTopIds = startsDeferral
-    ? new Set([...deferredTopIdsRef.current, ...addedTopIds])
-    : deferredTopIdsRef.current;
-  const events = shouldDefer
-    ? appendNonDeferredTail(acceptedEventsRef.current, serverEvents, excludedTopIds)
-    : serverEvents;
-
-  useEffect(() => {
-    const scrollContainer =
-      listRef.current?.closest<HTMLElement>(".center-column") ?? document.documentElement;
-    scrollContainerRef.current = scrollContainer;
-    const handleScroll = () => {
-      awayFromTopRef.current = scrollContainer.scrollTop > 96;
-      if (!awayFromTopRef.current && deferredRef.current) {
-        acceptedEventsRef.current = latestEventsRef.current;
-        deferredTopIdsRef.current.clear();
-        deferredRef.current = false;
-        setCount(0);
-        setRevision((current) => current + 1);
-      }
-    };
-    handleScroll();
-    scrollContainer.addEventListener("scroll", handleScroll, { passive: true });
-    return () => scrollContainer.removeEventListener("scroll", handleScroll);
-  }, [firstPageKey, listRef]);
-
-  useEffect(() => {
-    const currentIds = new Set(firstPageEvents.map((event) => event.event_id));
-    if (identityRef.current !== identity) {
-      identityRef.current = identity;
-      knownIdsRef.current = currentIds;
-      acceptedEventsRef.current = serverEvents;
-      deferredTopIdsRef.current.clear();
-      deferredRef.current = false;
-      setCount(0);
-      return;
-    }
-    const newlyAddedIds = firstPageEvents.flatMap((event) =>
-      knownIdsRef.current.has(event.event_id) ? [] : [event.event_id],
-    );
-    knownIdsRef.current = currentIds;
-    if (newlyAddedIds.length && awayFromTopRef.current) {
-      let newlyDeferred = 0;
-      for (const eventId of newlyAddedIds) {
-        if (deferredTopIdsRef.current.has(eventId)) continue;
-        deferredTopIdsRef.current.add(eventId);
-        newlyDeferred += 1;
-      }
-      deferredRef.current = true;
-      if (newlyDeferred) setCount((current) => current + newlyDeferred);
-      return;
-    }
-    if (!deferredRef.current) acceptedEventsRef.current = serverEvents;
-  }, [firstPageKey, firstPageEvents, identity, serverEvents]);
-
-  const reveal = () => {
-    const scrollContainer = scrollContainerRef.current;
-    acceptedEventsRef.current = latestEventsRef.current;
-    deferredTopIdsRef.current.clear();
-    deferredRef.current = false;
-    setRevision((current) => current + 1);
-    if (scrollContainer && typeof scrollContainer.scrollTo === "function") {
-      scrollContainer.scrollTo({ behavior: "smooth", top: 0 });
-    } else if (scrollContainer) {
-      scrollContainer.scrollTop = 0;
-    }
-    awayFromTopRef.current = false;
-    setCount(0);
-  };
-
-  return { count, events, reveal };
-}
-
-function appendNonDeferredTail(
-  acceptedEvents: NewsFeedEvent[],
-  serverEvents: NewsFeedEvent[],
-  deferredTopIds: Set<string>,
-): NewsFeedEvent[] {
-  const seen = new Set(acceptedEvents.map((event) => event.event_id));
-  const appended = serverEvents.filter((event) => {
-    if (deferredTopIds.has(event.event_id) || seen.has(event.event_id)) return false;
-    seen.add(event.event_id);
-    return true;
-  });
-  return appended.length ? [...acceptedEvents, ...appended] : acceptedEvents;
 }

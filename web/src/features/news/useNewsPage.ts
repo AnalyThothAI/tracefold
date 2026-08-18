@@ -18,9 +18,23 @@ export type NewsLabel = NewsSchemas["NewsLabelData"];
 export type NewsTriageSummary = NewsSchemas["NewsTriageSummaryData"];
 export type NewsStatus = NewsSchemas["NewsStatusData"];
 export type NewsIncident = NewsSchemas["NewsIncidentData"];
+export type NewsOutcome = NewsSchemas["NewsOutcomeData"];
+export type NewsOutcomeKind = NewsOutcome["kind"];
+export type NewsOutcomeGroup = NewsOutcome["group"];
+export type NewsTimelineStep = NewsSchemas["NewsTimelineStepData"];
+export type NewsHealth = NewsSchemas["NewsHealthData"];
+export type NewsHealthItem = NewsSchemas["NewsHealthItemData"];
+export type NewsHealthLevel = NewsHealthItem["level"];
+export type NewsFunnel = NewsSchemas["NewsFunnelData"];
+export type NewsReasonCount = NewsSchemas["NewsReasonCountData"];
 
 export type NewsFeedPriority = "high" | "normal";
 export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
+export type NewsFeedOutcome = NewsOutcomeGroup;
+export const NEWS_FEED_OUTCOMES: readonly NewsFeedOutcome[] = ["pushed", "held", "pending"];
+/** Time windows the feed offers; `null` means the whole retention window. */
+export const NEWS_FEED_HOURS: readonly number[] = [1, 6, 24, 72];
+export const NEWS_FEED_DEFAULT_HOURS = 24;
 
 export const NEWS_FEED_PRIORITIES: readonly NewsFeedPriority[] = ["high", "normal"];
 export const NEWS_FEED_DECISIONS: readonly NewsFeedDecision[] = [
@@ -39,6 +53,8 @@ export type NewsFeedFilters = {
   admission: string | null;
   decision: NewsFeedDecision | null;
   family: string | null;
+  hours: number | null;
+  outcome: NewsFeedOutcome | null;
   priority: NewsFeedPriority | null;
   q: string;
   sort: NewsFeedSort;
@@ -56,6 +72,8 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
         filters.decision,
         filters.symbol,
         filters.sort,
+        filters.outcome,
+        filters.hours,
         cursor ?? "first",
       ])}`,
       params: {
@@ -63,7 +81,9 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
         cursor,
         decision: filters.decision,
         family: filters.family,
+        hours: filters.hours ?? undefined,
         limit: NEWS_FEED_PAGE_SIZE,
+        outcome: filters.outcome,
         priority: filters.priority,
         q: filters.q,
         sort: filters.sort,

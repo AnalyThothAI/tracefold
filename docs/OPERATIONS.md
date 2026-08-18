@@ -295,6 +295,22 @@ stage behind Triage — one Event gets one judgment and one card — so
 `triage_24h` next to `triage_degraded_24h` in status is the first place to
 look when pushes stop.
 
+`/api/news/status.health` (and the console's status page) applies code-owned
+thresholds from `tracefold.news.health`: ingest is `warn` after 10 min and
+`bad` after 30 min without a frame, `bad` when disconnected or Workers are not
+running; broker is `warn` at 50 and `bad` at 200 queued messages on a business
+queue, `bad` when a business queue has no consumer, `warn` with dead letters;
+model is `warn` at a 3 % and `bad` at a 10 % 24 h degraded share (the detail
+names the error codes); delivery is `warn` when paused or 10 % of 24 h attempts
+are terminal, `bad` at 30 %. `funnel_24h` and `reasons_24h` (Chinese labels
+over `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
+`pushed_by_rule`, `triage_degraded_by_code_24h`) say where the day went. Every
+Event's `outcome` (feed, detail, `news why`) is the same ten-kind conclusion:
+`held_recovery`, `held_gate`, `queued_publish`, `queued_triage`, `dropped`,
+`throttled`, `degraded_dropped`, `pending_delivery`, `delivered`,
+`delivery_failed` — "no state" on the console means one of the two `queued_*`
+kinds, and only those two are worth chasing as backlog.
+
 Diagnose News in this order:
 
 1. `/api/news/status.state` and `ingest`: `connected`, `last_frame_at_ms`,

@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from .outcome import admission_zh, error_code_zh, override_rule_zh, throttled_by_zh
+from .outcome import admission_zh, error_code_zh, incident_cause_zh, override_rule_zh, throttled_by_zh
 
 HEALTH_VERSION: Final = "news_health_v1"
 
@@ -27,6 +27,7 @@ DEGRADED_SHARE_BAD: Final = 0.10
 DELIVERY_FAIL_SHARE_WARN: Final = 0.10
 DELIVERY_FAIL_SHARE_BAD: Final = 0.30
 _BUSINESS_QUEUES: Final = ("news.raw", "news.triage", "news.deliver")
+_NON_INGEST_INCIDENTS: Final = frozenset({"triage_circuit_open", "broker_backpressure", "broker_unavailable"})
 
 _LEVEL_ORDER: Final = {"ok": 0, "off": 0, "warn": 1, "bad": 2}
 
@@ -63,7 +64,12 @@ def ingest_health(ingest: Mapping[str, Any], *, now_ms: int, workers_state: str 
         return HealthItem("off", "接入未配置", "news.enabled 或 OpenNews token 未设置")
     if workers_state and workers_state != "running":
         return HealthItem("bad", "Workers 未运行", f"workers_state={workers_state}")
-    incidents = [i for i in (ingest.get("open_incidents") or []) if not i.get("planned")]
+    # Model and broker incidents are reported by their own health items; the ingest item only owns the WSS lane.
+    incidents = [
+        i
+        for i in (ingest.get("open_incidents") or [])
+        if not i.get("planned") and str(i.get("cause_class") or "") not in _NON_INGEST_INCIDENTS
+    ]
     last_frame = ingest.get("last_frame_at_ms")
     age = int(now_ms) - int(last_frame) if last_frame else None
     if not ingest.get("connected"):
@@ -74,7 +80,8 @@ def ingest_health(ingest: Mapping[str, Any], *, now_ms: int, workers_state: str 
     if age is not None and age >= FRAME_STALE_WARN_MS:
         return HealthItem("warn", f"已连接，{_minutes(age)} 没有新帧", "")
     if incidents:
-        return HealthItem("warn", "已连接，有未关闭的接入事故", "、".join(str(i.get("cause_class")) for i in incidents))
+        causes = "、".join(incident_cause_zh(i.get("cause_class")) for i in incidents)
+        return HealthItem("warn", "已连接，有未关闭的接入事故", causes)
     if ingest.get("strategy_warnings"):
         return HealthItem("warn", "已连接，策略配置与 provider 不一致", "；".join(ingest["strategy_warnings"]))
     detail = f"最近一帧 {_minutes(age)} 前" if age is not None else ""

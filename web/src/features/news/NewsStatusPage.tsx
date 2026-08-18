@@ -1,263 +1,438 @@
+import { newsPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
-import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 
+import "./news.css";
+import "./newsOutcome.css";
 import "./newsStatus.css";
 import { NewsSectionTabs } from "./NewsSectionTabs";
-import { absoluteTime, optionalDuration, optionalTime } from "./newsLabels";
-import { type NewsIncident, type NewsStatus, useNewsStatusWithToken } from "./useNewsPage";
+import {
+  HEALTH_ITEM_KEYS,
+  absoluteTime,
+  formatCount,
+  healthItemTitle,
+  healthLevelLabel,
+  healthTone,
+  optionalDuration,
+  optionalTime,
+  percent,
+  reasonStageLabel,
+} from "./newsLabels";
+import {
+  type NewsHealthItem,
+  type NewsReasonCount,
+  type NewsStatus,
+  useNewsStatusWithToken,
+} from "./useNewsPage";
+
+const REASON_STAGE_ORDER = ["push", "throttle", "drop", "gate", "degraded"] as const;
 
 export function NewsStatusPage({ token }: { token: string }) {
   const query = useNewsStatusWithToken(token);
   const status = query.data;
-
   return (
     <section
-      aria-label="新闻运行状态"
+      aria-label="新闻流水线状态"
       className="news-panel news-status-shell"
       data-page-archetype="scan"
     >
-      <NewsSectionTabs active="status" />
-      <header className="news-status-header">
-        <div>
-          <span className="news-eyebrow">NEWS PIPELINE STATUS</span>
-          <h1>新闻运行状态</h1>
-          <p>OpenNews 接入、消息代理、Triage 流水线与飞书推送的当前状态。</p>
+      <header className="news-page-header">
+        <div className="news-heading-copy">
+          <h1>流水线状态</h1>
+          <p>四个环节的健康度、过去 24 小时的去向，以及当前控制状态。</p>
         </div>
-        {status ? (
-          <span className="news-status-state" data-state={status.state}>
-            {overallStateLabel(status.state)}
-          </span>
-        ) : null}
+        <div className="news-status-header-side">
+          <NewsSectionTabs active="status" />
+          {status ? <OverallPill status={status} /> : null}
+        </div>
       </header>
 
       {query.isLoading && !status ? (
-        <PageState.Loading layout="panel" rows={4} label="正在读取新闻运行状态" />
+        <PageState.Loading layout="panel" rows={4} label="正在读取流水线状态" />
       ) : null}
       {query.isError && !status ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
-      {status ? (
-        <PageState.Stale updating={query.isFetching && !query.isLoading}>
-          <StatusDocument status={status} />
+      {status && !status.health ? (
+        <PageState.Error
+          error={new Error("状态接口版本过旧，请刷新页面")}
+          onRetry={() => void query.refetch()}
+        />
+      ) : null}
+      {status?.health ? (
+        <PageState.Stale updating={query.isFetching}>
+          <div className="news-status-body">
+            <div className="news-health-grid">
+              {HEALTH_ITEM_KEYS.map((key) => (
+                <HealthCard item={status.health[key]} key={key} title={healthItemTitle(key)}>
+                  <HealthNumbers keyName={key} status={status} />
+                </HealthCard>
+              ))}
+            </div>
+
+            <div className="news-status-grid">
+              <section aria-label="过去 24 小时漏斗" className="news-card">
+                <div className="news-card-header">
+                  <h2>过去 24 小时去向</h2>
+                  <small>点击一层可跳到对应事件</small>
+                </div>
+                <Funnel status={status} />
+              </section>
+              <section aria-label="拦截与推送原因" className="news-card">
+                <div className="news-card-header">
+                  <h2>原因排行</h2>
+                  <small>过去 24 小时，按事件数</small>
+                </div>
+                <ReasonBars reasons={status.reasons_24h ?? []} />
+              </section>
+            </div>
+
+            <div className="news-status-grid">
+              <section aria-label="控制状态" className="news-card">
+                <div className="news-card-header">
+                  <h2>控制</h2>
+                  <small>用 tracefold news control 修改</small>
+                </div>
+                <ControlView status={status} />
+              </section>
+              <section aria-label="关注列表与策略" className="news-card">
+                <div className="news-card-header">
+                  <h2>关注列表与策略</h2>
+                </div>
+                <WatchAndStrategies status={status} />
+              </section>
+            </div>
+
+            <TechnicalMetrics status={status} />
+          </div>
         </PageState.Stale>
       ) : null}
     </section>
   );
 }
 
-function StatusDocument({ status }: { status: NewsStatus }) {
-  const { broker, control, delivery, ingest, pipeline } = status;
-  const openIncidents = ingest.open_incidents ?? [];
-  const strategyWarnings = ingest.strategy_warnings ?? [];
-  const queues = Object.entries(broker.queues ?? {});
-  const mutes = control.mutes ?? [];
-  const watchSymbols = status.watchlist ?? [];
+function OverallPill({ status }: { status: NewsStatus }) {
+  const level = status.health.overall;
   return (
-    <div className="news-status-document">
-      <header className="news-status-overview">
-        <dl>
-          <StatusFact label="整体状态" value={overallStateLabel(status.state)} />
-          <StatusFact label="Workers" value={status.workers_state ?? "未知"} />
-          <StatusFact label="测量时间" value={absoluteTime(status.measured_at_ms)} />
-        </dl>
-      </header>
-
-      <div className="news-status-layer-grid">
-        <StatusLayer
-          footer={
-            <>
-              <StatusReasons reasons={strategyWarnings} />
-              {openIncidents.length ? <IncidentLedger incidents={openIncidents} /> : null}
-            </>
-          }
-          title="接入 · OpenNews WSS"
-        >
-          <StatusFact label="Token" value={ingest.token_configured ? "已配置" : "未配置"} />
-          <StatusFact label="WSS" value={ingest.connected ? "已连接" : "未连接"} />
-          <StatusFact label="最近帧" value={optionalTime(ingest.last_frame_at_ms)} />
-          <StatusFact label="最近发布" value={optionalTime(ingest.last_publish_at_ms)} />
-          <StatusFact label="最近错误" value={ingest.last_error_code ?? "无"} />
-          <StatusFact
-            label="配置 Strategy"
-            value={String((ingest.configured_strategy_ids ?? []).length)}
-          />
-          <StatusFact
-            label="提供方启用 Strategy"
-            value={
-              ingest.provider_enabled_strategy_ids == null
-                ? "未校验"
-                : String(ingest.provider_enabled_strategy_ids.length)
-            }
-          />
-          <StatusFact label="未结事故" value={String(openIncidents.length)} />
-        </StatusLayer>
-
-        <StatusLayer title="代理 · RabbitMQ">
-          <StatusFact label="配置" value={broker.configured ? "已配置" : "未配置"} />
-          <StatusFact
-            label="连接"
-            value={broker.connected == null ? "未知" : broker.connected ? "已连接" : "未连接"}
-          />
-          <StatusFact label="错误" value={broker.error_code ?? "无"} />
-          {queues.map(([name, queue]) => (
-            <StatusFact
-              key={name}
-              label={`队列 ${name}`}
-              value={`${queue.messages} 消息 · ${queue.consumers} 消费者`}
-            />
-          ))}
-        </StatusLayer>
-
-        <StatusLayer title="流水线 · Triage">
-          <StatusFact label="1h 事件" value={String(pipeline.events_1h)} />
-          <StatusFact label="24h 事件" value={String(pipeline.events_24h)} />
-          <StatusFact label="24h 候选" value={String(pipeline.candidates_24h)} />
-          <StatusFact label="24h Triage" value={String(pipeline.triage_24h)} />
-          <StatusFact label="24h Triage 降级" value={String(pipeline.triage_degraded_24h)} />
-          <StatusFact label="24h 判定推送" value={String(pipeline.decided_push_24h)} />
-          <StatusFact label="24h 节流" value={String(pipeline.throttled_24h)} />
-          <StatusFact
-            label="进入 Triage 比例"
-            value={
-              pipeline.candidate_share_24h == null
-                ? "—"
-                : `${Math.round(pipeline.candidate_share_24h * 100)}%`
-            }
-          />
-          {Object.entries(pipeline.suppressed_by_reason ?? {}).map(([reason, count]) => (
-            <StatusFact key={`s-${reason}`} label={`Gate 压制 · ${reason}`} value={String(count)} />
-          ))}
-          {Object.entries(pipeline.dropped_by_rule ?? {}).map(([rule, count]) => (
-            <StatusFact key={`d-${rule}`} label={`Triage 丢弃 · ${rule}`} value={String(count)} />
-          ))}
-          {Object.entries(pipeline.throttled_by_key ?? {}).map(([key, count]) => (
-            <StatusFact key={`t-${key}`} label={`节流 · ${key}`} value={String(count)} />
-          ))}
-          {Object.entries(pipeline.pushed_by_rule ?? {}).map(([rule, count]) => (
-            <StatusFact key={`p-${rule}`} label={`推送 · ${rule}`} value={String(count)} />
-          ))}
-          <StatusFact label="标注漏推（missed）" value={String(pipeline.labeled_missed_24h ?? 0)} />
-          <StatusFact label="Triage P50" value={optionalDuration(pipeline.triage_p50_ms)} />
-          <StatusFact label="Triage P95" value={optionalDuration(pipeline.triage_p95_ms)} />
-          <StatusFact label="Triage 模型" value={pipeline.triage_model ?? "未配置"} />
-        </StatusLayer>
-
-        <StatusLayer title="推送 · 飞书">
-          <StatusFact label="飞书投递" value={delivery.delivery_available ? "可用" : "不可用"} />
-          <StatusFact label="1h 已发送" value={String(delivery.sent_1h)} />
-          <StatusFact label="24h 已发送" value={String(delivery.sent_24h)} />
-          <StatusFact label="24h 已终结" value={String(delivery.terminal_24h)} />
-          <StatusFact label="小时上限" value={String(delivery.hourly_cap)} />
-          <StatusFact label="端到端 P95" value={optionalDuration(delivery.e2e_p95_ms)} />
-          <StatusFact label="最近错误" value={delivery.last_error_code ?? "无"} />
-        </StatusLayer>
-      </div>
-
-      <div className="news-status-control-grid">
-        <article className="news-status-control" data-state={control.paused ? "paused" : "running"}>
-          <header>
-            <h2>控制（只读）</h2>
-            <span>{control.paused ? "已暂停" : "运行中"}</span>
-          </header>
-          {mutes.length ? (
-            <ul className="news-status-mutes">
-              {mutes.map((mute, index) => (
-                <li key={`${index}:${compactJson(mute)}`}>{compactJson(mute)}</li>
-              ))}
-            </ul>
-          ) : (
-            <p>无静音规则。</p>
-          )}
-        </article>
-        <article className="news-watch-list">
-          <header>
-            <h2>关注名单（只读）</h2>
-            <span>{watchSymbols.length} 个资产</span>
-          </header>
-          {watchSymbols.length ? (
-            <ul>
-              {watchSymbols.map((symbol) => (
-                <li key={symbol}>{symbol}</li>
-              ))}
-            </ul>
-          ) : (
-            <p>未配置关注资产。</p>
-          )}
-        </article>
-      </div>
-    </div>
+    <span className="news-health-pill news-toned" data-tone={healthTone(level)} role="status">
+      <span aria-hidden className="news-outcome-dot" />
+      <b>总体{healthLevelLabel(level)}</b>
+      <small>更新于 {absoluteTime(status.measured_at_ms).slice(11)}</small>
+    </span>
   );
 }
 
-function IncidentLedger({ incidents }: { incidents: readonly NewsIncident[] }) {
-  return (
-    <details className="news-incident-ledger">
-      <summary>未结 WSS 事故 · {incidents.length}</summary>
-      <ol>
-        {incidents.map((incident) => (
-          <li key={incident.incident_id}>
-            <b>{incident.cause_class}</b>
-            <span>{absoluteTime(incident.opened_at_ms)}</span>
-            <span>{incident.planned ? "计划内" : "非计划"}</span>
-          </li>
-        ))}
-      </ol>
-    </details>
-  );
-}
-
-function StatusLayer({
+function HealthCard({
   children,
-  footer,
+  item,
   title,
 }: {
-  children: ReactNode;
-  footer?: ReactNode;
+  children?: React.ReactNode;
+  item: NewsHealthItem;
   title: string;
 }) {
   return (
-    <article className="news-status-layer">
+    <article
+      className="news-health-card news-toned"
+      data-level={item.level}
+      data-tone={healthTone(item.level)}
+    >
       <header>
-        <h2>{title}</h2>
+        <span className="news-health-card-title">{title}</span>
+        <span className="news-health-card-level">
+          <span aria-hidden className="news-outcome-dot" />
+          {healthLevelLabel(item.level)}
+        </span>
       </header>
-      <dl>{children}</dl>
-      {footer}
+      <p className="news-health-card-summary">{item.summary_zh}</p>
+      {item.detail_zh ? <p className="news-health-card-detail">{item.detail_zh}</p> : null}
+      {children}
     </article>
   );
 }
 
-function StatusFact({ label, value }: { label: string; value: string }) {
+function HealthNumbers({
+  keyName,
+  status,
+}: {
+  keyName: (typeof HEALTH_ITEM_KEYS)[number];
+  status: NewsStatus;
+}) {
+  const cells: Array<[string, string]> =
+    keyName === "ingest"
+      ? [
+          ["最近一帧", optionalTime(status.ingest.last_frame_at_ms).slice(11) || "尚无"],
+          ["最近 1 小时事件", formatCount(status.pipeline.events_1h)],
+        ]
+      : keyName === "broker"
+        ? [
+            ["审稿队列", formatCount(status.broker.queues?.["news.triage"]?.messages ?? 0)],
+            ["投递队列", formatCount(status.broker.queues?.["news.deliver"]?.messages ?? 0)],
+          ]
+        : keyName === "model"
+          ? [
+              ["24h 判断", formatCount(status.pipeline.triage_24h)],
+              ["延迟 p95", optionalDuration(status.pipeline.triage_p95_ms)],
+            ]
+          : [
+              ["24h 送达", formatCount(status.delivery.sent_24h)],
+              ["每小时上限", formatCount(status.delivery.hourly_cap)],
+            ];
   return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
+    <dl className="news-health-card-numbers">
+      {cells.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function Funnel({ status }: { status: NewsStatus }) {
+  const funnel = status.funnel_24h;
+  const max = Math.max(1, funnel.received);
+  const layers = [
+    {
+      label: "收到",
+      value: funnel.received,
+      hint: `最近 1 小时 ${formatCount(funnel.received_1h)}`,
+      to: newsPath(),
+    },
+    {
+      label: "候选（送审）",
+      value: funnel.candidates,
+      hint: percent(funnel.candidates, funnel.received),
+      to: null,
+    },
+    {
+      label: "模型判断",
+      value: funnel.triaged,
+      hint: percent(funnel.triaged, funnel.received),
+      to: null,
+    },
+    {
+      label: "决定推送",
+      value: funnel.decided_push,
+      hint: percent(funnel.decided_push, funnel.received),
+      to: `${newsPath()}?outcome=pushed`,
+    },
+    {
+      label: "已送达",
+      value: funnel.delivered,
+      hint: `最近 1 小时 ${formatCount(funnel.delivered_1h)}`,
+      to: `${newsPath()}?outcome=pushed`,
+    },
+  ];
+  return (
+    <ol className="news-funnel">
+      {layers.map((layer) => {
+        const width = `${Math.max(4, Math.round((layer.value / max) * 100))}%`;
+        const content = (
+          <>
+            <span className="news-funnel-label">{layer.label}</span>
+            <span className="news-funnel-bar" style={{ width }} />
+            <b>{formatCount(layer.value)}</b>
+            <small>{layer.hint}</small>
+          </>
+        );
+        return (
+          <li key={layer.label}>
+            {layer.to ? (
+              <Link className="news-funnel-row" to={layer.to}>
+                {content}
+              </Link>
+            ) : (
+              <span className="news-funnel-row">{content}</span>
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function ReasonBars({ reasons }: { reasons: NewsReasonCount[] }) {
+  if (!reasons.length) return <p className="news-detail-empty">过去 24 小时没有记录。</p>;
+  const max = Math.max(1, ...reasons.map((reason) => reason.count));
+  const groups = REASON_STAGE_ORDER.map((stage) => ({
+    stage,
+    rows: reasons.filter((reason) => reason.stage === stage).slice(0, 6),
+  })).filter((group) => group.rows.length);
+  return (
+    <div className="news-reason-groups">
+      {groups.map((group) => (
+        <section className="news-reason-group" data-stage={group.stage} key={group.stage}>
+          <h3>{reasonStageLabel(group.stage)}</h3>
+          <ul>
+            {group.rows.map((reason) => (
+              <li key={`${reason.stage}-${reason.key}`} title={reason.key}>
+                <span className="news-reason-label">{reason.label_zh}</span>
+                <span className="news-reason-bar-track">
+                  <span
+                    className="news-reason-bar"
+                    style={{ width: `${Math.max(3, Math.round((reason.count / max) * 100))}%` }}
+                  />
+                </span>
+                <b>{formatCount(reason.count)}</b>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
     </div>
   );
 }
 
-function StatusReasons({ reasons }: { reasons: readonly string[] }) {
-  if (!reasons.length) return null;
+function ControlView({ status }: { status: NewsStatus }) {
+  const mutes = status.control.mutes as Array<Record<string, unknown>>;
   return (
-    <ul aria-label="状态原因" className="news-status-reasons">
-      {reasons.map((reason, index) => (
-        <li key={`${reason}:${index}`}>{reason}</li>
-      ))}
-    </ul>
+    <div className="news-control">
+      <p className="news-control-row">
+        <span>推送</span>
+        <b data-paused={status.control.paused || undefined}>
+          {status.control.paused ? "已暂停" : "运行中"}
+        </b>
+      </p>
+      {mutes.length ? (
+        <table className="news-mute-table">
+          <thead>
+            <tr>
+              <th>类型</th>
+              <th>对象</th>
+              <th>到期</th>
+            </tr>
+          </thead>
+          <tbody>
+            {mutes.map((mute, index) => (
+              <tr key={index}>
+                <td>{String(mute.kind ?? "")}</td>
+                <td>{String(mute.key ?? mute.symbol ?? mute.storyline_key ?? "")}</td>
+                <td>{typeof mute.until_ms === "number" ? absoluteTime(mute.until_ms) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="news-detail-empty">没有生效中的静音。</p>
+      )}
+    </div>
   );
 }
 
-function overallStateLabel(state: NewsStatus["state"]): string {
-  if (state === "ready") return "运行正常";
-  if (state === "warming") return "准备中";
-  if (state === "degraded") return "运行降级";
-  return "不可用";
+function WatchAndStrategies({ status }: { status: NewsStatus }) {
+  const warnings = status.ingest.strategy_warnings ?? [];
+  const watchlist = status.watchlist ?? [];
+  const strategies = status.ingest.configured_strategy_ids ?? [];
+  return (
+    <div className="news-watch">
+      <p className="news-control-row">
+        <span>关注列表</span>
+        <span className="news-chip-row">
+          {watchlist.length ? (
+            watchlist.map((symbol) => <code key={symbol}>{symbol}</code>)
+          ) : (
+            <em>未配置</em>
+          )}
+        </span>
+      </p>
+      <p className="news-control-row">
+        <span>Strategy</span>
+        <span className="news-chip-row">
+          {strategies.map((id) => (
+            <code key={id}>{id}</code>
+          ))}
+        </span>
+      </p>
+      {warnings.length ? (
+        <ul className="news-warning-list">
+          {warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
 }
 
-function compactJson(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
+function TechnicalMetrics({ status }: { status: NewsStatus }) {
+  const queues = Object.entries(status.broker.queues ?? {});
+  const incidents = status.ingest.open_incidents ?? [];
+  return (
+    <details className="news-technical">
+      <summary>技术指标（延迟分位、队列深度、事故、原始计数）</summary>
+      <div>
+        <section>
+          <h4>流水线</h4>
+          <dl className="news-kv">
+            <KV k="state" v={status.state} />
+            <KV k="workers_state" v={status.workers_state ?? "—"} />
+            <KV k="triage_model" v={status.pipeline.triage_model ?? "—"} />
+            <KV k="triage_p50_ms" v={optionalDuration(status.pipeline.triage_p50_ms)} />
+            <KV k="triage_p95_ms" v={optionalDuration(status.pipeline.triage_p95_ms)} />
+            <KV k="queue_lag_p95_ms" v={optionalDuration(status.pipeline.queue_lag_p95_ms)} />
+            <KV k="e2e_p95_ms" v={optionalDuration(status.delivery.e2e_p95_ms)} />
+            <KV k="events_24h" v={status.pipeline.events_24h} />
+            <KV k="candidates_24h" v={status.pipeline.candidates_24h} />
+            <KV k="triage_24h" v={status.pipeline.triage_24h} />
+            <KV k="triage_degraded_24h" v={status.pipeline.triage_degraded_24h} />
+            <KV k="throttled_24h" v={status.pipeline.throttled_24h} />
+            <KV k="labeled_missed_24h" v={status.pipeline.labeled_missed_24h} />
+            <KV k="candidate_share_24h" v={status.pipeline.candidate_share_24h ?? "—"} />
+            <KV k="delivery.terminal_24h" v={status.delivery.terminal_24h} />
+            <KV k="delivery.last_error_code" v={status.delivery.last_error_code ?? "—"} />
+          </dl>
+        </section>
+        <section>
+          <h4>接入</h4>
+          <dl className="news-kv">
+            <KV k="connected" v={String(status.ingest.connected)} />
+            <KV k="token_configured" v={String(status.ingest.token_configured)} />
+            <KV k="last_frame_at_ms" v={optionalTime(status.ingest.last_frame_at_ms)} />
+            <KV k="last_publish_at_ms" v={optionalTime(status.ingest.last_publish_at_ms)} />
+            <KV k="last_error_code" v={status.ingest.last_error_code ?? "—"} />
+            <KV
+              k="provider_enabled_strategy_ids"
+              v={status.ingest.provider_enabled_strategy_ids?.join(", ") ?? "—"}
+            />
+            <KV
+              k="open_incidents"
+              v={
+                incidents.length
+                  ? incidents
+                      .map(
+                        (incident) =>
+                          `${incident.cause_class} @ ${absoluteTime(incident.opened_at_ms)}`,
+                      )
+                      .join("; ")
+                  : "—"
+              }
+            />
+          </dl>
+        </section>
+        <section>
+          <h4>队列</h4>
+          <dl className="news-kv">
+            <KV k="configured" v={String(status.broker.configured)} />
+            <KV k="connected" v={String(status.broker.connected ?? "unknown")} />
+            <KV k="observed_at_ms" v={optionalTime(status.broker.observed_at_ms)} />
+            <KV k="error_code" v={status.broker.error_code ?? "—"} />
+            {queues.map(([name, queue]) => (
+              <KV k={name} key={name} v={`${queue.messages} 条 · ${queue.consumers} 消费者`} />
+            ))}
+          </dl>
+        </section>
+      </div>
+    </details>
+  );
+}
+
+function KV({ k, v }: { k: string; v: string | number }) {
+  return (
+    <div className="news-kv-row">
+      <dt>{k}</dt>
+      <dd>{String(v)}</dd>
+    </div>
+  );
 }

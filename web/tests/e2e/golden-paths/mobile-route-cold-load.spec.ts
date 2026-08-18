@@ -41,9 +41,9 @@ const routeCases: RouteCase[] = [
       ).toBeVisible();
       const rows = page.locator(".news-event-row");
       await expect(rows).toHaveCount(5);
-      await expect(page.locator(".news-provider-score")).toHaveCount(5);
-      await expect(page.locator(".news-provider-score").first()).toBeVisible();
-      await expect(page.locator('[aria-label="推送状态 已发送"]')).toHaveCount(5);
+      await expect(page.locator(".news-event-row .news-outcome")).toHaveCount(5);
+      await expect(page.locator(".news-event-row .news-outcome").first()).toContainText("已推送");
+      await expect(page.getByRole("tablist", { name: "按结局筛选" })).toBeVisible();
       const fullyVisibleRows = await rows.evaluateAll(
         (elements) =>
           elements.filter((element) => {
@@ -65,19 +65,24 @@ const routeCases: RouteCase[] = [
     specific: async (page) => {
       await expect(page.getByRole("link", { name: "返回新闻事件流" })).toBeVisible();
       await expect(
-        page.getByRole("heading", { exact: true, level: 1, name: "央行应对新的全球政策冲击" }),
+        page.getByRole("heading", { exact: true, level: 1, name: "央行政策转向，风险资产承压" }),
       ).toBeVisible();
-      await expect(page.locator(".news-original-title")).toContainText(
+      await expect(page.locator(".news-detail-original")).toContainText(
         "Macro desk flags liquidity rotation",
       );
-      await expect(page.getByRole("heading", { name: /条报道/ })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "判定记录" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "推送记录" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "操作者标注" })).toBeVisible();
+      await expect(page.locator(".news-detail-hero .news-outcome")).toContainText("已推送");
+      await expect(page.getByRole("heading", { name: "这条新闻经历了什么" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "同类报道" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "运营标注" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "市场标记" })).toHaveCount(0);
     },
-    nestedOverflowSelectors: [".news-panel", ".news-event-detail", ".news-verdict-panel"],
-    lastMeaningfulSelector: ".news-labels-section",
+    nestedOverflowSelectors: [
+      ".news-panel",
+      ".news-detail-hero",
+      ".news-timeline",
+      ".news-detail-grid",
+    ],
+    lastMeaningfulSelector: ".news-technical",
   },
   {
     name: "macro",

@@ -20,6 +20,8 @@ const baseFilters = {
   admission: null,
   decision: null,
   family: null,
+  hours: null,
+  outcome: null,
   priority: null,
   q: "",
   sort: "latest",
@@ -35,6 +37,10 @@ describe("useNewsFeedWithToken", () => {
     expect(latest[0]).toBe("news-feed");
     expect(priority[4]).toBe("high");
     expect(priority[7]).toBe("priority");
+    const held = queryKeys.newsFeed({ ...baseFilters, hours: 6, outcome: "held" });
+    expect(held).not.toEqual(latest);
+    expect(held[8]).toBe("held");
+    expect(held[9]).toBe("6");
   });
 
   it("reads the Event Feed endpoint with exact server filter names", async () => {
@@ -52,6 +58,8 @@ describe("useNewsFeedWithToken", () => {
           "sort",
           "symbol",
           "cursor",
+          "outcome",
+          "hours",
         ]) {
           observed[name] = params.get(name);
         }
@@ -64,6 +72,8 @@ describe("useNewsFeedWithToken", () => {
           admission: "candidate",
           decision: "push",
           family: "general",
+          hours: 24,
+          outcome: "pushed",
           priority: "high",
           q: "bitcoin",
           sort: "priority",
@@ -77,7 +87,9 @@ describe("useNewsFeedWithToken", () => {
       cursor: null,
       decision: "push",
       family: "general",
+      hours: "24",
       limit: "25",
+      outcome: "pushed",
       priority: "high",
       q: "bitcoin",
       sort: "priority",
