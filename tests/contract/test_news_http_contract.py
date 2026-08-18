@@ -67,7 +67,7 @@ class _FakeNewsRepository:
                 "sort": kwargs["sort"],
                 "limit": kwargs["limit"],
                 "outcome": kwargs.get("outcome"),
-                "since_ms": kwargs.get("since_ms"),
+                "hours": kwargs.get("hours"),
             },
         }
 
@@ -176,7 +176,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "sort",
         "limit",
         "outcome",
-        "since_ms",
+        "hours",
     }
     assert set(schemas_news.NewsFeedEventData.model_fields) - set(schemas_news.NewsEventData.model_fields) == {
         "title_zh",
@@ -253,7 +253,7 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
         "sort": "priority",
         "limit": 5,
         "outcome": None,
-        "since_ms": None,
+        "hours": None,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
     assert body["data"]["events"][0]["outcome"]["kind"] == "queued_publish"
@@ -270,7 +270,7 @@ def test_feed_forwards_outcome_group_and_hours_window(client) -> None:
     assert response.status_code == 200
     forwarded = news.calls[0][1]
     assert forwarded["outcome"] == "held"
-    assert forwarded["since_ms"] is not None and forwarded["since_ms"] > 0
+    assert forwarded["hours"] == 6
     # Pattern/bound violations are rejected by the FastAPI query validators (422), like the existing `priority` filter.
     assert http.get("/api/news/feed", params={"token": TOKEN, "outcome": "bogus"}).status_code == 422
     assert http.get("/api/news/feed", params={"token": TOKEN, "hours": 999}).status_code == 422

@@ -142,8 +142,8 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   (`总体正常/注意/异常`), the 24 h funnel (`funnel_24h`, each layer linking to
   the matching feed tab), the reason ranking (`reasons_24h` grouped by stage
   with `label_zh` bars — never raw keys), read-only `control` (paused state
-  and a mute table), the watchlist and configured Strategy chips with
-  `strategy_warnings`, and a collapsed `技术指标` disclosure with the raw
+  and a mute table), the watchlist chips, configured/provider-enabled Strategy *counts* (never
+  the IDs) with `strategy_warnings`, and a collapsed `技术指标` disclosure with the raw
   pipeline/ingest/broker facts (latency percentiles, queue depths, incidents,
   counters). No layer computes a second health state; thresholds are the
   server's. There are no pause/resume/mute controls, no source inventory, and

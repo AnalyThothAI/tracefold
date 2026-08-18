@@ -84,8 +84,8 @@ def ingest_health(ingest: Mapping[str, Any], *, now_ms: int, workers_state: str 
         return HealthItem("warn", "已连接，有未关闭的接入事故", causes)
     if ingest.get("strategy_warnings"):
         return HealthItem("warn", "已连接，策略配置与 provider 不一致", "；".join(ingest["strategy_warnings"]))
-    detail = f"最近一帧 {_minutes(age)} 前" if age is not None else ""
-    return HealthItem("ok", "已连接，正在收帧", detail)
+    # No wall-clock text on the healthy path: the status ETag must not churn while nothing changes.
+    return HealthItem("ok", "已连接，正在收帧", "")
 
 
 def broker_health(broker: Mapping[str, Any]) -> HealthItem:

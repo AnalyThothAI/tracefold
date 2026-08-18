@@ -1,3 +1,4 @@
+import { newsFeedIdentity } from "@shared/query/queryKeys";
 import { newsStatusPath } from "@shared/routing/paths";
 import * as PageState from "@shared/ui/PageState";
 import { SlidersHorizontal, X } from "lucide-react";
@@ -88,17 +89,7 @@ function FeedRoute({ token }: { token: string }) {
   const filters = parseFeedFilters(searchParams);
   const query = useNewsFeedWithToken(token, filters);
   const statusQuery = useNewsStatusWithToken(token);
-  const feedIdentity = [
-    filters.q,
-    filters.family ?? "",
-    filters.admission ?? "",
-    filters.priority ?? "",
-    filters.decision ?? "",
-    filters.symbol ?? "",
-    filters.sort,
-    filters.outcome ?? "",
-    filters.hours == null ? "" : String(filters.hours),
-  ].join("\u001f");
+  const feedIdentity = newsFeedIdentity(filters).join("\u001f");
   const [historyAnchor, setHistoryAnchor] = useState<{
     cursor: string | null;
     feedIdentity: string;
@@ -176,16 +167,6 @@ function FeedRoute({ token }: { token: string }) {
     setSearchParams(params, { replace: true });
   };
 
-  const resetAdvancedFilters = () =>
-    updateFeedParams({
-      admission: null,
-      decision: null,
-      family: null,
-      priority: null,
-      q: null,
-      symbol: null,
-    });
-
   return (
     <section
       aria-label="新闻事件流"
@@ -232,10 +213,17 @@ function FeedRoute({ token }: { token: string }) {
             hasAdvancedFilters || filters.hours != null ? (
               <button
                 className="news-button"
-                onClick={() => {
-                  resetAdvancedFilters();
-                  if (filters.hours != null) updateFeedParams({ hours: null });
-                }}
+                onClick={() =>
+                  updateFeedParams({
+                    admission: null,
+                    decision: null,
+                    family: null,
+                    hours: null,
+                    priority: null,
+                    q: null,
+                    symbol: null,
+                  })
+                }
                 type="button"
               >
                 清除筛选，查看全部时间

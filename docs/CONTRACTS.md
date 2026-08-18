@@ -175,7 +175,7 @@ surface is exactly three read-only routes:
   decision values, and malformed cursors return 400; out-of-pattern
   `priority`/`outcome`/`hours` return 422. Recovery Events are visible with
   `admission=recovery`. `filters` echoes every parameter incl. `outcome` and
-  `since_ms`.
+  `hours` (never the wall-clock bound, so unchanged pages keep their ETag).
 - `GET /api/news/events/{event_id}` returns one Event, its `outcome`, a
   `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
   `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw

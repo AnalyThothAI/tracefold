@@ -16,15 +16,15 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .outcome import DIRECTION_ZH, MAGNITUDE_ZH
+
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"(?<!\w)@[\w]{1,32}")
 _MARKDOWN_RE = re.compile(r"[*_`#>\[\]()]")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _SPACE_RE = re.compile(r"\s+")
 
-_DIRECTION_LABEL = {"bullish": "利多", "bearish": "利空", "neutral": "中性", "unclear": "方向待定"}
 _DIRECTION_COLOR = {"bullish": "green", "bearish": "red", "neutral": "grey", "unclear": "grey"}
-_MAGNITUDE_LABEL = {0: "影响很小", 1: "影响有限", 2: "影响明显", 3: "影响重大"}
 _MAX_ASSETS = 4
 _CARD_TZ_OFFSET_S = 8 * 3600  # the reader's clock (Asia/Shanghai); the source timestamp is UTC ms
 
@@ -61,7 +61,7 @@ def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> l
 def _facts_line(
     *, direction: str, magnitude: int, assets: Sequence[str], source: str, members: int, at_ms: int | None
 ) -> str:
-    parts = [_DIRECTION_LABEL.get(direction, direction), _MAGNITUDE_LABEL.get(magnitude, str(magnitude))]
+    parts = [DIRECTION_ZH.get(direction, direction), MAGNITUDE_ZH.get(magnitude, str(magnitude))]
     if assets:
         parts.append(" ".join(assets))
     origin = source or "-"

@@ -339,10 +339,11 @@ function WatchAndStrategies({ status }: { status: NewsStatus }) {
       </p>
       <p className="news-control-row">
         <span>Strategy</span>
-        <span className="news-chip-row">
-          {strategies.map((id) => (
-            <code key={id}>{id}</code>
-          ))}
+        <span>
+          已配置 {formatCount(strategies.length)} 个
+          {status.ingest.provider_enabled_strategy_ids
+            ? ` · provider 已启用 ${formatCount(status.ingest.provider_enabled_strategy_ids.length)} 个`
+            : ""}
         </span>
       </p>
       {warnings.length ? (
@@ -393,8 +394,12 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
             <KV k="last_publish_at_ms" v={optionalTime(status.ingest.last_publish_at_ms)} />
             <KV k="last_error_code" v={status.ingest.last_error_code ?? "—"} />
             <KV
-              k="provider_enabled_strategy_ids"
-              v={status.ingest.provider_enabled_strategy_ids?.join(", ") ?? "—"}
+              k="provider_enabled_strategy_count"
+              v={status.ingest.provider_enabled_strategy_ids?.length ?? "—"}
+            />
+            <KV
+              k="configured_strategy_count"
+              v={(status.ingest.configured_strategy_ids ?? []).length}
             />
             <KV
               k="open_incidents"

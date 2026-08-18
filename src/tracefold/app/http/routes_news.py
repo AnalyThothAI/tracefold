@@ -81,7 +81,7 @@ def get_news_feed(
                 limit=limit,
                 cursor=cursor or None,
                 outcome=outcome or None,
-                since_ms=(int(time.time() * 1000) - hours * 3600_000) if hours else None,
+                hours=hours or None,
             )
     except ValueError as exc:
         raise ApiBadRequest(str(exc), field="cursor") from exc

@@ -164,7 +164,7 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "sort": "latest",
         "limit": 10,
         "outcome": None,
-        "since_ms": None,
+        "hours": None,
     }
     assert {row["outcome"]["kind"] for row in feed_data["events"]} <= {
         "held_recovery",

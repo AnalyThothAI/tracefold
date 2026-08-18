@@ -246,7 +246,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     assert held_ids.isdisjoint(pending_ids) and pushed_ids | held_ids | pending_ids == all_ids
     for group, ids in (("pushed", pushed_ids), ("held", held_ids), ("pending", pending_ids)):
         assert all(e["outcome"]["group"] == group for e in everything if e["event_id"] in ids)
-    assert _feed(since_ms=10_000_000_000_000)["events"] == []
+    assert _feed(hours=1, now_ms=10_000_000_000_000)["events"] == []
     status = repos.news.status_snapshot(now_ms=10_000_000_000_000)
     assert status["delivery"]["sent_24h"] >= 0 and "pipeline" in status
     conn.commit()

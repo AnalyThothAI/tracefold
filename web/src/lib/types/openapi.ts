@@ -2460,6 +2460,8 @@ export interface components {
             decision?: string | null;
             /** Family */
             family?: string | null;
+            /** Hours */
+            hours?: number | null;
             /** Limit */
             limit: number;
             /** Outcome */
@@ -2468,8 +2470,6 @@ export interface components {
             priority?: string | null;
             /** Q */
             q?: string | null;
-            /** Since Ms */
-            since_ms?: number | null;
             /**
              * Sort
              * @enum {string}

@@ -6910,6 +6910,17 @@
             ],
             "title": "Family"
           },
+          "hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hours"
+          },
           "limit": {
             "title": "Limit",
             "type": "integer"
@@ -6951,17 +6962,6 @@
               }
             ],
             "title": "Q"
-          },
-          "since_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Since Ms"
           },
           "sort": {
             "enum": [

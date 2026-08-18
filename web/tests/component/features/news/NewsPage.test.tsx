@@ -530,7 +530,10 @@ describe("NewsPage", () => {
     expect(within(control).queryByText(/until_ms/)).not.toBeInTheDocument();
     const watch = screen.getByRole("region", { name: "关注列表与策略" });
     expect(within(watch).getByText("BTC")).toBeInTheDocument();
-    expect(within(watch).getByText("1018")).toBeInTheDocument();
+    // Strategy IDs are private: the console shows counts only.
+    expect(within(watch).getByText(/已配置 2 个/)).toBeInTheDocument();
+    expect(within(watch).queryByText("1018")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("1018");
     // Raw metrics stay available, but folded away.
     const technical = screen.getByText(/技术指标/).closest("details")!;
     expect(technical).not.toHaveAttribute("open");

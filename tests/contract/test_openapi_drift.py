@@ -247,7 +247,7 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "sort",
         "limit",
         "outcome",
-        "since_ms",
+        "hours",
     }
     assert set(filters["required"]) == {"sort", "limit"}
 

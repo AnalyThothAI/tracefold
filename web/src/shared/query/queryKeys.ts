@@ -10,7 +10,7 @@ export type NewsFeedQueryKeyFilters = {
   symbol: string | null;
 };
 
-const newsFeedIdentity = (filters: NewsFeedQueryKeyFilters) =>
+export const newsFeedIdentity = (filters: NewsFeedQueryKeyFilters) =>
   [
     filters.q,
     filters.family ?? "",

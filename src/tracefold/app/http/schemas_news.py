@@ -95,7 +95,7 @@ class NewsFeedFiltersData(ExactApiSchema):
     sort: Literal["latest", "priority"]
     limit: int
     outcome: Literal["pushed", "held", "pending"] | None = None
-    since_ms: int | None = None
+    hours: int | None = None
 
 
 class NewsFeedData(ExactApiSchema):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
@@ -721,14 +722,18 @@ class NewsRepository:
         limit: int,
         cursor: str | None,
         outcome: str | None = None,
-        since_ms: int | None = None,
+        hours: int | None = None,
+        now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
         params: list[Any] = []
         where = ["e.ingest_mode IN ('live', 'recovery')"]
-        if since_ms is not None:
+        window_hours = int(hours) if hours else None
+        if window_hours:
+            # The response echoes `hours`, never the wall-clock bound, so an unchanged page keeps its ETag.
+            since_ms = int(now_ms if now_ms is not None else time.time() * 1000) - window_hours * 3600_000
             where.append("e.opened_at_ms >= %s")
-            params.append(int(since_ms))
+            params.append(since_ms)
         if outcome in _OUTCOME_GROUP_SQL:
             where.append(_OUTCOME_GROUP_SQL[outcome])
         if family:
@@ -801,7 +806,7 @@ class NewsRepository:
                 "sort": sort,
                 "limit": int(limit),
                 "outcome": outcome if outcome in _OUTCOME_GROUP_SQL else None,
-                "since_ms": int(since_ms) if since_ms is not None else None,
+                "hours": window_hours,
             },
         }
 
@@ -914,14 +919,6 @@ class NewsRepository:
         ).fetchone()
         control = self.read_control(now_ms=now_ms)
         funnel = self._funnel_24h(day_ago=day_ago)
-        degraded_by_code = self.conn.execute(
-            """
-            SELECT COALESCE(error_code, 'unknown') AS code, count(*) AS n FROM news_verdicts
-             WHERE stage = 'triage' AND degraded AND created_at_ms >= %s
-             GROUP BY code ORDER BY n DESC
-            """,
-            (day_ago,),
-        ).fetchall()
         return {
             "ingest": {
                 "connected": bool(ingest["connected"]) if ingest else False,
@@ -951,7 +948,6 @@ class NewsRepository:
                     for k, v in dict(pipeline or {}).items()
                 },
                 **funnel,
-                "triage_degraded_by_code_24h": {str(r["code"]): int(r["n"]) for r in degraded_by_code},
             },
             "broker": dict(ingest["broker_snapshot"] or {}) if ingest else {},
             "delivery": {
@@ -977,30 +973,33 @@ class NewsRepository:
             """,
             (day_ago,),
         ).fetchall()
-        dropped = self.conn.execute(
+        # One pass over the last 24 h of Triage verdicts; the four named maps are folded from it in Python.
+        verdict_groups = self.conn.execute(
             """
-            SELECT COALESCE(override_rule, 'unknown') AS rule, count(*) AS n FROM news_verdicts
-             WHERE stage = 'triage' AND final_decision = 'drop' AND created_at_ms >= %s
-             GROUP BY rule ORDER BY n DESC
+            SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
+                   COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
+                   count(*) AS n
+              FROM news_verdicts
+             WHERE stage = 'triage' AND created_at_ms >= %s
+             GROUP BY 1, 2, 3, 4, 5
             """,
             (day_ago,),
         ).fetchall()
-        throttled = self.conn.execute(
-            """
-            SELECT COALESCE(throttled_by, 'unknown') AS key, count(*) AS n FROM news_verdicts
-             WHERE stage = 'triage' AND final_decision = 'throttled' AND created_at_ms >= %s
-             GROUP BY key ORDER BY n DESC LIMIT 10
-            """,
-            (day_ago,),
-        ).fetchall()
-        pushed_by_rule = self.conn.execute(
-            """
-            SELECT COALESCE(override_rule, 'unknown') AS rule, count(*) AS n FROM news_verdicts
-             WHERE stage = 'triage' AND final_decision IN ('push', 'escalate') AND created_at_ms >= %s
-             GROUP BY rule ORDER BY n DESC
-            """,
-            (day_ago,),
-        ).fetchall()
+        dropped: dict[str, int] = {}
+        throttled: dict[str, int] = {}
+        pushed_by_rule: dict[str, int] = {}
+        degraded_by_code: dict[str, int] = {}
+        for row in verdict_groups:
+            n = int(row["n"])
+            final = str(row["final_decision"])
+            if final == "drop":
+                dropped[str(row["rule"])] = dropped.get(str(row["rule"]), 0) + n
+            elif final == "throttled":
+                throttled[str(row["key"])] = throttled.get(str(row["key"]), 0) + n
+            elif final in {"push", "escalate"}:
+                pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
+            if row["degraded"]:
+                degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
         missed = self.conn.execute(
             """
             SELECT count(DISTINCT l.event_id) AS n
@@ -1021,9 +1020,10 @@ class NewsRepository:
         admitted = int(totals["admitted"] or 0) if totals else 0
         return {
             "suppressed_by_reason": {str(r["admission"]): int(r["n"]) for r in suppressed},
-            "dropped_by_rule": {str(r["rule"]): int(r["n"]) for r in dropped},
-            "throttled_by_key": {str(r["key"]): int(r["n"]) for r in throttled},
-            "pushed_by_rule": {str(r["rule"]): int(r["n"]) for r in pushed_by_rule},
+            "dropped_by_rule": dict(sorted(dropped.items(), key=lambda kv: -kv[1])),
+            "throttled_by_key": dict(sorted(throttled.items(), key=lambda kv: -kv[1])[:10]),
+            "pushed_by_rule": dict(sorted(pushed_by_rule.items(), key=lambda kv: -kv[1])),
+            "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
             "labeled_missed_24h": int(missed["n"] or 0) if missed else 0,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
         }

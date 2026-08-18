@@ -82,7 +82,7 @@ export function newsFeedFixture(overrides: Partial<NewsFeed> = {}): NewsFeed {
       outcome: null,
       priority: null,
       q: null,
-      since_ms: null,
+      hours: null,
       sort: "latest",
       symbol: null,
     },
