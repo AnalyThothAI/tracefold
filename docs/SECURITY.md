@@ -37,18 +37,30 @@ environment variables, or move code-owned safety budgets into
 ## Model capability boundary
 
 `news_triage`, `news_analyst`, and `macro_document_analysis` are the only
-production product-model consumers. News Triage is one structured call whose
-output never decides delivery by itself: the pure `decide()` rules own the
-final decision, model failure is fail-closed, and every verdict row stores
-the model intent next to the rule baseline. The News Analyst is a bounded
-`deepagents` run with seven read-only tools that execute through a read-only
-repository session; it has no filesystem, shell, network, subagent, or write
-capability, its evidence citations are verified against the run's own tool
-returns, and it can only add a follow-up card after a first card was sent.
-Shared News title translation is a bounded presentation adapter: it cannot
-write an Item, Event, verdict, or delivery. Item identity, Event identity,
-Gate admission, storyline keys, search, and ordering remain deterministic. The
-six Macro modules are also deterministic views over persisted facts.
+production product-model consumers. News Triage is one structured call with a
+byte-frozen system prompt whose output never decides delivery by itself: the
+pure `decide()` rules own the final decision, model failure is fail-closed,
+and every verdict row stores the model intent next to the rule baseline. The
+News Analyst is one structured call with a byte-frozen system prompt over a
+code-prefetched evidence bundle read in one read-only repository session; it
+has no tools, agent loop, filesystem, shell, network, subagent, or write
+capability, its evidence citations are verified by `verify_verdict()` against
+the bundle's own `evidence_id`s (one bounded correction round), and it can
+only add a follow-up card after a first card was sent. The Chinese title is
+the Triage verdict's `title_zh`; no separate title provider or adapter exists.
+Item identity, Event identity, Gate admission, storyline keys, search, and
+ordering remain deterministic. The six Macro modules are also deterministic
+views over persisted facts.
+
+PostgreSQL runtime roles are code-owned:
+`src/tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
+`20260818_0275` baseline migration, creates the non-login `tracefold_owner`
+plus `tracefold_serve` (`default_transaction_read_only=on`, SELECT only),
+`tracefold_workers` (SELECT/INSERT/UPDATE/DELETE), and `tracefold_migrate`
+when run by the bootstrap superuser, verifies that role contract, and applies
+the grants. Serve never writes; `tracefold news control` and `tracefold news label` write
+`news_control_state` and `news_event_labels` from the CLI through the Workers
+role, and no HTTP route mutates News state.
 
 Search and Token Case publish a canonical address for copying and source
 navigation; they do not publish a honeypot, holder, liquidity, Smart Money,
@@ -66,9 +78,10 @@ route lists configured and provider-enabled Strategy IDs (non-secret opaque
 IDs) so allowlist warnings are actionable, but never the token or broker URL. OpenNews transport exceptions, logs,
 generated artifacts, and public source/status responses must never contain the
 token, authorization header, or allowlist values.
-The current reviewed configuration contains exactly `1018` and `1019`, so
-diagnostics expose count `2`; provider-side Listing/Storage Strategies are not
-admitted. A future addition requires an explicit reviewed configuration change.
+The current reviewed configuration contains exactly `1018`, `1352`, and
+`1353`, so diagnostics expose count `3`; `1019` is disabled provider-side and
+not configured. A future change requires an explicit reviewed configuration
+change.
 
 The authenticated WSS automatically sends the account owner's
 `strategy.triggered` notifications. Tracefold sends no application subscription
@@ -85,8 +98,8 @@ Accepted event metadata is bounded to provider score/signal/grade/assets/source
 and the deterministic matching Strategy ID/name/source-type/observed-engine-type
 provenance union. The full Strategy definition and metrics payload are never
 copied into public data. Provider ratings and provenance are descriptive
-NewsItem metadata after admission and cannot change fact identity, Story
-membership, importance, or Brief ordering. Disconnect, overflow, outage, and
+NewsItem metadata after admission and cannot change fact identity, Event
+membership, priority, or feed ordering. Disconnect, overflow, outage, and
 provider non-delivery create sanitized typed incidents with bounded cause,
 close-code, interval, and recovery state. Reconnect restores current WSS health
 but never marks an interval recovered without official Strategy-hit evidence;
@@ -108,23 +121,17 @@ copy) for audit but never the webhook, signing secret, timestamp, or signature.
 There is exactly one Feishu attempt after the durable `sending` row and no
 retry; a crash between send and ack terminalizes as `ambiguous_after_crash`.
 
-Title translation uses the ordered operator-owned
-`news.translation.deepl_api_keys` first and the direct DeepSeek
-`llm.api_key`, `llm.base_url`, `llm.news_triage_model` triple second, only for
-Events that will be delivered. DeepL keys are secrets: diagnostics expose only
-whether any key is configured and the key count. Only the exact Event leader
-title is sent to either provider; provider metadata, URLs, verdicts, the
-webhook, and the signing secret are never included. Presentation rows are
-non-secret and bounded to original/display title, outcome, provider, and a
-sanitized fallback code.
-
 News Triage receives the Event title/content excerpt (wrapped as untrusted
 material), Gate facts, the storyline status bar, and the watchlist symbols;
-News Analyst additionally receives Triage field conclusions (never the free
-text rationale) and reads bounded tool outputs wrapped as external content.
-Neither receives credentials, webhook material, or unrelated corpus context;
-prompts are byte-frozen constants and raw model responses are never persisted
-beyond the validated verdict payload and bounded trace.
+News Analyst receives Triage field conclusions (never the free-text
+rationale) and one code-built `<evidence>` bundle (event card, at most five
+members wrapped as external content, bounded storyline/symbol history, prior
+verdicts, CEX market-reaction rows, six macro module rows, and the
+`<event_status>` bar), every citable row carrying an `evidence_id`. Neither
+receives credentials, webhook material, or unrelated corpus context; prompts
+are byte-frozen constants (`TRIAGE_SYSTEM_PROMPT` and `NEWS_ANALYST.md`) whose
+SHA-256 is recorded in each verdict trace, and raw model responses are never
+persisted beyond the validated verdict payload and bounded trace.
 
 RabbitMQ credentials live only in `news.broker.url`; the compose service binds
 AMQP and management ports to `127.0.0.1` by default and uses a

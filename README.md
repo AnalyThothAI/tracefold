@@ -33,12 +33,12 @@ The Python package is deliberately shallow:
 
 ```text
 src/tracefold/
-  market/         capture, identity, pricing, profiles, read views
+  market/         capture, identity, pricing, views
   news/           broker-driven Event pipeline: Deduper, Gate, Triage, Analyst, delivery
-  macro/          observations and completed-session research
-  integrations/   provider and external-system adapters
+  macro/          observations, completed-session research, Fed document analysis
+  integrations/   provider and external-system adapters (GMGN, Binance, OpenNews, RabbitMQ, Feishu, macro sources)
   platform/       config, PostgreSQL, telemetry, generic worker kernel
-  app/            composition plus HTTP, WebSocket, and CLI adapters
+  app/            composition (`tracefold.app.workers` root), HTTP, WebSocket, and CLI adapters
 ```
 
 Other packages import business capabilities from `tracefold.market`,
@@ -99,6 +99,8 @@ truth. Confirm the active path and redacted credential booleans with:
 
 ```bash
 uv run tracefold config
+uv run tracefold news bus-check   # broker reachable, topology declared, queue depths
+uv run tracefold --help
 ```
 
 Exact HTTP fields come from [OpenAPI](docs/generated/openapi.json). The

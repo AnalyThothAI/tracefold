@@ -55,8 +55,8 @@ def upgrade() -> None:
         $migration$;
         """
     )
-    for table in _DROPPED_TABLES:
-        op.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+    for table in _DROPPED_TABLES:  # every table exists in baseline 0275 and only references retained tables
+        op.execute(f"DROP TABLE {table}")
     op.execute(
         """
         DELETE FROM queue_terminal_events

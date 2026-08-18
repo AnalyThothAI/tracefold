@@ -23,22 +23,22 @@ from tracefold.app.market_providers import (
     AssetMarketProviders,
     wire_asset_market,
 )
-from tracefold.app.model_arbiter import run_model_arbiter
-from tracefold.app.projection_edf import run_projection_edf
 from tracefold.app.provider_ownership import gmgn_stream_enabled
-from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
-from tracefold.app.worker_cpu_prewarm import prewarm_projection_cpu_modules
-from tracefold.app.worker_http import _create_workers_probe_app
-from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
-from tracefold.integrations.deepagents.fed_document_analysis import FedDocumentAnalysisAgent
+from tracefold.app.workers.capabilities import CpuProcess, FiniteOperations, ModelAdapter
+from tracefold.app.workers.cpu_prewarm import prewarm_projection_cpu_modules
+from tracefold.app.workers.model_arbiter import run_model_arbiter
+from tracefold.app.workers.probe import _create_workers_probe_app
+from tracefold.app.workers.projection_edf import run_projection_edf
+from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
+from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
-from tracefold.integrations.news_push import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.macro import (
     FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
     FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
     FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
+    FedDocumentAnalysisAgent,
     MacroAcquisition,
     MacroAcquisitionService,
     MacroDocumentAnalysisService,

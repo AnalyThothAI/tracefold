@@ -9,12 +9,12 @@ import pytest
 from psycopg import OperationalError
 
 from tracefold.app import workers as workers_module
-from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.workers import (
     _MARKET_TICK_POLL_SECONDS,
     _run_due,
     _run_periodic,
 )
+from tracefold.app.workers.model_arbiter import run_model_arbiter
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.macro import MacroProjectionCandidate, acquisition_loop_policy, require_dataset
 from tracefold.macro.domain import MacroSourceError

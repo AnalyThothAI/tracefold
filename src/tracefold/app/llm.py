@@ -49,8 +49,8 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
     if leaf.startswith("deepseek-v4-") and thinking:
         return {"extra_body": {"thinking": {"type": "enabled"}}}
     if leaf.startswith("deepseek-v4-"):
-        # This gateway enables thinking by default, while DeepAgents structured
-        # output requires tool_choice. This is an OpenAI-compatible extension,
+        # This gateway enables thinking by default, while function-calling
+        # structured output requires tool_choice. This is an OpenAI-compatible extension,
         # so it must be placed in the HTTP request body via ``extra_body``;
         # a top-level LiteLLM kwarg is filtered before the proxy request.
         return {"extra_body": {"thinking": {"type": "disabled"}}}

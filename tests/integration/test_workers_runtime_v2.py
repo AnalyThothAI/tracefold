@@ -27,9 +27,9 @@ from tests.postgres_test_utils import (
 )
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.http.app import create_app
-from tracefold.app.worker_http import _create_workers_probe_app
 from tracefold.app.workers import _ProbeState
-from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.app.workers.probe import _create_workers_probe_app
+from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.postgres.runtime_roles import (
     RUNTIME_LOGIN_ROLES,

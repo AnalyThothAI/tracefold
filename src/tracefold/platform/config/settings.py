@@ -72,13 +72,12 @@ class LlmConfig(BaseModel):
 
     api_key: str | None = None
     base_url: str | None = None
-    groq_api_key: str | None = None
     news_triage_model: str | None = None
     news_analyst_model: str | None = None
     macro_document_analysis_enabled: bool = False
     macro_document_analysis_model: str = "gpt-5.4-mini"
 
-    @field_validator("api_key", "groq_api_key", "news_triage_model", "news_analyst_model", mode="before")
+    @field_validator("api_key", "news_triage_model", "news_analyst_model", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -555,7 +554,6 @@ storage:
 llm:
   api_key:
   base_url:
-  groq_api_key:
   news_triage_model:
   news_analyst_model:
   macro_document_analysis_enabled: false

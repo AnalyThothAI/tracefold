@@ -110,135 +110,32 @@ by wall-clock deadlines, ~2 minutes), `make test-e2e`/`make test-golden` the
 service and corpus lanes, and `make test-all` everything (~6.5 minutes).
 Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
-head. Historical migration tests exist only for lanes that still ship; retired
-lanes keep no migration tests.
+head. There are no historical migration-path tests: the Alembic chain is the
+`20260818_0275` current-schema baseline plus `20260818_0276`, and schema tests
+run against that migrated head. There is no acceptance-bundle, collector, or
+sealing workflow; runtime evidence comes from the maintained lanes above.
 
 ### News V3 evaluation seams
 
-News V3 is evaluated through three public seams: `tracefold.news.eval.replay`
+News V3 is evaluated through public seams: `tracefold.news.eval.replay`
 (`tracefold news replay <hits.json>` runs Deduper+Gate in memory over provider
 hits; `tests/fixtures/news_v3_hits_sample.json` is the real, redacted golden
-corpus), `tracefold.news.triage_rules.decide()` (pure post-rules, golden-tested
-in `tests/news/test_news_v3_pure.py`), and `tracefold.news.analyst_rules.
-verify_verdict()`. Broker behavior is covered by
-`tests/integration/test_news_bus_rabbitmq.py` against the compose RabbitMQ
-(`TRACEFOLD_TEST_AMQP_URL`, default `amqp://tracefold:tracefold@127.0.0.1:5672/`;
-skipped when unreachable). Run the focused lane with:
+corpus), `tracefold.news.triage_rules.decide()` (pure post-rules with an
+optional `DecidePolicy`, golden-tested in `tests/news/test_news_v3_pure.py`),
+`tracefold.news.analyst_rules.verify_verdict()`, and
+`tracefold.news.eval.offline` (`tracefold news eval` scores stored verdicts
+against market marks and `news_event_labels`; `tracefold news
+replay-decisions` re-runs `decide()` with a candidate policy and no model).
+Broker behavior is covered by `tests/integration/test_news_bus_rabbitmq.py`
+against the compose RabbitMQ (`TRACEFOLD_TEST_AMQP_URL`, default
+`amqp://tracefold:tracefold@127.0.0.1:5672/`; skipped when unreachable); every
+test declares its own `tf_test_<id>`-prefixed topology and deletes it on
+teardown, so the operator queues are never touched. Run the focused lane with:
 
 ```bash
 uv run pytest -q tests/news tests/integration/test_news_v3_pipeline.py \
   tests/integration/test_news_v3_consumers.py tests/integration/test_news_bus_rabbitmq.py
 ```
-
-Before the hard cut, run a read-only shadow against the current 96-hour RSS and
-12-hour OpenNews fact population and attach the report to Issue #44. Record
-physical Items, exact atoms, Stories, size P50/P90/P99/max, current-to-V2
-merge/split counts, candidate/accepted/rejected/conflict/ambiguity/grounded
-counts, event-family distribution, encoded input, compute time, and every Story
-larger than 20 Items with a manual coherence disposition. The projection must
-stay within 10,000 Items, 8 MiB, 250,000 candidate pairs, 25 seconds, and 8 KiB
-per Story evidence; do not repair failures through sampling or dynamic windows.
-After cutover, attach Story distribution, analyzed query plans, News health,
-first coherent V2 selection/Brief evidence, and an unchanged-publication
-zero-write result. Two clean full generation/check runs must have no drift.
-
-Use the configured Serve role so PostgreSQL enforces the zero-write boundary:
-
-```bash
-uv run tracefold config
-uv run python scripts/news_story_v2_shadow.py
-```
-
-The JSON report includes the database revision, version fingerprint, current→V2
-merge/split comparison, deterministic decision counters, bounds, and an explicit
-manual-review list for every V2 Story larger than 20 Items. It never emits
-provider credentials, raw provider metadata, comparison tokens, or rejected
-titles.
-
-`20260813_0266` historical cutover acceptance requires one atomic hard cut: exactly ten
-News tables, five public News routes, and one zero-send authenticated OpenNews
-WSS consuming automatic account `strategy.triggered` pushes for the exact
-two-ID allowlist `1018`/`1019`, the exact
-opt-in 179-feed public RSS breadth/corroboration catalog, one acquisition module,
-one dirty-triggered Story/selection writer, one native model seam, and no ordinary
-`news.subscribe`, `/open/news_search` recovery, dual writer, old Push policy,
-personalized, or compatibility path. The primary maintained seam sends
-representative RSS responses plus configured NEWS and MARKET/OI Strategy
-frames through real PostgreSQL, the production complete Story projection and
-public selector, fake external model transports, the half-hour
-frozen-slot/current-LKG state machine, and authenticated `GET /api/news/brief`;
-repositories, transactions, calculation, selector, composer, and HTTP
-serialization remain real.
-
-Release evidence additionally proves the socket sends no application
-subscribe/request during connect while retaining literal ping/pong and RFC
-control heartbeat, the first automatic trigger is not consumed as an ACK,
-configured Strategy admission ignores `engineType`, canonical headline/origin
-normalization, exact replay zero writes, same-event sorted-unique multi-Strategy
-provenance union, and distinct-event fact identity; complete Story membership
-and CAS; exact public
-Top Story order and provenance; L1 success or truthful L2/none degradation;
-whole healthy LKG preservation without clock refresh or mixed snapshots;
-the exact Ollama -> configured direct DeepSeek -> Groq order; all-or-none
-direct endpoint/key/model validation; bounded retries and fenced claims; no model/network I/O in a database
-transaction; all five endpoints; generated contracts; and the responsive real
-`/news/brief` route. The page keeps server order, makes Top Stories primary,
-labels L1/L2 as an enhancement, preserves linkless evidence, and exposes no
-publication history or personalized ranking.
-
-Historical `20260814_0270` acceptance proves one fail-soft effective-availability
-epoch, same-transaction first-live Item/outbox creation, recovery/RSS/pre-epoch
-exclusion, immutable source snapshots, and two independent Push attempts for
-two provider Item IDs even when Story later merges them. It proves optional
-one-shot title-only translation with immediate original fallback, translation
-outside database transactions, exact signed/unsigned Feishu shapes, and one
-Feishu attempt ending in `sent` or `terminal` with no retry, lease, or reaper.
-Startup terminalizes interrupted `sending` rows before acquisition. The hard cut
-terminalizes incompatible legacy unsent Story-policy rows while preserving
-completed legacy card audit and the Push enablement fence;
-absence of a signing secret is an explicit unsigned mode, never a fallback
-after a signed attempt fails.
-
-Historical `20260815_0271` acceptance proves one durable exact-title presentation
-decision shared by Feed/detail and Push, with no history backfill or
-compatibility reader/writer. Every newly accepted OpenNews, recovery, or RSS
-title creates its intent atomically; current live Push-blocking work outranks
-the FIFO remainder. Chinese/oversized input bypasses providers. Other titles
-make at most one call with the active DeepL key, then at most one direct
-DeepSeek call, then settle the original. Permanent DeepL authentication/quota
-failure rotates only future Items; transient failure retains the key and the
-current Item never tries another DeepL key. Tests prove exact fingerprint
-matching, original-title search/Story/Brief semantics, provider deadlines,
-fallback visibility, startup reconciliation, and fatal Workers termination if
-a fenced external outcome cannot be settled. The hard cut adds the eleventh
-News table, terminalizes pre-cut nonterminal Push, preserves renamed legacy
-presentation JSON as audit only, and performs no migration-time provider or
-outbound call.
-
-Current `20260815_0273` acceptance is Issue #45 and is exercised at the existing
-OpenNews Item transaction plus real PostgreSQL/worker seam. Tests prove that
-three distinct provider IDs for one exact atom create three Items and title
-presentations but only one Feishu call; normalization-only variants suppress;
-numbers, percentages, amounts, and similar non-exact Story members do not;
-provider-time window boundaries, cross-transaction leaders, terminal leaders,
-replay, rollback, and batch permutation are deterministic; and suppressed rows
-never enter sender or restart recovery. Story V2 golden/permutation tests must
-stay byte-for-byte unchanged through the public `build_story_projection` seam.
-Schema tests cover the composite compatible-leader FK, counter invariant,
-partial leader/recent-suppression indexes, no new News table, and the 0273
-offline hard cut. Contract/frontend tests cover versioned aggregate status and
-bounded title-free evidence. Run the focused suites, `make check`, contract
-generation twice, and the selected backend/frontend gates before cutover.
-
-Production cutover review records exactly `1018` (News Score > 70) and `1019`
-(OI Event Monitor), a redacted configured count of `2`, one redacted real
-MARKET/OI frame and one redacted NEWS frame, the deterministic provenance-union
-result for a same-event multi-Strategy match, and explicit confirmation that a
-scoreless MARKET/OI live event creates one Item Push independently of whether
-Story projection later succeeds.
-Listing and Delisting Announcements and Storage News may remain enabled
-provider-side but are explicitly outside this cutover. Any future addition is a
-reviewed configuration change, never implicit provider-side enablement.
 
 Transport/status acceptance records disconnect, overflow, process outage, and
 planned shutdown with distinct causes. Database backpressure must retain WSS;

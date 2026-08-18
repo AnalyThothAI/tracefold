@@ -10,7 +10,7 @@ from tracefold.platform.postgres.postgres_audit import (
     postgres_query_specs,
 )
 
-from .workers_runtime import workers_runtime_read_query
+from .workers.runtime import workers_runtime_read_query
 
 
 class NewsQuerySpecsProvider(Protocol):

@@ -143,7 +143,7 @@ describe("buildTokenCaseViewModel", () => {
         market_live: {
           ...dossier.market_live,
           status: "ready",
-          provider: "okx_cex_rest",
+          provider: "binance_cex_rest",
           price_usd: 1.24,
           open_interest_usd: 12_400_000,
         },

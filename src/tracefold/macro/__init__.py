@@ -41,6 +41,7 @@ from .fed_analysis import (
     FedDocumentAnalysisDraft,
     MacroDocumentAnalysisService,
 )
+from .fed_document_agent import FedDocumentAnalysisAgent
 from .market_calendar import is_us_market_session
 from .module_payloads import build_typed_module_payload, schema_version_for_module
 from .projection import rebuild_all_macro_modules_for_maintenance
@@ -73,6 +74,7 @@ __all__ = [
     "DatasetSpec",
     "DocumentFact",
     "FedAnalysisEvidence",
+    "FedDocumentAnalysisAgent",
     "FedDocumentAnalysisDraft",
     "FedOfficialRoleFact",
     "FetchBatch",

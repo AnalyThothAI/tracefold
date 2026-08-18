@@ -82,29 +82,29 @@ lanes report explicit degradation or unavailable evidence:
 - absent or unreachable `news.broker.url` makes Workers fail startup while News
   is enabled (the broker is the News transport plane); disable News with
   `news.enabled: false` to run Market/Macro without RabbitMQ;
-- absent GMGN/OKX credentials leave their authenticated profile, discovery, or
-  market lanes unavailable, while configured keyless sources keep their own
-  independent behavior;
+- an absent `gmgn.api_key` leaves the GMGN OpenAPI DEX quote lane
+  (`gmgn_dex_quote`) unowned, and `providers.binance.enabled: false` leaves
+  the Binance CEX lane (`binance_cex_rest`) unowned, while configured keyless
+  sources keep their own independent behavior;
 - an absent direct DeepSeek triple (`llm.api_key`, `llm.base_url`,
   `llm.news_triage_model`) makes Triage fall back to fail-closed rules
-  (`triage_degraded_24h` grows) and disables the Analyst;
-- absent both DeepL keys and the direct DeepSeek triple makes card titles use
-  the original text;
+  (`triage_degraded_24h` grows) and disables the Analyst; a degraded verdict
+  carries no `title_zh`, so the feed and card show only the original title;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
 `tracefold config` reports the effective file paths, configured booleans,
-`opennews_strategy_count`, broker `url_configured`, model names, watchlist
-symbols, and the DeepL key count; it never prints provider tokens, the broker
-URL, webhook URLs, signing secrets, or model keys.
+`opennews_strategy_count`, broker `url_configured`, model names, and watchlist
+symbols; it never prints provider tokens, the broker URL, webhook URLs,
+signing secrets, or model keys.
 
 `news.push.feishu_signing_secret` is optional. When present, the Adapter adds
 the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
-configured booleans. Feishu delivery has no model-credential dependency.
-Title translation uses ordered DeepL keys first and the direct DeepSeek triple
-second, only for Events that will be delivered; no provider call is retried.
+configured booleans. Feishu delivery has no model-credential dependency; the
+card's `**标题**` line is the Triage verdict's `title_zh` and `**原标题**` is the
+leader title.
 
 An operator configuration for live News uses the existing generated fields;
 do not add another secrets file or environment variable:
@@ -125,9 +125,6 @@ news:
     - "1353" # Listing and Delisting Announcements
   broker:
     url: "amqp://tracefold:<rabbitmq password>@rabbitmq:5672/"
-  translation:
-    deepl_api_keys:
-      - "<DeepL key 1>"
   push:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
@@ -154,10 +151,10 @@ provider-side enablement never silently edits Tracefold configuration.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain the credentials/endpoints needed by each enabled
-lane, including GMGN OpenAPI for exact token profiles and OKX provider settings
-for discovery, market data, or DEX WebSocket paths. The `llm` block owns one
-all-or-none direct DeepSeek triple (`api_key`, `base_url`,
-`news_triage_model`) plus optional `news_analyst_model` and `groq_api_key`;
+lane: `gmgn.api_key` for the GMGN OpenAPI DEX quote lane and
+`providers.binance` for the Binance USD-M futures CEX lane. The `llm` block
+owns one all-or-none direct DeepSeek triple (`api_key`, `base_url`,
+`news_triage_model`) plus optional `news_analyst_model`;
 there is no environment-variable credential path or inferred URL/model.
 
 The OpenNews Receiver authenticates one WSS and sends zero application
@@ -166,7 +163,7 @@ notifications and Tracefold publishes each accepted frame to RabbitMQ. A
 disconnect, broker backpressure, or process outage creates a typed incident;
 reconnect restores current WSS health and the official Strategy list/hits
 endpoints perform bounded idempotent recovery (recovered Items never deliver).
-Deduper, Triage, Analyst, Translator, and Deliverer are broker consumers; see
+Deduper, Triage, Analyst, and Deliverer are broker consumers; see
 `docs/ARCHITECTURE.md` and `docs/OPERATIONS.md` for the pipeline and diagnosis.
 
 Use `uv run tracefold config` to inspect the active config path and redacted
@@ -177,22 +174,17 @@ Useful live-data smoke checks:
 
 ```bash
 uv run tracefold config
-uv run tracefold ops refresh-asset-profiles --limit 5
-uv run tracefold ops mirror-token-images --limit 50
+uv run tracefold news bus-check
+uv run tracefold ops sync-binance-usdt-perp-universe --dry-run
 ```
 
-The first command confirms the real config paths. The profile refresh command
-exercises the GMGN exact-token profile path that feeds `asset_profiles.logo_url`
-for DEX token icon source URLs. Profile publication admits exact profile and
-evidence logo sources into `token_image_source_dirty_targets`; the mirror
-command processes the durable image target without a retired rebuild/repair
-alias. Refreshing a profile can re-admit an image target whose prior source is
-stale. The mirror command copies eligible provider images into
-`~/.tracefold/cache/token-images`; fenced Profile publication projects
-`token_profile_current.logo_url` to local `/api/token-images/{image_id}` paths
-or `NULL`. Provider blocks, rate limits, unsupported image types, and missing
-mirror rows should surface as explicit diagnostic results or fallback marks,
-not as fake public profile facts.
+The first command confirms the real config paths. `news bus-check` proves the
+broker URL, declares the News topology idempotently, and prints per-queue
+message/consumer counts. The Binance universe sync (`--dry-run`, then
+`--execute`) populates `cex_tokens`; News market marks and the Analyst
+market-reaction evidence carry data only when `providers.binance.enabled` is
+true and that universe has been synced. Provider blocks, rate limits, and
+missing rows surface as explicit diagnostic results, not as fake facts.
 
 Macro live-data debugging starts the same way: first run
 `uv run tracefold config` and confirm `config_path` points at
@@ -270,41 +262,23 @@ visible quality state; it is not a frontend defect.
 
 After `uv run tracefold db migrate`, the database contains
 typed Market/Macro fact tables, acquisition targets, module frontiers, six
-current module rows, official documents, document-analysis jobs, and immutable
-document analyses.
-`20260728_0210` remains the compact current-schema baseline and
-the generated Alembic head is the required hard-cut version. A new empty database applies the
-baseline and head without replaying retired runtime tables, compatibility
+current module rows, official documents, document-analysis jobs, immutable
+document analyses, and the twelve `news_*` tables.
+The Alembic chain is the `20260818_0275` current-schema baseline (root; it
+executes `current_schema_20260818_0275.sql` and `runtime_roles.sql`) followed
+by `20260818_0276_review_49_hard_cut`. A new empty database applies the
+baseline and 0276 without replaying retired runtime tables, compatibility
 columns, historical backfills, or intermediate contracts. A database stamped
-at `20260728_0210` migrates forward once; paid-data placeholders are dropped
-rather than archived. Retired News migrations (`20260801_0234` .. `20260815_0273`) remain in the
-alembic chain as history; `20260818_0275` is the current irreversible News V3
-hard cut that drops every legacy News table and creates the thirteen V3 tables
-(see `OPERATIONS.md`).
-Historical migrations `20260810_0249` through `20260814_0269` shaped the
-former Token Radar singleton; migration `20260818_0274` is the irreversible
-Token Radar removal hard cut. It drops `token_radar_current`, the Radar-only
-Event covering index and its generated `token_radar_text_fingerprint` column,
-and the Radar-only resolution covering index. It preserves every material
-Event, intent, resolution, identity, profile, and market fact; there is no
-Radar table, route, worker, or compatibility read afterwards. Historical
-migration `20260810_0250` also dropped the three Stocks-only derived tables
-`stock_attention_target_features`, `stocks_radar_current_rows`, and
-`stocks_radar_publication_state`; `us_equity_symbols` remains only as an
-internal token-identity collision guard; there is no Stocks product or route.
-Migration `20260811_0252` converts legacy acquisition-target states to the
-reachable state machine, removes `invalid`, preserves all six current rows, and
-clears only their rebuildable frontiers; it does not call a provider. Worker
-startup reconstructs missing/version-mismatched frontiers from persisted
-Dataset projection state, while matching clean frontiers remain zero-write.
-Migration `20260811_0253` hard-cuts only the rebuildable Rates, Economy, and
-Cross-Asset serving rows/frontiers to `macro_rates_fed_v8`,
-`macro_economy_inflation_v6`, and `macro_cross_asset_v8`. Typed facts,
-acquisition state, official documents, jobs, and immutable analyses are
-preserved. Stop Serve and Workers, apply both migrations, then let the sole
-Macro projection writer reconcile all six frontiers and rebuild the three
-semantic-contract rows.
-Enable the Macro workers only after the migration is current.
+at `20260818_0275` (the live one) migrates forward once with
+`tracefold db migrate`; 0276 drops the retired News title table, the DEX
+discovery/token-profile/token-image tables, and the unused LangGraph
+`checkpoint_*` tables and is irreversible (see `OPERATIONS.md`). Stop Serve
+and Workers before applying it and enable the workers only after the
+migration is current. Worker startup reconstructs missing/version-mismatched
+Macro frontiers from persisted Dataset projection state, while matching clean
+frontiers remain zero-write; the sole Macro projection writer reconciles all
+six frontiers. `us_equity_symbols` remains only as an internal token-identity
+collision guard; there is no Stocks or Token Radar product or route.
 
 The overview and six typed module reads are persisted-only and never trigger a
 provider, model, target advance, projection rebuild, or write. Retired Macro
@@ -340,27 +314,6 @@ It intentionally does not make business-data freshness part of readiness. Run
 `make macro-acceptance` after deployment to validate the overview and six
 current modules; use `make logs` for the bounded startup evidence named by a
 failure.
-
-### Token Radar removal hard cut
-
-For the one-time transition across `20260818_0274`, build the new image first,
-stop Serve and Workers, run the ordinary one-shot migration service, and verify
-that material fact counts and identities are unchanged before starting the new
-runtime. The migration is transactional and irreversible: it only drops
-rebuildable Radar-derived schema. After it succeeds, fix forward; no Radar
-route, worker task, projection CPU module, audit query, compatibility adapter,
-or imported LKG remains. `GET /api/token-radar` returns `404`; `/api/live-market`
-is unchanged.
-
-Use the ordinary lifecycle after the transition:
-
-```bash
-make up
-make status
-make macro-acceptance
-make logs
-make down
-```
 
 The preflight verifies `uv`, the Docker CLI, Compose plugin, `curl`, and daemon
 access before a build starts. If the daemon is unavailable, start Docker

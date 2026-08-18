@@ -27,7 +27,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/app/repositories.py": {
         "tracefold.news.repository",
     },
-    "src/tracefold/app/workers.py": {
+    "src/tracefold/app/workers/__init__.py": {
         "tracefold.news.agents.analyst",
         "tracefold.news.agents.triage_model",
         "tracefold.news.consumers",
@@ -256,7 +256,7 @@ def test_business_sql_uses_only_owned_tables() -> None:
 
 
 def test_worker_runtime_v2_has_one_public_root_and_no_retired_framework() -> None:
-    workers_source = (SRC / "app" / "workers.py").read_text(encoding="utf-8")
+    workers_source = (SRC / "app" / "workers" / "__init__.py").read_text(encoding="utf-8")
     assert '__all__ = ["run_workers"]' in workers_source
     assert "async def run_workers(" in workers_source
     retired = (
@@ -292,7 +292,7 @@ def test_legacy_news_runtime_contract_is_absent_outside_migration_history() -> N
 
 def test_news_v3_has_one_pipeline_wiring_and_one_broker_adapter() -> None:
     news_source = "\n".join(path.read_text(encoding="utf-8") for path in _python_files(SRC / "news"))
-    workers_source = (SRC / "app" / "workers.py").read_text(encoding="utf-8")
+    workers_source = (SRC / "app" / "workers" / "__init__.py").read_text(encoding="utf-8")
 
     assert news_source.count("class NewsPipeline:") == 1
     assert news_source.count("class DeduperConsumer:") == 1

@@ -16,11 +16,25 @@ from tracefold.news.models import TRIAGE_PROMPT_VERSION, TriageVerdict
 
 from .prompts import TRIAGE_SYSTEM_PROMPT
 
+_RETRYABLE_MARKERS = ("timeout", "ratelimit", "connect", "serviceunavailable", "internalserver", "remoteprotocol")
+_MIN_RETRY_BUDGET_SECONDS = 1.5
+
 
 class TriageModelError(RuntimeError):
-    def __init__(self, code: str) -> None:
+    """One classified model failure: retryable (transport/limits) or not (schema, 4xx); the trace records the class."""
+
+    def __init__(self, code: str, *, retryable: bool = False, attempts: int = 1) -> None:
         self.code = code
+        self.retryable = retryable
+        self.attempts = attempts
         super().__init__(code)
+
+
+def is_retryable_model_failure(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    name = type(exc).__name__.lower()
+    return any(marker in name for marker in _RETRYABLE_MARKERS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +45,7 @@ class TriageCallResult:
     output_tokens: int | None
     cached_tokens: int | None
     model: str
+    attempts: int = 1
 
 
 def build_triage_input(
@@ -95,20 +110,32 @@ class TriageModel:
         self.deadline_seconds = float(deadline_seconds)
 
     async def triage(self, human_text: str) -> TriageCallResult:
+        """One structured call within ``deadline_seconds``; a fast retryable failure earns one more attempt."""
+
         started = time.perf_counter()
-        try:
-            out = await asyncio.wait_for(
-                self._structured.ainvoke([SystemMessage(TRIAGE_SYSTEM_PROMPT), HumanMessage(human_text)]),
-                timeout=self.deadline_seconds,
-            )
-        except TimeoutError as exc:
-            raise TriageModelError("news_triage_timeout") from exc
-        except Exception as exc:  # provider/network failures are expected here
-            raise TriageModelError(f"news_triage_model_failed:{type(exc).__name__}") from exc
+        deadline = started + self.deadline_seconds
+        messages = [SystemMessage(TRIAGE_SYSTEM_PROMPT), HumanMessage(human_text)]
+        attempts = 0
+        while True:
+            attempts += 1
+            remaining = deadline - time.perf_counter()
+            try:
+                out = await asyncio.wait_for(self._structured.ainvoke(messages), timeout=max(0.001, remaining))
+                break
+            except Exception as exc:  # provider/network failures are expected here
+                retryable = is_retryable_model_failure(exc)
+                if retryable and attempts < 2 and (deadline - time.perf_counter()) >= _MIN_RETRY_BUDGET_SECONDS:
+                    continue
+                code = (
+                    "news_triage_timeout"
+                    if isinstance(exc, TimeoutError)
+                    else (f"news_triage_model_failed:{type(exc).__name__}")
+                )
+                raise TriageModelError(code, retryable=retryable, attempts=attempts) from exc
         latency_ms = int((time.perf_counter() - started) * 1000)
         parsed = out.get("parsed") if isinstance(out, Mapping) else None
         if not isinstance(parsed, TriageVerdict):
-            raise TriageModelError("news_triage_output_invalid")
+            raise TriageModelError("news_triage_output_invalid", attempts=attempts)
         raw = out.get("raw") if isinstance(out, Mapping) else None
         usage = getattr(raw, "usage_metadata", None) or {}
         details = usage.get("input_token_details") or {}
@@ -119,7 +146,15 @@ class TriageModel:
             output_tokens=usage.get("output_tokens"),
             cached_tokens=details.get("cache_read") if isinstance(details, Mapping) else None,
             model=self.model_name,
+            attempts=attempts,
         )
 
 
-__all__ = ["TRIAGE_PROMPT_VERSION", "TriageCallResult", "TriageModel", "TriageModelError", "build_triage_input"]
+__all__ = [
+    "TRIAGE_PROMPT_VERSION",
+    "TriageCallResult",
+    "TriageModel",
+    "TriageModelError",
+    "build_triage_input",
+    "is_retryable_model_failure",
+]

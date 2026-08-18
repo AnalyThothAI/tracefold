@@ -65,12 +65,15 @@ six Macro reads; it is not part of `/readyz`.
 
 Provider degradation and a missing Fed document analysis do not make the HTTP
 process unready. `/api/status.providers` derives configured ownership,
-continuous-source freshness, durable circuit state, and queue backlog from
-PostgreSQL; it never probes an upstream. Only adapters with a durable
-operational signal appear there, and backlog is an indexed existence signal;
-use `tracefold ops queue-inspect` for exact on-demand queue detail. Domain
-freshness and native model-job state remain visible through their own API and
-operator diagnostics.
+continuous-source freshness, and durable circuit state from PostgreSQL for
+`gmgn_direct_ws`, `gmgn_dex_quote`, and `binance_cex_rest`; it never probes an
+upstream, and providers own no durable queue. Use `tracefold ops
+queue-inspect` for exact on-demand queue detail; its owners are
+`event_anchor_backfill` (`event_anchor_backfill_jobs`),
+`macro_document_analysis` (`macro_document_analysis_jobs`), and
+`macro_projection` (`macro_module_frontiers`). Domain freshness and native
+model-job state remain visible through their own API and operator
+diagnostics.
 
 ## Worker ownership
 
@@ -87,21 +90,22 @@ tracefold serve
 
 tracefold workers
   -> one singleton advisory lock and runtime_id
-  -> one DB pool min 1 / max 4 / max_waiting 3
-  -> one pinned singleton session / business DB executor 2 / control DB executor 1
+  -> one DB pool min 1 / max 8 / max_waiting 3
+     (1 singleton lock + 2 business + 4 News lane + 1 control)
+  -> one pinned singleton session / business DB executor 2 / News DB lane 4 /
+     control DB executor 1
   -> finite external-operation executor 3 / synchronous model adapter 1
-  -> spawn-only Pebble ProcessPool 1 for Profile / Macro
+  -> spawn-only Pebble ProcessPool 1 for Macro
   -> when News is enabled, one RabbitMQ robust connection and the News consumer
-     tasks (receiver, recovery, deduper, triage, analyst, translator,
-     deliverer, janitor, control)
-  -> acquisition clocks + one EDF projection coordinator for Macro/Profile
+     tasks (receiver, recovery, deduper, triage, analyst, deliverer, janitor)
+  -> acquisition clocks + one EDF projection coordinator for Macro
   -> one serial native-state model arbiter
 ```
 
 Every acquisition/projection/model task uses a short claim transaction,
 bounded load plus provider/compute/model work with no database connection, and
 a short compare-and-set publication transaction. The stateless EDF
-coordinator polls typed Macro and Profile candidates and runs one
+coordinator polls typed Macro candidates and runs one
 eligible semantic shard at a time, ordered by the real freshness deadline.
 After every productive shard turn it yields cooperatively and immediately
 rereads every typed frontier head. Failed and idle shard turns wait on the fixed
@@ -124,11 +128,6 @@ after 15 seconds the stale heartbeat makes readiness false without killing the
 root, and recovery restores readiness. Invariant failures and an unfinished
 native control future remain process-fatal. This retry does not apply to
 general control writes whose commit outcome could be ambiguous.
-
-Resolution performs one external lookup per durable turn and reprocesses at
-most 10 affected intents in each publication transaction. Larger closures use
-the persisted keyset continuation and repoll after the fixed 250 ms cadence
-without refetching the provider result.
 
 Serve owns a read-only pool of eight with ordinary/search/control admission
 `6/1/1`, 50 ms permit wait, 250 ms checkout, one-second statement timeout,
@@ -170,10 +169,15 @@ deadline plus five seconds so a native statement cancellation has the same
 bounded cleanup allowance as the Worker future; explicit per-operation
 transaction deadlines remain authoritative.
 
-News consumers use the ordinary business DB executor for short idempotent
-transactions (each message is one transaction of a few milliseconds); the
-broker's prefetch counts (`news.triage.concurrency`, `news.analyst.concurrency`,
-1 for single-active queues) are the only News concurrency knobs.
+News consumers use a dedicated four-slot News DB lane
+(`WorkerDatabase.run_news`: its own executor and gate, separate from the two
+business slots) for short idempotent transactions; each message is one
+transaction of a few milliseconds. `consume()` handles up to `prefetch`
+messages concurrently with a per-message ack, so `news.triage.concurrency`
+(default 4) and `news.analyst.concurrency` (default 2) are real concurrency and
+the only News concurrency knobs; single-active queues use prefetch 1. When the
+News lane cannot admit a message the consumer raises `DeferError` and the
+message requeues uncounted through the retry lane.
 
 There is no Token Radar loop, singleton, dirty frontier, claim, lease, attempt
 state, product-specific heavy-DB permit, or product-specific telemetry/status
@@ -181,7 +185,7 @@ command. There is no Stocks route, writer, query family, or read model. The
 retained `us_equity_symbols` catalog is only a token-identity collision guard
 and owns no runtime Stocks loop.
 
-Profile and Macro projection claims retain their 30-second lease envelopes.
+Macro projection claims retain their 30-second lease envelope.
 News has no projection lease: the broker's single-active-consumer and
 per-message ack are the fences. The
 high-churn `events`
@@ -208,9 +212,6 @@ diagnosis; CPU alone is not a root-cause claim.
 - Workers re-read durable work on bounded intervals; there is no wake plane.
 - Provider/network/subprocess/filesystem I/O occurs outside DB transactions.
 - Current rows use stable keys and skip unchanged payload writes.
-- Asset profile targets carry `hot`/`warm`/`cold` priority, exponential
-  missing/error backoff, and an explicit terminal reason. Rank-only churn does
-  not reset retries; a new evidence fingerprint reactivates the target.
 
 ## First checks
 
@@ -238,7 +239,7 @@ For missing or stale live data:
 Market:
 
 ```text
-event -> intent -> resolution revisions -> identity/profile facts
+event -> intent -> resolution revisions -> identity facts
   -> Search and Token Case fact reads
 market_ticks -> market_tick_current -> /api/live-market
 ```
@@ -249,12 +250,11 @@ projection worker or dirty queue. Repair uses bounded
 The normal poll rereads the database-ordered most recently active 100 market
 targets from the fixed 24-hour fact window every 35 seconds. Consecutive turns
 intentionally refresh the same still-hot targets so their live-market
-presentation facts remain fresh; there is no cross-turn exclusion cursor,
-24-hour round-robin sweep, or product-driven priority slot. The
-OKX path uses the bounded batch
-`/api/v6/dex/market/price-info` contract, so price, market capitalization,
-liquidity, and holder facts share one request and observation clock rather than
-an N+1 enrichment loop.
+facts remain fresh; there is no cross-turn exclusion cursor,
+24-hour round-robin sweep, or product-driven priority slot. DEX quotes come
+from the GMGN OpenAPI token-info lookup (`gmgn_dex_quote`, cached for
+`gmgn.token_info_cache_ttl_seconds`); CEX ticks come from Binance USD-M
+futures (`binance_cex_rest`).
 
 News:
 
@@ -263,15 +263,18 @@ OpenNews account Strategy WSS (news.opennews_strategy_ids, validated at startup)
   -> Receiver publishes each accepted frame to RabbitMQ (confirms)
   -> q:news.raw [SAC] Deduper: Item upsert -> title/identity -> Event new|member
      -> Gate -> storyline key -> publish event.<family>.<priority> for candidates
-  -> q:news.triage Triage: one structured DeepSeek call + decide() -> news_verdicts
+  -> q:news.triage Triage (prefetch news.triage.concurrency): one structured
+     DeepSeek call (title_zh, headline_zh, ...) + decide() -> news_verdicts
      -> verdict.push / verdict.escalate
-  -> q:news.translate Translator (push only): DeepL -> DeepSeek -> original
-  -> q:news.deep Analyst: minimal deepagents run + verify_verdict() -> deep verdict
-     -> verdict.deep only after the first card was sent
-  -> q:news.deliver [SAC] Deliverer: one Feishu attempt per (event, kind)
-  -> x:news.control pause/resume/mute/drain -> news_control_state
-  -> retry lanes 5s/30s/120s for transient errors; q:news.dead for the rest
-  -> Janitor: band expiry, 30-day purge, market marks t0/+5m/+30m/+4h
+  -> q:news.deep Analyst (prefetch news.analyst.concurrency): one-session
+     evidence bundle -> one structured call -> verify_verdict() (one correction
+     round) -> deep verdict -> verdict.deep only after the first card was sent
+  -> q:news.deliver [SAC] Deliverer: one Feishu attempt per (event, kind);
+     paused control settles terminal/delivery_paused
+  -> tracefold news control -> news_control_state (read on every message)
+  -> q:news.retry (30 s TTL) for TransientError/DeferError; q:news.dead for the rest
+  -> Janitor: outbox catch-up (unpublished candidates older than 15 s), band
+     expiry, 30-day purge, market marks t0/+5m/+30m/+4h, broker snapshot
   -> /api/news/feed + /api/news/events/{event_id} + /api/news/status
 ```
 
@@ -285,23 +288,36 @@ Recovery fills from the official Strategy hits after reconnect. Queue overflow
 on `news.raw` (`reject-publish` at 100k) opens `broker_backpressure`.
 
 Dead letters: `q:news.dead` receives permanently failed messages (schema
-errors, missing events, exhausted transient retries, delivery-limit hits).
-Inspect it in the management UI (`127.0.0.1:15672`) or with `bus-check`; a
-growing DLQ with a healthy DB means a code bug, not load. Purge only after the
-cause is fixed; recovered Items never deliver, so re-driving old raw frames is
-safe.
+errors, missing events, `PermanentError`, handler crashes, `TransientError`
+after 3 attempts, delivery-limit hits); it is declared with delivery limit
+1,000,000 so peeking never drops evidence. `tracefold news dlq inspect
+[--limit N]` peeks without consuming, `tracefold news dlq replay [--limit N]`
+republishes to the topic exchange with a fresh attempt counter, and
+`tracefold news dlq purge` empties it; the management UI (`127.0.0.1:15672`)
+and `bus-check` show the depth. A growing DLQ with a healthy DB means a code
+bug, not load. Purge only after the cause is fixed; recovered Items never
+deliver, so re-driving old raw frames is safe.
 
-Control: `tracefold news control pause_delivery|resume_delivery` stops or
-resumes Feishu sends (queued verdicts wait); `mute_theme <theme>` /
-`mute_symbol <SYM> [--ttl-minutes N]` make `decide()` drop matching events;
-`unmute <key>`; `drain` is reserved. State lives in `news_control_state` and
+Control: `tracefold news control <action> [--key K] [--ttl-minutes N]` writes
+`news_control_state` directly through the Workers role; there is no broker
+hop and consumers read the row on every message. `pause_delivery` makes
+`decide()` drop new candidates (`override_rule` `muted`) and the Deliverer
+settle already-decided verdicts as `terminal/delivery_paused` instead of
+holding an unacked message; `resume_delivery` clears it. `mute_theme --key
+<theme>` / `mute_symbol --key <SYM>` (`--ttl-minutes`, default 360) make
+`decide()` drop matching events; `unmute --key <key>` removes a mute. State
 is visible in `/api/news/status.control`.
 
 Model failure: Triage timeouts/5xx produce fail-closed degraded verdicts
 (only watchlist primaries or score >= 90 with grounded assets still push);
-three consecutive failures open a 60-second circuit and a
-`triage_circuit_open` incident. Analyst failures produce `degraded` deep
-verdicts and no follow-up. `triage_degraded_24h` and `deep_24h` in status
+a retryable failure (timeout, rate limit, connection) gets one more attempt
+inside `deadline_seconds`, and three consecutive failures open a 60-second
+circuit and a `triage_circuit_open` incident. The verdict trace records
+`prompt_sha256`, `input_sha256`, the `event_status` snapshot,
+`model_attempts`, and `model_failure_retryable`. Analyst failures produce
+`degraded` deep verdicts and no follow-up; a first card pushed after the
+Analyst started makes the follow-up `throttled` with `throttled_by`
+`storyline:<key>:superseded`. `triage_degraded_24h` and `deep_24h` in status
 are the first place to look when pushes stop.
 
 Diagnose News in this order:
@@ -309,14 +325,21 @@ Diagnose News in this order:
 1. `/api/news/status.state` and `ingest`: `connected`, `last_frame_at_ms`,
    `strategy_warnings`, `open_incidents`.
 2. `tracefold news bus-check`: consumers attached to every queue (Deduper and
-   Deliverer show exactly one), `news.dead` depth, retry lane depth.
+   Deliverer show exactly one), `news.dead` depth, `news.retry` depth;
+   `tracefold news dlq inspect` for the dead-letter bodies.
 3. `pipeline`: `events_1h` vs `candidates_24h` (Gate share ~30%),
-   `triage_24h` vs `triage_degraded_24h`, `triage_p95_ms`, `throttled_24h`.
+   `triage_24h` vs `triage_degraded_24h`, `triage_p95_ms`,
+   `queue_lag_p95_ms`, `throttled_24h`.
 4. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
    (`delivery_unavailable` = push disabled or webhook invalid;
-   `ambiguous_after_crash` = a send whose ack was lost; `hourly_cap_reached`).
+   `delivery_paused` = control pause; `ambiguous_after_crash` = a send whose
+   ack was lost; `hourly_cap_reached`).
 5. `tracefold news eval --hours 168`: precision@push, missed movers,
-   direction accuracy from market marks.
+   direction accuracy from market marks and operator labels (`tracefold news
+   label <event_id> <good|noise|late|wrong_direction|dup>`), with
+   per-`override_rule`/`throttled_by`/asset-class/event-type confusion tables.
+   `tracefold news replay-decisions --hours 168 --min-push-magnitude 2 ...`
+   re-runs `decide()` with a candidate policy over the same stored verdicts.
 6. `tracefold news replay <hits.json>`: reproduce Deduper+Gate on a saved
    provider payload without broker or model.
 
@@ -397,22 +420,28 @@ source requires no repair command while a still-disabled source creates no
 restart burst. The
 `uv run tracefold config` command exposes the same secret-free booleans.
 
-Migration `20260818_0275_news_v3_event_bus_hard_cut` is the current
-irreversible News migration. Stop Serve and Workers before applying it (the
-maintenance gate refuses to run while Workers hold the steady lock). It drops
-every legacy News table (`news_sources`, `news_stories`, `news_story_members`,
-`news_projection_summary`, `news_brief_selection_current`,
-`news_brief_current`, `news_push_state`, `news_push_deliveries`,
-`news_item_title_presentations`, the legacy `news_items` and incidents) and
-creates the thirteen V3 tables with `tracefold_serve` read and
-`tracefold_workers` write grants. It performs no provider, broker, or outbound
-call and has no compatibility path; the Feed starts from the first frames
-observed after Workers restart. Verify after restart: `tracefold news
-bus-check` shows one consumer on `news.raw` and `news.deliver`,
-`/api/news/status.state` becomes `ready` once the WSS connects, and the first
-candidate Event receives a Triage verdict within seconds. Older News migration
-files (`20260801_0234` .. `20260815_0273`) remain in the alembic chain as
-history only.
+The Alembic chain is the `20260818_0275` baseline (root; it executes
+`current_schema_20260818_0275.sql` and then `runtime_roles.sql`, which
+creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
+`tracefold_migrate` roles when run by the bootstrap superuser, verifies the
+role contract, and applies the Serve read / Workers write grants) followed
+by `20260818_0276_review_49_hard_cut`. A live database already stamped
+`20260818_0275` upgrades to 0276 with `tracefold db migrate`; a fresh database
+runs the baseline and 0276. Both are irreversible; a downgrade is a backup
+restore. Stop Serve and Workers before applying 0276 (the maintenance gate
+refuses to run while Workers hold the steady lock). It drops
+`news_title_presentations`, `token_discovery_results`,
+`token_discovery_dirty_lookup_keys`, `asset_profiles`,
+`asset_profile_refresh_targets`, `cex_token_profiles`, `token_image_assets`,
+`token_image_source_dirty_targets`, `token_profile_current`,
+`token_profile_projection_frontiers`, and the four unused `checkpoint_*`
+tables, deletes their `queue_terminal_events` rows and the `okx_*` circuit
+rows, and performs no provider, broker, or outbound call. Verify after
+restart: `tracefold db audit` reports `news_schema.exact` for the twelve
+`news_*` tables, `tracefold news bus-check` shows one consumer on `news.raw`
+and `news.deliver`, `/api/news/status.state` becomes `ready` once the WSS
+connects, and the first candidate Event receives a Triage verdict within
+seconds.
 
 ## Operator actions and retention
 
@@ -482,8 +511,8 @@ planned. `uv run tracefold db query-audit --analyze` executes those read-only
 queries with JSON `EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated
 large-table sequential scan, any temporary read/write blocks, or read/return
 amplification above 20:1. An empty development database proves only SQL and
-route coverage; production-scale output belongs in the real 30-minute
-acceptance bundle. Each runtime owner supplies the same bound statement builder
+route coverage; production-scale plans need a production-sized database. Each
+runtime owner supplies the same bound statement builder
 used by its serving read; the App layer only composes those specs with route
 coverage, so an audit-only SQL approximation is not accepted.
 
@@ -498,17 +527,16 @@ Frontier-backed hot paths claim narrow stable keys and hydrate wide JSONB only
 after selection. Partial indexes must match the real due/status predicate. An
 idle frontier worker must not scan broad facts merely to prove that no work is
 due. Use one representative `EXPLAIN (ANALYZE, BUFFERS)` for a
-bounded evidence path; do not create a second acceptance or planner-assertion
-control plane. Current models remain bounded by stable product keys; a
+bounded evidence path; do not create a second planner-assertion control
+plane. Current models remain bounded by stable product keys; a
 latest-generation pointer is not a retention policy.
 
 Projection sessions disable PostgreSQL parallel gather and JIT and use 16 MB
 `work_mem`; foreground ingestion and API sessions keep PostgreSQL defaults.
 This prevents two bounded background iterations from multiplying into all
 available PostgreSQL CPU workers while preserving deterministic source-to-
-current work. The News current-item and asset-identity profile hot
-paths use ordered composite indexes; do not replace them with periodic broad
-scans.
+current work. The News feed and asset-identity hot paths use ordered
+composite indexes; do not replace them with periodic broad scans.
 
 Compose uses the official PostgreSQL 18 Bookworm image and preloads only
 `pg_stat_statements` for query diagnosis. `compute_query_id` remains enabled.
@@ -516,9 +544,6 @@ Use Compose logs for container output and the supported Tracefold database
 health, audit, query-audit, status, metrics, and `ops` commands for diagnosis
 and repair. There is no repository `ops/` infrastructure tree, auxiliary
 observability service, host log collector, or persistent diagnostic script.
-The runtime hard-cut migration also resets the retired `powa.coalesce` and
-`powa.frequency` `ALTER SYSTEM` entries before the official image takes over
-the existing PostgreSQL volume.
 
 For an ordinary migration or production cutover:
 
@@ -530,138 +555,3 @@ For an ordinary migration or production cutover:
 6. start one writer per current model, then verify readiness, queue movement,
    and unchanged-projection zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.
-
-## Token Radar removal hard cut
-
-Historical migrations `20260810_0249` through `20260814_0269` shaped the
-former Token Radar singleton (`token_radar_current`), and `20260810_0250` also
-dropped the three Stocks-only derived tables while preserving the internal
-`us_equity_symbols` collision guard. Migration `20260818_0274` is the
-irreversible Token Radar removal hard cut. Stop Serve and Workers before
-applying it. It drops `token_radar_current`, the Radar-only partial Events
-covering index `idx_events_token_radar_source_time` together with the generated
-`events.token_radar_text_fingerprint` column, and the Radar-only
-`idx_token_intent_resolutions_token_radar_material` index. It preserves Events,
-intents, every resolution revision, identity/profile facts, and market facts.
-After migration, start only the new runtime; there is no Radar route, worker
-task, projection CPU module, audit query, LKG import, backup table, or
-compatibility payload. Verify with `tracefold db audit` (no `token_radar_current`
-projection row), `tracefold db query-audit` (no `token_radar_latest` family), a
-`404` from `GET /api/token-radar`, and an unchanged `GET /api/live-market`.
-
-## Issue #33 Workers Runtime V2 acceptance and sealing
-
-Controlled offline workload, isolated startup/recovery, and the real continuous
-30-minute run are independent gates. Tests or a healthy Compose stack cannot
-substitute for the real run. Print the deliberately non-passing `evidence.json`
-template from the current code:
-
-```bash
-uv run tracefold ops seal-workers-runtime-acceptance --template
-```
-
-Before the cutover, migration `20260731_0233` must pass its terminal-owner
-preflight. It performs these one-time, operator-authorized production evidence
-mappings encoded in that irreversible migration; the specification-defined
-historical coordinator and model owners retain their source- and
-candidate-specific migration rules. No runtime alias or dual read remains after
-the migration. Any other non-canonical owner aborts the whole migration;
-operators must resolve that provenance instead of guessing an alias. After the
-operator-approved production cutover, fill a new external bundle with measured
-evidence. The production collector bypasses the maintenance lock because it is
-read-only and must observe the running singleton. It uses a fixed 1,800-second
-interval with 181 samples at 10-second cadence, rejects any sample gap over 15
-seconds, and writes only to a new absolute directory outside the checkout:
-
-```bash
-uv run tracefold ops collect-workers-runtime-acceptance \
-  --bundle /absolute/path/to/issue-33-runtime-evidence
-```
-
-The first sample embeds the complete result of
-`PostgresQueryAudit.run(analyze=True)`. Validation binds the exact public-route
-coverage and no-SQL route sets, requires every declared hot query, executes its
-read-only plan, and rejects any route gap, missing plan/metric, large-table
-sequential scan, temporary-block use, or other query-audit violation. This is
-the production query-plan gate; a separately asserted query-analysis boolean
-cannot replace it.
-
-Every sample records the complete observed Worker `wait_event_type`
-distribution and requires its counts to reconcile to the Worker connection
-count. A sampled `Lock` wait is measured from PostgreSQL's ungranted-lock
-`waitstart`, must remain within the code-owned 250 ms database lock budget, and
-is sealed with its count and maximum duration for review. Other wait types are
-not interpreted as a blanket failure; their interval maxima are sealed for
-operator and independent review. The collector also requires the complete
-low-cardinality Prometheus contract: projection deadlines/transitions,
-processing and terminal counters, last-run time, and resource
-active/admission/service series. A missing required family fails closed instead
-of becoming an implicit zero.
-
-Admission and service evidence are independent. Each requires complete
-`capability`, `operation`, and `outcome` labels plus matching cumulative
-`_count`/`_sum` series. Every exact series must remain present and monotonic
-between samples, and each class must show a real positive count delta during
-the 30-minute interval. Active capability gauges must remain within their
-code-owned caps. Worker readiness and metrics are resolved from the actual
-Compose-published Workers endpoint, including a custom host port.
-
-More generally, the collector fails closed on a dirty or changing checkout,
-revision/runtime/PID/container changes, restart or OOM, stale readiness,
-container memory at or above 2 GiB, PostgreSQL connection/lock/transaction
-violations, resource-cap violations, deadline/quarantine evidence, malformed
-field shapes, negative or non-finite (`NaN`/`Infinity`) measurements, any
-cumulative-counter regression, or a non-converging durable Frontier backlog.
-The transaction ceiling follows the longest active steady transaction budget
-(the bounded heavy-transaction budget). Database-wide temporary
-file counters are recorded for review but are not attributed to Workers; the
-first-sample analyzed query audit remains the fail-closed temp-plan gate.
-Arrival and completion counters are emitted only after the PostgreSQL
-transaction containing the frontier transition commits; rollback emits
-nothing. The 30-minute duration is the final `collector_elapsed_seconds` from
-the collector's monotonic clock, while wall-clock timestamps continue to prove
-heartbeat freshness and the maximum sample gap. A failed collection retains
-its raw samples and returns non-zero.
-
-Add the measured collection, the offline/startup artifacts, the operator
-authorization record, and an independent reviewer disposition to the complete
-bundle. Seal only that complete bundle:
-
-```bash
-uv run tracefold ops seal-workers-runtime-acceptance \
-  --bundle /absolute/path/to/issue-33-evidence
-```
-
-The real gate accepts one `production_collection` proof plus the separate
-`public_semantic_diff`; it has no hand-filled runtime, process, PostgreSQL,
-resource, or capacity proofs. The production proof must point exactly at
-`workers-runtime-collection.json`, whose `samples_sha256` binds the accompanying
-`workers-runtime-samples.jsonl`. The sealer rereads all 181 JSONL rows,
-revalidates every sample, and recomputes duration, deadline misses, quarantine,
-capacity, runtime/process/container identity, restart/readiness, PostgreSQL,
-and resource limits. The real gate's declared duration, miss/quarantine counts,
-and capacity rows must equal that recomputed summary exactly; editing either
-the collection summary or any raw sample fails sealing.
-
-The sealer revalidates the embedded first-sample production query audit and
-recomputes its summary, every sampled wait distribution, required metric-family
-presence, per-series resource monotonicity, and independent admission/service
-interval deltas from the bound JSONL. It
-also requires semantic and permission passes, runtime/model-reservation
-evidence, and reviewer pass. The declared commit must equal the current
-checkout HEAD; the checkout must have no tracked or untracked changes, the
-absolute operator config path must exist, and every raw artifact must bind the same
-repository/session/cutoff, commit/migration, and redacted enablement. Every
-passing proof and the independent review must bind an `artifact_path` plus its
-actual SHA-256 to a regular JSON file inside the bundle. Raw proof files use
-`workers_runtime_raw_evidence_v1`; they contain typed per-proof records rather
-than bare `{ "ok": true }` assertions. The sealer independently checks all three
-semantic-domain hash pairs, zero serving writes, all five migration states, the
-operator-authorized no-backup/fix-forward boundary, and continuous runtime
-samples with no gap over 15 seconds or runtime/process identity change. It
-rejects restore, waiver, placeholder, and retired hand-filled production proof
-records.
-The `workers_runtime_independent_review_v1` artifact must identify the reviewer
-and bind the exact path/hash set of every raw proof artifact, including both
-production collection files. The sealer hashes every bundle file and refuses
-post-seal changes.

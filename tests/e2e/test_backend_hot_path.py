@@ -32,9 +32,9 @@ from tests.support.provider_fixtures import load_provider_fixture
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.http.app import create_app
 from tracefold.app.market_providers import AssetMarketProviders
-from tracefold.app.worker_capabilities import FiniteOperations
 from tracefold.app.workers import _PooledIngestStore
-from tracefold.app.workers_runtime import WorkersRuntimeRepository
+from tracefold.app.workers.capabilities import FiniteOperations
+from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.market import CollectorService, EventAnchorBackfill
 
 

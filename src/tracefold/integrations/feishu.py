@@ -1,3 +1,5 @@
+"""Feishu custom-bot webhook: one interactive-card send per call; the News Deliverer owns idempotency."""
+
 from __future__ import annotations
 
 import base64
@@ -5,7 +7,7 @@ import hashlib
 import hmac
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -151,11 +153,44 @@ def _is_feishu_webhook_url(value: str) -> bool:
     )
 
 
+class NewsPushExternalError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class FeishuNewsPushSender:
+    """Send one News card; the caller owns idempotency and settlement, there are no retries here."""
+
+    def __init__(
+        self,
+        *,
+        webhook_url: str,
+        signing_secret: str | None = None,
+        transport: httpx.BaseTransport | None = None,
+        timestamp_seconds: Callable[[], int] | None = None,
+    ) -> None:
+        self._client = FeishuWebhookClient(webhook_url=webhook_url, signing_secret=signing_secret, transport=transport)
+        self._timestamp_seconds = timestamp_seconds or (lambda: int(time.time()))
+
+    def send_card(self, card: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            receipt = self._client.send(dict(card), timestamp_seconds=self._timestamp_seconds())
+        except FeishuDeliveryError as exc:
+            raise NewsPushExternalError(f"news_delivery_{exc.code}") from None
+        return {"provider": "feishu", "code": receipt.code, "status_code": receipt.status_code}
+
+    def close(self) -> None:
+        self._client.close()
+
+
 __all__ = [
     "FEISHU_WEBHOOK_RATE_LIMIT_CODE",
     "FEISHU_WEBHOOK_REQUEST_MAX_BYTES",
     "FeishuDeliveryError",
     "FeishuDeliveryReceipt",
+    "FeishuNewsPushSender",
     "FeishuWebhookClient",
+    "NewsPushExternalError",
     "generate_feishu_signature",
 ]

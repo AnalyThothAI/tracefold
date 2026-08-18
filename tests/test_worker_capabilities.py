@@ -12,8 +12,8 @@ from pebble import CONSTS as PEBBLE_CONSTS
 
 from tracefold.app import database as database_module
 from tracefold.app.database import WorkerDatabase
-from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
-from tracefold.app.worker_cpu_prewarm import (
+from tracefold.app.workers.capabilities import CpuProcess, FiniteOperations, ModelAdapter
+from tracefold.app.workers.cpu_prewarm import (
     prewarm_projection_cpu_modules,
     projection_cpu_modules_loaded,
 )

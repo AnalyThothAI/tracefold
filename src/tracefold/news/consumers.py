@@ -611,6 +611,7 @@ class TriageConsumer:
             try:
                 call = await self.model.triage(human)
             except TriageModelError as exc:
+                trace.update({"model_attempts": exc.attempts, "model_failure_retryable": exc.retryable})
                 opened = self.circuit.record_failure(stamp)
                 if opened:
                     with contextlib.suppress(TransientError, DeferError):
@@ -626,6 +627,7 @@ class TriageConsumer:
                 trace.update(
                     {
                         "latency_ms": call.latency_ms,
+                        "model_attempts": call.attempts,
                         "input_tokens": call.input_tokens,
                         "output_tokens": call.output_tokens,
                         "cached_tokens": call.cached_tokens,

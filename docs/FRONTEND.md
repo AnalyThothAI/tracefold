@@ -62,8 +62,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `/token/:targetType/:targetId` inspection. The route parses `window` and
   optional trigger focus from the URL, fetches `/api/token-case`, seeds
   `/api/target-posts` from the dossier's first page, and subscribes only the
-  active target for live market updates. The dossier renders profile/market
-  facts and raw posts without synthesizing prose or per-post conclusions. An
+  active target for live market updates. The dossier renders identity/market
+  facts and raw posts without synthesizing prose or per-post conclusions; it
+  has no token profile card, logo, or profile links, and the single GMGN action
+  link is derived from the target chain and address. An
   inbound link may carry `window`, `focus=trigger`, and a canonical
   `trigger_event_id`; the route locates and visually focuses that exact Event
   or states that it is unavailable. It does not reconstruct any retired
@@ -104,8 +106,8 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   Triage `final_decision` (or `待判定` when no verdict exists), admission,
   family, asset class, and the numeric `provider_score_max` badge (omitted
   without numeric evidence), followed by reporting origin, exact local
-  `opened_at_ms` date/time plus relative time, and `member_count`. The
-  `display_title` (or `leader_title` when presentation is empty) is the
+  `opened_at_ms` date/time plus relative time, and `member_count`. The Triage
+  `title_zh` (or `leader_title` when the verdict has none) is the
   primary two-line headline and links to `/news/events/:eventId`; a differing
   `leader_title` appears as `原标题`, and a valid `context_line` is a two-line
   secondary line. The footer renders `grounded_assets` under `落地资产`
@@ -114,13 +116,13 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `override_rule`, `throttled_by`, and a `降级` flag), the delivery summary
   state with its settled time, and a separate original link when a valid URL
   exists. Missing values are omitted, never rendered as placeholder copy.
-  Row tone (`data-direction`, `data-priority`, `data-decision`) is presentation
+  Row tone (`data-direction`, `data-priority`, `data-decision`) is styling
   only. At 1280×720 the target is at least four rows, at 390×844 about two,
   with no horizontal overflow.
 
   `/news/events/:eventId` reads `/api/news/events/{event_id}` and renders
-  five server-owned sections in fixed order: the Event hero (badges,
-  presentation `display_title` as `h1`, `原标题`, valid `leader_description`,
+  six server-owned sections in fixed order: the Event hero (badges, the Triage
+  verdict's `title_zh` (or `leader_title`) as `h1`, `原标题`, valid `leader_description`,
   storyline `context_line`, grounded assets, source/opened/last-member/
   published clocks, ingest mode, storyline key, macro lexicon, Event ID, and
   the representative original link); `members[]` cards with reporting origin,
@@ -130,9 +132,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   `override_rule`, `throttled_by`, model/policy/prompt versions, publish time,
   the typed Triage or Analyst payload fields, verdict assets, context
   evidence, and a collapsed `trace` disclosure); `deliveries[]` rows (kind,
-  state, error code, attempted/settled clocks, receipt entries);
-  `presentation` facts (outcome, provider, display title, original title, or
-  an explicit absent state); and `marks[]` as a scrollable market-mark table.
+  state, error code, attempted/settled clocks, receipt entries); `labels[]`
+  under `操作者标注` (source, label payload, created time, or an explicit empty
+  state naming `tracefold news label`); and `marks[]` as a scrollable
+  market-mark table.
   The browser does not recompute any verdict, decision, or delivery state.
 
   `/news/status` reads `/api/news/status` and presents the single server
@@ -194,7 +197,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   normalized charts state that the comparison base is 100; a compact benchmark
   strip exposes each price/return source and as-of time. The correlation window
   selector is generated solely from the server's correlation contract, and the
-  mirrored matrix/diagonal are presentation-only derivations.
+  mirrored matrix/diagonal are display-only derivations.
   Credit keeps its four concurrent dimensions and no composite score.
   Volatility alone owns the official-expiry CFE VX settlement curve.
 
@@ -219,7 +222,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   cache, and typed module-unavailable states use distinct `PageState.*`
   surfaces with a truthful retry/recovery action. A disabled token query must
   never leave an infinite skeleton.
-- **CSS ownership.** `main.tsx` imports only Tailwind, tokens, and base styles. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `PageState`, `TokenProfileCard`, `CompactPanel`, and case-file components own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
+- **CSS ownership.** `main.tsx` imports only Tailwind, tokens, and base styles. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `PageState`, and the case-file components own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
 - **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, and side-effect class names reused across feature roots. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
 - **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, and the shadcn sidebar composition (`SidebarProvider`, `AppSidebar`, `SidebarInset`, and `SidebarTrigger`) split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Mobile and tablet route navigation uses the shadcn `Sheet` drawer opened from the topbar trigger.
@@ -230,13 +233,9 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
 - **Score display.** Any displayed ranking score includes its component breakdown from the API. The UI does not recompute ranking facts locally.
-- **Token images.** Token Case/profile surfaces render
-  `profile.identity.logo_url` directly. The API contract guarantees the value is
-  `null` or a same-origin `/api/token-images/{image_id}` path; DB
-  constraints reject remote provider URLs before they reach the frontend. Do
-  not restore `tokenImageUrl`, `/api/token-image?url=...`, local logo filters,
-  or any frontend proxy/helper that rewrites GMGN, Binance, OKX, or CEX image
-  URLs.
+- **No provider images.** Token Case renders no token logo; the API exposes no
+  image URL or image route. Do not add a frontend proxy, helper, or filter that
+  loads or rewrites provider image URLs.
 
 ## Build And Test
 
@@ -282,9 +281,9 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 5. Confirm route-aware WebSocket subscription behavior: `/news` and `/macro`
    register no `market_targets`; Token Case registers only its active target and
    releases it after leaving the route.
-6. Confirm Token Case/profile logos either load from `/api/token-images/{image_id}` or show
-   fallback marks, with no browser requests to provider image URLs such as
-   GMGN `external-res`.
+6. Confirm Token Case renders identity, market, and source-post facts only,
+   with the GMGN action link derived from the target chain/address and no
+   browser request to a provider image URL.
 7. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, `/` lands on the News list, and no filter/Tape/task bar exists.
 8. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
 9. At `1920px`, `1366px`, `834px`, and `390px`, verify the default News Feed
@@ -295,7 +294,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    Triage strip, and the delivery state are visible; exact date/time remains
    visible; current WSS state and pipeline latency are inline. On
    `/news/events/:eventId`, verify the hero, members, verdicts, deliveries,
-   presentation, and market marks appear in that order, `trace` starts
+   operator labels, and market marks appear in that order, `trace` starts
    collapsed, and the back link returns to `/news`. Verify `/news/status`
    shows the overview plus the four `ingest/broker/pipeline/delivery` layers,
    read-only control and watch views, and no operator controls. Confirm about

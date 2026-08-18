@@ -336,7 +336,7 @@ function timelineData() {
         duplicate_text_share: 0,
         price: {
           status: "ready",
-          provider: "okx_dex_price",
+          provider: "gmgn_dex_quote",
           pricefeed_id: `pricefeed:dex-token:gmgn_payload:eip155:1:${ADDRESS.toLowerCase()}`,
           price_usd: 0.00112,
           observed_at_ms: NOW - 60_000,
@@ -352,7 +352,7 @@ function timelineData() {
         duplicate_text_share: 0,
         price: {
           status: "ready",
-          provider: "okx_dex_price",
+          provider: "gmgn_dex_quote",
           pricefeed_id: `pricefeed:dex-token:gmgn_payload:eip155:1:${ADDRESS.toLowerCase()}`,
           price_usd: 0.00114,
           observed_at_ms: NOW,
@@ -479,7 +479,7 @@ function post(eventId: string, handle: string, text: string, score: number) {
         : null,
     price: {
       status: "ready",
-      provider: "okx_dex_price",
+      provider: "gmgn_dex_quote",
       pricefeed_id: `pricefeed:dex-token:gmgn_payload:eip155:1:${ADDRESS.toLowerCase()}`,
       price_usd: 0.00112,
       observed_at_ms: NOW,

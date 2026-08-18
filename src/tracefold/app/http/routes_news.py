@@ -12,7 +12,7 @@ from tracefold.app.http import schemas_news
 from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _json, _validated_etag_json
-from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.platform.config.settings import news_model_availability, news_push_availability
 
 router = APIRouter()

@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -44,6 +45,21 @@ def _amqp_reachable(url: str) -> bool:
             return True
     except OSError:
         return False
+
+
+def _delete_test_topology(url: str, name_prefix: str) -> None:
+    """The bus-check test declares a prefixed topology on the shared development broker; leave nothing behind."""
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
+    async def _run() -> None:
+        bus = RabbitMQBus(url=url, name_prefix=name_prefix, connect_timeout_seconds=5.0)
+        try:
+            await bus.connect()
+            await bus.delete_topology()
+        finally:
+            await bus.close()
+
+    asyncio.run(_run())
 
 
 def make_event(
@@ -476,14 +492,18 @@ class CliTests(unittest.TestCase):
             if not _amqp_reachable(amqp_url):
                 self.skipTest("development RabbitMQ is not reachable")
             payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            name_prefix = f"tf_test_{uuid.uuid4().hex[:8]}"
             payload["news"] = {
                 **(payload.get("news") or {}),
-                "broker": {"url": amqp_url, "name_prefix": f"tf_test_{uuid.uuid4().hex[:8]}"},
+                "broker": {"url": amqp_url, "name_prefix": name_prefix},
             }
             config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
             stdout = io.StringIO()
-            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
-                exit_code = main(["news", "bus-check"], stdout=stdout)
+            try:
+                with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+                    exit_code = main(["news", "bus-check"], stdout=stdout)
+            finally:
+                _delete_test_topology(amqp_url, name_prefix)
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)

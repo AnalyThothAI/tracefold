@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 import pytest
 
-import tracefold.app.projection_edf as projection_edf_module
-from tracefold.app.projection_edf import run_projection_edf
+import tracefold.app.workers.projection_edf as projection_edf_module
+from tracefold.app.workers.projection_edf import run_projection_edf
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.projection import ProjectionShard
 from tracefold.platform.resource import ResourceAdmissionTimeout

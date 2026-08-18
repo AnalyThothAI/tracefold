@@ -200,7 +200,7 @@ def test_opennews_production_has_no_subscription_or_rest_search_path() -> None:
         for path in (
             integration_root / "__init__.py",
             integration_root / "client.py",
-            SRC / "app" / "workers.py",
+            SRC / "app" / "workers" / "__init__.py",
             NEWS_ROOT / "consumers.py",
         )
     )

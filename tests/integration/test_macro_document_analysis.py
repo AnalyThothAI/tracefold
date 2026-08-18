@@ -16,11 +16,9 @@ from tests.postgres_test_utils import (
     repository_session_for_connection,
     reset_postgres_schema,
 )
-from tracefold.integrations.deepagents.fed_document_analysis import (
-    FedDocumentAnalysisAgent,
-)
 from tracefold.macro import (
     DocumentFact,
+    FedDocumentAnalysisAgent,
     MacroProjectionCandidate,
     rebuild_all_macro_modules_for_maintenance,
 )
@@ -141,6 +139,9 @@ class _InvalidEvidenceAgent(_Agent):
 
 
 class _HangingModel:
+    def with_structured_output(self, _schema: object, **_kwargs: object) -> _HangingModel:
+        return self
+
     async def ainvoke(self, _messages: list[object]) -> None:
         await asyncio.Event().wait()
 

@@ -21,11 +21,11 @@ providers / public streams
 repositories, and serve telemetry. `tracefold workers` initializes ingestion,
 acquisition, the bounded external/model capabilities, one short-projection CPU
 lane, singleton runtime status, the RabbitMQ-driven News consumers when News is
-enabled, and one EDF projection coordinator for the remaining frontier-backed
-domains. Market and Macro workers recover exclusively by re-reading PostgreSQL
-facts, typed Macro/Profile frontiers, native Fed-document model state, and
-queues on bounded code-owned clocks; News consumers recover by re-consuming
-durable broker queues plus database idempotency keys.
+enabled, and one EDF projection coordinator for the Macro frontier. Market and
+Macro workers recover exclusively by re-reading PostgreSQL facts, the typed
+Macro frontier, native Fed-document model state, and queues on bounded
+code-owned clocks; News consumers recover by re-consuming durable broker queues
+plus database idempotency keys.
 There is no
 database wake plane or in-memory correctness dependency. Provider raw frames
 remain inputs until normalized and persisted as material facts.
@@ -74,8 +74,7 @@ Material facts include:
 - macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
   `macro_documents`.
 
-Current read models are `token_profile_current`,
-`market_tick_current`, `news_events` (plus `news_event_members`,
+Current read models are `market_tick_current`, `news_events` (plus `news_event_members`,
 `news_event_bands`, `news_event_assets`), and the six stable rows in
 `macro_module_current`. Each uses stable product/window/target identity, has
 exactly one runtime writer, is rebuildable from facts, and writes zero serving
@@ -88,18 +87,16 @@ source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 OpenNews connection state in `news_ingest_state`, explicit incident intervals
 in `news_opennews_incidents`, News control state (`news_control_state`),
 queues, leases, retries, native model runs/jobs, and terminal events are
-control state. Typed Macro and Profile
-frontiers store stable
-domain/shard identity, input fingerprint, earliest deadline, lease, failure,
+control state. The typed Macro frontier stores stable
+module identity, input fingerprint, earliest deadline, lease, failure,
 and publication checkpoints. `first_dirty_at_ms` records the causal change,
 `deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
 eligibility clock for a scheduled recheck or retry. An eligible shard may run
-before its deadline; the deadline is never a start gate. Profile refresh heat tiers, retry attempts, provider circuits, and terminal reasons are
-likewise queue policy, not profile facts.
+before its deadline; the deadline is never a start gate. Retry attempts,
+provider circuits, and terminal reasons are likewise queue policy, not facts.
 `news_verdicts` (Triage and Analyst decisions bound to a policy version) and
 rows in `macro_document_analyses` are derived model outputs bound to frozen
-evidence; they are not material facts. `news_title_presentations` is durable
-presentation state keyed by the comparison fingerprint. `news_deliveries` is
+evidence; they are not material facts. `news_deliveries` is
 the one-attempt outbound ledger keyed by `(event_id, kind)`; there is no retry,
 lease, or backfill. `news_event_market_marks` and `news_event_labels` are the
 learning-plane truth for evaluating decisions.
@@ -108,27 +105,27 @@ learning-plane truth for evaluating decisions.
 
 ```text
 tracefold.market
-  capture/       provider-neutral evidence ingestion
-  identity/      token and asset identity resolution
-  pricing/       append-only market facts and current prices
-  profiles/      source-backed token profiles and image state
-  views/         persisted market read queries
+  capture/       provider-neutral evidence ingestion (GMGN stream)
+  identity/      token and asset identity resolution against the registry
+  pricing/       append-only market facts and current prices (GMGN DEX quotes, Binance CEX ticks)
+  views/         persisted market read queries (Search, Token Case)
 
 tracefold.news
   opennews.py         canonical OpenNews frame adapter (raw_text, provenance)
-  bus.py              broker envelope, routing keys, Publisher/Consumer protocols
+  bus.py              broker envelope, routing keys, error classes, Publisher/Consumer protocols
   titles.py           content-block title extraction + pinned prefix/suffix tables
   exact_atom_identity.py comparison normalization, event family, windows
   tokens.py / minhash.py  comparison tokens, MinHash 32x4 band keys
   gate.py / storyline.py  deterministic admission, priority, grounded assets, storyline keys
   events.py           the Deduper transaction (admit_item)
-  triage_rules.py     decide() post-rules, throttle, fail-closed fallback
+  triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
+  analyst_evidence.py the Analyst evidence bundle (one DB session, evidence ids)
   analyst_rules.py    verify_verdict() evidence gate
-  agents/             Triage structured call, Analyst deepagents harness, tools, prompts
-  translation.py / delivery.py / control.py  waterfall, cards, control commands
-  consumers.py        Receiver, Recovery, Deduper, Triage, Analyst, Translator, Deliverer, Janitor, Control
+  agents/             Triage and Analyst structured calls, byte-frozen prompts
+  delivery.py / control.py  cards, control commands
+  consumers.py        Receiver, Recovery, Deduper, Triage, Analyst, Deliverer, Janitor
   repository.py / query_specs.py  news_* access and audited reads
-  eval/               market marks, offline evaluation, replay
+  eval/               market marks, offline evaluation, decision replay, hits replay
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
@@ -136,15 +133,16 @@ tracefold.macro
   calculations.py versioned calculation registry and transparent features
   projection.py  six current decision modules
   fed_analysis.py evidence-bound FOMC/speech analysis contract
+  fed_document_agent.py one structured model call over the official body's evidence catalog
 
 tracefold.integrations
-  provider and external-system adapters, including DeepAgents
+  provider and external-system adapters: GMGN, Binance USD-M, OpenNews, RabbitMQ, Feishu, macro sources
 
 tracefold.platform
-  config, PostgreSQL/Alembic, telemetry, paths, and bounded resource primitives
+  config, PostgreSQL/Alembic (baseline + one chained hard cut), telemetry, paths, bounded resource primitives
 
 tracefold.app
-  composition, repositories/providers, the sole worker root, HTTP/WS, and CLI
+  composition, repositories/providers, the worker root package (`app/workers/`), HTTP/WS, and CLI
 ```
 
 The three business package roots are their public Python interfaces:
@@ -180,19 +178,20 @@ read-model behavior stay with their business owner. These rules are executable i
 
 A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
-into a business-package protocol. App composition decides which configured
-adapter owns each durable queue; disabled adapters own no work, and startup
-starts a bounded drain of their obsolete nonterminal profile queue rows, which
-continues through ordinary Worker turns. Operational status is derived from
-PostgreSQL facts, circuits, and queues rather than cached provider objects or
-live probes. Expected provider failures stay inside the owning bounded loop; an
+into a business-package protocol. There are two market adapters: GMGN (the
+anonymous stream and OpenAPI DEX quotes) and Binance USD-M futures (CEX universe
+and ticks); no provider owns a durable queue. Operational status is derived from
+PostgreSQL facts and circuits rather than cached provider objects or live
+probes. Expected provider failures stay inside the owning bounded loop; an
 unhandled child exception is deliberately a Workers-root failure and the
 container restarts the single process.
 
 SQL ownership follows the same boundary: Market owns the event, token, asset,
-profile, price, collector, general cross-asset observation, and
+price, collector, general cross-asset observation, and
 settlement tables; News owns `news_*`; Macro owns `macro_*`. Platform owns
-Alembic, checkpoint, and generic terminal-evidence tables. Macro imports Market only through
+Alembic and the generic terminal-evidence table. News reads `cex_tokens`,
+`price_feeds`, `market_ticks`, and `macro_module_current` through named
+read-only seams (market reaction, macro state) and never writes them. Macro imports Market only through
 `tracefold.market`, has no live or hidden dependency on News, and never
 duplicates general market facts into Macro storage. The architecture gate
 checks SQL table references against the generated current schema.
@@ -243,8 +242,8 @@ releases the shared capability permit before the underlying future actually
 finishes. Frontier-backed projection turns therefore have phase-native
 deadlines and no aggregate fatal watchdog.
 
-Projection claim leases cover the complete legal phase envelope: Profile and
-Macro use 30 seconds each. News consumers have no frontier lease; the broker's
+The Macro projection claim lease covers the complete legal phase envelope (30
+seconds). News consumers have no frontier lease; the broker's
 single-active-consumer and per-message ack are their fences.
 
 ## Product flows
@@ -259,34 +258,30 @@ input, so no derived read model can feed a market result back into acquisition
 scheduling.
 
 ```text
-events + intent resolution revisions + identity/profile facts + market ticks
+events + intent resolution revisions + identity facts + market ticks
   -> Search (bounded lexical/substring fact reads)
-  -> Token Case (target dossier: profile, timeline, posts, live market)
+  -> Token Case (target dossier: timeline, posts, live market)
   -> /api/live-market (one durable market_tick_current row per target)
 ```
 
 Search and Token Case read their owning facts directly; there is no
 model-derived, scored, or ranked product layer between them and the persisted
 facts. There is no Token Radar or Stocks product, route, public read model,
-writer, or worker task; historical migrations `20260810_0249` through
-`20260814_0269` shaped the former Radar singleton and `20260818_0274` removed
-it together with its Radar-only Event/resolution covering indexes and the
-generated `events.token_radar_text_fingerprint` column. `us_equity_symbols`
+writer, or worker task. `us_equity_symbols`
 remains only an identity-collision guard for token resolution and does not
 constitute a Stocks surface. General cross-asset Market facts and the six Macro
 modules remain unchanged.
 
-Profile refresh targets use `hot`, `warm`, and `cold` queue tiers; missing and
-error outcomes back off exponentially to a bounded terminal state, and only a
-new evidence fingerprint reactivates that target. Profile eligibility and
-invalidation come from identity/profile facts and Profile-owned policy.
+Token identity is resolved deterministically against the registry (GMGN
+payloads, Binance CEX instruments, tweet contract mentions); there is no DEX
+discovery, token profile, or token image lane.
 
 ### News
 
 News V3 is a broker-driven Event pipeline. RabbitMQ is the only transport,
 buffer, retry, concurrency, and dead-letter plane; PostgreSQL holds facts,
 decisions, and audit; every write is idempotent by key. The Story/Brief/RSS/
-pinned-WorldMonitor lane is retired.
+pinned-WorldMonitor lane and the title-translation lane are retired.
 
 ```text
 OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
@@ -299,27 +294,34 @@ OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
        -> Event new|member (family window) -> Gate (engine_type, asset_class,
           grounded_assets, macro lexicon, PR-template) -> storyline key
        -> publish event.<family>.<priority> only for admission=candidate
-  -> q:news.triage [prefetch N] Triage: one structured call (frozen system prompt,
-       <event> -> <gate> -> <event_status> status bar) -> decide() rules -> verdict row
-       -> publish verdict.push (+ verdict.escalate)
-  -> q:news.translate (verdict.push) Translator: DeepL -> DeepSeek -> original, keyed by fingerprint
-  -> q:news.deep (verdict.escalate) Analyst: minimal deepagents harness, 7 read-only tools,
-       verify_verdict() -> deep verdict -> publish verdict.deep only after the first card was sent
+  -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
+       one structured call (frozen system prompt, <event> -> <gate> -> <event_status> status bar,
+       one bounded retry for a fast retryable model failure) -> decide() rules -> verdict row
+       (title_zh, prompt sha, input sha, status snapshot) -> publish verdict.push (+ verdict.escalate)
+  -> q:news.deep (verdict.escalate) [prefetch = news.analyst.concurrency] Analyst:
+       one DB session builds the evidence bundle -> one structured call -> verify_verdict()
+       (one correction round) -> safe-point staleness check -> deep verdict
+       -> publish verdict.deep only after the first card was sent
   -> q:news.deliver [single-active-consumer] Deliverer: begin(sending) -> one Feishu attempt
-       -> settle sent|terminal; crash between send and ack -> ambiguous_after_crash
-  -> x:news.control (fanout) pause/resume/mute_theme/mute_symbol/drain -> news_control_state
-  -> retry lanes news.retry.{5s,30s,120s} (TTL -> back to x:news) for transient errors;
-     x:news.dlx -> q:news.dead for permanent/exhausted messages
-  -> Janitor: band expiry, 30-day retention, market marks (t0/+5m/+30m/+4h)
+       -> settle sent|terminal; paused -> terminal/delivery_paused; crash between send and ack
+       -> ambiguous_after_crash
+  -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
+     DeferError uncounted; x:news.dlx -> q:news.dead for permanent/exhausted/crashed messages
+  -> Janitor: outbox catch-up (unpublished candidates), band expiry, 30-day retention,
+     market marks (t0/+5m/+30m/+4h), broker depth snapshot
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
 
 Ownership: `tracefold.integrations.rabbitmq` is the only module that imports
-`aio_pika`; `tracefold.news.bus` owns the envelope, routing keys, and
-Publisher/Consumer protocols. `tracefold.news.consumers` holds the eight
-consumers wired by `app/workers.py::_wire_news_pipeline`; they run as asyncio
-tasks in the single Workers process but coordinate only through the broker and
-PostgreSQL keys, so they can be scaled out without code changes.
+`aio_pika`; `tracefold.news.bus` owns the envelope, routing keys, error classes,
+and Publisher/Consumer protocols. `tracefold.news.consumers` holds the seven
+consumers wired by `tracefold.app.workers._wire_news_pipeline`; they run as
+asyncio tasks in the single Workers process but coordinate only through the
+broker and PostgreSQL keys, so they can be scaled out without code changes.
+News consumers use their own four-slot database lane
+(`WorkerDatabase.run_news`) so Market/Macro backlog never starves a live Event;
+a lane admission timeout is a `DeferError` (uncounted requeue), a statement
+overrun is a `TransientError` (counted).
 
 Identity: `news_items.item_id = sha256(source_id, params.id)`;
 `news_events.event_id` is the leader item id. `tracefold.news.titles`
@@ -340,55 +342,73 @@ notices are suppressed; `listing` frames are deterministic. Priority is
 
 Triage (`tracefold.news.agents.triage_model`, `tracefold.news.triage_rules`)
 never retrieves: the Deduper computes `event_status` (storyline window facts)
-and the consumer passes it last in the human message. `decide()` owns the
-final decision: noise -> drop; magnitude 3 -> escalate; high priority + push ->
-escalate; unclear direction -> drop; magnitude >= 2 and actionable -> push;
-watchlist primary and magnitude >= 1 -> push; storyline window-max throttle
-(2 h push / 4 h escalate); hourly cap; control mutes. Model failure is
-fail-closed (`rule_baseline`: watchlist primary or score >= 90 with grounded
-assets) and three consecutive failures open a 60-second circuit that also opens
-a `triage_circuit_open` incident. `news_verdicts` stores `model_decision`,
+and the consumer passes it last in the human message. The structured verdict
+carries `title_zh` (a faithful Chinese title; the card shows it next to the
+original) besides `headline_zh`. `decide()` owns the final decision under a
+`DecidePolicy` (defaults are the live policy): noise -> drop; magnitude 3 ->
+escalate; high priority + push -> escalate; unclear direction -> drop;
+magnitude >= 2 and actionable -> push; watchlist primary and magnitude >= 1 ->
+push; storyline window-max throttle (2 h push / 4 h escalate); hourly cap;
+control mutes. A fast retryable model failure (timeout, rate limit, connection)
+earns one more attempt inside the deadline; model failure is fail-closed
+(`rule_baseline`: watchlist primary or score >= 90 with grounded assets) and
+three consecutive failures open a 60-second circuit that also opens a
+`triage_circuit_open` incident. `news_verdicts` stores `model_decision`,
 `rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
-`degraded`, and a trace with latency and cached tokens.
+`degraded`, and a replayable trace (latency, tokens, model attempts, prompt
+sha, input sha, the status-bar snapshot).
 
-Analyst (`tracefold.news.agents.analyst`, `tools`, `analyst_rules`) uses
-`create_deep_agent` with seven read-only tools (event card, members, find
-events, prior verdicts, market reaction, macro state, watchlist), no subagents,
-no filesystem/todo/sandbox tools, no checkpointer, and `ToolStrategy` terminal
-output. Tool returns are bounded (2 s, 4 KB, clamped echoes) and register
-evidence ids; `verify_verdict()` rejects unknown evidence, market numbers that
-differ from tool output, disagreement without revision, and magnitude without
-evidence. Deep verdicts only produce follow-up cards after the first delivery
-was sent. `NEWS_ANALYST.md` is code-owned domain memory concatenated into the
-system prompt.
+Analyst (`tracefold.news.analyst_evidence`, `tracefold.news.agents.analyst`,
+`tracefold.news.analyst_rules`) is one structured LangChain call over a
+code-prefetched evidence bundle built in one database session: the Event card
+and Triage fields, up to five members, up to twenty storyline/symbol history
+Events and prior verdicts from the last 48 hours, per-grounded-symbol CEX
+market reaction rows (elapsed 5m/30m/4h windows through `cex_tokens`,
+`price_feeds`, and `market_ticks`), the six macro module rows, and the same
+`<event_status>` status bar Triage sees. Every citable row carries an
+`evidence_id` registered by the host; `verify_verdict()` rejects unknown
+evidence, market numbers that differ from the bundle, disagreement without
+revision, and magnitude without evidence, and a rejection buys exactly one
+correction round with the reason appended. Before publishing a follow-up the
+consumer re-reads the storyline status: a push newer than the Analyst start
+supersedes the follow-up (`throttled_by = storyline:<key>:superseded`). Deep
+verdicts only produce follow-up cards after the first delivery was sent.
+`NEWS_ANALYST.md` is code-owned domain memory concatenated into the byte-frozen
+system prompt; the effective prompt sha is part of every trace.
 
 Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders
-code facts (original title, link, assets, direction, magnitude, sources) as
-the card body and sanitizes AI copy (URLs fall back to the original title).
-There is no retry: `news_deliveries(event_id, kind)` is inserted as `sending`
-before the single HTTP call and settled `sent`/`terminal`; interrupted rows are
-terminalized at startup. Recovery items, suppressed events, and paused/muted
-control state never deliver; the hourly cap lets only escalates through.
+code facts (original title, `title_zh`, link, assets, direction, magnitude,
+sources) as the card body and sanitizes AI copy (URLs fall back to the
+code-owned title). There is no retry: `news_deliveries(event_id, kind)` is
+inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
+interrupted rows are terminalized at startup. Recovery items, suppressed
+events, and muted storylines never deliver; a paused lane settles
+`terminal/delivery_paused` instead of holding an unacked message; the hourly cap
+lets only escalates through. Control state (`news_control_state`) is written by
+`tracefold news control` and read by Triage and the Deliverer on every message.
 
 Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
 backpressure/unavailability, and Triage circuit opens are rows in
 `news_opennews_incidents`; reconnect closes transport incidents and requests
 recovery, which pages the official Strategy hits endpoints for the closed
 interval and publishes `raw.recovery.*` frames (`admission=recovery`, never
-delivered).
+delivered). Dead letters are operator-visible through `tracefold news dlq
+inspect|replay|purge`.
 
-Storage is exactly thirteen tables: `news_ingest_state`,
+Storage is exactly twelve tables: `news_ingest_state`,
 `news_opennews_incidents`, `news_items`, `news_events`, `news_event_members`,
-`news_event_bands`, `news_event_assets`, `news_verdicts`,
-`news_title_presentations`, `news_deliveries`, `news_control_state`,
-`news_event_market_marks`, `news_event_labels`. Migration
-`20260818_0275_news_v3_event_bus_hard_cut` drops the eleven legacy Story/
-Brief/Push/Title tables and is irreversible. Read queries are registered in
-`tracefold.news.query_specs` for the query audit.
+`news_event_bands`, `news_event_assets`, `news_verdicts`, `news_deliveries`,
+`news_control_state`, `news_event_market_marks`, `news_event_labels`. Read
+queries are registered in `tracefold.news.query_specs` for the query audit.
 
 Learning plane: `news_event_market_marks` capture t0/+5m/+30m/+4h price and OI
-for candidate events with CEX targets; `tracefold news eval` reports
-precision@push, missed-mover rate, and direction accuracy over stored verdicts;
+for candidate events with CEX targets (Binance USDT perps synced into
+`cex_tokens`); `news_event_labels` hold operator labels written by `tracefold
+news label`; `tracefold news eval` reports precision@push, missed-mover rate,
+throttled-mover rate, direction accuracy, and per-rule / per-asset-class /
+per-event-type confusion tables over stored verdicts; `tracefold news
+replay-decisions` re-runs `decide()` over stored verdicts with a candidate
+`DecidePolicy` (the boundary/retention replay before a policy version moves);
 `tracefold news replay <hits.json>` replays provider hits through Deduper+Gate
 without a model or broker; `tests/fixtures/news_v3_hits_sample.json` is the
 golden replay corpus.
@@ -510,34 +530,16 @@ Dataset projection state, and dirtying the `rates_fed` frontier share one
 transaction. A maintenance rebuild derives the same state from immutable
 analyses and native jobs.
 
-Migrations `20260801_0235` and `20260801_0236` are irreversible hard cuts: they
-remove retired News acquisition and Macro derived/control history without
-adding compatibility tables or readers.
-Historical migration `20260801_0237` introduced a persisted OpenNews recovery
-boundary, and historical migration `20260809_0247` replaced it with a bounded
-12-hour ordinary-news overlap. Neither is the current acquisition contract:
-`20260813_0265` removes ordinary-news REST overlap and records
-unknown coverage without replay. Current migration `20260813_0266` supersedes
-that status shape with explicit incidents and bounded official Strategy-hit
-recovery; it still never uses ordinary News Search. `20260801_0238` adds the two News-owned
-push-control tables with an
-uninitialized baseline. Runtime initialization records that fence once, and
-every bounded reconcile page suppresses selected evidence already persisted at
-the fence without a network call.
-Migration `20260810_0251` is the Rates v7 hard cut: it deletes the rebuildable
-v6 `rates_fed` current/frontier rows and changes the database schema invariant
-to v7. Typed Macro facts and immutable analyses are preserved and the sole
-projection writer rebuilds the current row.
-Migration `20260811_0252` converts unreachable legacy acquisition-target
-states once, removes `invalid` from the live state machine, preserves the six
-serving rows, and clears only their rebuildable frontiers. On startup the sole
-projection writer reconciles those missing frontiers from persisted Dataset
-projection state and republishes all six modules without provider I/O.
-Migration
-`20260811_0253` is the current semantic-contract hard cut: it invalidates only
-the rebuildable Rates, Economy, and Cross-Asset current/frontier rows and
-requires v8, v6, and v8 respectively. Material facts, targets, documents, and
-analyses remain intact; there is no dual reader.
+Migration history is squashed. `20260818_0275_baseline` is the single root
+revision: it executes the frozen `current_schema_20260818_0275.sql` dump
+(every table, index, constraint, seed row of the schema as it stood after the
+News V3 hard cut and Radar removal) plus `runtime_roles.sql`, and it is
+irreversible. `20260818_0276_review_49_hard_cut` is the only chained revision:
+it drops the retired title-translation, DEX discovery, token profile,
+token image, and Radar-era checkpoint tables, and there is no downgrade.
+Earlier hard cuts (News acquisition, Macro derived history, Rates v7/v8,
+acquisition-target state machine, Radar) live only in git history; a fresh
+database and a database upgraded through them reach byte-identical schemas.
 
 ## Safety boundary
 

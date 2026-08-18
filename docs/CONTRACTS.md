@@ -30,26 +30,25 @@ but no live provider/model/webhook credential, `news.push.enabled` is
 false, and `news.broker.url` points at the compose RabbitMQ service.
 
 The configuration schema uses typed nested models directly
-(`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, and `upstream`).
+(`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, `news`, and
+`upstream`).
 Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
 aliases are not part of the configuration contract.
 
 Fresh configs subscribe GMGN to `sol`, `eth`, `base`, `bsc`, and `robinhood`.
-The default OKX DEX discovery/quote set includes chain index `4663`, whose
-canonical Tracefold chain ID is `robinhood`; no runtime alias or inferred
-fallback supplies that mapping.
 
 Top-level `handles`, top-level `notifications`, `news.sources`,
-`news.rss_enabled`, `news.title_presentation`, and `llm.news_brief_model` are
+`news.rss_enabled`, `news.title_presentation`, `news.translation`,
+`news.gate`, `news.budget`, `providers.okx`, and `llm.news_brief_model` are
 retired inputs. Any equivalent retired key fails validation; there is no
 alias, merge, or generated-source fallback.
 
 `llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
 DeepSeek-compatible configuration. They are all absent or all present; a
 partial triple fails validation, and Tracefold never supplies an implicit
-endpoint or model. `llm.news_analyst_model` defaults to the triage model. News
-title translation uses the ordered `news.translation.deepl_api_keys` first and
-this direct slot as fallback. Model execution policy, timeouts, token budgets,
+endpoint or model. `llm.news_analyst_model` defaults to the triage model. The
+Chinese card title is the Triage verdict's `title_zh`; no other model or
+provider produces titles. Model execution policy, timeouts, token budgets,
 cadence, retries, and reservations are code-owned. Environment variables are
 not a credential contract.
 
@@ -64,15 +63,16 @@ they never fail startup or recovery. The current operator set is `1018`,
 `1352`, `1353`; `1019` is disabled provider-side and not configured.
 
 `news.broker.url` (`amqp://` or `amqps://`, a secret) is required for News to
-run; `news.broker.name_prefix` prefixes every exchange and queue name.
-`news.gate.*`, `news.triage.*` (`deadline_seconds`, `concurrency`,
-`circuit_failures`, `circuit_open_seconds`), `news.analyst.*` (`enabled`,
-`deadline_seconds`, `max_steps` (must not equal 25), `concurrency`),
-`news.push.*` (`enabled`, `feishu_webhook_url`, optional
-`feishu_signing_secret`, `min_interval_seconds`, `hourly_cap`),
-`news.budget.daily_model_cost_usd`, and `news.watchlist[]`
-(`{symbol, market_type, weight}`) are the only News knobs. Lexicons, prefix
-tables, LSH geometry, prompt texts, and policy versions are code constants.
+run; `news.broker.name_prefix` prefixes every exchange and queue name and
+`news.broker.connect_timeout_seconds` bounds the connect. `news.triage.*`
+(`deadline_seconds`, `concurrency`, `circuit_failures`,
+`circuit_open_seconds`), `news.analyst.*` (`enabled`, `deadline_seconds`,
+`concurrency`), `news.push.*` (`enabled`, `feishu_webhook_url`, optional
+`feishu_signing_secret`, `min_interval_seconds`, `hourly_cap`), and
+`news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
+`news.triage.concurrency` (default 4) and `news.analyst.concurrency` (default
+2) are the real consumer widths of their queues. Lexicons, prefix tables, LSH
+geometry, prompt texts, and policy versions are code constants.
 `tracefold config` exposes only redacted booleans, counts, model names, and
 watchlist symbols; it never prints the token, broker URL, keys, or webhook.
 
@@ -111,8 +111,9 @@ The service exposes `/healthz`, `/readyz`, `/metrics`, `/ws`, static frontend as
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
 - `/api/status` separates process/database/Workers runtime truth from Provider
   operations. `runtime` fails closed on stale worker heartbeats; `providers`
-  reports configured ownership, durable circuit state, continuous-source
-  freshness, and owned or unowned queue backlog without calling an upstream.
+  reports configured ownership, durable circuit state, and continuous-source
+  freshness for `gmgn_direct_ws`, `gmgn_dex_quote`, and `binance_cex_rest`
+  without calling an upstream; providers own no durable queue.
 - Read endpoints do not call providers, execute models, mutate facts, or rebuild projections.
 
 Status contains no provider/model credentials, base URLs, request policy,
@@ -134,11 +135,10 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | runtime composition, worker status, and persisted Provider operations |
 | Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
-| Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity, profile, and market facts owned by those readers |
+| Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity, and market facts owned by those readers |
 | Market | `/api/live-market` | stable PostgreSQL current read models |
 | Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status` | broker-driven Event feed, one Event with members/verdicts/deliveries/marks, and four-layer News status |
-| Images | `/api/token-images/{image_id}` | ready mirrored assets under the operator cache root |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status` | broker-driven Event feed, one Event with members/verdicts/deliveries/labels/marks, and four-layer News status |
 
 There is no CEX OI/detail product API. Generic exchange facts and provider adapters remain internal inputs to supported products.
 
@@ -162,26 +162,28 @@ surface is exactly three read-only routes:
 
 - `GET /api/news/feed?family={family}&admission={admission}&priority={high|normal}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&sort={latest|priority}&limit={limit}&cursor={cursor}`
   returns Events newest first (or high priority first) with the leader title,
-  the shared display title when a presentation exists, admission, priority,
+  the Triage `title_zh` when a verdict carries one, admission, priority,
   asset class, grounded assets, watchlist hits, storyline key, context line,
   the latest Triage summary (final decision, override rule, throttle reason,
-  degraded flag, direction, magnitude, event type, scope, `headline_zh`), and
-  the first delivery state. Unknown query parameters, invalid admission or
-  decision values, and malformed cursors return 400. Recovery Events are
-  visible with `admission=recovery`.
+  degraded flag, direction, magnitude, event type, scope, `headline_zh`,
+  `title_zh`), and the first delivery state. Unknown query parameters,
+  invalid admission or decision values, and malformed cursors return 400.
+  Recovery Events are visible with `admission=recovery`.
 - `GET /api/news/events/{event_id}` returns one Event, its member Items
   (title, URL, origin, publication time, match kind, Jaccard estimate,
   provenance, description), every Triage/Analyst verdict (model decision, rule
   baseline, final decision, override rule, throttle reason, verdict payload,
-  model, prompt version, degraded flag, trace), deliveries, the shared
-  presentation, and market marks. Unknown ids return 404.
+  model, prompt version, degraded flag, trace), deliveries, operator labels
+  (`label_version`, `source`, label payload, created time), and market marks.
+  Unknown ids return 404.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
   `unavailable`), the Workers state, and four layers: `ingest` (WSS connected,
   last frame/publish, error, configured and provider-enabled Strategy IDs,
   strategy warnings, open incidents, token configured), `broker` (configured,
   connected, per-queue message/consumer counts when observed, error code),
   `pipeline` (events and candidates per hour/day, Triage/Analyst counts,
-  degraded counts, decided pushes, throttled, Triage p50/p95, model names), and
+  degraded counts, decided pushes, throttled, Triage p50/p95, queue lag p95,
+  model names), and
   `delivery` (sent/terminal counts, last error, end-to-end p95, availability,
   hourly cap), plus `control` (paused, mutes) and the watchlist symbols.
 
@@ -199,7 +201,8 @@ Fingerprints of at most two tokens never share an Event.
 Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
 `event_type`, `assets[{symbol, market_type?, role}]`, `direction`, `scope`,
 `magnitude 0..3`, `actionable`, `confidence`, `decision` (model intent),
-`headline_zh`, `rationale`; the stored row adds `model_decision`,
+`headline_zh`, `title_zh` (faithful Chinese title, at most 160 characters),
+`rationale`; the stored row adds `model_decision`,
 `rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
 `degraded`, `error_code`, `trace`. `AnalystVerdict` is `agrees_with_triage`,
 `revised_direction`, `revised_magnitude`, `novelty_assessment`,
@@ -208,17 +211,28 @@ Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
 or as `degraded`.
 
 Delivery identity is `(event_id, kind)` with `kind` in `first`, `followup`;
-states are `sending`, `sent`, `terminal`. There is exactly one HTTP attempt.
+states are `sending`, `sent`, `terminal`. There is exactly one HTTP attempt;
+a paused control settles `terminal/delivery_paused` immediately instead of
+holding the message.
 
 Broker contract (code-owned): topic exchange `news`, dead-letter exchange
-`news.dlx`, fanout `news.control`, quorum queues `news.raw` (single-active,
-`reject-publish` overflow), `news.triage`, `news.translate`, `news.deep`,
-`news.deliver` (single-active, delivery limit 1), `news.dead`, and retry lanes
-`news.retry.5s|30s|120s`; all names take `news.broker.name_prefix`. Message
-bodies are `news_bus_v1` JSON envelopes (`kind`, `message_id`, `trace_id`,
-`occurred_at_ms`, `payload`) with AMQP priority 0 or 5. Control payloads are
-`{action: pause_delivery|resume_delivery|mute_theme|mute_symbol|unmute|drain,
-key?, ttl_ms?}`.
+`news.dlx`, fanout retry exchange `news.retry`, quorum queues `news.raw`
+(`raw.#`; single-active, `reject-publish` overflow at 100,000, delivery limit
+3), `news.triage` (`event.#`; delivery limit 3), `news.deep`
+(`verdict.escalate`; delivery limit 2), `news.deliver` (`verdict.push`,
+`verdict.deep`; single-active, delivery limit 1), the single retry lane
+`news.retry` (30 s TTL, dead-letters back to `news`), and `news.dead`
+(delivery limit 1,000,000 so peeks never drop evidence); all names take
+`news.broker.name_prefix`. Message bodies are `news_bus_v1` JSON envelopes
+(`schema_version`, `kind`, `message_id`, `trace_id`, `occurred_at_ms`,
+`payload`) with AMQP priority 0 or 5 and `x-news-attempt`/`x-news-trace`
+headers. Consumer outcomes are typed: `TransientError` retries through the
+lane and dead-letters after 3 attempts, `DeferError` requeues uncounted when
+the News DB lane cannot admit the message, and `PermanentError` or a handler
+crash dead-letters. Control is not a broker message: `tracefold news control
+<pause_delivery|resume_delivery|mute_theme|mute_symbol|unmute> [--key
+--ttl-minutes]` writes `news_control_state` and consumers read that row on
+every message.
 
 ### Macro
 
@@ -374,21 +388,19 @@ Macro has no second judgment, historical-session, or archive contract. Retired
 paths return the ordinary application `404`; there is no alias or fallback
 publication.
 
-Migration history for the retired Story/Brief/RSS/Item-Push/Title lane
-(`20260801_0234` .. `20260815_0273`) is documented in the alembic version
-files only. `20260818_0275_news_v3_event_bus_hard_cut` is the current
-irreversible News migration: it drops `news_sources`, `news_stories`,
-`news_story_members`, `news_projection_summary`,
-`news_brief_selection_current`, `news_brief_current`, `news_push_state`,
-`news_push_deliveries`, `news_item_title_presentations`, the legacy
-`news_items`, and the legacy incident table, and creates the thirteen V3
-tables. It performs no provider, broker, or outbound call and has no
+The Alembic chain is `20260818_0275` (the root baseline: it executes
+`current_schema_20260818_0275.sql` plus `runtime_roles.sql`) followed by
+`20260818_0276_review_49_hard_cut`, which drops the retired News title table,
+the DEX discovery/token-profile/token-image tables, and the unused LangGraph
+`checkpoint_*` tables. A database already at `20260818_0275` upgrades with
+`tracefold db migrate`; a fresh database runs the baseline and 0276. News owns
+exactly twelve tables: `news_ingest_state`, `news_opennews_incidents`,
+`news_items`, `news_events`, `news_event_members`, `news_event_bands`,
+`news_event_assets`, `news_verdicts`, `news_deliveries`,
+`news_control_state`, `news_event_market_marks`, `news_event_labels`.
+Migrations perform no provider, broker, or outbound call and have no
 compatibility reader/writer; the Feed starts from the first frames observed
 after deployment.
-
-### Token images
-
-`/api/token-images/{image_id}` accepts only the persisted lowercase SHA-256 URL identity. Only `ready` assets whose relative path resolves under `~/.tracefold/cache/token-images` are served. Missing rows/files, malformed IDs, absolute paths, and traversal attempts return `404`. Provider URLs are never accepted as a proxy input.
 
 ## WebSocket
 
@@ -422,7 +434,7 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 - service/config: `serve`, `workers`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - Macro: `macro backfill|backfill-professional|status`;
-- News: `news bus-check|control|eval|replay`;
+- News: `news bus-check|control|label|eval|replay-decisions|replay|dlq`;
 - read models: `recent`, `search`;
 - maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
 
@@ -434,13 +446,20 @@ They do not acquire the maintenance lock, so operators can inspect the running
 singleton without interrupting it. Repair and rebuild commands remain
 exclusive maintenance operations.
 
-`ops collect-workers-runtime-acceptance --bundle <absolute-path>` is a
-read-only production observer with a fixed 1,800-second interval, 181 samples,
-10-second cadence, and 15-second maximum gap. It accepts exactly one new
-directory outside the checkout and returns non-zero while preserving raw JSONL
-if any continuity, identity, capacity, PostgreSQL, resource, or query-plan gate
-fails. `ops seal-workers-runtime-acceptance` accepts that repository-owned
-collection only after the other typed gates and independent review are bound.
+`news bus-check` connects, declares the topology idempotently, and prints
+per-queue message/consumer counts. `news control <action> [--key
+--ttl-minutes]` writes `news_control_state` through the Workers role. `news
+label <event_id> <good|noise|late|wrong_direction|dup> [--note]` inserts one
+`news_event_labels` row (`source` `human`, `label_version` `news_label_v1`).
+`news eval --hours --policy-version` scores stored Triage decisions against
+market marks and labels, including per-`override_rule`, `throttled_by`,
+asset-class, and event-type confusion tables, the throttled-movers rate, and
+storyline statistics. `news replay-decisions --hours --escalate-magnitude
+--min-push-magnitude --min-watchlist-magnitude` re-runs `decide()` over stored
+verdicts with a candidate `DecidePolicy` and no model call. `news replay
+<hits.json>` runs Deduper+Gate over saved provider hits without broker or
+model. `news dlq inspect|replay|purge [--limit]` peeks, republishes, or purges
+`news.dead`.
 
 `macro status` separates steady acquisition from explicit maintenance. The
 steady summary reports actionable due work, future schedules, active and
@@ -456,18 +475,14 @@ observed process liveness.
 
 `ops rebuild-market-current --execute` is the bounded, cursor-based repair for
 reconstructing `market_tick_current` from persisted `market_ticks`.
-News steady state and explicit maintenance use the same complete current
-12-hour WorldMonitor calculation from persisted Strategy-admitted and optional
-RSS NewsItems.
 
-One-shot maintenance commands construct only the dependencies required by the
-named domain operation and invoke that bounded operation directly. The
-application adapter owns provider/database cleanup and returns exactly
-`operation`, `processed`, `failed`, `terminal`, `skipped`, and `preparation`.
-`operation` is `resolution_refresh`, `asset_profile_refresh`, or
-`token_image_mirror`; counters are non-negative integers and `preparation` is
-an object or null. There is no generic result object, free-form notes, or
-retired `dead`/`worker_name` field.
+The `ops` family is exactly `rebuild-market-current`, `queue-inspect`,
+`queue-resolve`, `queue-resolve-bucket`, `reconcile-event-anchor-jobs`,
+`validate-projections`, `sync-binance-usdt-perp-universe`,
+`sync-us-equity-symbols`, `rebuild-token-intents`, and `audit-token-intent`.
+Each command constructs only the dependencies required by the named domain
+operation and invokes that bounded operation directly; there is no generic
+one-shot worker adapter or free-form result object.
 
 Queue resolution is auditable: retry mutates the source queue and resolves terminal evidence in one transaction; quarantine/archive resolves the terminal row without pretending the source work succeeded.
 

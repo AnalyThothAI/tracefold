@@ -14,7 +14,7 @@ from tracefold.app.provider_operations import (
     provider_operational_status_unavailable,
 )
 from tracefold.app.repositories import RepositorySession
-from tracefold.app.workers_runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
