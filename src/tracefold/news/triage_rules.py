@@ -4,22 +4,41 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 from .models import Decision, TriageVerdict
 
 PUSH_WINDOW_MS = 2 * 60 * 60_000
 ESCALATE_WINDOW_MS = 4 * 60 * 60_000
 _DIRECTIONAL = frozenset({"bullish", "bearish"})
+_MODEL_WANTS_PUSH = frozenset({"push", "escalate"})
+
+
+_UNCLEAR_PUSH_EVENT_TYPES: Final = (
+    "product",
+    "listing",
+    "delisting",
+    "regulation",
+    "hack",
+    "exploit",
+    "partnership",
+    "filing",
+)
 
 
 @dataclass(frozen=True, slots=True)
 class DecidePolicy:
-    """Tunable thresholds of decide(); the defaults are the live policy (TRIAGE_POLICY_VERSION)."""
+    """Tunable thresholds of decide(); the defaults are the live policy (TRIAGE_POLICY_VERSION), operator-owned
+    through ``news.policy``."""
 
     escalate_magnitude: int = 3
-    min_push_magnitude: int = 2
+    min_push_magnitude: int = 1
     min_watchlist_magnitude: int = 1
+    unclear_push_event_types: tuple[str, ...] = _UNCLEAR_PUSH_EVENT_TYPES
+    unclear_push_min_magnitude: int = 2
+    theme_cap_4h: int = 3
+    storyline_throttle: bool = True
+    hourly_cap_enabled: bool = True
 
 
 DEFAULT_POLICY = DecidePolicy()
@@ -61,12 +80,16 @@ def _base(symbol: str) -> str:
     return symbol.upper().replace("XYZ-", "")
 
 
+_BASELINE_MIN_SCORE: Final = 80.0
+
+
 def rule_baseline(facts: GateFacts) -> Decision:
-    """The decision a pure-rule system would take with no model at all (fail-closed)."""
+    """The decision a pure-rule system would take with no model at all: watchlist, or a provider score >= 80 on a
+    grounded asset, pushes; everything else drops (and is counted as degraded, never silently)."""
 
     watch = any(_base(s) in facts.watchlist_symbols for s in facts.grounded_assets)
     score = float(facts.provider_score or 0)
-    if watch or (score >= 90 and facts.grounded_assets):
+    if watch or (score >= _BASELINE_MIN_SCORE and facts.grounded_assets):
         return "push"
     return "drop"
 
@@ -87,6 +110,8 @@ def decide(
     muted: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
+    """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently."""
+
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
     grounded = {_base(s) for s in facts.grounded_assets}
@@ -105,25 +130,57 @@ def decide(
         final, rule = "escalate", "magnitude3"
     elif facts.priority == "high" and verdict.decision == "push":
         final, rule = "escalate", "high_priority_push"
+    elif (
+        verdict.decision in _MODEL_WANTS_PUSH
+        and verdict.actionable
+        and verdict.magnitude >= policy.min_push_magnitude
+        and verdict.direction != "unclear"
+    ):
+        final, rule = "push", "model_push_actionable"
+    elif (
+        verdict.direction == "unclear"
+        and verdict.magnitude >= policy.unclear_push_min_magnitude
+        and verdict.event_type in policy.unclear_push_event_types
+        and verdict.decision != "drop"
+    ):
+        final, rule = "push", "unclear_but_clear_event"
     elif verdict.direction == "unclear":
         final, rule = "drop", "unclear_direction"
-    elif verdict.magnitude >= policy.min_push_magnitude and verdict.actionable:
-        final, rule = "push", "magnitude2_actionable"
     elif watch_hits and verdict.magnitude >= policy.min_watchlist_magnitude:
         final, rule = "push", "watchlist"
     else:
         final, rule = "drop", "below_threshold"
 
-    if final in {"push", "escalate"} and status is not None:
+    if final in {"push", "escalate"} and status is not None and policy.storyline_throttle:
+        throttled_by = _storyline_throttle(verdict, status, final, policy)
+        if throttled_by is not None:
+            return DecisionResult("throttled", rule, throttled_by, baseline, watch_hits)
+
+    if final == "push" and hourly_cap_reached and policy.hourly_cap_enabled:
+        return DecisionResult("throttled", rule, "hourly_cap", baseline, watch_hits)
+    return DecisionResult(final, rule, None, baseline, watch_hits)
+
+
+def _storyline_throttle(
+    verdict: TriageVerdict, status: StorylineStatus, final: Decision, policy: DecidePolicy
+) -> str | None:
+    """Asset storylines: window-max plus direction flip. Theme/family storylines: at most ``theme_cap_4h`` pushes
+    per 4 h, so a flood (a war, a rate shock) still lets its important progressions through."""
+
+    if status.key.startswith("asset:"):
         window_max = status.max_magnitude_2h if final == "push" else status.max_magnitude_4h
         pushed = status.pushed_2h if final == "push" else status.pushed_4h
         seen = status.directions_2h if final == "push" else status.directions_4h
         if pushed > 0 and verdict.magnitude <= window_max and not _direction_flip(verdict.direction, seen):
-            return DecisionResult("throttled", rule, f"storyline:{status.key}", baseline, watch_hits)
-
-    if final == "push" and hourly_cap_reached:
-        return DecisionResult("throttled", rule, "hourly_cap", baseline, watch_hits)
-    return DecisionResult(final, rule, None, baseline, watch_hits)
+            return f"storyline:{status.key}"
+        return None
+    if (
+        status.pushed_4h >= policy.theme_cap_4h
+        and verdict.magnitude <= status.max_magnitude_4h
+        and not _direction_flip(verdict.direction, status.directions_4h)
+    ):
+        return f"storyline:{status.key}:cap{policy.theme_cap_4h}"
+    return None
 
 
 def fallback_verdict(facts: GateFacts, *, error_code: str) -> tuple[TriageVerdict, DecisionResult]:
@@ -133,7 +190,7 @@ def fallback_verdict(facts: GateFacts, *, error_code: str) -> tuple[TriageVerdic
     verdict = TriageVerdict(
         event_type="noise" if baseline == "drop" else "macro",
         assets=[],
-        direction="unclear",
+        direction="neutral",  # a rule verdict has no view on direction; "unclear" would veto its own push
         scope="macro",
         magnitude=0 if baseline == "drop" else 2,
         actionable=baseline == "push",

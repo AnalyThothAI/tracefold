@@ -117,6 +117,27 @@ function StatusDocument({ status }: { status: NewsStatus }) {
           <StatusFact label="24h Analyst" value={String(pipeline.deep_24h)} />
           <StatusFact label="24h 判定推送" value={String(pipeline.decided_push_24h)} />
           <StatusFact label="24h 节流" value={String(pipeline.throttled_24h)} />
+          <StatusFact
+            label="进入 Triage 比例"
+            value={
+              pipeline.candidate_share_24h == null
+                ? "—"
+                : `${Math.round(pipeline.candidate_share_24h * 100)}%`
+            }
+          />
+          {Object.entries(pipeline.suppressed_by_reason ?? {}).map(([reason, count]) => (
+            <StatusFact key={`s-${reason}`} label={`Gate 压制 · ${reason}`} value={String(count)} />
+          ))}
+          {Object.entries(pipeline.dropped_by_rule ?? {}).map(([rule, count]) => (
+            <StatusFact key={`d-${rule}`} label={`Triage 丢弃 · ${rule}`} value={String(count)} />
+          ))}
+          {Object.entries(pipeline.throttled_by_key ?? {}).map(([key, count]) => (
+            <StatusFact key={`t-${key}`} label={`节流 · ${key}`} value={String(count)} />
+          ))}
+          {Object.entries(pipeline.pushed_by_rule ?? {}).map(([rule, count]) => (
+            <StatusFact key={`p-${rule}`} label={`推送 · ${rule}`} value={String(count)} />
+          ))}
+          <StatusFact label="标注漏推（missed）" value={String(pipeline.labeled_missed_24h ?? 0)} />
           <StatusFact label="Triage P50" value={optionalDuration(pipeline.triage_p50_ms)} />
           <StatusFact label="Triage P95" value={optionalDuration(pipeline.triage_p95_ms)} />
           <StatusFact label="Triage 模型" value={pipeline.triage_model ?? "未配置"} />

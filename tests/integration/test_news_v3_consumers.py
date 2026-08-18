@@ -320,8 +320,13 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
     assert routing == [(RK_VERDICT_PUSH, strong["event_id"]), (RK_VERDICT_ESCALATE, strong["event_id"])]
     assert bus.published[0].message_id == f"push:{strong['event_id']}"
     assert bus.published[0].payload["kind"] == "first"
-    context = conn.execute("SELECT context_line FROM news_events WHERE event_id = %s", (strong["event_id"],)).fetchone()
+    context = conn.execute(
+        "SELECT context_line, storyline_key FROM news_events WHERE event_id = %s", (strong["event_id"],)
+    ).fetchone()
     assert "模型不可用" in context["context_line"]
+    assert "→ escalate·high_priority_push" in context["context_line"]  # the feed shows the reason, not just the verdict
+    # Triage wrote the final storyline key back and recorded it in the replayable trace.
+    assert context["storyline_key"] == strong_row["trace"]["storyline_key"]
     assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 2
 
 

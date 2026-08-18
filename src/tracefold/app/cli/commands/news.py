@@ -27,6 +27,8 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_replay(args)
     if args.news_command == "dlq":
         return _handle_dlq(args)
+    if args.news_command == "why":
+        return _handle_why(args)
     return 2, {"ok": False, "error": f"unknown news command: {args.news_command}"}
 
 
@@ -111,6 +113,18 @@ def _handle_eval(args: Namespace) -> tuple[int, dict[str, Any]]:
     return 0, {"ok": True, "data": report}
 
 
+def _handle_why(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repositories import repositories
+    from tracefold.news.eval.why import explain_event
+
+    settings = load_settings(require_ws_token=False)
+    with repositories(settings) as repos:
+        report = explain_event(repos, str(args.event_id))
+    if report is None:
+        return 1, {"ok": False, "error": "news_event_not_found"}
+    return 0, {"ok": True, "data": report}
+
+
 def _handle_replay_decisions(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repositories import repositories
     from tracefold.news import DecidePolicy
@@ -118,10 +132,22 @@ def _handle_replay_decisions(args: Namespace) -> tuple[int, dict[str, Any]]:
 
     settings = load_settings(require_ws_token=False)
     now_ms = int(time.time() * 1000)
+    live = settings.news.policy
     policy = DecidePolicy(
-        escalate_magnitude=int(args.escalate_magnitude),
-        min_push_magnitude=int(args.min_push_magnitude),
-        min_watchlist_magnitude=int(args.min_watchlist_magnitude),
+        escalate_magnitude=int(
+            args.escalate_magnitude if args.escalate_magnitude is not None else live.escalate_magnitude
+        ),
+        min_push_magnitude=int(
+            args.min_push_magnitude if args.min_push_magnitude is not None else live.min_push_magnitude
+        ),
+        min_watchlist_magnitude=int(
+            args.min_watchlist_magnitude if args.min_watchlist_magnitude is not None else live.min_watchlist_magnitude
+        ),
+        unclear_push_min_magnitude=live.unclear_push_min_magnitude,
+        unclear_push_event_types=() if args.no_unclear_push else tuple(live.unclear_push_event_types),
+        theme_cap_4h=int(args.theme_cap_4h if args.theme_cap_4h is not None else live.theme_cap_4h),
+        storyline_throttle=not args.no_storyline_throttle and live.storyline_throttle,
+        hourly_cap_enabled=live.hourly_cap_enabled,
     )
     with repositories(settings) as repos:
         report = replay_decisions(
@@ -150,6 +176,9 @@ def _handle_replay(args: Namespace) -> tuple[int, dict[str, Any]]:
         hits,
         strategy_ids=settings.news.opennews_strategy_ids or ("1018", "1352", "1353"),
         watchlist_symbols=settings.news.watchlist_symbols,
+        suppress_low_signal=(
+            settings.news.gate.suppress_low_signal if args.gate_policy == "config" else args.gate_policy == "strict"
+        ),
     )
     return 0, {"ok": True, "data": report}
 

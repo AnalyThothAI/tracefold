@@ -7,25 +7,23 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
-EVENT_IDENTITY_VERSION = "news_event_identity_v3"
-GATE_POLICY_VERSION = "news_gate_v3"
-STORYLINE_POLICY_VERSION = "news_storyline_v1"
-TRIAGE_PROMPT_VERSION = "news_triage_prompt_v2"
-TRIAGE_POLICY_VERSION = "news_triage_policy_v1"
-ANALYST_PROMPT_VERSION = "news_analyst_prompt_v3"
+EVENT_IDENTITY_VERSION = "news_event_identity_v4"
+GATE_POLICY_VERSION = "news_gate_v4"
+STORYLINE_POLICY_VERSION = "news_storyline_v2"
+TRIAGE_PROMPT_VERSION = "news_triage_prompt_v3"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v2"
+ANALYST_PROMPT_VERSION = "news_analyst_prompt_v4"
 ANALYST_POLICY_VERSION = "news_analyst_policy_v3"
-DELIVERY_CARD_VERSION = "news_delivery_card_v5"
+DELIVERY_CARD_VERSION = "news_delivery_card_v6"
 
 Admission = Literal[
     "candidate",
     "listing_deterministic",
-    "suppressed_ungrounded",
-    "suppressed_ungrounded_meme",
-    "suppressed_meme_low",
     "suppressed_pr_template",
     "suppressed_low_signal",
     "recovery",
 ]
+Audience = Literal["crypto", "us_equity", "macro", "none"]
 AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
 Decision = Literal["push", "escalate", "drop", "throttled"]
@@ -85,6 +83,7 @@ class TriageVerdict(BaseModel):
     actionable: bool
     confidence: float = Field(ge=0.0, le=1.0)
     decision: Literal["push", "drop", "escalate"]
+    audience: Audience = "none"
     headline_zh: str = Field(min_length=1, max_length=60)
     title_zh: str = Field(default="", max_length=160)
     rationale: str = Field(default="", max_length=160)
@@ -131,6 +130,7 @@ __all__ = [
     "Admission",
     "AnalystVerdict",
     "AssetClass",
+    "Audience",
     "Decision",
     "EngineType",
     "ExactNewsModel",

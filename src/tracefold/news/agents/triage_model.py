@@ -62,6 +62,7 @@ def build_triage_input(
         "strategies": list(event.get("provenance") or []),
         "engine_type": event.get("engine_type"),
         "title": str(event.get("leader_title") or "")[:600],
+        "raw_first_line": str(event.get("raw_first_line") or "")[:300],
         "content": str(event.get("leader_description") or "")[:600],
         "published_utc": time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(event.get("opened_at_ms") or 0) / 1000)),
         "member_count": int(event.get("member_count") or 1),
@@ -71,7 +72,11 @@ def build_triage_input(
         "asset_class": gate.get("asset_class"),
         "grounded_assets": list(gate.get("grounded_assets") or []),
         "provider_score": event.get("provider_score_max"),
-        "provider_coins": [c.get("symbol") for c in ((event.get("provider_metadata") or {}).get("coins") or [])][:8],
+        "provider_coins": [
+            f"{c.get('symbol')}:{c.get('grade') or '-'}"
+            for c in ((event.get("provider_metadata") or {}).get("coins") or [])
+            if c.get("symbol")
+        ][:10],
         "macro_lexicon": bool(gate.get("macro_lexicon")),
         "pr_template": bool(gate.get("pr_template")),
         "priority": event.get("priority"),
@@ -79,6 +84,7 @@ def build_triage_input(
     }
     status_block = {
         "storyline_key": event_status.get("storyline_key"),
+        "preliminary": bool(event_status.get("preliminary", True)),
         "same_key_2h": {
             "events": int(event_status.get("events_2h") or 0),
             "pushed": int(event_status.get("pushed_2h") or 0),

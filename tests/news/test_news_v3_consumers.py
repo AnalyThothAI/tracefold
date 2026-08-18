@@ -292,9 +292,9 @@ def test_triage_without_model_escalates_watchlist_or_high_score_and_persists_deg
     "card",
     [
         _card(
-            event_id="ev-weak", priority="normal", provider_score_max=85.0, grounded_assets=["AMD"], watchlist_hits=[]
+            event_id="ev-weak", priority="normal", provider_score_max=75.0, grounded_assets=["AMD"], watchlist_hits=[]
         ),
-        _card(event_id="ev-macro", priority="high", provider_score_max=75.0, grounded_assets=[], watchlist_hits=[]),
+        _card(event_id="ev-macro", priority="high", provider_score_max=85.0, grounded_assets=[], watchlist_hits=[]),
     ],
 )
 def test_triage_without_model_drops_when_rule_baseline_drops(card: dict[str, Any]) -> None:
@@ -308,6 +308,23 @@ def test_triage_without_model_drops_when_rule_baseline_drops(card: dict[str, Any
     assert inserted["rule_baseline_decision"] == "drop" and inserted["final_decision"] == "drop"
     assert bus.published == []
     assert "mark_verdict_published" not in news.names()
+
+
+def test_triage_without_model_pushes_a_grounded_score_80_event() -> None:
+    """Degraded mode is not silent: a provider score >= 80 on a grounded asset still pushes (rule baseline)."""
+
+    card = _card(
+        event_id="ev-strong-80", priority="normal", provider_score_max=85.0, grounded_assets=["AMD"], watchlist_hits=[]
+    )
+    news = RecordingNews(get_verdict=None, event_card=card, event_status={}, sent_count_since=0, insert_verdict=True)
+    bus = FakeBus()
+
+    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["degraded"] is True and inserted["rule_baseline_decision"] == "push"
+    assert inserted["final_decision"] == "push"
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
 def test_triage_without_model_never_pushes_while_muted_or_paused() -> None:

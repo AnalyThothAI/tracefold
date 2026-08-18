@@ -1,0 +1,1745 @@
+[
+ {
+  "id": 900000,
+  "text": "Bitcoin scores a rare win over S&P 500 with 2.6% rise versus 0.5% fall",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:00:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "symbol": "RARE"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900001,
+  "text": "Home Depot Shares Up 3% Premarket After Q2 Sales Beat",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:01:00+00:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "symbol": "HD"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900002,
+  "text": "Cardano Plans Two-Phase Dijkstra Upgrade With Leios and Peras<br/>Cardano has outlined a two-phase rollout for its upcoming Dijkstra era. Phase 1, targeting Q4 2026 code completion, will activate Ouroboros Linear Leios (CIP-164) to increase throughput through supplementary Endorser Blocks, while also introducing nested transactions (CIP-118), guard scripts (CIP-11",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:02:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "LAYER"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "ADA"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "ERA"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900003,
+  "text": "JUST IN: @Krakenfx launches commission-free trading of 7,000+ U.S. stocks for eligible customers in Europe, becoming the only crypto-native platform offering both traditional shares and tokenized xStocks in a single regulated account.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:03:00+00:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "symbol": "HYPE"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "ONDO"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900004,
+  "text": "reply @FanTokens Built on Chiliz. Powered by fandom.<br/>Over $22B in FAN TOKEN® trading volume is what sports tokenization looks like at scale.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:04:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "CHZ"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "HYPE"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900005,
+  "text": "1. 民调支持率创本任期新低 ——路透社/益普索民调显示，特朗普的支持率降至其总统任期以来的最低水平。与此同时，绝大多数美国人担心美伊战争将持续很长时间。<br/>2. 与土耳其总统埃尔多安通话 ——土耳其总统埃尔多安与特朗普通电话，呼吁外交解决美伊问题。埃尔多安表达了土耳其希望双方继续对话的愿望，并表示土耳其将继续支持各项和平努力。 3. 重申伊朗不能拥有核武器 ——特朗普发文称：首要目标，而且始终如一的目标，就是伊朗绝不能以任何方式、形态或形式拥有核武器。 4. 威胁称若阿曼妨碍美国 将对其进行轰炸 ——特朗普谈及伊朗问题时表示，他“不着急”，并透露与伊朗革命卫队之间存在秘密沟通渠道（伊方已否认）。同时，他威胁称如果阿曼妨碍美国，美国将对其进行轰炸。 5. 敦促以色列停止对加沙的袭击 ——特朗普表示，以色列不应袭击加沙地带的目标，因为哈马斯已经同意放",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:05:00+00:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900006,
+  "text": "UWMC Alert: UWM (UWMC) Faces Securities Class Action After Investors Learn of Massive Over-Hedge Loss - HBSS",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:06:00+00:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "symbol": "UWMC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900007,
+  "text": "Two audits, done.<br/>@osec_io reviewed @AftermathFi's perps engine by hand. @Certora proved it with math. Two firms, two methods, one codebase. That combination is rare anywhere in DeFi. Markets open tomorrow, with both reports in the open.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:07:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "SUI"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "RARE"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900008,
+  "text": "AARD Investor Notice: Hagens Berman Alerts Investors in Aardvark Therapeutics (NASDAQ: AARD) to Filing of Securities Class Action",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:08:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "AARD"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "NASDAQ"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900009,
+  "text": "CAPR Stock News: Capricor Therapeutics Sued for Securities Fraud over Alleged Misrepresentations and Corresponding 64% Stock Drop",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:09:00+00:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "symbol": "CAPR"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "DROP"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900010,
+  "text": "Hyperscale Data Bitcoin Treasury at Approximately 276 Bitcoin Worth Approximately $17.3 Million",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:10:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900011,
+  "text": "Bitcoin pauses at $64,000 as rising yields, oil drag equities lower",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:11:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900012,
+  "text": "NVIDIA-backed Groq raises $350M at $3.5B as AI inference race accelerates",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:12:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "XYZ-NVDA"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900013,
+  "text": "Korean media reports that TSMC has secured a technological edge in backside power delivery with A16, putting it a step ahead of Intel and Samsung in the competition.<br/>Specifically, TSMC has successfully developed and validated A16, the industry’s first angstrom-class CMOS platform featuring its Super Power Rail (SPR) backside power delivery scheme. The key achievement is that A16 retains the gate density and design flexibility enabled by NanoFlex in the existing",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:13:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "SAMSUNG"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "SPACE"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "DROP"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "TSM"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "XYZ-TSM"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "XYZ-SKHX"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "symbol": "INTC"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "symbol": "XYZ-INTC"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "RAIL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "XYZ-MU"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "XYZ-SNDK"
+   }
+  ],
+  "strategy": {
+   "id": 1352,
+   "name": "Storage News",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900014,
+  "text": "Iran attacked another ship outside the Strait of Hormuz this morning https://t.co/HQkPnHVHiI",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:14:00+00:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900015,
+  "text": "CoinShares Renames WGMI as “Bitcoin Mining and Digital Power ETF,” Reflecting the Convergence of Bitcoin Mining and AI Infrastructure",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:15:00+00:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900016,
+  "text": "Cypherpunk Technologies Launches World’s Largest Zcash Mining Fleet",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:16:00+00:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "symbol": "ZEC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900017,
+  "text": "ETHENA WALLET MOVES $14M ENA TO FALCONX<br/>A WALLET LIKELY linked TO ETHENA TEAM deposited 170M $ENA (~$14.09M) to FalconX one hour ago, likely for an OTC sale. The wallet originally received $ENA from Ethena’s Gnosis Safe last year.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:17:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "ENA"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "GNO"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900018,
+  "text": "Binance Announcement:<br/>Binance Alpha Trading Competition: Trade KiiChain (KII) and Share $200K Worth of Rewards (2026-08-18) $KII Notifer: @CexAlerts",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:18:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "KII"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900019,
+  "text": "TRX ETF",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:19:00+00:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "symbol": "TRX"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900020,
+  "text": "INVESTORS BRACE FOR GLOBAL STAGFLATION<br/>Most investors expect stagflation—weak growth combined with high inflation—over the next 12 months, Bank of America’s August survey shows. 49% expect stagflation, up from 47% in July. Meanwhile, 43% expect an economic boom, the highest level since February 2022. Optimism is fading, however, with jus",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:20:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "OP"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 35,
+    "symbol": "NET"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900021,
+  "text": "$NVDA BofA sees 'compelling' valuation for Nvidia amid vendor financing risks. The firm reiterates a Buy rating on the shares with a $350 price target.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:21:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "NVDA"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "XYZ-NVDA"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900022,
+  "text": "Join the #Binance Alpha KII Trading Competition now!<br/>🔸 Trade KII with $200K worth of rewards up for grabs. 🔸 Click… https://x.com/i/web/status/2089671657208373419",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:22:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "KII"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900023,
+  "text": "Trump tweets: Strait of Hormuz - new American territory",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:23:00+00:00",
+  "aiRating": {
+   "score": 90,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A+",
+    "market_type": "cex",
+    "score": 90,
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900024,
+  "text": "THE BLOCK: Citi said its planned digital asset custody service will launch later this year, starting with bitcoin $BTC, providing new details on a previously disclosed rollout.<br/>The bank said traditional and crypto custody will be available within the same framework as part of its new Custody+ platform.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:24:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900025,
+  "text": "Euro zone bonds join global selloff, long-end yields at multi-year highs",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:25:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "EUR"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "XYZ-EUR"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900026,
+  "text": "$HD Home Depot reports Q2 adjusted EPS $4.92, consensus $4.73 Reports Q2 revenue $47.86B, consensus $47.23B.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:26:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 70,
+    "symbol": "HD"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900027,
+  "text": "*US 10-YEAR YIELD RISES TO 4.75%, HIGHEST SINCE JANUARY 2025",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:27:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900028,
+  "text": "New Listing!<br/>$ACU is now available on @okx as an Expiry Perp (X-Perp). A major step forward for Acurast’s reach. Details: https://www.okx.com/en-sg/help/okx-to-list-chipusd-acuusd-ethfiusd-x-perps Read more about X-Perps here: https://www.okx.com/learn/what-are-x-perps-guide-for-european-traders",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T10:28:00+00:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "symbol": "ACU"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "PERP"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "ETHFI"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "OKB"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900029,
+  "text": "Wall Street Banking Giant Citi to Launch Digital Asset Custody Later This Year, Starting With Bitcoin<br/>Wall Street banking giant Citi announced the launch of Custody+, a new suite of near- and real-time custody solutions, and said it expects to go live with digital asset custody later this year, starting with Bitcoin. The service will be built on Citi’s common digital asset architecture and is design",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T10:29:00+00:00",
+  "aiRating": {
+   "score": 80,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 80,
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "ONDO"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "symbol": "HYPE"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "symbol": "NEAR"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900030,
+  "text": "LATEST: FOMC July meeting minutes and a White House crypto summit are both scheduled for tomorrow.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "twitter",
+  "engineType": "meme",
+  "ts": "2026-08-18T11:00:00+00:00",
+  "aiRating": {
+   "score": 70,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "meme",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900031,
+  "text": "CROWDFUNDINSIDER: Bitcoin Mining Firms Report Lower Monthly Output as Crypto Bear Market Remains Firmly Intact",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:01:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900032,
+  "text": "CROWDFUNDINSIDER: European Union Rules Enable Regulatory Authorities to Block Third-Country Crypto Exchangeshttps",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:02:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900033,
+  "text": "U.S. spot bitcoin $BTC ETFs attracted $297.6 million in net inflows on Monday, breaking a three-day outflow streak.<br/>Ethereum $ETH ETFs also generated $30.9 million worth of inflows, while Solana, Hyperliquid, and XRP-based funds saw zero flows.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:03:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "HYPE"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "SOL"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "BASED"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "symbol": "ETH"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "XRP"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "SPOT"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "symbol": "NET"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900034,
+  "text": "CROWDFUNDINSIDER: Crypto Wallet Provider SafePal Discloses Security Breach Exposing Personal Data of Nearly 40,000 Customershttps",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:04:00+00:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "SFP"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900035,
+  "text": "Uber Eyes 1 Million Daily Drone Deliveries With Zipline Partnership https://www.zerohedge.com/political/uber-eyes-1-million-daily-drone-deliveries-zipline-partnership",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:05:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "UBER"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900036,
+  "text": "Bond Yields Jump and Stocks Slip as Iran Stalemate Unsettles Investors",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:06:00+00:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B",
+    "market_type": "cex",
+    "score": 55,
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900037,
+  "text": "FORBES: 'Buyers Are Absent'—Glassnode Warning Has Bitcoin Braced For $58,500",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:07:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "short",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900038,
+  "text": "COINDESK: Visa looking for new stablecoin settlement partner after BVNK sale to Mastercard",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:08:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "symbol": "V"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "XPL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "CRCL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "XYZ-CRCL"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900039,
+  "text": "U.S. Spot Bitcoin ETFs See $298M Net Inflows, Ethereum ETFs Add $30.85M<br/>According to SoSoValue data, U.S. spot Bitcoin ETFs recorded total net inflows of $298 million on August 17 (ET). Over the same period, U.S. spot Ethereum ETFs saw total net inflows of $30.85 million.",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:09:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "B+",
+    "market_type": "cex",
+    "score": 65,
+    "symbol": "ETH"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "SPOT"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 10,
+    "symbol": "NET"
+   },
+   {
+    "expired": false,
+    "grade": null,
+    "market_type": "cex",
+    "score": null,
+    "symbol": "SOSO"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900040,
+  "text": "Unitree Starts Trading Tomorrow In Shanghai After 8000x IPO Demand",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:10:00+00:00",
+  "aiRating": {
+   "score": 85,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "symbol": "UNITREE"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 85,
+    "symbol": "XYZ-UNITREE"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900041,
+  "text": "Metaplanet to Invest 2,100 Bitcoin in Super League to Launch U.S. Bitcoin Treasury Platform, Superplanet",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:11:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "C",
+    "market_type": "cex",
+    "score": 5,
+    "symbol": "XYZ-CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "BTC"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900042,
+  "text": "U.S. July Year-Over-Year Import Prices +5.9%, Export Prices +8.2%",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:12:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900043,
+  "text": "TABLE-U.S. July housing starts fall 12.4%",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:13:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ },
+ {
+  "id": 900044,
+  "text": "美国7月营建许可总数 144.3万户，预期137万户，前值137.4万户。",
+  "link": null,
+  "source": "redacted",
+  "newsType": "news",
+  "engineType": "news",
+  "ts": "2026-08-18T11:14:00+00:00",
+  "aiRating": {
+   "score": 75,
+   "signal": "long",
+   "status": "done"
+  },
+  "coins": [
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "CL"
+   },
+   {
+    "expired": false,
+    "grade": "A",
+    "market_type": "cex",
+    "score": 75,
+    "symbol": "XYZ-CL"
+   }
+  ],
+  "strategy": {
+   "id": 1018,
+   "name": "News Score > 70",
+   "engine_type": "news",
+   "source_type": "news"
+  }
+ }
+]

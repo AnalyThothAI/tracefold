@@ -230,10 +230,15 @@ class CliTests(unittest.TestCase):
                 "triage",
                 "analyst",
                 "watchlist",
+                "policy",
+                "gate",
                 "push",
             },
         )
         self.assertEqual(set(news["broker"]), {"url_configured", "name_prefix"})
+        self.assertEqual(news["policy"]["min_push_magnitude"], 1)
+        self.assertEqual(news["policy"]["theme_cap_4h"], 3)
+        self.assertIs(news["gate"]["suppress_low_signal"], False)
         self.assertFalse(news["broker"]["url_configured"])
         self.assertTrue(news["models"]["triage_configured"])
         self.assertEqual(news["models"]["triage_model"], "deepseek-chat")

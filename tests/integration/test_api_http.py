@@ -102,9 +102,11 @@ def _seed_news_v3_events(*, now_ms: int) -> list[str]:
     hits = json.loads(NEWS_V3_FIXTURE.read_text(encoding="utf-8"))
     event_ids: list[str] = []
     with write_repositories() as repos, repos.transaction():
-        for hit in sorted(hits, key=lambda h: str(h.get("ts") or ""))[:40]:
+        for offset, hit in enumerate(sorted(hits, key=lambda h: str(h.get("ts") or ""))[:40]):
+            # pin the fixture into the live 24 h window (the corpus ages; the status counters are windowed)
+            fresh = {**hit, "ts": (now_ms - 3600_000 + offset * 1000) / 1000}
             event = parse_opennews_message(
-                {"method": "strategy.triggered", "params": hit}, strategy_ids=frozenset({"1018", "1352", "1353"})
+                {"method": "strategy.triggered", "params": fresh}, strategy_ids=frozenset({"1018", "1352", "1353"})
             )
             if event is None:
                 continue

@@ -56,7 +56,8 @@ from .opennews import (
     parse_opennews_message,
     parse_opennews_strategy_hits,
 )
-from .triage_rules import GateFacts, decide, fallback_verdict, storyline_status_from_row
+from .storyline import final_storyline_key
+from .triage_rules import DEFAULT_POLICY, DecidePolicy, GateFacts, decide, fallback_verdict, storyline_status_from_row
 
 log = logging.getLogger("tracefold.news")
 
@@ -450,11 +451,20 @@ async def publish_event(bus: Any, db: _Db, *, event_id: str, family: str, priori
 
 
 class DeduperConsumer:
-    def __init__(self, *, bus: Any, db: Any, strategy_ids: Sequence[str], watchlist_symbols: frozenset[str]) -> None:
+    def __init__(
+        self,
+        *,
+        bus: Any,
+        db: Any,
+        strategy_ids: Sequence[str],
+        watchlist_symbols: frozenset[str],
+        suppress_low_signal: bool = False,
+    ) -> None:
         self.bus = bus
         self.db = _Db(db)
         self.strategy_ids = frozenset(strategy_ids)
         self.watchlist_symbols = watchlist_symbols
+        self.suppress_low_signal = bool(suppress_low_signal)
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         await self.bus.consume(Q_RAW, self.handle, prefetch=1, stop_event=stop_event)
@@ -481,6 +491,7 @@ class DeduperConsumer:
                 trace_id=message.trace_id,
                 watchlist_symbols=self.watchlist_symbols,
                 now_ms=stamp,
+                suppress_low_signal=self.suppress_low_signal,
             ),
             timeout_seconds=5.0,
         )
@@ -531,6 +542,7 @@ class TriageConsumer:
         concurrency: int,
         circuit_failures: int,
         circuit_open_seconds: float,
+        policy: DecidePolicy = DEFAULT_POLICY,
     ) -> None:
         self.bus = bus
         self.db = _Db(db)
@@ -540,6 +552,7 @@ class TriageConsumer:
         self.hourly_cap = int(hourly_cap)
         self.concurrency = int(concurrency)
         self.circuit = _Circuit(threshold=circuit_failures, open_seconds=circuit_open_seconds)
+        self.policy = policy
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         await self.bus.consume(Q_TRIAGE, self.handle, prefetch=self.concurrency, stop_event=stop_event)
@@ -594,7 +607,12 @@ class TriageConsumer:
             verdict, decision = fallback_verdict(facts, error_code="news_triage_circuit_open")
             degraded, error_code = True, "news_triage_circuit_open"
         else:
-            status_payload = {**dict(status_row or {}), "storyline_key": status.key, "queue_lag_ms": queue_lag_ms}
+            status_payload = {
+                **dict(status_row or {}),
+                "storyline_key": status.key,
+                "preliminary": True,
+                "queue_lag_ms": queue_lag_ms,
+            }
             human = build_triage_input(
                 event=card,
                 gate={
@@ -632,18 +650,37 @@ class TriageConsumer:
                         "cached_tokens": call.cached_tokens,
                     }
                 )
-                decision = decide(verdict, facts, status, hourly_cap_reached=cap_reached, muted=muted)
-        if degraded:
-            decision = decide(verdict, facts, status, hourly_cap_reached=cap_reached, muted=muted)
-            if decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
-                decision = type(decision)(
-                    "drop", "fail_closed_fallback", None, decision.rule_baseline, decision.watchlist_hits
-                )
+        # The final storyline key comes from the verdict (primaries/scope); the throttle windows must use it.
+        final_key = final_storyline_key(
+            title=str(card.get("leader_title") or ""),
+            headline_zh=verdict.headline_zh,
+            scope=verdict.scope,
+            verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
+            grounded_assets=facts.grounded_assets,
+            family=str(card.get("family") or "general"),
+        )
+        if final_key != status.key:
+            final_row = await self.db.read(
+                "news_triage_status_final",
+                lambda repos: repos.news.event_status(storyline_key=final_key, now_ms=stamp),
+            )
+            status = storyline_status_from_row(final_row, final_key)
+            muted = bool(control.get("paused")) or is_muted(
+                control, storyline_key=final_key, grounded_assets=facts.grounded_assets, now_ms=stamp
+            )
+            trace["status_final"] = json_ready(dict(final_row or {}))
+        trace["storyline_key"] = final_key
+        decision = decide(verdict, facts, status, hourly_cap_reached=cap_reached, muted=muted, policy=self.policy)
+        if degraded and decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
+            decision = type(decision)(
+                "drop", "fail_closed_fallback", None, decision.rule_baseline, decision.watchlist_hits
+            )
         final = decision.final
         headline = verdict.headline_zh
+        reason = decision.throttled_by or decision.override_rule or ""
         context_line = (
-            f"[{card.get('asset_class')}/{verdict.event_type}/{verdict.scope}/{verdict.direction}"
-            f" m{verdict.magnitude}] {headline}"
+            f"[{verdict.audience}/{verdict.event_type}/{verdict.direction} m{verdict.magnitude}"
+            f" → {final}·{reason}] {headline}"
         )
 
         def _persist(repos: Any) -> bool:
@@ -666,6 +703,7 @@ class TriageConsumer:
                 trace=trace,
                 now_ms=stamp,
             )
+            repos.news.set_storyline_key(event_id=event_id, storyline_key=final_key, now_ms=stamp)
             repos.news.set_context_line(event_id=event_id, context_line=context_line, followup_of=None, now_ms=stamp)
             return bool(inserted)
 

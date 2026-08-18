@@ -271,13 +271,16 @@ OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
   -> q:news.raw [single-active-consumer] Deduper:
        Item upsert (provenance union) -> content-block title + pinned normalization
        -> exact fingerprint / MinHash 32x4 LSH near-duplicate + strong-fact veto
-       -> Event new|member (family window) -> Gate (engine_type, asset_class,
-          grounded_assets, macro lexicon, PR-template) -> storyline key
+       -> Event new|member (family window) -> Gate (provider-graded grounded_assets,
+          macro/energy lexicon, PR-template veto, low-signal switch) -> preliminary
+          storyline key; a stronger later member re-gates a suppressed Event
        -> publish event.<family>.<priority> only for admission=candidate
   -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
        one structured call (frozen system prompt, <event> -> <gate> -> <event_status> status bar,
-       one bounded retry for a fast retryable model failure) -> decide() rules -> verdict row
-       (title_zh, prompt sha, input sha, status snapshot) -> publish verdict.push (+ verdict.escalate)
+       one bounded retry for a fast retryable model failure) -> final storyline key from the
+       verdict (written back) -> decide() policy -> verdict row (title_zh, audience, prompt sha,
+       input sha, preliminary + final status snapshots, named rule) -> publish verdict.push
+       (+ verdict.escalate)
   -> q:news.deep (verdict.escalate) [prefetch = news.analyst.concurrency] Analyst:
        one DB session builds the evidence bundle -> one structured call -> verify_verdict()
        (one correction round) -> safe-point staleness check -> deep verdict
@@ -306,37 +309,63 @@ overrun is a `TransientError` (counted).
 Identity: `news_items.item_id = sha256(source_id, params.id)`;
 `news_events.event_id` is the leader item id. `tracefold.news.titles`
 extracts the first content block (skipping URL-only, label-only, `reply/quote:`
-lines and pinned wire prefixes/suffixes), `tracefold.news.exact_atom_identity`
+lines and pinned wire source labels/suffixes; exchange names and `@handles`
+are subjects and stay — `@Krakenfx launches ...` keeps `Krakenfx`),
+`tracefold.news.exact_atom_identity`
 normalizes for comparison, `tracefold.news.tokens` + `minhash` produce the
 band keys stored in `news_event_bands`, and `tracefold.news.events.admit_item`
 is the single Deduper transaction. Fingerprints of at most two tokens never
 share an Event.
 
 Gate and storyline (`tracefold.news.gate`, `tracefold.news.storyline`) are pure
-functions with pinned lexicons: grounded assets are provider grade A/A+ tags
-whose symbol (or match text) appears in the title or A+ tags on non-CL assets;
-`CL`/`XYZ-CL` is grounded only in energy context; macro-lexicon items pass to
-Triage even without assets; ungrounded non-macro items and law-firm template
-notices are suppressed; `listing` frames are deterministic. Priority is
-`high` (AMQP priority 5) for score >= 90, watchlist hits, or rate/yield macro.
+functions and keep no name table of their own: grounded assets are the
+provider's grade B+/A/A+ coin tags plus any literal `$TICKER` cashtag (the
+provider already resolved Bitcoin -> BTC, Home Depot -> HD); `CL`/`XYZ-CL` is
+grounded only in energy context and a short stop-list drops English-word tags.
+The Gate does not decide relevance: every Item is a `candidate` unless it is a
+recovery replay, a deterministic `listing` frame, a law-firm template notice
+(strong template phrases always; weak ones only without a grounded asset), an
+under-80 market-telemetry frame, or — behind `news.gate.suppress_low_signal`,
+default off — an ungrounded, non-macro social post under 70. A member that
+joins a suppressed Event with stronger evidence (score >= 80, an A/A+ grounded
+tag, or a different source) re-gates it in place and it publishes once.
+Priority is `high` (AMQP priority 5) for score >= 90, watchlist hits, listing
+frames, or rate/yield macro. The preliminary storyline key (status bar only)
+is theme-first (`crypto_treasury`, `mideast_energy`, `rates`, `trade`,
+`china_macro`, `metals`, `us_equity_macro`, `us_macro_data`), then the first
+A/A+ or cashtag asset; the final key is computed after Triage from the
+verdict's grounded primaries and scope, written back to `news_events`, and
+used by every window query, throttle, mute, and the Analyst.
 
 Triage (`tracefold.news.agents.triage_model`, `tracefold.news.triage_rules`)
 never retrieves: the Deduper computes `event_status` (storyline window facts)
 and the consumer passes it last in the human message. The structured verdict
 carries `title_zh` (a faithful Chinese title; the card shows it next to the
-original) besides `headline_zh`. `decide()` owns the final decision under a
-`DecidePolicy` (defaults are the live policy): noise -> drop; magnitude 3 ->
-escalate; high priority + push -> escalate; unclear direction -> drop;
-magnitude >= 2 and actionable -> push; watchlist primary and magnitude >= 1 ->
-push; storyline window-max throttle (2 h push / 4 h escalate); hourly cap;
-control mutes. A fast retryable model failure (timeout, rate limit, connection)
-earns one more attempt inside the deadline; model failure is fail-closed
-(`rule_baseline`: watchlist primary or score >= 90 with grounded assets) and
-three consecutive failures open a 60-second circuit that also opens a
+original) besides `headline_zh` and an `audience` (crypto / us_equity / macro /
+none). `decide()` owns the final decision under a `DecidePolicy` whose defaults
+are the live policy and whose values come from `news.policy`: mute -> drop;
+noise -> drop; magnitude >= 3 with a direction or macro scope -> escalate;
+high priority + push -> escalate; model push/escalate intent, actionable,
+magnitude >= `min_push_magnitude` (1) and a direction -> push
+(`model_push_actionable`); unclear direction with a clear event type
+(product, listing, delisting, regulation, hack, exploit, partnership, filing)
+at magnitude >= 2 -> push (`unclear_but_clear_event`); other unclear -> drop;
+watchlist primary at magnitude >= 1 -> push; else drop (`below_threshold`).
+Storyline throttling (switch `storyline_throttle`) keeps the window-max +
+direction-flip rule for `asset:` keys and caps `theme:`/`macro:` keys at
+`theme_cap_4h` (3) pushes per 4 h unless magnitude exceeds the window max or
+the direction flips; the hourly cap (switch `hourly_cap_enabled`,
+`news.push.hourly_cap`, default 30) throttles pushes only. Every path names its
+rule; nothing drops silently. A fast retryable model failure (timeout, rate
+limit, connection) earns one more attempt inside the deadline; model failure is
+degraded, not silent: `rule_baseline` (watchlist primary, or score >= 80 with
+a grounded asset) still pushes, everything else drops with `degraded=true`,
+and three consecutive failures open a 60-second circuit that also opens a
 `triage_circuit_open` incident. `news_verdicts` stores `model_decision`,
 `rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
 `degraded`, and a replayable trace (latency, tokens, model attempts, prompt
-sha, input sha, the status-bar snapshot).
+sha, input sha, the preliminary and final status-bar snapshots, the final
+storyline key).
 
 Analyst (`tracefold.news.analyst_evidence`, `tracefold.news.agents.analyst`,
 `tracefold.news.analyst_rules`) is one structured LangChain call over a
@@ -381,15 +410,24 @@ Storage is exactly eleven tables: `news_ingest_state`,
 `tracefold.news.query_specs` for the query audit.
 
 Learning plane: `news_event_labels` hold operator labels written by `tracefold
-news label` (`good`, `noise`, `late`, `wrong_direction`, `dup`); `tracefold
-news eval` treats `good`/`wrong_direction`/`late` as "moved" and `noise`/`dup`
-as "flat" and reports precision@push, missed-mover rate, throttled-mover rate,
-and per-rule / per-asset-class / per-event-type confusion tables over stored
-verdicts; `tracefold news replay-decisions` re-runs `decide()` over stored
-verdicts with a candidate `DecidePolicy` (the boundary/retention replay before
-a policy version moves); `tracefold news replay <hits.json>` replays provider
-hits through Deduper+Gate without a model or broker;
-`tests/fixtures/news_v3_hits_sample.json` is the golden replay corpus. There
+news label` (`good`, `noise`, `late`, `wrong_direction`, `dup`, `missed`) on
+any Event, pushed or held; `tracefold news eval` walks every Event of the
+window (Gate-suppressed ones count as `suppressed`), treats
+`good`/`wrong_direction`/`late`/`missed` as "moved" and `noise`/`dup` as
+"flat", and reports precision@push, the guardrail `missed_rate` and
+`false_push_rate`, suppressed/missed/throttled-mover rates, and per-admission /
+per-rule / per-throttle / per-asset-class / per-audience / per-event-type
+confusion tables; `tracefold news replay-decisions` re-runs `decide()` over
+stored verdicts with a candidate `DecidePolicy` (defaults from `news.policy`,
+switches for storyline throttling and the unclear-event rule) against the
+final storyline status snapshot; `tracefold news replay <hits.json>
+[--gate-policy]` replays provider hits through Deduper+Gate without a model or
+broker and lists every Event with its admission, grounded assets, and
+preliminary storyline; `tracefold news why <event_id>` prints one Event's whole
+chain (item, gate, triage, decide, analyst, delivery) with a one-line outcome.
+`tests/fixtures/news_v3_hits_sample.json` and
+`news_v3_hits_recall_sample.json` are the golden replay corpora and
+`news_v3_expectations.json` the trajectory-prefix regression over them. There
 is no market-mark or price-reaction lane.
 
 ### Macro

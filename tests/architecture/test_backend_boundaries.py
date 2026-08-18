@@ -19,6 +19,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.bus",
         "tracefold.news.eval.offline",
         "tracefold.news.eval.replay",
+        "tracefold.news.eval.why",
     },
     "src/tracefold/app/query_audit.py": {
         "tracefold.news.query_specs",

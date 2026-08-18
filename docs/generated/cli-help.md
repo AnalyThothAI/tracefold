@@ -179,10 +179,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,control,label,eval,replay-decisions,replay,dlq} ...
+                      {bus-check,control,label,eval,replay-decisions,replay,why,dlq} ...
 
 positional arguments:
-  {bus-check,control,label,eval,replay-decisions,replay,dlq}
+  {bus-check,control,label,eval,replay-decisions,replay,why,dlq}
     bus-check           connect to RabbitMQ, declare the News topology, and
                         print queue depths
     control             write a delivery control command to news_control_state
@@ -193,6 +193,8 @@ positional arguments:
                         policy (no model)
     replay              replay a JSON file of provider hits through
                         Deduper+Gate (no model, no broker)
+    why                 print one Event's chain: item, gate, triage, decide,
+                        delivery
     dlq                 inspect, replay, or purge the News dead-letter queue
 
 options:
@@ -231,11 +233,12 @@ options:
 
 ```
 usage: tracefold news label [-h] [--note NOTE]
-                            event_id {good,noise,late,wrong_direction,dup}
+                            event_id
+                            {good,noise,late,wrong_direction,dup,missed}
 
 positional arguments:
   event_id
-  {good,noise,late,wrong_direction,dup}
+  {good,noise,late,wrong_direction,dup,missed}
 
 options:
   -h, --help            show this help message and exit
@@ -264,23 +267,50 @@ usage: tracefold news replay-decisions [-h] [--hours HOURS]
                                        [--escalate-magnitude ESCALATE_MAGNITUDE]
                                        [--min-push-magnitude MIN_PUSH_MAGNITUDE]
                                        [--min-watchlist-magnitude MIN_WATCHLIST_MAGNITUDE]
+                                       [--theme-cap-4h THEME_CAP_4H]
+                                       [--no-storyline-throttle]
+                                       [--no-unclear-push]
 
 options:
   -h, --help            show this help message and exit
   --hours HOURS         look-back window
   --escalate-magnitude ESCALATE_MAGNITUDE
+                        default: news.policy
   --min-push-magnitude MIN_PUSH_MAGNITUDE
+                        default: news.policy
   --min-watchlist-magnitude MIN_WATCHLIST_MAGNITUDE
+                        default: news.policy
+  --theme-cap-4h THEME_CAP_4H
+                        default: news.policy
+  --no-storyline-throttle
+                        replay with storyline throttling switched off
+  --no-unclear-push     replay without the unclear-but-clear-event push rule
 
 ```
 
 ## `news replay`
 
 ```
-usage: tracefold news replay [-h] path
+usage: tracefold news replay [-h] [--gate-policy {config,open,strict}] path
 
 positional arguments:
-  path        JSON file: {strategy_id: [hit, ...]} or [hit, ...]
+  path                  JSON file: {strategy_id: [hit, ...]} or [hit, ...]
+
+options:
+  -h, --help            show this help message and exit
+  --gate-policy {config,open,strict}
+                        Gate low-signal switch: config =
+                        news.gate.suppress_low_signal, open = off, strict = on
+
+```
+
+## `news why`
+
+```
+usage: tracefold news why [-h] event_id
+
+positional arguments:
+  event_id
 
 options:
   -h, --help  show this help message and exit

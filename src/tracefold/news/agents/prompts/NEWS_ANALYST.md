@@ -14,7 +14,7 @@
 ## 3. 已知噪音模式（不要当成新信息）
 - 律所模板公告："X (TICK) Securities Investigation Notice - Levi & Korsinsky"、"Investor Alert … Contact …"。
 - meme/推文情绪：quote:/reply 前缀的表情化推文、"Imagine being this guy"、"Staying Low"、"$XXX 突破 N 美元"。
-- Provider `coins[]` 标签会把地缘/商品新闻一律挂 CL（原油）、把英文单词 NEAR 当币、把 OPENAI/GENIUS 当币；只有 `grounded_assets`（标题中真实出现且 grade A/A+）可信。
+- Provider `coins[]` 标签会把地缘/商品新闻一律挂 CL（原油）、把英文单词 NEAR 当币、把 OPENAI/GENIUS 当币；`grounded_assets` 是 provider 以 B+/A/A+ 置信度标注（或标题中以 $TICKER 出现）的标的，通常可信但仍需以 Triage 的 primary 为准。
 - 同一表态的多源转述（Reuters/First Squawk/deitaone/推特账号）在数分钟内会重复出现，属于同一 storyline。
 
 ## 4. 来源可信度分级

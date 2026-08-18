@@ -22,7 +22,11 @@ from tracefold.news.tokens import comparison_tokens, jaccard
 
 
 def replay_hits(
-    hits: Sequence[Mapping[str, Any]], *, strategy_ids: Sequence[str], watchlist_symbols: frozenset[str]
+    hits: Sequence[Mapping[str, Any]],
+    *,
+    strategy_ids: Sequence[str],
+    watchlist_symbols: frozenset[str],
+    suppress_low_signal: bool = False,
 ) -> dict[str, Any]:
     ids = frozenset(str(s) for s in strategy_ids)
     seen: set[str] = set()
@@ -58,6 +62,8 @@ def replay_hits(
                 coins=coins,
                 ingest_mode="live",
                 watchlist_symbols=watchlist_symbols,
+                raw_first_line=extracted.first_line,
+                suppress_low_signal=suppress_low_signal,
             )
         )
         tokens = comparison_tokens(extracted.comparison)
@@ -101,7 +107,7 @@ def replay_hits(
                 "asset_class": gate.asset_class,
                 "grounded_assets": gate.grounded_assets,
                 "storyline_key": preliminary_storyline_key(
-                    title=title, grounded_assets=gate.grounded_assets, asset_class=gate.asset_class, family=family
+                    title=title, grounded_assets=gate.strong_assets, asset_class=gate.asset_class, family=family
                 ),
             }
         )
@@ -113,11 +119,24 @@ def replay_hits(
         counts[f"admission:{gate.admission}"] += 1
     candidates = [e for e in events if e["admission"] == "candidate"]
     return {
+        "gate": {"suppress_low_signal": bool(suppress_low_signal)},
         "counts": dict(counts),
         "candidate_share_of_items": round(len(candidates) / counts["items"], 4) if counts["items"] else None,
         "candidate_asset_class": dict(collections.Counter(e["asset_class"] for e in candidates)),
         "candidate_priority": dict(collections.Counter(e["priority"] for e in candidates)),
         "storylines": len({e["storyline_key"] for e in candidates}),
+        "events": [
+            {
+                "title": e["title"][:160],
+                "admission": e["admission"],
+                "priority": e["priority"],
+                "asset_class": e["asset_class"],
+                "grounded_assets": list(e["grounded_assets"]),
+                "storyline_key": e["storyline_key"],
+                "members": e["members"],
+            }
+            for e in events
+        ],
         "sample_candidates": [
             {
                 "title": e["title"][:120],
