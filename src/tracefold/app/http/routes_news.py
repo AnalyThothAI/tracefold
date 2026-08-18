@@ -97,12 +97,14 @@ def get_news_status(request: Request) -> Response:
         workers_state, _ = _news_workers_observation(repos.conn, now_ms=now_ms)
     push = news_push_availability(settings)
     models = news_model_availability(settings)
-    broker = getattr(runtime, "news_broker_status", None)
-    broker_data = (
-        broker()
-        if callable(broker)
-        else {"configured": bool(settings.news.broker.url), "connected": None, "queues": {}, "error_code": None}
-    )
+    observed = dict(snapshot.get("broker") or {})
+    broker_data = {
+        "configured": bool(settings.news.broker.url),
+        "connected": observed.get("connected"),
+        "queues": {str(k): v for k, v in (observed.get("queues") or {}).items()},
+        "error_code": observed.get("error_code"),
+        "observed_at_ms": observed.get("observed_at_ms"),
+    }
     ingest = {**snapshot["ingest"], "token_configured": bool(settings.news.opennews_token)}
     pipeline = {**snapshot["pipeline"], "triage_model": models.triage_model, "analyst_model": models.analyst_model}
     delivery = {

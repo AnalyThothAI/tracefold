@@ -1,6 +1,6 @@
 """RabbitMQ adapter tests: topology, confirmed publish, consume/ack, retry lane, control fanout.
 
-Requires a broker at TRACEFOLD_TEST_AMQP_URL (default amqp://guest:guest@127.0.0.1:5672/); skips otherwise.
+Requires a broker at TRACEFOLD_TEST_AMQP_URL (default amqp://tracefold:tracefold@127.0.0.1:5672/, the compose broker); skips otherwise.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from tracefold.news.bus import Q_DEAD, Q_TRIAGE, BusMessage, PermanentError, Tra
 
 pytestmark = pytest.mark.integration
 
-AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://guest:guest@127.0.0.1:5672/")
+AMQP_URL = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "amqp://tracefold:tracefold@127.0.0.1:5672/")
 
 
 def _broker_reachable() -> bool:

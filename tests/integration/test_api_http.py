@@ -539,6 +539,11 @@ def _seed_news_v3_events(*, now_ms: int) -> list[str]:
             )
             if result.event_created:
                 event_ids.append(result.event_id)
+    with write_repositories() as repos, repos.transaction():
+        repos.news.update_broker_snapshot(
+            snapshot={"connected": True, "queues": {"news.raw": {"messages": 0, "consumers": 1}}, "error_code": None},
+            now_ms=now_ms,
+        )
     return event_ids
 
 
@@ -610,6 +615,8 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert status_data["state"] == "unavailable"
     assert status_data["ingest"]["token_configured"] is False
     assert status_data["broker"]["configured"] is False
+    assert status_data["broker"]["connected"] is True
+    assert status_data["broker"]["queues"]["news.raw"]["consumers"] == 1
     assert status_data["pipeline"]["events_24h"] >= 1
     assert status_data["delivery"]["delivery_available"] is False
     assert status_data["control"] == {"paused": False, "mutes": []}
