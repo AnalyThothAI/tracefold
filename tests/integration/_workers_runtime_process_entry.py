@@ -61,13 +61,8 @@ def _components(
     *,
     due_turns: tuple[tuple[Any, float], ...],
 ) -> Any:
-    class _AssetProfileRefresh:
-        async def reconcile(self) -> None:
-            return None
-
     return workers_module._Components(
         providers=market_providers_module.AssetMarketProviders(),
-        asset_profile_refresh=_AssetProfileRefresh(),
         collector=None,
         news_pipeline=None,
         news_bus=None,

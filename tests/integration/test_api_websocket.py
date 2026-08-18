@@ -340,7 +340,7 @@ def test_websocket_routes_live_market_update_for_explicit_market_target_subscrip
         "target_type": "Asset",
         "target_id": "asset:solana:token:5UUH9RTDiSpq6HKS6bp4NdU9PNJpXRXuiw6ShBTBhgH2",
         "live_market": {"status": "live", "price_usd": 1.23},
-        "provider": "okx",
+        "provider": "gmgn",
         "observed_at_ms": 1_700_086_430_000,
     }
 

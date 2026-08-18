@@ -14,12 +14,10 @@ class SearchInspectService:
         *,
         search_query: Any,
         targets: Any,
-        profiles: Any,
         market_candles: Any | None = None,
     ) -> None:
         self.search_query = search_query
         self.targets = targets
-        self.profiles = profiles
         self.market_candles = market_candles
 
     def inspect(
@@ -92,7 +90,6 @@ class SearchInspectService:
         target_id = str(selected["target_id"])
         return TokenCaseService(
             targets=self.targets,
-            profiles=self.profiles,
             market_candles=self.market_candles,
         ).dossier(
             target_type=target_type,

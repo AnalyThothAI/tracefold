@@ -46,72 +46,6 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `asset_profile_refresh_targets`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `provider` | `TEXT` | False | `None` |
-| `target_type` | `TEXT` | False | `None` |
-| `target_id` | `TEXT` | False | `None` |
-| `chain_id` | `TEXT` | False | `None` |
-| `address` | `TEXT` | False | `None` |
-| `symbol` | `TEXT` | True | `None` |
-| `dirty_reason` | `TEXT` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `source_watermark_ms` | `BIGINT` | False | `0` |
-| `priority` | `INTEGER` | False | `100` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `last_error` | `TEXT` | True | `None` |
-| `first_dirty_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `heat_tier` | `TEXT` | False | `'cold'::text` |
-| `terminal_reason` | `TEXT` | True | `None` |
-
-## `asset_profiles`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `asset_id` | `TEXT` | False | `None` |
-| `provider` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `symbol` | `TEXT` | True | `None` |
-| `name` | `TEXT` | True | `None` |
-| `logo_url` | `TEXT` | True | `None` |
-| `banner_url` | `TEXT` | True | `None` |
-| `website_url` | `TEXT` | True | `None` |
-| `twitter_username` | `TEXT` | True | `None` |
-| `twitter_url` | `TEXT` | True | `None` |
-| `telegram_url` | `TEXT` | True | `None` |
-| `gmgn_url` | `TEXT` | True | `None` |
-| `geckoterminal_url` | `TEXT` | True | `None` |
-| `description` | `TEXT` | True | `None` |
-| `raw_payload_json` | `JSONB` | False | `'{}'::jsonb` |
-| `observed_at_ms` | `BIGINT` | True | `None` |
-| `next_refresh_at_ms` | `BIGINT` | False | `None` |
-| `last_error` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `cex_token_profiles`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `cex_token_id` | `TEXT` | False | `None` |
-| `provider` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `symbol` | `TEXT` | True | `None` |
-| `name` | `TEXT` | True | `None` |
-| `logo_url` | `TEXT` | True | `None` |
-| `source_ref` | `TEXT` | True | `None` |
-| `raw_payload_json` | `JSONB` | False | `'{}'::jsonb` |
-| `observed_at_ms` | `BIGINT` | True | `None` |
-| `last_error` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `cex_tokens`
 
 | Column | Type | Nullable | Default |
@@ -122,49 +56,6 @@
 | `evidence_level` | `TEXT` | False | `None` |
 | `first_seen_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `checkpoint_blobs`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `thread_id` | `TEXT` | False | `None` |
-| `checkpoint_ns` | `TEXT` | False | `''::text` |
-| `channel` | `TEXT` | False | `None` |
-| `version` | `TEXT` | False | `None` |
-| `type` | `TEXT` | False | `None` |
-| `blob` | `BYTEA` | True | `None` |
-
-## `checkpoint_migrations`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `v` | `INTEGER` | False | `None` |
-
-## `checkpoint_writes`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `thread_id` | `TEXT` | False | `None` |
-| `checkpoint_ns` | `TEXT` | False | `''::text` |
-| `checkpoint_id` | `TEXT` | False | `None` |
-| `task_id` | `TEXT` | False | `None` |
-| `idx` | `INTEGER` | False | `None` |
-| `channel` | `TEXT` | False | `None` |
-| `type` | `TEXT` | True | `None` |
-| `blob` | `BYTEA` | False | `None` |
-| `task_path` | `TEXT` | False | `''::text` |
-
-## `checkpoints`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `thread_id` | `TEXT` | False | `None` |
-| `checkpoint_ns` | `TEXT` | False | `''::text` |
-| `checkpoint_id` | `TEXT` | False | `None` |
-| `parent_checkpoint_id` | `TEXT` | True | `None` |
-| `type` | `TEXT` | True | `None` |
-| `checkpoint` | `JSONB` | False | `None` |
-| `metadata` | `JSONB` | False | `'{}'::jsonb` |
 
 ## `collector_pending_items`
 
@@ -773,19 +664,6 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_title_presentations`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `comparison_fingerprint` | `TEXT` | False | `None` |
-| `original_title` | `TEXT` | False | `None` |
-| `display_title` | `TEXT` | False | `None` |
-| `outcome` | `TEXT` | False | `None` |
-| `provider` | `TEXT` | True | `None` |
-| `fallback_code` | `TEXT` | True | `None` |
-| `policy_version` | `TEXT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_verdicts`
 
 | Column | Type | Nullable | Default |
@@ -900,48 +778,6 @@
 | `first_seen_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `token_discovery_dirty_lookup_keys`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `provider` | `TEXT` | False | `None` |
-| `lookup_key` | `TEXT` | False | `None` |
-| `lookup_type` | `TEXT` | False | `None` |
-| `dirty_reason` | `TEXT` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `latest_seen_ms` | `BIGINT` | False | `0` |
-| `intent_count` | `BIGINT` | False | `0` |
-| `refresh_priority` | `INTEGER` | False | `9` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `last_error` | `TEXT` | True | `None` |
-| `first_dirty_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `reprocess_lookup_keys` | `ARRAY` | True | `None` |
-| `reprocess_after_intent_id` | `TEXT` | True | `None` |
-| `reprocess_resolved` | `BOOLEAN` | False | `false` |
-| `reprocess_queue_due_at_ms` | `BIGINT` | True | `None` |
-
-## `token_discovery_results`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `provider` | `TEXT` | False | `None` |
-| `lookup_key` | `TEXT` | False | `None` |
-| `lookup_type` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `candidate_count` | `INTEGER` | False | `0` |
-| `candidate_ids_json` | `JSONB` | False | `'[]'::jsonb` |
-| `result_hash` | `TEXT` | True | `None` |
-| `last_lookup_at_ms` | `BIGINT` | True | `None` |
-| `next_refresh_at_ms` | `BIGINT` | False | `0` |
-| `last_error` | `TEXT` | True | `None` |
-| `error_count` | `INTEGER` | False | `0` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `token_evidence`
 
 | Column | Type | Nullable | Default |
@@ -965,53 +801,6 @@
 | `strength` | `TEXT` | False | `None` |
 | `confidence` | `DOUBLE PRECISION` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-
-## `token_image_assets`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `image_id` | `TEXT` | False | `None` |
-| `source_url` | `TEXT` | False | `None` |
-| `source_url_hash` | `TEXT` | False | `None` |
-| `source_provider` | `TEXT` | False | `None` |
-| `source_kind` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `media_type` | `TEXT` | True | `None` |
-| `file_extension` | `TEXT` | True | `None` |
-| `content_sha256` | `TEXT` | True | `None` |
-| `byte_size` | `BIGINT` | True | `None` |
-| `storage_path` | `TEXT` | True | `None` |
-| `public_url` | `TEXT` | True | `None` |
-| `raw_ref_json` | `JSONB` | False | `'{}'::jsonb` |
-| `failure_count` | `BIGINT` | False | `0` |
-| `last_error` | `TEXT` | True | `None` |
-| `observed_at_ms` | `BIGINT` | True | `None` |
-| `next_refresh_at_ms` | `BIGINT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `token_image_source_dirty_targets`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `source_url_hash` | `TEXT` | False | `None` |
-| `source_url` | `TEXT` | False | `None` |
-| `source_provider` | `TEXT` | False | `None` |
-| `source_kind` | `TEXT` | False | `None` |
-| `target_type` | `TEXT` | False | `None` |
-| `target_id` | `TEXT` | False | `None` |
-| `raw_ref_json` | `JSONB` | False | `'{}'::jsonb` |
-| `dirty_reason` | `TEXT` | False | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-| `source_watermark_ms` | `BIGINT` | False | `0` |
-| `priority` | `INTEGER` | False | `100` |
-| `due_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_owner` | `TEXT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `last_error` | `TEXT` | True | `None` |
-| `first_dirty_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `token_intent_evidence`
 
@@ -1073,56 +862,6 @@
 | `intent_status` | `TEXT` | False | `None` |
 | `intent_confidence` | `DOUBLE PRECISION` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `token_profile_current`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `target_type` | `TEXT` | False | `None` |
-| `target_id` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `profile_provider` | `TEXT` | True | `None` |
-| `source_kind` | `TEXT` | False | `None` |
-| `source_ref` | `TEXT` | True | `None` |
-| `symbol` | `TEXT` | True | `None` |
-| `name` | `TEXT` | True | `None` |
-| `logo_url` | `TEXT` | True | `None` |
-| `banner_url` | `TEXT` | True | `None` |
-| `website_url` | `TEXT` | True | `None` |
-| `twitter_username` | `TEXT` | True | `None` |
-| `twitter_url` | `TEXT` | True | `None` |
-| `telegram_url` | `TEXT` | True | `None` |
-| `gmgn_url` | `TEXT` | True | `None` |
-| `geckoterminal_url` | `TEXT` | True | `None` |
-| `description` | `TEXT` | True | `None` |
-| `quality_flags_json` | `JSONB` | False | `'[]'::jsonb` |
-| `source_payload_json` | `JSONB` | False | `'{}'::jsonb` |
-| `observed_at_ms` | `BIGINT` | True | `None` |
-| `computed_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `logo_image_id` | `TEXT` | True | `None` |
-| `logo_source_provider` | `TEXT` | True | `None` |
-| `logo_source_url_hash` | `TEXT` | True | `None` |
-| `payload_hash` | `TEXT` | False | `None` |
-
-## `token_profile_projection_frontiers`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `target_type` | `TEXT` | False | `None` |
-| `target_id` | `TEXT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `first_dirty_at_ms` | `BIGINT` | True | `None` |
-| `deadline_at_ms` | `BIGINT` | True | `None` |
-| `next_attempt_at_ms` | `BIGINT` | True | `None` |
-| `attempt_count` | `INTEGER` | False | `0` |
-| `transient_failure_count` | `INTEGER` | False | `0` |
-| `input_fingerprint` | `TEXT` | True | `None` |
-| `projection_version` | `TEXT` | False | `None` |
-| `claimed_by` | `UUID` | True | `None` |
-| `claimed_until_ms` | `BIGINT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `us_equity_symbols`

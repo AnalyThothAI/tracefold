@@ -9080,18 +9080,6 @@
             "title": "Posts",
             "type": "object"
           },
-          "profile": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Profile"
-          },
           "target": {
             "additionalProperties": true,
             "title": "Target",
@@ -9105,7 +9093,6 @@
         },
         "required": [
           "target",
-          "profile",
           "timeline",
           "posts",
           "market_live"

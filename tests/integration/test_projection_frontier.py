@@ -6,7 +6,7 @@ from uuid import uuid4
 from tests.postgres_test_utils import connect_postgres_test, prepare_postgres_database
 from tracefold.app.cli.commands.queue_ops import QUEUE_RETRY_TRANSITIONS
 from tracefold.platform.postgres.projection_frontier import (
-    PROFILE_FRONTIER,
+    MACRO_FRONTIER,
     ProjectionFrontierRepository,
 )
 from tracefold.platform.postgres.queue_terminal import resolve_terminal_event
@@ -15,46 +15,46 @@ from tracefold.platform.postgres.queue_terminal import resolve_terminal_event
 def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
     prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
-    key = {"target_type": "Asset", "target_id": "asset:test:frontier"}
+    key = {"module_id": "asset:test:frontier"}
     runtime_id = str(uuid4())
     repo = ProjectionFrontierRepository(conn)
     try:
         with conn.transaction():
             assert (
                 repo.mark_dirty(
-                    PROFILE_FRONTIER,
+                    MACRO_FRONTIER,
                     key=key,
                     dirty_at_ms=1_000,
                     deadline_at_ms=31_000,
                     input_fingerprint="sha256:input-a",
-                    version="profile-v1",
+                    version="macro-v1",
                 )
                 == 1
             )
             assert (
                 repo.mark_dirty(
-                    PROFILE_FRONTIER,
+                    MACRO_FRONTIER,
                     key=key,
                     dirty_at_ms=2_000,
                     deadline_at_ms=32_000,
                     input_fingerprint="sha256:input-a",
-                    version="profile-v1",
+                    version="macro-v1",
                 )
                 == 1
             )
             assert (
                 repo.mark_dirty(
-                    PROFILE_FRONTIER,
+                    MACRO_FRONTIER,
                     key=key,
                     dirty_at_ms=3_000,
                     deadline_at_ms=33_000,
                     input_fingerprint="sha256:input-a2",
-                    version="profile-v1",
+                    version="macro-v1",
                 )
                 == 1
             )
 
-        due = repo.next_due(PROFILE_FRONTIER, now_ms=1_000)
+        due = repo.next_due(MACRO_FRONTIER, now_ms=1_000)
         assert due is not None
         assert due["first_dirty_at_ms"] == 1_000
         assert due["deadline_at_ms"] == 31_000
@@ -62,7 +62,7 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
 
         with conn.transaction():
             claim = repo.claim(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 now_ms=31_000,
@@ -73,7 +73,7 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
 
         with conn.transaction():
             assert repo.release_stale(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 now_ms=31_100,
@@ -86,7 +86,7 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
         for attempt in range(1, 4):
             with conn.transaction():
                 claim = repo.claim(
-                    PROFILE_FRONTIER,
+                    MACRO_FRONTIER,
                     key=key,
                     runtime_id=runtime_id,
                     now_ms=40_000 * attempt,
@@ -94,7 +94,7 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
                 )
                 assert claim is not None
                 failed = repo.fail_deterministic(
-                    PROFILE_FRONTIER,
+                    MACRO_FRONTIER,
                     key=key,
                     runtime_id=runtime_id,
                     error_code="compute_timeout",
@@ -109,8 +109,8 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
             """
             SELECT final_status, attempt_count, payload_hash
             FROM queue_terminal_events
-            WHERE owner_key = 'profile_projection'
-              AND source_table = 'token_profile_projection_frontiers'
+            WHERE owner_key = 'macro_projection'
+              AND source_table = 'macro_module_frontiers'
               AND operator_action IS NULL
             """
         ).fetchone()
@@ -126,13 +126,13 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
                 """
                 SELECT terminal_id
                 FROM queue_terminal_events
-                WHERE owner_key = 'profile_projection'
-                  AND source_table = 'token_profile_projection_frontiers'
+                WHERE owner_key = 'macro_projection'
+                  AND source_table = 'macro_module_frontiers'
                   AND operator_action IS NULL
                 """
             ).fetchone()["terminal_id"]
         )
-        transition = QUEUE_RETRY_TRANSITIONS[("profile_projection", "token_profile_projection_frontiers")]
+        transition = QUEUE_RETRY_TRANSITIONS[("macro_projection", "macro_module_frontiers")]
         with conn.transaction():
             resolved = resolve_terminal_event(
                 conn,
@@ -142,8 +142,8 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
                 now_ms=160_000,
                 retry_transitions={
                     (
-                        "profile_projection",
-                        "token_profile_projection_frontiers",
+                        "macro_projection",
+                        "macro_module_frontiers",
                     ): lambda event, *, now_ms, reason: transition(
                         SimpleNamespace(projection_frontiers=repo),
                         event,
@@ -163,7 +163,7 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
 
         with conn.transaction():
             retried_claim = repo.claim(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 now_ms=160_000,
@@ -171,22 +171,22 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
             )
             assert retried_claim is not None
             assert repo.complete(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 input_fingerprint="sha256:input-a2",
-                version="profile-v1",
+                version="macro-v1",
                 now_ms=160_100,
             )
 
         with conn.transaction():
             repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=200_000,
                 deadline_at_ms=230_000,
                 input_fingerprint="sha256:input-b",
-                version="profile-v1",
+                version="macro-v1",
             )
         row = _frontier_row(conn, key)
         assert row["status"] == "dirty"
@@ -197,16 +197,16 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
         conn.execute(
             """
             DELETE FROM queue_terminal_events
-            WHERE owner_key = 'profile_projection'
-              AND source_table = 'token_profile_projection_frontiers'
+            WHERE owner_key = 'macro_projection'
+              AND source_table = 'macro_module_frontiers'
             """
         )
         conn.execute(
             """
-            DELETE FROM token_profile_projection_frontiers
-            WHERE target_type = %s AND target_id = %s
+            DELETE FROM macro_module_frontiers
+            WHERE module_id = %s
             """,
-            (key["target_type"], key["target_id"]),
+            (key["module_id"],),
         )
         conn.commit()
         conn.close()
@@ -215,21 +215,21 @@ def test_typed_frontier_coalesces_recovers_and_quarantines_by_input_version():
 def test_frontier_completion_is_input_and_version_cas():
     prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
-    key = {"target_type": "Asset", "target_id": "asset:test:frontier-cas"}
+    key = {"module_id": "asset:test:frontier-cas"}
     runtime_id = str(uuid4())
     repo = ProjectionFrontierRepository(conn)
     try:
         with conn.transaction():
             repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=1_000,
                 deadline_at_ms=31_000,
                 input_fingerprint="sha256:input-a",
-                version="profile-v1",
+                version="macro-v1",
             )
             assert repo.claim(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 now_ms=31_000,
@@ -237,15 +237,15 @@ def test_frontier_completion_is_input_and_version_cas():
             )
         with conn.transaction():
             assert not repo.complete(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 input_fingerprint="sha256:wrong",
-                version="profile-v1",
+                version="macro-v1",
                 now_ms=31_100,
             )
             assert repo.release_stale(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 now_ms=31_100,
@@ -254,10 +254,10 @@ def test_frontier_completion_is_input_and_version_cas():
     finally:
         conn.execute(
             """
-            DELETE FROM token_profile_projection_frontiers
-            WHERE target_type = %s AND target_id = %s
+            DELETE FROM macro_module_frontiers
+            WHERE module_id = %s
             """,
-            (key["target_type"], key["target_id"]),
+            (key["module_id"],),
         )
         conn.commit()
         conn.close()
@@ -266,34 +266,31 @@ def test_frontier_completion_is_input_and_version_cas():
 def test_dirty_frontier_uses_next_attempt_only_as_eligibility_not_as_deadline():
     prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
-    key = {
-        "target_type": "Asset",
-        "target_id": "asset:test:scheduled-frontier",
-    }
+    key = {"module_id": "asset:test:scheduled-frontier"}
     repo = ProjectionFrontierRepository(conn)
     try:
         with conn.transaction():
             repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=1_000,
                 deadline_at_ms=31_000,
                 eligible_at_ms=5_000,
                 input_fingerprint="sha256:scheduled",
-                version="profile-v1",
+                version="macro-v1",
             )
             repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=2_000,
                 deadline_at_ms=32_000,
                 eligible_at_ms=7_000,
                 input_fingerprint="sha256:scheduled-new-input",
-                version="profile-v1",
+                version="macro-v1",
             )
 
-        assert repo.next_due(PROFILE_FRONTIER, now_ms=4_999) is None
-        due = repo.next_due(PROFILE_FRONTIER, now_ms=5_000)
+        assert repo.next_due(MACRO_FRONTIER, now_ms=4_999) is None
+        due = repo.next_due(MACRO_FRONTIER, now_ms=5_000)
         assert due is not None
         assert due["deadline_at_ms"] == 31_000
         assert due["next_attempt_at_ms"] == 5_000
@@ -301,23 +298,23 @@ def test_dirty_frontier_uses_next_attempt_only_as_eligibility_not_as_deadline():
 
         with conn.transaction():
             repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=3_000,
                 deadline_at_ms=33_000,
                 input_fingerprint="sha256:material-input",
-                version="profile-v1",
+                version="macro-v1",
             )
-        immediate = repo.next_due(PROFILE_FRONTIER, now_ms=3_000)
+        immediate = repo.next_due(MACRO_FRONTIER, now_ms=3_000)
         assert immediate is not None
         assert immediate["next_attempt_at_ms"] is None
     finally:
         conn.execute(
             """
-            DELETE FROM token_profile_projection_frontiers
-            WHERE target_type = %s AND target_id = %s
+            DELETE FROM macro_module_frontiers
+            WHERE module_id = %s
             """,
-            (key["target_type"], key["target_id"]),
+            (key["module_id"],),
         )
         conn.commit()
         conn.close()
@@ -326,82 +323,82 @@ def test_dirty_frontier_uses_next_attempt_only_as_eligibility_not_as_deadline():
 def test_projection_transition_observer_counts_only_new_executable_arrivals_and_completed_cas():
     prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
-    key = {"target_type": "Asset", "target_id": "asset:test:transition-observer"}
+    key = {"module_id": "asset:test:transition-observer"}
     runtime_id = str(uuid4())
     transitions: list[tuple[str, str]] = []
     repo = ProjectionFrontierRepository(conn, transition_observer=transitions.append)
     try:
         with conn.transaction():
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=1_000,
                 deadline_at_ms=31_000,
                 input_fingerprint="sha256:base",
-                version="profile-v1",
+                version="macro-v1",
             )
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=2_000,
                 deadline_at_ms=32_000,
                 input_fingerprint="sha256:base",
-                version="profile-v1",
+                version="macro-v1",
             )
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=3_000,
                 deadline_at_ms=33_000,
                 input_fingerprint="sha256:coalesced",
-                version="profile-v1",
+                version="macro-v1",
             )
-        assert transitions == [("profile", "arrival")]
+        assert transitions == [("macro", "arrival")]
 
         with conn.transaction():
             assert repo.claim(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 now_ms=4_000,
                 lease_ms=30_000,
             )
             assert repo.complete(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 input_fingerprint="sha256:coalesced",
-                version="profile-v1",
+                version="macro-v1",
                 now_ms=4_100,
             )
-        assert transitions[-1] == ("profile", "completion")
+        assert transitions[-1] == ("macro", "completion")
 
         transitions.clear()
         with conn.transaction():
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=5_000,
                 deadline_at_ms=35_000,
                 input_fingerprint="sha256:coalesced",
-                version="profile-v1",
+                version="macro-v1",
             )
         assert transitions == []
 
         with conn.transaction():
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=6_000,
                 deadline_at_ms=36_000,
                 input_fingerprint="sha256:clean-change",
-                version="profile-v1",
+                version="macro-v1",
             )
-        assert transitions == [("profile", "arrival")]
+        assert transitions == [("macro", "arrival")]
 
         with conn.transaction():
             assert repo.claim(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 runtime_id=runtime_id,
                 now_ms=7_000,
@@ -410,70 +407,70 @@ def test_projection_transition_observer_counts_only_new_executable_arrivals_and_
         transitions.clear()
         with conn.transaction():
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=8_000,
                 deadline_at_ms=38_000,
                 input_fingerprint="sha256:clean-change",
-                version="profile-v1",
+                version="macro-v1",
             )
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=9_000,
                 deadline_at_ms=39_000,
                 input_fingerprint="sha256:running-change",
-                version="profile-v1",
+                version="macro-v1",
             )
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=10_000,
                 deadline_at_ms=40_000,
                 input_fingerprint="sha256:running-coalesced",
-                version="profile-v1",
+                version="macro-v1",
             )
-        assert transitions == [("profile", "arrival")]
+        assert transitions == [("macro", "arrival")]
 
         with conn.transaction():
             conn.execute(
                 """
-                UPDATE token_profile_projection_frontiers
+                UPDATE macro_module_frontiers
                 SET status = 'quarantined',
                     claimed_by = NULL,
                     claimed_until_ms = NULL
-                WHERE target_type = %(target_type)s AND target_id = %(target_id)s
+                WHERE module_id = %(module_id)s
                 """,
                 key,
             )
         transitions.clear()
         with conn.transaction():
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=11_000,
                 deadline_at_ms=41_000,
                 input_fingerprint="sha256:running-coalesced",
-                version="profile-v1",
+                version="macro-v1",
             )
         assert transitions == []
         with conn.transaction():
             assert repo.mark_dirty(
-                PROFILE_FRONTIER,
+                MACRO_FRONTIER,
                 key=key,
                 dirty_at_ms=12_000,
                 deadline_at_ms=42_000,
                 input_fingerprint="sha256:quarantine-change",
-                version="profile-v1",
+                version="macro-v1",
             )
-        assert transitions == [("profile", "arrival")]
+        assert transitions == [("macro", "arrival")]
     finally:
         conn.execute(
             """
-            DELETE FROM token_profile_projection_frontiers
-            WHERE target_type = %s AND target_id = %s
+            DELETE FROM macro_module_frontiers
+            WHERE module_id = %s
             """,
-            (key["target_type"], key["target_id"]),
+            (key["module_id"],),
         )
         conn.commit()
         conn.close()
@@ -483,10 +480,10 @@ def _frontier_row(conn, key):
     row = conn.execute(
         """
         SELECT *
-        FROM token_profile_projection_frontiers
-        WHERE target_type = %s AND target_id = %s
+        FROM macro_module_frontiers
+        WHERE module_id = %s
         """,
-        (key["target_type"], key["target_id"]),
+        (key["module_id"],),
     ).fetchone()
     assert row is not None
     return row

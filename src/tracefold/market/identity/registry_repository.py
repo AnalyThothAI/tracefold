@@ -400,8 +400,7 @@ class RegistryRepository:
               SELECT raw_payload_json, observed_at_ms, provider
               FROM asset_identity_evidence
               WHERE asset_identity_evidence.asset_id = registry_assets.asset_id
-                AND asset_identity_evidence.provider = 'okx'
-                AND asset_identity_evidence.lookup_mode IN ('symbol_search', 'exact_address')
+                AND asset_identity_evidence.provider = 'gmgn'
               ORDER BY observed_at_ms DESC, evidence_id DESC
               LIMIT 1
             ) identity_metadata ON true
@@ -457,7 +456,7 @@ class RegistryRepository:
                 registry_assets.address,
                 NULL::text AS native_market_id,
                 NULL::text AS quote_symbol,
-                'okx' AS provider,
+                'gmgn' AS provider,
                 NULL::text AS pricefeed_id,
                 active_targets.computed_at_ms,
                 active_targets.score
@@ -655,21 +654,7 @@ class RegistryRepository:
                     AND price_feeds.status = 'canonical'
                     AND price_feeds.native_market_id = route_market.native_market_id
                 )
-              ) AS pricefeeds_to_insert,
-              (
-                (
-                  SELECT COUNT(*)::bigint
-                  FROM price_feeds
-                  WHERE provider = 'okx'
-                    AND left(feed_type, 4) = 'cex_'
-                )
-                + (
-                  SELECT COUNT(*)::bigint
-                  FROM market_ticks
-                  WHERE target_type = 'cex_symbol'
-                    AND (target_id LIKE 'okx:%%' OR source_provider = 'okx_cex_rest')
-                )
-              ) AS old_okx_cex_rows_to_delete
+              ) AS pricefeeds_to_insert
             """,
             (normalized_token_ids, normalized_token_ids, normalized_market_ids),
         ).fetchone()
@@ -677,7 +662,6 @@ class RegistryRepository:
             "cex_tokens_to_insert": int(row["cex_tokens_to_insert"] or 0) if row else 0,
             "cex_tokens_to_delete": int(row["cex_tokens_to_delete"] or 0) if row else 0,
             "pricefeeds_to_insert": int(row["pricefeeds_to_insert"] or 0) if row else 0,
-            "old_okx_cex_rows_to_delete": int(row["old_okx_cex_rows_to_delete"] or 0) if row else 0,
         }
 
     def find_preferred_cex_pricefeed(self, base_symbol: str) -> dict[str, Any] | None:

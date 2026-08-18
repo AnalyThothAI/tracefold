@@ -103,31 +103,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     ops = subcommands.add_parser("ops", help="maintenance commands")
     ops_subcommands = ops.add_subparsers(dest="ops_command", required=True)
-    seal_acceptance = ops_subcommands.add_parser(
-        "seal-workers-runtime-acceptance",
-        help="validate and seal a complete Workers Runtime V2 acceptance bundle",
-    )
-    seal_acceptance_mode = seal_acceptance.add_mutually_exclusive_group(
-        required=True,
-    )
-    seal_acceptance_mode.add_argument(
-        "--bundle",
-        help="directory containing evidence.json and supporting evidence files",
-    )
-    seal_acceptance_mode.add_argument(
-        "--template",
-        action="store_true",
-        help="print a deliberately non-passing evidence.json template",
-    )
-    collect_acceptance = ops_subcommands.add_parser(
-        "collect-workers-runtime-acceptance",
-        help="collect the fixed 30-minute production Workers Runtime V2 interval",
-    )
-    collect_acceptance.add_argument(
-        "--bundle",
-        required=True,
-        help="new absolute evidence directory outside the repository checkout",
-    )
     rebuild_market_current = ops_subcommands.add_parser(
         "rebuild-market-current",
         help="rebuild current market rows from persisted market tick facts",
@@ -178,31 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_binance_universe_mode = sync_binance_universe.add_mutually_exclusive_group(required=True)
     sync_binance_universe_mode.add_argument("--dry-run", action="store_true")
     sync_binance_universe_mode.add_argument("--execute", action="store_true")
-    ops_subcommands.add_parser("sync-binance-cex-profiles", help="sync Binance CEX token profiles")
     ops_subcommands.add_parser("sync-us-equity-symbols", help="sync Nasdaq Trader US equity symbols")
-    run_resolution_refresh = ops_subcommands.add_parser(
-        "run-resolution-refresh",
-        help="refresh due token resolution lookups and reprocess recent intents",
-    )
-    run_resolution_refresh.add_argument("--limit", type=_positive_int, default=50)
-    run_resolution_refresh.add_argument("--reprocess-limit", type=_positive_int, default=500)
-    refresh_asset_profiles = ops_subcommands.add_parser(
-        "refresh-asset-profiles",
-        help="enqueue missing DEX profile targets and refresh due profile facts",
-    )
-    refresh_asset_profiles.add_argument("--limit", type=_positive_int, default=50)
-    mirror_token_images = ops_subcommands.add_parser(
-        "mirror-token-images",
-        help="mirror provider token images into the local cache",
-    )
-    mirror_token_images.add_argument("--limit", type=_positive_int, default=500)
-    reprocess_token_intents = ops_subcommands.add_parser(
-        "reprocess-token-intents",
-        help="re-resolve recent unresolved token intents",
-    )
-    reprocess_token_intents.add_argument("--window", choices=("5m", "1h", "4h", "24h"), default="24h")
-    reprocess_token_intents.add_argument("--limit", type=_positive_int, default=500)
-    reprocess_token_intents.add_argument("--lookup-key", action="append", default=[])
     rebuild_token_intents = ops_subcommands.add_parser(
         "rebuild-token-intents",
         help="rebuild recent token evidence, intents, resolutions, and lookup keys",

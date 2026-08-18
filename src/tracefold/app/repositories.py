@@ -8,10 +8,6 @@ from typing import Any, Literal
 
 from tracefold.macro import MacroRepository
 from tracefold.market import (
-    AssetProfileRefreshTargetRepository,
-    AssetProfileRepository,
-    CexTokenProfileRepository,
-    DiscoveryRepository,
     EnrichedEventRepository,
     EntityRepository,
     EventAnchorBackfillJobRepository,
@@ -24,12 +20,8 @@ from tracefold.market import (
     MarketTickRepository,
     RegistryRepository,
     TokenEvidenceRepository,
-    TokenImageAssetRepository,
-    TokenImageSourceDirtyTargetRepository,
     TokenIntentLookupRepository,
     TokenIntentRepository,
-    TokenProfileCurrentRepository,
-    TokenProfileSourceQuery,
     TokenTargetRepository,
 )
 from tracefold.news.repository import NewsRepository
@@ -49,19 +41,11 @@ class RepositorySession:
     conn: Any
     evidence: EvidenceRepository
     entities: EntityRepository
-    asset_profiles: AssetProfileRepository
-    asset_profile_refresh_targets: AssetProfileRefreshTargetRepository
-    source_query: TokenProfileSourceQuery
-    cex_token_profiles: CexTokenProfileRepository
-    token_profiles: TokenProfileCurrentRepository
-    token_image_assets: TokenImageAssetRepository
-    token_image_source_dirty_targets: TokenImageSourceDirtyTargetRepository
     token_evidence: TokenEvidenceRepository
     token_intents: TokenIntentRepository
     intent_resolutions: IntentResolutionRepository
     registry: RegistryRepository
     identity_evidence: IdentityEvidenceRepository
-    discovery: DiscoveryRepository
     market_ticks: MarketTickRepository
     market_tick_current: MarketTickCurrentRepository
     enriched_events: EnrichedEventRepository
@@ -111,19 +95,11 @@ def repositories_for_connection(
         conn=conn,
         evidence=EvidenceRepository(conn),
         entities=EntityRepository(conn),
-        asset_profiles=AssetProfileRepository(conn),
-        asset_profile_refresh_targets=AssetProfileRefreshTargetRepository(conn),
-        source_query=TokenProfileSourceQuery(conn),
-        cex_token_profiles=CexTokenProfileRepository(conn),
-        token_profiles=TokenProfileCurrentRepository(conn),
-        token_image_assets=TokenImageAssetRepository(conn),
-        token_image_source_dirty_targets=TokenImageSourceDirtyTargetRepository(conn),
         token_evidence=TokenEvidenceRepository(conn),
         token_intents=TokenIntentRepository(conn),
         intent_resolutions=IntentResolutionRepository(conn),
         registry=RegistryRepository(conn),
         identity_evidence=IdentityEvidenceRepository(conn),
-        discovery=DiscoveryRepository(conn),
         market_ticks=MarketTickRepository(conn),
         market_tick_current=MarketTickCurrentRepository(conn),
         enriched_events=EnrichedEventRepository(conn),

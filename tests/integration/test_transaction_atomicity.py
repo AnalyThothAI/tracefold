@@ -182,7 +182,7 @@ def _delete_market_tick_target(conn: Any, tick: MarketTick) -> None:
 def _market_tick(*, observed_at_ms: int) -> MarketTick:
     target_type = "chain_token"
     target_id = "solana:atomicity"
-    source_provider = "okx_dex_ws"
+    source_provider = "gmgn_dex_quote"
     return MarketTick(
         tick_id=market_tick_id(
             target_type=target_type,

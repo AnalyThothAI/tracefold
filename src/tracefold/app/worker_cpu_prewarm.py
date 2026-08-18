@@ -3,14 +3,11 @@ from __future__ import annotations
 import importlib
 import sys
 
-_PROJECTION_CPU_MODULES = (
-    "tracefold.macro.projection",
-    "tracefold.market.profiles.profile_projection",
-)
+_PROJECTION_CPU_MODULES = ("tracefold.macro.projection",)
 
 
 def prewarm_projection_cpu_modules() -> tuple[str, ...]:
-    """Import Profile and Macro compute in their spawned process."""
+    """Import the Macro projection compute in its spawned process."""
 
     for module_name in _PROJECTION_CPU_MODULES:
         importlib.import_module(module_name)

@@ -76,7 +76,7 @@ export function buildSearchCaseView(data: SearchInspectData): SearchCaseView {
         label: "Official",
         source: "deterministic",
         tone: "neutral",
-        value: "No token profile",
+        value: "No token identity",
       },
       market: unavailableMarket(),
       resolver: resolverFact(data),
@@ -98,16 +98,11 @@ export function buildSearchCaseView(data: SearchInspectData): SearchCaseView {
 }
 
 function tokenSearchCase(data: SearchInspectData, result: TokenCaseDossier): SearchCaseView {
-  const profile = result.profile;
   const target = result.target;
-  const officialName =
-    cleanText(profile?.identity?.name) ??
-    cleanText(profile?.identity?.symbol) ??
-    (target.symbol ? `$${target.symbol}` : "Official profile unavailable");
+  const officialName = target.symbol ? `$${target.symbol}` : shortTargetId(target.target_id);
   const officialDetail = [
-    cleanText(profile?.identity?.description) ? "description ready" : null,
-    hostLabel(profile?.links?.website_url),
-    cleanText(profile?.provider),
+    cleanText(target.chain_id),
+    cleanText(target.address) ? "contract resolved" : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -124,10 +119,10 @@ function tokenSearchCase(data: SearchInspectData, result: TokenCaseDossier): Sea
     },
     evidence: evidenceFact(result.posts.returned_count),
     official: {
-      detail: officialDetail || (profile?.status ? `profile ${profile.status}` : "profile missing"),
+      detail: officialDetail || "identity from registry",
       label: "Official",
       source: "official",
-      tone: profile?.status === "ready" ? "info" : "neutral",
+      tone: target.address ? "info" : "neutral",
       value: officialName,
     },
     market: marketFact(result),
@@ -246,19 +241,11 @@ function numberValue(value: unknown): number | null {
   return null;
 }
 
-function hostLabel(value?: string | null): string | null {
-  const text = cleanText(value);
-  if (!text) {
-    return null;
-  }
-  try {
-    return new URL(text).hostname.replace(/^www\./, "");
-  } catch {
-    return text.replace(/^https?:\/\//, "").replace(/^www\./, "");
-  }
-}
-
 function cleanText(value?: string | null): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function shortTargetId(value: string): string {
+  return value.length > 30 ? `${value.slice(0, 14)}...${value.slice(-8)}` : value;
 }

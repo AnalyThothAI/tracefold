@@ -2,8 +2,6 @@ import { buildTokenCaseViewModel } from "@features/token-case/model/buildTokenCa
 import { tokenCaseFixture } from "@tests/fixtures/tokenCaseFixture";
 import { describe, expect, it } from "vitest";
 
-const HANSA_TOKEN_IMAGE_URL = "/api/token-images/hansa-local";
-
 describe("buildTokenCaseViewModel", () => {
   it("maps a token-case dossier from source, social, and market facts", () => {
     const dossier = tokenCaseFixture();
@@ -20,7 +18,7 @@ describe("buildTokenCaseViewModel", () => {
     expect(vm.hero.subtitle).toContain("solana");
     expect(vm.metrics.map((metric) => metric.key)).toEqual(["mentions", "authors"]);
     expect(vm.metrics.map((metric) => metric.key)).not.toContain("radar-rank");
-    expect(vm.hero.logoUrl).toBe(HANSA_TOKEN_IMAGE_URL);
+    expect(vm.hero.logoUrl).toBeNull();
     expect(vm.timeline.items[0]).toMatchObject({ phase: "expansion", role: "early_amplifier" });
     expect(vm.timeline.items[0].pills).toEqual([]);
     expect(vm.timeline.items[0].pills.map((pill) => pill.label)).not.toContain("PQ 82");

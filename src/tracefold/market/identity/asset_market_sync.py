@@ -74,7 +74,6 @@ def sync_binance_usdt_perp_routes(
         "cex_tokens_to_insert": int(plan.get("cex_tokens_to_insert", len(routes))),
         "cex_tokens_to_delete": int(plan.get("cex_tokens_to_delete", 0)),
         "pricefeeds_to_insert": int(plan.get("pricefeeds_to_insert", len(routes))),
-        "old_okx_cex_rows_to_delete": int(plan.get("old_okx_cex_rows_to_delete", 0)),
         "cex_tokens_written": cex_tokens_written,
         "pricefeeds_written": pricefeeds_written,
         "affected_lookup_keys": sorted(affected_lookup_keys),

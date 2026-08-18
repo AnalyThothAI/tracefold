@@ -71,7 +71,6 @@ NEWS_TABLES = (
     "news_event_bands",
     "news_event_assets",
     "news_verdicts",
-    "news_title_presentations",
     "news_deliveries",
     "news_control_state",
     "news_event_market_marks",
@@ -165,17 +164,6 @@ _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
         },
     },
     {
-        "name": "token_profile_target",
-        "sql": """
-            SELECT target_type, target_id, payload_hash
-            FROM token_profile_current
-            WHERE target_type = 'Asset'
-              AND target_id = %s
-            LIMIT 1
-        """,
-        "params": ("audit-missing-target",),
-    },
-    {
         "name": "live_market_current",
         "sql": """
             SELECT current.tick_id
@@ -241,60 +229,7 @@ _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
             WHERE provider = ANY(%s::text[])
             ORDER BY provider
         """,
-        "params": (
-            [
-                "gmgn_direct_ws",
-                "gmgn_dex_profile",
-                "binance_web3_profile",
-                "okx_dex_search",
-            ],
-        ),
-    },
-    {
-        "name": "provider_backlogs",
-        "sql": """
-            WITH providers(provider) AS (
-              SELECT unnest(%s::text[])
-            )
-            SELECT
-              provider,
-              (
-                SELECT profile_queue.provider
-                FROM asset_profile_refresh_targets profile_queue
-                WHERE profile_queue.provider = providers.provider
-                  AND profile_queue.terminal_reason IS NULL
-                ORDER BY
-                  profile_queue.provider,
-                  profile_queue.priority,
-                  profile_queue.due_at_ms,
-                  profile_queue.updated_at_ms,
-                  profile_queue.target_type,
-                  profile_queue.target_id
-                LIMIT 1
-              ) IS NOT NULL OR (
-                SELECT discovery_queue.provider
-                FROM token_discovery_dirty_lookup_keys discovery_queue
-                WHERE discovery_queue.provider = providers.provider
-                ORDER BY
-                  discovery_queue.provider,
-                  discovery_queue.refresh_priority,
-                  discovery_queue.due_at_ms,
-                  discovery_queue.latest_seen_ms DESC,
-                  discovery_queue.updated_at_ms,
-                  discovery_queue.lookup_key
-                LIMIT 1
-              ) IS NOT NULL AS has_backlog
-            FROM providers
-            ORDER BY provider
-        """,
-        "params": (
-            [
-                "gmgn_direct_ws",
-                "gmgn_dex_profile",
-                "binance_web3_profile",
-                "okx_dex_search",
-            ],
-        ),
+        "params": (["gmgn_direct_ws", "gmgn_dex_quote", "binance_cex_rest"],),
     },
     {
         "name": "persisted_live_after_cursor",

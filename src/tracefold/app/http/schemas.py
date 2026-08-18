@@ -1688,7 +1688,6 @@ class SearchInspectData(ExactApiSchema):
 
 class TokenCaseData(ExactApiSchema):
     target: JsonObject
-    profile: JsonObject | None
     timeline: JsonObject
     posts: JsonObject
     market_live: JsonObject

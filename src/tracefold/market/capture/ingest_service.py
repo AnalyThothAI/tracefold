@@ -14,7 +14,6 @@ from tracefold.market.capture.event_contracts import EventRead, materialize_even
 from tracefold.market.capture.evidence_repository import EvidenceRepository
 from tracefold.market.capture.ingest_contracts import IngestedEvent
 from tracefold.market.capture.twitter_event import TwitterEvent
-from tracefold.market.identity.discovery_repository import DiscoveryRepository
 from tracefold.market.identity.identity_evidence_policy import (
     CONFIDENCE_MENTION_ONLY,
     CONFIDENCE_PROVIDER_EXACT,
@@ -70,7 +69,6 @@ class IngestService:
         token_evidence: TokenEvidenceRepository,
         token_intents: TokenIntentRepository,
         intent_resolutions: IntentResolutionRepository,
-        discovery: DiscoveryRepository,
         market_ticks: MarketTickRepository,
         market_tick_current: MarketTickCurrentRepository,
         enriched_events: EnrichedEventRepository,
@@ -88,7 +86,6 @@ class IngestService:
         self.token_evidence = token_evidence
         self.token_intents = token_intents
         self.intent_resolutions = intent_resolutions
-        self.discovery = discovery
         self.market_ticks = market_ticks
         self.market_tick_current = market_tick_current
         self.enriched_events = enriched_events
@@ -214,13 +211,6 @@ class IngestService:
                 keys=decision.lookup_keys,
                 source_evidence_id=intent.primary_evidence_id,
                 created_at_ms=prepared.event_ms,
-            )
-        discovery_lookup_keys = _discovery_lookup_keys_for_resolutions(resolutions)
-        if discovery_lookup_keys:
-            self.discovery.enqueue_lookup_keys(
-                discovery_lookup_keys,
-                reason="intent_resolution_unresolved",
-                now_ms=prepared.event_ms,
             )
         capture_ticks = [item.tick for item in capture_results if item.tick is not None]
         if capture_ticks:
@@ -466,24 +456,6 @@ def _require_capture_result(item: Any) -> CaptureResult:
     if not isinstance(item.capture, EnrichedEventCapture):
         raise RuntimeError("ingest_capture_result_contract_required")
     return item
-
-
-def _discovery_lookup_keys_for_resolutions(
-    resolutions: list[TokenIntentResolutionDecision],
-) -> list[str]:
-    lookup_keys: set[str] = set()
-    for decision in resolutions:
-        formal_decision = _require_resolution_decision(decision)
-        status = str(formal_decision.resolution_status or "")
-        target_type = formal_decision.target_type
-        target_id = formal_decision.target_id
-        if status not in {"NIL", "AMBIGUOUS"} and target_type and target_id:
-            continue
-        for key in formal_decision.lookup_keys:
-            text = str(key or "").strip()
-            if text.startswith(("symbol:", "address:")):
-                lookup_keys.add(text)
-    return sorted(lookup_keys)
 
 
 def _unavailable_capture(

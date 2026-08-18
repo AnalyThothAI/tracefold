@@ -221,27 +221,6 @@ function searchInspectData(): SearchInspectData {
         observed_at_ms: null,
         provider: null,
       },
-      profile: {
-        status: "ready",
-        provider: "gmgn",
-        identity: {
-          symbol: "RKC",
-          name: "Runtime Coin",
-          logo_url: null,
-          description: "Runtime token profile",
-        },
-        links: {
-          website_url: "https://rkc.example",
-          twitter_url: "https://x.com/rkc",
-          gmgn_url: "https://gmgn.ai/sol/token/rkc",
-          geckoterminal_url: "https://www.geckoterminal.com/solana/pools/rkc",
-        },
-        source: {
-          provider: "gmgn",
-          raw_available: true,
-          last_error: null,
-        },
-      },
     },
     topic_result: null,
     ambiguous_result: null,

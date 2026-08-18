@@ -38,9 +38,8 @@ export function buildTokenCaseViewModel({
   focusedEventUnavailable = false,
 }: BuildTokenCaseViewModelArgs): TokenCaseViewModel {
   const target = dossier.target;
-  const profileIdentity = dossier.profile?.identity;
-  const symbol = cleanText(profileIdentity?.symbol) ?? cleanText(target.symbol);
-  const name = cleanText(profileIdentity?.name);
+  const symbol = cleanText(target.symbol);
+  const name: string | null = null;
   const title = symbol
     ? `$${symbol}${name && name !== symbol ? ` · ${name}` : ""}`
     : shortId(target.target_id);
@@ -78,7 +77,7 @@ export function buildTokenCaseViewModel({
       searchHref: `/search?q=${encodeURIComponent(symbol ? `$${symbol}` : target.target_id)}`,
     },
     hero: {
-      logoUrl: cleanText(profileIdentity?.logo_url),
+      logoUrl: null,
       title,
       subtitle: heroSubtitle(dossier),
       contractLabel: target.address
@@ -193,33 +192,33 @@ function postPills(post: TokenPostItem): Array<{ label: string; tone: TokenCaseT
 
 function heroSubtitle(dossier: TokenCaseDossier): string {
   const target = dossier.target;
-  const parts = [
-    target.chain_id,
-    target.address ? shortAddress(target.address) : null,
-    dossier.profile?.status ? `profile ${dossier.profile.status}` : null,
-  ].filter((part): part is string => Boolean(part));
+  const parts = [target.chain_id, target.address ? shortAddress(target.address) : null].filter(
+    (part): part is string => Boolean(part),
+  );
   return parts.join(" · ") || target.target_id;
 }
 
 function heroActions(dossier: TokenCaseDossier): TokenCaseViewModel["hero"]["actions"] {
   const actions: TokenCaseViewModel["hero"]["actions"] = [];
-  const twitter = cleanText(dossier.profile?.links?.twitter_username);
-  const website = cleanText(dossier.profile?.links?.website_url);
-  const gmgn = cleanText(dossier.profile?.links?.gmgn_url);
-  if (twitter) {
+  const target = dossier.target;
+  if (target.chain_id && target.address) {
     actions.push({
-      label: "X",
-      href: `https://x.com/${twitter.replace(/^@+/, "")}`,
-      tone: "info",
+      label: "GMGN",
+      href: `https://gmgn.ai/${encodeURIComponent(gmgnChainSlug(target.chain_id))}/token/${encodeURIComponent(target.address)}`,
+      tone: "opportunity",
     });
   }
-  if (website) {
-    actions.push({ label: "Website", href: website, tone: "neutral" });
-  }
-  if (gmgn) {
-    actions.push({ label: "GMGN", href: gmgn, tone: "opportunity" });
-  }
   return actions;
+}
+
+function gmgnChainSlug(chainId: string): string {
+  const slugs: Record<string, string> = {
+    solana: "sol",
+    "eip155:1": "eth",
+    "eip155:56": "bsc",
+    "eip155:8453": "base",
+  };
+  return slugs[chainId] ?? chainId;
 }
 
 function shortId(value: string): string {

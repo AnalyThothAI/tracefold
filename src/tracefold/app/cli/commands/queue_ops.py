@@ -4,7 +4,6 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from tracefold.app.queue_health import fetch_queue_table_health, queue_tables_for_owner
-from tracefold.market import DISCOVERY_PROVIDER
 from tracefold.platform.postgres.projection_frontier import (
     FRONTIER_SPECS,
     FrontierSpec,
@@ -164,40 +163,6 @@ def _inspect_active_queues(
     }
 
 
-def _retry_discovery_lookup_key(
-    repos: Any,
-    event: dict[str, Any],
-    *,
-    now_ms: int,
-    reason: str,
-) -> dict[str, Any]:
-    source_row = _source_row(event)
-    lookup_key = _lookup_key(event, source_row)
-    provider = str(source_row.get("provider") or DISCOVERY_PROVIDER)
-    if provider != DISCOVERY_PROVIDER:
-        raise ValueError(f"unsupported_discovery_provider:{provider}")
-    latest_seen_ms = _optional_int(source_row.get("latest_seen_ms")) or int(now_ms)
-    intent_count = max(1, _optional_int(source_row.get("intent_count")) or 1)
-    requeued = repos.discovery.enqueue_lookup_keys(
-        [lookup_key],
-        reason=f"terminal_retry:{reason}",
-        now_ms=int(now_ms),
-        due_at_ms=int(now_ms),
-        latest_seen_ms=latest_seen_ms,
-        intent_count=intent_count,
-    )
-    if int(requeued or 0) <= 0:
-        raise ValueError("discovery_lookup_retry_not_requeued")
-    return {
-        "provider": provider,
-        "lookup_key": lookup_key,
-        "requeued": int(requeued or 0),
-        "due_at_ms": int(now_ms),
-        "latest_seen_at_ms": latest_seen_ms,
-        "intent_count": intent_count,
-    }
-
-
 def _retry_event_anchor_job(
     repos: Any,
     event: dict[str, Any],
@@ -212,33 +177,6 @@ def _retry_event_anchor_job(
     )
     _require_requeued(row, "event_anchor_job_retry_not_requeued")
     return {"requeued": 1, "job": row}
-
-
-def _retry_token_image_source_target(
-    repos: Any,
-    event: dict[str, Any],
-    *,
-    now_ms: int,
-    reason: str,
-) -> dict[str, Any]:
-    source_row = _source_row(event)
-    target = {**source_row, "due_at_ms": int(now_ms)}
-    requeued = repos.token_image_source_dirty_targets.enqueue_targets(
-        [target],
-        reason=f"terminal_retry:{reason}",
-        now_ms=int(now_ms),
-        due_at_ms=int(now_ms),
-    )
-    requeued_count = int((requeued or {}).get("targets") or 0)
-    if requeued_count <= 0:
-        raise ValueError("token_image_source_retry_not_requeued")
-    return {
-        "requeued": requeued_count,
-        "source_url": str(source_row.get("source_url") or ""),
-        "target_type": str(source_row.get("target_type") or ""),
-        "target_id": str(source_row.get("target_id") or ""),
-        "due_at_ms": int(now_ms),
-    }
 
 
 def _retry_projection_frontier(
@@ -345,34 +283,13 @@ def _required_source_text(source_row: dict[str, Any], column: str) -> str:
     return value
 
 
-def _lookup_key(event: dict[str, Any], source_row: dict[str, Any]) -> str:
-    lookup_key = str(source_row.get("lookup_key") or "").strip()
-    if lookup_key:
-        return lookup_key
-    target_key = str(event.get("target_key") or "")
-    prefix = f"{DISCOVERY_PROVIDER}:"
-    if target_key.startswith(prefix):
-        lookup_key = target_key.removeprefix(prefix).strip()
-    if not lookup_key:
-        raise ValueError("terminal_lookup_key_required")
-    return lookup_key
-
-
-def _optional_int(value: Any) -> int | None:
-    if value is None or value == "":
-        return None
-    return int(value)
-
-
 def _require_requeued(row: object, code: str) -> None:
     if not row:
         raise ValueError(code)
 
 
 QUEUE_RETRY_TRANSITIONS = {
-    ("resolution_refresh", "token_discovery_dirty_lookup_keys"): _retry_discovery_lookup_key,
     ("event_anchor_backfill", "event_anchor_backfill_jobs"): _retry_event_anchor_job,
-    ("token_image_mirror", "token_image_source_dirty_targets"): _retry_token_image_source_target,
     (
         "macro_document_analysis",
         "macro_document_analysis_jobs",

@@ -49,10 +49,6 @@ def canonical_evm_chain_ids() -> tuple[str, ...]:
     return tuple(capability.canonical_id for capability in _CHAIN_CAPABILITIES if capability.evm_address)
 
 
-def default_dex_discovery_chain_ids() -> tuple[str, ...]:
-    return tuple(capability.canonical_id for capability in _CHAIN_CAPABILITIES)
-
-
 def canonical_chain_address(chain_id: Any, address: Any) -> str:
     chain = canonical_chain_id(chain_id)
     value = str(address or "").strip()
@@ -69,7 +65,6 @@ __all__ = [
     "canonical_chain_id",
     "canonical_evm_chain_ids",
     "chain_address_key",
-    "default_dex_discovery_chain_ids",
     "evm_query_chain_ids",
     "normalize_query_chain_id",
 ]

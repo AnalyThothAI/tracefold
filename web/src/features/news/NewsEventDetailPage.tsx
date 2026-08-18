@@ -104,7 +104,10 @@ function EventDocument({ detail }: { detail: NewsEventDetail }) {
           <p className="news-detail-empty">尚未产生推送。</p>
         )}
       </section>
-      <section aria-labelledby="news-labels-heading" className="news-detail-card news-labels-section">
+      <section
+        aria-labelledby="news-labels-heading"
+        className="news-detail-card news-labels-section"
+      >
         <header>
           <div>
             <span className="news-eyebrow">LABELS</span>

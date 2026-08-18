@@ -8,7 +8,7 @@ threshold changes can be judged on the same boundary/retention set before `TRIAG
 from __future__ import annotations
 
 import collections
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from tracefold.news.models import TriageVerdict
@@ -68,7 +68,7 @@ def _confusion(rows: Iterable[Mapping[str, Any]], key: str) -> dict[str, dict[st
     return {k: dict(v) for k, v in sorted(table.items())}
 
 
-def _rates(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+def _rates(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     labeled = [r for r in rows if _outcome(r) is not None]
     pushed = [r for r in labeled if r["final_decision"] in _PUSHED]
     dropped = [r for r in labeled if r["final_decision"] == "drop"]

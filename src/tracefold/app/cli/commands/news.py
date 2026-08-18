@@ -67,7 +67,7 @@ def _handle_control(args: Namespace) -> tuple[int, dict[str, Any]]:
     """Consumers read news_control_state on every message; the CLI writes it directly (no broker hop)."""
 
     from tracefold.app.repositories import repositories
-    from tracefold.news.control import apply_control, parse_control
+    from tracefold.news import apply_control, parse_control
 
     settings = load_settings(require_ws_token=False)
     payload = {"action": args.action, "key": args.key or None, "ttl_ms": int(args.ttl_minutes) * 60_000}
@@ -113,8 +113,8 @@ def _handle_eval(args: Namespace) -> tuple[int, dict[str, Any]]:
 
 def _handle_replay_decisions(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repositories import repositories
+    from tracefold.news import DecidePolicy
     from tracefold.news.eval.offline import replay_decisions
-    from tracefold.news.triage_rules import DecidePolicy
 
     settings = load_settings(require_ws_token=False)
     now_ms = int(time.time() * 1000)

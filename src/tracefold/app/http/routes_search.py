@@ -18,7 +18,6 @@ from tracefold.market import (
     SearchService,
     TokenCaseService,
     TokenCaseTargetNotFound,
-    TokenProfileReadModel,
     TokenTargetCursorError,
     TokenTargetPostsCursorError,
     TokenTargetPostsQueryError,
@@ -88,11 +87,9 @@ def search_inspect(
     runtime = _authenticated_runtime(request)
     parsed_window = _window(window)
     with runtime.repositories(lane="search") as repos:
-        profiles = TokenProfileReadModel(token_profiles=repos.token_profiles)
         data = SearchInspectService(
             search_query=SearchEventsQuery(repos.conn),
             targets=repos.token_targets,
-            profiles=profiles,
             market_candles=_market_candles_service(),
         ).inspect(
             q,
@@ -126,7 +123,6 @@ def token_case(
         with runtime.repositories(lane="search") as repos:
             data = TokenCaseService(
                 targets=repos.token_targets,
-                profiles=TokenProfileReadModel(token_profiles=repos.token_profiles),
                 market_candles=_market_candles_service(),
             ).dossier(
                 target_type=parsed_target_type,

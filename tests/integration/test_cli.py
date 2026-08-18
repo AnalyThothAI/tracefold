@@ -90,7 +90,6 @@ def seed_postgres(db_path: Path) -> None:
             token_evidence=repos.token_evidence,
             token_intents=repos.token_intents,
             intent_resolutions=repos.intent_resolutions,
-            discovery=repos.discovery,
             market_ticks=repos.market_ticks,
             market_tick_current=repos.market_tick_current,
             enriched_events=repos.enriched_events,
@@ -176,20 +175,6 @@ class CliTests(unittest.TestCase):
         assert parser.parse_args(["serve"]).command == "serve"
         assert parser.parse_args(["workers"]).command == "workers"
 
-    def test_workers_runtime_collector_requires_one_bundle_path(self):
-        bundle = str(Path.cwd().parent / "runtime-acceptance")
-        parsed = build_parser().parse_args(
-            [
-                "ops",
-                "collect-workers-runtime-acceptance",
-                "--bundle",
-                bundle,
-            ]
-        )
-
-        assert parsed.ops_command == "collect-workers-runtime-acceptance"
-        assert parsed.bundle == bundle
-
     def test_audit_and_current_operations_commands_are_registered(self):
         parser = build_parser()
 
@@ -200,15 +185,12 @@ class CliTests(unittest.TestCase):
             ["ops", "validate-projections", "--sample", "5"],
             ["ops", "sync-binance-usdt-perp-universe", "--dry-run"],
             ["ops", "sync-binance-usdt-perp-universe", "--execute"],
-            ["ops", "sync-binance-cex-profiles"],
-            ["ops", "run-resolution-refresh", "--limit", "5"],
-            ["ops", "refresh-asset-profiles", "--limit", "5"],
-            ["ops", "mirror-token-images", "--limit", "5"],
-            ["ops", "reprocess-token-intents", "--window", "24h", "--limit", "5", "--lookup-key", "symbol:SLOP"],
             ["ops", "rebuild-token-intents", "--window", "5m", "--limit", "5"],
             ["ops", "audit-token-intent", "--event-id", "event-1"],
             ["ops", "sync-us-equity-symbols"],
-            ["ops", "seal-workers-runtime-acceptance", "--template"],
+            ["news", "label", "ev-1", "noise", "--note", "template"],
+            ["news", "dlq", "inspect", "--limit", "5"],
+            ["news", "replay-decisions", "--hours", "24", "--min-push-magnitude", "3"],
         ]
 
         parsed = [parser.parse_args(command) for command in commands]
@@ -223,40 +205,15 @@ class CliTests(unittest.TestCase):
         self.assertTrue(parsed[4].dry_run)
         self.assertEqual(parsed[5].ops_command, "sync-binance-usdt-perp-universe")
         self.assertTrue(parsed[5].execute)
-        self.assertEqual(parsed[6].ops_command, "sync-binance-cex-profiles")
-        self.assertEqual(parsed[7].ops_command, "run-resolution-refresh")
-        self.assertEqual(parsed[7].limit, 5)
-        self.assertEqual(parsed[8].ops_command, "refresh-asset-profiles")
-        self.assertEqual(parsed[8].limit, 5)
-        self.assertEqual(parsed[9].ops_command, "mirror-token-images")
-        self.assertEqual(parsed[9].limit, 5)
-        self.assertEqual(parsed[10].ops_command, "reprocess-token-intents")
-        self.assertEqual(parsed[10].window, "24h")
-        self.assertEqual(parsed[10].lookup_key, ["symbol:SLOP"])
-        self.assertEqual(parsed[11].ops_command, "rebuild-token-intents")
-        self.assertEqual(parsed[11].window, "5m")
-        self.assertEqual(parsed[12].ops_command, "audit-token-intent")
-        self.assertEqual(parsed[13].ops_command, "sync-us-equity-symbols")
-        self.assertEqual(parsed[14].ops_command, "seal-workers-runtime-acceptance")
-        self.assertTrue(parsed[14].template)
-
-    def test_workers_runtime_v2_acceptance_template_does_not_require_runtime_config(self):
-        stdout = io.StringIO()
-
-        exit_code = main(
-            ["ops", "seal-workers-runtime-acceptance", "--template"],
-            stdout=stdout,
-        )
-
-        assert exit_code == 0
-        payload = json.loads(stdout.getvalue())
-        assert payload["ok"] is True
-        template = payload["data"]["template"]
-        assert template["schema_version"] == "workers_runtime_acceptance_v2"
-        startup = template["gates"]["startup_recovery"]
-        assert "operator_authorized_fix_forward_boundary" in startup
-        assert "snapshot_restore" not in startup
-        assert template["gates"]["real_continuous_30m"]["status"] == "pending"
+        self.assertEqual(parsed[6].ops_command, "rebuild-token-intents")
+        self.assertEqual(parsed[6].window, "5m")
+        self.assertEqual(parsed[7].ops_command, "audit-token-intent")
+        self.assertEqual(parsed[8].ops_command, "sync-us-equity-symbols")
+        self.assertEqual(parsed[9].news_command, "label")
+        self.assertEqual((parsed[9].event_id, parsed[9].label, parsed[9].note), ("ev-1", "noise", "template"))
+        self.assertEqual((parsed[10].news_command, parsed[10].dlq_action, parsed[10].limit), ("dlq", "inspect", 5))
+        self.assertEqual(parsed[11].news_command, "replay-decisions")
+        self.assertEqual((parsed[11].hours, parsed[11].min_push_magnitude), (24, 3))
 
     def test_cli_rejects_retired_hard_cut_commands(self):
         parser = build_parser()
@@ -273,18 +230,20 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["ops", "hard-cut-rebuild", "--execute"])
 
-    def test_cli_ops_mirror_token_images_has_no_source_limit_option(self):
-        parser = build_parser()
-
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["ops", "mirror-token-images", "--source-limit", "9"])
-
     def test_cli_rejects_retired_projection_queue_commands(self):
         parser = build_parser()
 
         retired = (
             ["asset-flow", "--window", "1h", "--limit", "5"],
             ["ops", "projection-status"],
+            ["ops", "collect-workers-runtime-acceptance", "--bundle", "x"],
+            ["ops", "seal-workers-runtime-acceptance", "--template"],
+            ["ops", "refresh-asset-profiles", "--limit", "5"],
+            ["ops", "mirror-token-images", "--limit", "5"],
+            ["ops", "run-resolution-refresh", "--limit", "5"],
+            ["ops", "sync-binance-cex-profiles"],
+            ["ops", "reprocess-token-intents", "--window", "24h", "--limit", "5"],
+            ["news", "control", "drain"],
             ["ops", "factor-diagnostics", "--window", "1h", "--limit", "200"],
             ["ops", "radar-evaluate"],
             ["ops", "repair-token-profile-images", "--limit", "5"],
@@ -354,10 +313,8 @@ class CliTests(unittest.TestCase):
                 "opennews_strategy_count",
                 "broker",
                 "models",
-                "gate",
                 "triage",
                 "analyst",
-                "translation",
                 "watchlist",
                 "push",
             },
@@ -381,7 +338,7 @@ class CliTests(unittest.TestCase):
             {"serve", "workers", "migrate"},
         )
         self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 8)
-        self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 4)
+        self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 8)
         self.assertNotIn("embed" + "ding_dim", payload["data"]["store"])
         self.assertNotIn("workers", payload["data"])
 
@@ -402,7 +359,6 @@ class CliTests(unittest.TestCase):
         self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
         self.assertNotIn("request_timeout_seconds", payload["providers"]["macro_sources"])
         self.assertEqual(settings.upstream.chains, ("sol", "eth", "base", "bsc", "robinhood"))
-        self.assertEqual(settings.providers.okx.dex_chain_indexes, ("501", "1", "56", "8453", "607", "4663"))
 
     def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
         retired_payloads = {
@@ -609,43 +565,6 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     assert app_home.stat().st_mode & 0o777 == 0o700
     assert all((app_home / name).stat().st_mode & 0o777 == 0o600 for name in tracked_names)
     assert all((app_home / name).stat().st_mode & 0o777 == 0o700 for name in ("logs", "cache"))
-
-
-def test_cli_runtime_collector_bypasses_maintenance_lock_and_fails_closed(monkeypatch, tmp_path):
-    from tracefold.app.cli.commands import ops as ops_module
-
-    write_runtime_config(tmp_path, db_path=tmp_path / ".tracefold" / "postgres_test_db")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(
-        ops_module,
-        "collect_workers_runtime_acceptance",
-        lambda bundle, settings: {
-            "status": "failed",
-            "bundle": str(bundle),
-            "config_home": str(settings.app_home),
-        },
-    )
-
-    def maintenance_lock_forbidden(*args, **kwargs):
-        raise AssertionError("collector_must_bypass_maintenance_lock")
-
-    monkeypatch.setattr(ops_module.WorkerDatabase, "create", maintenance_lock_forbidden)
-    stdout = io.StringIO()
-
-    code = main(
-        [
-            "ops",
-            "collect-workers-runtime-acceptance",
-            "--bundle",
-            str(tmp_path / "runtime-evidence"),
-        ],
-        stdout=stdout,
-    )
-
-    payload = json.loads(stdout.getvalue())
-    assert code == 1
-    assert payload["ok"] is False
-    assert payload["data"]["status"] == "failed"
 
 
 if __name__ == "__main__":

@@ -72,18 +72,6 @@ function searchTokenInspectFixture(q: string): SearchInspectData {
         target_id: "asset:solana:rkc",
         symbol: "RKC",
       },
-      profile: {
-        status: tokenResult.profile?.status ?? "ready",
-        provider: tokenResult.profile?.provider ?? "gmgn",
-        observed_at_ms: tokenResult.profile?.observed_at_ms,
-        links: tokenResult.profile?.links ?? {},
-        source: tokenResult.profile?.source,
-        identity: {
-          ...tokenResult.profile?.identity,
-          symbol: "RKC",
-          name: "Runtime Coin",
-        },
-      },
       timeline: {
         ...tokenResult.timeline,
         query: {

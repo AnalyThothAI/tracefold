@@ -13,7 +13,6 @@ from tracefold.integrations.gmgn.openapi_client import (
 from tracefold.integrations.gmgn.openapi_gateway import GmgnOpenApiGateway
 from tracefold.market import (
     DexProviderTemporarilyUnavailable,
-    DexTokenProfile,
     DexTokenQuote,
     DexTokenQuoteRequest,
     UpstreamClientProtocol,
@@ -56,26 +55,6 @@ class GmgnDexMarketProvider:
                 )
             )
         return quotes
-
-    def token_profile(self, *, chain_id: str, address: str) -> DexTokenProfile | None:
-        info = self._lookup_token_info(chain_id=chain_id, address=address).info
-        if info is None:
-            return None
-        return DexTokenProfile(
-            chain_id=info.chain,
-            address=canonical_chain_address(info.chain, info.address),
-            symbol=info.symbol,
-            name=info.name,
-            logo_url=info.icon_url,
-            banner_url=info.banner_url,
-            website=info.website,
-            twitter_username=info.twitter_username,
-            telegram=info.telegram,
-            gmgn_url=info.gmgn_url,
-            geckoterminal_url=info.geckoterminal_url,
-            description=info.description,
-            raw=info.raw,
-        )
 
     def _lookup_token_info(self, *, chain_id: str, address: str) -> GmgnTokenInfoLookup:
         try:

@@ -14,7 +14,7 @@ from tests.postgres_test_utils import (
 from tracefold.market import RegistryRepository
 from tracefold.platform.postgres.postgres_migrations import alembic_config
 
-_SCHEMA_REVISION = "20260813_0263"
+_SCHEMA_REVISION = "head"
 _SINCE_MS = 2_000_000
 _NOISE_EVENT_COUNT = 40_000
 _RECENT_NOISE_EVENT_COUNT = 10_000
@@ -461,7 +461,7 @@ def _reference_ranked_chain_targets(conn: Any, *, since_ms: int) -> list[dict[st
           asset.address,
           NULL::text AS native_market_id,
           NULL::text AS quote_symbol,
-          'okx' AS provider,
+          'gmgn' AS provider,
           NULL::text AS pricefeed_id
         FROM registry_assets asset
         JOIN (
@@ -493,7 +493,7 @@ def _chain_target(address: str) -> dict[str, Any]:
         "address": address,
         "native_market_id": None,
         "quote_symbol": None,
-        "provider": "okx",
+        "provider": "gmgn",
         "pricefeed_id": None,
     }
 

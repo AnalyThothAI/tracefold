@@ -36,6 +36,5 @@ def test_worker_runtime_v2_schema_keeps_only_native_domain_state_and_one_runtime
         "macro_module_frontiers",
         "persisted_live_events",
         "queue_terminal_events",
-        "token_profile_projection_frontiers",
         "workers_runtime",
     ]

@@ -14,17 +14,21 @@ NEWS_ROOT = SRC / "news"
 PUBLIC_NEWS_INTERFACE = {
     "ANALYST_POLICY_VERSION",
     "ANALYST_PROMPT_VERSION",
+    "DEFAULT_POLICY",
     "GATE_POLICY_VERSION",
     "OPENNEWS_SOURCE_ID",
     "TRIAGE_POLICY_VERSION",
     "TRIAGE_PROMPT_VERSION",
     "AnalystVerdict",
+    "DecidePolicy",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
     "OpenNewsStrategyHistory",
     "TriageVerdict",
+    "apply_control",
+    "parse_control",
     "parse_opennews_message",
 }
 
@@ -34,6 +38,7 @@ PURE_NEWS_MODULES = (
     "storyline.py",
     "triage_rules.py",
     "analyst_rules.py",
+    "control.py",
     "tokens.py",
     "minhash.py",
     "titles.py",
@@ -52,11 +57,11 @@ RETIRED_NEWS_MODULES = (
     "classification.py",
     "title_presentation.py",
     "title_presentation_store.py",
+    "translation.py",
 )
 WRITE_REPOSITORY_METHODS = (
     "insert_event",
     "insert_verdict",
-    "insert_presentation",
     "insert_label",
     "upsert_item",
     "add_member",
@@ -163,14 +168,18 @@ def test_news_package_does_not_import_retired_token_radar() -> None:
     assert offenders == []
 
 
-def test_analyst_tools_are_read_only() -> None:
-    tools = NEWS_ROOT / "agents" / "tools.py"
-    modules = _imported_modules(tools)
-    assert not any(module.startswith(("tracefold.news.consumers", "tracefold.news.events")) for module in modules)
-    assert not any(module.startswith("tracefold.integrations") for module in modules)
-    assert _imported_roots(tools).isdisjoint(IO_MODULE_ROOTS)
-    called = _called_attribute_names(tools)
-    assert called.isdisjoint(set(WRITE_REPOSITORY_METHODS) | {"tx", "transaction", "publish"})
+def test_analyst_evidence_bundle_and_call_are_read_only_and_tool_free() -> None:
+    evidence = NEWS_ROOT / "analyst_evidence.py"
+    analyst = NEWS_ROOT / "agents" / "analyst.py"
+    for path in (evidence, analyst):
+        modules = _imported_modules(path)
+        assert not any(module.startswith(("tracefold.news.consumers", "tracefold.news.events")) for module in modules)
+        assert not any(module.startswith("tracefold.integrations") for module in modules)
+        assert _imported_roots(path).isdisjoint(IO_MODULE_ROOTS | {"deepagents", "langgraph", "langchain"})
+        called = _called_attribute_names(path)
+        assert called.isdisjoint(set(WRITE_REPOSITORY_METHODS) | {"tx", "transaction", "publish"})
+    assert not (NEWS_ROOT / "agents" / "tools.py").exists()
+    assert "with_structured_output" in analyst.read_text(encoding="utf-8")
 
 
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:

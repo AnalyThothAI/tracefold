@@ -92,35 +92,6 @@ export type SearchInspectResultKind =
   | "ambiguous_result"
   | "empty_result";
 
-export type TokenProfileBlock = {
-  status: "ready" | "pending" | "missing" | "unsupported" | "error" | string;
-  provider?: string | null;
-  observed_at_ms?: number | null;
-  identity?: {
-    symbol?: string | null;
-    name?: string | null;
-    logo_url?: string | null;
-    banner_url?: string | null;
-    description?: string | null;
-  } | null;
-  links?: {
-    website_url?: string | null;
-    twitter_url?: string | null;
-    twitter_username?: string | null;
-    telegram_url?: string | null;
-    gmgn_url?: string | null;
-    geckoterminal_url?: string | null;
-  } | null;
-  source?: {
-    provider?: string | null;
-    source_kind?: string | null;
-    source_ref?: string | null;
-    quality_flags?: string[] | null;
-    raw_available?: boolean | null;
-    last_error?: string | null;
-  } | null;
-};
-
 export type LiveMarketSnapshot = MarketObservationSnapshot & {
   status?: "ready" | "missing" | "unsupported" | "error" | "stale" | string | null;
   error?: string | null;
@@ -144,7 +115,6 @@ export type TokenCaseSocialTimelineData = Omit<TokenSocialTimelineData, "query">
 
 export type TokenCaseDossier = {
   target: SearchTargetCandidate;
-  profile: TokenProfileBlock | null;
   timeline: TokenCaseSocialTimelineData;
   posts: TokenCasePostsData;
   market_live: LiveMarketSnapshot;

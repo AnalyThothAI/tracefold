@@ -6,14 +6,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 
-from tracefold.integrations.okx.dex_client import OkxDexClient, _candidate_from_row
-from tracefold.integrations.okx.providers import OkxDexDiscoveryProvider, OkxDexQuoteProvider
 from tracefold.market import (
     CollectorService,
-    DexTokenQuoteRequest,
     GmgnStreamExpectedError,
     IngestedEvent,
     materialize_event,
@@ -296,150 +292,6 @@ def test_gmgn_event_publications_are_serial() -> None:
         return resources.max_active
 
     assert asyncio.run(scenario()) == 1
-
-
-def test_okx_dex_search_fixture_maps_rest_candidate_and_domain_candidate() -> None:
-    fixture = _load_json("okx_dex_search_result.json")
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        assert request.url.path == "/api/v6/dex/market/token/search"
-        assert request.url.params["search"] == "MIRROR"
-        assert request.url.params["chains"] == "501"
-        return httpx.Response(200, json=fixture)
-
-    client = OkxDexClient(base_url="https://web3.okx.test", transport=httpx.MockTransport(handler))
-    try:
-        candidates = client.search_tokens(query="mirror", chain_indexes=["501"])
-        direct_candidate = _candidate_from_row(fixture["data"][0])
-        domain_candidates = OkxDexDiscoveryProvider(client).search_tokens(query="mirror", chain_ids=("solana",))
-    finally:
-        client.close()
-
-    assert len(requests) == 2
-    assert len(candidates) == 1
-    assert direct_candidate is not None
-    assert candidates[0] == direct_candidate
-    assert candidates[0].chain_index == "501"
-    assert candidates[0].chain == "solana"
-    assert candidates[0].address == "Mirror111111111111111111111111111111111111"
-    assert candidates[0].symbol == "MIRROR"
-    assert candidates[0].name == "Mirror Fixture"
-    assert candidates[0].price_usd == 0.12
-    assert candidates[0].market_cap_usd == 123_456
-    assert candidates[0].liquidity_usd == 45_678
-    assert candidates[0].holders == 321
-    assert candidates[0].community_recognized is True
-    assert candidates[0].raw["providerExtraProfile"] == {"sourceRank": "fixture-only"}
-    assert not hasattr(candidates[0], "providerExtraProfile")
-
-    assert len(domain_candidates) == 1
-    assert domain_candidates[0].chain_id == "solana"
-    assert domain_candidates[0].address == "Mirror111111111111111111111111111111111111"
-    assert domain_candidates[0].symbol == "MIRROR"
-    assert domain_candidates[0].name == "Mirror Fixture"
-    assert domain_candidates[0].price_usd == 0.12
-    assert domain_candidates[0].raw is not candidates[0].raw
-    assert domain_candidates[0].raw == candidates[0].raw
-    assert domain_candidates[0].raw["providerExtraProfile"] == {"sourceRank": "fixture-only"}
-    assert not hasattr(domain_candidates[0], "providerExtraProfile")
-
-
-def test_okx_batch_token_trading_information_preserves_quote_market_facts() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        assert request.url.path == "/api/v6/dex/market/price-info"
-        assert json.loads(request.content) == [
-            {
-                "chainIndex": "4663",
-                "tokenContractAddress": "0x020bfc650a365f8bb26819deaabf3e21291018b4",
-            },
-            {
-                "chainIndex": "501",
-                "tokenContractAddress": "Mirror111111111111111111111111111111111111",
-            },
-        ]
-        return httpx.Response(
-            200,
-            json={
-                "code": "0",
-                "data": [
-                    {
-                        "chainIndex": "4663",
-                        "tokenContractAddress": "0x020bfc650a365f8bb26819deaabf3e21291018b4",
-                        "time": "1786406400123",
-                        "price": "0.0032",
-                        "marketCap": "82000000.5",
-                        "liquidity": "4200000.25",
-                        "holders": "11002",
-                    },
-                    {
-                        "chainIndex": "501",
-                        "tokenContractAddress": "Mirror111111111111111111111111111111111111",
-                        "time": "1786406400124",
-                        "price": "0.12",
-                        "marketCap": "123456",
-                        "liquidity": "45678",
-                        "holders": "321",
-                    },
-                ],
-                "msg": "",
-            },
-        )
-
-    client = OkxDexClient(base_url="https://web3.okx.test", transport=httpx.MockTransport(handler))
-    provider = OkxDexQuoteProvider(client)
-    try:
-        quotes = provider.token_quotes(
-            [
-                DexTokenQuoteRequest(
-                    chain_id="robinhood",
-                    address="0x020BFc650A365f8BB26819dEAabF3e21291018b4",
-                ),
-                DexTokenQuoteRequest(
-                    chain_id="solana",
-                    address="Mirror111111111111111111111111111111111111",
-                ),
-            ]
-        )
-    finally:
-        provider.close()
-
-    assert len(requests) == 1
-    assert [
-        (
-            quote.chain_id,
-            quote.address,
-            quote.observed_at_ms,
-            quote.price_usd,
-            quote.market_cap_usd,
-            quote.liquidity_usd,
-            quote.holders,
-        )
-        for quote in quotes
-    ] == [
-        (
-            "robinhood",
-            "0x020bfc650a365f8bb26819deaabf3e21291018b4",
-            1_786_406_400_123,
-            0.0032,
-            82_000_000.5,
-            4_200_000.25,
-            11_002,
-        ),
-        (
-            "solana",
-            "Mirror111111111111111111111111111111111111",
-            1_786_406_400_124,
-            0.12,
-            123_456,
-            45_678,
-            321,
-        ),
-    ]
 
 
 def _load_json(name: str) -> Any:

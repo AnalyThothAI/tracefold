@@ -32,7 +32,6 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.agents.triage_model",
         "tracefold.news.consumers",
     },
-    "src/tracefold/integrations/news_title_presentation.py": {"tracefold.news.translation"},
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
     "src/tracefold/integrations/rabbitmq.py": {"tracefold.news.bus"},
 }
@@ -40,8 +39,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
 # marks read Market/Macro current facts through SELECT only. Every edge is named;
 # no News module may write another business package's tables.
 ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES = {
-    "src/tracefold/news/agents/tools.py": {"cex_tokens", "market_ticks", "macro_module_current"},
-    "src/tracefold/news/eval/marks.py": {"cex_tokens", "market_ticks"},
+    "src/tracefold/news/repository.py": {"cex_tokens", "price_feeds", "market_ticks", "macro_module_current"},
 }
 WRITE_SQL_TABLE_RE = re.compile(
     r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)",
@@ -63,10 +61,6 @@ SQL_TABLE_RE = re.compile(
 )
 PLATFORM_TABLES = {
     "alembic_version",
-    "checkpoint_blobs",
-    "checkpoint_migrations",
-    "checkpoint_writes",
-    "checkpoints",
     "worker_queue_terminal_events",
 }
 RETIRED_NEWS_RUNTIME_MARKERS = (

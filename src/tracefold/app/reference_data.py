@@ -3,13 +3,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from tracefold.integrations.binance.cex_profile_client import BinanceCexProfileClient
 from tracefold.integrations.binance.usdm_futures_client import BinanceUsdmFuturesClient, BinanceUsdmRoute
 from tracefold.market import (
     BinanceUsdtPerpRoute,
     NasdaqTraderSymbolClient,
     sync_binance_usdt_perp_routes,
-    sync_cex_token_profiles,
     sync_us_equity_symbols,
 )
 from tracefold.platform.config.settings import Settings
@@ -40,27 +38,9 @@ def sync_binance_usdt_perp_universe(
         )
 
 
-def sync_binance_cex_profiles_once(settings: Settings) -> dict[str, Any]:
-    """Fetch Binance profile observations before opening a DB transaction."""
-    client = BinanceCexProfileClient(
-        base_url=settings.providers.binance.cex_profile_base_url,
-        timeout_seconds=settings.providers.binance.timeout_seconds,
-    )
-    try:
-        profiles = client.token_profiles()
-    finally:
-        client.close()
-    with _repositories(settings) as repos:
-        return sync_cex_token_profiles(
-            repos=repos,
-            profiles=profiles,
-            observed_at_ms=_now_ms(),
-        )
-
-
 def sync_us_equity_symbols_once(settings: Settings) -> dict[str, Any]:
     """Fetch Nasdaq Trader symbols before opening a DB transaction."""
-    client = NasdaqTraderSymbolClient(timeout_seconds=settings.providers.okx.timeout_seconds)
+    client = NasdaqTraderSymbolClient(timeout_seconds=settings.providers.binance.timeout_seconds)
     try:
         symbols = client.symbols()
     finally:
@@ -95,7 +75,6 @@ def _repositories(settings: Settings) -> Any:
 
 
 __all__ = [
-    "sync_binance_cex_profiles_once",
     "sync_binance_usdt_perp_universe",
     "sync_us_equity_symbols_once",
 ]

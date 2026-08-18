@@ -10,7 +10,7 @@ describe("buildSearchCaseView", () => {
 
     expect(view.resultKind).toBe("token_result");
     expect(view.title).toBe("$HANSA");
-    expect(view.official.value).toBe("Hansa Network");
+    expect(view.official.value).toBe("$HANSA");
     expect(view.official.source).toBe("official");
     expect(view.community.value).toBe("18 posts · 9 authors");
     expect(view.market.value).toBe("-");
@@ -32,7 +32,7 @@ describe("buildSearchCaseView", () => {
 
     expect(view.resultKind).toBe("topic_result");
     expect(view.community.value).toBe("2 posts · 2 authors");
-    expect(view.official.value).toBe("No token profile");
+    expect(view.official.value).toBe("No token identity");
     expect(view.evidence.value).toBe("0 events");
   });
 

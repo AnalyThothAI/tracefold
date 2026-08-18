@@ -25,7 +25,7 @@ from tracefold.app.market_providers import (
 )
 from tracefold.app.model_arbiter import run_model_arbiter
 from tracefold.app.projection_edf import run_projection_edf
-from tracefold.app.provider_ownership import configured_profile_provider_ids, gmgn_stream_enabled
+from tracefold.app.provider_ownership import gmgn_stream_enabled
 from tracefold.app.worker_capabilities import CpuProcess, FiniteOperations, ModelAdapter
 from tracefold.app.worker_cpu_prewarm import prewarm_projection_cpu_modules
 from tracefold.app.worker_http import _create_workers_probe_app
@@ -46,16 +46,12 @@ from tracefold.macro import (
     acquisition_loop_policy,
 )
 from tracefold.market import (
-    AssetProfileRefresh,
     CollectorService,
     EventAnchorBackfill,
     EventMarketCaptureService,
     IngestService,
     MarketTickPoll,
-    ProfileProjectionCandidate,
-    ResolutionRefresh,
     TickLookup,
-    TokenImageMirror,
 )
 from tracefold.news.agents.analyst import Analyst
 from tracefold.news.agents.triage_model import TriageModel
@@ -160,7 +156,6 @@ class _ProbeState:
 @dataclass(slots=True)
 class _Components:
     providers: AssetMarketProviders
-    asset_profile_refresh: AssetProfileRefresh
     collector: CollectorService | None
     news_pipeline: NewsPipeline | None
     news_bus: Any | None
@@ -845,29 +840,6 @@ async def _wire_components(
             idle_seconds = acquisition_loop_policy(clock_kind)[0]
             due_turns.append((turn.turn, idle_seconds))
 
-    if providers.dex_discovery_market is not None:
-        resolution = ResolutionRefresh(
-            db=db,
-            dex_discovery_market=providers.dex_discovery_market,
-            finite_operations=finite,
-            runtime_id=runtime_id,
-            claim_limit=1,
-        )
-        due_turns.append((resolution.turn, 30.0))
-    asset_profile_refresh = AssetProfileRefresh(
-        db=db,
-        finite_operations=finite,
-        runtime_id=runtime_id,
-        dex_profile_sources=providers.dex_profile_sources,
-    )
-    due_turns.append((asset_profile_refresh.turn, 60.0))
-    image = TokenImageMirror(
-        db=db,
-        app_home=settings.app_home,
-        finite_operations=finite,
-        runtime_id=runtime_id,
-    )
-    due_turns.append((image.turn, 60.0))
     event_anchor = EventAnchorBackfill(
         db=db,
         providers=providers,
@@ -881,23 +853,9 @@ async def _wire_components(
         if providers.cex_market is not None or providers.dex_quote_market is not None
         else None
     )
-    active_profile_provider_ids = configured_profile_provider_ids(settings)
-    wired_profile_provider_ids = tuple(source.provider for source in providers.dex_profile_sources)
-    if wired_profile_provider_ids != active_profile_provider_ids:
-        raise RuntimeError("profile_provider_wiring_mismatch")
-    projections = (
-        ProfileProjectionCandidate(
-            db=db,
-            cpu=projection_cpu,
-            runtime_id=runtime_id,
-            active_profile_provider_ids=active_profile_provider_ids,
-            stable_order=10,
-        ),
-        MacroProjectionCandidate(db=db, cpu=projection_cpu, runtime_id=runtime_id, stable_order=20),
-    )
+    projections = (MacroProjectionCandidate(db=db, cpu=projection_cpu, runtime_id=runtime_id, stable_order=20),)
     return _Components(
         providers=providers,
-        asset_profile_refresh=asset_profile_refresh,
         collector=collector,
         news_pipeline=news_pipeline,
         news_bus=news_bus,
@@ -1016,7 +974,6 @@ async def _wire_news_pipeline(
 
 
 async def _reconcile_once(components: _Components) -> None:
-    await components.asset_profile_refresh.reconcile()
     for turn in components.macro_turns:
         await turn.reconcile()
     if components.document_model is not None:
@@ -1085,12 +1042,7 @@ async def _close_market_providers(
     finite: FiniteOperations,
 ) -> None:
     seen: set[int] = set()
-    synchronous = [
-        providers.cex_market,
-        providers.dex_discovery_market,
-        providers.dex_quote_market,
-        *(source.market for source in providers.dex_profile_sources),
-    ]
+    synchronous = [providers.cex_market, providers.dex_quote_market]
     for provider in synchronous:
         if provider is None or id(provider) in seen:
             continue
@@ -1298,7 +1250,6 @@ def _ingest_service_for_repos(repos: Any, *, event_anchor_active_window_ms: int)
         token_evidence=repos.token_evidence,
         token_intents=repos.token_intents,
         intent_resolutions=repos.intent_resolutions,
-        discovery=repos.discovery,
         market_ticks=repos.market_ticks,
         market_tick_current=repos.market_tick_current,
         enriched_events=repos.enriched_events,

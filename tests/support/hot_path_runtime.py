@@ -21,9 +21,6 @@ def backend_hot_path_settings(tmp_path: Path) -> Settings:
         ws_token=WS_TOKEN,
         storage=postgres_settings_storage(),
         providers={
-            "okx": {
-                "dex_base_url": "",
-            },
             "binance": {"enabled": False},
             "macro_sources": {"enabled": False},
         },

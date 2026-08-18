@@ -52,21 +52,7 @@ _STATUS_QUEUE_SPECS = {
     ),
 }
 
-_DIRTY_TARGET_QUEUE_SPECS = {
-    "asset_profile_refresh_targets": DirtyTargetQueueSpec(
-        owner_key="asset_profile_refresh",
-        table="asset_profile_refresh_targets",
-        terminal_column="terminal_reason",
-    ),
-    "token_discovery_dirty_lookup_keys": DirtyTargetQueueSpec(
-        owner_key="resolution_refresh",
-        table="token_discovery_dirty_lookup_keys",
-    ),
-    "token_image_source_dirty_targets": DirtyTargetQueueSpec(
-        owner_key="token_image_mirror",
-        table="token_image_source_dirty_targets",
-    ),
-}
+_DIRTY_TARGET_QUEUE_SPECS: dict[str, DirtyTargetQueueSpec] = {}
 
 _FRONTIER_SPECS = {spec.table: spec for spec in FRONTIER_SPECS}
 _QUEUE_OWNER_BY_TABLE = {

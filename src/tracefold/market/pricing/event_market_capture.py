@@ -21,7 +21,7 @@ from tracefold.market.provider_contracts import (
 )
 
 TargetType = Literal["chain_token", "cex_symbol"]
-DEX_SOURCE_PROVIDER: MarketTickSourceProvider = "okx_dex_rest"
+DEX_SOURCE_PROVIDER: MarketTickSourceProvider = "gmgn_dex_quote"
 CEX_SOURCE_PROVIDER: MarketTickSourceProvider = "binance_cex_rest"
 
 
@@ -98,10 +98,9 @@ class EventMarketCaptureService:
         """Async-backfill capture that calls the appropriate provider.
 
         Dispatches deterministically by ``target_type``: ``chain_token``
-        uses ``providers.dex_quote_market`` (GMGN OpenAPI primary + OKX DEX
-        REST fallback) and ``cex_symbol`` uses
-        ``providers.cex_market`` (Binance USD-M futures REST). No free-form
-        provider choice.
+        uses ``providers.dex_quote_market`` (GMGN OpenAPI) and ``cex_symbol``
+        uses ``providers.cex_market`` (Binance USD-M futures REST). No
+        free-form provider choice.
         """
         target_type = _target_type(resolution.get("target_type"))
         target_id = _clean_str(resolution.get("target_id"))

@@ -1,29 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from tracefold.app.cli.commands import queue_ops
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.read_models import rebuild_market_tick_current_batch
-from tracefold.app.reference_data import (
-    sync_binance_cex_profiles_once,
-    sync_binance_usdt_perp_universe,
-    sync_us_equity_symbols_once,
-)
+from tracefold.app.reference_data import sync_binance_usdt_perp_universe, sync_us_equity_symbols_once
 from tracefold.app.repositories import repositories
-from tracefold.app.run_worker_once import (
-    mirror_token_images_once,
-    refresh_asset_profiles_once,
-    refresh_resolutions_once,
-)
-from tracefold.app.workers_runtime_acceptance_v2 import (
-    seal_workers_runtime_evidence,
-    workers_runtime_evidence_template,
-)
-from tracefold.app.workers_runtime_collector import collect_workers_runtime_acceptance
-from tracefold.market import rebuild_recent_token_intents, reprocess_recent_token_intents
+from tracefold.market import rebuild_recent_token_intents
 from tracefold.platform.config.settings import load_settings
 from tracefold.platform.postgres.postgres_audit import ProjectionValidationAudit
 
@@ -37,21 +22,6 @@ _READ_ONLY_OPS_COMMANDS = frozenset(
 
 
 def handle_ops(args: object, _parser: object) -> tuple[int, dict[str, Any]]:
-    if args.ops_command == "seal-workers-runtime-acceptance":
-        if bool(args.template):
-            return 0, {
-                "ok": True,
-                "data": {
-                    "template": workers_runtime_evidence_template(),
-                },
-            }
-        seal = seal_workers_runtime_evidence(Path(args.bundle))
-        return 0, {"ok": True, "data": seal}
-    if args.ops_command == "collect-workers-runtime-acceptance":
-        settings = load_settings(require_ws_token=False)
-        collection = collect_workers_runtime_acceptance(Path(args.bundle), settings)
-        passed = collection.get("status") == "passed"
-        return (0 if passed else 1), {"ok": passed, "data": collection}
     settings = load_settings(require_ws_token=False)
     if args.ops_command in _READ_ONLY_OPS_COMMANDS:
         with repositories(settings, role="serve") as repos:
@@ -73,35 +43,6 @@ def _handle_ops_exclusive(
     settings: Any,
     lock_db: WorkerDatabase,
 ) -> tuple[int, dict[str, Any]]:
-    if args.ops_command == "refresh-asset-profiles":
-        data = refresh_asset_profiles_once(settings, limit=args.limit, db=lock_db)
-        return 0, {"ok": True, "data": data}
-
-    if args.ops_command == "mirror-token-images":
-        data = mirror_token_images_once(settings, limit=args.limit, db=lock_db)
-        return 0, {"ok": True, "data": data}
-
-    if args.ops_command == "run-resolution-refresh":
-        data = refresh_resolutions_once(
-            settings,
-            limit=args.limit,
-            reprocess_limit=args.reprocess_limit,
-            db=lock_db,
-        )
-        return 0, {"ok": True, "data": data}
-
-    if args.ops_command == "reprocess-token-intents":
-        now_ms = _now_ms()
-        with repositories(settings) as repos:
-            reprocess = reprocess_recent_token_intents(
-                repos=repos,
-                now_ms=now_ms,
-                window=args.window,
-                limit=args.limit,
-                lookup_keys=args.lookup_key or None,
-            )
-        return 0, {"ok": True, "data": {"reprocess": reprocess}}
-
     if args.ops_command == "rebuild-token-intents":
         now_ms = _now_ms()
         with repositories(settings) as repos:
@@ -131,10 +72,6 @@ def _handle_ops_exclusive(
             dry_run=bool(args.dry_run),
             execute=bool(args.execute),
         )
-        return 0, {"ok": True, "data": data}
-
-    if args.ops_command == "sync-binance-cex-profiles":
-        data = sync_binance_cex_profiles_once(settings)
         return 0, {"ok": True, "data": data}
 
     if args.ops_command == "sync-us-equity-symbols":

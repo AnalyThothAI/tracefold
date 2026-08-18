@@ -160,48 +160,16 @@ class UpstreamConfig(BaseModel):
         return normalized
 
 
-class OkxProviderConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    dex_base_url: str = "https://web3.okx.com"
-    dex_chain_indexes: tuple[str, ...] = ("501", "1", "56", "8453", "607", "4663")
-    dex_api_key: str | None = None
-    dex_secret_key: str | None = None
-    dex_passphrase: str | None = None
-    timeout_seconds: float = 15.0
-
-    @field_validator("dex_base_url", mode="before")
-    @classmethod
-    def parse_base_url(cls, value: Any) -> str:
-        normalized = str(value or "").strip().rstrip("/")
-        return normalized
-
-    @field_validator("dex_chain_indexes", mode="before")
-    @classmethod
-    def parse_tuple(cls, value: Any) -> tuple[str, ...]:
-        return tuple(_split_values(value))
-
-    @field_validator("dex_api_key", "dex_secret_key", "dex_passphrase", mode="before")
-    @classmethod
-    def parse_optional_secret(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-
 class BinanceProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    web3_base_url: str = "https://web3.binance.com"
-    cex_profile_base_url: str = "https://www.binance.com"
     usdm_futures_base_url: str = "https://fapi.binance.com"
     cex_universe_quote_symbol: str = "USDT"
     cex_universe_contract_type: str = "PERPETUAL"
     timeout_seconds: float = 15.0
 
-    @field_validator("web3_base_url", "cex_profile_base_url", "usdm_futures_base_url", mode="before")
+    @field_validator("usdm_futures_base_url", mode="before")
     @classmethod
     def parse_base_url(cls, value: Any) -> str:
         return str(value or "").strip().rstrip("/")
@@ -227,7 +195,6 @@ class MacroSourcesConfig(BaseModel):
 class ProvidersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    okx: OkxProviderConfig = Field(default_factory=OkxProviderConfig)
     binance: BinanceProviderConfig = Field(default_factory=BinanceProviderConfig)
     macro_sources: MacroSourcesConfig = Field(default_factory=MacroSourcesConfig)
 
@@ -438,10 +405,6 @@ class Settings(BaseModel):
     def gmgn_configured(self) -> bool:
         return bool(self.gmgn.api_key)
 
-    @property
-    def okx_dex_configured(self) -> bool:
-        return bool(self.providers.okx.dex_base_url)
-
     @field_validator("ws_token", mode="before")
     @classmethod
     def parse_optional_ws_token(cls, value: Any) -> str | None:
@@ -605,17 +568,8 @@ gmgn:
   token_info_cache_ttl_seconds: 60
 
 providers:
-  okx:
-    dex_base_url: "https://web3.okx.com"
-    dex_chain_indexes: ["501", "1", "56", "8453", "607", "4663"]
-    dex_api_key:
-    dex_secret_key:
-    dex_passphrase:
-    timeout_seconds: 15
   binance:
     enabled: true
-    web3_base_url: "https://web3.binance.com"
-    cex_profile_base_url: "https://www.binance.com"
     usdm_futures_base_url: "https://fapi.binance.com"
     cex_universe_quote_symbol: "USDT"
     cex_universe_contract_type: "PERPETUAL"

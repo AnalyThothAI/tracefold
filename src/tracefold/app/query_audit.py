@@ -25,7 +25,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "workers_runtime",
         "provider_gmgn_freshness",
         "provider_circuits",
-        "provider_backlogs",
     ),
     "/api/recent": ("recent_all", "events_by_ids"),
     "/api/events/by-ids": ("events_by_ids",),
@@ -34,12 +33,8 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/search/inspect": (
         "search_v2_lexical",
         "search_v2_substring",
-        "token_profile_target",
     ),
-    "/api/token-case": (
-        "token_profile_target",
-        "target_posts_recent",
-    ),
+    "/api/token-case": ("target_posts_recent",),
     "/api/target-posts": ("target_posts_recent",),
     "/api/target-social-timeline": ("target_posts_recent",),
     "/api/news/feed": (

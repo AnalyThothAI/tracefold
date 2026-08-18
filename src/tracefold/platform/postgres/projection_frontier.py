@@ -22,13 +22,6 @@ class FrontierSpec:
     stable_order: int
 
 
-PROFILE_FRONTIER = FrontierSpec(
-    domain="profile",
-    table="token_profile_projection_frontiers",
-    key_columns=("target_type", "target_id"),
-    version_column="projection_version",
-    stable_order=10,
-)
 MACRO_FRONTIER = FrontierSpec(
     domain="macro",
     table="macro_module_frontiers",
@@ -36,10 +29,7 @@ MACRO_FRONTIER = FrontierSpec(
     version_column="projection_version",
     stable_order=20,
 )
-FRONTIER_SPECS = (
-    PROFILE_FRONTIER,
-    MACRO_FRONTIER,
-)
+FRONTIER_SPECS = (MACRO_FRONTIER,)
 
 
 class ProjectionFrontierRepository:
@@ -574,7 +564,6 @@ def _required_text(value: object, field: str) -> str:
 __all__ = [
     "FRONTIER_SPECS",
     "MACRO_FRONTIER",
-    "PROFILE_FRONTIER",
     "FrontierSpec",
     "ProjectionFrontierRepository",
 ]

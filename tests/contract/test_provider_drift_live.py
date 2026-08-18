@@ -26,7 +26,6 @@ def test_live_provider_configuration_shape_matches_redacted_contract() -> None:
         "config_path": str(settings.app_home / "config.yaml"),
         "providers": {
             "gmgn_configured": settings.gmgn_configured,
-            "okx_dex_configured": settings.okx_dex_configured,
         },
     }
 

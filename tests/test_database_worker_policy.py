@@ -14,25 +14,13 @@ from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatab
 from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.macro.projection import MacroProjectionService
 from tracefold.market.pricing.event_anchor_backfill_worker import EventAnchorBackfill
-from tracefold.market.profiles.profile_projection import ProfileProjectionService
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
-@pytest.mark.parametrize(
-    ("service_type", "worker_name", "kwargs"),
-    [
-        (MacroProjectionService, "macro_projection", {}),
-        (ProfileProjectionService, "profile_projection", {"active_profile_provider_ids": ()}),
-    ],
-)
-def test_projection_services_default_to_canonical_terminal_owner(
-    service_type: Any,
-    worker_name: str,
-    kwargs: dict[str, Any],
-) -> None:
-    service = service_type(db=_RecordingSessionDatabase(), **kwargs)
+def test_projection_services_default_to_canonical_terminal_owner() -> None:
+    service = MacroProjectionService(db=_RecordingSessionDatabase())
 
-    assert service.worker_name == worker_name
+    assert service.worker_name == "macro_projection"
 
 
 def test_background_projection_session_bounds_postgres_parallelism() -> None:
@@ -40,7 +28,7 @@ def test_background_projection_session_bounds_postgres_parallelism() -> None:
     pool = _FakePool(conn)
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
 
-    with bundle.worker_session("profile_projection"):
+    with bundle.worker_session("macro_projection"):
         pass
 
     configured = _combined_config(conn.executed[0])
@@ -80,7 +68,7 @@ def test_worker_session_enforces_transaction_local_timeout() -> None:
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
 
     with bundle.worker_session(
-        "profile_projection",
+        "macro_projection",
         transaction_timeout_seconds=0.5,
     ):
         pass
@@ -117,15 +105,15 @@ def test_projection_transitions_flush_only_after_outer_worker_transaction_commit
     telemetry = _RecordingTelemetry()
     bundle = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=telemetry)
 
-    with bundle.worker_session("profile_projection") as repos:
-        repos.projection_frontiers._observe("profile", "arrival")
-        repos.projection_frontiers._observe("profile", "arrival")
-        repos.projection_frontiers._observe("profile", "completion")
+    with bundle.worker_session("macro_projection") as repos:
+        repos.projection_frontiers._observe("macro", "arrival")
+        repos.projection_frontiers._observe("macro", "arrival")
+        repos.projection_frontiers._observe("macro", "completion")
         assert telemetry.transitions == []
 
     assert telemetry.transitions == [
-        ("profile", "arrival", 2),
-        ("profile", "completion", 1),
+        ("macro", "arrival", 2),
+        ("macro", "completion", 1),
     ]
 
 
@@ -133,19 +121,19 @@ def test_projection_transitions_are_discarded_on_outer_or_nested_rollback() -> N
     telemetry = _RecordingTelemetry()
     bundle = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=telemetry)
 
-    with pytest.raises(ValueError, match="outer"), bundle.worker_session("profile_projection") as repos:
-        repos.projection_frontiers._observe("profile", "arrival")
+    with pytest.raises(ValueError, match="outer"), bundle.worker_session("macro_projection") as repos:
+        repos.projection_frontiers._observe("macro", "arrival")
         raise ValueError("outer")
 
     with (
-        bundle.worker_session("profile_projection") as repos,
+        bundle.worker_session("macro_projection") as repos,
         pytest.raises(
             ValueError,
             match="nested",
         ),
         repos.transaction(),
     ):
-        repos.projection_frontiers._observe("profile", "arrival")
+        repos.projection_frontiers._observe("macro", "arrival")
         raise ValueError("nested")
 
     assert telemetry.transitions == []
@@ -157,11 +145,6 @@ def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() ->
             MacroProjectionService,
             {},
             "macro_maintenance_rebuild",
-        ),
-        (
-            ProfileProjectionService,
-            {"active_profile_provider_ids": ()},
-            "profile_maintenance_rebuild",
         ),
     )
     for service_type, kwargs, worker_name in cases:

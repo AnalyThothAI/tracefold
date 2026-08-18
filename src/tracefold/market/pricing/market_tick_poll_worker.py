@@ -31,7 +31,7 @@ from tracefold.market.windows import PRODUCT_WINDOW_MS
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 SOURCE_TIER: MarketTickSourceTier = "tier2_poll"
-DEX_SOURCE_PROVIDER: MarketTickSourceProvider = "okx_dex_rest"
+DEX_SOURCE_PROVIDER: MarketTickSourceProvider = "gmgn_dex_quote"
 CEX_SOURCE_PROVIDER: MarketTickSourceProvider = "binance_cex_rest"
 
 

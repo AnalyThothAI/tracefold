@@ -15,11 +15,9 @@ class TokenCaseService:
         self,
         *,
         targets: Any,
-        profiles: Any,
         market_candles: Any | None = None,
     ) -> None:
         self.targets = targets
-        self.profiles = profiles
         self.market_candles = market_candles
 
     def dossier(
@@ -52,11 +50,9 @@ class TokenCaseService:
             limit=posts_limit,
             now_ms=now_ms,
         )
-        profile = self.profiles.profile_for_target(target_type=target_type, target_id=target_id)
         market_live = self._market_live(target=target, now_ms=now_ms)
         return {
             "target": target,
-            "profile": profile,
             "timeline": timeline,
             "posts": posts,
             "market_live": market_live,

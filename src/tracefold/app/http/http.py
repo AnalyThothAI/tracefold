@@ -12,14 +12,12 @@ from tracefold.app.http import (
     routes_news,
     routes_search,
     routes_status,
-    routes_token_images,
 )
 
 
 def create_api_router(status_payload: Callable[[Any], dict[str, Any]]) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["api"])
     router.include_router(routes_status.create_router(status_payload))
-    router.include_router(routes_token_images.router)
     router.include_router(routes_events.router)
     router.include_router(routes_search.router)
     router.include_router(routes_market.router)

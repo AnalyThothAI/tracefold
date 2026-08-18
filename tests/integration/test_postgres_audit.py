@@ -152,7 +152,7 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert len(payload["news_schema"]["actual_tables"]) == 13
+    assert len(payload["news_schema"]["actual_tables"]) == 12
     assert {"news_stories", "news_brief_current", "news_push_state", "news_sources"}.isdisjoint(
         payload["news_schema"]["actual_tables"]
     )

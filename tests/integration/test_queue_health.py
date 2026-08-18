@@ -13,17 +13,13 @@ from tracefold.app.database import WorkerDatabase
 from tracefold.app.queue_health import fetch_queue_table_health, queue_tables_for_owner
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.platform.config.settings import Settings
-from tracefold.platform.postgres.projection_frontier import PROFILE_FRONTIER
+from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
 
 NOW_MS = 10_000
 ALL_QUEUE_TABLES = (
-    "asset_profile_refresh_targets",
     "event_anchor_backfill_jobs",
     "macro_document_analysis_jobs",
     "macro_module_frontiers",
-    "token_discovery_dirty_lookup_keys",
-    "token_image_source_dirty_targets",
-    "token_profile_projection_frontiers",
 )
 
 
@@ -59,57 +55,10 @@ def test_active_queue_inspection_covers_every_declared_queue_while_workers_are_r
     assert all(item["queue_health"]["available"] for item in queue_payload["data"]["items"])
 
 
-def test_queue_registry_has_one_truthful_owner_for_all_seven_tables() -> None:
+def test_queue_registry_has_one_truthful_owner_for_all_three_tables() -> None:
     assert queue_tables_for_owner(None) == ALL_QUEUE_TABLES
-    assert queue_tables_for_owner("profile_projection") == ("token_profile_projection_frontiers",)
+    assert queue_tables_for_owner("macro_projection") == ("macro_module_frontiers",)
     assert queue_tables_for_owner("unknown") == ()
-
-
-def test_dirty_target_health_excludes_retained_terminal_rows_and_does_not_double_count_them() -> None:
-    prepare_postgres_database()
-    conn = connect_postgres_test(read_only=False)
-    repos = repositories_for_connection(conn)
-    try:
-        with repos.transaction():
-            repos.asset_profile_refresh_targets.enqueue_targets(
-                [_profile_target("terminal", due_at_ms=NOW_MS)],
-                reason="test",
-                now_ms=NOW_MS,
-            )
-            claim = repos.asset_profile_refresh_targets.claim_due(
-                provider="gmgn_dex_profile",
-                now_ms=NOW_MS,
-                limit=1,
-                lease_owner="test-owner",
-                lease_ms=1_000,
-            )
-            assert len(claim) == 1
-            assert (
-                repos.asset_profile_refresh_targets.mark_terminal(
-                    claim,
-                    reason="test_terminal",
-                    now_ms=NOW_MS,
-                )
-                == 1
-            )
-            repos.asset_profile_refresh_targets.enqueue_targets(
-                [_profile_target("scheduled", due_at_ms=NOW_MS + 1_000)],
-                reason="test",
-                now_ms=NOW_MS,
-            )
-
-        health = fetch_queue_table_health(conn, "asset_profile_refresh_targets", now_ms=NOW_MS)
-
-        assert health["available"] is True
-        assert health["total_count"] == 2
-        assert health["queue_depth"] == 1
-        assert health["due_count"] == 0
-        assert health["source_terminal_count"] == 1
-        assert health["unresolved_terminal_count"] == 1
-        assert health["blocked_count"] == 1
-        assert health["status"] == "blocked"
-    finally:
-        conn.close()
 
 
 def test_frontier_and_native_job_health_use_eligibility_and_expired_lease_clocks() -> None:
@@ -119,23 +68,23 @@ def test_frontier_and_native_job_health_use_eligibility_and_expired_lease_clocks
     try:
         with repos.transaction():
             repos.projection_frontiers.mark_dirty(
-                PROFILE_FRONTIER,
-                key={"target_type": "Asset", "target_id": "asset:test:profile"},
+                MACRO_FRONTIER,
+                key={"module_id": "queue-health-module"},
                 dirty_at_ms=NOW_MS - 2_000,
                 deadline_at_ms=NOW_MS + 5_000,
                 eligible_at_ms=NOW_MS - 1_000,
-                input_fingerprint="sha256:profile-input",
-                version="profile-test-v1",
+                input_fingerprint="sha256:macro-input",
+                version="macro-test-v1",
             )
             _insert_macro_document_jobs(conn)
 
-        profile = fetch_queue_table_health(conn, "token_profile_projection_frontiers", now_ms=NOW_MS)
+        frontier = fetch_queue_table_health(conn, "macro_module_frontiers", now_ms=NOW_MS)
         document = fetch_queue_table_health(conn, "macro_document_analysis_jobs", now_ms=NOW_MS)
 
-        assert profile["kind"] == "projection_frontier"
-        assert profile["queue_depth"] == 1
-        assert profile["due_count"] == 1
-        assert profile["oldest_due_age_ms"] == 1_000
+        assert frontier["kind"] == "projection_frontier"
+        assert frontier["queue_depth"] == 1
+        assert frontier["due_count"] == 1
+        assert frontier["oldest_due_age_ms"] == 1_000
 
         assert document["counts_by_status"] == {"claimed": 1, "retryable": 1}
         assert document["queue_depth"] == 2
@@ -145,21 +94,6 @@ def test_frontier_and_native_job_health_use_eligibility_and_expired_lease_clocks
         assert document["status"] == "degraded"
     finally:
         conn.close()
-
-
-def _profile_target(suffix: str, *, due_at_ms: int) -> dict[str, object]:
-    return {
-        "provider": "gmgn_dex_profile",
-        "target_type": "Asset",
-        "target_id": f"asset:test:{suffix}",
-        "chain_id": "eip155:1",
-        "address": f"0x{suffix.encode().hex():0<40}"[:42],
-        "symbol": suffix.upper(),
-        "source_watermark_ms": NOW_MS,
-        "heat_tier": "hot",
-        "priority": 10,
-        "due_at_ms": due_at_ms,
-    }
 
 
 def _insert_macro_document_jobs(conn) -> None:

@@ -1,7 +1,6 @@
 import type { TokenCaseDossier, TokenPostsData } from "@lib/types";
 
 const BASE_MS = 1_777_746_300_000;
-const HANSA_TOKEN_IMAGE_URL = "/api/token-images/hansa-local";
 
 export function tokenCaseFixture(): TokenCaseDossier {
   return {
@@ -14,26 +13,6 @@ export function tokenCaseFixture(): TokenCaseDossier {
       status: "resolved",
       source: "registry_assets",
       reason: "TARGET_ID",
-    },
-    profile: {
-      status: "ready",
-      provider: "gmgn",
-      observed_at_ms: BASE_MS - 60_000,
-      identity: {
-        symbol: "HANSA",
-        name: "Hansa Network",
-        logo_url: HANSA_TOKEN_IMAGE_URL,
-        description: "Socially discovered Solana token with fast scanner pickup.",
-      },
-      links: {
-        website_url: "https://hansa.example",
-        twitter_username: "hansa_sol",
-        gmgn_url: "https://gmgn.ai/sol/token/FhoxjfsuStvRQKRXSuB9ZDB7WRGjqhUPxa3NztWspump",
-      },
-      source: {
-        provider: "gmgn",
-        raw_available: true,
-      },
     },
     timeline: {
       query: {

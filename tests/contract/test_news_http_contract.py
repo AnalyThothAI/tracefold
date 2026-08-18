@@ -52,7 +52,7 @@ class _FakeNewsRepository:
         if kwargs.get("cursor") == "broken":
             raise ValueError("news_feed_cursor_invalid")
         return {
-            "events": [{**_event(), "display_title": "铜价冲击纪录", "presentation_outcome": "translated"}],
+            "events": [{**_event(), "title_zh": "铜价冲击纪录"}],
             "next_cursor": None,
             "filters": {
                 "family": kwargs["family"],
@@ -75,7 +75,7 @@ class _FakeNewsRepository:
             "members": [],
             "verdicts": [],
             "deliveries": [],
-            "presentation": None,
+            "labels": [],
             "marks": [],
         }
 
@@ -163,8 +163,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "limit",
     }
     assert set(schemas_news.NewsFeedEventData.model_fields) - set(schemas_news.NewsEventData.model_fields) == {
-        "display_title",
-        "presentation_outcome",
+        "title_zh",
         "triage",
         "delivery",
     }
@@ -173,7 +172,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "members",
         "verdicts",
         "deliveries",
-        "presentation",
+        "labels",
         "marks",
     }
     assert set(schemas_news.NewsStatusData.model_fields) == {
@@ -233,7 +232,7 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
         "limit": 5,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
-    assert body["data"]["events"][0]["display_title"] == "铜价冲击纪录"
+    assert body["data"]["events"][0]["title_zh"] == "铜价冲击纪录"
     assert response.headers.get("etag")
     assert news.calls[0][1]["cursor"] is None
 

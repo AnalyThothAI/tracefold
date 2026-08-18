@@ -19,20 +19,12 @@ from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.macro import MacroProjectionCandidate, acquisition_loop_policy, require_dataset
 from tracefold.macro.domain import MacroSourceError
 from tracefold.macro.runtime import MacroAcquisition
-from tracefold.market.identity.resolution_refresh_worker import ResolutionRefresh
 from tracefold.market.pricing.event_anchor_backfill_worker import (
     EventAnchorBackfill,
     _RescheduleOutcome,
     _TerminalOutcome,
 )
 from tracefold.market.pricing.market_tick_poll_worker import MarketTickPoll
-from tracefold.market.profiles.asset_profile_refresh_worker import AssetProfileRefresh
-from tracefold.market.profiles.token_image_mirror_worker import TokenImageMirror
-from tracefold.market.provider_contracts import (
-    DexProfileSource,
-    DexProviderTemporarilyUnavailable,
-    MarketProviderExpectedError,
-)
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
@@ -383,18 +375,6 @@ def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() ->
     macro.db = database
     macro.service = SimpleNamespace(claim_next=lambda: None)
 
-    resolution = object.__new__(ResolutionRefresh)
-    resolution.db = database
-
-    profile = object.__new__(AssetProfileRefresh)
-    profile.db = database
-    profile.dex_profile_sources = (SimpleNamespace(provider="gmgn_dex_profile"),)
-    profile._inactive_cleanup_complete = True
-    profile._source_cursor = 0
-
-    image = object.__new__(TokenImageMirror)
-    image.db = database
-
     anchor = object.__new__(EventAnchorBackfill)
     anchor.db = database
     anchor.clock = lambda: 1
@@ -404,9 +384,6 @@ def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() ->
 
     async def scenario() -> None:
         assert await macro.turn() is None
-        assert await resolution.turn(now_ms=1) is None
-        assert await profile.turn(now_ms=1) is None
-        assert await image.turn(now_ms=1) is None
         assert await anchor.turn() is None
         assert await poll.sample() is None
 
@@ -595,190 +572,6 @@ def test_event_anchor_provider_overrun_uses_existing_retry_budget(
         assert outcome.next_run_at_ms == now_ms + 10_000
     else:
         assert outcome.status == "failed"
-
-
-def test_resolution_provider_overrun_uses_existing_unavailable_branch_without_releasing_claims() -> None:
-    claim = {
-        "lookup_key": "symbol:BTC",
-        "lookup_type": "dex_symbol_lookup",
-        "attempt_count": 1,
-        "error_count": 0,
-    }
-
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-            self.error: Exception | None = None
-
-        async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-            self.operations.append(operation_name)
-            if operation_name == "resolution_claim":
-                return [claim], False
-            if operation_name == "resolution_publish_unavailable":
-                self.error = args[-1]
-                return True
-            raise AssertionError(operation_name)
-
-    database = _Database()
-    worker = object.__new__(ResolutionRefresh)
-    worker.db = database
-    worker.finite_operations = _SubmittedOverrunFiniteOperations()
-    worker.dex_discovery_market = object()
-    worker.chain_ids = ("solana",)
-
-    assert asyncio.run(worker.turn(now_ms=1_000)) is True
-    assert isinstance(database.error, DexProviderTemporarilyUnavailable)
-    assert str(database.error) == "resolution_provider_lookup_timeout"
-    assert database.operations == ["resolution_claim", "resolution_publish_unavailable"]
-
-
-@pytest.mark.parametrize(("attempt_count", "expected"), [(1, "failed"), (3, "terminal")])
-def test_token_image_provider_overrun_publishes_existing_bounded_error_result(
-    attempt_count: int,
-    expected: str,
-) -> None:
-    claim = {
-        "source_url": "https://images.example/token.png",
-        "source_provider": "gmgn",
-        "source_kind": "logo",
-        "raw_ref_json": {},
-        "attempt_count": attempt_count,
-    }
-
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-            self.mirror_result: dict[str, object] | None = None
-
-        async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-            self.operations.append(operation_name)
-            if operation_name == "token_image_claim":
-                return claim, None, 1
-            if operation_name == "token_image_publish":
-                self.mirror_result = args[1]
-                return {"queue_rows_changed": 1, "asset_rows_changed": 1}
-            raise AssertionError(operation_name)
-
-    database = _Database()
-    worker = TokenImageMirror(
-        db=database,
-        app_home=".",
-        finite_operations=_SubmittedOverrunFiniteOperations(),
-        runtime_id="runtime",
-    )
-
-    assert asyncio.run(worker.turn(now_ms=1_000)) == expected
-    assert database.mirror_result == {
-        "status": "error",
-        "error": "token_image_fetch_timeout",
-    }
-    assert database.operations == ["token_image_claim", "token_image_publish"]
-
-
-def test_asset_profile_provider_overrun_uses_existing_failure_branch_without_releasing_claim() -> None:
-    claim = {
-        "provider": "gmgn_dex_profile",
-        "target_id": "asset-1",
-        "attempt_count": 1,
-    }
-
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-            self.error: Exception | None = None
-
-        async def run_business(self, operation_name, _function, /, *args, **_kwargs):
-            self.operations.append(operation_name)
-            if operation_name == "asset_profile_claim":
-                return claim, {"due": 1}
-            if operation_name == "asset_profile_publish_unavailable":
-                self.error = args[1]
-                return {"terminal": 0}
-            raise AssertionError(operation_name)
-
-    database = _Database()
-    worker = AssetProfileRefresh(
-        db=database,
-        finite_operations=_SubmittedOverrunFiniteOperations(),
-        runtime_id="runtime",
-        dex_profile_sources=(DexProfileSource(provider="gmgn_dex_profile", market=object()),),
-    )
-    worker._inactive_cleanup_complete = True
-
-    assert asyncio.run(worker.turn(now_ms=1_000)) == "failed"
-    assert isinstance(database.error, MarketProviderExpectedError)
-    assert str(database.error) == "asset_profile_fetch_timeout"
-    assert database.operations == ["asset_profile_claim", "asset_profile_publish_unavailable"]
-
-
-def test_asset_profile_releases_claim_when_publication_admission_is_saturated() -> None:
-    claim = {"provider": "gmgn_dex_profile", "target_id": "asset:one"}
-
-    class _Database:
-        def __init__(self) -> None:
-            self.operations: list[str] = []
-
-        async def run_business(self, operation_name, function, /, *args, **kwargs):
-            del function, args, kwargs
-            self.operations.append(operation_name)
-            if operation_name == "asset_profile_claim":
-                return claim, {"due": 1}
-            if operation_name == "asset_profile_publish":
-                raise ResourceAdmissionTimeout("publication_db_saturated")
-            if operation_name == "asset_profile_release_prework":
-                return True
-            raise AssertionError(operation_name)
-
-    class _FiniteOperations:
-        async def run(self, operation_name, function, /, *args, **kwargs):
-            del operation_name, function, args
-            kwargs["on_submitted"]()
-            return object()
-
-    class _ProfileMarket:
-        def token_profile(self, *, chain_id: str, address: str):
-            del chain_id, address
-
-        def close(self) -> None:
-            return None
-
-    database = _Database()
-    profile = AssetProfileRefresh(
-        db=database,
-        finite_operations=_FiniteOperations(),
-        runtime_id="runtime",
-        dex_profile_sources=(
-            DexProfileSource(
-                provider="gmgn_dex_profile",
-                market=_ProfileMarket(),
-            ),
-        ),
-    )
-    profile._inactive_cleanup_complete = True
-
-    assert asyncio.run(profile.turn(now_ms=1)) is None
-    assert database.operations == [
-        "asset_profile_claim",
-        "asset_profile_publish",
-        "asset_profile_release_prework",
-    ]
-
-
-def test_release_prework_admission_timeout_uses_lease_recovery() -> None:
-    class _SaturatedDatabase:
-        async def run_business(self, operation_name, function, /, *args, **kwargs):
-            del function, args, kwargs
-            raise ResourceAdmissionTimeout(f"saturated:{operation_name}")
-
-    database = _SaturatedDatabase()
-
-    resolution = object.__new__(ResolutionRefresh)
-    resolution.db = database
-
-    async def scenario() -> None:
-        assert await resolution._release_prework([{}]) is False
-
-    asyncio.run(scenario())
 
 
 def test_model_arbiter_propagates_post_model_admission_timeout() -> None:

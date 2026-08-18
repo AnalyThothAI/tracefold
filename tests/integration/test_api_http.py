@@ -63,170 +63,15 @@ def test_api_json_response_replaces_non_finite_float_payloads_with_null():
     }
 
 
-def test_token_images_serves_ready_local_file_without_auth(tmp_path):
+def test_token_image_routes_are_absent(tmp_path):
     app = create_app(settings=make_settings(tmp_path))
 
     with TestClient(app) as client:
-        image_id = seed_ready_token_image(client, content=b"fake-png")
-        response = client.get(f"/api/token-images/{image_id}")
+        proxy = client.get("/api/token-image", params={"url": "https://gmgn.ai/external-res/token-alpha.png"})
+        mirrored = client.get(f"/api/token-images/{'0' * 64}")
 
-    assert response.status_code == 200
-    assert response.content == b"fake-png"
-    assert response.headers["content-type"].startswith("image/png")
-    assert response.headers["cache-control"] == "public, max-age=86400"
-
-
-def test_token_images_rejects_invalid_image_ids(tmp_path):
-    app = create_app(settings=make_settings(tmp_path, reset=False))
-
-    with TestClient(app) as client:
-        responses = [client.get(f"/api/token-images/{image_id}") for image_id in ("a" * 63, "A" * 64, "g" * 64)]
-
-    assert [response.status_code for response in responses] == [404, 404, 404]
-
-
-def test_token_images_returns_404_for_missing_and_error_rows(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-
-    with TestClient(app) as client:
-        source_url = "https://gmgn.ai/external-res/error-token.png"
-        with write_repositories() as repos:
-            repos.token_image_assets.upsert_pending_sources(
-                [
-                    {
-                        "source_url": source_url,
-                        "source_provider": "gmgn_dex_profile",
-                        "source_kind": "asset_profile.logo_url",
-                        "raw_ref_json": {"source": "test"},
-                    }
-                ],
-                now_ms=1_779_000_000_000,
-            )
-            repos.token_image_assets.mark_error(
-                source_url,
-                error="upstream failed",
-                now_ms=1_779_000_000_100,
-                retry_ms=30_000,
-            )
-
-        missing = client.get(f"/api/token-images/{'0' * 64}")
-        error = client.get(f"/api/token-images/{_sha256(source_url)}")
-
-    assert missing.status_code == 404
-    assert error.status_code == 404
-
-
-def test_token_images_returns_404_when_ready_file_is_missing(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-
-    with TestClient(app) as client:
-        image_id = seed_ready_token_image(client, storage_path="missing.png", write_file=False)
-        response = client.get(f"/api/token-images/{image_id}")
-
-    assert response.status_code == 404
-
-
-def test_token_images_rejects_storage_path_traversal(tmp_path):
-    app = create_app(settings=make_settings(tmp_path, reset=False))
-
-    with TestClient(app) as client:
-        runtime = client.app.state.service
-        cache_root = runtime.settings.app_home / "cache"
-        cache_root.mkdir(parents=True, exist_ok=True)
-        (cache_root / "outside.png").write_bytes(b"leaked")
-        image_id = insert_ready_token_image_row(client, storage_path="../outside.png")
-
-        response = client.get(f"/api/token-images/{image_id}")
-
-    assert response.status_code == 404
-    assert response.content != b"leaked"
-
-
-def test_old_token_image_proxy_route_is_absent(tmp_path):
-    app = create_app(settings=make_settings(tmp_path))
-
-    with TestClient(app) as client:
-        response = client.get(
-            "/api/token-image",
-            params={"url": "https://gmgn.ai/external-res/token-alpha.png"},
-        )
-
-    assert response.status_code == 404
-
-
-def seed_ready_token_image(
-    client: TestClient,
-    *,
-    source_url: str = "https://gmgn.ai/external-res/token-alpha.png",
-    storage_path: str = "token-alpha.png",
-    content: bytes = b"fake-png",
-    media_type: str = "image/png",
-    write_file: bool = True,
-) -> str:
-    runtime = client.app.state.service
-    cache_dir = runtime.settings.app_home / "cache" / "token-images"
-    if write_file:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        (cache_dir / storage_path).write_bytes(content)
-    with write_repositories() as repos:
-        repos.token_image_assets.upsert_pending_sources(
-            [
-                {
-                    "source_url": source_url,
-                    "source_provider": "gmgn_dex_profile",
-                    "source_kind": "asset_profile.logo_url",
-                    "raw_ref_json": {"source": "test"},
-                }
-            ],
-            now_ms=1_779_000_000_000,
-        )
-        row = repos.token_image_assets.mark_ready(
-            source_url,
-            media_type=media_type,
-            file_extension=".png",
-            content_sha256="a" * 64,
-            byte_size=len(content),
-            storage_path=storage_path,
-            now_ms=1_779_000_000_100,
-        )
-    return str(row["image_id"])
-
-
-def insert_ready_token_image_row(
-    client: TestClient,
-    *,
-    source_url: str = "https://gmgn.ai/external-res/traversal-token.png",
-    storage_path: str,
-) -> str:
-    image_id = _sha256(source_url)
-    with write_repositories() as repos:
-        repos.conn.execute(
-            """
-            INSERT INTO token_image_assets(
-              image_id, source_url, source_url_hash, source_provider, source_kind, status,
-              media_type, file_extension, content_sha256, byte_size, storage_path,
-              public_url, raw_ref_json, failure_count, next_refresh_at_ms,
-              created_at_ms, updated_at_ms
-            )
-            VALUES (
-              %s, %s, %s, 'gmgn_dex_profile', 'asset_profile.logo_url', 'ready',
-              'image/png', '.png', %s, 6, %s, %s, '{}'::jsonb, 0, %s, %s, %s
-            )
-            """,
-            (
-                image_id,
-                source_url,
-                image_id,
-                "b" * 64,
-                storage_path,
-                f"/api/token-images/{image_id}",
-                1_779_000_000_000,
-                1_779_000_000_000,
-                1_779_000_000_000,
-            ),
-        )
-        repos.conn.commit()
-    return image_id
+    assert proxy.status_code == 404
+    assert mirrored.status_code == 404
 
 
 def _sha256(value: str) -> str:
@@ -590,7 +435,7 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "limit": 10,
     }
     assert 0 < len(feed_data["events"]) <= 10
-    assert all(event["display_title"] for event in feed_data["events"])
+    assert all("title_zh" in event for event in feed_data["events"])
     assert {event["event_id"] for event in feed_data["events"]} <= set(event_ids)
     if len(event_ids) > 10:
         assert feed_data["next_cursor"]
@@ -682,8 +527,7 @@ def test_api_exposes_recent_search_and_token_read_models(tmp_path):
     assert inspect_data["resolver"]["target_candidates"]
     assert inspect_data["token_result"]["posts"]["items"][0]["event_id"] == "event-1"
     assert inspect_data["token_result"]["timeline"]["market_candles"]["target_type"] == "Asset"
-    assert inspect_data["token_result"]["profile"]["status"] == "pending"
-    assert inspect_data["token_result"]["profile"]["provider"] is None
+    assert "profile" not in inspect_data["token_result"]
     assert inspect_data["token_result"]["market_live"]["status"] in {"missing", "unsupported", "ready"}
     assert "current_radar" not in inspect_data["token_result"]
     legacy_market_field = "market_overlay"
@@ -1185,33 +1029,13 @@ def test_api_status_remains_queryable_when_readiness_is_degraded(tmp_path):
     assert "news" not in body["data"]
 
 
-def test_api_status_separates_provider_freshness_circuit_and_unowned_backlog_from_readiness(
-    tmp_path,
-):
+def test_api_status_separates_provider_freshness_and_circuit_from_readiness(tmp_path):
     settings = make_settings(tmp_path)
     settings.providers.binance.enabled = False
+    settings.gmgn.api_key = "provider-status-test"
     with write_repositories() as repos, repos.transaction():
-        repos.asset_profile_refresh_targets.enqueue_targets(
-            [
-                {
-                    "provider": "binance_web3_profile",
-                    "target_type": "Asset",
-                    "target_id": "asset:dex:sol:test-provider-status",
-                    "chain_id": "sol",
-                    "address": "test-provider-status",
-                    "symbol": "TEST",
-                    "payload_hash": "sha256:provider-status",
-                    "source_watermark_ms": 1,
-                    "heat_tier": "hot",
-                    "priority": 10,
-                }
-            ],
-            reason="provider_status_test",
-            now_ms=1,
-            due_at_ms=1,
-        )
         repos.provider_circuits.open(
-            provider="okx_dex_search",
+            provider="gmgn_dex_quote",
             error="provider status test",
             now_ms=1,
             retry_ms=60_000,
@@ -1226,14 +1050,14 @@ def test_api_status_separates_provider_freshness_circuit_and_unowned_backlog_fro
     data = response.json()["data"]
     assert data["providers"]["status"] == "degraded"
     providers = {item["provider"]: item for item in data["providers"]["items"]}
+    assert set(providers) == {"gmgn_direct_ws", "gmgn_dex_quote", "binance_cex_rest"}
     assert providers["gmgn_direct_ws"]["freshness"] == "no_evidence"
     assert providers["gmgn_direct_ws"]["reasons"] == ["source_stale"]
-    assert providers["okx_dex_search"]["circuit_status"] == "open"
-    assert providers["okx_dex_search"]["reasons"] == ["circuit_open"]
-    assert "last_error" not in providers["okx_dex_search"]
-    assert providers["binance_web3_profile"]["owned"] is False
-    assert providers["binance_web3_profile"]["has_backlog"] is True
-    assert providers["binance_web3_profile"]["reasons"] == ["unowned_backlog"]
+    assert providers["gmgn_dex_quote"]["circuit_status"] == "open"
+    assert providers["gmgn_dex_quote"]["reasons"] == ["circuit_open"]
+    assert "last_error" not in providers["gmgn_dex_quote"]
+    assert providers["binance_cex_rest"]["owned"] is False
+    assert providers["binance_cex_rest"]["status"] == "inactive"
 
 
 def test_api_rejects_removed_narrative_product_surfaces(tmp_path):

@@ -18,7 +18,8 @@ positional arguments:
     config              print effective runtime configuration
     db                  database lifecycle commands
     macro               Macro acquisition and current-module commands
-    news                News V3 broker, control, and evaluation commands
+    news                News V3 broker, control, label, and evaluation
+                        commands
     recent              print recent stored events
     search              search stored tweets by query text
     ops                 maintenance commands
@@ -181,17 +182,23 @@ options:
 ## `news`
 
 ```
-usage: tracefold news [-h] {bus-check,control,eval,replay} ...
+usage: tracefold news [-h]
+                      {bus-check,control,label,eval,replay-decisions,replay,dlq} ...
 
 positional arguments:
-  {bus-check,control,eval,replay}
+  {bus-check,control,label,eval,replay-decisions,replay,dlq}
     bus-check           connect to RabbitMQ, declare the News topology, and
                         print queue depths
-    control             publish a control command to all News consumers
+    control             write a delivery control command to news_control_state
+    label               record an operator label for one Event (learning
+                        plane)
     eval                offline evaluation of Triage decisions against market
                         marks and labels
+    replay-decisions    re-run decide() over stored verdicts with a candidate
+                        policy (no model)
     replay              replay a JSON file of provider hits through
                         Deduper+Gate (no model, no broker)
+    dlq                 inspect, replay, or purge the News dead-letter queue
 
 options:
   -h, --help            show this help message and exit
@@ -212,16 +219,32 @@ options:
 
 ```
 usage: tracefold news control [-h] [--key KEY] [--ttl-minutes TTL_MINUTES]
-                              {pause_delivery,resume_delivery,mute_theme,mute_symbol,unmute,drain}
+                              {pause_delivery,resume_delivery,mute_theme,mute_symbol,unmute}
 
 positional arguments:
-  {pause_delivery,resume_delivery,mute_theme,mute_symbol,unmute,drain}
+  {pause_delivery,resume_delivery,mute_theme,mute_symbol,unmute}
 
 options:
   -h, --help            show this help message and exit
   --key KEY             theme name or symbol for mute/unmute
   --ttl-minutes TTL_MINUTES
                         mute duration
+
+```
+
+## `news label`
+
+```
+usage: tracefold news label [-h] [--note NOTE]
+                            event_id {good,noise,late,wrong_direction,dup}
+
+positional arguments:
+  event_id
+  {good,noise,late,wrong_direction,dup}
+
+options:
+  -h, --help            show this help message and exit
+  --note NOTE           free-text note (<=200 chars)
 
 ```
 
@@ -239,6 +262,23 @@ options:
 
 ```
 
+## `news replay-decisions`
+
+```
+usage: tracefold news replay-decisions [-h] [--hours HOURS]
+                                       [--escalate-magnitude ESCALATE_MAGNITUDE]
+                                       [--min-push-magnitude MIN_PUSH_MAGNITUDE]
+                                       [--min-watchlist-magnitude MIN_WATCHLIST_MAGNITUDE]
+
+options:
+  -h, --help            show this help message and exit
+  --hours HOURS         look-back window
+  --escalate-magnitude ESCALATE_MAGNITUDE
+  --min-push-magnitude MIN_PUSH_MAGNITUDE
+  --min-watchlist-magnitude MIN_WATCHLIST_MAGNITUDE
+
+```
+
 ## `news replay`
 
 ```
@@ -249,6 +289,20 @@ positional arguments:
 
 options:
   -h, --help  show this help message and exit
+
+```
+
+## `news dlq`
+
+```
+usage: tracefold news dlq [-h] [--limit LIMIT] {inspect,replay,purge}
+
+positional arguments:
+  {inspect,replay,purge}
+
+options:
+  -h, --help            show this help message and exit
+  --limit LIMIT         messages to inspect/replay
 
 ```
 
@@ -290,16 +344,10 @@ options:
 
 ```
 usage: tracefold ops [-h]
-                     {seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent} ...
+                     {rebuild-market-current,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-us-equity-symbols,rebuild-token-intents,audit-token-intent} ...
 
 positional arguments:
-  {seal-workers-runtime-acceptance,collect-workers-runtime-acceptance,rebuild-market-current,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-binance-cex-profiles,sync-us-equity-symbols,run-resolution-refresh,refresh-asset-profiles,mirror-token-images,reprocess-token-intents,rebuild-token-intents,audit-token-intent}
-    seal-workers-runtime-acceptance
-                        validate and seal a complete Workers Runtime V2
-                        acceptance bundle
-    collect-workers-runtime-acceptance
-                        collect the fixed 30-minute production Workers Runtime
-                        V2 interval
+  {rebuild-market-current,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-us-equity-symbols,rebuild-token-intents,audit-token-intent}
     rebuild-market-current
                         rebuild current market rows from persisted market tick
                         facts
@@ -317,20 +365,8 @@ positional arguments:
     sync-binance-usdt-perp-universe
                         sync Binance USD-M USDT perpetual contracts into the
                         CEX registry
-    sync-binance-cex-profiles
-                        sync Binance CEX token profiles
     sync-us-equity-symbols
                         sync Nasdaq Trader US equity symbols
-    run-resolution-refresh
-                        refresh due token resolution lookups and reprocess
-                        recent intents
-    refresh-asset-profiles
-                        enqueue missing DEX profile targets and refresh due
-                        profile facts
-    mirror-token-images
-                        mirror provider token images into the local cache
-    reprocess-token-intents
-                        re-resolve recent unresolved token intents
     rebuild-token-intents
                         rebuild recent token evidence, intents, resolutions,
                         and lookup keys
@@ -338,32 +374,6 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-
-```
-
-## `ops seal-workers-runtime-acceptance`
-
-```
-usage: tracefold ops seal-workers-runtime-acceptance [-h] (--bundle BUNDLE |
-                                                     --template)
-
-options:
-  -h, --help       show this help message and exit
-  --bundle BUNDLE  directory containing evidence.json and supporting evidence
-                   files
-  --template       print a deliberately non-passing evidence.json template
-
-```
-
-## `ops collect-workers-runtime-acceptance`
-
-```
-usage: tracefold ops collect-workers-runtime-acceptance [-h] --bundle BUNDLE
-
-options:
-  -h, --help       show this help message and exit
-  --bundle BUNDLE  new absolute evidence directory outside the repository
-                   checkout
 
 ```
 
@@ -479,16 +489,6 @@ options:
 
 ```
 
-## `ops sync-binance-cex-profiles`
-
-```
-usage: tracefold ops sync-binance-cex-profiles [-h]
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
 ## `ops sync-us-equity-symbols`
 
 ```
@@ -496,56 +496,6 @@ usage: tracefold ops sync-us-equity-symbols [-h]
 
 options:
   -h, --help  show this help message and exit
-
-```
-
-## `ops run-resolution-refresh`
-
-```
-usage: tracefold ops run-resolution-refresh [-h] [--limit LIMIT]
-                                            [--reprocess-limit REPROCESS_LIMIT]
-
-options:
-  -h, --help            show this help message and exit
-  --limit LIMIT
-  --reprocess-limit REPROCESS_LIMIT
-
-```
-
-## `ops refresh-asset-profiles`
-
-```
-usage: tracefold ops refresh-asset-profiles [-h] [--limit LIMIT]
-
-options:
-  -h, --help     show this help message and exit
-  --limit LIMIT
-
-```
-
-## `ops mirror-token-images`
-
-```
-usage: tracefold ops mirror-token-images [-h] [--limit LIMIT]
-
-options:
-  -h, --help     show this help message and exit
-  --limit LIMIT
-
-```
-
-## `ops reprocess-token-intents`
-
-```
-usage: tracefold ops reprocess-token-intents [-h] [--window {5m,1h,4h,24h}]
-                                             [--limit LIMIT]
-                                             [--lookup-key LOOKUP_KEY]
-
-options:
-  -h, --help            show this help message and exit
-  --window {5m,1h,4h,24h}
-  --limit LIMIT
-  --lookup-key LOOKUP_KEY
 
 ```
 

@@ -104,7 +104,6 @@ def open_runtime(tmp_path):
         token_evidence=repos.token_evidence,
         token_intents=repos.token_intents,
         intent_resolutions=repos.intent_resolutions,
-        discovery=repos.discovery,
         market_ticks=repos.market_ticks,
         market_tick_current=repos.market_tick_current,
         enriched_events=repos.enriched_events,

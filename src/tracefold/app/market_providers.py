@@ -1,25 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
-from tracefold.app.provider_ownership import configured_profile_provider_ids
 from tracefold.integrations.binance import providers as binance
 from tracefold.integrations.gmgn import providers as gmgn
-from tracefold.integrations.okx import providers as okx
-from tracefold.market import (
-    BINANCE_WEB3_PROFILE_PROVIDER,
-    GMGN_DEX_PROFILE_PROVIDER,
-    CexMarketProvider,
-    DexProfileSource,
-    DexTokenDiscoveryProvider,
-    DexTokenProfileProvider,
-    DexTokenQuote,
-    DexTokenQuoteProvider,
-    DexTokenQuoteRequest,
-    MarketProviderExpectedError,
-    chain_address_key,
-)
+from tracefold.market import CexMarketProvider, DexTokenQuoteProvider
 from tracefold.platform.config.settings import Settings
 
 
@@ -29,146 +15,24 @@ class _SyncCloseProvider(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class AssetMarketProviders:
+    """The two market data providers: GMGN OpenAPI for DEX quotes, Binance USD-M futures for CEX ticks."""
+
     cex_market: CexMarketProvider | None = None
-    dex_discovery_market: DexTokenDiscoveryProvider | None = None
     dex_quote_market: DexTokenQuoteProvider | None = None
-    dex_profile_sources: tuple[DexProfileSource, ...] = ()
-    discovery_chain_ids: tuple[str, ...] = ()
-
-
-class FallbackDexQuoteProvider:
-    def __init__(self, *, primary: DexTokenQuoteProvider, fallback: DexTokenQuoteProvider | None) -> None:
-        self._primary = primary
-        self._fallback = fallback
-
-    def token_quotes(self, tokens: list[DexTokenQuoteRequest]) -> list[DexTokenQuote]:
-        requests = list(tokens)
-        if len(requests) > 1 and self._fallback is not None:
-            return self._fallback.token_quotes(requests)
-        try:
-            primary_quotes = self._primary.token_quotes(requests)
-        except MarketProviderExpectedError:
-            if self._fallback is None:
-                raise
-            primary_quotes = []
-            missing = requests
-        else:
-            missing = []
-        by_key = {
-            _quote_key(quote.chain_id, quote.address): quote for quote in primary_quotes if _quote_has_price(quote)
-        }
-        if not missing:
-            missing = [token for token in requests if _quote_key(token.chain_id, token.address) not in by_key]
-        if missing and self._fallback is not None:
-            fallback_quotes = self._fallback.token_quotes(missing)
-            for fallback_quote in fallback_quotes:
-                key = _quote_key(fallback_quote.chain_id, fallback_quote.address)
-                if _quote_has_price(fallback_quote):
-                    by_key[key] = fallback_quote
-        return [
-            quote for token in requests if (quote := by_key.get(_quote_key(token.chain_id, token.address))) is not None
-        ]
-
-    def close(self) -> None:
-        if self._fallback is not None:
-            self._fallback.close()
 
 
 def wire_asset_market(settings: Settings) -> AssetMarketProviders:
-    okx_discovery_market: DexTokenDiscoveryProvider | None = None
-    okx_quote_market: DexTokenQuoteProvider | None = None
     binance_cex_market: CexMarketProvider | None = None
-    gmgn_dex_market: object | None = None
-    binance_profile_market: DexTokenProfileProvider | None = None
+    gmgn_dex_market: DexTokenQuoteProvider | None = None
     try:
-        profile_provider_ids = configured_profile_provider_ids(settings)
-        if settings.okx_dex_configured:
-            okx_discovery_market = okx.SerializedDiscoveryProvider(okx.okx_dex_discovery_market(settings))
-            okx_quote_market = okx.okx_dex_quote_market(settings)
-        binance_enabled = BINANCE_WEB3_PROFILE_PROVIDER in profile_provider_ids
-        binance_cex_market = binance.binance_usdm_futures_market(settings) if binance_enabled else None
-        gmgn_dex_market = gmgn.gmgn_dex_market(settings) if GMGN_DEX_PROFILE_PROVIDER in profile_provider_ids else None
-        binance_profile_market = binance.binance_web3_profile_market(settings) if binance_enabled else None
-        dex_profile_sources = _dex_profile_sources(
-            gmgn_dex_market=gmgn_dex_market,
-            binance_profile_market=binance_profile_market,
-        )
-        return AssetMarketProviders(
-            cex_market=binance_cex_market,
-            dex_discovery_market=okx_discovery_market,
-            dex_quote_market=_dex_quote_market(
-                primary=gmgn_dex_market,
-                fallback=okx_quote_market,
-            ),
-            dex_profile_sources=dex_profile_sources,
-            discovery_chain_ids=okx.okx_chain_indexes_to_chain_ids(settings.providers.okx.dex_chain_indexes),
-        )
+        if settings.providers.binance.enabled:
+            binance_cex_market = binance.binance_usdm_futures_market(settings)
+        if settings.gmgn_configured:
+            gmgn_dex_market = gmgn.gmgn_dex_market(settings)
+        return AssetMarketProviders(cex_market=binance_cex_market, dex_quote_market=gmgn_dex_market)
     except Exception as exc:
-        _close_partial_providers(
-            exc,
-            binance_cex_market,
-            okx_discovery_market,
-            okx_quote_market,
-            gmgn_dex_market,
-            binance_profile_market,
-        )
+        _close_partial_providers(exc, binance_cex_market, gmgn_dex_market)
         raise
-
-
-def _dex_quote_market(
-    *,
-    primary: object | None,
-    fallback: DexTokenQuoteProvider | None,
-) -> DexTokenQuoteProvider | None:
-    if primary is None:
-        return fallback
-    primary_quote = _require_token_quote_provider(primary)
-    if fallback is not None:
-        return FallbackDexQuoteProvider(primary=primary_quote, fallback=fallback)
-    return primary_quote
-
-
-def _dex_profile_sources(
-    *,
-    gmgn_dex_market: object | None,
-    binance_profile_market: DexTokenProfileProvider | None,
-) -> tuple[DexProfileSource, ...]:
-    sources: list[DexProfileSource] = []
-    if gmgn_dex_market is not None:
-        sources.append(
-            DexProfileSource(provider=GMGN_DEX_PROFILE_PROVIDER, market=_require_token_profile_source(gmgn_dex_market))
-        )
-    if binance_profile_market is not None:
-        sources.append(DexProfileSource(provider=BINANCE_WEB3_PROFILE_PROVIDER, market=binance_profile_market))
-    return tuple(sources)
-
-
-def _require_token_quote_provider(value: object) -> DexTokenQuoteProvider:
-    try:
-        token_quotes = cast(Any, value).token_quotes
-    except AttributeError as exc:
-        raise RuntimeError("asset_market_token_quotes_required") from exc
-    if not callable(token_quotes):
-        raise RuntimeError("asset_market_token_quotes_required")
-    return cast(DexTokenQuoteProvider, value)
-
-
-def _require_token_profile_source(value: object) -> DexTokenProfileProvider:
-    try:
-        token_profile = cast(Any, value).token_profile
-    except AttributeError as exc:
-        raise RuntimeError("asset_market_token_profile_required") from exc
-    if not callable(token_profile):
-        raise RuntimeError("asset_market_token_profile_required")
-    return cast(DexTokenProfileProvider, value)
-
-
-def _quote_key(chain_id: Any, address: Any) -> tuple[str, str]:
-    return chain_address_key(chain_id, address)
-
-
-def _quote_has_price(quote: DexTokenQuote | None) -> bool:
-    return quote is not None and quote.price_usd is not None
 
 
 def _close_partial_providers(error: BaseException, *providers: object | None) -> None:
@@ -183,8 +47,4 @@ def _close_partial_providers(error: BaseException, *providers: object | None) ->
             error.add_note(f"partial provider cleanup failed: {type(exc).__name__}: {exc}")
 
 
-__all__ = [
-    "AssetMarketProviders",
-    "FallbackDexQuoteProvider",
-    "wire_asset_market",
-]
+__all__ = ["AssetMarketProviders", "wire_asset_market"]

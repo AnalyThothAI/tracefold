@@ -38,7 +38,6 @@ export type {
   TokenPostItem,
   TokenPostRange,
   TokenPostsData,
-  TokenProfileBlock,
   TokenReference,
   TokenSocialTimelineData,
   TokenTimelineStage,

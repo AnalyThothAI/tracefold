@@ -6,8 +6,6 @@ from typing import Any
 import pytest
 
 from tracefold.macro.projection_worker import MacroProjectionCandidate
-from tracefold.market.profiles.profile_source_ids import GMGN_DEX_PROFILE_PROVIDER
-from tracefold.market.profiles.token_profile_current_worker import ProfileProjectionCandidate
 from tracefold.platform.projection import ProjectionShard
 
 
@@ -20,10 +18,7 @@ class _Cpu:
 
 
 def _candidate(candidate_type: Any, *, db: Any) -> Any:
-    kwargs: dict[str, Any] = {"db": db, "cpu": _Cpu(), "runtime_id": "runtime-1"}
-    if candidate_type is ProfileProjectionCandidate:
-        kwargs["active_profile_provider_ids"] = (GMGN_DEX_PROFILE_PROVIDER,)
-    return candidate_type(**kwargs)
+    return candidate_type(db=db, cpu=_Cpu(), runtime_id="runtime-1")
 
 
 class _AdmissionBlockingDb:
@@ -58,13 +53,7 @@ class _AdmissionBlockingDb:
         return {}
 
 
-@pytest.mark.parametrize(
-    "candidate_type",
-    (
-        ProfileProjectionCandidate,
-        MacroProjectionCandidate,
-    ),
-)
+@pytest.mark.parametrize("candidate_type", (MacroProjectionCandidate,))
 def test_projection_peek_watchdog_outlives_native_statement_timeout(candidate_type: Any) -> None:
     class _RecordingDb:
         def __init__(self) -> None:
@@ -91,18 +80,6 @@ def test_projection_peek_watchdog_outlives_native_statement_timeout(candidate_ty
             object(),
             "macro_projection_publish",
             "macro_projection_release_prework",
-        ),
-        (
-            ProfileProjectionCandidate,
-            ProjectionShard(
-                "profile",
-                '{"target_id":"BTC-USDT-SWAP","target_type":"cex_symbol"}',
-                100,
-                20,
-            ),
-            object(),
-            "profile_projection_publish",
-            "profile_projection_release_prework",
         ),
     ),
 )

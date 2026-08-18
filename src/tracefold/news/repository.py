@@ -601,26 +601,45 @@ class NewsRepository:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def cex_tick_target(self, symbol: str) -> str | None:
+        """market_ticks target of a CEX base symbol: its canonical Binance USDT perp feed (provider:native_market_id)."""
+
+        row = self.conn.execute(
+            """
+            SELECT f.provider || ':' || f.native_market_id AS target_id
+              FROM cex_tokens t
+              JOIN price_feeds f
+                ON f.subject_type = 'CexToken' AND f.subject_id = t.cex_token_id
+               AND f.provider = 'binance' AND f.feed_type = 'cex_swap' AND f.quote_symbol = 'USDT'
+               AND f.status = 'canonical' AND f.native_market_id IS NOT NULL
+             WHERE upper(t.base_symbol) = %s AND t.status IN ('candidate', 'canonical')
+             ORDER BY t.updated_at_ms DESC, f.updated_at_ms DESC
+             LIMIT 1
+            """,
+            (symbol.upper(),),
+        ).fetchone()
+        return str(row["target_id"]) if row else None
+
+    def cex_tick_at(self, *, target_id: str, at_ms: int, lookback_ms: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT price_usd, open_interest_usd, observed_at_ms FROM market_ticks
+             WHERE target_type = 'cex_symbol' AND target_id = %s AND observed_at_ms <= %s AND observed_at_ms >= %s
+             ORDER BY observed_at_ms DESC LIMIT 1
+            """,
+            (target_id, int(at_ms), int(at_ms) - int(lookback_ms)),
+        ).fetchone()
+        return dict(row) if row else None
+
     def market_reaction(
         self, *, symbol: str, anchor_ms: int, now_ms: int, windows_min: Sequence[int]
     ) -> dict[str, Any]:
         """Price/OI change for a CEX symbol from the anchor over elapsed windows; error_code when no target/tick."""
 
-        target = self.conn.execute(
-            "SELECT cex_token_id FROM cex_tokens WHERE upper(base_symbol) = %s ORDER BY updated_at_ms DESC LIMIT 1",
-            (symbol.upper(),),
-        ).fetchone()
-        if target is None:
+        target_id = self.cex_tick_target(symbol)
+        if target_id is None:
             return {"symbol": symbol, "error_code": "no_market_target"}
-        target_id = target["cex_token_id"]
-        base = self.conn.execute(
-            """
-            SELECT price_usd, open_interest_usd FROM market_ticks
-             WHERE target_type = 'CexToken' AND target_id = %s AND observed_at_ms <= %s AND observed_at_ms >= %s
-             ORDER BY observed_at_ms DESC LIMIT 1
-            """,
-            (target_id, int(anchor_ms), int(anchor_ms) - 30 * 60_000),
-        ).fetchone()
+        base = self.cex_tick_at(target_id=target_id, at_ms=int(anchor_ms), lookback_ms=30 * 60_000)
         if base is None:
             return {"symbol": symbol, "error_code": "no_anchor_tick"}
         rows: list[dict[str, Any]] = []
@@ -628,14 +647,7 @@ class NewsRepository:
             end = int(anchor_ms) + int(window) * 60_000
             if end > int(now_ms):
                 continue
-            after = self.conn.execute(
-                """
-                SELECT price_usd, open_interest_usd FROM market_ticks
-                 WHERE target_type = 'CexToken' AND target_id = %s AND observed_at_ms <= %s AND observed_at_ms > %s
-                 ORDER BY observed_at_ms DESC LIMIT 1
-                """,
-                (target_id, end, int(anchor_ms)),
-            ).fetchone()
+            after = self.cex_tick_at(target_id=target_id, at_ms=end, lookback_ms=int(window) * 60_000)
             if after is None:
                 continue
             rows.append(

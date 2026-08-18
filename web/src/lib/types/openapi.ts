@@ -3246,10 +3246,6 @@ export interface components {
             posts: {
                 [key: string]: unknown;
             };
-            /** Profile */
-            profile: {
-                [key: string]: unknown;
-            } | null;
             /** Target */
             target: {
                 [key: string]: unknown;
