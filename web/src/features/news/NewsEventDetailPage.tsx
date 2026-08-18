@@ -25,7 +25,6 @@ import {
   type NewsEventDetail,
   type NewsEventMember,
   type NewsLabel,
-  type NewsMarketMark,
   useNewsEventWithToken,
 } from "./useNewsPage";
 
@@ -116,16 +115,6 @@ function EventDocument({ detail }: { detail: NewsEventDetail }) {
           <span>{detail.labels?.length ?? 0} 条</span>
         </header>
         <LabelsList labels={detail.labels ?? []} />
-      </section>
-      <section aria-labelledby="news-marks-heading" className="news-detail-card news-marks-section">
-        <header>
-          <div>
-            <span className="news-eyebrow">MARKET MARKS</span>
-            <h2 id="news-marks-heading">市场标记</h2>
-          </div>
-          <span>{detail.marks?.length ?? 0} 条</span>
-        </header>
-        <MarksTable marks={detail.marks ?? []} />
       </section>
     </article>
   );
@@ -250,42 +239,6 @@ function LabelsList({ labels }: { labels: readonly NewsLabel[] }) {
   );
 }
 
-function MarksTable({ marks }: { marks: readonly NewsMarketMark[] }) {
-  if (!marks.length) return <p className="news-detail-empty">尚无市场标记。</p>;
-  return (
-    <div className="news-marks-table-wrap">
-      <table className="news-marks-table">
-        <thead>
-          <tr>
-            <th scope="col">标记</th>
-            <th scope="col">资产</th>
-            <th scope="col">市场</th>
-            <th scope="col">价格</th>
-            <th scope="col">价格变动</th>
-            <th scope="col">OI</th>
-            <th scope="col">OI 变动</th>
-            <th scope="col">采集时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          {marks.map((mark) => (
-            <tr key={`${mark.mark}:${mark.symbol}:${mark.captured_at_ms}`}>
-              <td>{mark.mark}</td>
-              <td>{mark.symbol}</td>
-              <td>{mark.market_type ?? "—"}</td>
-              <td>{formatNumber(mark.price)}</td>
-              <td>{formatPercent(mark.price_change_pct)}</td>
-              <td>{formatNumber(mark.open_interest)}</td>
-              <td>{formatPercent(mark.oi_change_pct)}</td>
-              <td>{absoluteTime(mark.captured_at_ms)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function Fact({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -309,14 +262,4 @@ function compactValue(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function formatNumber(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value);
-}
-
-function formatPercent(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-  return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }

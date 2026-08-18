@@ -42,7 +42,6 @@ from .bus import (
 )
 from .control import is_muted
 from .delivery import render_first_card, render_followup_card
-from .eval.marks import capture_due_marks
 from .events import admit_item
 from .models import (
     ANALYST_POLICY_VERSION,
@@ -987,7 +986,7 @@ class DelivererConsumer:
 
 # ---------------------------------------------------------------------------- Janitor
 class JanitorLoop:
-    """Outbox catch-up, band expiry, retention, market marks, broker snapshot — one bounded turn per period."""
+    """Outbox catch-up, band expiry, retention, broker snapshot — one bounded turn per period."""
 
     def __init__(self, *, db: Any, bus: Any | None = None, period_seconds: float = _JANITOR_PERIOD_SECONDS) -> None:
         self.db = _Db(db)
@@ -1011,12 +1010,6 @@ class JanitorLoop:
                 repos.news.purge_before(cutoff_ms=s - _RETENTION_MS)
 
             await self.db.tx("news_janitor", _janitor, timeout_seconds=10.0)
-        with contextlib.suppress(TransientError, DeferError, Exception):
-
-            def _marks(repos: Any, s: int = stamp) -> int:
-                return capture_due_marks(repos, now_ms=s)
-
-            await self.db.tx("news_marks", _marks, timeout_seconds=10.0)
         if self.bus is not None:
             snapshot: dict[str, Any] = {"configured": True, "connected": False, "queues": {}, "error_code": None}
             try:

@@ -15,7 +15,5 @@ def handle_serve(_args: object) -> int:
         host=settings.api.host,
         port=settings.api.port,
         log_config=None,
-        ws_ping_interval=settings.api.heartbeat_interval,
-        ws_ping_timeout=settings.api.heartbeat_interval * 2,
     )
     return 0

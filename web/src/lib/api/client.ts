@@ -86,7 +86,3 @@ async function requestApi<T>(
 export function getBootstrap(): Promise<ApiResponse<BootstrapData>> {
   return getApi<BootstrapData>("/api/bootstrap");
 }
-
-export function websocketUrl(): string {
-  return env.wsUrl;
-}

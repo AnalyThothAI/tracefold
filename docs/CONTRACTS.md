@@ -1,6 +1,6 @@
 # Public Contracts
 
-Tracefold exposes one configuration contract, one HTTP/WebSocket service, and one CLI. This document records stable behavior; generated OpenAPI is authoritative for exact HTTP fields.
+Tracefold exposes one configuration contract, one HTTP service, and one CLI. This document records stable behavior; generated OpenAPI is authoritative for exact HTTP fields.
 
 There are no compatibility aliases for retired products, tables, worker names, routes, or response fields. A behavior change updates source, tests, generated contracts, and this document in the same change.
 
@@ -8,10 +8,10 @@ There are no compatibility aliases for retired products, tables, worker names, r
 
 The active operator-owned application file is
 `~/.tracefold/config.yaml`. It contains deployment/domain choices,
-PostgreSQL role DSNs and password-file references, providers, credentials,
-API, and public WebSocket settings. Worker topology, cadence, deadlines,
-resource limits, batches, leases, retries, and model reservations are
-code-owned and are not configuration fields.
+PostgreSQL role DSNs and password-file references, the Macro source-family
+switches, credentials, API bind/auth, and News settings. Worker topology,
+cadence, deadlines, resource limits, batches, leases, retries, and model
+reservations are code-owned and are not configuration fields.
 
 Repository fixtures, `.env` files, and generated docs are not runtime
 configuration. No static example is a second schema authority: the
@@ -25,32 +25,40 @@ and bootstrap/Serve/Workers/migrate password files. The operator directory is
 mode `0700`; config and password files are `0600`. A normal rerun preserves
 existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
-existing database passwords. The generated config has a new WebSocket token
-but no live provider/model/webhook credential, `news.push.enabled` is
-false, and `news.broker.url` points at the compose RabbitMQ service.
+existing database passwords. The generated config has a new API bearer token
+(`ws_token`) but no live provider/model/webhook credential, `news.push.enabled`
+is false, and `news.broker.url` points at the compose RabbitMQ service.
 
-The configuration schema uses typed nested models directly
-(`storage.postgres`, `api`, `llm`, `gmgn`, `providers.*`, `news`, and
-`upstream`).
-Root-level `postgres_*`, `api_*`, provider, LLM, and upstream forwarding
-aliases are not part of the configuration contract.
+The configuration schema is exactly the top-level keys `ws_token`, `api`
+(`host`, `port`), `storage.postgres`, `llm`, `providers.macro_sources`, and
+`news`, each a typed nested model with `extra=forbid`. `ws_token` is the HTTP
+API bearer token; the key name is kept so operator configs need not churn.
+Root-level `postgres_*`, `api_*`, provider, and LLM forwarding aliases are not
+part of the configuration contract.
 
-Fresh configs subscribe GMGN to `sol`, `eth`, `base`, `bsc`, and `robinhood`.
-
-Top-level `handles`, top-level `notifications`, `news.sources`,
-`news.rss_enabled`, `news.title_presentation`, `news.translation`,
-`news.gate`, `news.budget`, `providers.okx`, and `llm.news_brief_model` are
-retired inputs. Any equivalent retired key fails validation; there is no
-alias, merge, or generated-source fallback.
+`gmgn.*`, `upstream.*`, `providers.binance.*`, `providers.okx`,
+`api.heartbeat_interval`, `api.replay_limit`, top-level `handles`, top-level
+`notifications`, `news.sources`, `news.rss_enabled`,
+`news.title_presentation`, `news.translation`, `news.gate`, `news.budget`,
+and `llm.news_brief_model` are retired inputs. Any equivalent retired key
+fails validation; there is no alias, merge, or generated-source fallback.
+Remove them from an existing operator config before upgrading.
 
 `llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
 DeepSeek-compatible configuration. They are all absent or all present; a
 partial triple fails validation, and Tracefold never supplies an implicit
-endpoint or model. `llm.news_analyst_model` defaults to the triage model. The
+endpoint or model. `llm.news_analyst_model` defaults to the triage model.
+`llm.macro_document_analysis_enabled` and `llm.macro_document_analysis_model`
+admit the optional Fed document analysis on the same gateway. The
 Chinese card title is the Triage verdict's `title_zh`; no other model or
 provider produces titles. Model execution policy, timeouts, token budgets,
 cadence, retries, and reservations are code-owned. Environment variables are
 not a credential contract.
+
+`providers.macro_sources` (`enabled`, `fred_enabled`, `cboe_enabled`,
+`cftc_enabled`, `nasdaq_daily_enabled`, `yfinance_enabled`, `user_agent`)
+enables the free Macro source families and identifies the client; it owns no
+dataset membership, formula, freshness, or schedule.
 
 `news.opennews_token` is the operator-owned secret for the production News
 source. `news.opennews_strategy_ids` is the operator-owned, duplicate-free
@@ -81,12 +89,11 @@ webhook is a valid Feishu HTTPS custom-bot v2 URL; otherwise Serve and
 Workers still start and deliveries settle `terminal/delivery_unavailable`.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
-Worker topology, News broker topology and consumer set, private due/periodic
-loops, the projection EDF, the serial native-state model arbiter, and all
-resource capacities are code-owned. Configuration cannot add another worker
-or derived product lane. Explicit
-Macro backfill is a synchronous CLI maintenance action and is absent from the
-steady Workers root.
+Worker topology, News broker topology and consumer set, private due loops, the
+projection EDF, the serial native-state model arbiter, and all resource
+capacities are code-owned. Configuration cannot add another worker or derived
+product lane. Explicit Macro backfill is a synchronous CLI maintenance action
+and is absent from the steady Workers root.
 
 ## Operator lifecycle
 
@@ -105,15 +112,14 @@ an unknown non-empty database.
 
 ## HTTP
 
-The service exposes `/healthz`, `/readyz`, `/metrics`, `/ws`, static frontend assets, and `/api/*`.
+The service exposes `/healthz`, `/readyz`, `/metrics`, static frontend assets
+(the console routes `/`, `/app`, `/app/*`, `/news`, `/news/*`, `/macro`,
+`/macro/<module>`), and `/api/*`. There is no WebSocket endpoint.
 
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
-- `/api/status` separates process/database/Workers runtime truth from Provider
-  operations. `runtime` fails closed on stale worker heartbeats; `providers`
-  reports configured ownership, durable circuit state, and continuous-source
-  freshness for `gmgn_direct_ws`, `gmgn_dex_quote`, and `binance_cex_rest`
-  without calling an upstream; providers own no durable queue.
+- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate; every other `/api/*` route requires that token as an HTTP bearer token (`Authorization: Bearer <ws_token>`; routes that allow it also accept a `token` query parameter). A missing or wrong token is `401`.
+- `/api/status` is exactly `{measured_at_ms, runtime}`. `runtime` combines the database probe (schema revision match) with the Workers heartbeat row and fails closed on stale heartbeats; there is no provider block.
 - Read endpoints do not call providers, execute models, mutate facts, or rebuild projections.
 
 Status contains no provider/model credentials, base URLs, request policy,
@@ -133,27 +139,17 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 
 | Family | Routes | Source of data |
 |---|---|---|
-| Bootstrap/status | `/api/bootstrap`, `/api/status` | runtime composition, worker status, and persisted Provider operations |
-| Events | `/api/recent`, `/api/events/by-ids` | persisted event/evidence facts |
-| Search/case | `/api/search`, `/api/search/inspect`, `/api/token-case`, `/api/target-posts`, `/api/target-social-timeline` | Evidence, identity, and market facts owned by those readers |
-| Market | `/api/live-market` | stable PostgreSQL current read models |
-| Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro/Market facts and Fed document analysis |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status` | broker-driven Event feed, one Event with members/verdicts/deliveries/labels/marks, and four-layer News status |
+| Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status` | broker-driven Event feed, one Event with members/verdicts/deliveries/labels, and four-layer News status |
+| Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro facts and Fed document analysis |
 
-There is no CEX OI/detail product API. Generic exchange facts and provider adapters remain internal inputs to supported products.
-
-### Live market
-
-`GET /api/live-market?target_type=…&target_id=…` reads the durable
-`market_tick_current` row for one `Asset` or `CexToken` target and returns one
-`LiveMarketData` object (`status` is `live`, `stale`, or `missing`). It never
-calls a provider. Both query parameters are required and are validated exactly.
-
-`/api/token-radar` and `/api/stocks-radar` are removed and return `404`; there
-is no compatibility alias, redirect, feature flag, or replacement Radar
-contract. Search and Token Case are the only token research readers. The
-retained US-equity identity catalog is an internal collision guard for token
-resolution, not a public Stocks interface.
+The public API is exactly these routes plus `/healthz`, `/readyz`, and
+`/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
+`/api/events/by-ids`, `/api/search`, `/api/search/inspect`, `/api/token-case`,
+`/api/target-posts`, `/api/target-social-timeline`, `/api/live-market`,
+`/api/token-images/*`, `/api/token-radar`, `/api/stocks-radar`) are not
+registered and answer the ordinary `404`; there is no alias, redirect, or
+feature flag.
 
 ### News
 
@@ -173,9 +169,9 @@ surface is exactly three read-only routes:
   (title, URL, origin, publication time, match kind, Jaccard estimate,
   provenance, description), every Triage/Analyst verdict (model decision, rule
   baseline, final decision, override rule, throttle reason, verdict payload,
-  model, prompt version, degraded flag, trace), deliveries, operator labels
-  (`label_version`, `source`, label payload, created time), and market marks.
-  Unknown ids return 404.
+  model, prompt version, degraded flag, trace), deliveries, and operator labels
+  (`label_version`, `source`, label payload, created time). Unknown ids return
+  404.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
   `unavailable`), the Workers state, and four layers: `ingest` (WSS connected,
   last frame/publish, error, configured and provider-enabled Strategy IDs,
@@ -206,9 +202,10 @@ Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
 `rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
 `degraded`, `error_code`, `trace`. `AnalystVerdict` is `agrees_with_triage`,
 `revised_direction`, `revised_magnitude`, `novelty_assessment`,
-`market_reaction[]`, `context_evidence[]`, `thesis_zh`, `risks_zh`,
-`follow_up_needed`, `confidence`; it is stored only after `verify_verdict()`
-or as `degraded`.
+`context_evidence[]`, `thesis_zh`, `risks_zh`, `follow_up_needed`,
+`confidence`; it is stored only after `verify_verdict()` or as `degraded`.
+The current versions are `news_analyst_prompt_v3`, `news_analyst_policy_v3`,
+and `news_delivery_card_v5`.
 
 Delivery identity is `(event_id, kind)` with `kind` in `first`, `followup`;
 states are `sending`, `sent`, `terminal`. There is exactly one HTTP attempt;
@@ -311,8 +308,10 @@ The Dataset and Calculation Registries are code-owned public semantics, not
 runtime configuration. Provider config may only enable the free source
 families. A dataset's owner, fact family, source/adapter, acquisition clock,
 freshness, trust tier, criticality, module membership, and formula identity do
-not come from YAML. General cross-asset observations and settlements are Market
-facts; macroeconomic series, release events, and official documents are Macro
+not come from YAML. General cross-asset observations, settlements, and
+positioning are Macro's general market facts (`market_instruments`,
+`market_observations`, `market_settlements`, `market_position_facts`);
+macroeconomic series, release events, and official documents are `macro_*`
 facts. The legacy generic evidence route, window parameter, bundle/sync
 surface, `macro_observations`, and unclassified facts do not exist.
 
@@ -390,42 +389,19 @@ publication.
 
 The Alembic chain is `20260818_0275` (the root baseline: it executes
 `current_schema_20260818_0275.sql` plus `runtime_roles.sql`) followed by
-`20260818_0276_review_49_hard_cut`, which drops the retired News title table,
-the DEX discovery/token-profile/token-image tables, and the unused LangGraph
-`checkpoint_*` tables. A database already at `20260818_0275` upgrades with
-`tracefold db migrate`; a fresh database runs the baseline and 0276. News owns
-exactly twelve tables: `news_ingest_state`, `news_opennews_incidents`,
-`news_items`, `news_events`, `news_event_members`, `news_event_bands`,
-`news_event_assets`, `news_verdicts`, `news_deliveries`,
-`news_control_state`, `news_event_market_marks`, `news_event_labels`.
-Migrations perform no provider, broker, or outbound call and have no
-compatibility reader/writer; the Feed starts from the first frames observed
-after deployment.
-
-## WebSocket
-
-Clients connect to `/ws`, authenticate, then subscribe:
-
-```json
-{"type":"auth","token":"..."}
-{"type":"subscribe","cas":[{"ca":"0x...","chain":"eip155:1"}],"symbols":[],"market_targets":[],"replay":100}
-```
-
-Authentication accepts exactly `type` and a string `token`. Subscription keys
-and value shapes are exact: `symbols` is a string array; `cas` contains
-`{ca, chain?}` objects; `market_targets` contains `{target_type, target_id}`
-objects; and `replay` is an integer. Retired `handles`, `notifications`,
-`ca`, and `tokens` keys, scalar CA values, `address` aliases, extra target
-keys, and coercible string/number values are rejected as
-`invalid_subscription`. The total filter count and replay count are bounded.
-Replay is a PostgreSQL read-side query with batched hydration, not one query
-per event or filter. Event replay and event pushes require at least one `cas`
-or `symbols` filter; an empty event filter returns and broadcasts no events.
-`market_targets` remains an independent subscription for
-`live_market_update` pushes. Push message families are `event` and
-`live_market_update`. Token Case may subscribe only its active target.
-
-Worker progress is recovered by bounded database catch-up. Provider frames are never emitted as business facts before persistence.
+`20260818_0276_review_49_hard_cut` (drops the retired News title table, the
+DEX discovery/token-profile/token-image tables, and the unused LangGraph
+`checkpoint_*` tables) and `20260818_0277_gmgn_lane_removal` (drops the
+social evidence, token identity/registry, DEX/CEX market, live broadcast,
+provider circuit, and News market-mark tables). A database at `20260818_0276`
+upgrades with `tracefold db migrate`; a fresh database runs the baseline, 0276,
+and 0277. The resulting schema is exactly 28 tables. News owns exactly eleven:
+`news_ingest_state`, `news_opennews_incidents`, `news_items`, `news_events`,
+`news_event_members`, `news_event_bands`, `news_event_assets`,
+`news_verdicts`, `news_deliveries`, `news_control_state`,
+`news_event_labels`. Migrations perform no provider, broker, or outbound call
+and have no compatibility reader/writer; the Feed starts from the first frames
+observed after deployment.
 
 ## CLI
 
@@ -435,16 +411,26 @@ Worker progress is recovered by bounded database catch-up. Provider frames are n
 - database: `db migrate|health|audit|query-audit`;
 - Macro: `macro backfill|backfill-professional|status`;
 - News: `news bus-check|control|label|eval|replay-decisions|replay|dlq`;
-- read models: `recent`, `search`;
-- maintenance: `ops ...` for explicit repair, rebuild, queue inspection/resolution, and diagnostics.
+- maintenance: `ops queue-inspect|queue-resolve|queue-resolve-bucket|validate-projections`.
 
-Mutating maintenance commands require an explicit execution flag where the parser offers a dry-run mode. They operate from persisted facts and stable target keys. A rebuild does not create an alternate generation/run identity or make a provider response the source of truth.
+There is no `recent` or `search` command and no market rebuild/sync/reconcile
+maintenance command. Mutating maintenance commands require an explicit
+execution flag where the parser offers a dry-run mode. They operate from
+persisted facts and stable target keys. A rebuild does not create an alternate
+generation/run identity or make a provider response the source of truth.
 
-`queue-inspect`, `validate-projections`, and
-`audit-token-intent` are strict Serve-role reads.
-They do not acquire the maintenance lock, so operators can inspect the running
-singleton without interrupting it. Repair and rebuild commands remain
-exclusive maintenance operations.
+`queue-inspect` and `validate-projections` are strict Serve-role reads. They
+do not acquire the maintenance lock, so operators can inspect the running
+singleton without interrupting it. Queue resolution commands remain exclusive
+maintenance operations.
+
+`db audit` reports the migration revision, row `counts` for the Macro core
+tables (`macro_series_facts`, `macro_release_facts`, `macro_documents`,
+`macro_document_analyses`, `macro_module_current`, `market_instruments`,
+`market_observations`, `market_settlements`, `market_position_facts`), and
+`news_schema` exactness over the eleven `news_*` tables. `db query-audit`
+covers `/readyz`, `/api/status`, `/api/news/*`, and `/api/macro/*`;
+`/healthz`, `/metrics`, and `/api/bootstrap` are declared no-SQL routes.
 
 `news bus-check` connects, declares the topology idempotently, and prints
 per-queue message/consumer counts. `news control <action> [--key
@@ -452,14 +438,15 @@ per-queue message/consumer counts. `news control <action> [--key
 label <event_id> <good|noise|late|wrong_direction|dup> [--note]` inserts one
 `news_event_labels` row (`source` `human`, `label_version` `news_label_v1`).
 `news eval --hours --policy-version` scores stored Triage decisions against
-market marks and labels, including per-`override_rule`, `throttled_by`,
-asset-class, and event-type confusion tables, the throttled-movers rate, and
-storyline statistics. `news replay-decisions --hours --escalate-magnitude
---min-push-magnitude --min-watchlist-magnitude` re-runs `decide()` over stored
-verdicts with a candidate `DecidePolicy` and no model call. `news replay
-<hits.json>` runs Deduper+Gate over saved provider hits without broker or
-model. `news dlq inspect|replay|purge [--limit]` peeks, republishes, or purges
-`news.dead`.
+operator labels only (`good`/`wrong_direction`/`late` count as moved,
+`noise`/`dup` as flat): `precision_at_push`, `missed_movers_rate`,
+`throttled_movers_rate`, per-`override_rule`, `throttled_by`, asset-class,
+and event-type confusion tables, and storyline statistics. `news
+replay-decisions --hours --escalate-magnitude --min-push-magnitude
+--min-watchlist-magnitude` re-runs `decide()` over stored verdicts with a
+candidate `DecidePolicy` and no model call. `news replay <hits.json>` runs
+Deduper+Gate over saved provider hits without broker or model. `news dlq
+inspect|replay|purge [--limit]` peeks, republishes, or purges `news.dead`.
 
 `macro status` separates steady acquisition from explicit maintenance. The
 steady summary reports actionable due work, future schedules, active and
@@ -473,16 +460,13 @@ configuration-derived `worker_active`, and model name). It invokes no
 provider/model and writes nothing; `worker_active` is admission state, not
 observed process liveness.
 
-`ops rebuild-market-current --execute` is the bounded, cursor-based repair for
-reconstructing `market_tick_current` from persisted `market_ticks`.
-
-The `ops` family is exactly `rebuild-market-current`, `queue-inspect`,
-`queue-resolve`, `queue-resolve-bucket`, `reconcile-event-anchor-jobs`,
-`validate-projections`, `sync-binance-usdt-perp-universe`,
-`sync-us-equity-symbols`, `rebuild-token-intents`, and `audit-token-intent`.
-Each command constructs only the dependencies required by the named domain
-operation and invokes that bounded operation directly; there is no generic
-one-shot worker adapter or free-form result object.
+The `ops` family is exactly `queue-inspect`, `queue-resolve`,
+`queue-resolve-bucket`, and `validate-projections`. Queue owners are
+`macro_document_analysis` (`macro_document_analysis_jobs`) and
+`macro_projection` (`macro_module_frontiers`). Each command constructs only the
+dependencies required by the named domain operation and invokes that bounded
+operation directly; there is no generic one-shot worker adapter or free-form
+result object.
 
 Queue resolution is auditable: retry mutates the source queue and resolves terminal evidence in one transaction; quarantine/archive resolves the terminal row without pretending the source work succeeded.
 

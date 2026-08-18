@@ -50,13 +50,6 @@
       padding: 0;
     }
 
-    .brand-mark,
-    .brand-copy,
-    .ws-status-beacon,
-    .main-route-button {
-      display: none;
-    }
-
     .searchbar {
       grid-column: 2;
       grid-row: 1;

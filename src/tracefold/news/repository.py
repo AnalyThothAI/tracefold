@@ -1,4 +1,4 @@
-"""News V3 repository: facts, events, verdicts, deliveries, control, marks, and bounded reads.
+"""News V3 repository: facts, events, verdicts, deliveries, control, labels, and bounded reads.
 
 Every write is idempotent by key. Callers own the transaction (worker_session / api_session).
 """
@@ -601,64 +601,6 @@ class NewsRepository:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def cex_tick_target(self, symbol: str) -> str | None:
-        """market_ticks target of a CEX base symbol: the canonical Binance USDT perp feed (provider:market_id)."""
-
-        row = self.conn.execute(
-            """
-            SELECT f.provider || ':' || f.native_market_id AS target_id
-              FROM cex_tokens t
-              JOIN price_feeds f
-                ON f.subject_type = 'CexToken' AND f.subject_id = t.cex_token_id
-               AND f.provider = 'binance' AND f.feed_type = 'cex_swap' AND f.quote_symbol = 'USDT'
-               AND f.status = 'canonical' AND f.native_market_id IS NOT NULL
-             WHERE upper(t.base_symbol) = %s AND t.status IN ('candidate', 'canonical')
-             ORDER BY t.updated_at_ms DESC, f.updated_at_ms DESC
-             LIMIT 1
-            """,
-            (symbol.upper(),),
-        ).fetchone()
-        return str(row["target_id"]) if row else None
-
-    def cex_tick_at(self, *, target_id: str, at_ms: int, lookback_ms: int) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT price_usd, open_interest_usd, observed_at_ms FROM market_ticks
-             WHERE target_type = 'cex_symbol' AND target_id = %s AND observed_at_ms <= %s AND observed_at_ms >= %s
-             ORDER BY observed_at_ms DESC LIMIT 1
-            """,
-            (target_id, int(at_ms), int(at_ms) - int(lookback_ms)),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def market_reaction(
-        self, *, symbol: str, anchor_ms: int, now_ms: int, windows_min: Sequence[int]
-    ) -> dict[str, Any]:
-        """Price/OI change for a CEX symbol from the anchor over elapsed windows; error_code when no target/tick."""
-
-        target_id = self.cex_tick_target(symbol)
-        if target_id is None:
-            return {"symbol": symbol, "error_code": "no_market_target"}
-        base = self.cex_tick_at(target_id=target_id, at_ms=int(anchor_ms), lookback_ms=30 * 60_000)
-        if base is None:
-            return {"symbol": symbol, "error_code": "no_anchor_tick"}
-        rows: list[dict[str, Any]] = []
-        for window in windows_min:
-            end = int(anchor_ms) + int(window) * 60_000
-            if end > int(now_ms):
-                continue
-            after = self.cex_tick_at(target_id=target_id, at_ms=end, lookback_ms=int(window) * 60_000)
-            if after is None:
-                continue
-            rows.append(
-                {
-                    "window_min": int(window),
-                    "price_change_pct": _pct(base["price_usd"], after["price_usd"]),
-                    "oi_change_pct": _pct(base["open_interest_usd"], after["open_interest_usd"]),
-                }
-            )
-        return {"symbol": symbol, "anchor_ms": int(anchor_ms), "rows": rows}
-
     def macro_state(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT module_key, health, headline, updated_at_ms FROM macro_module_current ORDER BY module_key"
@@ -754,59 +696,6 @@ class NewsRepository:
     def purge_before(self, *, cutoff_ms: int) -> int:
         cursor = self.conn.execute("DELETE FROM news_items WHERE observed_at_ms < %s", (int(cutoff_ms),))
         return int(cursor.rowcount or 0)
-
-    def record_mark(
-        self,
-        *,
-        event_id: str,
-        mark: str,
-        symbol: str,
-        market_type: str | None,
-        price: float | None,
-        open_interest: float | None,
-        price_change_pct: float | None,
-        oi_change_pct: float | None,
-        captured_at_ms: int,
-    ) -> bool:
-        cursor = self.conn.execute(
-            """
-            INSERT INTO news_event_market_marks (
-              event_id, mark, symbol, market_type, price, open_interest, price_change_pct, oi_change_pct, captured_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
-            """,
-            (
-                event_id,
-                mark,
-                symbol,
-                market_type,
-                price,
-                open_interest,
-                price_change_pct,
-                oi_change_pct,
-                int(captured_at_ms),
-            ),
-        )
-        return bool(cursor.rowcount)
-
-    def marks_for_event(self, event_id: str) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM news_event_market_marks WHERE event_id = %s ORDER BY symbol, captured_at_ms", (event_id,)
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def events_due_for_mark(self, *, mark: str, offset_ms: int, now_ms: int, limit: int = 100) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT e.event_id, e.grounded_assets, e.opened_at_ms
-              FROM news_events e
-             WHERE e.admission = 'candidate' AND e.grounded_assets <> '[]'::jsonb
-               AND e.opened_at_ms + %s <= %s AND e.opened_at_ms + %s > %s
-               AND NOT EXISTS (SELECT 1 FROM news_event_market_marks m WHERE m.event_id = e.event_id AND m.mark = %s)
-             ORDER BY e.opened_at_ms LIMIT %s
-            """,
-            (int(offset_ms), int(now_ms), int(offset_ms) + 6 * 3600_000, int(now_ms), mark, int(limit)),
-        ).fetchall()
-        return [dict(r) for r in rows]
 
     def insert_label(
         self, *, event_id: str, label_version: str, source: str, label: Mapping[str, Any], now_ms: int
@@ -972,7 +861,6 @@ class NewsRepository:
                 for r in deliveries
             ],
             "labels": self.labels_for_event(event_id),
-            "marks": self.marks_for_event(event_id),
         }
 
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
@@ -1063,14 +951,6 @@ class NewsRepository:
             },
             "control": control,
         }
-
-
-def _pct(before: Any, after: Any) -> float | None:
-    try:
-        b, a = float(before), float(after)
-    except (TypeError, ValueError):
-        return None
-    return None if b == 0 else round((a - b) / b * 100.0, 4)
 
 
 def _decode_cursor(cursor: str | None) -> tuple[int | None, str | None]:

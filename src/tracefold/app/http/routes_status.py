@@ -20,10 +20,7 @@ def bootstrap(request: Request) -> JSONResponse:
         api_schemas.ApiEnvelope[api_schemas.BootstrapData],
         {
             "ok": True,
-            "data": {
-                "ws_token": runtime.settings.ws_token,
-                "replay_limit": runtime.settings.api.replay_limit,
-            },
+            "data": {"ws_token": runtime.settings.ws_token},
         },
     )
 

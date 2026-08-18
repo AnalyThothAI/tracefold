@@ -27,8 +27,9 @@ from tracefold.macro.domain import (
 )
 from tracefold.macro.fed_roles import derive_fomc_role_facts
 from tracefold.macro.registry import datasets_for_clock, require_dataset
-from tracefold.market import MarketObservationFact, MarketPositionFact, MarketSettlementFact
 from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
+
+from .market_facts import MarketObservationFact, MarketPositionFact, MarketSettlementFact
 
 _MACRO_DEADLINE_MS = 60_000
 _ACQUISITION_POLICY = {

@@ -225,14 +225,10 @@ def terminal_reason_bucket(final_reason: str | None) -> str:
     reason = str(final_reason or "").lower()
     if "retry_budget_exhausted" in reason or "failed_exhausted" in reason or "max_attempt" in reason:
         return "retry_budget_exhausted"
-    if "provider_no_quote" in reason:
-        return "provider_no_quote"
     if "provider_unavailable" in reason or "transport" in reason or "connection" in reason:
         return "provider_unavailable"
     if "provider_error" in reason:
         return "provider_error"
-    if "no_market_data" in reason:
-        return "no_market_data"
     if "stale" in reason:
         return "stale_window_ttl"
     if "timeout" in reason:

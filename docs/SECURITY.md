@@ -15,8 +15,15 @@
 
 The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
-and password-file references, provider credentials and URLs, API/auth,
-domain/source-family enablement, model provider/name, and logging.
+and password-file references, the OpenNews token, the RabbitMQ URL, the
+Feishu webhook, the API bind address and bearer token, Macro source-family
+enablement, and model provider/name.
+
+The complete secret inventory is: `ws_token` (HTTP API bearer token),
+`news.opennews_token`, `llm.api_key`, `news.broker.url` (carries the broker
+credentials), `news.push.feishu_webhook_url` and the optional
+`news.push.feishu_signing_secret`, and the four PostgreSQL password files.
+There is no other provider key or credential.
 
 `tracefold init` is the sole default-config generator. It creates
 `~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/migrate
@@ -48,7 +55,7 @@ capability, its evidence citations are verified by `verify_verdict()` against
 the bundle's own `evidence_id`s (one bounded correction round), and it can
 only add a follow-up card after a first card was sent. The Chinese title is
 the Triage verdict's `title_zh`; no separate title provider or adapter exists.
-Item identity, Event identity, Gate admission, storyline keys, search, and
+Item identity, Event identity, Gate admission, storyline keys, and feed
 ordering remain deterministic. The six Macro modules are also deterministic
 views over persisted facts.
 
@@ -62,13 +69,15 @@ the grants. Serve never writes; `tracefold news control` and `tracefold news lab
 `news_control_state` and `news_event_labels` from the CLI through the Workers
 role, and no HTTP route mutates News state.
 
-Search and Token Case publish a canonical address for copying and source
-navigation; they do not publish a honeypot, holder, liquidity, Smart Money,
-contract-risk, or token-safety judgment. Removing those former product gates
-does not relax application security: HTTP/WebSocket authentication, exact
+HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
+to the served console and every other `/api/*` route requires it as
+`Authorization: Bearer <ws_token>`; `/healthz`, `/readyz`, and `/metrics` are
+unauthenticated liveness/telemetry surfaces (the compose stack publishes the
+HTTP port on loopback). There is no WebSocket endpoint and no second
+authentication scheme. Exact
 request validation, secret handling, PostgreSQL role/transaction integrity,
-migration confirmation, and source-fact provenance remain mandatory and are not
-product configuration.
+migration confirmation, and source-fact provenance remain mandatory and are
+not product configuration.
 
 `news.opennews_token`, `news.broker.url`, and the configured
 `news.opennews_strategy_ids` set are operator-owned secrets/configuration.
@@ -86,7 +95,7 @@ change.
 The authenticated WSS automatically sends the account owner's
 `strategy.triggered` notifications. Tracefold sends no application subscription
 request and performs no Strategy CRUD, account-page scraping, cookie/session
-extraction, private webpage API call, or ordinary-news Search replay. On Worker
+extraction, private webpage API call, or provider news-search replay. On Worker
 startup and WSS reconnect, the same token may call only the official bounded
 `/open/strategy_list` and `/open/strategy_hits` interfaces to verify the exact
 configured allowlist and repair audited coverage intervals. Strategy
@@ -126,8 +135,8 @@ material), Gate facts, the storyline status bar, and the watchlist symbols;
 News Analyst receives Triage field conclusions (never the free-text
 rationale) and one code-built `<evidence>` bundle (event card, at most five
 members wrapped as external content, bounded storyline/symbol history, prior
-verdicts, CEX market-reaction rows, six macro module rows, and the
-`<event_status>` bar), every citable row carrying an `evidence_id`. Neither
+verdicts, six macro module rows, and the `<event_status>` bar), every citable
+row carrying an `evidence_id`. Neither
 receives credentials, webhook material, or unrelated corpus context; prompts
 are byte-frozen constants (`TRIAGE_SYSTEM_PROMPT` and `NEWS_ANALYST.md`) whose
 SHA-256 is recorded in each verdict trace, and raw model responses are never
@@ -156,6 +165,6 @@ headers, hidden reasoning, or unsanitized provider failures.
 
 Ask before changing authentication, authorisation, billing, or data-deletion behaviour.
 
-## Frontend WebSocket token
+## Frontend API token
 
-The `ws_token` reaches the browser through the same config schema. Do not embed it in committed source; the frontend reads it from the page bootstrap injected by `api/`.
+The `ws_token` reaches the browser through `/api/bootstrap`. Do not embed it in committed source; the frontend reads it from that bootstrap response and sends it as the bearer token on every other API call.

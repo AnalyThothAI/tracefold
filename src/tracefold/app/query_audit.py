@@ -19,24 +19,7 @@ class NewsQuerySpecsProvider(Protocol):
 
 PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/readyz": ("readiness_schema",),
-    "/ws": ("persisted_live_after_cursor",),
-    "/api/status": (
-        "readiness_schema",
-        "workers_runtime",
-        "provider_gmgn_freshness",
-        "provider_circuits",
-    ),
-    "/api/recent": ("recent_all", "events_by_ids"),
-    "/api/events/by-ids": ("events_by_ids",),
-    "/api/live-market": ("live_market_current",),
-    "/api/search": ("search_v2_lexical", "search_v2_substring"),
-    "/api/search/inspect": (
-        "search_v2_lexical",
-        "search_v2_substring",
-    ),
-    "/api/token-case": ("target_posts_recent",),
-    "/api/target-posts": ("target_posts_recent",),
-    "/api/target-social-timeline": ("target_posts_recent",),
+    "/api/status": ("readiness_schema", "workers_runtime"),
     "/api/news/feed": (
         "news_feed_events",
         "news_feed_symbol_filter",

@@ -21,40 +21,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/events/by-ids": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Events By Ids */
-        get: operations["events_by_ids_api_events_by_ids_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/live-market": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Live Market */
-        get: operations["live_market_api_live_market_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/macro/credit": {
         parameters: {
             query?: never;
@@ -225,57 +191,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/recent": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Recent */
-        get: operations["recent_api_recent_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/search": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Search */
-        get: operations["search_api_search_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/search/inspect": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Search Inspect */
-        get: operations["search_inspect_api_search_inspect_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/status": {
         parameters: {
             query?: never;
@@ -285,57 +200,6 @@ export interface paths {
         };
         /** Status */
         get: operations["status_api_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/target-posts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Target Posts */
-        get: operations["target_posts_api_target_posts_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/target-social-timeline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Target Social Timeline */
-        get: operations["target_social_timeline_api_target_social_timeline_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/token-case": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Token Case */
-        get: operations["token_case_api_token_case_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -409,16 +273,6 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[LiveMarketData] */
-        ApiEnvelope_LiveMarketData_: {
-            data?: components["schemas"]["LiveMarketData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
         /** ApiEnvelope[MacroOverviewReadData] */
         ApiEnvelope_MacroOverviewReadData_: {
             data?: components["schemas"]["MacroOverviewReadData"] | null;
@@ -459,79 +313,9 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[RecentData] */
-        ApiEnvelope_RecentData_: {
-            data?: components["schemas"]["RecentData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[SearchData] */
-        ApiEnvelope_SearchData_: {
-            data?: components["schemas"]["SearchData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[SearchInspectData] */
-        ApiEnvelope_SearchInspectData_: {
-            data?: components["schemas"]["SearchInspectData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[SourceEventsByIdsData] */
-        ApiEnvelope_SourceEventsByIdsData_: {
-            data?: components["schemas"]["SourceEventsByIdsData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
         /** ApiEnvelope[StatusData] */
         ApiEnvelope_StatusData_: {
             data?: components["schemas"]["StatusData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TargetPostsData] */
-        ApiEnvelope_TargetPostsData_: {
-            data?: components["schemas"]["TargetPostsData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TargetSocialTimelineData] */
-        ApiEnvelope_TargetSocialTimelineData_: {
-            data?: components["schemas"]["TargetSocialTimelineData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TokenCaseData] */
-        ApiEnvelope_TokenCaseData_: {
-            data?: components["schemas"]["TokenCaseData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -607,8 +391,6 @@ export interface components {
         };
         /** BootstrapData */
         BootstrapData: {
-            /** Replay Limit */
-            replay_limit: number;
             /** Ws Token */
             ws_token: string;
         };
@@ -616,47 +398,6 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
-        };
-        /** LiveMarketData */
-        LiveMarketData: {
-            /** Age Ms */
-            age_ms: number | null;
-            /** Holders */
-            holders: number | null;
-            /** Liquidity Usd */
-            liquidity_usd: number | null;
-            /** Market Cap Usd */
-            market_cap_usd: number | null;
-            /** Observed At Ms */
-            observed_at_ms: number | null;
-            /** Open Interest Usd */
-            open_interest_usd: number | null;
-            /**
-             * Price Basis
-             * @enum {string}
-             */
-            price_basis: "usd" | "quote_as_usd" | "unavailable";
-            /** Price Quote */
-            price_quote: number | null;
-            /** Price Usd */
-            price_usd: number | null;
-            /** Provider */
-            provider: string | null;
-            /** Quote Symbol */
-            quote_symbol: string | null;
-            /** Received At Ms */
-            received_at_ms: number | null;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "live" | "stale" | "missing";
-            /** Target Id */
-            target_id: string;
-            /** Target Type */
-            target_type: string;
-            /** Volume 24H Usd */
-            volume_24h_usd: number | null;
         };
         /** MacroBackfillExecutionData */
         MacroBackfillExecutionData: {
@@ -2600,8 +2341,6 @@ export interface components {
             event: components["schemas"]["NewsEventData"];
             /** Labels */
             labels?: components["schemas"]["NewsLabelData"][];
-            /** Marks */
-            marks?: components["schemas"]["NewsMarketMarkData"][];
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
             /** Verdicts */
@@ -2774,27 +2513,6 @@ export interface components {
             /** Source */
             source: string;
         };
-        /** NewsMarketMarkData */
-        NewsMarketMarkData: {
-            /** Captured At Ms */
-            captured_at_ms: number;
-            /** Event Id */
-            event_id: string;
-            /** Mark */
-            mark: string;
-            /** Market Type */
-            market_type?: string | null;
-            /** Oi Change Pct */
-            oi_change_pct?: number | null;
-            /** Open Interest */
-            open_interest?: number | null;
-            /** Price */
-            price?: number | null;
-            /** Price Change Pct */
-            price_change_pct?: number | null;
-            /** Symbol */
-            symbol: string;
-        };
         /** NewsPipelineStatusData */
         NewsPipelineStatusData: {
             /** Analyst Model */
@@ -2933,49 +2651,6 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** ProviderOperationalData */
-        ProviderOperationalData: {
-            /** Circuit Status */
-            circuit_status: ("open" | "closed") | null;
-            /** Consecutive Failures */
-            consecutive_failures: number;
-            /**
-             * Freshness
-             * @enum {string}
-             */
-            freshness: "current" | "stale" | "no_evidence" | "not_applicable";
-            /** Freshness Budget Ms */
-            freshness_budget_ms: number | null;
-            /** Has Backlog */
-            has_backlog: boolean;
-            /** Latest Fact At Ms */
-            latest_fact_at_ms: number | null;
-            /** Next Probe At Ms */
-            next_probe_at_ms: number | null;
-            /** Owned */
-            owned: boolean;
-            /** Provider */
-            provider: string;
-            /** Reasons */
-            reasons: ("unowned_backlog" | "circuit_open" | "source_stale")[];
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "ok" | "degraded" | "inactive";
-        };
-        /** ProviderOperationsData */
-        ProviderOperationsData: {
-            /** Items */
-            items: components["schemas"]["ProviderOperationalData"][];
-            /** Reasons */
-            reasons: string[];
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "ok" | "degraded" | "unavailable";
-        };
         /** ReadinessData */
         ReadinessData: {
             /** Composition */
@@ -2996,140 +2671,10 @@ export interface components {
              */
             store: "postgresql";
         };
-        /** RecentData */
-        RecentData: {
-            /** Events */
-            events: {
-                [key: string]: unknown;
-            }[];
-            /** Items */
-            items: {
-                [key: string]: unknown;
-            }[];
-            page: components["schemas"]["SearchPageData"];
-        };
-        /** SearchData */
-        SearchData: {
-            /** Items */
-            items: {
-                [key: string]: unknown;
-            }[];
-            page: components["schemas"]["SearchPageData"];
-            /** Query */
-            query: {
-                [key: string]: unknown;
-            };
-            /** Target Candidates */
-            target_candidates: {
-                [key: string]: unknown;
-            }[];
-        };
-        /** SearchInspectAmbiguousData */
-        SearchInspectAmbiguousData: {
-            /** Candidates */
-            candidates: {
-                [key: string]: unknown;
-            }[];
-            /** Items */
-            items: {
-                [key: string]: unknown;
-            }[];
-            summary: components["schemas"]["SearchInspectTopicSummaryData"];
-        };
-        /** SearchInspectData */
-        SearchInspectData: {
-            ambiguous_result: components["schemas"]["SearchInspectAmbiguousData"] | null;
-            query: components["schemas"]["SearchInspectQueryData"];
-            resolver: components["schemas"]["SearchInspectResolverData"];
-            token_result: components["schemas"]["TokenCaseData"] | null;
-            topic_result: components["schemas"]["SearchInspectTopicData"] | null;
-        };
-        /** SearchInspectQueryData */
-        SearchInspectQueryData: {
-            /** Normalized Q */
-            normalized_q: string;
-            /** Q */
-            q: string;
-            /**
-             * Result Kind
-             * @enum {string}
-             */
-            result_kind: "token_result" | "topic_result" | "ambiguous_result" | "empty_result";
-            /** Window */
-            window: string;
-        };
-        /** SearchInspectResolverData */
-        SearchInspectResolverData: {
-            /** Reasons */
-            reasons: string[];
-            /** Selected Target */
-            selected_target: {
-                [key: string]: unknown;
-            } | null;
-            /** Target Candidates */
-            target_candidates: {
-                [key: string]: unknown;
-            }[];
-        };
-        /** SearchInspectTopicData */
-        SearchInspectTopicData: {
-            /** Items */
-            items: {
-                [key: string]: unknown;
-            }[];
-            summary: components["schemas"]["SearchInspectTopicSummaryData"];
-        };
-        /** SearchInspectTopicSummaryData */
-        SearchInspectTopicSummaryData: {
-            /** Authors */
-            authors: number;
-            /** Posts */
-            posts: number;
-        };
-        /** SearchPageData */
-        SearchPageData: {
-            /** Has More */
-            has_more: boolean;
-            /** Next Cursor */
-            next_cursor: string | null;
-            /** Returned Count */
-            returned_count: number;
-        };
-        /** SourceEventDetail */
-        SourceEventDetail: {
-            /** Action */
-            action: string;
-            /** Author Followers */
-            author_followers: number | null;
-            /** Author Handle */
-            author_handle: string | null;
-            /** Author Name */
-            author_name: string | null;
-            /** Canonical Url */
-            canonical_url: string | null;
-            /** Channel */
-            channel: string;
-            /** Event Id */
-            event_id: string;
-            /** Source Provider */
-            source_provider: string;
-            /** Text Clean */
-            text_clean: string | null;
-            /** Timestamp Ms */
-            timestamp_ms: number;
-        };
-        /** SourceEventsByIdsData */
-        SourceEventsByIdsData: {
-            /** Events */
-            events: components["schemas"]["SourceEventDetail"][];
-            /** Not Found */
-            not_found: string[];
-        };
         /** StatusData */
         StatusData: {
             /** Measured At Ms */
             measured_at_ms: number;
-            providers: components["schemas"]["ProviderOperationsData"];
             runtime: components["schemas"]["StatusRuntimeData"];
         };
         /** StatusDatabaseData */
@@ -3153,107 +2698,6 @@ export interface components {
             /** Reasons */
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
-        };
-        /** TargetPostsData */
-        TargetPostsData: {
-            /** Has More */
-            has_more: boolean;
-            /** Items */
-            items: {
-                [key: string]: unknown;
-            }[];
-            /** Next Cursor */
-            next_cursor: string | null;
-            query: components["schemas"]["TargetPostsQueryData"];
-            /** Returned Count */
-            returned_count: number;
-            score_window: components["schemas"]["TargetPostsScoreWindowData"];
-            /** Total Count */
-            total_count: number;
-        };
-        /** TargetPostsQueryData */
-        TargetPostsQueryData: {
-            /** Range */
-            range: string;
-            /** Target Id */
-            target_id: string;
-            /** Target Type */
-            target_type: string;
-            /** Window */
-            window: string;
-        };
-        /** TargetPostsScoreWindowData */
-        TargetPostsScoreWindowData: {
-            /** Window */
-            window: string;
-        };
-        /** TargetSocialTimelineData */
-        TargetSocialTimelineData: {
-            /** Authors */
-            authors: {
-                [key: string]: unknown;
-            }[];
-            /** Buckets */
-            buckets: {
-                [key: string]: unknown;
-            }[];
-            /** Cascade */
-            cascade: {
-                [key: string]: unknown;
-            };
-            /** Has More */
-            has_more: boolean;
-            /** Market Candles */
-            market_candles: {
-                [key: string]: unknown;
-            } | null;
-            /** Next Cursor */
-            next_cursor: string | null;
-            /** Posts */
-            posts: {
-                [key: string]: unknown;
-            }[];
-            query: components["schemas"]["TargetSocialTimelineQueryData"];
-            /** Returned Count */
-            returned_count: number;
-            /** Stages */
-            stages: {
-                [key: string]: unknown;
-            }[];
-            /** Summary */
-            summary: {
-                [key: string]: unknown;
-            };
-        };
-        /** TargetSocialTimelineQueryData */
-        TargetSocialTimelineQueryData: {
-            /** Bucket */
-            bucket: string;
-            /** Target Id */
-            target_id: string;
-            /** Target Type */
-            target_type: string;
-            /** Window */
-            window: string;
-        };
-        /** TokenCaseData */
-        TokenCaseData: {
-            /** Market Live */
-            market_live: {
-                [key: string]: unknown;
-            };
-            /** Posts */
-            posts: {
-                [key: string]: unknown;
-            };
-            /** Target */
-            target: {
-                [key: string]: unknown;
-            };
-            /** Timeline */
-            timeline: {
-                [key: string]: unknown;
-            };
         };
         /** ValidationError */
         ValidationError: {
@@ -3318,69 +2762,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_BootstrapData_"];
-                };
-            };
-        };
-    };
-    events_by_ids_api_events_by_ids_get: {
-        parameters: {
-            query?: {
-                ids?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_SourceEventsByIdsData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    live_market_api_live_market_get: {
-        parameters: {
-            query?: {
-                target_type?: string;
-                target_id?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_LiveMarketData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3717,109 +3098,6 @@ export interface operations {
             };
         };
     };
-    recent_api_recent_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                handles?: string;
-                ca?: string;
-                chain?: string;
-                symbol?: string;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_RecentData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    search_api_search_get: {
-        parameters: {
-            query?: {
-                q?: string;
-                limit?: number;
-                cursor?: string;
-                window?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_SearchData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    search_inspect_api_search_inspect_get: {
-        parameters: {
-            query?: {
-                q?: string;
-                window?: string;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_SearchInspectData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     status_api_status_get: {
         parameters: {
             query?: never;
@@ -3836,112 +3114,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_StatusData_"];
-                };
-            };
-        };
-    };
-    target_posts_api_target_posts_get: {
-        parameters: {
-            query?: {
-                target_type?: string;
-                target_id?: string;
-                window?: string;
-                range?: string;
-                limit?: number;
-                cursor?: string;
-                event_id?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TargetPostsData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    target_social_timeline_api_target_social_timeline_get: {
-        parameters: {
-            query?: {
-                target_type?: string;
-                target_id?: string;
-                window?: string;
-                limit?: number;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TargetSocialTimelineData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    token_case_api_token_case_get: {
-        parameters: {
-            query?: {
-                target_type?: string;
-                target_id?: string;
-                window?: string;
-                posts_limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TokenCaseData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

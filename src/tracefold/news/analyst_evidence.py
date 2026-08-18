@@ -16,7 +16,6 @@ from typing import Any
 HISTORY_HOURS = 48
 HISTORY_LIMIT = 20
 MEMBERS_LIMIT = 5
-REACTION_WINDOWS_MIN = (5, 30, 240)
 TITLE_CHARS = 140
 CONTENT_CHARS = 600
 MEMBER_CONTENT_CHARS = 300
@@ -58,7 +57,7 @@ def build_evidence_bundle(
     now_ms: int,
     queue_lag_ms: int = 0,
 ) -> EvidenceBundle | None:
-    """One DB session: event card + triage verdict + members + history + prior verdicts + market + macro + status."""
+    """One DB session: event card + triage verdict + members + history + prior verdicts + macro + status."""
 
     news = repos.news
     card = news.event_card(event_id)
@@ -148,25 +147,6 @@ def build_evidence_bundle(
         )
         prior.append(entry)
 
-    anchor_ms = int(card["opened_at_ms"])
-    reactions: list[dict[str, Any]] = []
-    for symbol in symbols:
-        outcome = news.market_reaction(
-            symbol=symbol, anchor_ms=anchor_ms, now_ms=int(now_ms), windows_min=REACTION_WINDOWS_MIN
-        )
-        if "error_code" in outcome:
-            reactions.append({"symbol": symbol, "error_code": outcome["error_code"]})
-            continue
-        for row in outcome["rows"]:
-            entry = {
-                "symbol": symbol,
-                "window_min": int(row["window_min"]),
-                "price_change_pct": row.get("price_change_pct"),
-                "oi_change_pct": row.get("oi_change_pct"),
-            }
-            entry["evidence_id"] = register("market", dict(entry))
-            reactions.append(entry)
-
     macro_rows = news.macro_state()
     macro_block: dict[str, Any] = {"modules": macro_rows}
     if macro_rows:
@@ -197,7 +177,6 @@ def build_evidence_bundle(
         "members": {"external_content": members},
         "history_events": history,
         "prior_verdicts": prior,
-        "market_reaction": reactions,
         "macro": macro_block,
         "event_status": status_block,
     }
@@ -218,7 +197,6 @@ __all__ = [
     "HISTORY_HOURS",
     "HISTORY_LIMIT",
     "MEMBERS_LIMIT",
-    "REACTION_WINDOWS_MIN",
     "EvidenceBundle",
     "build_evidence_bundle",
     "evidence_id",

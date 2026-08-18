@@ -109,6 +109,32 @@ describe("frontend documentation contract", () => {
     expect(topbar).toContain("healthAnomaly");
     expect(topbar).toContain("topbar-anomaly");
   });
+
+  it("describes the News + Macro console without the retired GMGN lane", () => {
+    expect(frontendDoc).toContain("gmgnLaneHardCut.test.ts");
+    expect(frontendDoc).toContain("`/news?q=<query>`");
+    expect(frontendDoc).toContain("`news search`");
+    expect(frontendDoc).toContain("搜索新闻事件 / 标题 / 资产");
+    expect(frontendDoc).toContain("no market-mark table");
+    for (const retired of [
+      "Token Case route",
+      "Search route",
+      "Socket lifecycle",
+      "SearchShell",
+      "shared/socket",
+      "IntelSocket",
+      "/api/search",
+      "/api/token-case",
+      "/api/target-posts",
+      "/api/live-market",
+      "market_targets",
+      "`marks[]`",
+      "/search?q=",
+      "GMGN action link",
+    ]) {
+      expect(frontendDoc, `docs/FRONTEND.md still describes ${retired}`).not.toContain(retired);
+    }
+  });
 });
 
 function flattenNavigation(items: AppNavigationItem[]): AppNavigationItem[] {

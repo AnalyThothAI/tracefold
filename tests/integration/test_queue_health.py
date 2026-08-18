@@ -17,7 +17,6 @@ from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
 
 NOW_MS = 10_000
 ALL_QUEUE_TABLES = (
-    "event_anchor_backfill_jobs",
     "macro_document_analysis_jobs",
     "macro_module_frontiers",
 )
@@ -55,7 +54,7 @@ def test_active_queue_inspection_covers_every_declared_queue_while_workers_are_r
     assert all(item["queue_health"]["available"] for item in queue_payload["data"]["items"])
 
 
-def test_queue_registry_has_one_truthful_owner_for_all_three_tables() -> None:
+def test_queue_registry_has_one_truthful_owner_for_both_tables() -> None:
     assert queue_tables_for_owner(None) == ALL_QUEUE_TABLES
     assert queue_tables_for_owner("macro_projection") == ("macro_module_frontiers",)
     assert queue_tables_for_owner("unknown") == ()

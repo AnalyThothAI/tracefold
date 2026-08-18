@@ -80,7 +80,7 @@ export function ok<T>(data: T): ApiResponse<T> {
 }
 
 export function defaultBootstrap(): ApiResponse<BootstrapData> {
-  return ok({ ws_token: "secret", replay_limit: 25 });
+  return ok({ ws_token: "secret" });
 }
 
 export function requestOptionsFromRequest(request: Request): RequestOptions {

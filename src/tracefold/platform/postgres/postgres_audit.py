@@ -7,8 +7,6 @@ from typing import Any, Literal
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 from tracefold.platform.validation import require_nonnegative_int
 
-SEARCH_CUTOFF_AT_MS_PARAM = "search_cutoff_at_ms"
-SEARCH_AUDIT_WINDOW_MS = 24 * 60 * 60 * 1000
 MAX_READ_RETURN_AMPLIFICATION = 20.0
 LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
 
@@ -46,21 +44,16 @@ class QueryAuditCatalog:
 
 
 CORE_TABLES = (
-    "raw_frames",
-    "events",
-    "event_entities",
-    "registry_assets",
-    "asset_identity_evidence",
-    "asset_identity_current",
-    "market_ticks",
-    "enriched_events",
-    "token_evidence",
-    "token_intents",
-    "token_intent_evidence",
-    "token_intent_resolutions",
+    "macro_series_facts",
+    "macro_release_facts",
+    "macro_documents",
+    "macro_document_analyses",
+    "macro_module_current",
+    "market_instruments",
+    "market_observations",
+    "market_settlements",
+    "market_position_facts",
 )
-
-PROJECTION_TABLES = ()
 
 NEWS_TABLES = (
     "news_ingest_state",
@@ -73,122 +66,14 @@ NEWS_TABLES = (
     "news_verdicts",
     "news_deliveries",
     "news_control_state",
-    "news_event_market_marks",
     "news_event_labels",
 )
 
-FOREIGN_KEY_CONSTRAINTS = {
-    "event_entities_missing_events": ("event_entities", "event_entities_event_id_fkey"),
-    "token_evidence_missing_events": ("token_evidence", "token_evidence_event_id_fkey"),
-    "token_intents_missing_events": ("token_intents", "token_intents_event_id_fkey"),
-    "token_resolutions_missing_intents": (
-        "token_intent_resolutions",
-        "token_intent_resolutions_intent_id_fkey",
-    ),
-}
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
         "name": "readiness_schema",
         "sql": "SELECT version_num FROM alembic_version LIMIT 1",
         "params": (),
-    },
-    {
-        "name": "recent_all",
-        "sql": """
-            SELECT event_id
-            FROM events
-            ORDER BY received_at_ms DESC, event_id DESC
-            LIMIT 50
-        """,
-        "params": (),
-    },
-    {
-        "name": "events_by_ids",
-        "sql": """
-            SELECT event_id
-            FROM events
-            WHERE event_id = ANY(%s::text[])
-            LIMIT 100
-        """,
-        "params": (["audit-missing-event"],),
-    },
-    {
-        "name": "search_v2_lexical",
-        "sql": """
-            WITH query AS (
-              SELECT
-                websearch_to_tsquery('simple', %(query)s) AS simple_q,
-                websearch_to_tsquery('english', %(query)s) AS english_q
-            ),
-            ranked AS (
-              SELECT
-                e.*,
-                (
-                  ts_rank_cd(e.search_tsv, query.simple_q)
-                  + ts_rank_cd(e.search_tsv, query.english_q)
-                ) AS route_score
-              FROM events e, query
-              WHERE (
-                  e.search_tsv @@ query.simple_q
-                  OR e.search_tsv @@ query.english_q
-                )
-                AND e.received_at_ms >= %(search_cutoff_at_ms)s
-            )
-            SELECT
-              *,
-              row_number() OVER (
-                ORDER BY received_at_ms DESC, event_id DESC
-              ) AS route_rank
-            FROM ranked
-            ORDER BY received_at_ms DESC, event_id DESC
-            LIMIT 50
-        """,
-        "params": {
-            "query": "pepe",
-            "search_cutoff_at_ms": None,
-        },
-    },
-    {
-        "name": "search_v2_substring",
-        "sql": """
-            SELECT event_id
-            FROM events
-            WHERE search_text ILIKE %(substring_pattern)s ESCAPE '\\'
-              AND received_at_ms >= %(search_cutoff_at_ms)s
-            ORDER BY received_at_ms DESC, event_id DESC
-            LIMIT 20
-        """,
-        "params": {
-            "substring_pattern": "%pepe%",
-            "search_cutoff_at_ms": None,
-        },
-    },
-    {
-        "name": "live_market_current",
-        "sql": """
-            SELECT current.tick_id
-            FROM registry_assets assets
-            JOIN market_tick_current current
-              ON current.target_type = 'chain_token'
-             AND current.target_id = assets.chain_id || ':' || assets.address
-            WHERE assets.asset_id = %s
-            LIMIT 1
-        """,
-        "params": ("audit-missing-target",),
-    },
-    {
-        "name": "target_posts_recent",
-        "sql": """
-            SELECT events.event_id
-            FROM token_intent_resolutions tir
-            JOIN events ON events.event_id = tir.event_id
-            WHERE tir.target_type = %s
-              AND tir.target_id = %s
-              AND tir.is_current
-            ORDER BY events.received_at_ms DESC, events.event_id DESC
-            LIMIT 51
-        """,
-        "params": ("Asset", "audit-missing-target"),
     },
     {
         "name": "macro_modules_current",
@@ -210,60 +95,17 @@ _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
         """,
         "params": ("rates_fed",),
     },
-    {
-        "name": "provider_gmgn_freshness",
-        "sql": """
-            SELECT received_at_ms
-            FROM raw_frames
-            WHERE source = 'gmgn'
-            ORDER BY received_at_ms DESC
-            LIMIT 1
-        """,
-        "params": (),
-    },
-    {
-        "name": "provider_circuits",
-        "sql": """
-            SELECT provider, status, consecutive_failures, next_probe_at_ms
-            FROM provider_circuit_state
-            WHERE provider = ANY(%s::text[])
-            ORDER BY provider
-        """,
-        "params": (["gmgn_direct_ws", "gmgn_dex_quote", "binance_cex_rest"],),
-    },
-    {
-        "name": "persisted_live_after_cursor",
-        "sql": """
-            SELECT cursor, payload_json
-            FROM persisted_live_events
-            WHERE cursor > %s
-            ORDER BY cursor
-            LIMIT 500
-        """,
-        "params": (0,),
-    },
 )
 
 
 def postgres_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-    """Return platform-owned reads with all clock parameters already bound."""
+    """Return platform-owned reads (no clock parameters remain, ``now_ms`` keeps the catalog contract)."""
 
-    search_cutoff_at_ms = int(now_ms) - SEARCH_AUDIT_WINDOW_MS
-    specs: list[ReadQuerySpec] = []
-    for template in _POSTGRES_QUERY_TEMPLATES:
-        params = template["params"]
-        if isinstance(params, dict):
-            params = dict(params)
-            if SEARCH_CUTOFF_AT_MS_PARAM in params:
-                params[SEARCH_CUTOFF_AT_MS_PARAM] = search_cutoff_at_ms
-        specs.append(
-            ReadQuerySpec(
-                name=str(template["name"]),
-                sql=str(template["sql"]),
-                params=params,
-            )
-        )
-    return tuple(specs)
+    del now_ms
+    return tuple(
+        ReadQuerySpec(name=str(template["name"]), sql=str(template["sql"]), params=template["params"])
+        for template in _POSTGRES_QUERY_TEMPLATES
+    )
 
 
 class PostgresOperationalAudit:
@@ -273,29 +115,22 @@ class PostgresOperationalAudit:
 
     def run(self) -> dict[str, Any]:
         counts = self._counts(CORE_TABLES)
-        projection_schema = self._table_presence(PROJECTION_TABLES)
         actual_news_tables = self._news_tables()
         news_schema = {
             "expected_tables": list(NEWS_TABLES),
             "actual_tables": sorted(actual_news_tables),
             "exact": actual_news_tables == set(NEWS_TABLES),
         }
-        foreign_key_checks = self._foreign_key_checks()
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
-        orphan_count = sum(int(value) for value in foreign_key_checks.values())
         return {
-            "ok": (
-                migration_ready and orphan_count == 0 and all(projection_schema.values()) and bool(news_schema["exact"])
-            ),
+            "ok": migration_ready and all(count >= 0 for count in counts.values()) and bool(news_schema["exact"]),
             "engine": "postgresql",
             "migration_version": migration_version,
             "expected_migration_version": self.expected_migration_version,
             "migration_status": "ready" if migration_ready else "stale",
             "counts": counts,
-            "projection_schema": projection_schema,
             "news_schema": news_schema,
-            "foreign_key_checks": foreign_key_checks,
         }
 
     def _counts(self, table_names: tuple[str, ...]) -> dict[str, int]:
@@ -307,9 +142,6 @@ class PostgresOperationalAudit:
             row = self.conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
             counts[table_name] = int(row["count"] if row else 0)
         return counts
-
-    def _table_presence(self, table_names: tuple[str, ...]) -> dict[str, bool]:
-        return {table_name: self._table_exists(table_name) for table_name in table_names}
 
     def _table_exists(self, table_name: str) -> bool:
         row = self.conn.execute(
@@ -334,32 +166,6 @@ class PostgresOperationalAudit:
             """
         ).fetchall()
         return {str(row["table_name"]) for row in rows}
-
-    def _foreign_key_checks(self) -> dict[str, int]:
-        rows = self.conn.execute(
-            """
-            SELECT child.relname AS child_table,
-                   constraints.conname,
-                   constraints.convalidated
-            FROM pg_constraint AS constraints
-            JOIN pg_class AS child ON child.oid = constraints.conrelid
-            JOIN pg_namespace AS namespace ON namespace.oid = child.relnamespace
-            WHERE constraints.contype = 'f'
-              AND namespace.nspname = 'public'
-              AND child.relname = ANY(%s)
-              AND constraints.conname = ANY(%s)
-            """,
-            (
-                [table_name for table_name, _constraint_name in FOREIGN_KEY_CONSTRAINTS.values()],
-                [constraint_name for _table_name, constraint_name in FOREIGN_KEY_CONSTRAINTS.values()],
-            ),
-        ).fetchall()
-        validated = {(str(row["child_table"]), str(row["conname"])): bool(row["convalidated"]) for row in rows}
-        checks = {
-            name: int(not validated.get(constraint_identity, False))
-            for name, constraint_identity in FOREIGN_KEY_CONSTRAINTS.items()
-        }
-        return checks
 
     def _migration_version(self) -> str | None:
         row = self.conn.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()

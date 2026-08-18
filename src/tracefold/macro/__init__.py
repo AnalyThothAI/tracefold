@@ -43,6 +43,8 @@ from .fed_analysis import (
 )
 from .fed_document_agent import FedDocumentAnalysisAgent
 from .market_calendar import is_us_market_session
+from .market_facts import GeneralMarketInstrumentSpec, MarketPositionFact, MarketTrustTier
+from .market_facts_repository import GeneralMarketRepository
 from .module_payloads import build_typed_module_payload, schema_version_for_module
 from .projection import rebuild_all_macro_modules_for_maintenance
 from .projection_worker import MacroProjectionCandidate
@@ -78,6 +80,8 @@ __all__ = [
     "FedDocumentAnalysisDraft",
     "FedOfficialRoleFact",
     "FetchBatch",
+    "GeneralMarketInstrumentSpec",
+    "GeneralMarketRepository",
     "MacroAcquisition",
     "MacroAcquisitionService",
     "MacroBackfillPolicy",
@@ -98,7 +102,9 @@ __all__ = [
     "MacroSourceRole",
     "MacroSourceUnavailable",
     "MarketObservationFact",
+    "MarketPositionFact",
     "MarketSettlementFact",
+    "MarketTrustTier",
     "NaturalChangeCalculationSpec",
     "ReleaseFact",
     "SeriesFact",

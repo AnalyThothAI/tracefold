@@ -29,7 +29,6 @@ NEWS_TABLES = {
     "news_verdicts",
     "news_deliveries",
     "news_control_state",
-    "news_event_market_marks",
     "news_event_labels",
 }
 

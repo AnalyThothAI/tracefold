@@ -5,13 +5,11 @@
 ## Top level
 
 ```
-usage: tracefold [-h]
-                 {serve,workers,init,config,db,macro,news,recent,search,ops} ...
+usage: tracefold [-h] {serve,workers,init,config,db,macro,news,ops} ...
 
 positional arguments:
-  {serve,workers,init,config,db,macro,news,recent,search,ops}
-    serve               run the read-only HTTP, frontend, and WebSocket
-                        runtime
+  {serve,workers,init,config,db,macro,news,ops}
+    serve               run the read-only HTTP and frontend runtime
     workers             run the ingestion, projection, provider, and model
                         runtime
     init                create ~/.tracefold/config.yaml
@@ -20,8 +18,6 @@ positional arguments:
     macro               Macro acquisition and current-module commands
     news                News V3 broker, control, label, and evaluation
                         commands
-    recent              print recent stored events
-    search              search stored tweets by query text
     ops                 maintenance commands
 
 options:
@@ -192,8 +188,7 @@ positional arguments:
     control             write a delivery control command to news_control_state
     label               record an operator label for one Event (learning
                         plane)
-    eval                offline evaluation of Triage decisions against market
-                        marks and labels
+    eval                offline evaluation of Triage decisions against labels
     replay-decisions    re-run decide() over stored verdicts with a candidate
                         policy (no model)
     replay              replay a JSON file of provider hits through
@@ -306,91 +301,25 @@ options:
 
 ```
 
-## `recent`
-
-```
-usage: tracefold recent [-h] [--limit LIMIT] [--handles HANDLES] [--ca CA]
-                        [--chain CHAIN] [--symbol SYMBOL]
-
-options:
-  -h, --help         show this help message and exit
-  --limit LIMIT
-  --handles HANDLES
-  --ca CA            filter by token contract address
-  --chain CHAIN      chain for contract address filters
-  --symbol SYMBOL    filter by cashtag symbol
-
-```
-
-## `search`
-
-```
-usage: tracefold search [-h] [--window {5m,1h,4h,24h}] [--limit LIMIT]
-                        [--cursor CURSOR]
-                        [query]
-
-positional arguments:
-  query
-
-options:
-  -h, --help            show this help message and exit
-  --window {5m,1h,4h,24h}
-  --limit LIMIT
-  --cursor CURSOR       opaque cursor returned by a prior search page
-
-```
-
 ## `ops`
 
 ```
 usage: tracefold ops [-h]
-                     {rebuild-market-current,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-us-equity-symbols,rebuild-token-intents,audit-token-intent} ...
+                     {queue-inspect,queue-resolve,queue-resolve-bucket,validate-projections} ...
 
 positional arguments:
-  {rebuild-market-current,queue-inspect,queue-resolve,queue-resolve-bucket,reconcile-event-anchor-jobs,validate-projections,sync-binance-usdt-perp-universe,sync-us-equity-symbols,rebuild-token-intents,audit-token-intent}
-    rebuild-market-current
-                        rebuild current market rows from persisted market tick
-                        facts
+  {queue-inspect,queue-resolve,queue-resolve-bucket,validate-projections}
     queue-inspect       inspect worker queue terminal evidence
     queue-resolve       resolve worker queue terminal evidence
     queue-resolve-bucket
                         resolve a bounded worker queue terminal evidence
                         bucket
-    reconcile-event-anchor-jobs
-                        one-shot reconcile of historical ready event-anchor
-                        backfill jobs
     validate-projections
                         validate projection read models against PostgreSQL
                         facts
-    sync-binance-usdt-perp-universe
-                        sync Binance USD-M USDT perpetual contracts into the
-                        CEX registry
-    sync-us-equity-symbols
-                        sync Nasdaq Trader US equity symbols
-    rebuild-token-intents
-                        rebuild recent token evidence, intents, resolutions,
-                        and lookup keys
-    audit-token-intent  inspect token intent evidence and resolution
 
 options:
   -h, --help            show this help message and exit
-
-```
-
-## `ops rebuild-market-current`
-
-```
-usage: tracefold ops rebuild-market-current [-h]
-                                            [--after-target-type AFTER_TARGET_TYPE]
-                                            [--after-target-id AFTER_TARGET_ID]
-                                            [--limit LIMIT] --execute
-
-options:
-  -h, --help            show this help message and exit
-  --after-target-type AFTER_TARGET_TYPE
-  --after-target-id AFTER_TARGET_ID
-  --limit LIMIT
-  --execute
 
 ```
 
@@ -452,19 +381,6 @@ options:
 
 ```
 
-## `ops reconcile-event-anchor-jobs`
-
-```
-usage: tracefold ops reconcile-event-anchor-jobs [-h] [--limit LIMIT]
-                                                 [--execute]
-
-options:
-  -h, --help     show this help message and exit
-  --limit LIMIT
-  --execute
-
-```
-
 ## `ops validate-projections`
 
 ```
@@ -473,54 +389,5 @@ usage: tracefold ops validate-projections [-h] [--sample SAMPLE]
 options:
   -h, --help       show this help message and exit
   --sample SAMPLE
-
-```
-
-## `ops sync-binance-usdt-perp-universe`
-
-```
-usage: tracefold ops sync-binance-usdt-perp-universe [-h] (--dry-run |
-                                                     --execute)
-
-options:
-  -h, --help  show this help message and exit
-  --dry-run
-  --execute
-
-```
-
-## `ops sync-us-equity-symbols`
-
-```
-usage: tracefold ops sync-us-equity-symbols [-h]
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
-## `ops rebuild-token-intents`
-
-```
-usage: tracefold ops rebuild-token-intents [-h] [--window {5m,1h,4h,24h}]
-                                           [--limit LIMIT]
-
-options:
-  -h, --help            show this help message and exit
-  --window {5m,1h,4h,24h}
-  --limit LIMIT
-
-```
-
-## `ops audit-token-intent`
-
-```
-usage: tracefold ops audit-token-intent [-h] (--event-id EVENT_ID |
-                                        --intent-id INTENT_ID)
-
-options:
-  -h, --help            show this help message and exit
-  --event-id EVENT_ID
-  --intent-id INTENT_ID
 
 ```

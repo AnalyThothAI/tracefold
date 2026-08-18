@@ -6,7 +6,6 @@ import {
   expectScrollableToLastMeaningfulElement,
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
-import { tokenCaseFixture } from "@tests/fixtures/tokenCaseFixture";
 
 type RouteCase = {
   name: string;
@@ -18,29 +17,11 @@ type RouteCase = {
   lastMeaningfulSelector: string;
 };
 
-const tokenCaseTargetId = tokenCaseFixture().target.target_id;
-
 test.beforeEach(({}, testInfo) => {
   test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only route layout contract");
 });
 
 const routeCases: RouteCase[] = [
-  {
-    name: "search token result",
-    path: "/search?q=HANSA&window=24h",
-    primary: async (page) => {
-      await expect(page.getByRole("region", { name: "Search Intel" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Search Intel" })).toBeVisible();
-    },
-    specific: async (page) => {
-      const tokenCase = page.getByRole("region", { name: "Token case" });
-      await expect(page.getByLabel("global search")).toBeVisible();
-      await expect(tokenCase.getByRole("heading", { name: /\$HANSA/ })).toBeVisible();
-      await expect(tokenCase.getByRole("heading", { name: "Mention Timeline" })).toBeVisible();
-    },
-    nestedOverflowSelectors: [".search-intel-page", ".search-dossier", "[aria-label='Token case']"],
-    lastMeaningfulSelector: "[aria-labelledby='token-case-timeline'] article:last-of-type",
-  },
   {
     name: "news queue",
     path: "/news",
@@ -84,38 +65,19 @@ const routeCases: RouteCase[] = [
     specific: async (page) => {
       await expect(page.getByRole("link", { name: "返回新闻事件流" })).toBeVisible();
       await expect(
-        page.getByRole("heading", {
-          exact: true,
-          level: 1,
-          name: "Macro desk flags liquidity rotation",
-        }),
+        page.getByRole("heading", { exact: true, level: 1, name: "央行应对新的全球政策冲击" }),
       ).toBeVisible();
+      await expect(page.locator(".news-original-title")).toContainText(
+        "Macro desk flags liquidity rotation",
+      );
       await expect(page.getByRole("heading", { name: /条报道/ })).toBeVisible();
       await expect(page.getByRole("heading", { name: "判定记录" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "推送记录" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "标题呈现" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "市场标记" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "操作者标注" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "市场标记" })).toHaveCount(0);
     },
     nestedOverflowSelectors: [".news-panel", ".news-event-detail", ".news-verdict-panel"],
-    lastMeaningfulSelector: ".news-marks-section",
-  },
-  {
-    name: "token case",
-    path: `/token/Asset/${encodeURIComponent(tokenCaseTargetId)}?window=1h`,
-    primary: async (page) => {
-      const tokenCase = page.getByRole("region", { name: "Token case" });
-      await expect(tokenCase.getByRole("heading", { name: /\$HANSA/ })).toBeVisible();
-    },
-    specific: async (page) => {
-      const tokenCase = page.getByRole("region", { name: "Token case" });
-      await expect(tokenCase.getByRole("heading", { name: "Mention Timeline" })).toBeVisible();
-      await expect(tokenCase.getByRole("heading", { name: "Live Market" })).toBeVisible();
-      await expect(
-        tokenCase.getByRole("article").filter({ hasText: "Expansion leg forming on $HANSA" }),
-      ).toBeVisible();
-    },
-    nestedOverflowSelectors: ["[aria-label='Token case']"],
-    lastMeaningfulSelector: "[aria-labelledby='token-case-timeline'] article:last-of-type",
+    lastMeaningfulSelector: ".news-labels-section",
   },
   {
     name: "macro",

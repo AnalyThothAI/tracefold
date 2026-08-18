@@ -13,9 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from tracefold.platform.paths import app_home, app_log_path, config_path
 
-DEFAULT_UPSTREAM_CHAINS = ("sol", "eth", "base", "bsc", "robinhood")
-DEFAULT_UPSTREAM_CHANNELS = ("twitter_monitor_basic", "twitter_monitor_token")
-DEFAULT_GMGN_APP_VERSION = "20260429-12894-ccec416"
 OPENNEWS_STRATEGY_ID_LIMIT = 32
 
 
@@ -24,8 +21,6 @@ class ApiConfig(BaseModel):
 
     host: str = "0.0.0.0"  # noqa: S104 -- configurable API bind address; defaults to all interfaces intentionally
     port: int = 8765
-    heartbeat_interval: int = 30
-    replay_limit: int = Field(default=100, ge=0, le=100)
 
 
 class PostgresConfig(BaseModel):
@@ -109,76 +104,6 @@ class LlmConfig(BaseModel):
         return self
 
 
-class GmgnConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    api_key: str | None = None
-    openapi_base_url: str = "https://openapi.gmgn.ai"
-    timeout_seconds: float = 5.0
-    token_info_cache_ttl_seconds: int = 60
-
-    @field_validator("api_key", mode="before")
-    @classmethod
-    def parse_optional_api_key(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-    @field_validator("openapi_base_url", mode="before")
-    @classmethod
-    def parse_openapi_base_url(cls, value: Any) -> str:
-        normalized = str(value or "https://openapi.gmgn.ai").strip().rstrip("/")
-        return normalized or "https://openapi.gmgn.ai"
-
-
-class UpstreamConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    chains: tuple[str, ...] = DEFAULT_UPSTREAM_CHAINS
-    channels: tuple[str, ...] = DEFAULT_UPSTREAM_CHANNELS
-    app_version: str = DEFAULT_GMGN_APP_VERSION
-    proxy: str | None = None
-    reconnect_delay: float = 3.0
-    heartbeat_interval: float = 25.0
-    idle_timeout: float = 90.0
-
-    @field_validator("chains", "channels", mode="before")
-    @classmethod
-    def parse_tuple(cls, value: Any) -> tuple[str, ...]:
-        return tuple(_split_values(value))
-
-    @field_validator("proxy", mode="before")
-    @classmethod
-    def parse_optional_proxy(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        if normalized.lower() in {"", "none", "false", "off", "direct"}:
-            return None
-        return normalized
-
-
-class BinanceProviderConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    usdm_futures_base_url: str = "https://fapi.binance.com"
-    cex_universe_quote_symbol: str = "USDT"
-    cex_universe_contract_type: str = "PERPETUAL"
-    timeout_seconds: float = 15.0
-
-    @field_validator("usdm_futures_base_url", mode="before")
-    @classmethod
-    def parse_base_url(cls, value: Any) -> str:
-        return str(value or "").strip().rstrip("/")
-
-    @field_validator("cex_universe_quote_symbol", "cex_universe_contract_type", mode="before")
-    @classmethod
-    def parse_uppercase_string(cls, value: Any) -> str:
-        return str(value or "").strip().upper()
-
-
 class MacroSourcesConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -194,7 +119,6 @@ class MacroSourcesConfig(BaseModel):
 class ProvidersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    binance: BinanceProviderConfig = Field(default_factory=BinanceProviderConfig)
     macro_sources: MacroSourcesConfig = Field(default_factory=MacroSourcesConfig)
 
 
@@ -369,10 +293,8 @@ class Settings(BaseModel):
     api: ApiConfig = Field(default_factory=ApiConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
-    gmgn: GmgnConfig = Field(default_factory=GmgnConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     news: NewsSettings = Field(default_factory=NewsSettings)
-    upstream: UpstreamConfig = Field(default_factory=UpstreamConfig)
 
     def set_config_dir(self, value: Path) -> None:
         self._config_dir = value
@@ -399,10 +321,6 @@ class Settings(BaseModel):
     @property
     def log_file(self) -> Path:
         return app_log_path(self._config_dir)
-
-    @property
-    def gmgn_configured(self) -> bool:
-        return bool(self.gmgn.api_key)
 
     @field_validator("ws_token", mode="before")
     @classmethod
@@ -538,8 +456,6 @@ ws_token: "{token}"
 api:
   host: "0.0.0.0"
   port: 8765
-  heartbeat_interval: 30
-  replay_limit: 100
 
 storage:
   postgres:
@@ -559,19 +475,7 @@ llm:
   macro_document_analysis_enabled: false
   macro_document_analysis_model: "gpt-5.4-mini"
 
-gmgn:
-  api_key:
-  openapi_base_url: "https://openapi.gmgn.ai"
-  timeout_seconds: 5
-  token_info_cache_ttl_seconds: 60
-
 providers:
-  binance:
-    enabled: true
-    usdm_futures_base_url: "https://fapi.binance.com"
-    cex_universe_quote_symbol: "USDT"
-    cex_universe_contract_type: "PERPETUAL"
-    timeout_seconds: 15
   macro_sources:
     enabled: true
     fred_enabled: true
@@ -602,15 +506,6 @@ news:
     min_interval_seconds: 0.6
     hourly_cap: 20
   watchlist: []
-
-upstream:
-  chains: ["sol", "eth", "base", "bsc", "robinhood"]
-  channels: ["twitter_monitor_basic", "twitter_monitor_token"]
-  app_version: "{DEFAULT_GMGN_APP_VERSION}"
-  proxy:
-  reconnect_delay: 3
-  heartbeat_interval: 25
-  idle_timeout: 90
 """
 
 
@@ -622,13 +517,3 @@ def _load_yaml_mapping(path: Path) -> Mapping[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"{path.name} must contain a mapping at {path}")
     return data
-
-
-def _split_values(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, list | tuple | set):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [str(value).strip()]

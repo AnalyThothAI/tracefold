@@ -163,22 +163,6 @@ def _inspect_active_queues(
     }
 
 
-def _retry_event_anchor_job(
-    repos: Any,
-    event: dict[str, Any],
-    *,
-    now_ms: int,
-    reason: str,
-) -> dict[str, Any]:
-    row = repos.event_anchor_jobs.retry_terminal_job_from_snapshot(
-        _source_row(event),
-        now_ms=int(now_ms),
-        reason=reason,
-    )
-    _require_requeued(row, "event_anchor_job_retry_not_requeued")
-    return {"requeued": 1, "job": row}
-
-
 def _retry_projection_frontier(
     repos: Any,
     event: dict[str, Any],
@@ -289,7 +273,6 @@ def _require_requeued(row: object, code: str) -> None:
 
 
 QUEUE_RETRY_TRANSITIONS = {
-    ("event_anchor_backfill", "event_anchor_backfill_jobs"): _retry_event_anchor_job,
     (
         "macro_document_analysis",
         "macro_document_analysis_jobs",

@@ -139,7 +139,7 @@ def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert set(data) == {"measured_at_ms", "runtime", "providers"}
+    assert set(data) == {"measured_at_ms", "runtime"}
     assert data["runtime"]["workers_runtime"]["runtime_id"] == RUNTIME_ID
     assert not hasattr(runtime, "providers")
     assert not hasattr(runtime, "collector")

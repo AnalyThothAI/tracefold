@@ -13,9 +13,17 @@ from tracefold.integrations.macro_sources import (
     MacroSourceError,
     MacroSourceUnavailable,
 )
-from tracefold.macro import DATASET_REGISTRY, DocumentFact, ReleaseFact, SeriesFact, require_dataset
+from tracefold.macro import (
+    DATASET_REGISTRY,
+    DocumentFact,
+    MarketObservationFact,
+    MarketPositionFact,
+    MarketSettlementFact,
+    ReleaseFact,
+    SeriesFact,
+    require_dataset,
+)
 from tracefold.macro.registry import MACRO_ACQUISITION_ADAPTER_IDS
-from tracefold.market import MarketObservationFact, MarketPositionFact, MarketSettlementFact
 
 NOW_MS = int(datetime(2026, 7, 27, 12, tzinfo=UTC).timestamp() * 1_000)
 _REMOVED_ACQUISITION_ADAPTER_ID = min(MACRO_ACQUISITION_ADAPTER_IDS)

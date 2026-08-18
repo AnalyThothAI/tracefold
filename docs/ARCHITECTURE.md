@@ -2,33 +2,33 @@
 
 Tracefold is one Python codebase/image with two mutually exclusive runtime
 composition roots, one CLI, one React console, and one PostgreSQL database.
-The architecture remains Kappa/CQRS: append-oriented material facts are the
-only business truth; deterministic current views and bounded immutable model
-publications are derived state.
+It has exactly two business capabilities, News V3 and Macro. The architecture
+remains Kappa/CQRS: append-oriented material facts are the only business
+truth; deterministic current views and bounded immutable model publications
+are derived state.
 
 ## Data flow
 
 ```text
-providers / public streams
-  -> tracefold workers
+OpenNews Strategy WSS / official macro sources
+  -> tracefold workers (RabbitMQ is the News transport plane)
   -> PostgreSQL material facts + bounded projection state + native model state
   -> single-writer read models or immutable publications
   -> tracefold serve
-  -> HTTP / persisted-live WebSocket / React
+  -> HTTP / React
 ```
 
-`tracefold serve` initializes only public HTTP/static/WebSocket, read
-repositories, and serve telemetry. `tracefold workers` initializes ingestion,
-acquisition, the bounded external/model capabilities, one short-projection CPU
-lane, singleton runtime status, the RabbitMQ-driven News consumers when News is
-enabled, and one EDF projection coordinator for the Macro frontier. Market and
-Macro workers recover exclusively by re-reading PostgreSQL facts, the typed
-Macro frontier, native Fed-document model state, and queues on bounded
-code-owned clocks; News consumers recover by re-consuming durable broker queues
-plus database idempotency keys.
-There is no
-database wake plane or in-memory correctness dependency. Provider raw frames
-remain inputs until normalized and persisted as material facts.
+`tracefold serve` initializes only public HTTP/static, read repositories, and
+serve telemetry. `tracefold workers` initializes Macro acquisition, the bounded
+external/model capabilities, one short-projection CPU lane, singleton runtime
+status, the RabbitMQ-driven News consumers when News is enabled, and one EDF
+projection coordinator for the Macro frontier. Macro workers recover
+exclusively by re-reading PostgreSQL facts, the typed Macro frontier, native
+Fed-document model state, and queues on bounded code-owned clocks; News
+consumers recover by re-consuming durable broker queues plus database
+idempotency keys. There is no database wake plane or in-memory correctness
+dependency. Provider raw frames remain inputs until normalized and persisted
+as material facts.
 
 The deployment composition has four required boundaries: PostgreSQL, one
 successful migration job, Serve, and Workers. `make up` is only their
@@ -46,7 +46,7 @@ production React build. Migration, Serve, and Workers use that exact image and
 build revision with different commands and credentials.
 `make up` builds the image once and recreates only migration, Serve, and
 Workers; it starts PostgreSQL when absent but does not recreate a running
-PostgreSQL container. Serve owns the static console and public HTTP/WebSocket
+PostgreSQL container. Serve owns the static console and public HTTP
 boundary; Workers exposes only its loopback operational boundary. Image
 construction and Compose startup do not become alternate configuration
 sources: `tracefold init` remains the single generated-default authority and
@@ -62,20 +62,17 @@ that cadence is scheduling policy, not a correctness authority.
 
 Material facts include:
 
-- evidence: `raw_frames`, `events`, `event_entities`;
-- identity: `token_evidence`, `token_intents`,
-  `token_intent_lookup_keys`, `token_intent_resolutions`,
-  `registry_assets`, `asset_identity_evidence`, `asset_identity_current`;
-- market: `market_ticks`, `enriched_events`, `market_observations`,
-  `market_settlements`, and `market_position_facts`;
 - news: canonical provider Item facts admitted by the operator's OpenNews
   Strategy allowlist in `news_items` (provenance union, provider metadata,
   raw first line, first ingest mode);
-- macro: revision-preserving `macro_series_facts`, `macro_release_facts`, and
-  `macro_documents`.
+- macro: revision-preserving `macro_series_facts`, `macro_release_facts`,
+  `macro_documents`, and `macro_fed_official_role_facts`, plus Macro's general
+  market observation facts `market_instruments`, `market_observations`,
+  `market_settlements`, and `market_position_facts` (the exchange, ETF,
+  futures-proxy, settlement, and CFTC positioning inputs of the six modules).
 
-Current read models are `market_tick_current`, `news_events` (plus `news_event_members`,
-`news_event_bands`, `news_event_assets`), and the six stable rows in
+Current read models are `news_events` (plus `news_event_members`,
+`news_event_bands`, `news_event_assets`) and the six stable rows in
 `macro_module_current`. Each uses stable product/window/target identity, has
 exactly one runtime writer, is rebuildable from facts, and writes zero serving
 rows when its business payload is unchanged. `news_events` is rebuildable by
@@ -92,24 +89,23 @@ module identity, input fingerprint, earliest deadline, lease, failure,
 and publication checkpoints. `first_dirty_at_ms` records the causal change,
 `deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
 eligibility clock for a scheduled recheck or retry. An eligible shard may run
-before its deadline; the deadline is never a start gate. Retry attempts,
-provider circuits, and terminal reasons are likewise queue policy, not facts.
+before its deadline; the deadline is never a start gate. Retry attempts and
+terminal reasons are likewise queue policy, not facts.
 `news_verdicts` (Triage and Analyst decisions bound to a policy version) and
 rows in `macro_document_analyses` are derived model outputs bound to frozen
 evidence; they are not material facts. `news_deliveries` is
 the one-attempt outbound ledger keyed by `(event_id, kind)`; there is no retry,
-lease, or backfill. `news_event_market_marks` and `news_event_labels` are the
-learning-plane truth for evaluating decisions.
+lease, or backfill. `news_event_labels` is the learning-plane truth for
+evaluating decisions.
+
+The current schema is exactly 28 tables: the eleven `news_*` tables, the ten
+`macro_*` tables plus the four general market fact tables owned by Macro, and
+the three platform tables `alembic_version`, `queue_terminal_events`, and
+`workers_runtime`.
 
 ## Package map
 
 ```text
-tracefold.market
-  capture/       provider-neutral evidence ingestion (GMGN stream)
-  identity/      token and asset identity resolution against the registry
-  pricing/       append-only market facts and current prices (GMGN DEX quotes, Binance CEX ticks)
-  views/         persisted market read queries (Search, Token Case)
-
 tracefold.news
   opennews.py         canonical OpenNews frame adapter (raw_text, provenance)
   bus.py              broker envelope, routing keys, error classes, Publisher/Consumer protocols
@@ -125,30 +121,34 @@ tracefold.news
   delivery.py / control.py  cards, control commands
   consumers.py        Receiver, Recovery, Deduper, Triage, Analyst, Deliverer, Janitor
   repository.py / query_specs.py  news_* access and audited reads
-  eval/               market marks, offline evaluation, decision replay, hits replay
+  eval/               offline label evaluation, decision replay, hits replay
 
 tracefold.macro
   registry.py    code-owned Dataset Registry and six-module membership
   acquisition.py clock-driven claim, provider-I/O, fact and cursor flow
   calculations.py versioned calculation registry and transparent features
   projection.py  six current decision modules
+  market_facts.py / market_facts_repository.py  general market observation, settlement,
+                 and positioning facts (market_instruments, market_observations,
+                 market_settlements, market_position_facts)
   fed_analysis.py evidence-bound FOMC/speech analysis contract
   fed_document_agent.py one structured model call over the official body's evidence catalog
 
 tracefold.integrations
-  provider and external-system adapters: GMGN, Binance USD-M, OpenNews, RabbitMQ, Feishu, macro sources
+  provider and external-system adapters: OpenNews, RabbitMQ, Feishu, macro sources
 
 tracefold.platform
-  config, PostgreSQL/Alembic (baseline + one chained hard cut), telemetry, paths, bounded resource primitives
+  config, PostgreSQL/Alembic (baseline + two chained hard cuts), telemetry, paths,
+  bounded resource primitives, docker host translation
 
 tracefold.app
-  composition, repositories/providers, the worker root package (`app/workers/`), HTTP/WS, and CLI
+  composition, repositories, the worker root package (`app/workers/`), HTTP, and CLI
 ```
 
-The three business package roots are their public Python interfaces:
-`tracefold.market`, `tracefold.news`, and `tracefold.macro`. Consumers outside
-an owning package import from the root only. Internal subpackages may change
-without creating a repository-wide import graph.
+The two business package roots are their public Python interfaces:
+`tracefold.news` and `tracefold.macro`. Consumers outside an owning package
+import from the root only. Internal subpackages may change without creating a
+repository-wide import graph.
 
 The application composition root and concrete provider adapters are private
 implementation collaborators, not product consumers. Where one of them must
@@ -164,37 +164,36 @@ The dependency direction is:
 app -> integrations + business packages + platform
 integrations -> business package interfaces + platform
 news -> platform
-macro -> market + platform
-market -> platform
+macro -> platform
 platform -> Python / third-party libraries only
 ```
 
-Business packages never import `tracefold.app` or provider integrations.
-Transport adapters do not own business rules. The Workers root and its private
-TaskGroup loops live in `tracefold.app.workers`; platform exposes only bounded
-resource/projection/model candidate contracts. Queue state machines and
-read-model behavior stay with their business owner. These rules are executable in
-`tests/architecture/test_backend_boundaries.py`.
+Business packages never import `tracefold.app`, provider integrations, or each
+other. Transport adapters do not own business rules. The Workers root and its
+private TaskGroup loops live in `tracefold.app.workers`; platform exposes only
+bounded resource/projection/model candidate contracts. Queue state machines and
+read-model behavior stay with their business owner. These rules are executable
+in `tests/architecture/test_backend_boundaries.py`.
 
 A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
-into a business-package protocol. There are two market adapters: GMGN (the
-anonymous stream and OpenAPI DEX quotes) and Binance USD-M futures (CEX universe
-and ticks); no provider owns a durable queue. Operational status is derived from
-PostgreSQL facts and circuits rather than cached provider objects or live
-probes. Expected provider failures stay inside the owning bounded loop; an
-unhandled child exception is deliberately a Workers-root failure and the
-container restarts the single process.
+into a business-package protocol. The adapters are OpenNews (the authenticated
+Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
+(`aio-pika`), Feishu (the custom-bot webhook), and the Macro source client
+(Treasury, FRED, BLS, BEA, Federal Reserve pages, CFTC, Cboe, Nasdaq, Yahoo
+Chart, and Binance public spot klines as one Macro dataset). No provider owns
+a durable queue. Expected provider failures stay inside the owning bounded
+loop; an unhandled child exception is deliberately a Workers-root failure and
+the container restarts the single process.
 
-SQL ownership follows the same boundary: Market owns the event, token, asset,
-price, collector, general cross-asset observation, and
-settlement tables; News owns `news_*`; Macro owns `macro_*`. Platform owns
-Alembic and the generic terminal-evidence table. News reads `cex_tokens`,
-`price_feeds`, `market_ticks`, and `macro_module_current` through named
-read-only seams (market reaction, macro state) and never writes them. Macro imports Market only through
-`tracefold.market`, has no live or hidden dependency on News, and never
-duplicates general market facts into Macro storage. The architecture gate
-checks SQL table references against the generated current schema.
+SQL ownership follows the same boundary: News owns `news_*`; Macro owns
+`macro_*` plus `market_instruments`, `market_observations`,
+`market_settlements`, and `market_position_facts`. Platform owns Alembic,
+`queue_terminal_events`, and `workers_runtime`. News reads exactly one
+cross-domain table, `macro_module_current`, through a named read-only seam
+(the Analyst's macro-state evidence) and never writes it. Macro has no live or
+hidden dependency on News. The architecture gate checks SQL table references
+against the generated current schema.
 
 ## Transaction ownership
 
@@ -204,8 +203,6 @@ transactions.
 
 Important atomic units are:
 
-- fact persistence, identity resolution, market capture, and downstream dirty
-  target creation;
 - one Macro acquisition completion: normalized fact insert, cursor advance, and
   compare-and-set target completion;
 - current read-model write plus acknowledgement of the exact claim;
@@ -246,35 +243,18 @@ The Macro projection claim lease covers the complete legal phase envelope (30
 seconds). News consumers have no frontier lease; the broker's
 single-active-consumer and per-message ack are their fences.
 
+## Workers task set
+
+The Workers root TaskGroup contains exactly: `workers-probe` (loopback
+health/readiness/metrics), the News consumer tasks when News is enabled
+(`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
+`news-analyst`, `news-deliverer`, `news-janitor`), one `durable-due-N` task
+per Macro acquisition clock family, `projection-edf` (the Macro frontier
+coordinator), `model-arbiter` (Fed document analysis), and `workers-control`
+(singleton lock, heartbeat, runtime row). There is no periodic market poll,
+stream ingester, identity backfill, or universe sync task.
+
 ## Product flows
-
-### Market
-
-`market_tick_current` is transactionally maintained from append-only
-`market_ticks`; it has no projection worker or dirty queue. Explicit bounded
-fact replay rebuilds it. The bounded market poll selects active targets by
-24-hour intent activity in stable order; there is no product-driven priority
-input, so no derived read model can feed a market result back into acquisition
-scheduling.
-
-```text
-events + intent resolution revisions + identity facts + market ticks
-  -> Search (bounded lexical/substring fact reads)
-  -> Token Case (target dossier: timeline, posts, live market)
-  -> /api/live-market (one durable market_tick_current row per target)
-```
-
-Search and Token Case read their owning facts directly; there is no
-model-derived, scored, or ranked product layer between them and the persisted
-facts. There is no Token Radar or Stocks product, route, public read model,
-writer, or worker task. `us_equity_symbols`
-remains only an identity-collision guard for token resolution and does not
-constitute a Stocks surface. General cross-asset Market facts and the six Macro
-modules remain unchanged.
-
-Token identity is resolved deterministically against the registry (GMGN
-payloads, Binance CEX instruments, tweet contract mentions); there is no DEX
-discovery, token profile, or token image lane.
 
 ### News
 
@@ -308,7 +288,7 @@ OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
      DeferError uncounted; x:news.dlx -> q:news.dead for permanent/exhausted/crashed messages
   -> Janitor: outbox catch-up (unpublished candidates), band expiry, 30-day retention,
-     market marks (t0/+5m/+30m/+4h), broker depth snapshot
+     broker depth snapshot
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
 
@@ -319,7 +299,7 @@ consumers wired by `tracefold.app.workers._wire_news_pipeline`; they run as
 asyncio tasks in the single Workers process but coordinate only through the
 broker and PostgreSQL keys, so they can be scaled out without code changes.
 News consumers use their own four-slot database lane
-(`WorkerDatabase.run_news`) so Market/Macro backlog never starves a live Event;
+(`WorkerDatabase.run_news`) so Macro backlog never starves a live Event;
 a lane admission timeout is a `DeferError` (uncounted requeue), a statement
 overrun is a `TransientError` (counted).
 
@@ -362,19 +342,18 @@ Analyst (`tracefold.news.analyst_evidence`, `tracefold.news.agents.analyst`,
 `tracefold.news.analyst_rules`) is one structured LangChain call over a
 code-prefetched evidence bundle built in one database session: the Event card
 and Triage fields, up to five members, up to twenty storyline/symbol history
-Events and prior verdicts from the last 48 hours, per-grounded-symbol CEX
-market reaction rows (elapsed 5m/30m/4h windows through `cex_tokens`,
-`price_feeds`, and `market_ticks`), the six macro module rows, and the same
-`<event_status>` status bar Triage sees. Every citable row carries an
-`evidence_id` registered by the host; `verify_verdict()` rejects unknown
-evidence, market numbers that differ from the bundle, disagreement without
-revision, and magnitude without evidence, and a rejection buys exactly one
-correction round with the reason appended. Before publishing a follow-up the
-consumer re-reads the storyline status: a push newer than the Analyst start
-supersedes the follow-up (`throttled_by = storyline:<key>:superseded`). Deep
-verdicts only produce follow-up cards after the first delivery was sent.
-`NEWS_ANALYST.md` is code-owned domain memory concatenated into the byte-frozen
-system prompt; the effective prompt sha is part of every trace.
+Events and prior verdicts from the last 48 hours, the six macro module rows
+(read-only from `macro_module_current`), and the same `<event_status>` status
+bar Triage sees. Every citable row carries an `evidence_id` registered by the
+host; `verify_verdict()` rejects unknown evidence, disagreement without
+revision, and magnitude >= 2 without context evidence, and a rejection buys
+exactly one correction round with the reason appended. Before publishing a
+follow-up the consumer re-reads the storyline status: a push newer than the
+Analyst start supersedes the follow-up (`throttled_by =
+storyline:<key>:superseded`). Deep verdicts only produce follow-up cards after
+the first delivery was sent. `NEWS_ANALYST.md` is code-owned domain memory
+concatenated into the byte-frozen system prompt; the effective prompt sha is
+part of every trace.
 
 Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders
 code facts (original title, `title_zh`, link, assets, direction, magnitude,
@@ -395,23 +374,23 @@ interval and publishes `raw.recovery.*` frames (`admission=recovery`, never
 delivered). Dead letters are operator-visible through `tracefold news dlq
 inspect|replay|purge`.
 
-Storage is exactly twelve tables: `news_ingest_state`,
+Storage is exactly eleven tables: `news_ingest_state`,
 `news_opennews_incidents`, `news_items`, `news_events`, `news_event_members`,
 `news_event_bands`, `news_event_assets`, `news_verdicts`, `news_deliveries`,
-`news_control_state`, `news_event_market_marks`, `news_event_labels`. Read
-queries are registered in `tracefold.news.query_specs` for the query audit.
+`news_control_state`, `news_event_labels`. Read queries are registered in
+`tracefold.news.query_specs` for the query audit.
 
-Learning plane: `news_event_market_marks` capture t0/+5m/+30m/+4h price and OI
-for candidate events with CEX targets (Binance USDT perps synced into
-`cex_tokens`); `news_event_labels` hold operator labels written by `tracefold
-news label`; `tracefold news eval` reports precision@push, missed-mover rate,
-throttled-mover rate, direction accuracy, and per-rule / per-asset-class /
-per-event-type confusion tables over stored verdicts; `tracefold news
-replay-decisions` re-runs `decide()` over stored verdicts with a candidate
-`DecidePolicy` (the boundary/retention replay before a policy version moves);
-`tracefold news replay <hits.json>` replays provider hits through Deduper+Gate
-without a model or broker; `tests/fixtures/news_v3_hits_sample.json` is the
-golden replay corpus.
+Learning plane: `news_event_labels` hold operator labels written by `tracefold
+news label` (`good`, `noise`, `late`, `wrong_direction`, `dup`); `tracefold
+news eval` treats `good`/`wrong_direction`/`late` as "moved" and `noise`/`dup`
+as "flat" and reports precision@push, missed-mover rate, throttled-mover rate,
+and per-rule / per-asset-class / per-event-type confusion tables over stored
+verdicts; `tracefold news replay-decisions` re-runs `decide()` over stored
+verdicts with a candidate `DecidePolicy` (the boundary/retention replay before
+a policy version moves); `tracefold news replay <hits.json>` replays provider
+hits through Deduper+Gate without a model or broker;
+`tests/fixtures/news_v3_hits_sample.json` is the golden replay corpus. There
+is no market-mark or price-reaction lane.
 
 ### Macro
 
@@ -420,7 +399,7 @@ code-owned Dataset Registry + Coverage Manifest
   -> one of six clock families
   -> macro_acquisition_targets claim
   -> free official / exchange / disclosed proxy adapter
-  -> typed append-only Market or Macro fact + target cursor/current state
+  -> typed append-only macro or general market fact + target cursor/current state
   -> static dataset -> calculation -> module dependency graph
   -> typed affected-module frontier
   -> one EDF module-local reducer
@@ -534,20 +513,23 @@ Migration history is squashed. `20260818_0275_baseline` is the single root
 revision: it executes the frozen `current_schema_20260818_0275.sql` dump
 (every table, index, constraint, seed row of the schema as it stood after the
 News V3 hard cut and Radar removal) plus `runtime_roles.sql`, and it is
-irreversible. `20260818_0276_review_49_hard_cut` is the only chained revision:
-it drops the retired title-translation, DEX discovery, token profile,
-token image, and Radar-era checkpoint tables, and there is no downgrade.
-Earlier hard cuts (News acquisition, Macro derived history, Rates v7/v8,
-acquisition-target state machine, Radar) live only in git history; a fresh
-database and a database upgraded through them reach byte-identical schemas.
-
-## Safety boundary
-
-`events.raw_json` and `events.event_json` remain because historical events do
-not yet have a proven one-to-one `raw_frames` source edge and locator. They may
-be removed only after new writes persist the edge, historical coverage is
-verified at 100%, and ambiguous payloads are exported as immutable evidence.
-No runtime fallback path should be introduced meanwhile.
+irreversible. Two chained revisions follow. `20260818_0276_review_49_hard_cut`
+drops the retired title-translation, DEX discovery, token profile, token
+image, and Radar-era checkpoint tables. `20260818_0277_gmgn_lane_removal`
+drops the whole GMGN lane: the social evidence tables (`raw_frames`, `events`,
+`event_entities`, `enriched_events`, `collector_pending_items`,
+`event_anchor_backfill_jobs`), token identity and registry tables
+(`token_evidence`, `token_intents`, `token_intent_lookup_keys`,
+`token_intent_evidence`, `token_intent_resolutions`, `registry_assets`,
+`asset_identity_evidence`, `asset_identity_current`, `us_equity_symbols`),
+DEX/CEX market data tables (`market_ticks` with its default partition,
+`market_tick_current`, `price_feeds`, `cex_tokens`), the persisted live
+broadcast journal (`persisted_live_events`), `provider_circuit_state`, and the
+News market-mark table (`news_event_market_marks`), plus the
+`forbid_market_fact_update()` trigger function and the terminal-evidence rows
+of the dropped queues. Neither chained revision has a downgrade. Earlier hard
+cuts live only in git history; a fresh database and a database upgraded
+through the chain reach byte-identical schemas.
 
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.

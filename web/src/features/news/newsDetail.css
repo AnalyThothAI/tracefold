@@ -315,29 +315,6 @@
     margin-top: 0.55rem;
   }
 
-  .news-marks-table-wrap {
-    overflow-x: auto;
-  }
-
-  .news-marks-table {
-    width: 100%;
-    border-collapse: collapse;
-    font: 0.68rem/1.4 var(--font-mono);
-  }
-
-  .news-marks-table th,
-  .news-marks-table td {
-    padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid var(--border);
-    text-align: left;
-    white-space: nowrap;
-  }
-
-  .news-marks-table th {
-    color: var(--muted-foreground);
-    font-weight: 600;
-  }
-
   @media (max-width: 767px) {
     .news-event-hero,
     .news-detail-card {

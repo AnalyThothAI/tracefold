@@ -451,7 +451,7 @@ describe("NewsPage", () => {
     expect(screen.queryByRole("button", { name: /暂停|恢复|静音/ })).not.toBeInTheDocument();
   });
 
-  it("renders Event detail with members, verdicts, deliveries, labels, and marks", async () => {
+  it("renders Event detail with members, verdicts, deliveries, and labels", async () => {
     renderNews(
       <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
@@ -507,12 +507,8 @@ describe("NewsPage", () => {
     const labels = screen.getByRole("region", { name: "操作者标注" });
     expect(within(labels).getByText("human")).toBeInTheDocument();
     expect(within(labels).getByText(/good/)).toBeInTheDocument();
-
-    const marks = screen.getByRole("region", { name: "市场标记" });
-    const marksTable = within(marks).getByRole("table");
-    expect(within(marksTable).getByText("t0")).toBeInTheDocument();
-    expect(within(marksTable).getByText("64,250.5")).toBeInTheDocument();
-    expect(within(marksTable).getAllByText("—")).toHaveLength(2);
+    expect(screen.queryByRole("region", { name: "市场标记" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
   it("shows degraded, throttled, and failed verdict/delivery facts without inventing state", async () => {
@@ -530,7 +526,6 @@ describe("NewsPage", () => {
               }),
             ],
             labels: [],
-            marks: [],
             verdicts: [
               newsVerdictFixture({
                 degraded: true,
@@ -594,7 +589,6 @@ describe("NewsPage", () => {
     expect(within(deliveries).getByText("已终结")).toBeInTheDocument();
     expect(within(deliveries).getByText("feishu_5xx")).toBeInTheDocument();
     expect(screen.getByText(/尚无标注/)).toBeInTheDocument();
-    expect(screen.getByText("尚无市场标记。")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", {
         level: 1,

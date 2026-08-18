@@ -37,9 +37,9 @@ recreated; the operator files and named-volume data remain in place.
 ### Initialization semantics
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
-`0700`, `logs/` and `cache/`, one config with a locally generated WebSocket
-token but no external credentials, and four independent PostgreSQL password
-files:
+`0700`, `logs/` and `cache/`, one config with a locally generated API bearer
+token (`ws_token`) but no external credentials, and four independent
+PostgreSQL password files:
 
 ```text
 postgres_password
@@ -56,10 +56,11 @@ all existing PostgreSQL passwords. Back up intentional config changes before
 using `--force`.
 
 `tracefold init` is the sole default-config authority. There is no maintained
-static example or `.env` fallback. The generated default creates a local
-WebSocket token but contains no external provider, model, OpenNews, or Feishu
-credential, points `news.broker.url` at the compose RabbitMQ service, leaves
-`news.opennews_strategy_ids` empty, and leaves News push disabled. Edit only the operator-owned
+static example or `.env` fallback. The generated default creates a local API
+token but contains no model, OpenNews, or Feishu credential, points
+`news.broker.url` at the compose RabbitMQ service, leaves
+`news.opennews_strategy_ids` empty, enables the free Macro source families,
+and leaves News push disabled. Edit only the operator-owned
 `~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
 terminal output, docs, tests, and commits.
 
@@ -73,6 +74,15 @@ contract is not valid.
 
 ### Credential-dependent capabilities
 
+The credentials a live deployment can hold are exactly: the OpenNews token
+(`news.opennews_token`), the direct model triple (`llm.api_key`,
+`llm.base_url`, `llm.news_triage_model`, plus optional
+`llm.news_analyst_model` and the Fed document-analysis switch/model), the
+RabbitMQ URL (`news.broker.url`), the Feishu webhook and optional signing
+secret (`news.push.*`), and the PostgreSQL role password files. Macro sources
+are keyless; `providers.macro_sources` only enables the free families and sets
+the user agent.
+
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
 
@@ -81,17 +91,17 @@ lanes report explicit degradation or unavailable evidence:
   `news.opennews_strategy_ids` must be non-empty or configuration fails closed;
 - absent or unreachable `news.broker.url` makes Workers fail startup while News
   is enabled (the broker is the News transport plane); disable News with
-  `news.enabled: false` to run Market/Macro without RabbitMQ;
-- an absent `gmgn.api_key` leaves the GMGN OpenAPI DEX quote lane
-  (`gmgn_dex_quote`) unowned, and `providers.binance.enabled: false` leaves
-  the Binance CEX lane (`binance_cex_rest`) unowned, while configured keyless
-  sources keep their own independent behavior;
+  `news.enabled: false` to run Macro alone without RabbitMQ;
 - an absent direct DeepSeek triple (`llm.api_key`, `llm.base_url`,
   `llm.news_triage_model`) makes Triage fall back to fail-closed rules
   (`triage_degraded_24h` grows) and disables the Analyst; a degraded verdict
   carries no `title_zh`, so the feed and card show only the original title;
+  `llm.macro_document_analysis_enabled: false` (the default) keeps Fed
+  document analysis `disabled` without lowering Rates/Fed health;
 - News push remains off until `news.push.enabled: true` and a supported
-  `news.push.feishu_webhook_url` are both configured.
+  `news.push.feishu_webhook_url` are both configured;
+- a disabled Macro source family leaves its datasets `unavailable` and visible
+  as such; nothing is proxied.
 
 `tracefold config` reports the effective file paths, configured booleans,
 `opennews_strategy_count`, broker `url_configured`, model names, and watchlist
@@ -143,19 +153,20 @@ delivery settles `terminal/delivery_unavailable`.
 The compose stack runs `rabbitmq:4-management` with the default user
 `tracefold` and password `${TRACEFOLD_RABBITMQ_PASSWORD:-tracefold}`; ports
 5672/15672 bind to `127.0.0.1`. The broker URL in `config.yaml` must match.
-Set `news.enabled: false` to run Market/Macro without RabbitMQ.
+Set `news.enabled: false` to run Macro without RabbitMQ.
 
 Workers validate the configured Strategy allowlist against the provider
 Strategy list at startup and expose `strategy_warnings` in `/api/news/status`;
 provider-side enablement never silently edits Tracefold configuration.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
-`config.yaml` must contain the credentials/endpoints needed by each enabled
-lane: `gmgn.api_key` for the GMGN OpenAPI DEX quote lane and
-`providers.binance` for the Binance USD-M futures CEX lane. The `llm` block
+`config.yaml` must contain only the News credentials above; the `llm` block
 owns one all-or-none direct DeepSeek triple (`api_key`, `base_url`,
-`news_triage_model`) plus optional `news_analyst_model`;
-there is no environment-variable credential path or inferred URL/model.
+`news_triage_model`) plus optional `news_analyst_model`; there is no
+environment-variable credential path or inferred URL/model. Configs written
+before the GMGN lane removal must drop the `gmgn`, `upstream`,
+`providers.binance`, `api.heartbeat_interval`, and `api.replay_limit` keys;
+the schema rejects them.
 
 The OpenNews Receiver authenticates one WSS and sends zero application
 subscription frames; the server pushes the account owner's `strategy.triggered`
@@ -175,21 +186,22 @@ Useful live-data smoke checks:
 ```bash
 uv run tracefold config
 uv run tracefold news bus-check
-uv run tracefold ops sync-binance-usdt-perp-universe --dry-run
+uv run tracefold db audit
+uv run tracefold macro status
 ```
 
 The first command confirms the real config paths. `news bus-check` proves the
 broker URL, declares the News topology idempotently, and prints per-queue
-message/consumer counts. The Binance universe sync (`--dry-run`, then
-`--execute`) populates `cex_tokens`; News market marks and the Analyst
-market-reaction evidence carry data only when `providers.binance.enabled` is
-true and that universe has been synced. Provider blocks, rate limits, and
-missing rows surface as explicit diagnostic results, not as fake facts.
+message/consumer counts. `db audit` confirms the migration head, the Macro
+core-table counts, and the exact eleven `news_*` tables. `macro status`
+reports acquisition targets and the six module rows without calling a
+provider. Source blocks, rate limits, and missing rows surface as explicit
+diagnostic results, not as fake facts.
 
 Macro live-data debugging starts the same way: first run
 `uv run tracefold config` and confirm `config_path` points at
 `~/.tracefold/config.yaml`. Report only paths,
-booleans, and diagnostic command status; do not paste WebSocket tokens, API
+booleans, and diagnostic command status; do not paste the API token, model
 keys, provider passwords, or full config payloads into docs or chat.
 
 Macro acquisition uses free, keyless sources first: Treasury XML for the
@@ -260,29 +272,33 @@ target current state/cursor, fact family, and three module quality axes. A
 public-source timeout, weekend settlement lag, or delayed Yahoo proxy is a
 visible quality state; it is not a frontend defect.
 
-After `uv run tracefold db migrate`, the database contains
-typed Market/Macro fact tables, acquisition targets, module frontiers, six
-current module rows, official documents, document-analysis jobs, immutable
-document analyses, and the twelve `news_*` tables.
+After `uv run tracefold db migrate`, the database contains exactly 28 tables:
+the eleven `news_*` tables; the Macro fact tables (`macro_series_facts`,
+`macro_release_facts`, `macro_documents`, `macro_fed_official_role_facts`)
+and Macro's general market fact tables (`market_instruments`,
+`market_observations`, `market_settlements`, `market_position_facts`);
+acquisition targets, dataset projection states, module frontiers, six current
+module rows, document-analysis jobs, and immutable document analyses; and the
+platform tables `alembic_version`, `queue_terminal_events`, and
+`workers_runtime`.
 The Alembic chain is the `20260818_0275` current-schema baseline (root; it
 executes `current_schema_20260818_0275.sql` and `runtime_roles.sql`) followed
-by `20260818_0276_review_49_hard_cut`. A new empty database applies the
-baseline and 0276 without replaying retired runtime tables, compatibility
-columns, historical backfills, or intermediate contracts. A database stamped
-at `20260818_0275` (the live one) migrates forward once with
-`tracefold db migrate`; 0276 drops the retired News title table, the DEX
-discovery/token-profile/token-image tables, and the unused LangGraph
-`checkpoint_*` tables and is irreversible (see `OPERATIONS.md`). Stop Serve
-and Workers before applying it and enable the workers only after the
-migration is current. Worker startup reconstructs missing/version-mismatched
-Macro frontiers from persisted Dataset projection state, while matching clean
-frontiers remain zero-write; the sole Macro projection writer reconciles all
-six frontiers. `us_equity_symbols` remains only as an internal token-identity
-collision guard; there is no Stocks or Token Radar product or route.
+by `20260818_0276_review_49_hard_cut` and `20260818_0277_gmgn_lane_removal`.
+A new empty database applies all three without replaying retired runtime
+tables, compatibility columns, historical backfills, or intermediate
+contracts. A database stamped at `20260818_0276` (the live one) migrates
+forward once with `tracefold db migrate`; 0277 drops the social evidence,
+token identity/registry, DEX/CEX market, live broadcast, provider circuit,
+and News market-mark tables and is irreversible (see `OPERATIONS.md`). Stop
+Serve and Workers before applying it, remove the retired config keys, and
+enable the workers only after the migration is current. Worker startup
+reconstructs missing/version-mismatched Macro frontiers from persisted Dataset
+projection state, while matching clean frontiers remain zero-write; the sole
+Macro projection writer reconciles all six frontiers.
 
 The overview and six typed module reads are persisted-only and never trigger a
-provider, model, target advance, projection rebuild, or write. Retired Macro
-routes return `404`; there is no compatibility alias.
+provider, model, target advance, projection rebuild, or write. Retired routes
+return `404`; there is no compatibility alias.
 
 The full CLI surface is documented by `uv run tracefold --help`.
 Treat that output as the source of truth — do not enumerate commands
@@ -338,7 +354,7 @@ against its loopback API:
 make up
 cd web
 npm ci
-npm run dev          # Vite console with API/WebSocket proxy to 127.0.0.1:8765
+npm run dev          # Vite console with API proxy to 127.0.0.1:8765
 ```
 
 For an intentional host-process backend loop, first provision PostgreSQL roles

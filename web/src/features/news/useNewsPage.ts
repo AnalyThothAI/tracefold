@@ -15,7 +15,6 @@ export type NewsVerdict = NewsSchemas["NewsVerdictData"];
 export type NewsDelivery = NewsSchemas["NewsDeliveryData"];
 export type NewsDeliverySummary = NewsSchemas["NewsDeliverySummaryData"];
 export type NewsLabel = NewsSchemas["NewsLabelData"];
-export type NewsMarketMark = NewsSchemas["NewsMarketMarkData"];
 export type NewsTriageSummary = NewsSchemas["NewsTriageSummaryData"];
 export type NewsStatus = NewsSchemas["NewsStatusData"];
 export type NewsIncident = NewsSchemas["NewsIncidentData"];

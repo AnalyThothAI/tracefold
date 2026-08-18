@@ -6,7 +6,7 @@ import {
 } from "react-router-dom";
 
 import { RouteErrorElement, RouteNotFoundElement } from "./routeErrorElement";
-import { SearchShellRoute, ShellChromeRoute, ShellRoute } from "./shell.route";
+import { ShellChromeRoute, ShellRoute } from "./shell.route";
 import { useShellRouteContext } from "./shellRouteContext";
 
 export type AppRouter = ReturnType<typeof createBrowserRouter>;
@@ -21,10 +21,6 @@ export function createAppRouteObjects(): RouteObject[] {
         {
           element: <ShellRoute />,
           children: [
-            {
-              path: "token/:targetType/:targetId",
-              lazy: () => import("./token-target.route"),
-            },
             {
               path: "news",
               lazy: () => import("./news.route"),
@@ -80,15 +76,6 @@ export function createAppRouteObjects(): RouteObject[] {
             {
               index: true,
               element: <Navigate replace to="/news" />,
-            },
-          ],
-        },
-        {
-          element: <SearchShellRoute />,
-          children: [
-            {
-              path: "search",
-              lazy: () => import("./search.route"),
             },
           ],
         },

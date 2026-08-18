@@ -34,7 +34,7 @@ _BOUNDED_QUERY_CONFIG = {
     "jit": "off",
     "work_mem": "16MB",
 }
-_SERVE_POOL_SIZE = 8
+_SERVE_POOL_SIZE = 7  # 6 ordinary read permits + 1 control permit
 _SERVE_CHECKOUT_TIMEOUT_SECONDS = 0.250
 _SERVE_STATEMENT_TIMEOUT_SECONDS = 1.0
 _SERVE_SESSION_CONFIG = {
@@ -44,7 +44,6 @@ _SERVE_SESSION_CONFIG = {
 }
 _SERVE_LANE_CAPACITIES = {
     "ordinary": 6,
-    "search": 1,
     "control": 1,
 }
 _SERVE_PERMIT_TIMEOUT_SECONDS = 0.050

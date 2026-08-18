@@ -6,42 +6,40 @@ import { describe, expect, it } from "vitest";
 
 describe("RouteBackLink", () => {
   it("renders an accessible return link", () => {
-    renderWithProviders(<RouteBackLink to="/search" label="返回" ariaLabel="返回 Search" />, {
-      route: "/token/Asset/x",
+    renderWithProviders(<RouteBackLink to="/news" label="返回" ariaLabel="返回事件流" />, {
+      route: "/news/events/evt-1",
     });
 
-    const link = screen.getByRole("link", { name: "返回 Search" });
-    expect(link).toHaveAttribute("href", "/search");
+    const link = screen.getByRole("link", { name: "返回事件流" });
+    expect(link).toHaveAttribute("href", "/news");
     expect(link).toHaveTextContent("返回");
   });
 
   it("navigates through the active router instead of reloading the document", () => {
     const { container } = renderWithProviders(
       <Routes>
-        <Route path="/search" element={<h1>Search</h1>} />
+        <Route path="/news" element={<h1>News</h1>} />
         <Route
-          path="/token/:targetType/:targetId"
-          element={<RouteBackLink to="/search" label="返回" ariaLabel="返回 Search" />}
+          path="/news/events/:eventId"
+          element={<RouteBackLink to="/news" label="返回" ariaLabel="返回事件流" />}
         />
       </Routes>,
       {
-        route: "/token/Asset/x",
+        route: "/news/events/evt-1",
       },
     );
 
-    fireEvent.click(within(container).getByRole("link", { name: "返回 Search" }));
+    fireEvent.click(within(container).getByRole("link", { name: "返回事件流" }));
 
-    expect(within(container).getByRole("heading", { name: "Search" })).toBeInTheDocument();
+    expect(within(container).getByRole("heading", { name: "News" })).toBeInTheDocument();
   });
 
   it("does not require a router provider", () => {
-    const { container } = render(
-      <RouteBackLink to="/search" label="返回" ariaLabel="返回 Search" />,
-    );
+    const { container } = render(<RouteBackLink to="/news" label="返回" ariaLabel="返回事件流" />);
 
-    expect(within(container).getByRole("link", { name: "返回 Search" })).toHaveAttribute(
+    expect(within(container).getByRole("link", { name: "返回事件流" })).toHaveAttribute(
       "href",
-      "/search",
+      "/news",
     );
   });
 });

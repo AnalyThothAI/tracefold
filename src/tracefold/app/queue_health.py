@@ -30,16 +30,6 @@ class DirtyTargetQueueSpec:
 
 
 _STATUS_QUEUE_SPECS = {
-    "event_anchor_backfill_jobs": StatusQueueSpec(
-        owner_key="event_anchor_backfill",
-        table="event_anchor_backfill_jobs",
-        waiting_statuses=("pending",),
-        running_statuses=("running",),
-        retry_statuses=(),
-        terminal_statuses=("failed", "expired"),
-        due_column="next_run_at_ms",
-        lease_column="leased_until_ms",
-    ),
     "macro_document_analysis_jobs": StatusQueueSpec(
         owner_key="macro_document_analysis",
         table="macro_document_analysis_jobs",

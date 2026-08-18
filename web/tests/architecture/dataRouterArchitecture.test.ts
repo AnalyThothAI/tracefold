@@ -50,34 +50,37 @@ describe("data router architecture", () => {
       "routes/shellChromeData.ts",
     ].map(readSource);
     const importSources = shellSources.flatMap(importSpecifiers);
-    const pageExportingFeatureBarrels = [
-      "@features/macro",
-      "@features/news",
-      "@features/search",
-      "@features/token-case",
-    ];
+    const pageExportingFeatureBarrels = ["@features/macro", "@features/news"];
 
     expect(importSources.filter((source) => pageExportingFeatureBarrels.includes(source))).toEqual(
       [],
     );
   });
 
-  it("keeps shell chrome data above cockpit and search shell switches", () => {
+  it("keeps shell chrome data above the single cockpit shell", () => {
     const router = readSource("routes/router.tsx");
     const shellRoute = readSource("routes/shell.route.tsx");
 
     expect(router).toContain("<ShellChromeRoute />");
+    expect(router).not.toContain("SearchShellRoute");
     expect(shellRoute).toContain("ShellChromeContext.Provider");
     expect(shellRoute).toContain("<Outlet />");
     expect(shellRoute).toContain("useShellChrome()");
+    expect(shellRoute).not.toContain("SearchShell");
+    expect(existsSync(join(srcRoot, "features/cockpit/ui/SearchShell.tsx"))).toBe(false);
   });
 
-  it("keeps eager shell dependencies from importing page-exporting search barrels", () => {
-    const eagerShellSources = ["routes/shellChromeData.ts"].map(readSource);
+  it("keeps only News and Macro route families plus the News landing redirect", () => {
+    const routerSource = readSource("routes/router.tsx");
 
-    expect(
-      eagerShellSources.flatMap(importSpecifiers).filter((source) => source === "@features/search"),
-    ).toEqual([]);
+    expect(routerSource).toContain('path: "macro/:modulePath"');
+    expect(routerSource).toContain('<Navigate replace to="/news" />');
+    expect(routerSource).not.toContain('path: "search"');
+    expect(routerSource).not.toContain('path: "token/:targetType/:targetId"');
+    expect(routerSource).not.toMatch(/search\.route|token-target\.route/);
+    for (const removed of ["routes/search.route.tsx", "routes/token-target.route.tsx"]) {
+      expect(existsSync(join(srcRoot, removed)), `${removed} must stay deleted`).toBe(false);
+    }
   });
 
   it("keeps macro routing on the data-router module path without legacy prop wrappers", () => {

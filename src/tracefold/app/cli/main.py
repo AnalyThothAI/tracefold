@@ -49,10 +49,6 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         from .commands import ops
 
         return _finish(ops.handle_ops(args, parser), stdout)
-    from .commands import read_models
-
-    if command in read_models.READ_MODEL_COMMANDS:
-        return _finish(read_models.handle_read_model(args), stdout)
 
     parser.error(f"unknown command: {command}")
     return 2

@@ -9,22 +9,12 @@ import pytest
 from psycopg import OperationalError
 
 from tracefold.app import workers as workers_module
-from tracefold.app.workers import (
-    _MARKET_TICK_POLL_SECONDS,
-    _run_due,
-    _run_periodic,
-)
+from tracefold.app.workers import _run_due
 from tracefold.app.workers.model_arbiter import run_model_arbiter
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.macro import MacroProjectionCandidate, acquisition_loop_policy, require_dataset
 from tracefold.macro.domain import MacroSourceError
 from tracefold.macro.runtime import MacroAcquisition
-from tracefold.market.pricing.event_anchor_backfill_worker import (
-    EventAnchorBackfill,
-    _RescheduleOutcome,
-    _TerminalOutcome,
-)
-from tracefold.market.pricing.market_tick_poll_worker import MarketTickPoll
 from tracefold.platform.model_candidate import ModelCandidate
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
@@ -95,38 +85,6 @@ def test_macro_idle_poll_never_sleeps_past_the_retry_clock() -> None:
     assert acquisition_loop_policy("official_document") == (900.0, 2)
 
 
-def test_periodic_loop_can_defer_its_first_sample_without_changing_cadence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    waits: list[float] = []
-    samples = 0
-
-    async def _wait(_stop_event: asyncio.Event, seconds: float) -> None:
-        waits.append(seconds)
-
-    async def scenario() -> None:
-        nonlocal samples
-        stop_event = asyncio.Event()
-
-        async def sample() -> None:
-            nonlocal samples
-            samples += 1
-            stop_event.set()
-
-        await _run_periodic(
-            sample,
-            period_seconds=30.0,
-            initial_delay_seconds=30.0,
-            stop_event=stop_event,
-        )
-
-    monkeypatch.setattr(workers_module, "_wait_or_stop", _wait)
-    asyncio.run(scenario())
-
-    assert samples == 1
-    assert waits[0] == 30.0
-
-
 def test_recurring_database_overruns_wait_for_each_loops_normal_cadence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -142,22 +100,14 @@ def test_recurring_database_overruns_wait_for_each_loops_normal_cadence(
             operation_name="due-without-a-db-prefix",
         )
 
-    async def periodic_sample() -> None:
-        raise ResourceOperationOverrun(
-            capability=ResourceCapability.DATABASE_BUSINESS,
-            operation_name="periodic-without-a-db-prefix",
-        )
-
     async def scenario() -> None:
         due_stop = asyncio.Event()
         await _run_due(due_turn, idle_seconds=7.0, stop_event=due_stop)
-        periodic_stop = asyncio.Event()
-        await _run_periodic(periodic_sample, period_seconds=11.0, stop_event=periodic_stop)
 
     monkeypatch.setattr(workers_module, "_wait_or_stop", wait)
     asyncio.run(scenario())
 
-    assert waits == [7.0, 11.0]
+    assert waits == [7.0]
 
 
 def test_recurring_loop_does_not_recover_non_database_overrun_with_db_like_text() -> None:
@@ -350,19 +300,6 @@ def test_due_loop_propagates_post_work_admission_timeout() -> None:
         asyncio.run(_run_due(turn, idle_seconds=1.0, stop_event=asyncio.Event()))
 
 
-def test_periodic_loop_propagates_post_work_admission_timeout() -> None:
-    async def sample() -> None:
-        raise ResourceAdmissionTimeout("sampler_publication_db_saturated")
-
-    with pytest.raises(ResourceAdmissionTimeout, match="sampler_publication_db_saturated"):
-        asyncio.run(_run_periodic(sample, period_seconds=1.0, stop_event=asyncio.Event()))
-
-
-def test_market_poll_period_stays_below_one_hundred_thousand_monthly_calls() -> None:
-    max_31_day_turns = 1 + int(31 * 24 * 60 * 60 / _MARKET_TICK_POLL_SECONDS)
-    assert max_31_day_turns < 100_000
-
-
 def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() -> None:
     class _SaturatedDatabase:
         async def run_business(self, operation_name, function, /, *args, **kwargs):
@@ -375,75 +312,10 @@ def test_claimless_domain_admission_timeouts_retry_without_killing_the_root() ->
     macro.db = database
     macro.service = SimpleNamespace(claim_next=lambda: None)
 
-    anchor = object.__new__(EventAnchorBackfill)
-    anchor.db = database
-    anchor.clock = lambda: 1
-
-    poll = object.__new__(MarketTickPoll)
-    poll.db = database
-
     async def scenario() -> None:
         assert await macro.turn() is None
-        assert await anchor.turn() is None
-        assert await poll.sample() is None
 
     asyncio.run(scenario())
-
-
-def test_market_poll_provider_overrun_stays_inside_the_poll_lane() -> None:
-    class _OverrunFiniteOperations:
-        async def run(self, *_args, **_kwargs):
-            raise ResourceOperationOverrun(
-                capability=ResourceCapability.FINITE_OPERATION,
-                operation_name="market_tick_poll_dex",
-            )
-
-    poll = object.__new__(MarketTickPoll)
-    poll.dex_quote_market = SimpleNamespace(token_quotes=lambda _requests: ())
-    poll.finite_operations = _OverrunFiniteOperations()
-
-    result = asyncio.run(
-        poll._poll_chain_targets_async(
-            [
-                SimpleNamespace(
-                    target_id="sol:token-address",
-                    chain_id="sol",
-                    address="token-address",
-                )
-            ]
-        )
-    )
-
-    assert result.ticks == []
-    assert result.skipped_reasons == {"provider_timeout": 1}
-
-
-def test_market_cex_poll_provider_overrun_stays_inside_the_poll_lane() -> None:
-    class _OverrunFiniteOperations:
-        async def run(self, *_args, **_kwargs):
-            raise ResourceOperationOverrun(
-                capability=ResourceCapability.FINITE_OPERATION,
-                operation_name="market_tick_poll_cex",
-            )
-
-    poll = object.__new__(MarketTickPoll)
-    poll.cex_market = SimpleNamespace(tickers=lambda **_kwargs: ())
-    poll.finite_operations = _OverrunFiniteOperations()
-
-    result = asyncio.run(
-        poll._poll_cex_targets_async(
-            [
-                SimpleNamespace(
-                    target_id="binance:BTCUSDT",
-                    exchange="binance",
-                    instrument="BTCUSDT",
-                )
-            ]
-        )
-    )
-
-    assert result.ticks == []
-    assert result.skipped_reasons == {"provider_timeout": 1}
 
 
 def test_macro_provider_overrun_publishes_a_bounded_source_failure_without_releasing_claim() -> None:
@@ -532,46 +404,6 @@ def test_macro_malformed_success_json_is_published_as_a_source_failure() -> None
     assert isinstance(database.failure, MacroSourceError)
     assert str(database.failure) == "bls_release_payload_invalid"
     assert database.operations == ["macro_target_claim", "macro_publish_failure"]
-
-
-@pytest.mark.parametrize(
-    ("attempt_count", "expected_type"),
-    [(1, _RescheduleOutcome), (3, _TerminalOutcome)],
-)
-def test_event_anchor_provider_overrun_uses_existing_retry_budget(
-    attempt_count: int,
-    expected_type: type[_RescheduleOutcome] | type[_TerminalOutcome],
-) -> None:
-    now_ms = 100_000
-    row = {
-        "event_id": "event-1",
-        "intent_id": "intent-1",
-        "resolution_id": "resolution-1",
-        "target_type": "Asset",
-        "target_id": "asset-1",
-        "t_event_ms": now_ms,
-        "active_until_ms": now_ms + 60_000,
-        "attempt_count": attempt_count,
-    }
-
-    class _Database:
-        async def run_business(self, operation_name, _function, /, *_args, **_kwargs):
-            assert operation_name == "event_anchor_existing_tick"
-
-    worker = object.__new__(EventAnchorBackfill)
-    worker.db = _Database()
-    worker.finite_operations = _SubmittedOverrunFiniteOperations()
-    worker.max_attempts = 3
-    worker.max_anchor_lag_ms = 60_000
-
-    outcome = asyncio.run(worker._capture_one(row, now_ms=now_ms, on_submitted=lambda: None))
-
-    assert isinstance(outcome, expected_type)
-    assert outcome.reason == "provider_timeout"
-    if isinstance(outcome, _RescheduleOutcome):
-        assert outcome.next_run_at_ms == now_ms + 10_000
-    else:
-        assert outcome.status == "failed"
 
 
 def test_model_arbiter_propagates_post_model_admission_timeout() -> None:

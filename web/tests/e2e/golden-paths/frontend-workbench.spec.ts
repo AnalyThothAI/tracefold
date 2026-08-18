@@ -10,8 +10,8 @@ const archetypes = [
   },
   {
     name: "case",
-    path: "/search?q=HANSA&window=24h",
-    ready: (page: Page) => page.getByRole("region", { name: "Token case" }),
+    path: "/news/events/evt-global-policy",
+    ready: (page: Page) => page.getByRole("region", { name: "新闻事件详情" }),
   },
 ] as const;
 
@@ -20,14 +20,6 @@ const macroPages = [["facts", "/macro", "宏观事实总览"]] as const;
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-07-23T10:00:00Z"));
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await page.routeWebSocket("**/ws", (socket) => {
-    socket.onMessage((message) => {
-      const payload = JSON.parse(String(message)) as { type?: string };
-      if (payload.type === "auth") {
-        socket.send(JSON.stringify({ type: "ready" }));
-      }
-    });
-  });
   await installMockApi(page);
 });
 

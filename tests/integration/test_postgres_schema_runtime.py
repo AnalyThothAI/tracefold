@@ -131,321 +131,66 @@ RETIRED_MACRO_RESEARCH_TABLES = {
 }
 
 
-def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_path) -> None:
+def test_current_postgres_schema_is_news_v3_plus_macro(tmp_path) -> None:
+    """After #50 the schema is exactly: News V3 tables, Macro facts/projection/current tables, Macro's general
+    market observation tables, and the two runtime tables (workers_runtime, queue_terminal_events)."""
+
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
         tables = {
             row["table_name"]
             for row in conn.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+                "SELECT table_name FROM information_schema.tables"
+                " WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
             ).fetchall()
         }
-        news_event_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'news_events'
-                """
-            ).fetchall()
-        }
-        news_delivery_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'news_deliveries'
-                """
-            ).fetchall()
-        }
-        news_control_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'news_control_state'
-                """
-            ).fetchall()
-        }
-        news_ingest_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'news_ingest_state'
-                """
-            ).fetchall()
-        }
-        market_current_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'market_tick_current'
-                """
-            ).fetchall()
-        }
-        market_settlement_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'market_settlements'
-                """
-            ).fetchall()
-        }
-        event_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'events'
-                """
-            ).fetchall()
-        }
-        event_entity_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'event_entities'
-                """
-            ).fetchall()
-        }
-        radar_feature_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'token_radar_target_features'
-                """
-            ).fetchall()
-        }
-        radar_current_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'token_radar_current'
-                """
-            ).fetchall()
-        }
-        radar_publication_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'token_radar_publication_state'
-                """
-            ).fetchall()
-        }
-        radar_first_seen_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'token_radar_target_first_seen'
-                """
-            ).fetchall()
-        }
-        radar_frontier_columns = {
-            row["column_name"]
-            for row in conn.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'radar_projection_frontiers'
-                """
-            ).fetchall()
-        }
-        retired_projection_tables = {
-            row["table_name"]
-            for row in conn.execute(
-                """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                  AND table_name = ANY(%s)
-                """,
-                (
-                    [
-                        "token_profile_current_dirty_targets",
-                        "token_profile_current",
-                        "token_profile_projection_frontiers",
-                        "asset_profiles",
-                        "asset_profile_refresh_targets",
-                        "token_image_assets",
-                        "token_image_source_dirty_targets",
-                        "token_discovery_results",
-                        "token_discovery_dirty_lookup_keys",
-                        "cex_token_profiles",
-                        "checkpoints",
-                        "checkpoint_writes",
-                        "checkpoint_blobs",
-                        "checkpoint_migrations",
-                        "token_radar_current",
-                        "token_radar_dirty_targets",
-                        "token_radar_rank_source_events",
-                        "token_radar_current_rows",
-                        "token_radar_publication_state",
-                        "token_radar_target_features",
-                        "token_radar_target_first_seen",
-                        "radar_projection_frontiers",
-                        "radar_source_edges",
-                    ],
-                ),
-            ).fetchall()
-        }
-        performance_indexes = {
-            row["indexname"]
-            for row in conn.execute(
-                """
-                SELECT indexname
-                FROM pg_indexes
-                WHERE schemaname = 'public'
-                  AND indexname IN (
-                    'idx_asset_identity_evidence_profile_source',
-                    'idx_asset_identity_evidence_asset_provider_lookup',
-                    'idx_market_observations_projection_history',
-                    'ix_news_events_opened',
-                    'ix_news_events_search',
-                    'ix_news_event_bands_lookup'
-                  )
-                """
-            ).fetchall()
-        }
-        resolution_lookup_index = conn.execute(
-            """
-            SELECT indexdef
-            FROM pg_indexes
-            WHERE schemaname = 'public'
-              AND indexname = 'idx_token_intent_lookup_keys_intent_lookup'
-            """
-        ).fetchone()
-        radar_event_index = conn.execute(
-            """
-            SELECT indexdef
-            FROM pg_indexes
-            WHERE schemaname = 'public'
-              AND indexname = 'idx_events_token_radar_source_time'
-            """
-        ).fetchone()
-        macro_market_projection_index = conn.execute(
-            """
-            SELECT indexdef
-            FROM pg_indexes
-            WHERE schemaname = 'public'
-              AND indexname = 'idx_market_observations_projection_history'
-            """
-        ).fetchone()
-        radar_fingerprint_column = conn.execute(
-            """
-            SELECT is_generated, generation_expression
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'events'
-              AND column_name = 'token_radar_text_fingerprint'
-            """
-        ).fetchone()
-        radar_resolution_index = conn.execute(
-            """
-            SELECT indexdef
-            FROM pg_indexes
-            WHERE schemaname = 'public'
-              AND indexname = 'idx_token_intent_resolutions_token_radar_material'
-            """
-        ).fetchone()
-        news_member_score_index = conn.execute(
-            """
-            SELECT indexdef
-            FROM pg_indexes
-            WHERE schemaname = 'public'
-              AND indexname = 'ix_news_items_member_provider_score'
-            """
-        ).fetchone()
+
+        def columns(table: str) -> set[str]:
+            return {
+                row["column_name"]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns"
+                    " WHERE table_schema = 'public' AND table_name = %s",
+                    (table,),
+                ).fetchall()
+            }
+
+        news_event_columns = columns("news_events")
+        news_delivery_columns = columns("news_deliveries")
+        news_control_columns = columns("news_control_state")
+        news_ingest_columns = columns("news_ingest_state")
+        market_settlement_columns = columns("market_settlements")
         news_v3_indexes = {
             str(row["indexname"]): str(row["indexdef"])
             for row in conn.execute(
-                """
-                SELECT indexname, indexdef
-                  FROM pg_indexes
-                 WHERE schemaname = 'public'
-                   AND indexname LIKE 'ix_news_%%'
-                """
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname LIKE 'ix_news_%%'"
             ).fetchall()
         }
+        macro_market_projection_index = conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'"
+            " AND indexname = 'idx_market_observations_projection_history'"
+        ).fetchone()
         projection_eligibility_indexes = {
             row["indexname"]
             for row in conn.execute(
-                """
-                    SELECT indexname
-                    FROM pg_indexes
-                    WHERE schemaname = 'public'
-                      AND (
-                        indexname LIKE '%frontiers_eligible'
-                        OR indexname IN (
-                          'idx_radar_projection_frontiers_microbatch_eligible',
-                          'idx_radar_projection_frontiers_expired_claim'
-                        )
-                      )
-                """
+                "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname LIKE '%%frontiers_eligible'"
             ).fetchall()
         }
-        event_reloptions = {
-            str(row["option"])
+        functions = {
+            row["proname"]
             for row in conn.execute(
-                """
-                SELECT unnest(reloptions) AS option
-                FROM pg_class
-                WHERE oid = 'events'::regclass
-                """
+                "SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace"
             ).fetchall()
         }
-        terminal_owner_constraint = conn.execute(
-            """
-            SELECT pg_get_constraintdef(oid) AS definition
-              FROM pg_constraint
-             WHERE conrelid = 'queue_terminal_events'::regclass
-               AND conname = 'queue_terminal_events_owner_key_check'
-            """
-        ).fetchone()
         version = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
     finally:
         conn.close()
 
-    assert {
-        "raw_frames",
-        "events",
-        "token_intents",
-        "token_intent_resolutions",
-        "market_ticks",
-        "enriched_events",
+    assert tables == {
+        "alembic_version",
+        "workers_runtime",
+        "queue_terminal_events",
         "market_instruments",
         "market_observations",
         "market_settlements",
@@ -460,14 +205,13 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "macro_dataset_projection_states",
         "macro_module_frontiers",
         "macro_module_current",
-        "workers_runtime",
-        "queue_terminal_events",
-    } <= tables
-    assert {"worker_runtime_status", "model_generation_frontiers", "worker_queue_terminal_events"}.isdisjoint(tables)
+        *PROFESSIONAL_NEWS_TABLES,
+    }
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
     assert RETIRED_MACRO_RESEARCH_TABLES.isdisjoint(tables)
-    assert {table for table in tables if table.startswith("news_")} == PROFESSIONAL_NEWS_TABLES
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
+    assert {"news_strategy_provenance_valid", "reject_macro_fact_mutation"} <= functions
+    assert "forbid_market_fact_update" not in functions
     assert {
         "event_id",
         "family",
@@ -482,7 +226,6 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "ingest_mode",
         "search_doc",
     } <= news_event_columns
-    assert {"story_id", "canonical_key", "facet_facts", "identity_evidence"}.isdisjoint(news_event_columns)
     assert news_delivery_columns == {
         "event_id",
         "kind",
@@ -507,39 +250,12 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "broker_snapshot",
         "updated_at_ms",
     }
-    assert {"raw_payload_json", "payload_hash"}.isdisjoint(market_current_columns)
     assert {"fact_schema_version", "contract_expiration_date"} <= market_settlement_columns
-    assert {"matched_handles_json", "is_watched", "matched_at_ms"}.isdisjoint(event_columns)
-    assert "is_watched" not in event_entity_columns
-    assert radar_feature_columns == set()
-    assert radar_publication_columns == set()
-    assert radar_first_seen_columns == set()
-    assert radar_frontier_columns == set()
-    assert radar_current_columns == set()
-    assert retired_projection_tables == set()
-    assert performance_indexes == {
-        "idx_asset_identity_evidence_profile_source",
-        "idx_asset_identity_evidence_asset_provider_lookup",
-        "idx_market_observations_projection_history",
-        "ix_news_events_opened",
-        "ix_news_events_search",
-        "ix_news_event_bands_lookup",
-    }
-    assert resolution_lookup_index is not None
-    assert "INCLUDE (event_id)" in resolution_lookup_index["indexdef"]
-    assert radar_event_index is None
     assert macro_market_projection_index is not None
     assert (
         "(dataset_id, ((observed_at_ms / 86400000)) DESC, observed_at_ms DESC, "
         "received_at_ms DESC, observation_id DESC)" in macro_market_projection_index["indexdef"]
     )
-    assert (
-        "INCLUDE (instrument_id, source_id, field_name, value_numeric, unit, "
-        "published_at_ms, trust_tier, source_url, fact_hash)" in macro_market_projection_index["indexdef"]
-    )
-    assert radar_fingerprint_column is None
-    assert radar_resolution_index is None
-    assert news_member_score_index is None
     assert {
         "ix_news_incidents_open",
         "ix_news_incidents_recovery",
@@ -559,24 +275,12 @@ def test_current_postgres_schema_has_macro_facts_and_six_current_modules(tmp_pat
         "ix_news_verdicts_final",
         "ix_news_deliveries_state",
         "ix_news_deliveries_sent",
-        "ix_news_marks_due",
     } <= set(news_v3_indexes)
-    retired_index_prefixes = ("ix_news_push_", "ix_news_item_title_", "ix_news_stories")
-    assert not any(name.startswith(retired_index_prefixes) for name in news_v3_indexes)
+    assert "ix_news_marks_due" not in news_v3_indexes
     assert "state = 'sent'" in news_v3_indexes["ix_news_deliveries_sent"]
     assert "gin" in news_v3_indexes["ix_news_events_search"].lower()
     assert projection_eligibility_indexes == {"idx_macro_module_frontiers_eligible"}
-    assert event_reloptions == {
-        "autovacuum_analyze_scale_factor=0.01",
-        "autovacuum_analyze_threshold=10000",
-        "autovacuum_vacuum_insert_scale_factor=0.01",
-        "autovacuum_vacuum_insert_threshold=10000",
-        "autovacuum_vacuum_scale_factor=0.01",
-        "autovacuum_vacuum_threshold=10000",
-    }
-    assert terminal_owner_constraint is not None
-    assert "radar_projection" not in terminal_owner_constraint["definition"]
-    assert version == latest_migration_version() == "20260818_0276"
+    assert version == latest_migration_version() == "20260818_0277"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -601,4 +305,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260818_0276"
+    assert version == latest_migration_version() == "20260818_0277"

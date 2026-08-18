@@ -1,1 +1,1 @@
-"""GMGN Twitter intelligence service."""
+"""Tracefold Market Research System: News V3 + Macro."""

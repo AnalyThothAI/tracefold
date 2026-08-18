@@ -57,19 +57,15 @@ def _arguments() -> argparse.Namespace:
 
 def _components(
     workers_module: Any,
-    market_providers_module: Any,
     *,
     due_turns: tuple[tuple[Any, float], ...],
 ) -> Any:
     return workers_module._Components(
-        providers=market_providers_module.AssetMarketProviders(),
-        collector=None,
         news_pipeline=None,
         news_bus=None,
         macro_source=None,
         macro_turns=(),
         due_turns=due_turns,
-        market_poll=None,
         projections=(),
         models=(),
         document_model=None,
@@ -86,7 +82,6 @@ async def _main() -> None:
         # late, but still classified and recoverable, native CPU timeout.
         CONSTS.term_timeout = 4.5
 
-    from tracefold.app import market_providers as market_providers_module
     from tracefold.app import workers
     from tracefold.platform.config.settings import Settings
     from tracefold.platform.model_candidate import ModelCandidate
@@ -215,7 +210,7 @@ async def _main() -> None:
             "control_native_timeout",
             "shutdown_stopping_control_never_returns",
         }:
-            return _components(workers, market_providers_module, due_turns=())
+            return _components(workers, due_turns=())
 
         if arguments.mode == "child_failure":
 
@@ -225,7 +220,7 @@ async def _main() -> None:
                 await asyncio.sleep(0.1)
                 raise RuntimeError("test_child_failure")
 
-            return _components(workers, market_providers_module, due_turns=((fail, 1.0),))
+            return _components(workers, due_turns=((fail, 1.0),))
 
         finite = kwargs["finite"]
         if arguments.mode in {"finite_overrun", "finite_never_returns"}:
@@ -243,7 +238,7 @@ async def _main() -> None:
                 )
                 return True
 
-            return _components(workers, market_providers_module, due_turns=((overrun, 1.0),))
+            return _components(workers, due_turns=((overrun, 1.0),))
 
         if arguments.mode == "model_overrun":
             model_adapter = kwargs["model_adapter"]
@@ -270,12 +265,12 @@ async def _main() -> None:
                     )
                     return True
 
-            components = _components(workers, market_providers_module, due_turns=())
+            components = _components(workers, due_turns=())
             components.models = (NeverReturningModelCandidate(),)
             return components
 
         if arguments.mode == "control_overrun":
-            return _components(workers, market_providers_module, due_turns=())
+            return _components(workers, due_turns=())
 
         if arguments.mode == "cpu_bounded_recovery":
             projection_cpu = kwargs["projection_cpu"]
@@ -309,7 +304,7 @@ async def _main() -> None:
                     return True
                 return False
 
-            return _components(workers, market_providers_module, due_turns=((bounded_cpu_turn, 0.1),))
+            return _components(workers, due_turns=((bounded_cpu_turn, 0.1),))
 
         db = kwargs["db"]
         published = False
@@ -337,7 +332,7 @@ async def _main() -> None:
             published = True
             return True
 
-        return _components(workers, market_providers_module, due_turns=((provider_publication, 1.0),))
+        return _components(workers, due_turns=((provider_publication, 1.0),))
 
     workers._wire_components = wire_components
     settings = Settings(

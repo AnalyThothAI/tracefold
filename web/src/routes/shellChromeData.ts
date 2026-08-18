@@ -1,12 +1,7 @@
 import type { AppSession } from "@app/useAppSession";
-import {
-  useCockpitStatusQuery,
-  type CockpitShellProps,
-  type SearchShellProps,
-} from "@features/cockpit";
-import { searchPath } from "@shared/routing/paths";
+import { useCockpitStatusQuery, type CockpitShellProps } from "@features/cockpit";
+import { newsPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
-import { useSocketSnapshot } from "@shared/socket/socketContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -20,7 +15,6 @@ export type ShellRouteContext = {
 export type ShellChromeData = {
   cockpitShellProps: CockpitShellProps;
   routeContext: ShellRouteContext;
-  searchShellProps: SearchShellProps;
 };
 
 export function useShellChromeData(session: AppSession): ShellChromeData {
@@ -28,7 +22,6 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const statusQuery = useCockpitStatusQuery({ token: session.token });
-  const socketSnapshot = useSocketSnapshot();
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const status = statusQuery.data?.data ?? null;
   const token = session.token;
@@ -46,63 +39,48 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       return;
     }
   };
-  const searchTargetsNews = shouldRouteTopbarSearchToNews(location.pathname);
-  const currentSearchQuery = new URLSearchParams(location.search).get("q") ?? "";
+  const currentSearchQuery = isNewsRoute(location.pathname)
+    ? (new URLSearchParams(location.search).get("q") ?? "")
+    : "";
   const submitTopbarSearch = (searchText: string) => {
-    if (!searchTargetsNews) {
-      navigate(searchPath({ q: searchText.trim(), window: "24h" }));
-      return;
-    }
     const query = searchText.trim();
-    const next = new URLSearchParams(location.search);
+    const next = isNewsRoute(location.pathname)
+      ? new URLSearchParams(location.search)
+      : new URLSearchParams();
     if (query) {
       next.set("q", query);
     } else {
       next.delete("q");
     }
     navigate({
-      pathname: "/news",
+      pathname: newsPath(),
       search: searchWithOptionalPrefix(next),
     });
   };
-  const topbarProps = {
-    search: {
-      ariaLabel: searchTargetsNews ? "news search" : "global search",
-      inputRef: searchInputRef,
-      onSubmitQuery: submitTopbarSearch,
-      placeholder: searchTargetsNews ? "搜索新闻事件 / 标题 / 资产" : "搜索 token / @handle / CA",
-      query: currentSearchQuery,
-    },
-    status: {
-      socketStatus: socketSnapshot.status,
-      lastSocketMessageAt: socketSnapshot.lastMessageAt,
-      status,
-      statusLoading: Boolean(token) && statusQuery.isPending,
-      statusError: statusQuery.isError,
-      configReady: Boolean(token),
-    },
-    onRefresh: () => void queryClient.invalidateQueries(),
-  };
-  const shellProps = {
-    topbar: topbarProps,
-    onHotkey: handleHotkey,
-    outletContext: routeContext,
-  };
 
   return {
-    cockpitShellProps: shellProps,
-    routeContext,
-    searchShellProps: {
-      ...shellProps,
+    cockpitShellProps: {
       topbar: {
-        ...shellProps.topbar,
-        search: { ...shellProps.topbar.search, showMainRouteButton: true },
+        search: {
+          inputRef: searchInputRef,
+          onSubmitQuery: submitTopbarSearch,
+          query: currentSearchQuery,
+        },
+        status: {
+          status,
+          statusLoading: Boolean(token) && statusQuery.isPending,
+          statusError: statusQuery.isError,
+          configReady: Boolean(token),
+        },
+        onRefresh: () => void queryClient.invalidateQueries(),
       },
+      onHotkey: handleHotkey,
+      outletContext: routeContext,
     },
+    routeContext,
   };
 }
 
-export function shouldRouteTopbarSearchToNews(pathname: string): boolean {
-  const path = pathname.split("?")[0] ?? pathname;
-  return path === "/news" || path.startsWith("/news/");
+function isNewsRoute(pathname: string): boolean {
+  return pathname === "/news" || pathname.startsWith("/news/");
 }

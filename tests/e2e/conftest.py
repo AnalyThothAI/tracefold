@@ -1,13 +1,12 @@
 """End-to-end test fixtures.
 
-Four session-scope fixtures:
+Three session-scope fixtures:
 - e2e_postgres: testcontainers Postgres + alembic upgrade head
 - e2e_app_home: isolated filesystem root for served test assets
 - e2e_uvicorn: subprocess running tests/e2e/_uvicorn_entry.py against e2e_postgres
-- e2e_writer: callable that runs tests/e2e/_writer_entry.py to inject a synthetic event
 
-A single ws_token (`TRACEFOLD_E2E_WS_TOKEN`, default "e2e-token") is shared by both
-the uvicorn process and the writer process so HTTP/WS auth lines up.
+The API token (`TRACEFOLD_E2E_WS_TOKEN`, default "e2e-token") is shared by the uvicorn
+process and the test client.
 
 E2E tests fail with actionable setup guidance when the runtime dependencies are
 unavailable; final verification must not be satisfied by an environment skip.
@@ -21,7 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -32,7 +31,7 @@ E2E_MACRO_NOW_MS = "1785247200000"
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Make sure in-process HTTP/WS clients bypass any system proxy.
+    """Make sure in-process HTTP clients bypass any system proxy.
 
     On macOS the system proxy settings are picked up by Python's urllib /
     httpx when `trust_env=True` (the default), so a request to
@@ -221,38 +220,3 @@ def e2e_uvicorn(
             proc.kill()
             proc.wait()
         log_fp.close()
-
-
-@pytest.fixture(scope="session")
-def e2e_writer(e2e_postgres: str, e2e_ws_token: str) -> Callable[[str, str], None]:
-    """Callable: writer(event_id, text) injects one synthetic mention via IngestService."""
-
-    def _write(event_id: str, text: str) -> None:
-        env = {
-            **os.environ,
-            "TRACEFOLD_POSTGRES_DSN": e2e_postgres,
-            "TRACEFOLD_E2E_WS_TOKEN": e2e_ws_token,
-            "PYTHONPATH": str(ROOT / "src"),
-        }
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "tests.e2e._writer_entry",
-                "--event-id",
-                event_id,
-                "--text",
-                text,
-            ],
-            cwd=str(ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"writer subprocess failed (rc={result.returncode}).\nstdout: {result.stdout}\nstderr: {result.stderr}"
-            )
-
-    return _write

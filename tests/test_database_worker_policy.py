@@ -13,7 +13,6 @@ from psycopg_pool import PoolTimeout
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatabase
 from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.macro.projection import MacroProjectionService
-from tracefold.market.pricing.event_anchor_backfill_worker import EventAnchorBackfill
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
@@ -53,7 +52,7 @@ def test_steady_worker_session_default_sql_budget_leaves_native_cleanup_grace() 
     conn = _FakeConnection()
     bundle = WorkerDatabase(worker_pool=_FakePool(conn), telemetry=None)
 
-    with bundle.worker_session("market_tick_poll"):
+    with bundle.worker_session("macro_projection"):
         pass
 
     assert len(conn.executed) == 1
@@ -183,31 +182,6 @@ def test_macro_acquisition_uses_one_native_budget_for_statement_and_transaction(
         },
         {
             "name": "macro_acquisition",
-            "statement_timeout_seconds": 0.5,
-            "transaction_timeout_seconds": 0.5,
-        },
-    ]
-
-
-def test_event_anchor_uses_one_native_budget_for_statement_and_transaction() -> None:
-    database = _RecordingSessionDatabase()
-    worker = object.__new__(EventAnchorBackfill)
-    worker.db = database
-    worker.name = "event_anchor_backfill"
-
-    with worker._worker_session():
-        pass
-    with worker._worker_session(timeout_seconds=0.5):
-        pass
-
-    assert database.calls == [
-        {
-            "name": "event_anchor_backfill",
-            "statement_timeout_seconds": 3.0,
-            "transaction_timeout_seconds": 3.0,
-        },
-        {
-            "name": "event_anchor_backfill",
             "statement_timeout_seconds": 0.5,
             "transaction_timeout_seconds": 0.5,
         },
@@ -415,7 +389,7 @@ def test_business_pool_checkout_timeout_is_recoverable_but_control_timeout_is_fa
     asyncio.run(scenario())
 
 
-def test_serve_admission_reserves_search_and_control_lanes() -> None:
+def test_serve_admission_reserves_the_control_lane() -> None:
     conn = _FakeConnection()
     database = ServeDatabase(api_pool=_FakeApiPool(conn), telemetry=None)
 
@@ -431,22 +405,10 @@ def test_serve_admission_reserves_search_and_control_lanes() -> None:
             pass
         assert 0.04 <= time.perf_counter() - started < 0.20
 
-        with database.api_session("search"), database.api_session("control"):
-            pass
-
-
-def test_serve_search_lane_rejects_second_concurrent_query_without_consuming_control() -> None:
-    conn = _FakeConnection()
-    database = ServeDatabase(api_pool=_FakeApiPool(conn), telemetry=None)
-
-    with database.api_session("search"):
-        with (
-            pytest.raises(ServeDatabaseBusy, match="serve_database_busy:search"),
-            database.api_session("search"),
-        ):
-            pass
         with database.api_session("control"):
             pass
+    with pytest.raises(ValueError, match="serve_database_lane_invalid:search"), database.api_session("search"):
+        pass
 
 
 def test_serve_pool_checkout_timeout_is_typed_busy() -> None:

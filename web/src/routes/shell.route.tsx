@@ -1,4 +1,4 @@
-import { CockpitShell, SearchShell } from "@features/cockpit";
+import { CockpitShell } from "@features/cockpit";
 import { Outlet } from "react-router-dom";
 
 import { useAppRouteSession } from "./routeSession";
@@ -20,10 +20,4 @@ export function ShellRoute() {
   const { cockpitShellProps } = useShellChrome();
 
   return <CockpitShell {...cockpitShellProps} />;
-}
-
-export function SearchShellRoute() {
-  const { searchShellProps } = useShellChrome();
-
-  return <SearchShell {...searchShellProps} />;
 }

@@ -9,6 +9,7 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.query_audit import query_audit_catalog
 from tracefold.platform.postgres.postgres_audit import (
+    CORE_TABLES,
     NEWS_TABLES,
     PostgresOperationalAudit,
     PostgresQueryAudit,
@@ -130,7 +131,7 @@ def _composed_catalog(*, now_ms: int = 0) -> QueryAuditCatalog:
     return query_audit_catalog(now_ms=now_ms)
 
 
-def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_path):
+def test_operational_audit_reports_macro_counts_and_exact_news_schema(tmp_path):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -143,22 +144,18 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
     assert payload["engine"] == "postgresql"
     assert payload["migration_version"] == latest_migration_version()
     assert payload["migration_status"] == "ready"
-    assert payload["counts"]["events"] == 0
-    assert payload["counts"]["registry_assets"] == 0
-    assert "token_radar_current" not in payload["projection_schema"]
-    assert payload["projection_schema"] == {}
+    assert set(payload["counts"]) == set(CORE_TABLES)
+    assert all(count == 0 for count in payload["counts"].values())
     assert payload["news_schema"] == {
         "expected_tables": list(NEWS_TABLES),
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert len(payload["news_schema"]["actual_tables"]) == 12
-    assert {"news_stories", "news_brief_current", "news_push_state", "news_sources"}.isdisjoint(
-        payload["news_schema"]["actual_tables"]
-    )
-    assert "projection_offsets" not in payload["projection_schema"]
-    assert "projection_runs" not in payload["projection_schema"]
-    assert not any(name.startswith("token_radar") for name in payload["foreign_key_checks"])
+    assert len(payload["news_schema"]["actual_tables"]) == 11
+    retired = {"news_stories", "news_brief_current", "news_push_state", "news_sources", "news_event_market_marks"}
+    assert retired.isdisjoint(payload["news_schema"]["actual_tables"])
+    assert "projection_schema" not in payload
+    assert "foreign_key_checks" not in payload
 
 
 def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
@@ -173,10 +170,9 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
     names = {item["name"] for item in payload["queries"]}
     assert payload["ok"] is True
     assert payload["analyze"] is False
-    expected = {"recent_all", "search_v2_lexical", "search_v2_substring", "target_posts_recent"}
-    assert expected.issubset(names)
-    assert "token_radar_latest" not in names
-    assert "search_v2_trigram" not in names
+    assert {"readiness_schema", "macro_modules_current", "macro_module_current"} < names
+    retired_prefixes = ("recent_", "search_", "target_posts", "live_market", "provider_")
+    assert not any(name.startswith(retired_prefixes) for name in names)
     assert all(item["plan"] for item in payload["queries"])
 
 
@@ -218,38 +214,6 @@ def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
     assert all(item["violations"] == [] for item in payload["queries"])
 
 
-def test_query_audit_target_posts_uses_resolution_targets():
-    query = next(item for item in postgres_query_specs(now_ms=0) if item.name == "target_posts_recent")
-
-    assert "target_type" in query.sql
-    assert "target_id" in query.sql
-    assert "first_seen_ms" not in query.sql
-    assert "confidence" not in query.sql
-
-
-def test_query_audit_has_no_token_radar_surface():
-    catalog = _composed_catalog()
-    assert all(item.name != "token_radar_latest" for item in catalog.queries)
-    assert all("token_radar_current" not in item.sql for item in catalog.queries)
-    assert "/api/token-radar" not in catalog.query_routes
-    assert catalog.query_routes["/api/live-market"] == ("live_market_current",)
-
-
-def test_query_audit_search_paths_use_the_public_24h_window_and_bounded_routes():
-    specs = postgres_query_specs(now_ms=86_400_123)
-    lexical = next(item for item in specs if item.name == "search_v2_lexical")
-    substring = next(item for item in specs if item.name == "search_v2_substring")
-
-    assert "received_at_ms >= %(search_cutoff_at_ms)s" in lexical.sql
-    assert "received_at_ms >= %(search_cutoff_at_ms)s" in substring.sql
-    assert "ORDER BY received_at_ms DESC, event_id DESC" in lexical.sql
-    assert "ts_rank_cd" in lexical.sql
-    assert "LIMIT 50" in lexical.sql
-    assert lexical.params["search_cutoff_at_ms"] == 123
-    assert substring.params["search_cutoff_at_ms"] == 123
-    assert all(item.name != "search_v2_trigram" for item in specs)
-
-
 def test_query_audit_has_no_retired_stocks_product_surface():
     catalog = _composed_catalog()
     assert all(item.name != "stocks_radar_recent" for item in catalog.queries)
@@ -260,15 +224,14 @@ def test_query_audit_does_not_restore_retired_token_factor_settlement_hot_path()
     assert all(item.name != "token_factor_settlement_rows" for item in _composed_catalog().queries)
 
 
-def test_query_audit_covers_every_public_openapi_route_and_websocket():
+def test_query_audit_covers_every_public_openapi_route():
     root = Path(__file__).resolve().parents[2]
     openapi = json.loads((root / "docs/generated/openapi.json").read_text())
     openapi_paths = set(openapi["paths"])
     catalog = _composed_catalog()
-    covered_http_paths = set(catalog.query_routes) - {"/ws"}
 
-    assert "/ws" in catalog.query_routes
-    assert covered_http_paths | set(catalog.no_sql_routes) == openapi_paths
+    assert "/ws" not in catalog.query_routes
+    assert set(catalog.query_routes) | set(catalog.no_sql_routes) == openapi_paths
     query_names = {item.name for item in catalog.queries}
     assert all(
         query_name in query_names for route_queries in catalog.query_routes.values() for query_name in route_queries

@@ -21,8 +21,6 @@ GENERATED_FILES = {
     "cli-help.md",
     "db-schema.md",
     "openapi.json",
-    "score-versions.md",
-    "ws-protocol.md",
 }
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<target>[^)]+)\)")
 
@@ -55,8 +53,6 @@ def test_make_check_runs_database_free_generated_drift_checks() -> None:
 
     assert {line.strip() for line in result.stdout.splitlines() if "scripts/regen_" in line} == {
         "uv run python scripts/regen_cli_help.py --check",
-        "uv run python scripts/regen_score_versions.py --check",
-        "uv run python scripts/regen_ws_protocol.py --check",
     }
 
 

@@ -76,7 +76,6 @@ class _FakeNewsRepository:
             "verdicts": [],
             "deliveries": [],
             "labels": [],
-            "marks": [],
         }
 
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
@@ -173,7 +172,6 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "verdicts",
         "deliveries",
         "labels",
-        "marks",
     }
     assert set(schemas_news.NewsStatusData.model_fields) == {
         "state",

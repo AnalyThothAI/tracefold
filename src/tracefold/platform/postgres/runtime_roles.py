@@ -82,17 +82,17 @@ def runtime_role_contract(
             SELECT
               has_table_privilege(
                 'tracefold_serve',
-                'public.events',
+                'public.news_events',
                 'SELECT'
               ) AS serve_select,
               has_table_privilege(
                 'tracefold_serve',
-                'public.events',
+                'public.news_events',
                 'INSERT'
               ) AS serve_insert,
               has_table_privilege(
                 'tracefold_workers',
-                'public.events',
+                'public.news_events',
                 'SELECT,INSERT,UPDATE,DELETE'
               ) AS workers_dml,
               has_schema_privilege(

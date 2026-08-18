@@ -143,7 +143,6 @@ describe("responsive CSS contract", () => {
       ".page-state-table-block",
       ".page-state-table-row",
       ".page-state-table-skeleton",
-      ".token-profile-card",
     ];
     const offenders = collectFiles(join(srcRoot, "features"))
       .filter(isCssFile)
@@ -165,28 +164,6 @@ describe("responsive CSS contract", () => {
     expect(
       offenders,
       "Feature CSS may lay out feature containers, but shared primitive internals belong under shared/ui.",
-    ).toEqual([]);
-  });
-
-  it("keeps Research shared UI selectors out of feature CSS buckets", () => {
-    const offenders = collectFiles(join(srcRoot, "features"))
-      .filter(isCssFile)
-      .flatMap((path) => {
-        const css = readFileSync(path, "utf8");
-
-        return findRules(css)
-          .filter((rule) => rule.selector.includes(".research-"))
-          .map(
-            (rule) =>
-              `${relativeToSrc(path)}:${lineNumber(css, rule.start)} reaches into Research UI via ${compactSelector(
-                rule.selector,
-              )}`,
-          );
-      });
-
-    expect(
-      offenders,
-      "Feature CSS may place shared Research components, but must not restyle .research-* internals.",
     ).toEqual([]);
   });
 

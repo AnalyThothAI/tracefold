@@ -122,25 +122,12 @@ class NewsLabelData(ExactApiSchema):
     created_at_ms: int
 
 
-class NewsMarketMarkData(ExactApiSchema):
-    event_id: str
-    mark: str
-    symbol: str
-    market_type: str | None = None
-    price: float | None = None
-    open_interest: float | None = None
-    price_change_pct: float | None = None
-    oi_change_pct: float | None = None
-    captured_at_ms: int
-
-
 class NewsEventDetailData(ExactApiSchema):
     event: NewsEventData
     members: list[NewsEventMemberData]
     verdicts: list[NewsVerdictData]
     deliveries: list[NewsDeliveryData]
     labels: list[NewsLabelData] = Field(default_factory=list)
-    marks: list[NewsMarketMarkData] = Field(default_factory=list)
 
 
 class NewsIncidentData(ExactApiSchema):
@@ -234,7 +221,6 @@ __all__ = [
     "NewsIncidentData",
     "NewsIngestStatusData",
     "NewsLabelData",
-    "NewsMarketMarkData",
     "NewsPipelineStatusData",
     "NewsStatusData",
     "NewsTriageSummaryData",

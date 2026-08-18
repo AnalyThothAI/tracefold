@@ -15,9 +15,14 @@ describe("index landing route", () => {
     expect(screen.queryByRole("heading", { name: "Radar" })).not.toBeInTheDocument();
   });
 
-  it("routes the retired Radar path to the application not-found surface", async () => {
-    renderAppRoute("/radar");
+  it.each(["/radar", "/search?q=PEPE", "/token/Asset/asset%3Adex%3Aeth%3A0xabc"])(
+    "routes the retired %s path to the application not-found surface",
+    async (path) => {
+      renderAppRoute(path);
 
-    expect(await screen.findByText("404 Not Found")).toBeInTheDocument();
-  });
+      expect(await screen.findByText("404 Not Found")).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Search Intel" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Token case" })).not.toBeInTheDocument();
+    },
+  );
 });

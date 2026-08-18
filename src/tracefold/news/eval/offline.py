@@ -1,4 +1,4 @@
-"""Offline evaluation over stored verdicts, market marks, and labels (learning plane, no model, no broker).
+"""Offline evaluation over stored verdicts and operator labels (learning plane, no model, no broker).
 
 `evaluate_recent` reports the outcome confusion per decision dimension; `replay_decisions` re-runs the pure
 `decide()` rules over stored verdicts (their gate facts and status-bar snapshot) with a candidate policy so
@@ -14,7 +14,6 @@ from typing import Any
 from tracefold.news.models import TriageVerdict
 from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status_from_row
 
-MOVED_THRESHOLD_PCT = 2.0
 _PUSHED = frozenset({"push", "escalate"})
 
 
@@ -26,11 +25,6 @@ def _rows(repos: Any, *, since_ms: int, policy_version: str | None) -> list[dict
                e.watchlist_hits, e.storyline_key, e.opened_at_ms,
                v.verdict ->> 'direction' AS direction, (v.verdict ->> 'magnitude')::int AS magnitude,
                v.verdict ->> 'event_type' AS event_type,
-               (SELECT max(abs(m.price_change_pct)) FROM news_event_market_marks m
-                 WHERE m.event_id = v.event_id AND m.mark IN ('30m','4h')) AS max_abs_move,
-               (SELECT m.price_change_pct FROM news_event_market_marks m
-                 WHERE m.event_id = v.event_id AND m.mark = '4h'
-                 ORDER BY abs(m.price_change_pct) DESC NULLS LAST LIMIT 1) AS move_4h,
                (SELECT l.label ->> 'label' FROM news_event_labels l WHERE l.event_id = v.event_id
                  ORDER BY l.created_at_ms DESC LIMIT 1) AS label
           FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
@@ -44,11 +38,8 @@ def _rows(repos: Any, *, since_ms: int, policy_version: str | None) -> list[dict
 
 
 def _outcome(row: Mapping[str, Any]) -> str | None:
-    """market truth first (moved / flat), then a human label; None when unlabeled."""
+    """Operator label as truth: good/wrong_direction/late = the event mattered ("moved"), noise/dup = it did not."""
 
-    move = row.get("max_abs_move")
-    if move is not None:
-        return "moved" if float(move) >= MOVED_THRESHOLD_PCT else "flat"
     label = row.get("label")
     if label in {"good", "wrong_direction", "late"}:
         return "moved"
@@ -76,20 +67,11 @@ def _rates(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     moved_pushed = [r for r in pushed if _outcome(r) == "moved"]
     moved_dropped = [r for r in dropped if _outcome(r) == "moved"]
     moved_throttled = [r for r in throttled if _outcome(r) == "moved"]
-    direction_hits = direction_total = 0
-    for r in pushed:
-        move = r.get("move_4h")
-        if move is None or r.get("direction") not in {"bullish", "bearish"}:
-            continue
-        direction_total += 1
-        if (float(move) > 0) == (r["direction"] == "bullish"):
-            direction_hits += 1
     return {
         "labeled": len(labeled),
         "precision_at_push": round(len(moved_pushed) / len(pushed), 4) if pushed else None,
         "missed_movers_rate": round(len(moved_dropped) / len(dropped), 4) if dropped else None,
         "throttled_movers_rate": round(len(moved_throttled) / len(throttled), 4) if throttled else None,
-        "direction_accuracy": round(direction_hits / direction_total, 4) if direction_total else None,
     }
 
 
@@ -113,7 +95,6 @@ def evaluate_recent(repos: Any, *, now_ms: int, hours: int, policy_version: str 
         "decisions": dict(decisions),
         "degraded": sum(1 for r in rows if r["degraded"]),
         "human_labels": sum(1 for r in rows if r.get("label")),
-        "moved_threshold_pct": MOVED_THRESHOLD_PCT,
         **_rates(rows),
         "by_override_rule": _confusion(rows, "override_rule"),
         "by_throttled_by": _confusion(rows, "throttled_by"),
@@ -184,4 +165,4 @@ def _median(values: list[int]) -> int | None:
     return ordered[len(ordered) // 2]
 
 
-__all__ = ["MOVED_THRESHOLD_PCT", "evaluate_recent", "replay_decisions"]
+__all__ = ["evaluate_recent", "replay_decisions"]

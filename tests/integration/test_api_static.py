@@ -28,7 +28,7 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
     with TestClient(app) as client:
         home = client.get("/")
         app_route = client.get("/app")
-        token_route = client.get("/token/CexToken/cex_token%3AZEC")
+        token_route = client.get("/token/CexToken/cex_token%3AZEC")  # GMGN lane retired (#50)
         retired_signal_lab_route = client.get("/signal-lab")
         news_route = client.get("/news")
         macro_route = client.get("/macro")
@@ -56,8 +56,7 @@ def test_frontend_dist_is_served_without_interfering_with_api(tmp_path):
     assert "text/html" in home.headers["content-type"]
     assert home.headers["cache-control"] == "no-cache, max-age=0, must-revalidate"
     assert app_route.status_code == 200
-    assert token_route.status_code == 200
-    assert "text/html" in token_route.headers["content-type"]
+    assert token_route.status_code == 404
     assert retired_signal_lab_route.status_code == 404
     assert news_route.status_code == 200
     assert "text/html" in news_route.headers["content-type"]
@@ -89,7 +88,7 @@ def test_frontend_dist_serves_browser_routes_for_spa(tmp_path):
     _mount_frontend(app, frontend_dist=dist)
 
     with TestClient(app) as client:
-        token_route = client.get("/token/CexToken/cex_token%3AZEC")
+        token_route = client.get("/token/CexToken/cex_token%3AZEC")  # GMGN lane retired (#50)
         retired_signal_lab_route = client.get("/signal-lab")
         news_route = client.get("/news")
         news_detail_route = client.get("/news/story/story_123")
@@ -111,10 +110,7 @@ def test_frontend_dist_serves_browser_routes_for_spa(tmp_path):
         retired_watchlist_route = client.get("/watchlist?handle=toly")
         missing_api = client.get("/api/not-a-route")
 
-    assert token_route.status_code == 200
-    assert "text/html" in token_route.headers["content-type"]
-    assert token_route.headers["cache-control"] == "no-cache, max-age=0, must-revalidate"
-    assert "cockpit" in token_route.text
+    assert token_route.status_code == 404
     assert retired_signal_lab_route.status_code == 404
     assert news_route.status_code == 200
     assert "text/html" in news_route.headers["content-type"]

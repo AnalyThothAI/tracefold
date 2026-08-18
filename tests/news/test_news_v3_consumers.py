@@ -379,7 +379,6 @@ def _analyst_verdict(**overrides: Any) -> AnalystVerdict:
         "revised_direction": "bullish",
         "revised_magnitude": 2,
         "novelty_assessment": "new",
-        "market_reaction": [],
         "context_evidence": ["history:abc"],
         "thesis_zh": "英伟达投资 OpenAI 数据中心，利多算力链。",
         "risks_zh": "",

@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -22,7 +22,6 @@ from tracefold.app.http.exceptions import (
 from tracefold.app.http.http import create_api_router
 from tracefold.app.http.responses import _validated_json
 from tracefold.app.http.schemas import ReadinessData
-from tracefold.app.http.ws import PersistedLiveBroadcaster
 from tracefold.app.serve_runtime import ServeRuntime, bootstrap_serve
 from tracefold.platform.config.settings import Settings, load_settings
 from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
@@ -51,7 +50,6 @@ def create_app(
         runtime = bootstrap_serve(resolved_settings)
         primary_error: BaseException | None = None
         try:
-            await runtime.hub.start()
             app.state.service = runtime
             logger.info("Starting Tracefold serve runtime | storage=postgresql")
             yield
@@ -90,10 +88,6 @@ def create_app(
             runtime.telemetry.render_prometheus_text(),
             media_type=PROMETHEUS_CONTENT_TYPE,
         )
-
-    @app.websocket("/ws")
-    async def websocket_endpoint(websocket: WebSocket) -> None:
-        await cast(PersistedLiveBroadcaster, app.state.service.hub).handle(websocket)
 
     _mount_frontend(app, frontend_dist=frontend_dist)
 
@@ -141,10 +135,6 @@ def _mount_frontend(app: FastAPI, *, frontend_dist: str | Path | None) -> None:
         "cross-asset",
     ):
         app.add_api_route(f"/macro/{macro_path}", frontend_index, include_in_schema=False)
-    app.add_api_route("/search", frontend_index, include_in_schema=False)
-    app.add_api_route("/search/{path:path}", frontend_index, include_in_schema=False)
-    app.add_api_route("/token", frontend_index, include_in_schema=False)
-    app.add_api_route("/token/{path:path}", frontend_index, include_in_schema=False)
 
 
 def _frontend_dist_dir(frontend_dist: str | Path | None = None) -> Path | None:

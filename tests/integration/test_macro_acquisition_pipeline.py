@@ -17,12 +17,13 @@ from tracefold.macro import (
     MACRO_ACQUISITION_ADAPTER_IDS,
     FetchBatch,
     MacroSourceError,
+    MarketObservationFact,
+    MarketSettlementFact,
     ReleaseFact,
     SeriesFact,
     require_dataset,
 )
 from tracefold.macro.acquisition import MacroAcquisitionService
-from tracefold.market import MarketObservationFact, MarketSettlementFact
 
 
 class _TestDb:

@@ -52,28 +52,6 @@
     letter-spacing: 0.02em;
   }
 
-  .main-route-button {
-    display: inline-flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: 5px;
-    height: 27px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    color: var(--text-muted);
-    background: var(--surface-panel);
-    padding: 0 8px;
-    font-family: var(--font-mono);
-    font-size: 9px;
-  }
-
-  .main-route-button:hover,
-  .main-route-button:focus-visible {
-    color: var(--accent-primary);
-    border-color: var(--accent-border);
-    outline: 0;
-  }
-
   .searchbar {
     display: flex;
     grid-column: 2;
@@ -170,8 +148,7 @@
       padding: 0 8px;
     }
 
-    .topbar-product-name,
-    .main-route-button {
+    .topbar-product-name {
       display: none;
     }
 

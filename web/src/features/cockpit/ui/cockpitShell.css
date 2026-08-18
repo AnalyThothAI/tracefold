@@ -31,8 +31,4 @@
     border-right: 1px solid var(--border-subtle);
     background: var(--surface-root);
   }
-
-  .search-focus-mode .center-column {
-    border-right: 0;
-  }
 }

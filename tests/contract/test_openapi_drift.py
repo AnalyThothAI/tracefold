@@ -80,29 +80,39 @@ def test_openapi_ts_matches_committed_artefact(tmp_path: Path) -> None:
 
 
 @pytest.mark.contract
-def test_token_radar_surface_is_absent_and_live_market_contract_is_unchanged() -> None:
+def test_public_api_is_status_news_and_macro_only() -> None:
+    """#47 removed Radar, #50 removed the GMGN lane: no market/search/token/live routes or schemas remain."""
+
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.settings import Settings
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     components = schema["components"]["schemas"]
 
-    assert "/api/token-radar" not in schema["paths"]
-    assert "/api/stocks-radar" not in schema["paths"]
-    assert all(not name.startswith(("TokenRadar", "StocksRadar")) for name in components)
-
-    live_market = schema["paths"]["/api/live-market"]["get"]
-    assert [parameter["name"] for parameter in live_market["parameters"]] == ["target_type", "target_id"]
-    assert live_market["responses"]["200"]["content"]["application/json"]["schema"] == {
-        "$ref": "#/components/schemas/ApiEnvelope_LiveMarketData_"
+    api_paths = {path for path in schema["paths"] if path.startswith("/api/")}
+    assert {path for path in api_paths if not path.startswith(("/api/news/", "/api/macro/"))} == {
+        "/api/bootstrap",
+        "/api/status",
     }
-    assert set(components["LiveMarketData"]["required"]) >= {
-        "target_type",
-        "target_id",
-        "status",
-        "price_usd",
-        "price_basis",
-    }
+    for retired in (
+        "/api/token-radar",
+        "/api/stocks-radar",
+        "/api/recent",
+        "/api/events/by-ids",
+        "/api/search",
+        "/api/search/inspect",
+        "/api/token-case",
+        "/api/target-posts",
+        "/api/target-social-timeline",
+        "/api/live-market",
+    ):
+        assert retired not in schema["paths"], retired
+    assert all(
+        not name.startswith(("TokenRadar", "StocksRadar", "LiveMarket", "Search", "TokenCase", "Event", "Provider"))
+        for name in components
+    ), sorted(components)
+    assert set(components["StatusData"]["properties"]) == {"measured_at_ms", "runtime"}
+    assert set(components["BootstrapData"]["properties"]) == {"ws_token"}
 
 
 @pytest.mark.contract
@@ -150,7 +160,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "verdicts",
         "deliveries",
         "labels",
-        "marks",
     }
     assert set(components["NewsStatusData"]["properties"]) == {
         "state",
@@ -230,19 +239,3 @@ def test_generated_contracts_have_no_retired_product_ai_surface() -> None:
     for token in retired_contract_tokens:
         assert token not in openapi_text
         assert token not in openapi_ts_text
-
-
-@pytest.mark.contract
-def test_market_candles_contract_has_no_legacy_market_payload_field() -> None:
-    """Search and timeline contracts expose market_candles only."""
-    openapi_text = OPENAPI_PATH.read_text(encoding="utf-8")
-    openapi_ts_text = OPENAPI_TS_PATH.read_text(encoding="utf-8")
-    frontend_contracts_text = FRONTEND_CONTRACTS_PATH.read_text(encoding="utf-8")
-    legacy_field = "market_overlay"
-
-    assert "market_candles" in openapi_text
-    assert "market_candles" in openapi_ts_text
-    assert "market_candles" in frontend_contracts_text
-    assert legacy_field not in openapi_text
-    assert legacy_field not in openapi_ts_text
-    assert legacy_field not in frontend_contracts_text

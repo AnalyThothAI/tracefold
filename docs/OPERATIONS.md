@@ -7,13 +7,13 @@ diagnosis, and safe repair boundaries.
 
 The only operator-owned Tracefold application configuration is
 `~/.tracefold/config.yaml`: deployment/domain choices, role-specific
-PostgreSQL references, providers, credentials, API/auth, models, and storage.
-Worker topology, cadence, deadlines, batches, leases, retry policy, timeouts,
-and resource budgets are code-owned.
+PostgreSQL references, Macro source-family switches, credentials, API/auth,
+models, and storage. Worker topology, cadence, deadlines, batches, leases,
+retry policy, timeouts, and resource budgets are code-owned.
 
 Confirm the active paths with `uv run tracefold config`. Never infer live state
 from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
-paths, redacted configured booleans, provider names, error classes, and command
+paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
 ## Operator lifecycle
@@ -58,35 +58,33 @@ six Macro reads; it is not part of `/readyz`.
 | `/healthz` | process liveness | none |
 | Serve `/readyz` | DB liveness plus cached startup schema/composition | no queue inspection |
 | Workers `/readyz` | root running, singleton session healthy, and latest O(1) heartbeat persisted within 15 s | no queue inspection |
-| `/api/status` | separate runtime truth and persisted Provider operations | bounded control plus ordinary read |
+| `/api/status` | `{measured_at_ms, runtime}`: database probe plus the Workers heartbeat row | bounded control read |
+| `/api/news/status` | four-layer News state (`ingest`, `broker`, `pipeline`, `delivery`) plus `control` | bounded News reads |
 | `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
 | `make macro-acceptance` | exact Macro contracts, current health, coverage, and ETag revalidation | persisted product-read acceptance |
-| `tracefold ops ...` | explicit on-demand diagnosis and repair | command-specific |
+| `tracefold ops ...` | explicit on-demand queue diagnosis and resolution | command-specific |
 
-Provider degradation and a missing Fed document analysis do not make the HTTP
-process unready. `/api/status.providers` derives configured ownership,
-continuous-source freshness, and durable circuit state from PostgreSQL for
-`gmgn_direct_ws`, `gmgn_dex_quote`, and `binance_cex_rest`; it never probes an
-upstream, and providers own no durable queue. Use `tracefold ops
+Source degradation and a missing Fed document analysis do not make the HTTP
+process unready. `/api/status` has no provider block; it fails closed only on
+a stale Workers heartbeat or a database/schema mismatch. Use `tracefold ops
 queue-inspect` for exact on-demand queue detail; its owners are
-`event_anchor_backfill` (`event_anchor_backfill_jobs`),
-`macro_document_analysis` (`macro_document_analysis_jobs`), and
+`macro_document_analysis` (`macro_document_analysis_jobs`) and
 `macro_projection` (`macro_module_frontiers`). Domain freshness and native
-model-job state remain visible through their own API and operator
-diagnostics.
+model-job state remain visible through `/api/news/status`, `macro status`, and
+the Macro reads.
 
 ## Worker ownership
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
-It wires one root `TaskGroup`; its due/periodic loops and dispositions are
-private implementation details. Configuration cannot invent workers, owners,
-resource lanes, or concurrency. An unknown child exception is a process
-failure, not an individual-worker degraded state. The typed recurring
-business-DB overrun below is the one resource-specific local recovery rule.
+It wires one root `TaskGroup`; its due loops and dispositions are private
+implementation details. Configuration cannot invent workers, owners, resource
+lanes, or concurrency. An unknown child exception is a process failure, not an
+individual-worker degraded state. The typed recurring business-DB overrun
+below is the one resource-specific local recovery rule.
 
 ```text
 tracefold serve
-  -> read-only pool -> HTTP/static/shared persisted-live WebSocket poller
+  -> read-only pool max 7 (6 ordinary + 1 control) -> HTTP/static
 
 tracefold workers
   -> one singleton advisory lock and runtime_id
@@ -96,10 +94,13 @@ tracefold workers
      control DB executor 1
   -> finite external-operation executor 3 / synchronous model adapter 1
   -> spawn-only Pebble ProcessPool 1 for Macro
-  -> when News is enabled, one RabbitMQ robust connection and the News consumer
-     tasks (receiver, recovery, deduper, triage, analyst, deliverer, janitor)
-  -> acquisition clocks + one EDF projection coordinator for Macro
-  -> one serial native-state model arbiter
+  -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
+     and the News consumer tasks (news-receiver, news-recovery, news-deduper,
+     news-triage, news-analyst, news-deliverer, news-janitor); one durable-due
+     task per Macro acquisition clock (macro_intraday_market, macro_settlements,
+     macro_economic_releases, macro_official_state, macro_official_documents);
+     projection-edf (Macro frontier coordinator); model-arbiter (Fed document
+     analysis); workers-control
 ```
 
 Every acquisition/projection/model task uses a short claim transaction,
@@ -129,13 +130,12 @@ root, and recovery restores readiness. Invariant failures and an unfinished
 native control future remain process-fatal. This retry does not apply to
 general control writes whose commit outcome could be ambiguous.
 
-Serve owns a read-only pool of eight with ordinary/search/control admission
-`6/1/1`, 50 ms permit wait, 250 ms checkout, one-second statement timeout,
-JIT off, parallel gather off, and 8 MiB work memory. Workers owns the exact
-pool/lane topology above. Finite provider/filesystem operations share the
-three-slot external capability; stream sockets remain long-lived async root
-children outside it. A provider-wide failure opens durable circuit state and
-consumes no target attempt. Only the owning provider seam may map an outer
+Serve owns a read-only pool of seven with ordinary/control admission `6/1`,
+50 ms permit wait, 250 ms checkout, one-second statement timeout, JIT off,
+parallel gather off, and 8 MiB work memory. Workers owns the exact pool/lane
+topology above. Finite provider/filesystem operations share the three-slot
+external capability; the OpenNews WSS socket remains a long-lived async root
+child outside it. Only the owning source seam may map an outer
 finite-operation overrun into its existing durable failure policy. A typed
 recurring business-DB overrun remains local to its natural loop; its occupied
 permit remains bound to the native future and the loop retries on its normal
@@ -143,18 +143,11 @@ cadence. Control-DB, model, CPU, cleanup, and unclassified overruns remain
 process-fatal. Classification uses the typed physical capability carried by
 the exception, never an operation-name or error-string prefix. A caller timeout
 never releases a resource permit before the underlying future actually
-completes; three stuck provider futures therefore exhaust the shared external
+completes; three stuck source futures therefore exhaust the shared external
 capability even though the root heartbeat can remain healthy. Diagnose that
 state from the resource-active/admission metrics and domain status. If an
 underlying thread never returns, process exit is the only universal release
 authority.
-
-The anonymous GMGN direct WebSocket treats `upstream.reconnect_delay` as its
-initial retry delay and doubles consecutive connection failures to a code-owned
-60-second cap. The first distinct failure logs at error level; repeated
-identical failures log only at power-of-two checkpoints, while the first live
-frame resets the backoff. This limits local retry and log pressure but does not
-claim to repair an upstream TLS or network-path outage.
 
 Each Worker DB session is exactly one bounded transaction. One transaction-local
 setup statement installs the application name, statement/transaction deadlines,
@@ -179,19 +172,9 @@ the only News concurrency knobs; single-active queues use prefetch 1. When the
 News lane cannot admit a message the consumer raises `DeferError` and the
 message requeues uncounted through the retry lane.
 
-There is no Token Radar loop, singleton, dirty frontier, claim, lease, attempt
-state, product-specific heavy-DB permit, or product-specific telemetry/status
-command. There is no Stocks route, writer, query family, or read model. The
-retained `us_equity_symbols` catalog is only a token-identity collision guard
-and owns no runtime Stocks loop.
-
 Macro projection claims retain their 30-second lease envelope.
 News has no projection lease: the broker's single-active-consumer and
-per-message ack are the fences. The
-high-churn `events`
-table uses a one-percent/10,000-row auto-analyze threshold so the 24-hour
-Search planner does not choose a recency scan from stale time-distribution
-statistics.
+per-message ack are the fences.
 
 `/metrics` exposes low-cardinality worker transaction and shared capability
 resource signals. Frontier-backed domains additionally expose projection
@@ -219,10 +202,11 @@ For missing or stale live data:
 
 1. run `uv run tracefold config`;
 2. check `/healthz` and `/readyz`;
-3. inspect authenticated `/api/status`;
+3. inspect authenticated `/api/status`, then `/api/news/status` or
+   `uv run tracefold macro status`;
 4. run `uv run tracefold ops queue-inspect --status active`;
 5. inspect unresolved terminal events;
-6. trace one stable target from fact -> dirty target -> current row -> API.
+6. trace one stable target from fact -> frontier/queue row -> current row -> API.
 
 | Symptom | Inspect first |
 |---|---|
@@ -230,36 +214,11 @@ For missing or stale live data:
 | idle worker with expected work | durable target plus due/lease fields |
 | stale row after a run | fact watermark, payload hash, zero-write comparison |
 | growing queue | claim size, lease expiry, retry budget, terminal events |
-| repeated provider failure | provider status and deterministic terminal policy |
+| repeated source failure | target error state and deterministic terminal policy |
 | readiness 503 | DB liveness and startup schema/composition |
 | status degraded, readiness 200 | expected runtime/product separation |
 
 ## Domain traces
-
-Market:
-
-```text
-event -> intent -> resolution revisions -> identity facts
-  -> Search and Token Case fact reads
-market_ticks -> market_tick_current -> /api/live-market
-```
-
-Market current is maintained transactionally with `market_ticks`; it has no
-projection worker or dirty queue. Repair uses bounded
-`tracefold ops rebuild-market-current --execute` fact replay.
-The normal poll rereads the database-ordered most recently active 100 market
-targets from the fixed 24-hour fact window every 35 seconds; there is no
-cross-turn exclusion cursor or product-driven priority slot. DEX quotes come
-from the GMGN OpenAPI token-info lookup (`gmgn_dex_quote`, cached for
-`gmgn.token_info_cache_ttl_seconds`), which is one request per token paced at
-the public 1 request/second limit (a violation gets the IP banned and opens the
-gateway circuit for the provider cooldown). A poll turn therefore quotes chain
-targets stalest-first (never-quoted, then oldest `market_tick_current` tick)
-until the provider's 25 s batch deadline and leaves the rest for the next turn,
-so the hot set rotates in roughly two minutes; unknown tokens and single-token
-errors are skipped, and only a turn with zero successful lookups is a
-`market tick poll batch quote failed` warning. CEX ticks come from Binance
-USD-M futures (`binance_cex_rest`) in one batch request.
 
 News:
 
@@ -279,7 +238,7 @@ OpenNews account Strategy WSS (news.opennews_strategy_ids, validated at startup)
   -> tracefold news control -> news_control_state (read on every message)
   -> q:news.retry (30 s TTL) for TransientError/DeferError; q:news.dead for the rest
   -> Janitor: outbox catch-up (unpublished candidates older than 15 s), band
-     expiry, 30-day purge, market marks t0/+5m/+30m/+4h, broker snapshot
+     expiry, 30-day purge, broker snapshot
   -> /api/news/feed + /api/news/events/{event_id} + /api/news/status
 ```
 
@@ -343,9 +302,10 @@ Diagnose News in this order:
    (`delivery_unavailable` = push disabled or webhook invalid;
    `delivery_paused` = control pause; `ambiguous_after_crash` = a send whose
    ack was lost; `hourly_cap_reached`).
-5. `tracefold news eval --hours 168`: precision@push, missed movers,
-   direction accuracy from market marks and operator labels (`tracefold news
-   label <event_id> <good|noise|late|wrong_direction|dup>`), with
+5. `tracefold news eval --hours 168`: precision@push, missed movers, and
+   throttled movers from operator labels (`tracefold news label <event_id>
+   <good|noise|late|wrong_direction|dup>`; `good`/`wrong_direction`/`late`
+   count as moved, `noise`/`dup` as flat), with
    per-`override_rule`/`throttled_by`/asset-class/event-type confusion tables.
    `tracefold news replay-decisions --hours 168 --min-push-magnitude 2 ...`
    re-runs `decide()` with a candidate policy over the same stored verdicts.
@@ -429,28 +389,52 @@ source requires no repair command while a still-disabled source creates no
 restart burst. The
 `uv run tracefold config` command exposes the same secret-free booleans.
 
+## Migrations
+
 The Alembic chain is the `20260818_0275` baseline (root; it executes
 `current_schema_20260818_0275.sql` and then `runtime_roles.sql`, which
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed
-by `20260818_0276_review_49_hard_cut`. A live database already stamped
-`20260818_0275` upgrades to 0276 with `tracefold db migrate`; a fresh database
-runs the baseline and 0276. Both are irreversible; a downgrade is a backup
-restore. Stop Serve and Workers before applying 0276 (the maintenance gate
-refuses to run while Workers hold the steady lock). It drops
-`news_title_presentations`, `token_discovery_results`,
+by `20260818_0276_review_49_hard_cut` and `20260818_0277_gmgn_lane_removal`.
+A live database stamped `20260818_0276` upgrades to 0277 with `tracefold db
+migrate`; a fresh database runs the baseline, 0276, and 0277. All three are
+irreversible; a downgrade is a backup restore. Stop Serve and Workers before
+applying a chained revision (each takes the maintenance gate advisory lock
+and refuses to run while Workers hold the steady lock).
+
+0276 drops `news_title_presentations`, `token_discovery_results`,
 `token_discovery_dirty_lookup_keys`, `asset_profiles`,
 `asset_profile_refresh_targets`, `cex_token_profiles`, `token_image_assets`,
 `token_image_source_dirty_targets`, `token_profile_current`,
 `token_profile_projection_frontiers`, and the four unused `checkpoint_*`
-tables, deletes their `queue_terminal_events` rows and the `okx_*` circuit
-rows, and performs no provider, broker, or outbound call. Verify after
-restart: `tracefold db audit` reports `news_schema.exact` for the twelve
-`news_*` tables, `tracefold news bus-check` shows one consumer on `news.raw`
-and `news.deliver`, `/api/news/status.state` becomes `ready` once the WSS
-connects, and the first candidate Event receives a Triage verdict within
-seconds.
+tables, and deletes their `queue_terminal_events` rows.
+
+0277 drops the whole GMGN lane in child-before-parent order:
+`news_event_market_marks`, `asset_identity_current`,
+`asset_identity_evidence`, `enriched_events`, `event_anchor_backfill_jobs`,
+`market_tick_current`, `market_ticks` (with its default partition),
+`price_feeds`, `cex_tokens`, `token_intent_lookup_keys`,
+`token_intent_evidence`, `token_intent_resolutions`, `token_intents`,
+`token_evidence`, `event_entities`, `events`, `raw_frames`,
+`registry_assets`, `collector_pending_items`, `persisted_live_events`,
+`us_equity_symbols`, and `provider_circuit_state`; it drops the
+`forbid_market_fact_update()` function and deletes the
+`queue_terminal_events` rows of `event_anchor_backfill_jobs` and
+`collector_pending_items`. Macro's general market fact tables
+(`market_instruments`, `market_observations`, `market_settlements`,
+`market_position_facts`) stay. Neither revision performs a provider, broker,
+or outbound call.
+
+Before applying 0277 remove `gmgn`, `upstream`, `providers.binance`,
+`api.heartbeat_interval`, and `api.replay_limit` from
+`~/.tracefold/config.yaml`; the settings schema rejects them. Verify after
+restart: `tracefold db audit` reports `migration_status` `ready`, `counts` for
+the Macro core tables, and `news_schema.exact` for the eleven `news_*`
+tables; `tracefold news bus-check` shows one consumer on `news.raw` and
+`news.deliver`; `/api/news/status.state` becomes `ready` once the WSS
+connects; `/api/macro/overview` lists six modules; and the first candidate
+Event receives a Triage verdict within seconds.
 
 ## Operator actions and retention
 
@@ -467,10 +451,6 @@ longer. Current models retain one stable row per identity.
 Destructive migrations use bounded timeouts, transform data before constraints,
 drop children before parents, avoid `CASCADE`/`IF EXISTS`, and preserve material
 facts plus unresolved side-effect/terminal evidence.
-
-Do not remove `events.raw_json` or `events.event_json` until every event has a
-verified raw-frame edge and locator, historical coverage reaches 100%, and
-ambiguous payloads are archived immutably.
 
 ## PostgreSQL performance diagnosis
 
@@ -514,16 +494,18 @@ ORDER BY total_exec_time DESC
 LIMIT 20;
 ```
 
-`uv run tracefold db query-audit` verifies that every public HTTP/WS route is
-assigned to a bounded read-query family and checks that every query can be
-planned. `uv run tracefold db query-audit --analyze` executes those read-only
-queries with JSON `EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated
-large-table sequential scan, any temporary read/write blocks, or read/return
-amplification above 20:1. An empty development database proves only SQL and
-route coverage; production-scale plans need a production-sized database. Each
-runtime owner supplies the same bound statement builder
-used by its serving read; the App layer only composes those specs with route
-coverage, so an audit-only SQL approximation is not accepted.
+`uv run tracefold db query-audit` verifies that every public HTTP route is
+assigned to a bounded read-query family (`/readyz`, `/api/status`,
+`/api/news/*`, `/api/macro/*`; `/healthz`, `/metrics`, and `/api/bootstrap`
+are declared no-SQL) and checks that every query can be planned. `uv run
+tracefold db query-audit --analyze` executes those read-only queries with JSON
+`EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated large-table sequential
+scan, any temporary read/write blocks, or read/return amplification above
+20:1. An empty development database proves only SQL and route coverage;
+production-scale plans need a production-sized database. Each runtime owner
+supplies the same bound statement builder used by its serving read; the App
+layer only composes those specs with route coverage, so an audit-only SQL
+approximation is not accepted.
 
 Read/return amplification uses the root result-row count for every hot query;
 no News query uses aggregate-input amplification.
@@ -544,8 +526,8 @@ Projection sessions disable PostgreSQL parallel gather and JIT and use 16 MB
 `work_mem`; foreground ingestion and API sessions keep PostgreSQL defaults.
 This prevents two bounded background iterations from multiplying into all
 available PostgreSQL CPU workers while preserving deterministic source-to-
-current work. The News feed and asset-identity hot paths use ordered
-composite indexes; do not replace them with periodic broad scans.
+current work. The News feed hot paths use ordered composite indexes; do not
+replace them with periodic broad scans.
 
 Compose uses the official PostgreSQL 18 Bookworm image and preloads only
 `pg_stat_statements` for query diagnosis. `compute_query_id` remains enabled.

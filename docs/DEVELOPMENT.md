@@ -25,11 +25,10 @@ outputs, or evaluation control planes require an explicit current need.
 
 ## Package design
 
-Business capabilities are exported from `tracefold.market`, `tracefold.news`,
-and `tracefold.macro`. Code outside the owning package imports only those
-roots. Keep internal modules cohesive and move behavior behind the root
-interface instead of adding forwarding modules, aliases, or compatibility
-packages.
+Business capabilities are exported from `tracefold.news` and
+`tracefold.macro`. Code outside the owning package imports only those roots.
+Keep internal modules cohesive and move behavior behind the root interface
+instead of adding forwarding modules, aliases, or compatibility packages.
 
 Private application composition and concrete provider adapters may use only
 the exact package-private implementation seams named in the architecture
@@ -38,7 +37,7 @@ behind a public protocol. This is implementation wiring, not a caller-facing
 interface: public models/protocols still come from the package root, and new
 private import edges fail until deliberately reviewed and enumerated.
 
-PostgreSQL material facts and public HTTP/WS/CLI contracts are migration
+PostgreSQL material facts and public HTTP/CLI contracts are migration
 boundaries. Internal Python imports are not compatibility contracts. Hard cuts
 delete the old path and update all consumers in the same change.
 
@@ -47,10 +46,10 @@ delete the old path and update all consumers in the same change.
 | Lane | Location | Proves |
 |---|---|---|
 | Architecture | `tests/architecture/` | package shape, dependency direction, durable ownership |
-| Contract | `tests/contract/` | public HTTP/WS/CLI and generated schemas |
+| Contract | `tests/contract/` | public HTTP/CLI and generated schemas |
 | Integration | `tests/integration/` | real PostgreSQL and composed service behavior |
 | Golden | `tests/golden/` | curated fact-to-product expectations |
-| E2E | `tests/e2e/` | running process boundaries |
+| E2E | `tests/e2e/` | one served process: `/readyz`, `/api/status`, `/api/news/status`, `/api/macro/overview` shapes, retired routes `404` |
 | Frontend | `web/tests/` | UI, route, model, and frontend architecture behavior |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
@@ -60,7 +59,7 @@ implementation detail. There is no coverage-percentage gate.
 Select commands by risk:
 
 - schema or repository behavior: focused real-PostgreSQL integration tests;
-- HTTP/WS/CLI behavior: contract tests plus regenerated artifacts;
+- HTTP/CLI behavior: contract tests plus regenerated artifacts;
 - workers: claim, lease, retry/terminal, restart catch-up, idempotency,
   single-writer, and external-I/O transaction boundaries;
 - UI: scoped tests, lint, typecheck, build, and a browser check when visual or
@@ -111,9 +110,14 @@ service and corpus lanes, and `make test-all` everything (~6.5 minutes).
 Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. There are no historical migration-path tests: the Alembic chain is the
-`20260818_0275` current-schema baseline plus `20260818_0276`, and schema tests
-run against that migrated head. There is no acceptance-bundle, collector, or
-sealing workflow; runtime evidence comes from the maintained lanes above.
+`20260818_0275` current-schema baseline plus `20260818_0276` and
+`20260818_0277`, and schema tests run against that migrated head. The e2e
+lane (`tests/e2e/test_golden_path.py`) starts one uvicorn Serve subprocess
+against a freshly migrated testcontainers PostgreSQL and asserts `/readyz`, the `/api/status`,
+`/api/news/status`, and `/api/macro/overview` shapes, and that the retired
+GMGN-lane routes answer `404`; it runs no Workers subprocess. There is no
+acceptance-bundle, collector, or sealing workflow; runtime evidence comes from
+the maintained lanes above.
 
 ### News V3 evaluation seams
 
@@ -124,8 +128,8 @@ corpus), `tracefold.news.triage_rules.decide()` (pure post-rules with an
 optional `DecidePolicy`, golden-tested in `tests/news/test_news_v3_pure.py`),
 `tracefold.news.analyst_rules.verify_verdict()`, and
 `tracefold.news.eval.offline` (`tracefold news eval` scores stored verdicts
-against market marks and `news_event_labels`; `tracefold news
-replay-decisions` re-runs `decide()` with a candidate policy and no model).
+against `news_event_labels` only; `tracefold news replay-decisions` re-runs
+`decide()` with a candidate policy and no model).
 Broker behavior is covered by `tests/integration/test_news_bus_rabbitmq.py`
 against the compose RabbitMQ (`TRACEFOLD_TEST_AMQP_URL`, default
 `amqp://tracefold:tracefold@127.0.0.1:5672/`; skipped when unreachable); every
@@ -142,18 +146,24 @@ planned shutdown with distinct causes. Database backpressure must retain WSS;
 overflow records an incident without falsely disconnecting it. Reconnect
 restores current state independently of bounded official Strategy list/hits
 recovery. Tests prove overlap idempotency, complete/partial/unavailable status,
-and that Search never appears in the production recovery seam.
+and that the provider news-search endpoint never appears in the production
+recovery seam.
 
 ## Generated contracts
 
-`docs/generated/` contains only reproducible outputs:
+`docs/generated/` contains only reproducible outputs: `README.md`,
+`cli-help.md` (`scripts/regen_cli_help.py`), `db-schema.md`
+(`scripts/regen_db_schema.py`, needs PostgreSQL), and `openapi.json`
+(`scripts/regen_openapi.py`, paired with `web/src/lib/types/openapi.ts`).
 
 ```bash
-make docs-generated
-make regen-contract
+make docs-generated   # db-schema.md + cli-help.md
+make regen-contract   # openapi.json + web/src/lib/types/openapi.ts
 ```
 
-Generated OpenAPI and frontend types change in the same commit as their source.
+`make check` runs only the database-free `regen_cli_help.py --check` drift
+check. Generated OpenAPI and frontend types change in the same commit as their
+source.
 
 ## Completion
 

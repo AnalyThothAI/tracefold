@@ -221,8 +221,6 @@ def test_retired_ops_tree_and_orphan_scripts_are_absent() -> None:
         "regen_cli_help.py",
         "regen_db_schema.py",
         "regen_openapi.py",
-        "regen_score_versions.py",
-        "regen_ws_protocol.py",
     }
 
 

@@ -6,14 +6,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
-BUSINESS_PACKAGES = ("market", "news", "macro")
+BUSINESS_PACKAGES = ("news", "macro")
 ALLOWED_BUSINESS_DEPENDENCIES = {
-    "market": {"market", "platform"},
     "news": {"news", "platform"},
-    "macro": {"macro", "market", "platform"},
+    "macro": {"macro", "platform"},
 }
 # Exact private seams for the composition root and concrete adapters. They are
-# implementation collaborators of the three public News capabilities, not
+# implementation collaborators of the public News capabilities, not
 # product callers or compatibility interfaces; every new edge must be named.
 ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/app/cli/commands/news.py": {
@@ -35,11 +34,11 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
     "src/tracefold/integrations/rabbitmq.py": {"tracefold.news.bus"},
 }
-# News V3 read-only cross-domain reads: the Analyst tool plane and market-reaction
-# marks read Market/Macro current facts through SELECT only. Every edge is named;
-# no News module may write another business package's tables.
+# News V3 read-only cross-domain reads: the Analyst evidence bundle reads the Macro
+# current module rows through SELECT only. Every edge is named; no News module may
+# write another business package's tables.
 ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES = {
-    "src/tracefold/news/repository.py": {"cex_tokens", "price_feeds", "market_ticks", "macro_module_current"},
+    "src/tracefold/news/repository.py": {"macro_module_current"},
 }
 WRITE_SQL_TABLE_RE = re.compile(
     r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)",
@@ -61,7 +60,8 @@ SQL_TABLE_RE = re.compile(
 )
 PLATFORM_TABLES = {
     "alembic_version",
-    "worker_queue_terminal_events",
+    "queue_terminal_events",
+    "workers_runtime",
 }
 RETIRED_NEWS_RUNTIME_MARKERS = (
     "news_item_process",
@@ -128,17 +128,27 @@ def test_backend_has_only_the_expected_package_shape() -> None:
         "app",
         "integrations",
         "macro",
-        "market",
         "news",
         "platform",
     }
     assert not (SRC / "domains").exists()
+    assert not (SRC / "market").exists()
     for retired in ("operations", "runtime", "surfaces"):
         assert not (SRC / "app" / retired).exists()
-    for retired in ("provider_types.py", "providers.py"):
+    for retired in (
+        "provider_types.py",
+        "providers.py",
+        "market_providers.py",
+        "provider_ownership.py",
+        "provider_operations.py",
+        "reference_data.py",
+        "read_models.py",
+    ):
         assert not (SRC / "app" / retired).exists()
-    assert not (SRC / "integrations" / "okx" / "dex_ws_client.py").exists()
-    assert not (SRC / "market" / "pricing" / "market_tick_stream_worker.py").exists()
+    for retired in ("gmgn", "binance", "okx"):
+        assert not (SRC / "integrations" / retired).exists()
+    for retired in ("routes_search.py", "routes_events.py", "routes_market.py", "ws.py"):
+        assert not (SRC / "app" / "http" / retired).exists()
     for retired in ("db", "logging", "runtime"):
         assert not (SRC / "platform" / retired).exists()
     assert not list(SRC.rglob("*_intel"))
@@ -151,23 +161,39 @@ def test_backend_has_only_the_expected_package_shape() -> None:
     ]
 
 
-def test_token_radar_product_is_removed_from_the_backend() -> None:
-    assert not (SRC / "market" / "radar").exists()
-    assert not (SRC / "app" / "http" / "routes_radar.py").exists()
-    # The persisted identity resolver policy version keeps its historical literal
-    # (see resolver_policy.py); every other Radar literal must be gone.
-    allowed = {"src/tracefold/market/identity/resolver_policy.py"}
+def test_gmgn_lane_and_token_radar_are_removed_from_the_backend() -> None:
+    """#47 removed Radar, #50 removed the whole GMGN lane: no social events, token identity, DEX/CEX
+    market data, live WebSocket journal, or Search/Token Case readers remain anywhere in the backend."""
+
+    markers = (
+        "token_radar",
+        "/token-radar",
+        "tracefold.market",
+        "gmgn",
+        "integrations.binance",
+        "usdm_futures",
+        "binance_cex",
+        "persisted_live",
+        "market_tick",
+        "registry_assets",
+        "token_intent",
+        "cex_token",
+        "price_feeds",
+        "raw_frames",
+        "/api/recent",
+        "/api/search",
+        "/api/token-case",
+        "/api/live-market",
+        "@app.websocket",
+        "persistedlivebroadcaster",
+    )
     violations = [
-        path.relative_to(ROOT).as_posix()
+        f"{path.relative_to(ROOT).as_posix()}:{marker}"
         for path in _python_files(SRC)
-        if path.relative_to(ROOT).as_posix() not in allowed
-        and "token_radar" in path.read_text(encoding="utf-8").lower()
+        for marker in markers
+        if marker in path.read_text(encoding="utf-8").lower()
     ]
     assert violations == []
-    for path in _python_files(SRC / "app"):
-        text = path.read_text(encoding="utf-8")
-        assert "/token-radar" not in text, path.relative_to(ROOT).as_posix()
-        assert "tracefold.market.radar" not in text, path.relative_to(ROOT).as_posix()
 
 
 def test_business_dependency_dag_is_one_way() -> None:
@@ -183,13 +209,6 @@ def test_business_dependency_dag_is_one_way() -> None:
             if unexpected:
                 violations[path.relative_to(ROOT).as_posix()] = unexpected
     assert violations == {}
-
-
-def test_provider_ownership_policy_does_not_import_concrete_adapters() -> None:
-    for filename in ("provider_ownership.py", "provider_operations.py"):
-        imports = _imports(SRC / "app" / filename)
-        assert "tracefold.app.market_providers" not in imports
-        assert not [name for name in imports if name.startswith("tracefold.integrations")]
 
 
 def test_platform_does_not_depend_on_app_business_or_integrations() -> None:
@@ -362,6 +381,6 @@ def test_news_kiss_retired_tables_have_no_production_owner() -> None:
 def _business_table_owner(table: str) -> str:
     if table.startswith("news_"):
         return "news"
-    if table.startswith("macro_"):
-        return "macro"
-    return "market"
+    if table.startswith("macro_") or table.startswith("market_"):
+        return "macro"  # market_* are Macro's general market observation facts
+    raise AssertionError(f"unowned business table: {table}")

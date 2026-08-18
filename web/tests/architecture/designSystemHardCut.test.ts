@@ -62,21 +62,21 @@ describe("Tracefold design-system hard cut", () => {
     }
   });
 
-  it("keeps shared research primitives independent of feature CSS", () => {
-    const primitives = readSource("shared/ui/ResearchPrimitives.tsx");
-    const css = readSource("shared/ui/ResearchPrimitives.css");
-
-    for (const component of [
-      "ResearchPanel",
-      "ResearchHeader",
-      "ResearchSection",
-      "ResearchFieldGrid",
-      "ResearchTag",
-      "ResearchMark",
+  it("keeps shared UI free of retired Search dossier and Token Case primitives", () => {
+    for (const removed of [
+      "shared/ui/ResearchPrimitives.tsx",
+      "shared/ui/ResearchPrimitives.css",
+      "shared/ui/researchLanguage.ts",
+      "shared/ui/case-file",
+      "shared/ui/toggle-group.tsx",
     ]) {
-      expect(primitives).toContain(`function ${component}`);
+      expect(existsSync(join(srcRoot, removed)), `${removed} must stay deleted`).toBe(false);
     }
-    expect([...css.matchAll(/#[0-9a-fA-F]{6}/g)]).toEqual([]);
+    const sharedUiCss = collectFiles(join(srcRoot, "shared/ui"))
+      .filter((path) => extname(path) === ".css")
+      .map((path) => readFileSync(path, "utf8"))
+      .join("\n");
+    expect(sharedUiCss).not.toMatch(/\.research-|\.token-case|\.case-file/);
   });
 
   it("exposes two primary research destinations with no duplicate Macro tree", () => {
@@ -98,15 +98,14 @@ describe("Tracefold design-system hard cut", () => {
     expect(topbar).not.toContain("opsPath");
     expect(topbar).not.toContain("StatusPills");
     expect(topbar).not.toContain("WsStatusBeacon");
+    expect(topbar).not.toMatch(/socketStatus|lastSocketMessageAt|providers|main-route-button/);
+    expect(topbar).toContain('"news search"');
+    expect(topbar).toContain("搜索新闻事件 / 标题 / 资产");
   });
 
   it("assigns every supported route family to a page archetype", () => {
     const owners = {
-      case: [
-        "features/search/ui/SearchIntelPage.tsx",
-        "shared/ui/case-file/TokenCasePanel.tsx",
-        "features/news/NewsEventDetailPage.tsx",
-      ],
+      case: ["features/news/NewsEventDetailPage.tsx"],
       decision: ["features/macro/ui/MacroDecisionPage.tsx"],
       scan: ["features/news/NewsPage.tsx", "features/news/NewsStatusPage.tsx"],
     } as const;

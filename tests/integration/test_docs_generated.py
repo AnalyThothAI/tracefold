@@ -15,8 +15,6 @@ GENERATED = REPO_ROOT / "docs" / "generated"
 AUTO_GENERATED = {
     "db-schema.md",
     "cli-help.md",
-    "score-versions.md",
-    "ws-protocol.md",
 }
 EXPECTED = {"README.md"} | AUTO_GENERATED
 HEADER_MARKER = "AUTO-GENERATED"

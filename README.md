@@ -1,9 +1,13 @@
 # Tracefold
 
-Tracefold is an evidence-first market research system. One Python service
-ingests provider posts, news, macro, DEX/CEX, and market evidence, persists material
-facts in PostgreSQL, builds deterministic read models, and serves a React
-operator console plus stable HTTP, WebSocket, and CLI contracts.
+Tracefold is an evidence-first market research system with exactly two
+business capabilities. News V3 turns the operator's OpenNews Strategy pushes
+into deduplicated Events, triages and analyses them with bounded structured
+model calls under deterministic rules, and delivers Feishu cards; Macro turns
+free official and exchange data into six deterministic current modules plus
+optional Fed document analyses. One Python service persists material facts in
+PostgreSQL, builds deterministic read models, and serves a React operator
+console plus stable HTTP and CLI contracts.
 
 Tracefold is not a trading bot or a chat product. Provider frames are inputs,
 not business truth.
@@ -11,12 +15,12 @@ not business truth.
 ## Architecture
 
 ```text
-providers
-  -> integrations
+OpenNews WSS / official macro sources
+  -> integrations (RabbitMQ is the News transport plane)
   -> PostgreSQL material facts
-  -> durable dirty targets / bounded catch-up
+  -> durable frontiers / bounded catch-up
   -> single-writer read models or immutable publications
-  -> HTTP / WebSocket / CLI / React
+  -> HTTP / CLI / React
 ```
 
 The hard invariants are:
@@ -25,7 +29,9 @@ The hard invariants are:
 - Current rows use stable product/window/target keys, never run or attempt IDs.
 - Each current read model has exactly one writer and is rebuildable from facts.
 - Unchanged projections write zero serving rows.
-- Workers recover by polling durable PostgreSQL state at bounded intervals.
+- Macro workers recover by polling durable PostgreSQL state at bounded
+  intervals; News consumers recover by re-consuming durable broker queues plus
+  database idempotency keys.
 - Read surfaces never call providers or models.
 - Missing evidence is explicit, never replaced by a fabricated zero or fallback.
 
@@ -33,16 +39,15 @@ The Python package is deliberately shallow:
 
 ```text
 src/tracefold/
-  market/         capture, identity, pricing, views
-  news/           broker-driven Event pipeline: Deduper, Gate, Triage, Analyst, delivery
-  macro/          observations, completed-session research, Fed document analysis
-  integrations/   provider and external-system adapters (GMGN, Binance, OpenNews, RabbitMQ, Feishu, macro sources)
-  platform/       config, PostgreSQL, telemetry, generic worker kernel
-  app/            composition (`tracefold.app.workers` root), HTTP, WebSocket, and CLI adapters
+  news/           broker-driven Event pipeline: Deduper, Gate, Triage, Analyst, delivery, labels
+  macro/          Dataset Registry, acquisition clocks, general market facts, six modules, Fed document analysis
+  integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu, macro sources)
+  platform/       config, PostgreSQL/Alembic, telemetry, bounded resource primitives
+  app/            composition (`tracefold.app.workers` root), HTTP, and CLI adapters
 ```
 
-Other packages import business capabilities from `tracefold.market`,
-`tracefold.news`, or `tracefold.macro`, not from their internal modules. See
+Other packages import business capabilities from `tracefold.news` or
+`tracefold.macro`, not from their internal modules. See
 [Architecture](docs/ARCHITECTURE.md).
 
 ## Start the complete product
@@ -76,7 +81,7 @@ A second `make up` rebuilds that application image and recreates only the
 migration, Serve, and Workers containers so configuration changes take effect.
 An already running PostgreSQL container is not recreated, and its named volume,
 operator configuration, and role passwords are preserved. The generated
-defaults contain no provider, model, or webhook credential, and News push is
+defaults contain no OpenNews, model, or webhook credential, and News push is
 disabled. The product still starts; credential-dependent capabilities report
 an explicit degraded or unavailable state instead of fabricating data. Add
 credentials only to `~/.tracefold/config.yaml`, then rerun `make up`.
@@ -100,6 +105,8 @@ truth. Confirm the active path and redacted credential booleans with:
 ```bash
 uv run tracefold config
 uv run tracefold news bus-check   # broker reachable, topology declared, queue depths
+uv run tracefold macro status     # acquisition targets and the six module rows
+uv run tracefold db audit         # migration head, Macro core counts, exact news_* tables
 uv run tracefold --help
 ```
 
@@ -128,7 +135,7 @@ The maintained documentation surface is intentionally small:
 |---|---|
 | Install and deployment | [docs/SETUP.md](docs/SETUP.md) |
 | Data and module architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| Public config/API/WS/CLI contracts | [docs/CONTRACTS.md](docs/CONTRACTS.md) |
+| Public config/API/CLI contracts | [docs/CONTRACTS.md](docs/CONTRACTS.md) |
 | Operations and PostgreSQL diagnosis | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
 | Design and testing | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | Frontend boundaries | [docs/FRONTEND.md](docs/FRONTEND.md) |

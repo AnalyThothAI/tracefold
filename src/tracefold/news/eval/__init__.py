@@ -1,1 +1,1 @@
-"""Learning plane: market marks, labels, offline evaluation."""
+"""Learning plane: operator labels and offline evaluation."""

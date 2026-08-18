@@ -14,7 +14,7 @@ from tracefold.news.delivery import render_first_card, sanitize_ai_text
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
-from tracefold.news.models import AnalystVerdict, MarketReactionEvidence, TriageAsset, TriageVerdict
+from tracefold.news.models import AnalystVerdict, TriageAsset, TriageVerdict
 from tracefold.news.storyline import preliminary_storyline_key, storyline_key
 from tracefold.news.titles import extract_title
 from tracefold.news.tokens import comparison_tokens, jaccard
@@ -248,43 +248,35 @@ def test_fallback_is_fail_closed() -> None:
 
 # ---------------------------------------------------------------- analyst verify
 def test_verify_verdict_rejects_fabricated_evidence() -> None:
-    evidence = {"market:abc": {"symbol": "NVDA", "price_change_pct": 1.5, "oi_change_pct": None, "window_min": 30}}
+    evidence = {"history:abc": {"event_id": "e0", "final_decision": "push"}}
     ok = AnalystVerdict(
         agrees_with_triage=True,
         revised_direction="bullish",
         revised_magnitude=2,
         novelty_assessment="new",
-        market_reaction=[
-            MarketReactionEvidence(
-                symbol="NVDA", price_change_pct=1.5, oi_change_pct=None, window_min=30, evidence_id="market:abc"
-            )
-        ],
-        context_evidence=[],
+        context_evidence=["history:abc"],
         thesis_zh="ok",
         risks_zh="",
         follow_up_needed=True,
         confidence=0.7,
     )
     assert verify_verdict(ok, tool_evidence=evidence, triage_direction="bullish").ok
-    bad = ok.model_copy(
-        update={
-            "market_reaction": [
-                MarketReactionEvidence(
-                    symbol="NVDA", price_change_pct=9.9, oi_change_pct=None, window_min=30, evidence_id="market:abc"
-                )
-            ]
-        }
-    )
-    assert not verify_verdict(bad, tool_evidence=evidence, triage_direction="bullish").ok
     unknown = ok.model_copy(update={"context_evidence": ["history:nope"]})
     assert (
         verify_verdict(unknown, tool_evidence=evidence, triage_direction="bullish").reason == "context_evidence_unknown"
+    )
+    unsupported = ok.model_copy(update={"context_evidence": []})
+    assert (
+        verify_verdict(unsupported, tool_evidence=evidence, triage_direction="bullish").reason
+        == "magnitude_without_evidence"
     )
     disagree = ok.model_copy(update={"agrees_with_triage": False})
     assert (
         verify_verdict(disagree, tool_evidence=evidence, triage_direction="bullish").reason
         == "disagreement_without_revision"
     )
+    with pytest.raises(ValueError):
+        AnalystVerdict.model_validate({**ok.model_dump(), "market_reaction": []})
 
 
 # ---------------------------------------------------------------- delivery / control / bus

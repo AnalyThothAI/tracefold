@@ -8,11 +8,6 @@ from typing import Any
 
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.http.exceptions import ApiUnavailable
-from tracefold.app.http.ws import PersistedLiveBroadcaster
-from tracefold.app.provider_operations import (
-    provider_operational_status,
-    provider_operational_status_unavailable,
-)
 from tracefold.app.repositories import RepositorySession
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.platform.config.settings import Settings
@@ -28,7 +23,6 @@ class ServeRuntime:
     settings: Settings
     db: ServeDatabase
     telemetry: TelemetryRegistry
-    hub: PersistedLiveBroadcaster
 
     @contextmanager
     def repositories(self, *, lane: str = "ordinary") -> Iterator[RepositorySession]:
@@ -41,23 +35,7 @@ class ServeRuntime:
     def status_payload(self, *, now_ms: int | None = None) -> dict[str, Any]:
         measured_at_ms = int(time.time() * 1_000) if now_ms is None else int(now_ms)
         runtime = self._runtime_status_payload(now_ms=measured_at_ms)
-        if not runtime["db"]["ok"]:
-            providers = provider_operational_status_unavailable(reason="database_unavailable")
-        else:
-            try:
-                with self.repositories(lane="ordinary") as repos:
-                    providers = provider_operational_status(
-                        repos.conn,
-                        settings=self.settings,
-                        now_ms=measured_at_ms,
-                    )
-            except Exception:
-                providers = provider_operational_status_unavailable(reason="provider_status_query_failed")
-        return {
-            "measured_at_ms": measured_at_ms,
-            "runtime": runtime,
-            "providers": providers,
-        }
+        return {"measured_at_ms": measured_at_ms, "runtime": runtime}
 
     def readiness_payload(self, *, now_ms: int | None = None) -> dict[str, Any]:
         measured_at_ms = int(time.time() * 1_000) if now_ms is None else int(now_ms)
@@ -129,7 +107,6 @@ class ServeRuntime:
         }
 
     async def aclose(self) -> None:
-        await self.hub.aclose()
         await self.db.aclose()
 
 
@@ -139,16 +116,7 @@ def bootstrap_serve(settings: Settings) -> ServeRuntime:
     telemetry = TelemetryRegistry()
     db = ServeDatabase.create(settings, telemetry=telemetry)
     try:
-        runtime = ServeRuntime(
-            settings=settings,
-            db=db,
-            telemetry=telemetry,
-            hub=PersistedLiveBroadcaster(
-                token=settings.ws_token,
-                repository_session=lambda: db.api_session("control"),
-                default_replay_limit=settings.api.replay_limit,
-            ),
-        )
+        runtime = ServeRuntime(settings=settings, db=db, telemetry=telemetry)
         readiness = runtime.readiness_payload()
         if readiness["db"]["error_code"] == "database_unavailable":
             raise RuntimeError("postgres health check failed")

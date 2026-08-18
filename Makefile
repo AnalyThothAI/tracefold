@@ -11,7 +11,7 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up status macro-acceptance logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers recent serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help up status macro-acceptance logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -49,8 +49,6 @@ check: ## run static, frontend, architecture, and public-contract checks
 	@uv run mypy src
 	@cd web && npm run typecheck && npm run lint && npm run format:check
 	@uv run python scripts/regen_cli_help.py --check
-	@uv run python scripts/regen_score_versions.py --check
-	@uv run python scripts/regen_ws_protocol.py --check
 	@uv run python -m pytest tests/architecture tests/contract -m "architecture or contract"
 	@uv run python -m compileall src tests
 
@@ -94,8 +92,6 @@ serve: ## run the read-only public runtime in foreground
 workers: ## run the ingestion/projection/provider/model runtime in foreground
 	@$(TRACEFOLD) workers
 
-recent: ## print recent stored events
-	@$(TRACEFOLD) recent --limit 20
 
 preflight: ## verify the one-command startup prerequisites
 	@command -v git >/dev/null 2>&1 || { echo "git is not installed or not on PATH" >&2; exit 127; }
@@ -192,9 +188,9 @@ clean: ## remove local test/cache artifacts
 	@rm -rf .pytest_cache .ruff_cache __pycache__
 	@find src tests -type d -name __pycache__ -prune -exec rm -rf {} +
 
-.PHONY: docs-generated docs-db-schema docs-cli-help docs-score-versions docs-ws-protocol
+.PHONY: docs-generated docs-db-schema docs-cli-help
 
-docs-generated: docs-db-schema docs-cli-help docs-score-versions docs-ws-protocol ## regenerate docs/generated/*
+docs-generated: docs-db-schema docs-cli-help ## regenerate docs/generated/*
 
 docs-db-schema: ## regenerate docs/generated/db-schema.md (requires Postgres)
 	@uv run python scripts/regen_db_schema.py
@@ -202,8 +198,3 @@ docs-db-schema: ## regenerate docs/generated/db-schema.md (requires Postgres)
 docs-cli-help: ## regenerate docs/generated/cli-help.md
 	@uv run python scripts/regen_cli_help.py
 
-docs-score-versions: ## regenerate docs/generated/score-versions.md
-	@uv run python scripts/regen_score_versions.py
-
-docs-ws-protocol: ## regenerate docs/generated/ws-protocol.md
-	@uv run python scripts/regen_ws_protocol.py

@@ -29,13 +29,11 @@ from tracefold.macro import (
     FetchBatch,
     MacroSourceError,
     MacroSourceUnavailable,
-    ReleaseFact,
-    SeriesFact,
-)
-from tracefold.market import (
     MarketObservationFact,
     MarketPositionFact,
     MarketSettlementFact,
+    ReleaseFact,
+    SeriesFact,
 )
 
 _MAX_REQUESTS = 4

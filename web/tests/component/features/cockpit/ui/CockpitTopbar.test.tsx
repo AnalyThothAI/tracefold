@@ -10,29 +10,28 @@ afterEach(() => {
   cleanup();
 });
 
+const healthyStatus = {
+  status: null,
+  statusLoading: false,
+  statusError: false,
+  configReady: true,
+};
+
 describe("CockpitTopbar", () => {
-  it("keeps its search draft synchronized with the URL-owned query", () => {
-    const status = {
-      socketStatus: "connected",
-      lastSocketMessageAt: 1_700_000_000_000,
-      status: null,
-      statusLoading: false,
-      statusError: false,
-      configReady: true,
-    };
+  it("keeps its News search draft synchronized with the URL-owned query", () => {
     const search = {
-      ariaLabel: "news search",
       inputRef: createRef<HTMLInputElement>(),
       onSubmitQuery: vi.fn(),
       query: "bitcoin",
     };
     const { rerender } = render(
       <MemoryRouter>
-        <CockpitTopbar search={search} status={status} onRefresh={vi.fn()} />
+        <CockpitTopbar search={search} status={healthyStatus} onRefresh={vi.fn()} />
       </MemoryRouter>,
     );
     const input = screen.getByRole("textbox", { name: "news search" });
     expect(input).toHaveValue("bitcoin");
+    expect(input).toHaveAttribute("placeholder", "搜索新闻事件 / 标题 / 资产");
 
     fireEvent.change(input, { target: { value: "local draft" } });
     expect(input).toHaveValue("local draft");
@@ -41,7 +40,7 @@ describe("CockpitTopbar", () => {
       <MemoryRouter>
         <CockpitTopbar
           search={{ ...search, query: "ethereum" }}
-          status={status}
+          status={healthyStatus}
           onRefresh={vi.fn()}
         />
       </MemoryRouter>,
@@ -50,10 +49,35 @@ describe("CockpitTopbar", () => {
 
     rerender(
       <MemoryRouter>
-        <CockpitTopbar search={{ ...search, query: "" }} status={status} onRefresh={vi.fn()} />
+        <CockpitTopbar
+          search={{ ...search, query: "" }}
+          status={healthyStatus}
+          onRefresh={vi.fn()}
+        />
       </MemoryRouter>,
     );
     expect(input).toHaveValue("");
+  });
+
+  it("submits the trimmed News query from the single search entry", () => {
+    const onSubmitQuery = vi.fn();
+    render(
+      <MemoryRouter>
+        <CockpitTopbar
+          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery }}
+          status={healthyStatus}
+          onRefresh={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "news search" }), {
+      target: { value: "BTC ETF" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "检索" }));
+
+    expect(onSubmitQuery).toHaveBeenCalledWith("BTC ETF");
+    expect(screen.queryByRole("button", { name: "Main" })).not.toBeInTheDocument();
   });
 
   it("keeps healthy status out of the task-focused topbar", async () => {
@@ -61,59 +85,28 @@ describe("CockpitTopbar", () => {
       <MemoryRouter>
         <CockpitTopbar
           search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
-          status={{
-            socketStatus: "connected",
-            lastSocketMessageAt: 1_700_000_000_000,
-            status: null,
-            statusLoading: false,
-            statusError: false,
-            configReady: true,
-          }}
+          status={{ ...healthyStatus, status: appStatusFixture() }}
           onRefresh={vi.fn()}
         />
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("textbox", { name: "global search" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "news search" })).toBeInTheDocument();
     expect(screen.getByText("Tracefold")).toBeInTheDocument();
-    expect(screen.queryByRole("status", { name: /WebSocket/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByText(/实时连接|WebSocket/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "notifications" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
     expect(await axe(container)).toHaveNoViolations();
   });
 
-  it("shows realtime anomalies without linking to a retired browser Ops route", () => {
+  it("shows the first runtime reason without a permanent health beacon or Ops link", () => {
     render(
       <MemoryRouter>
         <CockpitTopbar
           search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
           status={{
-            socketStatus: "idle",
-            lastSocketMessageAt: 1_700_000_000_000,
-            status: null,
-            statusLoading: false,
-            statusError: false,
-            configReady: true,
-          }}
-          onRefresh={vi.fn()}
-        />
-      </MemoryRouter>,
-    );
-
-    expect(screen.getByRole("status")).toHaveAttribute("title", "实时连接 idle");
-    expect(screen.getByText("实时连接 idle")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open ops diagnostics" })).not.toBeInTheDocument();
-  });
-
-  it("shows the first runtime reason without a permanent health beacon", () => {
-    render(
-      <MemoryRouter>
-        <CockpitTopbar
-          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
-          status={{
-            socketStatus: "connected",
-            lastSocketMessageAt: 1_700_000_000_000,
+            ...healthyStatus,
             status: appStatusFixture({
               runtime: {
                 ...appStatusFixture().runtime,
@@ -121,9 +114,6 @@ describe("CockpitTopbar", () => {
                 reasons: ["runtime_missing"],
               },
             }),
-            statusLoading: false,
-            statusError: false,
-            configReady: true,
           }}
           onRefresh={vi.fn()}
         />
@@ -132,33 +122,30 @@ describe("CockpitTopbar", () => {
 
     expect(screen.getByRole("status")).toHaveAttribute("title", "runtime_missing");
     expect(screen.getByText("runtime_missing")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open ops diagnostics" })).not.toBeInTheDocument();
   });
 
-  it("shows a provider degradation without treating runtime as unavailable", () => {
-    render(
+  it("reports a failed status check and an unready configuration", () => {
+    const { rerender } = render(
       <MemoryRouter>
         <CockpitTopbar
           search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
-          status={{
-            socketStatus: "connected",
-            lastSocketMessageAt: 1_700_000_000_000,
-            status: appStatusFixture({
-              providers: {
-                status: "degraded",
-                reasons: ["gmgn_direct_ws:source_stale"],
-                items: [],
-              },
-            }),
-            statusLoading: false,
-            statusError: false,
-            configReady: true,
-          }}
+          status={{ ...healthyStatus, statusError: true }}
           onRefresh={vi.fn()}
         />
       </MemoryRouter>,
     );
+    expect(screen.getByRole("status")).toHaveAttribute("title", "状态检查失败");
 
-    expect(screen.getByRole("status")).toHaveAttribute("title", "gmgn_direct_ws:source_stale");
-    expect(screen.getByText("gmgn_direct_ws:source_stale")).toBeInTheDocument();
+    rerender(
+      <MemoryRouter>
+        <CockpitTopbar
+          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
+          status={{ ...healthyStatus, configReady: false }}
+          onRefresh={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("status")).toHaveAttribute("title", "配置未就绪");
   });
 });

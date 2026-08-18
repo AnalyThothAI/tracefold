@@ -5,7 +5,7 @@ from datetime import date
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
-from tracefold.market import (
+from .market_facts import (
     MarketObservationFact,
     MarketPositionFact,
     MarketSettlementFact,

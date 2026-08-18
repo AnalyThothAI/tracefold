@@ -4,10 +4,8 @@ import json
 import os
 import socket
 import tempfile
-import time
 import unittest
 import uuid
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,19 +16,9 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.app.cli.parser import build_parser
-from tracefold.app.repositories import repositories_for_connection
 from tracefold.cli import main
-from tracefold.market import (
-    Author,
-    Content,
-    IngestService,
-    Source,
-    TwitterEvent,
-    parse_gmgn_token_payload,
-)
 from tracefold.platform.config.settings import Settings, default_config_yaml
 
-PEPE = "0x6982508145454ce325ddbe47a25d4ec3d2311933"
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 
 
@@ -62,86 +50,6 @@ def _delete_test_topology(url: str, name_prefix: str) -> None:
     asyncio.run(_run())
 
 
-def make_event(
-    event_id: str,
-    received_at_ms: int | None = None,
-    text: str = f"$PEPE Solana XDP mainnet base stablecoin {PEPE}",
-) -> TwitterEvent:
-    received_at_ms = received_at_ms if received_at_ms is not None else int(time.time() * 1000)
-    return TwitterEvent(
-        event_id=event_id,
-        source=Source(
-            provider="gmgn",
-            transport="direct_ws",
-            coverage="public_stream",
-            channel="twitter_monitor_basic",
-        ),
-        action="tweet",
-        original_action=None,
-        tweet_id=event_id,
-        internal_id=event_id,
-        timestamp=received_at_ms // 1000,
-        received_at_ms=received_at_ms,
-        author=Author(handle="toly", name="toly", avatar=None, followers=100, tags=[]),
-        content=Content(text=text, media=[]),
-        reference=None,
-        unfollow_target=None,
-        avatar_change=None,
-        bio_change=None,
-        raw=None,
-    )
-
-
-def seed_postgres(db_path: Path) -> None:
-    conn = connect_postgres_test(db_path, read_only=False)
-    try:
-        migrate(conn)
-        repos = repositories_for_connection(conn)
-        ingest = IngestService(
-            evidence=repos.evidence,
-            entities=repos.entities,
-            registry=repos.registry,
-            identity_evidence=repos.identity_evidence,
-            token_intent_lookup=repos.token_intent_lookup,
-            token_evidence=repos.token_evidence,
-            token_intents=repos.token_intents,
-            intent_resolutions=repos.intent_resolutions,
-            market_ticks=repos.market_ticks,
-            market_tick_current=repos.market_tick_current,
-            enriched_events=repos.enriched_events,
-            event_anchor_jobs=repos.event_anchor_jobs,
-            persisted_live=repos.persisted_live,
-            transaction=repos.transaction,
-            event_anchor_active_window_ms=300_000,
-        )
-        snapshot = parse_gmgn_token_payload(
-            {
-                "tt": "ca",
-                "t": {
-                    "a": PEPE,
-                    "c": "eth",
-                    "mc": "60490.341996",
-                    "p": "1.0",
-                    "s": "PEPE",
-                },
-            }
-        )
-        token_event = replace(
-            make_event("event-1"),
-            source=Source(
-                provider="gmgn",
-                transport="direct_ws",
-                coverage="public_stream",
-                channel="twitter_monitor_token",
-            ),
-            token_snapshot=snapshot,
-        )
-        with repos.transaction():
-            ingest.ingest_event(token_event)
-    finally:
-        conn.close()
-
-
 def write_runtime_config(
     home: Path,
     *,
@@ -167,7 +75,6 @@ def write_runtime_config(
     }
     if ws_token is not None:
         payload["ws_token"] = ws_token
-    payload["gmgn"] = {"api_key": "gmgn-test", "openapi_base_url": "https://openapi.gmgn.ai"}
     if llm:
         payload["llm"] = {
             "api_key": "sk-test",
@@ -199,11 +106,7 @@ class CliTests(unittest.TestCase):
             ["db", "query-audit"],
             ["db", "query-audit", "--analyze"],
             ["ops", "validate-projections", "--sample", "5"],
-            ["ops", "sync-binance-usdt-perp-universe", "--dry-run"],
-            ["ops", "sync-binance-usdt-perp-universe", "--execute"],
-            ["ops", "rebuild-token-intents", "--window", "5m", "--limit", "5"],
-            ["ops", "audit-token-intent", "--event-id", "event-1"],
-            ["ops", "sync-us-equity-symbols"],
+            ["ops", "queue-inspect", "--owner", "macro_projection", "--status", "active"],
             ["news", "label", "ev-1", "noise", "--note", "template"],
             ["news", "dlq", "inspect", "--limit", "5"],
             ["news", "replay-decisions", "--hours", "24", "--min-push-magnitude", "3"],
@@ -217,19 +120,14 @@ class CliTests(unittest.TestCase):
         self.assertTrue(parsed[2].analyze)
         self.assertEqual(parsed[3].ops_command, "validate-projections")
         self.assertEqual(parsed[3].sample, 5)
-        self.assertEqual(parsed[4].ops_command, "sync-binance-usdt-perp-universe")
-        self.assertTrue(parsed[4].dry_run)
-        self.assertEqual(parsed[5].ops_command, "sync-binance-usdt-perp-universe")
-        self.assertTrue(parsed[5].execute)
-        self.assertEqual(parsed[6].ops_command, "rebuild-token-intents")
-        self.assertEqual(parsed[6].window, "5m")
-        self.assertEqual(parsed[7].ops_command, "audit-token-intent")
-        self.assertEqual(parsed[8].ops_command, "sync-us-equity-symbols")
-        self.assertEqual(parsed[9].news_command, "label")
-        self.assertEqual((parsed[9].event_id, parsed[9].label, parsed[9].note), ("ev-1", "noise", "template"))
-        self.assertEqual((parsed[10].news_command, parsed[10].dlq_action, parsed[10].limit), ("dlq", "inspect", 5))
-        self.assertEqual(parsed[11].news_command, "replay-decisions")
-        self.assertEqual((parsed[11].hours, parsed[11].min_push_magnitude), (24, 3))
+        self.assertEqual(
+            (parsed[4].ops_command, parsed[4].owner, parsed[4].status), ("queue-inspect", "macro_projection", "active")
+        )
+        self.assertEqual(parsed[5].news_command, "label")
+        self.assertEqual((parsed[5].event_id, parsed[5].label, parsed[5].note), ("ev-1", "noise", "template"))
+        self.assertEqual((parsed[6].news_command, parsed[6].dlq_action, parsed[6].limit), ("dlq", "inspect", 5))
+        self.assertEqual(parsed[7].news_command, "replay-decisions")
+        self.assertEqual((parsed[7].hours, parsed[7].min_push_magnitude), (24, 3))
 
     def test_cli_rejects_retired_hard_cut_commands(self):
         parser = build_parser()
@@ -258,7 +156,15 @@ class CliTests(unittest.TestCase):
             ["ops", "mirror-token-images", "--limit", "5"],
             ["ops", "run-resolution-refresh", "--limit", "5"],
             ["ops", "sync-binance-cex-profiles"],
+            ["ops", "sync-binance-usdt-perp-universe", "--dry-run"],
+            ["ops", "sync-us-equity-symbols"],
+            ["ops", "rebuild-token-intents", "--window", "5m", "--limit", "5"],
+            ["ops", "audit-token-intent", "--event-id", "event-1"],
+            ["ops", "rebuild-market-current", "--execute"],
+            ["ops", "reconcile-event-anchor-jobs"],
             ["ops", "reprocess-token-intents", "--window", "24h", "--limit", "5"],
+            ["recent", "--limit", "5"],
+            ["search", "btc"],
             ["news", "control", "drain"],
             ["ops", "factor-diagnostics", "--window", "1h", "--limit", "200"],
             ["ops", "radar-evaluate"],
@@ -305,16 +211,8 @@ class CliTests(unittest.TestCase):
         )
         self.assertNotIn("agent_execution", payload["data"])
         self.assertNotIn("llm", payload["data"])
-        self.assertEqual(
-            payload["data"]["providers"]["gmgn"],
-            {
-                "configured": True,
-                "openapi_base_url": "https://openapi.gmgn.ai",
-                "timeout_seconds": 5.0,
-                "token_info_cache_ttl_seconds": 60,
-            },
-        )
-        self.assertNotIn("gmgn-test", stdout.getvalue())
+        self.assertEqual(set(payload["data"]["providers"]), {"macro_sources"})
+        self.assertNotIn("upstream", payload["data"])
         news = payload["data"]["news"]
         self.assertTrue(news["opennews_strategy_ids_configured"])
         self.assertEqual(news["opennews_strategy_count"], 2)
@@ -353,7 +251,7 @@ class CliTests(unittest.TestCase):
             set(payload["data"]["store"]["postgres_roles"]),
             {"serve", "workers", "migrate"},
         )
-        self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 8)
+        self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 7)
         self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 8)
         self.assertNotIn("embed" + "ding_dim", payload["data"]["store"])
         self.assertNotIn("workers", payload["data"])
@@ -374,7 +272,8 @@ class CliTests(unittest.TestCase):
         self.assertTrue(settings.providers.macro_sources.enabled)
         self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
         self.assertNotIn("request_timeout_seconds", payload["providers"]["macro_sources"])
-        self.assertEqual(settings.upstream.chains, ("sol", "eth", "base", "bsc", "robinhood"))
+        self.assertEqual(set(payload), {"ws_token", "api", "storage", "llm", "providers", "news"})
+        self.assertEqual(set(payload["providers"]), {"macro_sources"})
 
     def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
         retired_payloads = {
@@ -391,6 +290,10 @@ class CliTests(unittest.TestCase):
                 }
             },
             "macro source request timeout": {"providers": {"macro_sources": {"request_timeout_seconds": 15}}},
+            "gmgn stream": {"upstream": {"chains": ["sol"]}},
+            "gmgn openapi": {"gmgn": {"api_key": "x"}},
+            "binance": {"providers": {"binance": {"enabled": True}}},
+            "websocket replay": {"api": {"replay_limit": 10}},
         }
 
         for label, payload in retired_payloads.items():
@@ -400,28 +303,6 @@ class CliTests(unittest.TestCase):
     def test_settings_reject_worker_runtime_configuration(self):
         with self.assertRaises(ValidationError):
             Settings.model_validate({"workers": {"collector": {"enabled": False}}})
-
-    def test_recent_and_search_use_postgres_runtime_store(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            home = Path(tmpdir)
-            db_path = home / ".tracefold" / "postgres_test_db"
-            write_runtime_config(home, db_path=db_path)
-            seed_postgres(db_path)
-            stdout = io.StringIO()
-            with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
-                recent_code = main(["recent", "--limit", "5"], stdout=stdout)
-                search_code = main(["search", "$PEPE", "--limit", "5"], stdout=stdout)
-
-        lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
-        self.assertEqual(
-            [
-                recent_code,
-                search_code,
-            ],
-            [0, 0],
-        )
-        self.assertEqual(lines[0]["data"]["events"][0]["event_id"], "event-1")
-        self.assertEqual(lines[1]["data"]["items"][0]["event"]["event_id"], "event-1")
 
     def test_db_audit_query_audit_and_validate_projections_use_postgres_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -449,9 +330,8 @@ class CliTests(unittest.TestCase):
             [0, 0, 0],
         )
         self.assertEqual(lines[0]["data"]["engine"], "postgresql")
-        self.assertNotIn("token_radar_current", lines[0]["data"]["projection_schema"])
-        self.assertNotIn("projection_offsets", lines[0]["data"]["projection_schema"])
-        self.assertNotIn("projection_runs", lines[0]["data"]["projection_schema"])
+        self.assertTrue(lines[0]["data"]["news_schema"]["exact"])
+        self.assertNotIn("projection_schema", lines[0]["data"])
         self.assertFalse(lines[1]["data"]["analyze"])
         self.assertNotIn("token_radar_latest", {item["name"] for item in lines[1]["data"]["queries"]})
         self.assertEqual(lines[2]["data"]["sample"], 5)
@@ -511,21 +391,6 @@ class CliTests(unittest.TestCase):
         self.assertIn("queues", payload["data"])
         self.assertIn("declared", payload["data"])
         self.assertNotIn("guest:guest", stdout.getvalue())
-
-
-def test_recent_defaults_to_runtime_postgres_store_without_ws_token(tmp_path, monkeypatch):
-    app_home = tmp_path / ".tracefold"
-    db_path = app_home / "postgres_test_db"
-    write_runtime_config(tmp_path, db_path=db_path)
-    seed_postgres(db_path)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    stdout = io.StringIO()
-
-    exit_code = main(["recent", "--limit", "5"], stdout=stdout)
-
-    payload = json.loads(stdout.getvalue())
-    assert exit_code == 0
-    assert payload["data"]["events"][0]["event_id"] == "event-1"
 
 
 def test_init_creates_runtime_config(tmp_path, monkeypatch):

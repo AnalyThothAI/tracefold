@@ -1,1 +1,0 @@
-"""Binance public web adapters."""

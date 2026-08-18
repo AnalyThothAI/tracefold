@@ -25,23 +25,16 @@ const featureClassPrefixes: Record<string, string[]> = {
     "center-column",
     "cockpit-",
     "decision-count",
-    "main-route-button",
     "rail-",
-    "search-focus-mode",
-    "search-shell",
     "searchbar",
     "side-rail",
     "status-pills",
     "top-stats",
     "topbar",
     "topbar-",
-    "ws-status-beacon",
   ],
-  live: ["live-"],
   macro: ["active-trigger-column", "macro-"],
   news: ["news-"],
-  ops: ["ops-"],
-  search: ["search-"],
 };
 
 const modifierClassNames = new Set([

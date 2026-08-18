@@ -3,7 +3,6 @@ import { Badge } from "@shared/ui/badge";
 import { Panel, PanelContent, PanelDescription, PanelHeader, PanelTitle } from "@shared/ui/panel";
 import * as TabsNamespace from "@shared/ui/tabs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@shared/ui/tabs";
-import { ToggleGroup, ToggleGroupItem } from "@shared/ui/toggle-group";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -87,34 +86,5 @@ describe("shared UI primitives", () => {
     });
 
     expect(screen.getByText("Signals panel")).toBeVisible();
-  });
-
-  it("renders toggle group primitives with Radix pressed state", () => {
-    render(
-      <ToggleGroup type="single" defaultValue="queue" aria-label="View mode">
-        <ToggleGroupItem value="queue" className="custom-toggle">
-          Queue
-        </ToggleGroupItem>
-        <ToggleGroupItem value="history">History</ToggleGroupItem>
-      </ToggleGroup>,
-    );
-
-    const queue = screen.getByRole("radio", { name: "Queue" });
-    expect(queue).toHaveClass("custom-toggle");
-    expect(queue).toHaveAttribute("data-state", "on");
-  });
-
-  it("propagates root toggle group variant and size to items while allowing item overrides", () => {
-    render(
-      <ToggleGroup type="single" variant="outline" size="lg" defaultValue="queue">
-        <ToggleGroupItem value="queue">Queue</ToggleGroupItem>
-        <ToggleGroupItem value="history" size="sm">
-          History
-        </ToggleGroupItem>
-      </ToggleGroup>,
-    );
-
-    expect(screen.getByRole("radio", { name: "Queue" })).toHaveClass("border", "h-10", "px-4");
-    expect(screen.getByRole("radio", { name: "History" })).toHaveClass("border", "h-8", "px-2.5");
   });
 });

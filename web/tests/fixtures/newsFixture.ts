@@ -5,7 +5,6 @@ import type {
   NewsEventMember,
   NewsFeed,
   NewsFeedEvent,
-  NewsMarketMark,
   NewsStatus,
   NewsVerdict,
 } from "@features/news/useNewsPage";
@@ -161,26 +160,10 @@ export function newsDeliveryFixture(overrides: Partial<NewsDelivery> = {}): News
   };
 }
 
-export function newsMarketMarkFixture(overrides: Partial<NewsMarketMark> = {}): NewsMarketMark {
-  return {
-    captured_at_ms: NEWS_NOW_MS - 10_000,
-    event_id: "evt-global-policy",
-    mark: "t0",
-    market_type: "perp",
-    oi_change_pct: null,
-    open_interest: 1_250_000_000,
-    price: 64_250.5,
-    price_change_pct: null,
-    symbol: "BTC",
-    ...overrides,
-  };
-}
-
 export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {}): NewsEventDetail {
   return {
     deliveries: [newsDeliveryFixture()],
     event: newsEventFixture(),
-    marks: [newsMarketMarkFixture()],
     members: [
       newsEventMemberFixture(),
       newsEventMemberFixture({

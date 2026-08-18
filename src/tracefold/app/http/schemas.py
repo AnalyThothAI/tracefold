@@ -32,7 +32,6 @@ class ApiEnvelope[T](ExactApiSchema):
 
 class BootstrapData(ExactApiSchema):
     ws_token: str
-    replay_limit: int
 
 
 class StatusDatabaseData(ExactApiSchema):
@@ -104,30 +103,9 @@ class StatusRuntimeData(ExactApiSchema):
     workers_runtime: WorkersRuntimeData
 
 
-class ProviderOperationalData(ExactApiSchema):
-    provider: str
-    owned: bool
-    status: Literal["ok", "degraded", "inactive"]
-    reasons: list[Literal["unowned_backlog", "circuit_open", "source_stale"]]
-    freshness: Literal["current", "stale", "no_evidence", "not_applicable"]
-    freshness_budget_ms: int | None
-    latest_fact_at_ms: int | None
-    circuit_status: Literal["open", "closed"] | None
-    consecutive_failures: int
-    next_probe_at_ms: int | None
-    has_backlog: bool
-
-
-class ProviderOperationsData(ExactApiSchema):
-    status: Literal["ok", "degraded", "unavailable"]
-    reasons: list[str]
-    items: list[ProviderOperationalData]
-
-
 class StatusData(ExactApiSchema):
     measured_at_ms: int
     runtime: StatusRuntimeData
-    providers: ProviderOperationsData
 
 
 class ReadinessData(ExactApiSchema):
@@ -1058,145 +1036,3 @@ class MacroOverviewReadData(ExactApiSchema):
     latest_fact_at_ms: int
     modules: list[MacroModuleSummaryData]
     data_quality: MacroDataQualityOverviewData
-
-
-class SearchPageData(ExactApiSchema):
-    returned_count: int
-    has_more: bool
-    next_cursor: str | None
-
-
-class RecentData(ExactApiSchema):
-    events: list[JsonObject]
-    items: list[JsonObject]
-    page: SearchPageData
-
-
-class SearchData(ExactApiSchema):
-    query: JsonObject
-    page: SearchPageData
-    target_candidates: list[JsonObject]
-    items: list[JsonObject]
-
-
-class SearchInspectQueryData(ExactApiSchema):
-    q: str
-    normalized_q: str
-    window: str
-    result_kind: Literal["token_result", "topic_result", "ambiguous_result", "empty_result"]
-
-
-class SearchInspectResolverData(ExactApiSchema):
-    target_candidates: list[JsonObject]
-    selected_target: JsonObject | None
-    reasons: list[str]
-
-
-class SearchInspectTopicSummaryData(ExactApiSchema):
-    posts: int
-    authors: int
-
-
-class SearchInspectTopicData(ExactApiSchema):
-    summary: SearchInspectTopicSummaryData
-    items: list[JsonObject]
-
-
-class SearchInspectAmbiguousData(ExactApiSchema):
-    candidates: list[JsonObject]
-    summary: SearchInspectTopicSummaryData
-    items: list[JsonObject]
-
-
-class SearchInspectData(ExactApiSchema):
-    query: SearchInspectQueryData
-    resolver: SearchInspectResolverData
-    token_result: TokenCaseData | None
-    topic_result: SearchInspectTopicData | None
-    ambiguous_result: SearchInspectAmbiguousData | None
-
-
-class TokenCaseData(ExactApiSchema):
-    target: JsonObject
-    timeline: JsonObject
-    posts: JsonObject
-    market_live: JsonObject
-
-
-class LiveMarketData(ExactApiSchema):
-    target_type: str
-    target_id: str
-    status: Literal["live", "stale", "missing"]
-    price_usd: float | None
-    price_quote: float | None
-    quote_symbol: str | None
-    price_basis: Literal["usd", "quote_as_usd", "unavailable"]
-    market_cap_usd: float | None
-    liquidity_usd: float | None
-    holders: int | None
-    volume_24h_usd: float | None
-    open_interest_usd: float | None
-    observed_at_ms: int | None
-    received_at_ms: int | None
-    age_ms: int | None
-    provider: str | None
-
-
-class TargetPostsQueryData(ExactApiSchema):
-    target_type: str
-    target_id: str
-    window: str
-    post_range: str = Field(alias="range")
-
-
-class TargetPostsScoreWindowData(ExactApiSchema):
-    window: str
-
-
-class TargetPostsData(ExactApiSchema):
-    query: TargetPostsQueryData
-    score_window: TargetPostsScoreWindowData
-    total_count: int
-    returned_count: int
-    has_more: bool
-    next_cursor: str | None
-    items: list[JsonObject]
-
-
-class TargetSocialTimelineQueryData(ExactApiSchema):
-    target_type: str
-    target_id: str
-    window: str
-    bucket: str
-
-
-class TargetSocialTimelineData(ExactApiSchema):
-    query: TargetSocialTimelineQueryData
-    summary: JsonObject
-    market_candles: JsonObject | None
-    stages: list[JsonObject]
-    buckets: list[JsonObject]
-    authors: list[JsonObject]
-    posts: list[JsonObject]
-    cascade: JsonObject
-    returned_count: int
-    has_more: bool
-    next_cursor: str | None
-
-
-class SourceEventDetail(ExactApiSchema):
-    event_id: str
-    timestamp_ms: int
-    source_provider: str
-    channel: str
-    action: str
-    author_handle: str | None
-    author_name: str | None
-    author_followers: int | None
-    text_clean: str | None
-    canonical_url: str | None
-
-
-class SourceEventsByIdsData(ExactApiSchema):
-    events: list[SourceEventDetail]
-    not_found: list[str]

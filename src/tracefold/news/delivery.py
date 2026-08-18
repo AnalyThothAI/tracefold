@@ -111,13 +111,6 @@ def render_followup_card(
     revised_direction = str(analyst_verdict.get("revised_direction") or "unclear")
     thesis = sanitize_ai_text(analyst_verdict.get("thesis_zh"), limit=800)
     risks = sanitize_ai_text(analyst_verdict.get("risks_zh"), limit=400)
-    reactions = analyst_verdict.get("market_reaction") or []
-    reaction_lines = [
-        f"`{r.get('symbol')}` {r.get('window_min')}m 价格 {_pct(r.get('price_change_pct'))}"
-        f" OI {_pct(r.get('oi_change_pct'))}"
-        for r in reactions
-        if isinstance(r, Mapping)
-    ]
     verdict_line = (
         f"**深度补充**：与初判一致（{_DIRECTION_LABEL.get(revised_direction, revised_direction)}）"
         if agrees
@@ -137,8 +130,6 @@ def render_followup_card(
             ),
         },
     ]
-    if reaction_lines:
-        elements.append({"tag": "markdown", "content": "**市场反应**（工具数据）：\n" + "\n".join(reaction_lines)})
     if thesis:
         elements.append({"tag": "markdown", "content": f"**分析**：{thesis}"})
     if risks:
@@ -165,15 +156,6 @@ def render_followup_card(
         },
         "elements": elements,
     }
-
-
-def _pct(value: object) -> str:
-    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
-        return "n/a"
-    try:
-        return f"{float(value):+.2f}%"
-    except (TypeError, ValueError):
-        return "n/a"
 
 
 __all__ = ["render_first_card", "render_followup_card", "sanitize_ai_text"]

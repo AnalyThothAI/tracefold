@@ -13,7 +13,7 @@ from tests.postgres_test_utils import (
     repository_session_for_connection,
     reset_postgres_schema,
 )
-from tracefold.macro import ReleaseFact, SeriesFact, require_dataset
+from tracefold.macro import MarketObservationFact, ReleaseFact, SeriesFact, require_dataset
 from tracefold.macro.calculations import calculate_series_statistics
 from tracefold.macro.dependencies import (
     MODULE_DATASET_DEPENDENCIES,
@@ -25,7 +25,6 @@ from tracefold.macro.projection import (
     compute_macro_module_projection,
     rebuild_all_macro_modules_for_maintenance,
 )
-from tracefold.market import MarketObservationFact
 from tracefold.platform.postgres.projection_frontier import MACRO_FRONTIER
 
 NOW_MS = 1_779_000_000_000

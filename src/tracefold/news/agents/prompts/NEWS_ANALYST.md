@@ -21,17 +21,16 @@
 - Tier 1：Reuters、Bloomberg、WSJ、CNBC、交易所官方公告（binance/coinbase/okx/bybit）、监管机构。
 - Tier 2：First Squawk、deitaone、jin10、The Block、Decrypt、CoinDesk、PRNewswire（公司自发）。
 - Tier 3：个人推特账号（含分析师）、匿名聚合、"reply/quote" 转述。
-- 传闻（rumor）类事件若只有 Tier 3 来源，magnitude 上限 1，除非 `market_reaction` 显示市场已明显反应。
+- 传闻（rumor）类事件若只有 Tier 3 来源，magnitude 上限 1。
 
 ## 5. 证据包字段与引用规则
 - `event`：本 Event 的代码事实与 Triage 结论；`members`：其余成员原文（资料）。
 - `history_events`：同 storyline 或同标的 48 h 内的其它 Events，每条带 `evidence_id`；`prior_verdicts`：这些 Events 的判定，每条带 `evidence_id`。
-- `market_reaction`：每个 grounded 标的自事件时刻起 5m/30m/4h 的价格与持仓变化（只含已过去的窗口），每行带 `evidence_id`；`error_code` 表示无行情目标或无锚定 tick，此时不得填 market_reaction。
 - `macro`：六个宏观模块当前状态，带 `evidence_id`；`event_status`：同 storyline 2 h 内已推送计数、最大强度、方向与上次推送距今，用它判断 novelty 与是否重复。
-- `market_reaction` 字段只能逐字引用证据包 `market_reaction` 行的 `symbol/window_min/price_change_pct/oi_change_pct/evidence_id`；`context_evidence` 只能引用证据包中出现过的 `evidence_id`（history/verdict/macro/event）。
+- `context_evidence` 只能引用证据包中出现过的 `evidence_id`（history/verdict/macro/event）。
 - 若上一轮输出被代码拒绝，人类消息末尾会给出 `<rejected reason=...>`；按原因修正后重新输出完整 verdict。
 
 ## 6. 输出自检
-- 每个 evidence_id 都来自证据包？数字与证据包一致？
-- revised_magnitude ≥2 时至少一条 market_reaction 或 context_evidence？
+- 每个 evidence_id 都来自证据包？
+- revised_magnitude ≥2 时至少一条 context_evidence？
 - thesis_zh ≤ 800 字、risks_zh ≤ 400 字，不含 URL/@。

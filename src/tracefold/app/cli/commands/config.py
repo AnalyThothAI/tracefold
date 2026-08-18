@@ -49,7 +49,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                 "api": {
                     "host": settings.api.host,
                     "port": settings.api.port,
-                    "replay_limit": settings.api.replay_limit,
                     "ws_token_configured": bool(settings.ws_token),
                 },
                 "store": {
@@ -66,13 +65,9 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         }
                         for role in ("serve", "workers", "migrate")
                     },
-                    "serve_pool_max_size": 8,
+                    "serve_pool_max_size": 7,
                     "workers_pool_max_size": 8,
                     "log_file": str(settings.log_file),
-                },
-                "upstream": {
-                    "channels": list(settings.upstream.channels),
-                    "chains": list(settings.upstream.chains),
                 },
                 "news": {
                     "enabled": settings.news.enabled,
@@ -104,19 +99,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                 },
                 "macro": {"document_analysis": macro_document_analysis_runtime(settings)},
                 "providers": {
-                    "gmgn": {
-                        "configured": settings.gmgn_configured,
-                        "openapi_base_url": settings.gmgn.openapi_base_url,
-                        "timeout_seconds": settings.gmgn.timeout_seconds,
-                        "token_info_cache_ttl_seconds": settings.gmgn.token_info_cache_ttl_seconds,
-                    },
-                    "binance": {
-                        "enabled": settings.providers.binance.enabled,
-                        "usdm_futures_base_url": settings.providers.binance.usdm_futures_base_url,
-                        "cex_universe_quote_symbol": settings.providers.binance.cex_universe_quote_symbol,
-                        "cex_universe_contract_type": settings.providers.binance.cex_universe_contract_type,
-                        "timeout_seconds": settings.providers.binance.timeout_seconds,
-                    },
                     "macro_sources": {
                         "enabled": settings.providers.macro_sources.enabled,
                         "fred_enabled": settings.providers.macro_sources.fred_enabled,

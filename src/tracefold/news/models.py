@@ -12,9 +12,9 @@ GATE_POLICY_VERSION = "news_gate_v3"
 STORYLINE_POLICY_VERSION = "news_storyline_v1"
 TRIAGE_PROMPT_VERSION = "news_triage_prompt_v2"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v1"
-ANALYST_PROMPT_VERSION = "news_analyst_prompt_v2"
-ANALYST_POLICY_VERSION = "news_analyst_policy_v2"
-DELIVERY_CARD_VERSION = "news_delivery_card_v4"
+ANALYST_PROMPT_VERSION = "news_analyst_prompt_v3"
+ANALYST_POLICY_VERSION = "news_analyst_policy_v3"
+DELIVERY_CARD_VERSION = "news_delivery_card_v5"
 
 Admission = Literal[
     "candidate",
@@ -90,16 +90,6 @@ class TriageVerdict(BaseModel):
     rationale: str = Field(default="", max_length=160)
 
 
-class MarketReactionEvidence(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    symbol: str = Field(min_length=1, max_length=16)
-    price_change_pct: float | None = None
-    oi_change_pct: float | None = None
-    window_min: int = Field(ge=1, le=1440)
-    evidence_id: str = Field(min_length=1, max_length=64)
-
-
 class AnalystVerdict(BaseModel):
     """Structured output of the Analyst deep agent."""
 
@@ -109,7 +99,6 @@ class AnalystVerdict(BaseModel):
     revised_direction: Literal["bullish", "bearish", "neutral", "unclear"]
     revised_magnitude: int = Field(ge=0, le=3)
     novelty_assessment: Literal["new", "followup", "rehash"]
-    market_reaction: list[MarketReactionEvidence] = Field(default_factory=list, max_length=4)
     context_evidence: list[str] = Field(default_factory=list, max_length=8)
     thesis_zh: str = Field(min_length=1, max_length=800)
     risks_zh: str = Field(default="", max_length=400)
@@ -145,7 +134,6 @@ __all__ = [
     "Decision",
     "EngineType",
     "ExactNewsModel",
-    "MarketReactionEvidence",
     "NewsFeedEntry",
     "TriageAsset",
     "TriageVerdict",

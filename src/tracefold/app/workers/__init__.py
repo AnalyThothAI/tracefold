@@ -19,11 +19,6 @@ from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.llm import configured_chat_model, llm_is_configured
-from tracefold.app.market_providers import (
-    AssetMarketProviders,
-    wire_asset_market,
-)
-from tracefold.app.provider_ownership import gmgn_stream_enabled
 from tracefold.app.workers.capabilities import CpuProcess, FiniteOperations, ModelAdapter
 from tracefold.app.workers.cpu_prewarm import prewarm_projection_cpu_modules
 from tracefold.app.workers.model_arbiter import run_model_arbiter
@@ -31,7 +26,6 @@ from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.projection_edf import run_projection_edf
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
 from tracefold.integrations.feishu import FeishuNewsPushSender
-from tracefold.integrations.gmgn.providers import gmgn_upstream_client
 from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.macro import (
@@ -44,14 +38,6 @@ from tracefold.macro import (
     MacroDocumentAnalysisService,
     MacroProjectionCandidate,
     acquisition_loop_policy,
-)
-from tracefold.market import (
-    CollectorService,
-    EventAnchorBackfill,
-    EventMarketCaptureService,
-    IngestService,
-    MarketTickPoll,
-    TickLookup,
 )
 from tracefold.news.agents.analyst import Analyst
 from tracefold.news.agents.triage_model import TriageModel
@@ -87,13 +73,10 @@ _HEARTBEAT_SECONDS = 5.0
 _CONTROL_TIMEOUT_SECONDS = 1.0
 _CONTROL_RETRY_SECONDS = 0.250
 _CONTROL_HEARTBEAT_STALE_SECONDS = 15.0
-_EVENT_ANCHOR_ACTIVE_WINDOW_MS = 300_000
 _DOCUMENT_MODEL_TIMEOUT_SECONDS = 180.0
 _MODEL_MAX_TOKENS = 6_000
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
 _PRODUCTIVE_REPOLL_SECONDS = 0.250
-_DEFAULT_DUE_IDLE_SECONDS = 1.0
-_MARKET_TICK_POLL_SECONDS = 35.0
 _MACRO_CLOCKS = (
     ("macro_intraday_market", "intraday_market"),
     ("macro_settlements", "daily_settlement"),
@@ -155,14 +138,11 @@ class _ProbeState:
 
 @dataclass(slots=True)
 class _Components:
-    providers: AssetMarketProviders
-    collector: CollectorService | None
     news_pipeline: NewsPipeline | None
     news_bus: Any | None
     macro_source: MacroSourceClient | None
     macro_turns: tuple[MacroAcquisition, ...]
     due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
-    market_poll: MarketTickPoll | None
     projections: tuple[Any, ...]
     models: tuple[Any, ...]
     document_model: MacroDocumentAnalysisService | None
@@ -284,16 +264,6 @@ async def run_workers(settings: Settings) -> None:
                 ),
                 name="workers-probe",
             )
-            if components.collector is not None:
-                business_tasks.append(
-                    group.create_task(
-                        _guard_child(
-                            components.collector.run(stop_event=work_stop_event),
-                            on_fatal=enter_fatal,
-                        ),
-                        name="gmgn-stream",
-                    )
-                )
             if components.news_pipeline is not None:
                 for task_name, runner in components.news_pipeline.runners():
                     business_tasks.append(
@@ -314,20 +284,6 @@ async def run_workers(settings: Settings) -> None:
                             on_fatal=enter_fatal,
                         ),
                         name=f"durable-due-{index}",
-                    )
-                )
-            if components.market_poll is not None:
-                business_tasks.append(
-                    group.create_task(
-                        _guard_child(
-                            _run_periodic(
-                                components.market_poll.sample,
-                                period_seconds=_MARKET_TICK_POLL_SECONDS,
-                                stop_event=work_stop_event,
-                            ),
-                            on_fatal=enter_fatal,
-                        ),
-                        name="market-tick-poll",
                     )
                 )
             business_tasks.append(
@@ -569,35 +525,6 @@ async def _run_due(
             await _wait_or_stop(stop_event, float(idle_seconds))
 
 
-async def _run_periodic(
-    sample: Callable[[], Awaitable[None]],
-    *,
-    period_seconds: float,
-    initial_delay_seconds: float = 0.0,
-    stop_event: asyncio.Event,
-) -> None:
-    if initial_delay_seconds > 0.0:
-        await _wait_or_stop(stop_event, initial_delay_seconds)
-        if stop_event.is_set():
-            return
-    loop = asyncio.get_running_loop()
-    deadline = loop.time()
-    while not stop_event.is_set():
-        try:
-            await sample()
-        except ResourceOperationOverrun as exc:
-            if exc.capability is not ResourceCapability.DATABASE_BUSINESS:
-                raise
-            _log_recurring_database_overrun("periodic", exc)
-            deadline = loop.time() + float(period_seconds)
-            await _wait_or_stop(stop_event, float(period_seconds))
-            continue
-        deadline += float(period_seconds)
-        if deadline <= loop.time():
-            deadline = loop.time() + float(period_seconds)
-        await _wait_or_stop(stop_event, deadline - loop.time())
-
-
 async def _run_recurring_database_overrun_boundary(
     start: Callable[[], Awaitable[None]],
     *,
@@ -759,20 +686,6 @@ async def _wire_components(
     projection_cpu: CpuProcess,
     runtime_id: str,
 ) -> _Components:
-    providers = wire_asset_market(settings)
-    ingest = _PooledIngestStore(
-        db,
-        providers=providers,
-        event_anchor_active_window_ms=_EVENT_ANCHOR_ACTIVE_WINDOW_MS,
-    )
-    collector: CollectorService | None = None
-    if gmgn_stream_enabled(settings):
-        collector = CollectorService(store=ingest, upstream_client=None, db=db)
-        collector.upstream_client = gmgn_upstream_client(
-            settings,
-            on_frame=collector.handle_frame,
-        )
-
     due_turns: list[tuple[Callable[[], Awaitable[bool | str | None]], float]] = []
     model_candidates: list[Any] = []
     news_pipeline: NewsPipeline | None = None
@@ -840,29 +753,13 @@ async def _wire_components(
             idle_seconds = acquisition_loop_policy(clock_kind)[0]
             due_turns.append((turn.turn, idle_seconds))
 
-    event_anchor = EventAnchorBackfill(
-        db=db,
-        providers=providers,
-        finite_operations=finite,
-        runtime_id=runtime_id,
-    )
-    due_turns.append((event_anchor.turn, _DEFAULT_DUE_IDLE_SECONDS))
-
-    market_poll = (
-        MarketTickPoll(db=db, providers=providers, finite_operations=finite)
-        if providers.cex_market is not None or providers.dex_quote_market is not None
-        else None
-    )
     projections = (MacroProjectionCandidate(db=db, cpu=projection_cpu, runtime_id=runtime_id, stable_order=20),)
     return _Components(
-        providers=providers,
-        collector=collector,
         news_pipeline=news_pipeline,
         news_bus=news_bus,
         macro_source=macro_source,
         macro_turns=tuple(macro_turns),
         due_turns=tuple(due_turns),
-        market_poll=market_poll,
         projections=projections,
         models=tuple(model_candidates),
         document_model=document_model,
@@ -1001,8 +898,6 @@ async def _graceful_cleanup(
         finite.close_admission()
         model_adapter.close_admission()
         projection_cpu.close_admission()
-        if components.collector is not None:
-            await _within(components.collector.close(), started_at)
         if components.news_pipeline is not None:
             await _within(components.news_pipeline.close(), started_at)
         if components.news_bus is not None:
@@ -1017,7 +912,6 @@ async def _graceful_cleanup(
                 ),
                 started_at,
             )
-        await _within(_close_market_providers(components.providers, finite), started_at)
         if not await db.drain_business(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("worker_database_business_drain_timeout")
         if not await finite.drain(timeout_seconds=_remaining(started_at)):
@@ -1035,24 +929,6 @@ async def _graceful_cleanup(
         if _remaining(started_at) <= 0.001:
             raise RuntimeError("graceful_deadline_exceeded") from exc
         raise
-
-
-async def _close_market_providers(
-    providers: AssetMarketProviders,
-    finite: FiniteOperations,
-) -> None:
-    seen: set[int] = set()
-    synchronous = [providers.cex_market, providers.dex_quote_market]
-    for provider in synchronous:
-        if provider is None or id(provider) in seen:
-            continue
-        seen.add(id(provider))
-        await finite.run(
-            "market_provider_close",
-            provider.close,
-            timeout_seconds=5.0,
-            allow_shutdown=True,
-        )
 
 
 async def _fatal_exit(
@@ -1170,94 +1046,6 @@ def _runtime_heartbeat(db: WorkerDatabase, runtime_id: str, heartbeat_at_ms: int
             runtime_id=runtime_id,
             now_ms=heartbeat_at_ms,
         )
-
-
-class _PooledIngestStore:
-    def __init__(
-        self,
-        db: WorkerDatabase,
-        *,
-        providers: AssetMarketProviders,
-        event_anchor_active_window_ms: int,
-    ) -> None:
-        self.db = db
-        self.event_anchor_active_window_ms = int(event_anchor_active_window_ms)
-        self._capture_service = EventMarketCaptureService(
-            providers=providers,
-            now_ms=_now_ms,
-        )
-
-    def insert_raw_frame(self, **kwargs: Any) -> bool:
-        with self.db.worker_session("gmgn_capture", 3.0) as repos, repos.transaction():
-            return repos.evidence.insert_raw_frame(**kwargs)
-
-    def ingest_event(self, event: Any) -> Any:
-        prepared = IngestService.prepare_event(event)
-        market_resolutions: list[dict[str, Any]] = []
-        prefetched_ticks: dict[tuple[str, str], Any] = {}
-        with self.db.worker_session("gmgn_capture", 3.0) as repos, repos.transaction():
-            ingest = _ingest_service_for_repos(
-                repos,
-                event_anchor_active_window_ms=self.event_anchor_active_window_ms,
-            )
-            if ingest.event_already_exists(prepared):
-                return ingest.duplicate_result(prepared)
-            ingest.prepare_registry_for_resolution(prepared)
-            resolutions = ingest.resolve_prepared(prepared, persist=False)
-            for decision in resolutions:
-                resolution = ingest.market_resolution_for_decision(decision)
-                if resolution is None:
-                    continue
-                market_resolutions.append(resolution)
-                prefetched_ticks[(resolution["target_type"], resolution["target_id"])] = (
-                    repos.market_ticks.latest_at_or_before(
-                        target_type=resolution["target_type"],
-                        target_id=resolution["target_id"],
-                        at_ms=prepared.event_ms,
-                        max_lag_ms=60_000,
-                    )
-                )
-            lookup = TickLookup(
-                latest_at_or_before=lambda target_type, target_id, _at_ms, _max_lag_ms: prefetched_ticks.get(
-                    (target_type, target_id)
-                )
-            )
-            captures = [
-                self._capture_service.capture_for_event(
-                    event_id=resolution["event_id"],
-                    intent_id=resolution["intent_id"],
-                    resolution_id=resolution["resolution_id"],
-                    resolution=resolution,
-                    event_ms=prepared.event_ms,
-                    tick_lookup=lookup,
-                )
-                for resolution in market_resolutions
-            ]
-            return ingest.commit_prepared_event(
-                prepared,
-                resolutions=resolutions,
-                captures=captures,
-            )
-
-
-def _ingest_service_for_repos(repos: Any, *, event_anchor_active_window_ms: int) -> IngestService:
-    return IngestService(
-        evidence=repos.evidence,
-        entities=repos.entities,
-        registry=repos.registry,
-        identity_evidence=repos.identity_evidence,
-        token_intent_lookup=repos.token_intent_lookup,
-        token_evidence=repos.token_evidence,
-        token_intents=repos.token_intents,
-        intent_resolutions=repos.intent_resolutions,
-        market_ticks=repos.market_ticks,
-        market_tick_current=repos.market_tick_current,
-        enriched_events=repos.enriched_events,
-        event_anchor_jobs=repos.event_anchor_jobs,
-        persisted_live=repos.persisted_live,
-        transaction=repos.transaction,
-        event_anchor_active_window_ms=event_anchor_active_window_ms,
-    )
 
 
 async def _within(awaitable: Awaitable[Any], started_at: float) -> Any:
