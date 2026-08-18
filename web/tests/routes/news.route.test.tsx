@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { mockLiveRadarRoute } from "@tests/msw/scenarios";
+import { mockAppRoutes } from "@tests/msw/scenarios";
 import { renderAppRoute } from "@tests/render/renderRoute";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -8,15 +8,15 @@ import { apiMock, setupAppRouteTest } from "./routeTestSetup";
 describe("news route", () => {
   afterEach(cleanup);
 
-  beforeEach(() => setupAppRouteTest(mockLiveRadarRoute));
+  beforeEach(() => setupAppRouteTest(mockAppRoutes));
 
   it("uses the topbar as the sole search entry and synchronizes it with URL q", async () => {
     renderAppRoute("/news?q=bitcoin");
 
-    await screen.findByRole("heading", { name: "全球新闻" });
+    await screen.findByRole("heading", { name: "新闻事件流" });
     const search = screen.getByRole("textbox", { name: "news search" });
     expect(search).toHaveValue("bitcoin");
-    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(screen.getAllByRole("textbox", { name: "news search" })).toHaveLength(1);
     await waitFor(() => {
       expect(apiMock.readApi).toHaveBeenCalledWith(
         "/api/news/feed",
@@ -39,27 +39,35 @@ describe("news route", () => {
 
   it.each([
     ["/news/status", "新闻运行状态", "/api/news/status"],
-    ["/news/sources", "公开新闻来源", "/api/news/sources"],
+    [
+      "/news/events/evt-global-policy",
+      "央行应对新的全球政策冲击",
+      "/api/news/events/evt-global-policy",
+    ],
   ] as const)("hard-loads the public News view at %s", async (path, heading, endpoint) => {
     renderAppRoute(path);
 
-    expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: heading })).toBeInTheDocument();
     await waitFor(() => expect(apiMock.readApi).toHaveBeenCalledWith(endpoint, expect.any(Object)));
   });
 
-  it("navigates among Feed, Brief, Status, and Sources with stable public URLs", async () => {
+  it("navigates between the Event Feed and Status with stable public URLs", async () => {
     renderAppRoute("/news");
-    await screen.findByRole("heading", { name: "全球新闻" });
+    await screen.findByRole("heading", { name: "新闻事件流" });
 
     fireEvent.click(screen.getByRole("link", { name: "状态" }));
     expect(await screen.findByRole("heading", { name: "新闻运行状态" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("link", { name: "来源" }));
-    expect(await screen.findByRole("heading", { name: "公开新闻来源" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "事件流" }));
+    expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("link", { name: "公共全球简报" }));
+    fireEvent.click(screen.getByRole("link", { name: "央行应对新的全球政策冲击" }));
+    expect(await screen.findByRole("region", { name: "新闻事件详情" })).toBeInTheDocument();
     await waitFor(() =>
-      expect(apiMock.readApi).toHaveBeenCalledWith("/api/news/brief", expect.any(Object)),
+      expect(apiMock.readApi).toHaveBeenCalledWith(
+        "/api/news/events/evt-global-policy",
+        expect.any(Object),
+      ),
     );
   });
 });

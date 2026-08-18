@@ -169,7 +169,7 @@ def test_address_only_resolution_prioritizes_canonical_robinhood_over_unknown_ch
     assert decision.reason_codes == ["RESOLVED_BY_CHAIN_PRIORITY"]
 
 
-def test_ingest_capture_tick_updates_current_without_writing_token_radar(tmp_path):
+def test_ingest_capture_tick_updates_current_and_persisted_live_event(tmp_path):
     conn, repos, ingest = open_ingest(tmp_path)
     event = make_event(
         "event-capture-dirty",
@@ -184,13 +184,6 @@ def test_ingest_capture_tick_updates_current_without_writing_token_radar(tmp_pat
             target_type=capture_result.tick.target_type,
             target_id=capture_result.tick.target_id,
         )
-        radar_row = conn.execute(
-            """
-            SELECT snapshot_fingerprint, served_payload
-            FROM token_radar_current
-            WHERE singleton_key = true
-            """
-        ).fetchone()
         live_row = conn.execute(
             """
             SELECT event_kind, payload_json
@@ -205,8 +198,6 @@ def test_ingest_capture_tick_updates_current_without_writing_token_radar(tmp_pat
     assert result.inserted is True
     assert current_row is not None
     assert current_row["tick_id"] == capture_result.tick.tick_id
-    assert radar_row["snapshot_fingerprint"].startswith("sha256:")
-    assert radar_row["served_payload"]["items"] == []
     assert live_row is not None
     assert live_row["event_kind"] == "event"
     assert live_row["payload_json"]["event"]["event_id"] == event.event_id

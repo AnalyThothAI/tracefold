@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 
 import httpx
 
-from tracefold.news.title_presentation import TitleTranslationError
+from tracefold.news.translation import TitleTranslationError
 
 _DEEPL_FREE_BASE_URL = "https://api-free.deepl.com/v2/"
 _DEEPL_PRO_BASE_URL = "https://api.deepl.com/v2/"

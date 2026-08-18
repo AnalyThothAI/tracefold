@@ -58,8 +58,8 @@ using `--force`.
 `tracefold init` is the sole default-config authority. There is no maintained
 static example or `.env` fallback. The generated default creates a local
 WebSocket token but contains no external provider, model, OpenNews, or Feishu
-credential, leaves `news.opennews_strategy_ids` empty, and leaves News push
-disabled. Edit only the operator-owned
+credential, points `news.broker.url` at the compose RabbitMQ service, leaves
+`news.opennews_strategy_ids` empty, and leaves News push disabled. Edit only the operator-owned
 `~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
 terminal output, docs, tests, and commits.
 
@@ -76,141 +76,98 @@ contract is not valid.
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
 
-- absent `news.opennews_token` produces `opennews_token_missing` for the
-  operator-bound OpenNews Strategy lane. When a token is configured while News
-  is enabled, `news.opennews_strategy_ids` must be a non-empty duplicate-free
-  set or configuration fails closed. RSS defaults off; operators may explicitly
-  set `news.rss_enabled: true` to add the public breadth/corroboration catalog;
+- absent `news.opennews_token` keeps the News Receiver idle (`ingest.connected`
+  false, no incidents); when a token is configured while News is enabled,
+  `news.opennews_strategy_ids` must be non-empty or configuration fails closed;
+- absent or unreachable `news.broker.url` makes Workers fail startup while News
+  is enabled (the broker is the News transport plane); disable News with
+  `news.enabled: false` to run Market/Macro without RabbitMQ;
 - absent GMGN/OKX credentials leave their authenticated profile, discovery, or
   market lanes unavailable, while configured keyless sources keep their own
   independent behavior;
-- the public Brief always has its code-owned Ollama first provider and
-  deterministic degraded Top Stories. An absent direct DeepSeek triple or
-  optional Groq key can reduce synthesis availability but does not empty the
-  public selection;
-- absent both DeepL keys and the direct DeepSeek triple makes shared title
-  presentation resolve to the original title; Feed/detail and Push remain
-  available;
+- an absent direct DeepSeek triple (`llm.api_key`, `llm.base_url`,
+  `llm.news_triage_model`) makes Triage fall back to fail-closed rules
+  (`triage_degraded_24h` grows) and disables the Analyst;
+- absent both DeepL keys and the direct DeepSeek triple makes card titles use
+  the original text;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
 `tracefold config` reports the effective file paths, configured booleans,
-`opennews_strategy_count`, and the DeepL key count; it never prints provider
-tokens, Strategy-ID values, webhook URLs, signing secrets, or model keys.
+`opennews_strategy_count`, broker `url_configured`, model names, watchlist
+symbols, and the DeepL key count; it never prints provider tokens, the broker
+URL, webhook URLs, signing secrets, or model keys.
 
 `news.push.feishu_signing_secret` is optional. When present, the Adapter adds
 the Feishu timestamp and signature. When absent, it sends the same compact
 interactive card unsigned, without `timestamp` or `sign`; the operator owns
 that reduced-authentication choice. Configuration diagnostics report only
 configured booleans. Feishu delivery has no model-credential dependency.
-Shared title presentation uses ordered DeepL keys first and the direct DeepSeek
-triple second. It is independent of Feishu availability: every newly accepted
-exact OpenNews, recovery, or RSS title receives one durable decision, while
-Push merely waits for the same decision used by Feed/detail. A permanent
-DeepL authentication/quota error advances the process-local active key for
-future Items only; the current Item falls through to DeepSeek. Transient DeepL
-errors do not rotate the key. No provider call is retried.
+Title translation uses ordered DeepL keys first and the direct DeepSeek triple
+second, only for Events that will be delivered; no provider call is retried.
 
-An unsigned operator configuration uses the existing generated fields; do not
-add another secrets file or environment variable:
+An operator configuration for live News uses the existing generated fields;
+do not add another secrets file or environment variable:
 
 ```yaml
 llm:
   api_key: "<operator model secret>"
   base_url: "https://api.deepseek.com/v1"
-  news_brief_model: "deepseek-chat"
+  news_triage_model: "deepseek-v4-flash"
+  news_analyst_model: "deepseek-v4-pro"
 
 news:
   enabled: true
-  rss_enabled: false
   opennews_token: "<operator secret>"
   opennews_strategy_ids:
     - "1018" # News Score > 70
-    - "1019" # OI Event Monitor
-  title_presentation:
+    - "1352" # Storage News
+    - "1353" # Listing and Delisting Announcements
+  broker:
+    url: "amqp://tracefold:<rabbitmq password>@rabbitmq:5672/"
+  translation:
     deepl_api_keys:
       - "<DeepL key 1>"
-      - "<DeepL key 2>"
   push:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
     feishu_signing_secret:
+    hourly_cap: 20
+  watchlist:
+    - {symbol: BTC}
+    - {symbol: NVDA}
 ```
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
-not commit the populated operator config. Do not add a
-`news.push.translation` block: title presentation belongs to News, not Push.
-The DeepL/DeepSeek order, 1.5/5-second absolute deadlines, zero-retry policy,
-target language, and title limits are code-owned. Missing or invalid delivery
-configuration is fail-soft:
-Serve and Workers still start, while secret-free diagnostics report requested
-and effective availability plus a sanitized reason.
+not commit the populated operator config. Missing or invalid delivery
+configuration is fail-soft: Serve and Workers still start and every decided
+delivery settles `terminal/delivery_unavailable`.
 
-The current cutover configures exactly `1018` (News Score > 70) and `1019` (OI
-Event Monitor), and `tracefold config` therefore reports a redacted Strategy
-count of `2`. Listing and Delisting Announcements and Storage News exist
-provider-side but are deliberately excluded. Provider-side enablement never
-silently edits Tracefold configuration; adding any Strategy later requires an
-explicit config change, while the account page remains the definition authority.
+The compose stack runs `rabbitmq:4-management` with the default user
+`tracefold` and password `${TRACEFOLD_RABBITMQ_PASSWORD:-tracefold}`; ports
+5672/15672 bind to `127.0.0.1`. The broker URL in `config.yaml` must match.
+Set `news.enabled: false` to run Market/Macro without RabbitMQ.
+
+Workers validate the configured Strategy allowlist against the provider
+Strategy list at startup and expose `strategy_warnings` in `/api/news/status`;
+provider-side enablement never silently edits Tracefold configuration.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain the credentials/endpoints needed by each enabled
 lane, including GMGN OpenAPI for exact token profiles and OKX provider settings
-for discovery, market data, or DEX WebSocket paths.
-The `llm` block owns one all-or-none direct DeepSeek triple—`api_key`,
-`base_url`, and `news_brief_model`—plus optional `groq_api_key`. The Brief order
-is Ollama, configured direct DeepSeek, then Groq. Worker timeouts, token budgets,
-cadence, and resource limits are code-owned; there is no environment-variable
-credential path or inferred DeepSeek URL/model. Shared title presentation uses
-`news.title_presentation.deepl_api_keys` followed by that direct DeepSeek
-triple; it does not use Ollama or Groq and does not enter the serial model
-arbiter.
+for discovery, market data, or DEX WebSocket paths. The `llm` block owns one
+all-or-none direct DeepSeek triple (`api_key`, `base_url`,
+`news_triage_model`) plus optional `news_analyst_model` and `groq_api_key`;
+there is no environment-variable credential path or inferred URL/model.
 
-News correctness does not depend on the model. The code-owned public
-WorldMonitor catalog contributes 179 physical RSS feeds and 183 category
-memberships when `news.rss_enabled: true`; the switch defaults to `false`.
-Disabled startup reconciliation removes RSS from the active source inventory
-and releases prior claims, while the acquisition clock still expires old facts
-without making RSS requests. When enabled, one bounded turn conditionally fetches at most one due feed and
-atomically replaces its accepted first-five snapshot; failures preserve the
-last successful snapshot until the 96-hour floor. The OpenNews Strategy receiver
-and publisher share the same acquisition module. It authenticates one WSS and
-sends zero application subscription frames; the server automatically pushes the
-account owner's `strategy.triggered` notifications. Tracefold admits only nested
-Strategy IDs in the exact configured allowlist, including configured NEWS and
-MARKET/OI events regardless of `engineType`. It does not send
-`news.subscribe`, `strategy.subscribe`, or `strategy.triggered`, does not call
-ordinary `/open/news_search` for recovery, and does not use private webpage APIs.
-A disconnect, queue overflow, or process outage creates a typed incident.
-Reconnect restores current WSS independently; the official authenticated
-Strategy list/hits endpoints perform bounded idempotent incident recovery, while
-partial provider retention stays visible. Search is never used for recovery.
-RSS provides public breadth and independent corroboration; Strategy admission
-does not change the deterministic Story/Brief algorithms.
-A dirty-triggered writer owns the membership-expanded RSS Top-20-per-category
-plus OpenNews physical Story/selection projection. It coalesces accepted-fact
-bursts for one second and retains a five-minute safety pass,
-and the single-capacity native-state model arbiter owns World Brief. On the
-first post-migration start, the Story writer can publish current
-Strategy-admitted OpenNews facts before any RSS attempt. An empty Top Story
-selection is not claimable and does
-not complete or overwrite the current Brief slot; a later dirty Story turn in
-the same half hour makes a non-empty selection eligible.
-Push is a separate News-owned Item delivery state machine. Initial effective
-availability records one no-backfill epoch. The first live OpenNews Item insert
-atomically creates one outbox row keyed by `(source_id, source_item_key)`.
-Scoreless, assetless, linkless, and CL-labelled Items remain eligible;
-recovery-first, RSS, pre-enablement, disabled, and unavailable facts never
-backfill. Translation is one best-effort title-only asynchronous call within 1.5 seconds;
-failure sends the original. The delivery worker then makes exactly one
-optionally signed Feishu attempt and settles it as sent or terminal. There is
-no retry, lease, reaper, generic Notifications product, or Story dependency.
-An accepted Strategy trigger may appear outside explicit Focus when it lacks a
-score above 70, while still creating Story and Push. The due worker never scans
-Stories to discover candidates; it only claims existing transactional outbox
-rows.
-Changing cadence does not repair source admission, Story identity, or Brief
-fingerprint errors.
+The OpenNews Receiver authenticates one WSS and sends zero application
+subscription frames; the server pushes the account owner's `strategy.triggered`
+notifications and Tracefold publishes each accepted frame to RabbitMQ. A
+disconnect, broker backpressure, or process outage creates a typed incident;
+reconnect restores current WSS health and the official Strategy list/hits
+endpoints perform bounded idempotent recovery (recovered Items never deliver).
+Deduper, Triage, Analyst, Translator, and Deliverer are broker consumers; see
+`docs/ARCHITECTURE.md` and `docs/OPERATIONS.md` for the pipeline and diagnosis.
 
 Use `uv run tracefold config` to inspect the active config path and redacted
 enablement. Inspect serve through authenticated `/api/status` and workers
@@ -320,53 +277,21 @@ the generated Alembic head is the required hard-cut version. A new empty databas
 baseline and head without replaying retired runtime tables, compatibility
 columns, historical backfills, or intermediate contracts. A database stamped
 at `20260728_0210` migrates forward once; paid-data placeholders are dropped
-rather than archived. Migrations `20260801_0235` and `20260801_0236`
-irreversibly delete retired News acquisition history and Macro publication,
-per-attempt, and stored intermediate history while preserving current items,
-facts, targets, document analyses, and module rows.
-Historical migration `20260801_0237` added an OpenNews recovery boundary;
-historical News migration `20260809_0247` replaced it with bounded ordinary-news
-overlap, installed public RSS source scheduling, and hard-cut Brief persistence
-to two singleton tables. Neither recovery shape is current: Strategy-only
-migration `20260813_0265` removes ordinary-news REST overlap and records unknown coverage
-without replay.
-Stop Serve and Workers before applying `20260813_0265`. It deactivates
-legacy full-corpus OpenNews Items, clears Story/member/selection for the sole
-normal writer to rebuild after startup, clears
-incompatible Brief current/LKG state, cancels obsolete pending/retry Push work,
-preserves sent-delivery audit plus Push baseline/dedup evidence, and resets old
-REST-recovery telemetry. Start only the new writer after the exact non-empty
-allowlist is configured; never overlap old and new acquisition.
-Stop Serve and Workers before applying `20260813_0266`. It adds
-`news_opennews_incidents`, replaces legacy coverage columns with official
-Strategy-history status, and marks every OpenNews fact's immutable first ingest
-mode. It removes the Push eligibility clocks/cursor/ring, renames the baseline
-to the enablement epoch, terminalizes incompatible unsent v1 rows, and installs
-the historical live-only v2 Story outbox contract. After restart, current WSS state and
-latency are independent of incident recovery.
-Stop Serve and Workers before applying migration `20260814_0270`. It
-hard-cuts the existing two Push tables to Item identity and zero retry,
-terminalizes legacy unsent Story-policy work, preserves completed legacy card
-audit, and removes Story, retry, lease, and translation-preparation columns.
-The migration performs no backfill or outbound call. Restart only the new
-runtime; startup reconciles effective availability and terminalizes any
-interrupted current-schema `sending` row before acquisition begins.
-Stop Serve and Workers before applying current migration `20260815_0271`. It
-adds the shared title-presentation table, terminalizes pre-cut nonterminal Push
-work, renames the old Push presentation JSON to audit-only legacy data, and
-binds future Push rows to the exact title fingerprint. It performs no history
-backfill or provider/outbound call. Restart only the current runtime; startup
-resolves interrupted title work to the original and terminalizes interrupted
-Push without repeating an external call.
-Token Radar migration `20260810_0249` removed the retired Radar projection
-tables and temporary replay-only schema, then installed the compact singleton.
-It preserved material Events, intents, resolutions, identities, and market
-facts. Historical migration `20260810_0250` reset that v1 singleton to one empty
-`token_radar_snapshot_v2`, installed the fixed Top-50/96-KiB contract, and dropped
-the three Stocks-only derived tables `stock_attention_target_features`,
-`stocks_radar_current_rows`, and `stocks_radar_publication_state`. It preserved
-all material facts and retains `us_equity_symbols` only as an internal
-token-identity collision guard; there is no Stocks product or route.
+rather than archived. Retired News migrations (`20260801_0234` .. `20260815_0273`) remain in the
+alembic chain as history; `20260818_0275` is the current irreversible News V3
+hard cut that drops every legacy News table and creates the thirteen V3 tables
+(see `OPERATIONS.md`).
+Historical migrations `20260810_0249` through `20260814_0269` shaped the
+former Token Radar singleton; migration `20260818_0274` is the irreversible
+Token Radar removal hard cut. It drops `token_radar_current`, the Radar-only
+Event covering index and its generated `token_radar_text_fingerprint` column,
+and the Radar-only resolution covering index. It preserves every material
+Event, intent, resolution, identity, profile, and market fact; there is no
+Radar table, route, worker, or compatibility read afterwards. Historical
+migration `20260810_0250` also dropped the three Stocks-only derived tables
+`stock_attention_target_features`, `stocks_radar_current_rows`, and
+`stocks_radar_publication_state`; `us_equity_symbols` remains only as an
+internal token-identity collision guard; there is no Stocks product or route.
 Migration `20260811_0252` converts legacy acquisition-target states to the
 reachable state machine, removes `invalid`, preserves all six current rows, and
 clears only their rebuildable frontiers; it does not call a provider. Worker
@@ -379,55 +304,6 @@ acquisition state, official documents, jobs, and immutable analyses are
 preserved. Stop Serve and Workers, apply both migrations, then let the sole
 Macro projection writer reconcile all six frontiers and rebuild the three
 semantic-contract rows.
-Historical migration `20260811_0254` hard-cut only the rebuildable Radar
-singleton to `token_radar_snapshot_v3`, initial `unavailable` state, and the
-bounded source-time index/basic serving constraints. It preserved every
-material Event, intent, resolution revision, identity/profile fact, and market
-fact; its v3 runtime replayed a three-hour horizon for one-hour current/prior
-windows and a one-hour episode TTL.
-Migration `20260812_0255` hard-cuts only that rebuildable singleton to
-`token_radar_snapshot_v4` and initial `unavailable` state, and installs the
-bounded source-time index rebuilt as the narrow fingerprint covering index,
-plus the covering resolution index used by the optimized load SQL. It again
-preserves every material fact. This is now historical.
-Migration `20260814_0269` is the current irreversible v5 KISS hard cut. It
-preserves every material fact, replaces only the rebuildable Radar singleton
-with one valid empty `token_radar_snapshot_v5` packet and canonical snapshot
-fingerprint, and removes all attempt/failure/state/ruleset/input/workload
-columns. Stop Serve and Workers while an existing database crosses this
-revision; after migration, start only the v5 runtime. A fresh database migrates
-directly to head.
-Migration `20260813_0256` adds deterministic `facet_facts` to the existing
-rebuildable `news_stories` read model, backfills it from current Story
-membership, and invalidates the Story input fingerprint for one normal writer
-rebuild. It adds no News table and preserves every Item, Story identity,
-membership, Brief, and Push ledger row. Stop Serve and Workers while crossing
-the revision so no old writer can publish the pre-column shape.
-Migration `20260813_0257` adds narrow covering and partial-expression indexes
-for the membership-first numeric News score read and bounded Push-health
-reads. It extends the existing Push singleton with transactionally maintained
-lifetime counts/latest event clocks and adds typed delivery telemetry for a
-capped 24-hour SLO sample. It adds no table, second writer, or `active` filter,
-and it does not relax Serve deadlines. Stop Serve and Workers while crossing
-the revision, then start both runtimes.
-Migration `20260813_0258` adds the News Push reconcile cursor plus the
-provider score/assets eligibility clock, and widens two existing market-read
-indexes in place. Stop Serve and Workers while crossing this revision and keep
-them stopped through the 0259 invariant repair.
-Migration `20260813_0259` repairs the eligibility clock of any numeric-score
-Item written during a mixed-version 0258 cutover and then enforces that clock
-as a database invariant. Migration `20260813_0260` adds the durable 25-second
-Push reconcile-ring clock. Migration `20260813_0261` replaces Radar's old
-expression index with a STORED generated text fingerprint and narrow covering
-index while preserving all facts/current payload. Keep Serve and Workers
-stopped while crossing these revisions, then restore only the new single
-writer, observe one bounded cursor wrap, and verify Push latency plus Workers
-heartbeat stability.
-`20260801_0238` historically adds the News push baseline/delivery ledger. Push remains
-disabled after migration until the Feishu webhook and push switch are
-explicitly configured; signing remains optional. Current migration 0270 uses a
-no-backfill enablement epoch and admits each first-inserted live OpenNews Item
-observed after it, without score, asset, URL, or age gates.
 Enable the Macro workers only after the migration is current.
 
 The overview and six typed module reads are persisted-only and never trigger a
@@ -454,8 +330,10 @@ is pinned to the `tracefold-postgres` named volume, and `make down` does not
 delete it.
 
 Fresh-volume bootstrap is an `initdb` hook, not a steady service or a generic
-role-repair mechanism. Normal startup consists of PostgreSQL, the one-shot
-migration service, and separate Serve/Workers runtimes. `make status` returns
+role-repair mechanism. Normal startup consists of PostgreSQL, RabbitMQ
+(`rabbitmq:4-management`, data on the `tracefold-rabbitmq` volume, AMQP and
+management ports bound to `127.0.0.1`), the one-shot migration service, and
+separate Serve/Workers runtimes; Workers waits for the broker health check. `make status` returns
 non-zero for a failed/missing migration, stopped or unhealthy required
 container, failed Serve or Workers readiness endpoint, or missing HTML console.
 It intentionally does not make business-data freshness part of readiness. Run
@@ -463,33 +341,16 @@ It intentionally does not make business-data freshness part of readiness. Run
 current modules; use `make logs` for the bounded startup evidence named by a
 failure.
 
-### Token Radar v5 serving hard cut
+### Token Radar removal hard cut
 
-For the one-time `0255` to `0269` transition, build the new image first, stop
-Serve and Workers, run the ordinary one-shot migration service, and verify that
-material fact counts and identities are unchanged before starting the new
-runtime. The migration is transactional: failure leaves the v4 singleton in
-place. After it succeeds, fix forward with the v5 code; no v4 packet reader,
-dual writer, compatibility adapter, or imported LKG remains.
-
-The v5 singleton always serves one complete exact packet containing only
-`schema_version`, `social_evidence_as_of_ms`, `eligible_total`, and `items`.
-Its initial value is an empty valid packet; there is no availability, stale, or
-failure state. Workers run one immediate turn and then wait 30 seconds after
-each completed turn. A turn loads the bounded twelve-hour causal replay,
-reduces the unchanged four-hour current/prior semantics on the isolated CPU
-process, batch-loads selected presentation facts, and publishes only when the
-canonical snapshot fingerprint changes. Database operations use the shared
-native deadlines; there is no Radar whole-turn or phase budget. A non-cancelled
-failure leaves the last successful packet unchanged and retries only on the
-next natural cycle.
-
-Migration `20260813_0261` materializes the exact ASCII-lower,
-whitespace-normalized MD5 duplicate-text fingerprint as a STORED Event column
-and INCLUDEs it in the partial source-time index, allowing vacuum-visible
-history to remain Index Only without fetching wide Event text. Presentation
-uses at most one target-index LATERAL probe per selected market key for recent
-positive market cap, never a global recent-tick scan.
+For the one-time transition across `20260818_0274`, build the new image first,
+stop Serve and Workers, run the ordinary one-shot migration service, and verify
+that material fact counts and identities are unchanged before starting the new
+runtime. The migration is transactional and irreversible: it only drops
+rebuildable Radar-derived schema. After it succeeds, fix forward; no Radar
+route, worker task, projection CPU module, audit query, compatibility adapter,
+or imported LKG remains. `GET /api/token-radar` returns `404`; `/api/live-market`
+is unchanged.
 
 Use the ordinary lifecycle after the transition:
 

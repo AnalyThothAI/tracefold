@@ -1,282 +1,154 @@
+"""News V3 domain models and pinned versions."""
+
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any, Literal, Protocol, Self
-from urllib.parse import urlsplit
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-STORY_COMPARISON_VERSION = "news_story_comparison_v2"
-STORY_FEATURE_VERSION = "news_story_features_v2"
-STORY_GROUNDED_PROVIDER_VERSION = "news_story_grounded_provider_v2"
-STORY_EVENT_POLICY_VERSION = "news_story_event_policy_v2"
-STORY_JACCARD_VERSION = "news_story_jaccard_v2"
-STORY_CLUSTERING_VERSION = "news_story_fixed_anchor_v2"
-STORY_IDENTITY_VERSION = "news_story_identity_v3"
-STORY_SELECTOR_VERSION = "news_story_public_selector_v2"
-STORY_PROJECTION_VERSION = "news_story_projection_v2"
-CLASSIFIER_VERSION = "worldmonitor_keyword_classifier_0e8785c"
-IMPORTANCE_VERSION = "worldmonitor_importance_0e8785c_reporting_origin"
-BRIEF_PROMPT_VERSION = "worldmonitor_public_insights_prompt_0e8785c"
-BRIEF_WORKFLOW_VERSION = "worldmonitor_public_insights_workflow_0e8785c"
-BRIEF_COMPOSER_VERSION = "worldmonitor_public_insights_composer_0e8785c"
-BRIEF_SCHEMA_VERSION = "worldmonitor_public_insights_schema_v3"
-NEWS_LOCALE = "en"
-NEWS_PUSH_PAYLOAD_SCHEMA_VERSION = "news_item_push_v2"
+NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
+EVENT_IDENTITY_VERSION = "news_event_identity_v3"
+GATE_POLICY_VERSION = "news_gate_v3"
+STORYLINE_POLICY_VERSION = "news_storyline_v1"
+TRIAGE_PROMPT_VERSION = "news_triage_prompt_v1"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v1"
+ANALYST_PROMPT_VERSION = "news_analyst_prompt_v1"
+ANALYST_POLICY_VERSION = "news_analyst_policy_v1"
+TITLE_PRESENTATION_POLICY_VERSION = "news_title_zh_v2"
+DELIVERY_CARD_VERSION = "news_delivery_card_v3"
 
-INSIGHTS_SYNTHESIS_PARSE = "INSIGHTS_SYNTHESIS_PARSE"
-INSIGHTS_SYNTHESIS_GATE = "INSIGHTS_SYNTHESIS_GATE"
-INSIGHTS_SYNTHESIS_MISSING_CLUSTER = "INSIGHTS_SYNTHESIS_MISSING_CLUSTER"
-INSIGHTS_SYNTHESIS_PROVIDER = "INSIGHTS_SYNTHESIS_PROVIDER"
-
-ThreatLevel = Literal["critical", "high", "medium", "low", "info"]
-EventCategory = Literal[
-    "conflict",
-    "protest",
-    "disaster",
-    "diplomatic",
-    "economic",
-    "terrorism",
-    "cyber",
-    "health",
-    "environmental",
-    "military",
-    "crime",
-    "infrastructure",
-    "tech",
-    "general",
+Admission = Literal[
+    "candidate",
+    "listing_deterministic",
+    "suppressed_ungrounded",
+    "suppressed_ungrounded_meme",
+    "suppressed_meme_low",
+    "suppressed_pr_template",
+    "suppressed_low_signal",
+    "recovery",
 ]
-PublicInsightsThreatLevel = Literal["critical", "high", "elevated", "moderate"]
-PublicInsightsCategory = Literal[
-    "conflict",
-    "violence",
-    "unrest",
-    "geopolitical",
-    "crisis",
-    "natural_disaster",
-    "political",
-    "economic",
-    "general",
-]
+AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
+EngineType = Literal["news", "meme", "listing", "market", "unknown"]
+Decision = Literal["push", "escalate", "drop", "throttled"]
 
 
 class ExactNewsModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class NewsFeedExpectedError(RuntimeError):
-    """A bounded public-feed failure safe for durable source retry."""
-
-    def __init__(self, code: str) -> None:
-        self.code = str(code)
-        super().__init__(self.code)
-
-
-class NewsSourceDefinition(ExactNewsModel):
-    source_id: str
-    name: str
-    tier: int = Field(ge=1, le=4)
-    lang: str = "en"
-    source_kind: Literal["rss", "opennews"]
-    enabled: bool = True
-    feed_url: str | None = None
-    memberships: tuple[str, ...] = ()
-    refresh_interval_seconds: int = Field(default=1800, ge=1)
-
-    @field_validator(
-        "source_id",
-        "name",
-        "lang",
-        mode="before",
-    )
-    @classmethod
-    def require_text(cls, value: Any) -> str:
-        normalized = str(value or "").strip()
-        if not normalized:
-            raise ValueError("news_source_text_required")
-        return normalized
-
-    @field_validator("feed_url", mode="before")
-    @classmethod
-    def normalize_feed_url(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-    @field_validator("memberships", mode="before")
-    @classmethod
-    def normalize_memberships(cls, value: Any) -> tuple[str, ...]:
-        if not isinstance(value, list | tuple):
-            raise ValueError("news_source_memberships_invalid")
-        memberships = tuple(str(item or "").strip().lower() for item in value)
-        if any(not item for item in memberships) or len(set(memberships)) != len(memberships):
-            raise ValueError("news_source_memberships_invalid")
-        return memberships
-
-    @model_validator(mode="after")
-    def enforce_source_shape(self) -> Self:
-        if self.source_kind == "opennews":
-            if self.feed_url is not None or self.memberships:
-                raise ValueError("opennews_source_shape_invalid")
-            return self
-        parsed = urlsplit(str(self.feed_url or "").strip())
-        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-            raise ValueError("news_rss_feed_url_invalid")
-        if not self.memberships:
-            raise ValueError("news_rss_memberships_required")
-        return self
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class NewsFeedEntry(ExactNewsModel):
-    guid: str | None = None
+    """One canonical provider entry (kept from the OpenNews adapter contract)."""
+
+    guid: str
     link: str | None = None
     title: str | None = None
     description: str = ""
     published_at_ms: int | None = None
-    language: str | None = None
-    reporting_origin: str | None = None
+    reporting_origin: str = ""
 
 
-class NewsFeedFetch(ExactNewsModel):
-    status_code: int
-    entries: tuple[NewsFeedEntry, ...] = ()
-    entries_seen: int = Field(default=0, ge=0)
-    gate_counts: dict[str, int] = Field(default_factory=dict)
-    etag: str | None = None
-    last_modified: str | None = None
-    not_modified: bool = False
+class TriageAsset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=16)
+    market_type: str | None = Field(default=None, max_length=16)
+    role: Literal["primary", "mentioned"]
 
 
-class NewsFeedReader(Protocol):
-    def fetch_wire(
-        self,
-        *,
-        source: NewsSourceDefinition,
-        etag: str | None,
-        last_modified: str | None,
-    ) -> object: ...
+class TriageVerdict(BaseModel):
+    """Structured output of the Triage call. `decision` is the model's intent only."""
 
-    def close(self) -> None: ...
+    model_config = ConfigDict(extra="forbid")
 
-
-class NewsClassification(ExactNewsModel):
-    level: ThreatLevel
-    category: EventCategory
-    confidence: float = Field(ge=0, le=1)
-    source: Literal["keyword", "keyword-historical-downgrade"]
-
-
-class NewsBriefStory(ExactNewsModel):
-    story_id: str
-    primary_title: str
-    primary_source: str
-    primary_link: str | None
-    primary_published_at_ms: int
-    source_count: int = Field(ge=1)
-    unique_source_count: int = Field(ge=1)
-    sources: tuple[str, ...]
-    last_updated_ms: int
-    member_titles: tuple[str, ...]
-    source_tier: int = Field(ge=1, le=4)
-    upstream_importance_score: float
-    entity_corroboration: bool
-    corroboration_source_count: int = Field(ge=0)
-    importance_score: float
-    effective_importance_score: float
-    is_alert: bool
-    threat_level: PublicInsightsThreatLevel
-    category: PublicInsightsCategory
+    event_type: Literal[
+        "listing",
+        "delisting",
+        "filing",
+        "regulation",
+        "hack",
+        "exploit",
+        "partnership",
+        "funding",
+        "macro",
+        "rates",
+        "oi_spike",
+        "liquidation",
+        "whale",
+        "earnings",
+        "product",
+        "rumor",
+        "noise",
+    ]
+    assets: list[TriageAsset] = Field(default_factory=list, max_length=8)
+    direction: Literal["bullish", "bearish", "neutral", "unclear"]
+    scope: Literal["macro", "sector", "single_name"]
+    magnitude: int = Field(ge=0, le=3)
+    actionable: bool
+    confidence: float = Field(ge=0.0, le=1.0)
+    decision: Literal["push", "drop", "escalate"]
+    headline_zh: str = Field(min_length=1, max_length=60)
+    rationale: str = Field(default="", max_length=160)
 
 
-class NewsBriefStoryLine(ExactNewsModel):
-    n: int = Field(ge=1)
-    text: str
+class MarketReactionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=16)
+    price_change_pct: float | None = None
+    oi_change_pct: float | None = None
+    window_min: int = Field(ge=1, le=1440)
+    evidence_id: str = Field(min_length=1, max_length=64)
 
 
-class NewsBriefSource(ExactNewsModel):
-    title: str
-    source: str
-    url: str
-    published_at_ms: int | None = None
+class AnalystVerdict(BaseModel):
+    """Structured output of the Analyst deep agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agrees_with_triage: bool
+    revised_direction: Literal["bullish", "bearish", "neutral", "unclear"]
+    revised_magnitude: int = Field(ge=0, le=3)
+    novelty_assessment: Literal["new", "followup", "rehash"]
+    market_reaction: list[MarketReactionEvidence] = Field(default_factory=list, max_length=4)
+    context_evidence: list[str] = Field(default_factory=list, max_length=8)
+    thesis_zh: str = Field(min_length=1, max_length=800)
+    risks_zh: str = Field(default="", max_length=400)
+    follow_up_needed: bool
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
-class NewsBriefSynthesisResult(ExactNewsModel):
-    brief_kind: Literal["l1", "l2", "none"]
-    quality: Literal["ok", "degraded"]
-    world_brief: str
-    brief_story_lines: tuple[NewsBriefStoryLine, ...]
-    sources: tuple[NewsBriefSource, ...]
-    provider: str
-    model: str
-    validation: dict[str, Any]
+def json_ready(value: Any) -> Any:
+    """Return a JSON-serializable copy of pydantic/dataclass-free structures."""
 
-    @model_validator(mode="after")
-    def enforce_kind_shape(self) -> Self:
-        if self.brief_kind == "l1":
-            if (
-                self.quality != "ok"
-                or not self.world_brief.strip()
-                or not self.provider.strip()
-                or not self.model.strip()
-                or not self.brief_story_lines
-                or len(self.brief_story_lines) != len(self.sources)
-            ):
-                raise ValueError("news_brief_l1_shape_invalid")
-        elif self.brief_kind == "l2":
-            if (
-                self.quality != "degraded"
-                or not self.world_brief.strip()
-                or not self.provider.strip()
-                or not self.model.strip()
-                or self.brief_story_lines
-                or len(self.sources) > 1
-            ):
-                raise ValueError("news_brief_l2_shape_invalid")
-        elif (
-            self.quality != "degraded"
-            or self.world_brief
-            or self.provider
-            or self.model
-            or self.brief_story_lines
-            or len(self.sources) > 1
-        ):
-            raise ValueError("news_brief_none_shape_invalid")
-        return self
-
-
-class NewsBriefPublisher(Protocol):
-    def publish(self, stories: Sequence[NewsBriefStory]) -> NewsBriefSynthesisResult: ...
-
-    def close(self) -> None: ...
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(k): json_ready(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [json_ready(v) for v in value]
+    return value
 
 
 __all__ = [
-    "BRIEF_COMPOSER_VERSION",
-    "BRIEF_PROMPT_VERSION",
-    "BRIEF_SCHEMA_VERSION",
-    "BRIEF_WORKFLOW_VERSION",
-    "CLASSIFIER_VERSION",
-    "IMPORTANCE_VERSION",
-    "INSIGHTS_SYNTHESIS_GATE",
-    "INSIGHTS_SYNTHESIS_MISSING_CLUSTER",
-    "INSIGHTS_SYNTHESIS_PARSE",
-    "INSIGHTS_SYNTHESIS_PROVIDER",
-    "NEWS_LOCALE",
-    "STORY_IDENTITY_VERSION",
-    "EventCategory",
-    "NewsBriefPublisher",
-    "NewsBriefSource",
-    "NewsBriefStory",
-    "NewsBriefStoryLine",
-    "NewsBriefSynthesisResult",
-    "NewsClassification",
+    "ANALYST_POLICY_VERSION",
+    "ANALYST_PROMPT_VERSION",
+    "DELIVERY_CARD_VERSION",
+    "EVENT_IDENTITY_VERSION",
+    "GATE_POLICY_VERSION",
+    "NEWS_BUS_SCHEMA_VERSION",
+    "STORYLINE_POLICY_VERSION",
+    "TITLE_PRESENTATION_POLICY_VERSION",
+    "TRIAGE_POLICY_VERSION",
+    "TRIAGE_PROMPT_VERSION",
+    "Admission",
+    "AnalystVerdict",
+    "AssetClass",
+    "Decision",
+    "EngineType",
+    "ExactNewsModel",
+    "MarketReactionEvidence",
     "NewsFeedEntry",
-    "NewsFeedExpectedError",
-    "NewsFeedFetch",
-    "NewsFeedReader",
-    "NewsSourceDefinition",
-    "PublicInsightsCategory",
-    "PublicInsightsThreatLevel",
-    "ThreatLevel",
+    "TriageAsset",
+    "TriageVerdict",
+    "json_ready",
 ]

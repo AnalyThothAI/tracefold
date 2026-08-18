@@ -4,9 +4,9 @@ import { installMockApi } from "@tests/e2e/support/mockApi";
 
 const archetypes = [
   {
-    name: "scan",
+    name: "news",
     path: "/",
-    ready: (page: Page) => page.getByRole("heading", { name: "Radar" }),
+    ready: (page: Page) => page.getByRole("heading", { name: "新闻事件流" }),
   },
   {
     name: "case",
@@ -28,10 +28,10 @@ test.beforeEach(async ({ page }) => {
       }
     });
   });
-  await installMockApi(page, { radarItemCount: 8 });
+  await installMockApi(page);
 });
 
-test("freezes representative scan and case archetypes", async ({ page }) => {
+test("freezes representative news and case archetypes", async ({ page }) => {
   for (const route of archetypes) {
     await page.goto(route.path);
     await expect(route.ready(page)).toBeVisible();

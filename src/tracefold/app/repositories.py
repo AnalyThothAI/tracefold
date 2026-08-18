@@ -32,7 +32,6 @@ from tracefold.market import (
     TokenProfileSourceQuery,
     TokenTargetRepository,
 )
-from tracefold.market.radar.snapshot_repository import TokenRadarCurrentRepository
 from tracefold.news.repository import NewsRepository
 from tracefold.platform.postgres.persisted_live import PersistedLiveEventRepository
 from tracefold.platform.postgres.postgres_client import (
@@ -69,7 +68,6 @@ class RepositorySession:
     event_anchor_jobs: EventAnchorBackfillJobRepository
     token_intent_lookup: TokenIntentLookupRepository
     event_tokens: EventTokenProjectionQuery
-    token_radar_current: TokenRadarCurrentRepository
     token_targets: TokenTargetRepository
     news: NewsRepository
     macro: MacroRepository
@@ -132,7 +130,6 @@ def repositories_for_connection(
         event_anchor_jobs=EventAnchorBackfillJobRepository(conn),
         token_intent_lookup=TokenIntentLookupRepository(conn),
         event_tokens=EventTokenProjectionQuery(conn),
-        token_radar_current=TokenRadarCurrentRepository(conn),
         token_targets=TokenTargetRepository(conn),
         news=NewsRepository(conn),
         macro=MacroRepository(conn),

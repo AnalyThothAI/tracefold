@@ -86,7 +86,6 @@ describe("frontend documentation contract", () => {
 
   it("keeps primary route docs aligned with the app navigation tree", () => {
     const documentedRoutes = [
-      { term: "Radar", to: "/" },
       { term: "News", to: "/news" },
       { term: "Macro", to: "/macro" },
     ];
@@ -99,6 +98,9 @@ describe("frontend documentation contract", () => {
       expect(frontendDoc).toContain(term);
       expect(navigationTargets).toContain(to);
     }
+    expect(navigationTargets).toEqual(["/news", "/macro"]);
+    expect(navigationTargets).not.toContain("/");
+    expect(frontendDoc).not.toMatch(/Token Radar|RadarPage|live-radar|features\/live/);
 
     const topbar = readFileSync(join(webRoot, "src/features/cockpit/ui/CockpitTopbar.tsx"), "utf8");
     expect(frontendDoc).toContain("no browser Ops route");

@@ -70,7 +70,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       ariaLabel: searchTargetsNews ? "news search" : "global search",
       inputRef: searchInputRef,
       onSubmitQuery: submitTopbarSearch,
-      placeholder: searchTargetsNews ? "搜索新闻 / 来源 / token" : "搜索 token / @handle / CA",
+      placeholder: searchTargetsNews ? "搜索新闻事件 / 标题 / 资产" : "搜索 token / @handle / CA",
       query: currentSearchQuery,
     },
     status: {

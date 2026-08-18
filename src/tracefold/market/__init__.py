@@ -124,14 +124,6 @@ from .provider_contracts import (
     DexTokenQuoteRequest,
     MarketProviderExpectedError,
 )
-from .radar.constants import (
-    TOKEN_RADAR_INPUT_BYTE_CAP,
-    TOKEN_RADAR_INPUT_ROW_CAP,
-    TOKEN_RADAR_MAX_ITEMS,
-    TOKEN_RADAR_OUTPUT_BYTE_CAP,
-    TOKEN_RADAR_REFRESH_SECONDS,
-)
-from .radar.current_worker import TokenRadarCurrentProjection
 from .views.event_token_projection_query import EventTokenProjectionQuery
 from .views.search_events_query import SearchEventsQuery
 from .views.search_inspect_service import SearchInspectService
@@ -172,11 +164,6 @@ __all__ = [
     "GMGN_DEX_PROFILE_PROVIDER",
     "GMGN_STREAM_PROFILE_PROVIDER",
     "OKX_DEX_PROFILE_PROVIDER",
-    "TOKEN_RADAR_INPUT_BYTE_CAP",
-    "TOKEN_RADAR_INPUT_ROW_CAP",
-    "TOKEN_RADAR_MAX_ITEMS",
-    "TOKEN_RADAR_OUTPUT_BYTE_CAP",
-    "TOKEN_RADAR_REFRESH_SECONDS",
     "TOKEN_REPROCESS_WINDOW",
     "TOKEN_RESOLVER_POLICY_VERSION",
     "AssetMarketProviderBundle",
@@ -265,7 +252,6 @@ __all__ = [
     "TokenProfileCurrentRepository",
     "TokenProfileReadModel",
     "TokenProfileSourceQuery",
-    "TokenRadarCurrentProjection",
     "TokenSnapshot",
     "TokenTargetCursorError",
     "TokenTargetPostsCursorError",

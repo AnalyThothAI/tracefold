@@ -62,6 +62,31 @@ services:
         limits:
           cpus: "5.0"
 
+  rabbitmq:
+    image: rabbitmq:4-management
+    restart: unless-stopped
+    hostname: tracefold-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${TRACEFOLD_RABBITMQ_USER:-tracefold}
+      RABBITMQ_DEFAULT_PASS: ${TRACEFOLD_RABBITMQ_PASSWORD:-tracefold}
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "${TRACEFOLD_RABBITMQ_HOST:-127.0.0.1}:${TRACEFOLD_RABBITMQ_PORT:-5672}:5672"
+      - "${TRACEFOLD_RABBITMQ_MGMT_HOST:-127.0.0.1}:${TRACEFOLD_RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - tracefold-rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+
   migrate:
     <<: *tracefold-app
     restart: "no"
@@ -117,6 +142,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     ports:
@@ -148,6 +175,7 @@ services:
 
 volumes:
   tracefold-postgres:
+  tracefold-rabbitmq:
 
 secrets:
   postgres_password:

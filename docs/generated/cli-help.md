@@ -6,10 +6,10 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,workers,init,config,db,macro,recent,search,ops} ...
+                 {serve,workers,init,config,db,macro,news,recent,search,ops} ...
 
 positional arguments:
-  {serve,workers,init,config,db,macro,recent,search,ops}
+  {serve,workers,init,config,db,macro,news,recent,search,ops}
     serve               run the read-only HTTP, frontend, and WebSocket
                         runtime
     workers             run the ingestion, projection, provider, and model
@@ -18,6 +18,7 @@ positional arguments:
     config              print effective runtime configuration
     db                  database lifecycle commands
     macro               Macro acquisition and current-module commands
+    news                News V3 broker, control, and evaluation commands
     recent              print recent stored events
     search              search stored tweets by query text
     ops                 maintenance commands
@@ -171,6 +172,80 @@ options:
 
 ```
 usage: tracefold macro status [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `news`
+
+```
+usage: tracefold news [-h] {bus-check,control,eval,replay} ...
+
+positional arguments:
+  {bus-check,control,eval,replay}
+    bus-check           connect to RabbitMQ, declare the News topology, and
+                        print queue depths
+    control             publish a control command to all News consumers
+    eval                offline evaluation of Triage decisions against market
+                        marks and labels
+    replay              replay a JSON file of provider hits through
+                        Deduper+Gate (no model, no broker)
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `news bus-check`
+
+```
+usage: tracefold news bus-check [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `news control`
+
+```
+usage: tracefold news control [-h] [--key KEY] [--ttl-minutes TTL_MINUTES]
+                              {pause_delivery,resume_delivery,mute_theme,mute_symbol,unmute,drain}
+
+positional arguments:
+  {pause_delivery,resume_delivery,mute_theme,mute_symbol,unmute,drain}
+
+options:
+  -h, --help            show this help message and exit
+  --key KEY             theme name or symbol for mute/unmute
+  --ttl-minutes TTL_MINUTES
+                        mute duration
+
+```
+
+## `news eval`
+
+```
+usage: tracefold news eval [-h] [--hours HOURS]
+                           [--policy-version POLICY_VERSION]
+
+options:
+  -h, --help            show this help message and exit
+  --hours HOURS         look-back window
+  --policy-version POLICY_VERSION
+                        restrict to one triage policy version
+
+```
+
+## `news replay`
+
+```
+usage: tracefold news replay [-h] path
+
+positional arguments:
+  path        JSON file: {strategy_id: [hit, ...]} or [hit, ...]
 
 options:
   -h, --help  show this help message and exit

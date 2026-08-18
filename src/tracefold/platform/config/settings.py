@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -72,11 +73,12 @@ class LlmConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     groq_api_key: str | None = None
-    news_brief_model: str | None = None
+    news_triage_model: str | None = None
+    news_analyst_model: str | None = None
     macro_document_analysis_enabled: bool = False
     macro_document_analysis_model: str = "gpt-5.4-mini"
 
-    @field_validator("api_key", "groq_api_key", "news_brief_model", mode="before")
+    @field_validator("api_key", "groq_api_key", "news_triage_model", "news_analyst_model", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -100,9 +102,11 @@ class LlmConfig(BaseModel):
 
     @model_validator(mode="after")
     def require_complete_direct_configuration(self) -> LlmConfig:
-        configured = (self.api_key, self.base_url, self.news_brief_model)
+        configured = (self.api_key, self.base_url, self.news_triage_model)
         if any(configured) and not all(configured):
             raise ValueError("llm_direct_configuration_incomplete")
+        if self.news_analyst_model is None and self.news_triage_model is not None:
+            self.news_analyst_model = self.news_triage_model
         return self
 
 
@@ -234,6 +238,8 @@ class NewsPushSettings(BaseModel):
     enabled: bool = False
     feishu_webhook_url: str | None = None
     feishu_signing_secret: str | None = None
+    min_interval_seconds: float = 0.6
+    hourly_cap: int = 20
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
     @classmethod
@@ -241,8 +247,16 @@ class NewsPushSettings(BaseModel):
         normalized = str(value or "").strip()
         return normalized or None
 
+    @model_validator(mode="after")
+    def validate_limits(self) -> NewsPushSettings:
+        if self.min_interval_seconds < 0 or self.min_interval_seconds > 60:
+            raise ValueError("news_push_min_interval_invalid")
+        if self.hourly_cap < 1 or self.hourly_cap > 1000:
+            raise ValueError("news_push_hourly_cap_invalid")
+        return self
 
-class NewsTitlePresentationSettings(BaseModel):
+
+class NewsTranslationSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     deepl_api_keys: tuple[str, ...] = Field(default=(), repr=False)
@@ -253,29 +267,126 @@ class NewsTitlePresentationSettings(BaseModel):
         if value is None:
             return ()
         if not isinstance(value, list | tuple):
-            raise ValueError("news_title_presentation_deepl_api_keys_invalid")
+            raise ValueError("news_translation_deepl_api_keys_invalid")
         normalized: list[str] = []
         for raw in value:
             if not isinstance(raw, str):
-                raise ValueError("news_title_presentation_deepl_api_key_invalid")
+                raise ValueError("news_translation_deepl_api_key_invalid")
             key = raw.strip()
             if not key or "\x00" in key or len(key) > 512:
-                raise ValueError("news_title_presentation_deepl_api_key_invalid")
+                raise ValueError("news_translation_deepl_api_key_invalid")
             normalized.append(key)
         if len(set(normalized)) != len(normalized):
-            raise ValueError("news_title_presentation_deepl_api_keys_duplicate")
+            raise ValueError("news_translation_deepl_api_keys_duplicate")
         return tuple(normalized)
+
+
+class NewsBrokerSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    url: str | None = Field(default=None, repr=False)
+    name_prefix: str = ""
+    connect_timeout_seconds: float = 10.0
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def parse_url(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"amqp", "amqps"} or not parsed.hostname:
+            raise ValueError("news_broker_url_invalid")
+        return normalized
+
+    @field_validator("name_prefix", mode="before")
+    @classmethod
+    def parse_prefix(cls, value: Any) -> str:
+        normalized = str(value or "").strip()
+        if normalized and not re.fullmatch(r"[a-z0-9_.-]{1,32}", normalized):
+            raise ValueError("news_broker_name_prefix_invalid")
+        return normalized
+
+
+class NewsGateSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    market_telemetry_min_score: float = 80.0
+    general_min_score: float = 70.0
+
+
+class NewsTriageSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    deadline_seconds: float = 6.0
+    concurrency: int = 4
+    circuit_failures: int = 3
+    circuit_open_seconds: float = 60.0
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsTriageSettings:
+        if not 0.5 <= self.deadline_seconds <= 30:
+            raise ValueError("news_triage_deadline_invalid")
+        if not 1 <= self.concurrency <= 32:
+            raise ValueError("news_triage_concurrency_invalid")
+        return self
+
+
+class NewsAnalystSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    deadline_seconds: float = 30.0
+    max_steps: int = 24
+    concurrency: int = 2
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsAnalystSettings:
+        if not 5 <= self.deadline_seconds <= 300:
+            raise ValueError("news_analyst_deadline_invalid")
+        if self.max_steps == 25 or not 4 <= self.max_steps <= 100:
+            raise ValueError("news_analyst_max_steps_invalid")
+        if not 1 <= self.concurrency <= 8:
+            raise ValueError("news_analyst_concurrency_invalid")
+        return self
+
+
+class NewsBudgetSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    daily_model_cost_usd: float = 5.0
+
+
+class NewsWatchlistEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    market_type: str = "any"
+    weight: int = 1
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def parse_symbol(cls, value: Any) -> str:
+        normalized = str(value or "").strip().upper().replace("XYZ-", "")
+        if not re.fullmatch(r"[A-Z0-9._-]{1,16}", normalized):
+            raise ValueError("news_watchlist_symbol_invalid")
+        return normalized
 
 
 class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = True
-    rss_enabled: bool = False
     opennews_token: str | None = None
     opennews_strategy_ids: tuple[str, ...] = ()
-    title_presentation: NewsTitlePresentationSettings = Field(default_factory=NewsTitlePresentationSettings)
+    broker: NewsBrokerSettings = Field(default_factory=NewsBrokerSettings)
+    gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
+    triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
+    analyst: NewsAnalystSettings = Field(default_factory=NewsAnalystSettings)
+    translation: NewsTranslationSettings = Field(default_factory=NewsTranslationSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
+    budget: NewsBudgetSettings = Field(default_factory=NewsBudgetSettings)
+    watchlist: tuple[NewsWatchlistEntry, ...] = ()
 
     @field_validator("opennews_token", mode="before")
     @classmethod
@@ -308,11 +419,24 @@ class NewsSettings(BaseModel):
             raise ValueError("opennews_strategy_ids_duplicate")
         return tuple(sorted(normalized))
 
+    @field_validator("watchlist", mode="before")
+    @classmethod
+    def parse_watchlist(cls, value: Any) -> tuple[Any, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, list | tuple):
+            raise ValueError("news_watchlist_invalid")
+        return tuple(value)
+
     @model_validator(mode="after")
     def validate_opennews_strategy_configuration(self) -> NewsSettings:
         if self.enabled and self.opennews_token and not self.opennews_strategy_ids:
             raise ValueError("opennews_strategy_ids_required")
         return self
+
+    @property
+    def watchlist_symbols(self) -> frozenset[str]:
+        return frozenset(entry.symbol for entry in self.watchlist)
 
 
 class Settings(BaseModel):
@@ -402,23 +526,41 @@ def news_push_availability(settings: Settings) -> NewsPushAvailability:
 
 
 @dataclass(frozen=True, slots=True)
-class NewsTitlePresentationAvailability:
+class NewsTranslationAvailability:
     deepl_configured: bool
     deepl_key_count: int
     deepseek_configured: bool
 
 
-def news_title_presentation_availability(
-    settings: Settings,
-) -> NewsTitlePresentationAvailability:
-    key_count = len(settings.news.title_presentation.deepl_api_keys)
+def news_translation_availability(settings: Settings) -> NewsTranslationAvailability:
+    key_count = len(settings.news.translation.deepl_api_keys)
     deepseek_configured = bool(
-        settings.llm.api_key and settings.llm.news_brief_model and _is_http_base_url(settings.llm.base_url)
+        settings.llm.api_key and settings.llm.news_triage_model and _is_http_base_url(settings.llm.base_url)
     )
-    return NewsTitlePresentationAvailability(
+    return NewsTranslationAvailability(
         deepl_configured=key_count > 0,
         deepl_key_count=key_count,
         deepseek_configured=deepseek_configured,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class NewsModelAvailability:
+    triage_configured: bool
+    analyst_configured: bool
+    triage_model: str | None
+    analyst_model: str | None
+
+
+def news_model_availability(settings: Settings) -> NewsModelAvailability:
+    direct = bool(settings.llm.api_key and _is_http_base_url(settings.llm.base_url))
+    triage = direct and bool(settings.llm.news_triage_model)
+    analyst = direct and bool(settings.llm.news_analyst_model) and settings.news.analyst.enabled
+    return NewsModelAvailability(
+        triage_configured=triage,
+        analyst_configured=analyst,
+        triage_model=settings.llm.news_triage_model if triage else None,
+        analyst_model=settings.llm.news_analyst_model if analyst else None,
     )
 
 
@@ -515,7 +657,8 @@ llm:
   api_key:
   base_url:
   groq_api_key:
-  news_brief_model:
+  news_triage_model:
+  news_analyst_model:
   macro_document_analysis_enabled: false
   macro_document_analysis_model: "gpt-5.4-mini"
 
@@ -552,15 +695,33 @@ providers:
 
 news:
   enabled: true
-  rss_enabled: false
   opennews_token:
   opennews_strategy_ids: []
-  title_presentation:
+  broker:
+    url: "amqp://tracefold:tracefold@rabbitmq:5672/"
+    name_prefix: ""
+  gate:
+    market_telemetry_min_score: 80
+    general_min_score: 70
+  triage:
+    deadline_seconds: 6.0
+    concurrency: 4
+  analyst:
+    enabled: true
+    deadline_seconds: 30
+    max_steps: 24
+    concurrency: 2
+  translation:
     deepl_api_keys: []
   push:
     enabled: false
     feishu_webhook_url:
     feishu_signing_secret:
+    min_interval_seconds: 0.6
+    hourly_cap: 20
+  budget:
+    daily_model_cost_usd: 5
+  watchlist: []
 
 upstream:
   chains: ["sol", "eth", "base", "bsc", "robinhood"]

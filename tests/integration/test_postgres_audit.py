@@ -8,7 +8,6 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.query_audit import query_audit_catalog
-from tracefold.news.repository import NewsRepository
 from tracefold.platform.postgres.postgres_audit import (
     NEWS_TABLES,
     PostgresOperationalAudit,
@@ -45,22 +44,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
 
     def news_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         observed_now_ms.append(now_ms)
-        return tuple(
-            ReadQuerySpec(
-                name=name,
-                sql="SELECT 1",
-                amplification_basis=(
-                    "aggregate_input"
-                    if name
-                    in {
-                        "news_feed_focus_facets",
-                        "news_status_story_latency",
-                    }
-                    else "returned_rows"
-                ),
-            )
-            for name in _NEWS_QUERY_NAMES
-        )
+        return tuple(ReadQuerySpec(name=name, sql="SELECT 1") for name in _NEWS_QUERY_NAMES)
 
     catalog = query_audit_catalog(now_ms=123_456, news_query_specs=news_specs)
 
@@ -69,30 +53,37 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert {query.name for query in postgres_query_specs(now_ms=123_456)} < names
     assert set(_NEWS_QUERY_NAMES) < names
     assert catalog.query_routes["/api/news/feed"] == (
-        "news_feed_focus_rows",
-        "news_feed_focus_facets",
-        "news_story_provider_evidence",
+        "news_feed_events",
+        "news_feed_symbol_filter",
+        "news_feed_search",
+    )
+    assert catalog.query_routes["/api/news/events/{event_id}"] == (
+        "news_event_detail",
+        "news_event_members",
+        "news_event_verdicts",
     )
     assert catalog.query_routes["/api/news/status"] == (
         "workers_runtime",
-        "news_status_opennews",
-        "news_status_opennews_incidents",
-        "news_status_inbound_latency",
-        "news_status_story_latency",
-        "news_status_rss",
-        "news_status_projection",
-        "news_brief",
-        "news_push_state",
-        "news_push_oldest_pending",
-        "news_title_presentation_state",
-        "news_title_presentation_24h",
-        "news_push_delivery_24h",
-        "news_push_suppression_recent",
+        "news_status_ingest",
+        "news_status_incidents_open",
+        "news_status_pipeline_24h",
+        "news_status_delivery_1h",
+        "news_control_state",
     )
-    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
-        "news_feed_focus_facets",
-        "news_status_story_latency",
-    ]
+    assert not any(
+        route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
+        for route in catalog.query_routes
+    )
+    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == []
+
+
+def test_default_news_query_specs_cover_every_news_route_query():
+    catalog = query_audit_catalog(now_ms=123_456)
+    names = {query.name for query in catalog.queries}
+    for route, route_queries in catalog.query_routes.items():
+        if route.startswith("/api/news/"):
+            assert set(route_queries) <= names, route
+    assert set(_NEWS_QUERY_NAMES) <= names
 
 
 def test_app_catalog_rejects_unapproved_aggregate_input_queries():
@@ -100,12 +91,7 @@ def test_app_catalog_rejects_unapproved_aggregate_input_queries():
         del now_ms
         return (
             ReadQuerySpec(
-                name="news_feed_focus_facets",
-                sql="SELECT 1",
-                amplification_basis="aggregate_input",
-            ),
-            ReadQuerySpec(
-                name="news_title_presentation_24h",
+                name="news_status_pipeline_24h",
                 sql="SELECT 1",
                 amplification_basis="aggregate_input",
             ),
@@ -116,25 +102,19 @@ def test_app_catalog_rejects_unapproved_aggregate_input_queries():
 
 
 _NEWS_QUERY_NAMES = (
-    "news_feed_focus_rows",
-    "news_feed_focus_facets",
-    "news_story_provider_evidence",
-    "news_story",
-    "news_story_members",
-    "news_brief",
-    "news_sources",
-    "news_status_opennews",
-    "news_status_rss",
-    "news_status_projection",
-    "news_push_state",
-    "news_push_oldest_pending",
-    "news_title_presentation_state",
-    "news_status_opennews_incidents",
-    "news_status_inbound_latency",
-    "news_status_story_latency",
-    "news_title_presentation_24h",
-    "news_push_delivery_24h",
-    "news_push_suppression_recent",
+    "news_feed_events",
+    "news_feed_symbol_filter",
+    "news_feed_search",
+    "news_event_detail",
+    "news_event_members",
+    "news_event_verdicts",
+    "news_storyline_status",
+    "news_band_lookup",
+    "news_status_ingest",
+    "news_status_incidents_open",
+    "news_status_pipeline_24h",
+    "news_status_delivery_1h",
+    "news_control_state",
 )
 
 
@@ -165,19 +145,20 @@ def test_operational_audit_reports_counts_fk_checks_and_projection_schema(tmp_pa
     assert payload["migration_status"] == "ready"
     assert payload["counts"]["events"] == 0
     assert payload["counts"]["registry_assets"] == 0
-    assert payload["projection_schema"]["token_radar_current"] is True
-    assert payload["projection_schema"]["news_projection_summary"] is True
-    assert payload["projection_schema"]["news_brief_current"] is True
+    assert "token_radar_current" not in payload["projection_schema"]
+    assert payload["projection_schema"] == {}
     assert payload["news_schema"] == {
         "expected_tables": list(NEWS_TABLES),
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert len(payload["news_schema"]["actual_tables"]) == 11
-    assert "news_story_title_translations" not in payload["projection_schema"]
+    assert len(payload["news_schema"]["actual_tables"]) == 13
+    assert {"news_stories", "news_brief_current", "news_push_state", "news_sources"}.isdisjoint(
+        payload["news_schema"]["actual_tables"]
+    )
     assert "projection_offsets" not in payload["projection_schema"]
     assert "projection_runs" not in payload["projection_schema"]
-    assert "token_radar_current_rows_missing_intents" not in payload["foreign_key_checks"]
+    assert not any(name.startswith("token_radar") for name in payload["foreign_key_checks"])
 
 
 def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
@@ -192,8 +173,9 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
     names = {item["name"] for item in payload["queries"]}
     assert payload["ok"] is True
     assert payload["analyze"] is False
-    expected = {"recent_all", "search_v2_lexical", "search_v2_substring", "token_radar_latest", "target_posts_recent"}
+    expected = {"recent_all", "search_v2_lexical", "search_v2_substring", "target_posts_recent"}
     assert expected.issubset(names)
+    assert "token_radar_latest" not in names
     assert "search_v2_trigram" not in names
     assert all(item["plan"] for item in payload["queries"])
 
@@ -203,15 +185,20 @@ def test_projection_validation_checks_bounded_public_models(tmp_path):
     try:
         migrate(conn)
         initial = ProjectionValidationAudit(conn).run(sample=100)
-        conn.execute("DELETE FROM news_brief_current")
+        conn.execute("DELETE FROM news_control_state")
         stale = ProjectionValidationAudit(conn).run(sample=100)
     finally:
         conn.close()
 
     assert initial["ok"] is True
     assert initial["mismatch_count"] == 0
+    assert set(initial["checks"]) == {
+        "news_ingest_state_mismatch",
+        "news_control_state_mismatch",
+        "news_delivery_state_mismatch",
+    }
     assert stale["ok"] is False
-    assert stale["checks"]["news_brief_current_mismatch"] == 1
+    assert stale["checks"]["news_control_state_mismatch"] == 1
 
 
 def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
@@ -240,14 +227,12 @@ def test_query_audit_target_posts_uses_resolution_targets():
     assert "confidence" not in query.sql
 
 
-def test_query_audit_token_radar_latest_reads_only_the_singleton_without_product_params():
-    query = next(item for item in postgres_query_specs(now_ms=0) if item.name == "token_radar_latest")
-
-    assert "token_radar_current" in query.sql
-    assert "singleton_key = true" in query.sql
-    assert "token_profile_current" not in query.sql
-    assert query.params == ()
-    assert _composed_catalog().query_routes["/api/token-radar"] == ("token_radar_latest",)
+def test_query_audit_has_no_token_radar_surface():
+    catalog = _composed_catalog()
+    assert all(item.name != "token_radar_latest" for item in catalog.queries)
+    assert all("token_radar_current" not in item.sql for item in catalog.queries)
+    assert "/api/token-radar" not in catalog.query_routes
+    assert catalog.query_routes["/api/live-market"] == ("live_market_current",)
 
 
 def test_query_audit_search_paths_use_the_public_24h_window_and_bounded_routes():
@@ -402,7 +387,7 @@ def test_analyzed_query_audit_can_use_explicit_aggregate_input_amplification():
         conn,
         catalog=_single_query_catalog(
             ReadQuerySpec(
-                name="news_feed_focus_facets",
+                name="bounded_aggregate",
                 sql="SELECT 1",
                 amplification_basis="aggregate_input",
             )
@@ -415,376 +400,6 @@ def test_analyzed_query_audit_can_use_explicit_aggregate_input_amplification():
     assert facets["metrics"]["amplification_basis_rows"] == 500
     assert facets["metrics"]["read_return_amplification"] == 1.0
     assert facets["violations"] == []
-
-
-def test_news_filtered_facet_audit_is_bounded_by_current_membership_not_item_history(tmp_path):
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        conn.execute(
-            """
-            INSERT INTO news_sources(
-              source_id, name, tier, lang, enabled, consecutive_failures,
-              created_at_ms, updated_at_ms, source_kind, live_connected
-            ) VALUES (
-              'audit-source', 'Audit Source', 2, 'en', true, 0,
-              0, 0, 'opennews', false
-            );
-
-                INSERT INTO news_items(
-                  item_id, source_id, source_item_key, provider_record_id,
-                  provider_metadata, first_ingest_mode,
-                  reporting_origin, title, description, lang,
-              published_at_ms, first_observed_at_ms, last_observed_at_ms,
-              content_fingerprint, level, category, classification_source,
-              classification_confidence, importance_score, importance_factors,
-              active, created_at_ms, updated_at_ms
-            )
-                SELECT 'history-' || value, 'audit-source', 'history-' || value,
-                       'history-' || value, jsonb_build_object('score', 90), 'live',
-                   'History Wire', 'Historical report ' || value, '', 'en',
-                   value, value, value, 'history-fingerprint-' || value,
-                   'info', 'general', 'keyword', 1, 1, '{}'::jsonb,
-                   false, value, value
-              FROM generate_series(1, 12000) value;
-
-                INSERT INTO news_items(
-                  item_id, source_id, source_item_key, provider_record_id,
-                  provider_metadata, first_ingest_mode,
-                  reporting_origin, title, description, lang,
-              published_at_ms, first_observed_at_ms, last_observed_at_ms,
-              content_fingerprint, level, category, classification_source,
-              classification_confidence, importance_score, importance_factors,
-              active, created_at_ms, updated_at_ms
-            )
-                SELECT 'member-' || value, 'audit-source', 'member-' || value,
-                       'member-' || value, jsonb_build_object('score', 80), 'live',
-                   'Audit Wire', 'Current report ' || value, '', 'en',
-                   20000 + value, 20000 + value, 20000 + value,
-                   'member-fingerprint-' || value,
-                   'info', 'general', 'keyword', 1, 1, '{}'::jsonb,
-                   true, 20000 + value, 20000 + value
-              FROM generate_series(1, 200) value;
-
-            INSERT INTO news_stories(
-              story_id, canonical_title,
-              representative_item_id, representative_source_id,
-              representative_title, representative_description,
-              scoring_item_id, level, category, importance_score,
-              importance_factors, item_count, source_count,
-              first_published_at_ms, last_published_at_ms,
-              state_fingerprint, created_at_ms, updated_at_ms, facet_facts,
-              identity_evidence
-            )
-            SELECT 'story-' || value, 'Story ' || value,
-                   'member-' || (value * 2 - 1),
-                   'audit-source', 'Story ' || value, '',
-                   'member-' || (value * 2 - 1), 'info', 'general', 1,
-                   '{}'::jsonb, 2, 1, 20000 + value * 2 - 1,
-                   20000 + value * 2, 'story-fingerprint-' || value,
-                   30000 + value, 30000 + value,
-                   '{"source_ids":["audit-source"],"reporting_origins":["Audit Wire"]}'::jsonb,
-                   jsonb_build_object(
-                     'identity_version', 'news_story_identity_v3',
-                     'feature_version', 'news_story_feature_v2',
-                     'jaccard_version', 'news_story_jaccard_v2',
-                     'event_policy_version', 'news_story_event_policy_v2',
-                     'clustering_version', 'news_story_fixed_anchor_v2',
-                     'anchor_item_id', 'member-' || (value * 2 - 1),
-                     'strong_entity_keys', '[]'::jsonb,
-                     'action_keys', '[]'::jsonb,
-                     'numeric_keys', '[]'::jsonb,
-                     'location_keys', '[]'::jsonb,
-                     'membership_reasons', '{}'::jsonb,
-                     'rejection_reasons', '{}'::jsonb
-                   )
-              FROM generate_series(1, 100) value;
-
-            INSERT INTO news_story_members(story_id, item_id)
-            SELECT 'story-' || ((value + 1) / 2), 'member-' || value
-              FROM generate_series(1, 200) value;
-
-            """
-        )
-        conn.commit()
-        _vacuum_analyze(conn, "news_items")
-        _vacuum_analyze(conn, "news_story_members")
-        _vacuum_analyze(conn, "news_stories")
-
-        payload = PostgresQueryAudit(conn, catalog=_composed_catalog()).run(analyze=True)
-        facets = next(item for item in payload["queries"] if item["name"] == "news_feed_focus_facets")
-    finally:
-        conn.close()
-
-    assert facets["ok"] is True
-    assert facets["metrics"]["large_seq_scans"] == []
-    assert facets["metrics"]["read_rows"] < 5_000
-    assert facets["metrics"]["read_return_amplification"] <= 20
-    assert facets["metrics"]["temp_read_blocks"] == 0
-    assert facets["metrics"]["temp_written_blocks"] == 0
-
-
-def test_news_push_and_title_presentation_health_audits_are_bounded(tmp_path):
-    audit_now_ms = 1_800_000_000_000
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        migrate(conn)
-        conn.execute(
-            """
-            UPDATE news_push_state
-               SET enablement_epoch_at_ms = %s,
-                   delivery_available = true,
-                   updated_at_ms = %s
-             WHERE singleton_key = 'current'
-            """,
-            (audit_now_ms - 1, audit_now_ms - 1),
-        )
-        conn.execute(
-            """
-            INSERT INTO news_sources(
-              source_id, name, tier, lang, enabled, consecutive_failures,
-              created_at_ms, updated_at_ms, source_kind, live_connected
-            ) VALUES (
-              'news-opennews', 'OpenNews', 1, 'en', true, 0,
-              0, 0, 'opennews', false
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO news_items(
-              item_id, source_id, source_item_key, provider_record_id,
-              provider_metadata, first_ingest_mode,
-              reporting_origin, title, description, lang,
-              published_at_ms, first_observed_at_ms, last_observed_at_ms,
-              content_fingerprint, level, category, classification_source,
-              classification_confidence, importance_score, importance_factors,
-              active, created_at_ms, updated_at_ms
-            )
-            SELECT 'news_item_' || md5(value::text), 'news-opennews',
-                   'provider-' || value, 'provider-' || value,
-                   jsonb_build_object(
-                     'strategies', jsonb_build_array(
-                       jsonb_build_object('id', '1018')
-                     )
-                   ), 'live', 'OpenNews', 'Title ' || value,
-                   '', 'en', %s - 61000, %s - 60000, %s - 60000,
-                   md5('content-' || value), 'info', 'general', 'keyword',
-                   1, 1, '{}'::jsonb, true, %s - 60000, %s - 60000
-              FROM generate_series(1, 12000) value
-            """,
-            (
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO news_item_title_presentations(
-              item_id, source_title_fingerprint, original_title, state,
-              display_title, outcome, provider, policy_version,
-              fallback_code, created_at_ms, updated_at_ms,
-              attempted_at_ms, resolved_at_ms, duration_ms
-            )
-            SELECT 'news_item_' || md5(value::text),
-                   encode(sha256(convert_to('Title ' || value, 'UTF8')), 'hex'),
-                   'Title ' || value, 'resolved',
-                   CASE WHEN value %% 10 = 0
-                     THEN 'Title ' || value ELSE '标题 ' || value END,
-                   CASE WHEN value %% 10 = 0 THEN 'fallback' ELSE 'translated' END,
-                   CASE WHEN value %% 10 = 0 THEN NULL ELSE 'deepl' END,
-                   'news_title_zh_v1',
-                   CASE WHEN value %% 10 = 0
-                     THEN 'news_title_presentation_deepl_rate_limited' END,
-                   CASE WHEN value <= 200 THEN %s - value - 1000
-                     ELSE %s - 172800000 - value - 1000 END,
-                   CASE WHEN value <= 200 THEN %s - value
-                     ELSE %s - 172800000 - value END,
-                   CASE WHEN value <= 200 THEN %s - value - 1000
-                     ELSE %s - 172800000 - value - 1000 END,
-                   CASE WHEN value <= 200 THEN %s - value
-                     ELSE %s - 172800000 - value END,
-                   1000
-              FROM generate_series(1, 12000) value
-            """,
-            (
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO news_push_deliveries(
-              item_id, live_observed_at_ms, source_payload,
-              source_title_fingerprint, notification_fingerprint,
-              comparison_identity_version, admission_policy_version,
-              adjudicated_at_ms, admission_reason,
-              status, attempted_at_ms,
-              receipt, last_error, sent_at_ms, created_at_ms, updated_at_ms
-            )
-            SELECT 'news_item_' || md5(value::text),
-                   %s - 60000,
-                   jsonb_build_object(
-                     'schema_version', 'news_item_push_v2',
-                     'item_id', 'news_item_' || md5(value::text),
-                     'provider_event_id', 'provider-' || value,
-                     'live_observed_at_ms', %s - 60000,
-                     'original_title', 'Title ' || value,
-                     'reporting_origin', 'OpenNews',
-                     'provider_published_at_ms', %s - 61000,
-                     'strategy_labels', jsonb_build_array('1018 News Score > 70'),
-                     'assets', '[]'::jsonb
-                   ),
-                   encode(sha256(convert_to('Title ' || value, 'UTF8')), 'hex'),
-                   encode(sha256(convert_to(lower('Title ' || value), 'UTF8')), 'hex'),
-                   'news_exact_atom_identity_v1',
-                   'news_push_exact_atom_admission_v1',
-                   %s - 60000,
-                   'exact_atom_leader',
-                   CASE WHEN value %% 2 = 0 THEN 'sent' ELSE 'terminal' END,
-                   CASE
-                     WHEN value <= 200 THEN %s - value
-                     ELSE %s - 172800000 - value
-                   END,
-                   CASE WHEN value %% 2 = 0 THEN '{"provider":"feishu"}'::jsonb END,
-                   CASE WHEN value %% 2 = 1 THEN 'news_item_push_feishu_failed' END,
-                   CASE WHEN value %% 2 = 0 THEN
-                     CASE
-                       WHEN value <= 200 THEN %s - value
-                       ELSE %s - 172800000 - value
-                     END
-                   ELSE NULL END,
-                   %s - 172800000 - value,
-                   CASE
-                     WHEN value <= 200 THEN %s - value
-                     ELSE %s - 172800000 - value
-                   END
-              FROM generate_series(1, 12000) value
-            """,
-            (
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-                audit_now_ms,
-            ),
-        )
-        conn.execute(
-            """
-            UPDATE news_push_state
-                   SET total_count = 12000,
-                       suppressed_count = 0,
-                   pending_count = 0,
-                   sending_count = 0,
-                   sent_count = 6000,
-                   terminal_count = 6000
-             WHERE singleton_key = 'current';
-            """
-        )
-        conn.commit()
-        _vacuum_analyze(conn, "news_item_title_presentations")
-        _vacuum_analyze(conn, "news_push_deliveries")
-
-        repository = NewsRepository(conn)
-        snapshot = repository.push_health_snapshot(now_ms=audit_now_ms)
-        presentation_snapshot = repository.title_presentation_health_snapshot(
-            now_ms=audit_now_ms,
-            deepl_configured=True,
-            deepl_key_count=2,
-            deepseek_configured=True,
-        )
-        payload = PostgresQueryAudit(
-            conn,
-            catalog=_composed_catalog(now_ms=audit_now_ms),
-        ).run(analyze=True)
-        queries = {item["name"]: item for item in payload["queries"]}
-        exact_atom_leader_query = ReadQuerySpec(
-            name="news_push_exact_atom_leader_lookup_test",
-            sql="""
-                SELECT item_id, notification_fingerprint, adjudicated_at_ms,
-                       (source_payload ->> 'provider_published_at_ms')::bigint
-                         AS provider_published_at_ms
-                  FROM news_push_deliveries
-                 WHERE admission_policy_version = %s
-                   AND notification_fingerprint = ANY(%s)
-                   AND status IN ('pending', 'sending', 'sent', 'terminal')
-                   AND source_payload ->> 'schema_version' = 'news_item_push_v2'
-                   AND (source_payload ->> 'provider_published_at_ms')::bigint
-                         BETWEEN %s AND %s
-                 ORDER BY
-                       (source_payload ->> 'provider_published_at_ms')::bigint,
-                       item_id
-            """,
-            params=(
-                "news_push_exact_atom_admission_v1",
-                [
-                    conn.execute(
-                        """
-                        SELECT notification_fingerprint
-                          FROM news_push_deliveries
-                         ORDER BY item_id
-                         LIMIT 1
-                        """
-                    ).fetchone()["notification_fingerprint"]
-                ],
-                audit_now_ms - 12 * 60 * 60_000,
-                audit_now_ms,
-            ),
-        )
-        leader_lookup_audit = PostgresQueryAudit(
-            conn,
-            catalog=_single_query_catalog(exact_atom_leader_query),
-        ).run(analyze=True)["queries"][0]
-    finally:
-        conn.close()
-
-    assert snapshot["total_count"] == 12000
-    assert snapshot["pending_count"] == 0
-    assert snapshot["sent_count"] == 6000
-    assert snapshot["terminal_count"] == 6000
-    assert presentation_snapshot["resolution_24h"]["total"] == 200
-    assert presentation_snapshot["resolution_24h"]["attempted"] == 200
-    assert presentation_snapshot["resolution_24h"]["translated"] == 180
-    assert presentation_snapshot["resolution_24h"]["provider_counts"] == {"deepl": 180}
-    assert presentation_snapshot["resolution_24h"]["fallback_counts"] == {
-        "news_title_presentation_deepl_rate_limited": 20
-    }
-    assert snapshot["delivery_24h"]["completed"] == 200
-    assert snapshot["delivery_24h"]["sent"] == 100
-    assert snapshot["delivery_24h"]["terminal"] == 100
-    assert leader_lookup_audit["ok"] is True
-    assert leader_lookup_audit["metrics"]["large_seq_scans"] == []
-    assert "ix_news_push_deliveries_exact_atom_leader" in str(leader_lookup_audit["plan"])
-
-    for query_name in (
-        "news_push_state",
-        "news_push_oldest_pending",
-        "news_title_presentation_state",
-        "news_title_presentation_24h",
-        "news_push_delivery_24h",
-        "news_push_suppression_recent",
-    ):
-        query = queries[query_name]
-        assert query["ok"] is True
-        assert query["metrics"]["large_seq_scans"] == []
-        assert query["metrics"]["temp_read_blocks"] == 0
-        assert query["metrics"]["temp_written_blocks"] == 0
-        assert query["metrics"]["read_return_amplification"] <= 20
 
 
 class RecordingJsonPlanConn:

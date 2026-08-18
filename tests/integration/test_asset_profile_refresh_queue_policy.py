@@ -104,7 +104,7 @@ class _SupersedingProfileMarket:
                         "payload_hash": "sha256:evidence-v2",
                     }
                 ],
-                reason="newer_token_radar_evidence",
+                reason="newer_evidence",
                 now_ms=NOW_MS + 1,
             )
 
@@ -171,7 +171,7 @@ def _enqueue_profile_target(conn: Any, *, target_id: str = "asset-1") -> None:
                     "payload_hash": "sha256:evidence-v1",
                 }
             ],
-            reason="token_radar_entered",
+            reason="target_entered",
             now_ms=NOW_MS,
         )
 
@@ -547,7 +547,7 @@ def test_terminal_profile_target_only_reactivates_for_new_evidence() -> None:
         with repository_session_for_connection(conn) as repos, repos.transaction():
             repos.asset_profile_refresh_targets.enqueue_targets(
                 [target],
-                reason="token_radar_entered",
+                reason="target_entered",
                 now_ms=NOW_MS,
             )
             [claim] = repos.asset_profile_refresh_targets.claim_due(
@@ -582,7 +582,7 @@ def test_terminal_profile_target_only_reactivates_for_new_evidence() -> None:
         with repository_session_for_connection(conn) as repos, repos.transaction():
             repos.asset_profile_refresh_targets.enqueue_targets(
                 [target],
-                reason="token_radar_rank_changed",
+                reason="rank_changed",
                 now_ms=NOW_MS + 1,
             )
             assert (
@@ -604,7 +604,7 @@ def test_terminal_profile_target_only_reactivates_for_new_evidence() -> None:
         with repository_session_for_connection(conn) as repos, repos.transaction():
             repos.asset_profile_refresh_targets.enqueue_targets(
                 [changed],
-                reason="token_radar_source_watermark_changed",
+                reason="source_watermark_changed",
                 now_ms=NOW_MS + 2,
             )
             [reactivated] = repos.asset_profile_refresh_targets.claim_due(

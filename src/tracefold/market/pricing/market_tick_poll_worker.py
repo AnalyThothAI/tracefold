@@ -90,12 +90,10 @@ class MarketTickPoll:
     def _list_poll_rows(self) -> list[dict[str, Any]]:
         now_ms = int(self.clock())
         with self.db.worker_session("market_tick_poll") as repos:
-            priority_product_targets = _radar_priority_targets(repos.token_radar_current.served_snapshot())
             rows = repos.registry.ranked_market_targets(
                 since_ms=now_ms - PRODUCT_WINDOW_MS["24h"],
                 target_types=("chain_token", "cex_symbol"),
                 limit=self.batch_size,
-                priority_product_targets=priority_product_targets,
             )
         return [dict(row) for row in rows]
 
@@ -478,24 +476,6 @@ def _provider_error_reason(exc: Exception) -> str:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
-
-
-def _radar_priority_targets(snapshot: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-    items = snapshot.get("items")
-    if not isinstance(items, list):
-        return ()
-    targets: list[tuple[str, str]] = []
-    for item in items:
-        if not isinstance(item, Mapping):
-            continue
-        target = item.get("target")
-        if not isinstance(target, Mapping):
-            continue
-        target_type = str(target.get("target_type") or "").strip()
-        target_id = str(target.get("target_id") or "").strip()
-        if target_type in {"Asset", "CexToken"} and target_id:
-            targets.append((target_type, target_id))
-    return tuple(dict.fromkeys(targets))
 
 
 __all__ = ["MarketTickPoll"]

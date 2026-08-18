@@ -16,34 +16,37 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # implementation collaborators of the three public News capabilities, not
 # product callers or compatibility interfaces; every new edge must be named.
 ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
+    "src/tracefold/app/cli/commands/news.py": {
+        "tracefold.news.bus",
+        "tracefold.news.eval.offline",
+        "tracefold.news.eval.replay",
+    },
     "src/tracefold/app/query_audit.py": {
         "tracefold.news.query_specs",
     },
     "src/tracefold/app/repositories.py": {
-        "tracefold.market.radar.snapshot_repository",
         "tracefold.news.repository",
     },
     "src/tracefold/app/workers.py": {
-        "tracefold.news.push",
-        "tracefold.news.sources",
-        "tracefold.news.title_presentation",
+        "tracefold.news.agents.analyst",
+        "tracefold.news.agents.triage_model",
+        "tracefold.news.consumers",
     },
-    "src/tracefold/app/workers_runtime_collector.py": {
-        "tracefold.market.radar.snapshot_repository",
-        "tracefold.news.projection",
-    },
-    "src/tracefold/integrations/news_ai.py": {
-        "tracefold.news.brief",
-        "tracefold.news.identity",
-        "tracefold.news.models",
-    },
-    "src/tracefold/integrations/news_feeds/rss.py": {
-        "tracefold.news.identity",
-    },
-    "src/tracefold/integrations/news_push.py": {"tracefold.news.push"},
-    "src/tracefold/integrations/news_title_presentation.py": {"tracefold.news.title_presentation"},
+    "src/tracefold/integrations/news_title_presentation.py": {"tracefold.news.translation"},
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
+    "src/tracefold/integrations/rabbitmq.py": {"tracefold.news.bus"},
 }
+# News V3 read-only cross-domain reads: the Analyst tool plane and market-reaction
+# marks read Market/Macro current facts through SELECT only. Every edge is named;
+# no News module may write another business package's tables.
+ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES = {
+    "src/tracefold/news/agents/tools.py": {"cex_tokens", "market_ticks", "macro_module_current"},
+    "src/tracefold/news/eval/marks.py": {"cex_tokens", "market_ticks"},
+}
+WRITE_SQL_TABLE_RE = re.compile(
+    r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)",
+    re.IGNORECASE,
+)
 FORBIDDEN_CURRENT_IDENTITY_PARTS = {
     "attempt_id",
     "computed_at_ms",
@@ -154,6 +157,25 @@ def test_backend_has_only_the_expected_package_shape() -> None:
     ]
 
 
+def test_token_radar_product_is_removed_from_the_backend() -> None:
+    assert not (SRC / "market" / "radar").exists()
+    assert not (SRC / "app" / "http" / "routes_radar.py").exists()
+    # The persisted identity resolver policy version keeps its historical literal
+    # (see resolver_policy.py); every other Radar literal must be gone.
+    allowed = {"src/tracefold/market/identity/resolver_policy.py"}
+    violations = [
+        path.relative_to(ROOT).as_posix()
+        for path in _python_files(SRC)
+        if path.relative_to(ROOT).as_posix() not in allowed
+        and "token_radar" in path.read_text(encoding="utf-8").lower()
+    ]
+    assert violations == []
+    for path in _python_files(SRC / "app"):
+        text = path.read_text(encoding="utf-8")
+        assert "/token-radar" not in text, path.relative_to(ROOT).as_posix()
+        assert "tracefold.market.radar" not in text, path.relative_to(ROOT).as_posix()
+
+
 def test_business_dependency_dag_is_one_way() -> None:
     violations: dict[str, list[str]] = {}
     for owner, allowed in ALLOWED_BUSINESS_DEPENDENCIES.items():
@@ -225,10 +247,17 @@ def test_business_sql_uses_only_owned_tables() -> None:
     violations: list[str] = []
     for package in BUSINESS_PACKAGES:
         for path in _python_files(SRC / package):
-            for table in SQL_TABLE_RE.findall(path.read_text(encoding="utf-8")):
+            relative = path.relative_to(ROOT).as_posix()
+            source = path.read_text(encoding="utf-8")
+            read_only_allowed = ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES.get(relative, set())
+            for table in SQL_TABLE_RE.findall(source):
+                owner = table_owners.get(table.lower())
+                if owner is not None and owner != package and table.lower() not in read_only_allowed:
+                    violations.append(f"{relative} -> {table} ({owner})")
+            for table in WRITE_SQL_TABLE_RE.findall(source):
                 owner = table_owners.get(table.lower())
                 if owner is not None and owner != package:
-                    violations.append(f"{path.relative_to(ROOT)} -> {table} ({owner})")
+                    violations.append(f"{relative} writes {table} ({owner})")
     assert violations == []
 
 
@@ -267,19 +296,25 @@ def test_legacy_news_runtime_contract_is_absent_outside_migration_history() -> N
     assert violations == []
 
 
-def test_news_kiss_has_one_acquisition_module_and_one_story_writer() -> None:
+def test_news_v3_has_one_pipeline_wiring_and_one_broker_adapter() -> None:
     news_source = "\n".join(path.read_text(encoding="utf-8") for path in _python_files(SRC / "news"))
     workers_source = (SRC / "app" / "workers.py").read_text(encoding="utf-8")
 
-    assert news_source.count("class NewsAcquisition:") == 1
-    assert news_source.count("class NewsStoryProjectionWorker:") == 1
-    assert workers_source.count("NewsAcquisition(") == 1
-    assert workers_source.count("NewsStoryProjectionWorker(") == 1
+    assert news_source.count("class NewsPipeline:") == 1
+    assert news_source.count("class DeduperConsumer:") == 1
+    assert news_source.count("class DelivererConsumer:") == 1
+    assert workers_source.count("NewsPipeline(") == 1
+    assert workers_source.count("RabbitMQBus(") == 1
+    assert "NewsAcquisition(" not in workers_source
+    assert "NewsStoryProjectionWorker(" not in workers_source
+    for retired in ("projection.py", "story_projection.py", "story_store.py", "brief.py", "push.py", "runtime.py"):
+        assert not (SRC / "news" / retired).exists(), retired
 
 
 def test_public_news_has_no_personalization_or_parallel_product_infrastructure() -> None:
-    paths = [*_python_files(SRC / "news"), SRC / "integrations" / "news_ai.py"]
+    paths = [*_python_files(SRC / "news")]
     forbidden_import_roots = {
+        "aio_pika",
         "celery",
         "chromadb",
         "faiss",
@@ -287,7 +322,6 @@ def test_public_news_has_no_personalization_or_parallel_product_infrastructure()
         "multiprocessing",
         "pinecone",
         "qdrant_client",
-        "rabbitmq",
         "redis",
         "sentence_transformers",
         "subprocess",
@@ -314,12 +348,6 @@ def test_public_news_has_no_personalization_or_parallel_product_infrastructure()
         if marker in path.read_text(encoding="utf-8").lower()
     ]
     assert marker_violations == []
-
-    projection_source = (SRC / "news" / "projection.py").read_text(encoding="utf-8")
-    story_input_source = (SRC / "news" / "story_store.py").read_text(encoding="utf-8")
-    assert "provider_metadata" not in projection_source
-    assert "item.provider_metadata -> 'coins' AS provider_identity" in story_input_source
-    assert '"provider_metadata"' not in story_input_source
 
 
 def test_news_kiss_retired_tables_have_no_production_owner() -> None:

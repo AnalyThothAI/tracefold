@@ -36,38 +36,34 @@ environment variables, or move code-owned safety budgets into
 
 ## Model capability boundary
 
-`news_world_brief` and `macro_document_analysis` are the only production
-product-model consumers.
-Shared News title translation is a bounded presentation adapter, not a product
-model: it cannot write a NewsItem, Story, score, or semantic read model.
-News acquisition, NewsItem classification, Story identity, importance
-scoring, membership, search, and ordering remain deterministic. Its exact-title
-row preserves the original and adds only display metadata; Push references that
-same decision rather than owning or duplicating translation. The six Macro
-modules are also deterministic views over persisted facts.
+`news_triage`, `news_analyst`, and `macro_document_analysis` are the only
+production product-model consumers. News Triage is one structured call whose
+output never decides delivery by itself: the pure `decide()` rules own the
+final decision, model failure is fail-closed, and every verdict row stores
+the model intent next to the rule baseline. The News Analyst is a bounded
+`deepagents` run with seven read-only tools that execute through a read-only
+repository session; it has no filesystem, shell, network, subagent, or write
+capability, its evidence citations are verified against the run's own tool
+returns, and it can only add a follow-up card after a first card was sent.
+Shared News title translation is a bounded presentation adapter: it cannot
+write an Item, Event, verdict, or delivery. Item identity, Event identity,
+Gate admission, storyline keys, search, and ordering remain deterministic. The
+six Macro modules are also deterministic views over persisted facts.
 
-Token Radar publishes a canonical address for copying and source navigation;
-it does not publish a honeypot, holder, liquidity, Smart Money, contract-risk,
-or token-safety judgment. Removing those former product gates does not
-relax application security: HTTP/WebSocket authentication, exact request
-validation, secret handling, PostgreSQL role/transaction integrity, migration
-confirmation, and source-fact provenance remain mandatory and are not Radar
-configuration.
+Search and Token Case publish a canonical address for copying and source
+navigation; they do not publish a honeypot, holder, liquidity, Smart Money,
+contract-risk, or token-safety judgment. Removing those former product gates
+does not relax application security: HTTP/WebSocket authentication, exact
+request validation, secret handling, PostgreSQL role/transaction integrity,
+migration confirmation, and source-fact provenance remain mandatory and are not
+product configuration.
 
-When `news.rss_enabled` is explicitly true, News RSS acquisition accepts only
-the code-owned HTTPS catalog. The Adapter
-does not use automatic redirects: it follows at most two hops and, before every
-request, rejects credentials in the URL, non-HTTPS targets, local/reserved host
-forms, failed or empty DNS results, and any resolved address that is not
-globally routable. Feed failures preserve the previous current facts until the
-normal 96-hour expiry; malformed or unsafe-redirect responses cannot publish
-an empty replacement snapshot.
-
-`news.opennews_token` and the exact configured
+`news.opennews_token`, `news.broker.url`, and the configured
 `news.opennews_strategy_ids` set are operator-owned secrets/configuration.
-Diagnostics expose only `opennews_token_configured`,
-`opennews_strategy_ids_configured`, and `opennews_strategy_count`; source/status
-responses never list the configured set. OpenNews transport exceptions, logs,
+Diagnostics expose `opennews_token_configured`, broker `url_configured`,
+`opennews_strategy_ids_configured`, and `opennews_strategy_count`; the status
+route lists configured and provider-enabled Strategy IDs (non-secret opaque
+IDs) so allowlist warnings are actionable, but never the token or broker URL. OpenNews transport exceptions, logs,
 generated artifacts, and public source/status responses must never contain the
 token, authorization header, or allowlist values.
 The current reviewed configuration contains exactly `1018` and `1019`, so
@@ -107,44 +103,33 @@ without one it deliberately sends an unsigned body containing neither field.
 Unsigned delivery has weaker request authentication and is an explicit
 operator choice, not a fallback after a signing error. In both modes the
 Adapter accepts only the configured Feishu webhook boundary and never follows
-redirects. Persisted Item source snapshots and shared title-presentation rows never contain the
-webhook, signing secret, timestamp, signature, or complete rendered card. There
-is exactly one Feishu attempt after the durable `sending` fence and no retry.
+redirects. Persisted delivery rows store the rendered card (code facts plus sanitized AI
+copy) for audit but never the webhook, signing secret, timestamp, or signature.
+There is exactly one Feishu attempt after the durable `sending` row and no
+retry; a crash between send and ack terminalizes as `ambiguous_after_crash`.
 
-Shared title presentation uses the ordered operator-owned
-`news.title_presentation.deepl_api_keys` first and the direct DeepSeek
-`llm.api_key`, `llm.base_url`, and `llm.news_brief_model` triple second. DeepL
-keys are secrets: diagnostics expose only whether any key is configured and the
-key count, never values or the process-local active index. A permanent DeepL
-authentication or quota rejection advances that active index for future Items;
-it never exposes the rejected key or tries another key for the current Item.
-Only the exact immutable Item title is sent to either provider; asset
-annotations, score, URL, description, Story data, Feishu webhook, and signing
-secret are never included. Provider URLs and keys never enter logs, public
-status, generated artifacts, or presentation rows. Persisted presentation
-metadata is non-secret and bounded to original/display title,
-translated/not-needed/fallback outcome, policy/provider, a sanitized fallback
-code, and elapsed milliseconds. Feed/detail and every final card keep the
-original title visible when a distinct Chinese display title is used. Current
-Push rows reference the exact shared title decision and do not duplicate its
-presentation payload; the renamed legacy Push JSON remains audit-only.
+Title translation uses the ordered operator-owned
+`news.translation.deepl_api_keys` first and the direct DeepSeek
+`llm.api_key`, `llm.base_url`, `llm.news_triage_model` triple second, only for
+Events that will be delivered. DeepL keys are secrets: diagnostics expose only
+whether any key is configured and the key count. Only the exact Event leader
+title is sent to either provider; provider metadata, URLs, verdicts, the
+webhook, and the signing secret are never included. Presentation rows are
+non-secret and bounded to original/display title, outcome, provider, and a
+sanitized fallback code.
 
-The public News Brief L1 model receives only ordered primary headlines,
-primary reporting origins, and distinct-source counts. It receives no Article
-description/body, provider AI metadata, unrelated corpus context, user profile,
-preference, personalized filter, Push/Feishu material, or source credential.
-L2 receives only the one eligible primary headline. Both have no provider
-fetch, filesystem, shell, or arbitrary database capability. Every accepted L1
-response passes the same citation/proper-noun/number/date gates used before the
-sealed payload replaces the Brief current singleton; raw responses and prompts
-are never persisted.
+News Triage receives the Event title/content excerpt (wrapped as untrusted
+material), Gate facts, the storyline status bar, and the watchlist symbols;
+News Analyst additionally receives Triage field conclusions (never the free
+text rationale) and reads bounded tool outputs wrapped as external content.
+Neither receives credentials, webhook material, or unrelated corpus context;
+prompts are byte-frozen constants and raw model responses are never persisted
+beyond the validated verdict payload and bounded trace.
 
-News Brief uses the code-owned local Ollama endpoint first, the same configured
-direct DeepSeek endpoint/key/model triple second, and optional Groq last. The
-direct triple must be entirely present or entirely absent; no implicit URL or
-model is supplied. Diagnostics expose only configured booleans and bounded
-provider/model labels, failure codes, and clocks; they never probe or expose an
-endpoint, key, Authorization header, Retry-After contents, prompt, or response.
+RabbitMQ credentials live only in `news.broker.url`; the compose service binds
+AMQP and management ports to `127.0.0.1` by default and uses a
+`TRACEFOLD_RABBITMQ_PASSWORD` environment override. Consumers connect with one
+robust connection; queue names are prefixed by `news.broker.name_prefix`.
 
 Fed document analysis receives one bounded official source body plus
 effective-dated role and prior-signal context. It has no provider or web tool,

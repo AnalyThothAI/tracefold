@@ -1,12 +1,11 @@
 import type { Page, Route } from "@playwright/test";
 import { macroModuleFixture, macroOverviewFixture } from "@tests/fixtures/macroFixture";
 import {
+  newsEventDetailFixture,
+  newsEventFixture,
+  newsFeedEventFixture,
   newsFeedFixture,
-  newsGlobalBriefFixture,
-  newsSourcesFixture,
   newsStatusFixture,
-  newsStoryDetailFixture,
-  newsStoryFixture,
 } from "@tests/fixtures/newsFixture";
 import { tokenCaseFixture, tokenCasePostsFixture } from "@tests/fixtures/tokenCaseFixture";
 
@@ -18,15 +17,10 @@ const unhandledApiRequests = new WeakMap<Page, string[]>();
 export type MockApiOptions = {
   delayNonBootstrapMs?: number;
   failNonBootstrap?: boolean;
-  radarItemCount?: number;
-  radarPresentationStress?: boolean;
-  radarRefreshItemCount?: number;
-  radarUnsupportedChain?: boolean;
 };
 
 export async function installMockApi(page: Page, options: MockApiOptions = {}) {
   unhandledApiRequests.set(page, []);
-  let radarRequestCount = 0;
 
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -48,21 +42,6 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
       });
     }
     if (path === "/api/status") return fulfill(route, statusData());
-    if (path === "/api/token-radar") {
-      radarRequestCount += 1;
-      const itemCount =
-        radarRequestCount > 1 && options.radarRefreshItemCount !== undefined
-          ? options.radarRefreshItemCount
-          : (options.radarItemCount ?? 1);
-      return fulfill(
-        route,
-        tokenRadarData(
-          itemCount,
-          options.radarPresentationStress ?? false,
-          options.radarUnsupportedChain ?? false,
-        ),
-      );
-    }
     if (path === "/api/token-case") return fulfill(route, tokenCaseData(url));
     if (path.startsWith("/api/token-images/")) return fulfillTokenImage(route);
     if (path === "/api/search/inspect") return fulfill(route, searchInspectData(url));
@@ -71,9 +50,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/target-posts") return fulfill(route, targetPostsData(url));
     if (path === "/api/news/feed") return fulfill(route, newsFeedData());
     if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
-    if (path === "/api/news/sources") return fulfill(route, newsSourcesFixture());
-    if (path.startsWith("/api/news/stories/")) return fulfill(route, newsStoryDetailData(path));
-    if (path === "/api/news/brief") return fulfill(route, newsGlobalBriefFixture());
+    if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
     if (path === "/api/macro/overview") return fulfill(route, macroOverviewFixture());
     if (path === "/api/macro/rates-fed") return fulfill(route, macroModuleFixture("rates_fed"));
     if (path === "/api/macro/economy-inflation") {
@@ -109,27 +86,38 @@ function recordUnhandledApiRequest(page: Page, url: URL) {
 }
 
 function newsFeedData() {
-  const story = newsStoryFixture({
-    story_id: "story-global-policy",
-    title: "Macro desk flags liquidity rotation",
-    description: "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
+  const event = newsFeedEventFixture({
+    display_title: "Macro desk flags liquidity rotation",
+    event_id: "evt-global-policy",
+    leader_description:
+      "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
+    leader_title: "Macro desk flags liquidity rotation",
   });
   return {
     ...newsFeedFixture(),
-    stories: Array.from({ length: 5 }, (_, index) => ({
-      ...story,
-      story_id: index === 0 ? story.story_id : `story-global-policy-${index + 1}`,
-      title: index === 0 ? story.title : `Global policy update ${index + 1}`,
+    events: Array.from({ length: 5 }, (_, index) => ({
+      ...event,
+      display_title: index === 0 ? event.display_title : `Global policy update ${index + 1}`,
+      event_id: index === 0 ? event.event_id : `evt-global-policy-${index + 1}`,
+      leader_title: index === 0 ? event.leader_title : `Global policy update ${index + 1}`,
     })),
   };
 }
 
-function newsStoryDetailData(path: string) {
-  const storyId = decodeURIComponent(path.split("/").pop() ?? "story-global-policy");
-  return newsStoryDetailFixture({
-    story_id: storyId,
-    title: "Macro desk flags liquidity rotation",
-    description: "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
+function newsEventDetailData(path: string) {
+  const eventId = decodeURIComponent(path.split("/").pop() ?? "evt-global-policy");
+  return newsEventDetailFixture({
+    event: newsEventFixture({
+      event_id: eventId,
+      leader_description:
+        "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
+      leader_title: "Macro desk flags liquidity rotation",
+    }),
+    presentation: {
+      display_title: "Macro desk flags liquidity rotation",
+      outcome: "not_needed",
+      provider: null,
+    },
   });
 }
 
@@ -177,59 +165,6 @@ function statusData() {
       status: "ok",
       reasons: [],
       items: [],
-    },
-  };
-}
-
-function tokenRadarData(itemCount: number, presentationStress: boolean, unsupportedChain: boolean) {
-  return {
-    schema_version: "token_radar_snapshot_v5",
-    social_evidence_as_of_ms: NOW,
-    eligible_total: itemCount,
-    items: Array.from({ length: itemCount }, (_, index) =>
-      radarItem(index, presentationStress, unsupportedChain),
-    ),
-  };
-}
-
-function radarItem(index: number, presentationStress: boolean, unsupportedChain: boolean) {
-  const suffix = index ? `:${index + 1}` : "";
-  const stressFirstItem = presentationStress && index === 0;
-  return {
-    target: {
-      target_type: "Asset",
-      target_id: `${TARGET_ID}${suffix}`,
-      symbol: index ? `CASE${index + 1}` : "UPEG",
-      name: stressFirstItem
-        ? "超长中文代币名称用于验证窄屏完整展示"
-        : index
-          ? `Case ${index + 1}`
-          : "Unpegged Token",
-      logo_url: `/api/token-images/${String(index + 1).padStart(64, "0")}`,
-      chain: unsupportedChain && index === 0 ? "eip155:999999" : "eip155:1",
-      exchange: null,
-      address: index ? `${ADDRESS}${index + 1}` : ADDRESS,
-    },
-    trigger_event_id: index ? `event-upeg-${index + 1}` : "event-upeg-1",
-    trigger_source_event_at_ms: NOW - (index + 1) * 60_000,
-    qualified_at_ms: NOW - (index + 1) * 60_000 + 15_000,
-    why_now: {
-      current_mentions: stressFirstItem ? 12_345 : 7 + index,
-      prior_mentions: stressFirstItem ? 1_234 : 2,
-      mention_delta: stressFirstItem ? 11_111 : 5 + index,
-    },
-    evidence: {
-      independent_author_count: stressFirstItem ? 1_234 : 4,
-      independent_text_count: stressFirstItem ? 5_678 : 5,
-      time_to_nth_author_ms: 90_000,
-      duplicate_share: 0.08,
-    },
-    market: {
-      price_usd: stressFirstItem ? 0.000000000123456789 : 0.042,
-      price_observed_at_ms: NOW - 30_000,
-      price_change_since_signal: 0.12,
-      market_cap_usd: 42_000_000,
-      market_cap_observed_at_ms: NOW - 45_000,
     },
   };
 }
@@ -350,11 +285,11 @@ function socialEventsByIds(url: URL) {
     source_provider: "gmgn",
     channel: "twitter_monitor_basic",
     action: "tweet",
-    author_handle: "radartrigger",
-    author_name: "Radar Trigger",
+    author_handle: "upegtrigger",
+    author_name: "Upeg Trigger",
     author_followers: 1_024,
     text_clean: "Independent authors accelerated around $UPEG.",
-    canonical_url: "https://x.com/radartrigger/status/event-upeg-1",
+    canonical_url: "https://x.com/upegtrigger/status/event-upeg-1",
   });
   return {
     events: ids.map((id) => byId.get(id)).filter(Boolean),

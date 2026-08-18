@@ -18,9 +18,17 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert set(services) == {
         "migrate",
         "postgres",
+        "rabbitmq",
         "serve",
         "workers",
     }
+    assert services["rabbitmq"]["image"].startswith("rabbitmq:")
+    assert "build" not in services["rabbitmq"]
+    assert "tracefold-rabbitmq:/var/lib/rabbitmq" in services["rabbitmq"]["volumes"]
+    assert services["rabbitmq"]["healthcheck"]["test"][0] == "CMD"
+    assert "rabbitmq-diagnostics" in services["rabbitmq"]["healthcheck"]["test"]
+    assert "rabbitmq" not in services["serve"]["depends_on"]
+    assert services["workers"]["depends_on"]["rabbitmq"]["condition"] == "service_healthy"
     assert services["postgres"]["image"] == POSTGRES_IMAGE
     assert "build" not in services["postgres"]
     assert any("pg_stat_statements" in part for part in services["postgres"]["command"])
@@ -212,8 +220,6 @@ def test_retired_ops_tree_and_orphan_scripts_are_absent() -> None:
     scripts = {path.name for path in Path("scripts").iterdir() if path.is_file()}
     assert scripts == {
         "check_macro_acceptance.py",
-        "news_story_semantic_qualification.py",
-        "news_story_v2_shadow.py",
         "regen_cli_help.py",
         "regen_db_schema.py",
         "regen_openapi.py",

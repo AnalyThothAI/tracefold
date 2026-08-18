@@ -98,6 +98,7 @@ RETIRED_TABLES_AT_HEAD = frozenset(
         "token_discussion_digests",
         "token_flow_window_snapshots",
         "token_mention_semantics",
+        "token_radar_current",
         "token_radar_publications",
         "token_radar_current_rows",
         "token_radar_publication_state",

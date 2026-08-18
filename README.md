@@ -33,8 +33,8 @@ The Python package is deliberately shallow:
 
 ```text
 src/tracefold/
-  market/         capture, identity, pricing, profiles, radar, read views
-  news/           Article facts, deterministic Stories, immutable analysis
+  market/         capture, identity, pricing, profiles, read views
+  news/           broker-driven Event pipeline: Deduper, Gate, Triage, Analyst, delivery
   macro/          observations and completed-session research
   integrations/   provider and external-system adapters
   platform/       config, PostgreSQL, telemetry, generic worker kernel

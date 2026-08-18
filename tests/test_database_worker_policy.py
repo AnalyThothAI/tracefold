@@ -15,17 +15,13 @@ from tracefold.macro.acquisition import MacroAcquisitionService
 from tracefold.macro.projection import MacroProjectionService
 from tracefold.market.pricing.event_anchor_backfill_worker import EventAnchorBackfill
 from tracefold.market.profiles.profile_projection import ProfileProjectionService
-from tracefold.market.radar.current_worker import TokenRadarCurrentService
-from tracefold.news.projection import NewsProjectionService
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
 @pytest.mark.parametrize(
     ("service_type", "worker_name", "kwargs"),
     [
-        (TokenRadarCurrentService, "token_radar_current", {}),
         (MacroProjectionService, "macro_projection", {}),
-        (NewsProjectionService, "news_story_projection", {}),
         (ProfileProjectionService, "profile_projection", {"active_profile_provider_ids": ()}),
     ],
 )
@@ -100,7 +96,7 @@ def test_worker_session_applies_dynamic_policy_in_one_local_round_trip() -> None
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
 
     with bundle.worker_session(
-        "news_projection",
+        "news_deduper",
         statement_timeout_seconds=0.5,
         transaction_timeout_seconds=0.5,
     ):
@@ -111,7 +107,7 @@ def test_worker_session_applies_dynamic_policy_in_one_local_round_trip() -> None
         "max_parallel_workers_per_gather": "0",
         "jit": "off",
         "work_mem": "16MB",
-        "application_name": "tracefold_workers:news_projection",
+        "application_name": "tracefold_workers:news_deduper",
         "statement_timeout": "500ms",
         "transaction_timeout": "500ms",
     }
@@ -185,21 +181,6 @@ def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() ->
                 "transaction_timeout_seconds": None,
             }
         ]
-
-
-def test_token_radar_multi_statement_sessions_keep_native_transaction_cleanup_margin() -> None:
-    database = _RecordingSessionDatabase()
-    service = TokenRadarCurrentService(db=database)
-
-    service._session(timeout_seconds=9.0)
-
-    assert database.calls == [
-        {
-            "name": "token_radar_current",
-            "statement_timeout_seconds": 9.0,
-            "transaction_timeout_seconds": None,
-        }
-    ]
 
 
 def test_macro_acquisition_uses_one_native_budget_for_statement_and_transaction() -> None:
@@ -292,10 +273,10 @@ def test_native_statement_timeout_finishes_before_the_wrapper_watchdog() -> None
         try:
             with pytest.raises(
                 ResourceAdmissionTimeout,
-                match="worker_database_statement_timeout:news_projection_peek",
+                match="worker_database_statement_timeout:news_triage_load",
             ):
                 await database.run_business(
-                    "news_projection_peek",
+                    "news_triage_load",
                     native_statement_timeout,
                     operation_timeout_seconds=0.01,
                 )
@@ -341,10 +322,10 @@ def test_native_transaction_timeout_is_recoverable() -> None:
         try:
             with pytest.raises(
                 ResourceAdmissionTimeout,
-                match="worker_database_transaction_timeout:news_projection_claim",
+                match="worker_database_transaction_timeout:news_deduper_admit",
             ):
                 await database.run_business(
-                    "news_projection_claim",
+                    "news_deduper_admit",
                     native_transaction_timeout,
                     operation_timeout_seconds=0.01,
                 )
@@ -364,10 +345,10 @@ def test_business_connection_loss_is_recoverable_but_control_loss_is_fatal() -> 
         try:
             with pytest.raises(
                 ResourceAdmissionTimeout,
-                match="worker_database_connection_lost:news_brief_peek",
+                match="worker_database_connection_lost:news_delivery_load",
             ):
                 await database.run_business(
-                    "news_brief_peek",
+                    "news_delivery_load",
                     connection_lost,
                     operation_timeout_seconds=0.5,
                 )

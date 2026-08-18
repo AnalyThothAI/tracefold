@@ -422,22 +422,11 @@ class RegistryRepository:
         since_ms: int,
         target_types: tuple[str, ...],
         limit: int,
-        priority_product_targets: tuple[tuple[str, str], ...],
     ) -> list[dict[str, Any]]:
         parsed_limit = require_nonnegative_int(limit, error_code="registry_ranked_market_targets_limit_required")
         parsed_target_types = tuple(dict.fromkeys(str(value) for value in target_types))
         if not parsed_target_types or set(parsed_target_types) - {"chain_token", "cex_symbol"}:
             raise ValueError("registry_ranked_market_targets_target_types_required")
-        parsed_priority_targets = tuple(
-            dict.fromkeys((str(target_type), str(target_id)) for target_type, target_id in priority_product_targets)
-        )
-        if any(
-            target_type not in {"Asset", "CexToken"} or not target_id
-            for target_type, target_id in parsed_priority_targets
-        ):
-            raise ValueError("registry_ranked_market_targets_priority_identity_required")
-        priority_target_types = [target_type for target_type, _target_id in parsed_priority_targets]
-        priority_target_ids = [target_id for _target_type, target_id in parsed_priority_targets]
         rows = self.conn.execute(
             """
             WITH active_targets AS MATERIALIZED (
@@ -445,14 +434,7 @@ class RegistryRepository:
                 resolution.target_type,
                 resolution.target_id,
                 intent.created_at_ms AS computed_at_ms,
-                intent.created_at_ms::double precision AS score,
-                EXISTS (
-                  SELECT 1
-                  FROM unnest(%s::text[], %s::text[])
-                    AS priority(target_type, target_id)
-                  WHERE priority.target_type = resolution.target_type
-                    AND priority.target_id = resolution.target_id
-                ) AS radar_priority
+                intent.created_at_ms::double precision AS score
               FROM token_intents intent
               JOIN token_intent_resolutions resolution
                 ON resolution.intent_id = intent.intent_id
@@ -478,8 +460,7 @@ class RegistryRepository:
                 'okx' AS provider,
                 NULL::text AS pricefeed_id,
                 active_targets.computed_at_ms,
-                active_targets.score,
-                active_targets.radar_priority
+                active_targets.score
               FROM active_targets
               JOIN registry_assets ON registry_assets.asset_id = active_targets.target_id
               WHERE active_targets.target_type = 'Asset'
@@ -498,8 +479,7 @@ class RegistryRepository:
                 preferred_pricefeed.provider AS provider,
                 preferred_pricefeed.pricefeed_id AS pricefeed_id,
                 active_targets.computed_at_ms,
-                active_targets.score,
-                active_targets.radar_priority
+                active_targets.score
               FROM active_targets
               JOIN cex_tokens ON cex_tokens.cex_token_id = active_targets.target_id
               LEFT JOIN LATERAL (
@@ -531,16 +511,13 @@ class RegistryRepository:
             FROM live_targets
             WHERE target_type = ANY(%s::text[])
               AND (target_type = 'chain_token' OR native_market_id IS NOT NULL)
-            ORDER BY radar_priority DESC,
-                     score DESC NULLS LAST,
+            ORDER BY score DESC NULLS LAST,
                      computed_at_ms DESC,
                      target_type,
                      target_id
             LIMIT %s
             """,
             (
-                priority_target_types,
-                priority_target_ids,
                 int(since_ms),
                 list(parsed_target_types),
                 parsed_limit,

@@ -37,26 +37,5 @@ def test_worker_runtime_v2_schema_keeps_only_native_domain_state_and_one_runtime
         "persisted_live_events",
         "queue_terminal_events",
         "token_profile_projection_frontiers",
-        "token_radar_current",
         "workers_runtime",
     ]
-
-    conn = connect_postgres_test(read_only=True)
-    try:
-        radar_pk = conn.execute(
-            """
-            SELECT array_agg(attribute.attname ORDER BY key_columns.ordinality) AS columns
-            FROM pg_constraint constraint_row
-            JOIN LATERAL unnest(constraint_row.conkey) WITH ORDINALITY AS key_columns(attnum, ordinality)
-              ON true
-            JOIN pg_attribute attribute
-              ON attribute.attrelid = constraint_row.conrelid
-             AND attribute.attnum = key_columns.attnum
-            WHERE constraint_row.conrelid = 'token_radar_current'::regclass
-              AND constraint_row.contype = 'p'
-            """
-        ).fetchone()
-    finally:
-        conn.close()
-
-    assert radar_pk["columns"] == ["singleton_key"]

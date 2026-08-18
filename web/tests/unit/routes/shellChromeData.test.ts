@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 describe("shellChromeData", () => {
   it("scopes topbar search to news on news routes only", () => {
     expect(shouldRouteTopbarSearchToNews("/news")).toBe(true);
-    expect(shouldRouteTopbarSearchToNews("/news/stories/story-1")).toBe(true);
+    expect(shouldRouteTopbarSearchToNews("/news/events/evt-1")).toBe(true);
 
     expect(shouldRouteTopbarSearchToNews("/")).toBe(false);
     expect(shouldRouteTopbarSearchToNews("/search")).toBe(false);

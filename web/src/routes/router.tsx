@@ -1,4 +1,9 @@
-import { createBrowserRouter, createMemoryRouter, type RouteObject } from "react-router-dom";
+import {
+  createBrowserRouter,
+  createMemoryRouter,
+  Navigate,
+  type RouteObject,
+} from "react-router-dom";
 
 import { RouteErrorElement, RouteNotFoundElement } from "./routeErrorElement";
 import { SearchShellRoute, ShellChromeRoute, ShellRoute } from "./shell.route";
@@ -25,19 +30,11 @@ export function createAppRouteObjects(): RouteObject[] {
               lazy: () => import("./news.route"),
             },
             {
-              path: "news/stories/:storyId",
-              lazy: () => import("./news.route"),
-            },
-            {
-              path: "news/brief",
+              path: "news/events/:eventId",
               lazy: () => import("./news.route"),
             },
             {
               path: "news/status",
-              lazy: () => import("./news.route"),
-            },
-            {
-              path: "news/sources",
               lazy: () => import("./news.route"),
             },
             {
@@ -82,7 +79,7 @@ export function createAppRouteObjects(): RouteObject[] {
             },
             {
               index: true,
-              lazy: () => import("./radar.route"),
+              element: <Navigate replace to="/news" />,
             },
           ],
         },

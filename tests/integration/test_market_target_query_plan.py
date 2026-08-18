@@ -57,7 +57,6 @@ def test_ranked_market_targets_bounds_hot_tail_reads_without_changing_intent_joi
             since_ms=_SINCE_MS,
             target_types=("chain_token",),
             limit=20,
-            priority_product_targets=(),
         )
         explain = captured_conn.explain
     finally:

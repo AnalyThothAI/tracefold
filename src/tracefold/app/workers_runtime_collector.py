@@ -22,7 +22,6 @@ from tracefold.app.database import WORKER_DATABASE_LOCK_TIMEOUT_SECONDS
 from tracefold.app.provider_ownership import gmgn_stream_enabled
 from tracefold.app.query_audit import query_audit_catalog, query_audit_for_connection
 from tracefold.app.workers_runtime import WORKERS_RUNTIME_VERSION
-from tracefold.news.projection import NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
     with_password_from_file,
@@ -43,7 +42,7 @@ _HTTP_TIMEOUT_SECONDS = 1.0
 _MAX_PROBE_BYTES = 64 * 1024
 _MAX_METRICS_BYTES = 4 * 1024 * 1024
 _MAX_RSS_BYTES = 2 * 1024 * 1024 * 1024
-_MAX_TRANSACTION_SECONDS = NEWS_STORY_PUBLISH_TIMEOUT_SECONDS
+_MAX_TRANSACTION_SECONDS = 20.0  # bounded heavy transaction budget (formerly the News Story publish timeout)
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IPV4_ANY = ".".join(("0", "0", "0", "0"))
@@ -1618,10 +1617,9 @@ def _collection_metadata(settings: Any, *, repository_root: Path) -> dict[str, A
             "redacted_enablement": {
                 "collector_enabled": gmgn_stream_enabled(settings),
                 "news_enabled": bool(settings.news.enabled),
-                "news_rss_enabled": bool(settings.news.rss_enabled),
                 "macro_enabled": bool(settings.providers.macro_sources.enabled),
-                "news_brief_direct_configured": bool(settings.llm.api_key),
-                "news_brief_groq_configured": bool(settings.llm.groq_api_key),
+                "news_broker_configured": bool(settings.news.broker.url),
+                "news_triage_model_configured": bool(settings.llm.news_triage_model),
             },
         },
     }

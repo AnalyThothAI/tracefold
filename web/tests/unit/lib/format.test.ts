@@ -24,7 +24,7 @@ describe("format helpers", () => {
     expect(formatPercentShare(0.0123)).toBe("1.2%");
   });
 
-  it("formats market cap and signed price changes for radar cells", () => {
+  it("formats market cap and signed price changes for market cells", () => {
     expect(formatUsdCompact(15_200)).toBe("$15K");
     expect(formatUsdCompact(11_900_000_000)).toBe("$12B");
     expect(formatSignedPercent(0.124)).toBe("+12%");

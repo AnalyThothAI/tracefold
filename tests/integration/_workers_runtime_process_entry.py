@@ -49,7 +49,7 @@ def _arguments() -> argparse.Namespace:
             "control_transient_runtime",
             "shutdown_stopping_control_never_returns",
             "provider_publication",
-            "news_bounded_recovery",
+            "cpu_bounded_recovery",
         ),
     )
     return parser.parse_args()
@@ -65,24 +65,16 @@ def _components(
         async def reconcile(self) -> None:
             return None
 
-    class _RadarCurrent:
-        async def sample(self) -> None:
-            return None
-
     return workers_module._Components(
         providers=market_providers_module.AssetMarketProviders(),
         asset_profile_refresh=_AssetProfileRefresh(),
         collector=None,
-        news=None,
-        news_story=None,
-        news_brief=None,
-        news_title_presentation=None,
-        news_push=None,
+        news_pipeline=None,
+        news_bus=None,
         macro_source=None,
         macro_turns=(),
         due_turns=due_turns,
         market_poll=None,
-        radar_current=_RadarCurrent(),
         projections=(),
         models=(),
         document_model=None,
@@ -91,7 +83,7 @@ def _components(
 
 async def _main() -> None:
     arguments = _arguments()
-    if arguments.mode == "news_bounded_recovery":
+    if arguments.mode == "cpu_bounded_recovery":
         from pebble import CONSTS
 
         # Make the native TERM -> KILL interval longer than the old fixed
@@ -290,47 +282,39 @@ async def _main() -> None:
         if arguments.mode == "control_overrun":
             return _components(workers, market_providers_module, due_turns=())
 
-        if arguments.mode == "news_bounded_recovery":
-            news_cpu = kwargs["news_cpu"]
-            assert news_cpu is not None
-            workers._NEWS_STORY_REFRESH_SECONDS = 0.1
+        if arguments.mode == "cpu_bounded_recovery":
+            projection_cpu = kwargs["projection_cpu"]
+            assert projection_cpu is not None
+            calls = 0
 
-            class RecoveringNewsStory:
-                def __init__(self) -> None:
-                    self.calls = 0
-
-                async def run(self, *, stop_event: asyncio.Event) -> None:
-                    while not stop_event.is_set():
-                        await self.sample()
-                        await asyncio.sleep(0.1)
-
-                async def sample(self) -> None:
-                    self.calls += 1
-                    if self.calls == 1:
-                        try:
-                            await news_cpu.run(
-                                "test_news_story_bounded_timeout",
-                                _ignore_sigterm_and_sleep,
-                                30.0,
-                                service_timeout_seconds=0.05,
-                            )
-                        except CpuTaskTimeout:
-                            print("NEWS_STORY_BOUNDED_TIMEOUT", flush=True)
-                            return
-                    if self.calls == 2:
-                        assert (
-                            await news_cpu.run(
-                                "test_news_story_recovery",
-                                _return_one,
-                                service_timeout_seconds=1.0,
-                            )
-                            == 1
+            async def bounded_cpu_turn() -> bool:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    try:
+                        await projection_cpu.run(
+                            "test_cpu_bounded_timeout",
+                            _ignore_sigterm_and_sleep,
+                            30.0,
+                            service_timeout_seconds=0.05,
                         )
-                        print("NEWS_STORY_RECOVERED", flush=True)
+                    except CpuTaskTimeout:
+                        print("CPU_BOUNDED_TIMEOUT", flush=True)
+                        return True
+                if calls == 2:
+                    assert (
+                        await projection_cpu.run(
+                            "test_cpu_recovery",
+                            _return_one,
+                            service_timeout_seconds=1.0,
+                        )
+                        == 1
+                    )
+                    print("CPU_RECOVERED", flush=True)
+                    return True
+                return False
 
-            components = _components(workers, market_providers_module, due_turns=())
-            components.news_story = RecoveringNewsStory()
-            return components
+            return _components(workers, market_providers_module, due_turns=((bounded_cpu_turn, 0.1),))
 
         db = kwargs["db"]
         published = False
@@ -362,6 +346,7 @@ async def _main() -> None:
 
     workers._wire_components = wire_components
     settings = Settings(
+        news={"enabled": False},
         storage={
             "postgres": {
                 "serve_dsn": arguments.dsn,
@@ -371,7 +356,7 @@ async def _main() -> None:
                 "workers_password_file": None,
                 "migrate_password_file": None,
             }
-        }
+        },
     )
     await workers.run_workers(settings)
 

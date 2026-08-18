@@ -1,4 +1,3 @@
-import type { TokenRadarSnapshot } from "@features/live";
 import type {
   OpenApiStatusData,
   SearchInspectData,
@@ -7,8 +6,6 @@ import type {
 } from "@lib/types";
 
 const NOW = 1_777_770_000_000;
-const RADAR_ADDRESS = "0x6982508145454Ce325dDbE47a25d4ec3d2311933";
-const RADAR_TARGET_ID = `asset:dex:eth:${RADAR_ADDRESS.toLowerCase()}`;
 
 export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): OpenApiStatusData {
   return {
@@ -36,48 +33,6 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
     },
     providers: { status: "ok", reasons: [], items: [] },
     ...overrides,
-  };
-}
-
-export function tokenRadarFixture(overrides: Partial<TokenRadarSnapshot> = {}): TokenRadarSnapshot {
-  return {
-    schema_version: "token_radar_snapshot_v5",
-    social_evidence_as_of_ms: NOW,
-    eligible_total: 1,
-    items: [tokenRadarItemFixture()],
-    ...overrides,
-  };
-}
-
-export function tokenRadarItemFixture() {
-  return {
-    target: {
-      target_type: "Asset" as const,
-      target_id: RADAR_TARGET_ID,
-      symbol: "UPEG",
-      name: "Unpegged Token",
-      logo_url: `/api/token-images/${"a".repeat(64)}`,
-      chain: "eip155:1",
-      exchange: null,
-      address: RADAR_ADDRESS,
-    },
-    trigger_event_id: "event-upeg-1",
-    trigger_source_event_at_ms: NOW - 60_000,
-    qualified_at_ms: NOW - 45_000,
-    why_now: { current_mentions: 7, prior_mentions: 2, mention_delta: 5 },
-    evidence: {
-      independent_author_count: 4,
-      independent_text_count: 5,
-      time_to_nth_author_ms: 90_000,
-      duplicate_share: 0.08,
-    },
-    market: {
-      price_usd: 0.042,
-      price_observed_at_ms: NOW - 30_000,
-      price_change_since_signal: 0.12,
-      market_cap_usd: 42_000_000,
-      market_cap_observed_at_ms: NOW - 40_000,
-    },
   };
 }
 

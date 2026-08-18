@@ -174,15 +174,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/news/brief": {
+    "/api/news/events/{event_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get News World Brief */
-        get: operations["get_news_world_brief_api_news_brief_get"];
+        /** Get News Event */
+        get: operations["get_news_event_api_news_events__event_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -208,23 +208,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/news/sources": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get News Sources */
-        get: operations["get_news_sources_api_news_sources_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/news/status": {
         parameters: {
             query?: never;
@@ -234,23 +217,6 @@ export interface paths {
         };
         /** Get News Status */
         get: operations["get_news_status_api_news_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/news/stories/{story_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get News Story */
-        get: operations["get_news_story_api_news_stories__story_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -378,23 +344,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/token-radar": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Token Radar */
-        get: operations["token_radar_api_token_radar_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -480,9 +429,9 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[NewsBriefData] */
-        ApiEnvelope_NewsBriefData_: {
-            data?: components["schemas"]["NewsBriefData"] | null;
+        /** ApiEnvelope[NewsEventDetailData] */
+        ApiEnvelope_NewsEventDetailData_: {
+            data?: components["schemas"]["NewsEventDetailData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -500,39 +449,9 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[NewsRealtimeStatusResponseData] */
-        ApiEnvelope_NewsRealtimeStatusResponseData_: {
-            data?: components["schemas"]["NewsRealtimeStatusResponseData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[NewsSourcesData] */
-        ApiEnvelope_NewsSourcesData_: {
-            data?: components["schemas"]["NewsSourcesData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
         /** ApiEnvelope[NewsStatusData] */
         ApiEnvelope_NewsStatusData_: {
             data?: components["schemas"]["NewsStatusData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[NewsStoryDetailData] */
-        ApiEnvelope_NewsStoryDetailData_: {
-            data?: components["schemas"]["NewsStoryDetailData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -613,16 +532,6 @@ export interface components {
         /** ApiEnvelope[TokenCaseData] */
         ApiEnvelope_TokenCaseData_: {
             data?: components["schemas"]["TokenCaseData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
-        /** ApiEnvelope[TokenRadarData] */
-        ApiEnvelope_TokenRadarData_: {
-            data?: components["schemas"]["TokenRadarData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2538,1018 +2447,484 @@ export interface components {
             /** Spread History */
             spread_history: components["schemas"]["MacroHistoryPointData"][];
         };
-        /** NewsBriefData */
-        NewsBriefData: {
-            latest_run: components["schemas"]["NewsBriefRunData"] | null;
-            /** Next Due At Ms */
-            next_due_at_ms: number;
-            publication: components["schemas"]["NewsBriefPublicationData"] | null;
-            /** Slot At Ms */
-            slot_at_ms: number | null;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "unavailable" | "current" | "degraded" | "last_known_good";
+        /** NewsBrokerQueueData */
+        NewsBrokerQueueData: {
+            /** Consumers */
+            consumers: number;
+            /** Messages */
+            messages: number;
         };
-        /** NewsBriefL1ValidationData */
-        NewsBriefL1ValidationData: {
-            /** Failure Code */
-            failure_code: null;
-            /** Line Fallbacks */
-            line_fallbacks: number[];
-            /** Stripped Citations */
-            stripped_citations: number;
-        };
-        /** NewsBriefL2ValidationData */
-        NewsBriefL2ValidationData: {
-            /**
-             * Failure Code
-             * @enum {string}
-             */
-            failure_code: "INSIGHTS_SYNTHESIS_PARSE" | "INSIGHTS_SYNTHESIS_GATE" | "INSIGHTS_SYNTHESIS_MISSING_CLUSTER" | "INSIGHTS_SYNTHESIS_PROVIDER";
-            /** Headline Fallback */
-            headline_fallback: boolean;
-        };
-        /** NewsBriefNoneValidationData */
-        NewsBriefNoneValidationData: {
-            /**
-             * Failure Code
-             * @enum {string}
-             */
-            failure_code: "INSIGHTS_SYNTHESIS_PARSE" | "INSIGHTS_SYNTHESIS_GATE" | "INSIGHTS_SYNTHESIS_MISSING_CLUSTER" | "INSIGHTS_SYNTHESIS_PROVIDER";
-        };
-        /** NewsBriefProvenanceData */
-        NewsBriefProvenanceData: {
-            /** Projection Revision */
-            projection_revision: string;
-            selection_stats: components["schemas"]["NewsBriefSelectionStatsData"];
-            /** Selector Evaluated At Ms */
-            selector_evaluated_at_ms: number;
-        };
-        /** NewsBriefPublicationData */
-        NewsBriefPublicationData: {
-            /**
-             * Brief Kind
-             * @enum {string}
-             */
-            brief_kind: "l1" | "l2" | "none";
-            /** Brief Story Lines */
-            brief_story_lines: components["schemas"]["NewsBriefStoryLineData"][];
-            /** Composer Version */
-            composer_version: string;
-            /** Identity Version */
-            identity_version: string;
-            /**
-             * Locale
-             * @constant
-             */
-            locale: "en";
-            /** Model */
-            model: string;
-            /** Prompt Version */
-            prompt_version: string;
-            provenance: components["schemas"]["NewsBriefProvenanceData"];
-            /** Provider */
-            provider: string;
-            /** Publication Id */
-            publication_id: string;
-            /** Published At Ms */
-            published_at_ms: number;
-            /**
-             * Quality
-             * @enum {string}
-             */
-            quality: "ok" | "degraded";
-            /** Schema Version */
-            schema_version: string;
-            /** Selection Fingerprint */
-            selection_fingerprint: string;
-            /** Selector Version */
-            selector_version: string;
-            /** Slot At Ms */
-            slot_at_ms: number;
-            source_age_range: components["schemas"]["NewsBriefSourceAgeRangeData"];
-            /** Sources */
-            sources: components["schemas"]["NewsBriefSourceData"][];
-            /** Top Stories */
-            top_stories: components["schemas"]["NewsBriefTopStoryData"][];
-            /** Validation */
-            validation: components["schemas"]["NewsBriefL1ValidationData"] | components["schemas"]["NewsBriefL2ValidationData"] | components["schemas"]["NewsBriefNoneValidationData"];
-            /** Workflow Version */
-            workflow_version: string;
-            /** World Brief */
-            world_brief: string;
-        };
-        /** NewsBriefRunData */
-        NewsBriefRunData: {
-            /** Attempt Count */
-            attempt_count: number;
-            /** Completed At Ms */
-            completed_at_ms: number | null;
-            /** Failure Count */
-            failure_count: number;
-            /** Last Attempt At Ms */
-            last_attempt_at_ms: number | null;
-            /** Last Error Code */
-            last_error_code: string | null;
-            /** Lease Expires At Ms */
-            lease_expires_at_ms: number | null;
-            /** Model Outcome */
-            model_outcome: ("ok" | "l2" | "none") | null;
-            /** Next Due At Ms */
-            next_due_at_ms: number;
-            /**
-             * Pointer Action
-             * @enum {string}
-             */
-            pointer_action: "advance_ok" | "advance_degraded" | "preserve_lkg" | "none";
-            /** Slot At Ms */
-            slot_at_ms: number;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "due" | "running" | "completed";
-            /** Updated At Ms */
-            updated_at_ms: number;
-        };
-        /** NewsBriefSelectionStatsData */
-        NewsBriefSelectionStatsData: {
-            /** Admissibility Dropped */
-            admissibility_dropped: number;
-            /** Brief Eligible Considered */
-            brief_eligible_considered: number;
-            /** Brief Eligible Promoted */
-            brief_eligible_promoted: boolean;
-            /** Considered */
-            considered: number;
-            /** Overflow Dropped */
-            overflow_dropped: number;
-            /** Source Cap Dropped */
-            source_cap_dropped: number;
-        };
-        /** NewsBriefSourceAgeRangeData */
-        NewsBriefSourceAgeRangeData: {
-            /** Newest Ms */
-            newest_ms: number;
-            /** Oldest Ms */
-            oldest_ms: number;
-        };
-        /** NewsBriefSourceData */
-        NewsBriefSourceData: {
-            /** Published At Ms */
-            published_at_ms: number | null;
-            /** Source */
-            source: string;
-            /** Title */
-            title: string;
-            /** Url */
-            url: string;
-        };
-        /** NewsBriefStatusData */
-        NewsBriefStatusData: {
-            latest_run: components["schemas"]["NewsBriefRunData"] | null;
-            /** Next Due At Ms */
-            next_due_at_ms: number;
-            /**
-             * Public State
-             * @enum {string}
-             */
-            public_state: "unavailable" | "current" | "degraded" | "last_known_good";
-            /** Publication Id */
-            publication_id: string | null;
-            /** Reasons */
-            reasons: string[];
-            /** Slot At Ms */
-            slot_at_ms: number | null;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "ready" | "warming" | "degraded";
-        };
-        /** NewsBriefStoryLineData */
-        NewsBriefStoryLineData: {
-            /** N */
-            n: number;
-            /** Text */
-            text: string;
-        };
-        /** NewsBriefTopStoryData */
-        NewsBriefTopStoryData: {
-            /**
-             * Category
-             * @enum {string}
-             */
-            category: "conflict" | "violence" | "unrest" | "geopolitical" | "crisis" | "natural_disaster" | "political" | "economic" | "general";
-            /** Corroboration Source Count */
-            corroboration_source_count: number;
-            /** Effective Importance Score */
-            effective_importance_score: number;
-            /** Entity Corroboration */
-            entity_corroboration: boolean;
-            /** Importance Score */
-            importance_score: number;
-            /** Is Alert */
-            is_alert: boolean;
-            /** Last Updated Ms */
-            last_updated_ms: number;
-            /** Member Titles */
-            member_titles: string[];
-            /** Primary Link */
-            primary_link: string | null;
-            /** Primary Published At Ms */
-            primary_published_at_ms: number;
-            /** Primary Source */
-            primary_source: string;
-            /** Primary Title */
-            primary_title: string;
-            /** Source Count */
-            source_count: number;
-            /** Source Tier */
-            source_tier: number;
-            /** Sources */
-            sources: string[];
-            /** Story Id */
-            story_id: string;
-            /**
-             * Threat Level
-             * @enum {string}
-             */
-            threat_level: "critical" | "high" | "elevated" | "moderate";
-            /** Unique Source Count */
-            unique_source_count: number;
-            /** Upstream Importance Score */
-            upstream_importance_score: number;
-        };
-        /** NewsFeedData */
-        NewsFeedData: {
-            facets: components["schemas"]["NewsFeedFacetsData"];
-            filters: components["schemas"]["NewsFeedFiltersData"];
-            /** Has More */
-            has_more: boolean;
-            /** Next Cursor */
-            next_cursor: string | null;
-            /**
-             * Sort
-             * @enum {string}
-             */
-            sort: "importance" | "latest";
-            /** Stories */
-            stories: components["schemas"]["NewsStoryData"][];
-        };
-        /** NewsFeedFacetData */
-        NewsFeedFacetData: {
-            /** Count */
-            count: number;
-            /** Value */
-            value: string;
-        };
-        /** NewsFeedFacetsData */
-        NewsFeedFacetsData: {
-            /** Categories */
-            categories: components["schemas"]["NewsFeedFacetData"][];
-            /** Levels */
-            levels: components["schemas"]["NewsFeedFacetData"][];
-            page: components["schemas"]["NewsFeedFacetsPageData"];
-            /** Reporting Origins */
-            reporting_origins: components["schemas"]["NewsFeedReportingOriginFacetData"][];
-            /** Sources */
-            sources: components["schemas"]["NewsFeedSourceFacetData"][];
-        };
-        /** NewsFeedFacetsPageData */
-        NewsFeedFacetsPageData: {
-            /** Categories Has More */
-            categories_has_more: boolean;
-            /** Levels Has More */
-            levels_has_more: boolean;
-            /** Reporting Origins Has More */
-            reporting_origins_has_more: boolean;
-            /** Sources Has More */
-            sources_has_more: boolean;
-        };
-        /** NewsFeedFiltersData */
-        NewsFeedFiltersData: {
-            /** Category */
-            category: string | null;
-            /** Level */
-            level: string | null;
-            /** Provider Score Gt */
-            provider_score_gt: number | null;
-            /** Q */
-            q: string | null;
-            /** Reporting Origin */
-            reporting_origin: string | null;
-            /** Source Id */
-            source_id: string | null;
-        };
-        /** NewsFeedReportingOriginFacetData */
-        NewsFeedReportingOriginFacetData: {
-            /** Count */
-            count: number;
-            /** Label */
-            label: string;
-            /** Value */
-            value: string;
-        };
-        /** NewsFeedSourceFacetData */
-        NewsFeedSourceFacetData: {
-            /** Count */
-            count: number;
-            /** Label */
-            label: string;
-            /** Value */
-            value: string;
-        };
-        /** NewsImportanceFactorsData */
-        NewsImportanceFactorsData: {
-            /** Corroboration Points */
-            corroboration_points: number;
-            /** Diplomacy Flashpoint Boost */
-            diplomacy_flashpoint_boost: number;
-            /** Entity Corroboration Boost */
-            entity_corroboration_boost: number;
-            /** Recency Points */
-            recency_points: number;
-            /** Reporting Origin Count */
-            reporting_origin_count: number;
-            /** Scoring Corroboration Count */
-            scoring_corroboration_count: number;
-            /**
-             * Severity Level
-             * @enum {string}
-             */
-            severity_level: "critical" | "high" | "medium" | "low" | "info";
-            /** Severity Points */
-            severity_points: number;
-            /** Source Points */
-            source_points: number;
-            /** Source Tier */
-            source_tier: number;
-            /** Total */
-            total: number;
-        };
-        /** NewsIngestStatusData */
-        NewsIngestStatusData: {
-            opennews: components["schemas"]["NewsOpenNewsStatusData"] | null;
-            /** Reasons */
-            reasons: string[];
-            rss: components["schemas"]["NewsRssStatusData"];
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "ready" | "warming" | "degraded";
-        };
-        /** NewsOpenNewsIncidentData */
-        NewsOpenNewsIncidentData: {
-            /**
-             * Cause Class
-             * @enum {string}
-             */
-            cause_class: "planned_shutdown" | "network_connect" | "authentication" | "provider_close" | "protocol_error" | "idle_timeout" | "database_backpressure" | "buffer_overflow" | "process_outage" | "legacy_unknown" | "unknown";
-            /** Close Code */
-            close_code: number | null;
-            /** Closed At Ms */
-            closed_at_ms: number | null;
-            /** Incident Id */
-            incident_id: number;
-            /** Last Error Code */
-            last_error_code: string | null;
-            /** Opened At Ms */
-            opened_at_ms: number;
-            /** Planned */
-            planned: boolean;
-            /** Reconnected At Ms */
-            reconnected_at_ms: number | null;
-            /** Recovered Count */
-            recovered_count: number;
-            /** Recovery From At Ms */
-            recovery_from_at_ms: number | null;
-            /**
-             * Recovery Status
-             * @enum {string}
-             */
-            recovery_status: "pending" | "running" | "recovered" | "partial" | "unavailable" | "not_required";
-            /** Recovery To At Ms */
-            recovery_to_at_ms: number | null;
-        };
-        /** NewsOpenNewsStatusData */
-        NewsOpenNewsStatusData: {
-            /** Configured Strategy Count */
-            configured_strategy_count: number;
-            /** Consecutive Failures */
-            consecutive_failures: number;
-            /** Incidents */
-            incidents: components["schemas"]["NewsOpenNewsIncidentData"][];
-            /** Last Accepted Strategy Trigger At Ms */
-            last_accepted_strategy_trigger_at_ms: number | null;
-            /** Last Connected At Ms */
-            last_connected_at_ms: number | null;
-            /** Last Disconnected At Ms */
-            last_disconnected_at_ms: number | null;
-            /** Last Error */
-            last_error: string | null;
-            /** Last History Check At Ms */
-            last_history_check_at_ms: number | null;
-            /** Last Items Accepted */
-            last_items_accepted: number;
-            /** Last Items Seen */
-            last_items_seen: number;
-            /** Last Outcome */
-            last_outcome: string | null;
-            /** Last Rejection Counts */
-            last_rejection_counts: {
-                [key: string]: number;
+        /** NewsBrokerStatusData */
+        NewsBrokerStatusData: {
+            /** Configured */
+            configured: boolean;
+            /** Connected */
+            connected?: boolean | null;
+            /** Error Code */
+            error_code?: string | null;
+            /** Observed At Ms */
+            observed_at_ms?: number | null;
+            /** Queues */
+            queues?: {
+                [key: string]: components["schemas"]["NewsBrokerQueueData"];
             };
-            /** Last Success At Ms */
-            last_success_at_ms: number | null;
-            /** Live Connected */
-            live_connected: boolean;
-            /** Name */
-            name: string;
-            /** Observed Strategy Count */
-            observed_strategy_count: number;
-            /** Source Id */
-            source_id: string;
+        };
+        /** NewsControlStateData */
+        NewsControlStateData: {
+            /** Mutes */
+            mutes?: {
+                [key: string]: unknown;
+            }[];
             /**
-             * Strategy History Status
-             * @enum {string}
+             * Paused
+             * @default false
              */
-            strategy_history_status: "unknown" | "available" | "unavailable" | "partial";
-            /** Unresolved Incident Count */
-            unresolved_incident_count: number;
+            paused: boolean;
         };
-        /** NewsProviderAssetData */
-        NewsProviderAssetData: {
-            /** Grade */
-            grade?: string | null;
-            /** Market Type */
-            market_type: string;
-            /** Match */
-            match?: string | null;
-            /** Score */
-            score?: number | null;
-            /** Signal */
-            signal?: string | null;
-            /** Symbol */
-            symbol: string;
+        /** NewsDeliveryData */
+        NewsDeliveryData: {
+            /** Attempted At Ms */
+            attempted_at_ms: number;
+            /** Error Code */
+            error_code?: string | null;
+            /** Kind */
+            kind: string;
+            /** Receipt */
+            receipt?: {
+                [key: string]: unknown;
+            } | null;
+            /** Settled At Ms */
+            settled_at_ms?: number | null;
+            /** State */
+            state: string;
         };
-        /** NewsProviderEvidenceData */
-        NewsProviderEvidenceData: {
-            /** Item Id */
-            item_id: string;
-            provider_metadata: components["schemas"]["NewsProviderMetadataData"];
-            /** Url */
-            url: string | null;
-        };
-        /** NewsProviderMetadataData */
-        NewsProviderMetadataData: {
-            /** Assets */
-            assets?: components["schemas"]["NewsProviderAssetData"][] | null;
-            /** Grade */
-            grade?: string | null;
-            /** Score */
-            score?: number | null;
-            /** Signal */
-            signal?: string | null;
-            /** Source */
-            source?: string | null;
-        };
-        /** NewsPushDelivery24hData */
-        NewsPushDelivery24hData: {
-            /** Completed */
-            completed: number;
-            /** Latency P95 Ms */
-            latency_p95_ms: number | null;
-            /** Sample Complete */
-            sample_complete: boolean;
-            /** Sent */
-            sent: number;
-            /** Slo Met */
-            slo_met: boolean | null;
-            /** Terminal */
-            terminal: number;
-        };
-        /** NewsPushStatusData */
-        NewsPushStatusData: {
-            /** Admission Policy Version */
-            admission_policy_version: string;
-            /** Availability Reason */
-            availability_reason: string | null;
-            /** Comparison Identity Version */
-            comparison_identity_version: string;
-            delivery_24h: components["schemas"]["NewsPushDelivery24hData"];
+        /** NewsDeliveryStatusData */
+        NewsDeliveryStatusData: {
             /** Delivery Available */
             delivery_available: boolean;
-            /** Enablement Epoch At Ms */
-            enablement_epoch_at_ms: number | null;
-            /** Feishu Signing Secret Configured */
-            feishu_signing_secret_configured: boolean;
-            /** Feishu Webhook Url Configured */
-            feishu_webhook_url_configured: boolean;
-            /** Latest Error */
-            latest_error: string | null;
-            /** Latest Error At Ms */
-            latest_error_at_ms: number | null;
-            /** Latest Sent At Ms */
-            latest_sent_at_ms: number | null;
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Oldest Pending At Ms */
-            oldest_pending_at_ms: number | null;
-            /** Payload Schema Version */
-            payload_schema_version: string;
-            /** Pending Count */
-            pending_count: number;
-            /** Reasons */
-            reasons: string[];
-            /** Recent Suppressions */
-            recent_suppressions: components["schemas"]["NewsPushSuppressionEvidenceData"][];
-            /** Requested */
-            requested: boolean;
-            /** Sending Count */
-            sending_count: number;
-            /** Sent Count */
-            sent_count: number;
-            /** State Synchronized */
-            state_synchronized: boolean;
+            /** E2E P95 Ms */
+            e2e_p95_ms?: number | null;
+            /** Hourly Cap */
+            hourly_cap: number;
+            /** Last Error Code */
+            last_error_code?: string | null;
             /**
-             * Status
-             * @enum {string}
+             * Sent 1H
+             * @default 0
              */
-            status: "disabled" | "ready" | "degraded";
-            /** Suppressed Count */
-            suppressed_count: number;
-            /** Suppression Sample Complete */
-            suppression_sample_complete: boolean;
-            /** Terminal Count */
-            terminal_count: number;
-            /** Total Count */
-            total_count: number;
-        };
-        /** NewsPushSuppressionEvidenceData */
-        NewsPushSuppressionEvidenceData: {
-            /** Adjudicated At Ms */
-            adjudicated_at_ms: number;
+            sent_1h: number;
             /**
-             * Admission Reason
-             * @constant
+             * Sent 24H
+             * @default 0
              */
-            admission_reason: "exact_atom_suppressed";
-            /** Item Id */
-            item_id: string;
-            /** Notification Fingerprint */
-            notification_fingerprint: string;
-            /** Provider Published At Ms */
-            provider_published_at_ms: number;
-            /** Suppressed By Item Id */
-            suppressed_by_item_id: string;
-        };
-        /** NewsRealtimeLatencyData */
-        NewsRealtimeLatencyData: {
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** P50 Ms */
-            p50_ms: number | null;
-            /** P95 Ms */
-            p95_ms: number | null;
-            /** Sample Count */
-            sample_count: number;
-            /** Window Started At Ms */
-            window_started_at_ms: number;
-        };
-        /** NewsRealtimeStatusData */
-        NewsRealtimeStatusData: {
-            /** Connected At Ms */
-            connected_at_ms: number | null;
-            /** Disconnected At Ms */
-            disconnected_at_ms: number | null;
-            inbound_latency: components["schemas"]["NewsRealtimeLatencyData"];
-            story_visible_latency: components["schemas"]["NewsRealtimeLatencyData"];
+            sent_24h: number;
             /**
-             * Wss State
-             * @enum {string}
+             * Terminal 24H
+             * @default 0
              */
-            wss_state: "connected" | "reconnecting" | "unavailable";
+            terminal_24h: number;
         };
-        /** NewsRealtimeStatusResponseData */
-        NewsRealtimeStatusResponseData: {
-            /** Measured At Ms */
-            measured_at_ms: number;
-            realtime: components["schemas"]["NewsRealtimeStatusData"];
+        /** NewsDeliverySummaryData */
+        NewsDeliverySummaryData: {
+            /** Settled At Ms */
+            settled_at_ms?: number | null;
+            /** State */
+            state: string;
         };
-        /** NewsRssStatusData */
-        NewsRssStatusData: {
-            /** Claimed Source Count */
-            claimed_source_count: number;
-            /** Enabled */
-            enabled: boolean;
-            /** Failed Source Count */
-            failed_source_count: number;
-            /** Latest Success At Ms */
-            latest_success_at_ms: number | null;
-            /** Next Due At Ms */
-            next_due_at_ms: number | null;
-            /** Source Count */
-            source_count: number;
-            /** Successful Source Count */
-            successful_source_count: number;
-        };
-        /** NewsSourceData */
-        NewsSourceData: {
-            /** Claim Lease Expires At Ms */
-            claim_lease_expires_at_ms: number | null;
-            /** Consecutive Failures */
-            consecutive_failures: number;
-            /** Enabled */
-            enabled: boolean;
-            /** Feed Url */
-            feed_url: string | null;
-            /** Incidents */
-            incidents: components["schemas"]["NewsOpenNewsIncidentData"][];
-            /** Last Accepted Strategy Trigger At Ms */
-            last_accepted_strategy_trigger_at_ms: number | null;
-            /** Last Connected At Ms */
-            last_connected_at_ms: number | null;
-            /** Last Disconnected At Ms */
-            last_disconnected_at_ms: number | null;
-            /** Last Error */
-            last_error: string | null;
-            /** Last Fetch Finished At Ms */
-            last_fetch_finished_at_ms: number | null;
-            /** Last Fetch Started At Ms */
-            last_fetch_started_at_ms: number | null;
-            /** Last History Check At Ms */
-            last_history_check_at_ms: number | null;
-            /** Last Http Status */
-            last_http_status: number | null;
-            /** Last Items Accepted */
-            last_items_accepted: number;
-            /** Last Items Seen */
-            last_items_seen: number;
-            /** Last Outcome */
-            last_outcome: string | null;
-            /** Last Rejection Counts */
-            last_rejection_counts: {
-                [key: string]: number;
-            };
-            /** Last Success At Ms */
-            last_success_at_ms: number | null;
-            /** Live Connected */
-            live_connected: boolean;
-            /** Name */
-            name: string;
-            /** Next Fetch At Ms */
-            next_fetch_at_ms: number | null;
-            /** Observed Strategy Count */
-            observed_strategy_count: number;
-            /** Refresh Interval Seconds */
-            refresh_interval_seconds: number | null;
-            /** Source Id */
-            source_id: string;
+        /** NewsEventData */
+        NewsEventData: {
+            /** Admission */
+            admission: string;
+            /** Asset Class */
+            asset_class: string;
             /**
-             * Source Kind
-             * @enum {string}
+             * Context Line
+             * @default
              */
-            source_kind: "rss" | "opennews";
+            context_line: string;
+            /** Engine Type */
+            engine_type: string;
+            /** Event Id */
+            event_id: string;
+            /** Family */
+            family: string;
+            /** Grounded Assets */
+            grounded_assets?: string[];
+            /** Ingest Mode */
+            ingest_mode: string;
+            /** Last Member At Ms */
+            last_member_at_ms: number;
             /**
-             * Strategy History Status
-             * @enum {string}
+             * Leader Description
+             * @default
              */
-            strategy_history_status: "unknown" | "available" | "unavailable" | "partial";
-            /** Tier */
-            tier: number;
-            /** Unresolved Incident Count */
-            unresolved_incident_count: number;
+            leader_description: string;
+            /** Leader Title */
+            leader_title: string;
+            /** Leader Url */
+            leader_url?: string | null;
+            /**
+             * Macro Lexicon
+             * @default false
+             */
+            macro_lexicon: boolean;
+            /** Member Count */
+            member_count: number;
+            /** Opened At Ms */
+            opened_at_ms: number;
+            /** Priority */
+            priority: string;
+            /** Provenance */
+            provenance?: string[];
+            /** Provider Score Max */
+            provider_score_max?: number | null;
+            /** Published At Ms */
+            published_at_ms?: number | null;
+            /**
+             * Reporting Origin
+             * @default
+             */
+            reporting_origin: string;
+            /**
+             * Storyline Key
+             * @default
+             */
+            storyline_key: string;
+            /** Watchlist Hits */
+            watchlist_hits?: string[];
         };
-        /** NewsSourcesData */
-        NewsSourcesData: {
-            /** Items */
-            items: components["schemas"]["NewsSourceData"][];
-            page: components["schemas"]["NewsSourcesPageData"];
-        };
-        /** NewsSourcesPageData */
-        NewsSourcesPageData: {
-            /** Has More */
-            has_more: boolean;
-            /** Next Cursor */
-            next_cursor: string | null;
-            /** Returned Count */
-            returned_count: number;
-        };
-        /** NewsStatusData */
-        NewsStatusData: {
-            /** Last Success At Ms */
-            last_success_at_ms: number | null;
-            layers: components["schemas"]["NewsStatusLayersData"];
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /**
-             * Operating State
-             * @enum {string}
-             */
-            operating_state: "live" | "recovering" | "stalled";
-            realtime: components["schemas"]["NewsRealtimeStatusData"];
-            /** Reasons */
-            reasons: string[];
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "ready" | "warming" | "degraded";
-            title_presentation: components["schemas"]["NewsTitlePresentationStatusData"];
-        };
-        /** NewsStatusLayersData */
-        NewsStatusLayersData: {
-            brief: components["schemas"]["NewsBriefStatusData"];
-            ingest: components["schemas"]["NewsIngestStatusData"];
-            push: components["schemas"]["NewsPushStatusData"];
-            story: components["schemas"]["NewsStoryStatusData"];
-        };
-        /** NewsStoryData */
-        NewsStoryData: {
-            /**
-             * Category
-             * @enum {string}
-             */
-            category: "conflict" | "protest" | "disaster" | "diplomatic" | "economic" | "terrorism" | "cyber" | "health" | "environmental" | "military" | "crime" | "infrastructure" | "tech" | "general";
-            /** Description */
-            description: string;
-            /** First Published At Ms */
-            first_published_at_ms: number;
-            importance_factors: components["schemas"]["NewsImportanceFactorsData"];
-            /** Importance Score */
-            importance_score: number;
-            /** Item Count */
-            item_count: number;
-            /** Last Published At Ms */
-            last_published_at_ms: number;
-            /**
-             * Level
-             * @enum {string}
-             */
-            level: "critical" | "high" | "medium" | "low" | "info";
-            /** Original Title */
-            original_title: string;
-            provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
-            /** Representative Item Id */
-            representative_item_id: string;
-            /** Scoring Item Id */
-            scoring_item_id: string;
-            /** Source Count */
-            source_count: number;
-            /** Source Id */
-            source_id: string;
-            /** Source Name */
-            source_name: string;
-            /** Story Id */
-            story_id: string;
-            /** Title */
-            title: string;
-            /** Url */
-            url: string | null;
-        };
-        /** NewsStoryDetailData */
-        NewsStoryDetailData: {
-            /** Canonical Title */
-            canonical_title: string;
-            /**
-             * Category
-             * @enum {string}
-             */
-            category: "conflict" | "protest" | "disaster" | "diplomatic" | "economic" | "terrorism" | "cyber" | "health" | "environmental" | "military" | "crime" | "infrastructure" | "tech" | "general";
-            /** Description */
-            description: string;
-            /** First Published At Ms */
-            first_published_at_ms: number;
-            identity_evidence: components["schemas"]["NewsStoryIdentityEvidenceData"];
-            importance_factors: components["schemas"]["NewsImportanceFactorsData"];
-            /** Importance Score */
-            importance_score: number;
-            /** Item Count */
-            item_count: number;
-            /** Last Published At Ms */
-            last_published_at_ms: number;
-            /**
-             * Level
-             * @enum {string}
-             */
-            level: "critical" | "high" | "medium" | "low" | "info";
+        /** NewsEventDetailData */
+        NewsEventDetailData: {
+            /** Deliveries */
+            deliveries: components["schemas"]["NewsDeliveryData"][];
+            event: components["schemas"]["NewsEventData"];
+            /** Marks */
+            marks?: components["schemas"]["NewsMarketMarkData"][];
             /** Members */
-            members: components["schemas"]["NewsStoryMemberData"][];
-            members_page: components["schemas"]["NewsStoryMembersPageData"];
-            /** Original Title */
-            original_title: string;
-            provider_evidence: components["schemas"]["NewsProviderEvidenceData"] | null;
-            /** Representative Item Id */
-            representative_item_id: string;
-            /** Scoring Item Id */
-            scoring_item_id: string;
-            /** Source Count */
-            source_count: number;
-            /** Source Id */
-            source_id: string;
-            /** Source Name */
-            source_name: string;
-            /** Story Id */
-            story_id: string;
-            /** Title */
-            title: string;
-            /** Url */
-            url: string | null;
+            members: components["schemas"]["NewsEventMemberData"][];
+            presentation?: components["schemas"]["NewsPresentationData"] | null;
+            /** Verdicts */
+            verdicts: components["schemas"]["NewsVerdictData"][];
         };
-        /** NewsStoryIdentityEvidenceData */
-        NewsStoryIdentityEvidenceData: {
-            /** Action Keys */
-            action_keys: string[];
-            /** Anchor Item Id */
-            anchor_item_id: string;
-            /** Clustering Version */
-            clustering_version: string;
-            /** Comparison Version */
-            comparison_version: string;
-            /** Event Policy Version */
-            event_policy_version: string;
-            /** Feature Version */
-            feature_version: string;
-            /** Grounded Provider Count */
-            grounded_provider_count: number;
-            /** Grounded Provider Version */
-            grounded_provider_version: string;
-            /** Identity Version */
-            identity_version: string;
-            /** Jaccard Version */
-            jaccard_version: string;
-            /** Location Keys */
-            location_keys: string[];
-            /** Max Accepted Jaccard */
-            max_accepted_jaccard: number;
-            /** Max Rejected Jaccard */
-            max_rejected_jaccard: number;
-            /** Membership Reasons */
-            membership_reasons: {
-                [key: string]: number;
-            };
-            /** Numeric Keys */
-            numeric_keys: string[];
-            /** Rejection Reasons */
-            rejection_reasons: {
-                [key: string]: number;
-            };
-            /** Strong Entity Keys */
-            strong_entity_keys: string[];
-        };
-        /** NewsStoryMemberData */
-        NewsStoryMemberData: {
+        /** NewsEventMemberData */
+        NewsEventMemberData: {
             /**
-             * Category
-             * @enum {string}
+             * Description
+             * @default
              */
-            category: "conflict" | "protest" | "disaster" | "diplomatic" | "economic" | "terrorism" | "cyber" | "health" | "environmental" | "military" | "crime" | "infrastructure" | "tech" | "general";
-            /** Description */
             description: string;
-            importance_factors: components["schemas"]["NewsImportanceFactorsData"];
-            /** Importance Score */
-            importance_score: number;
             /** Item Id */
             item_id: string;
-            /** Lang */
-            lang: string;
-            /** Last Observed At Ms */
-            last_observed_at_ms: number;
-            /**
-             * Level
-             * @enum {string}
-             */
-            level: "critical" | "high" | "medium" | "low" | "info";
-            /** Original Title */
-            original_title: string;
-            provider_metadata: components["schemas"]["NewsProviderMetadataData"];
-            /** Provider Record Id */
-            provider_record_id: string | null;
+            /** Jaccard Estimate */
+            jaccard_estimate?: number | null;
+            /** Joined At Ms */
+            joined_at_ms: number;
+            /** Match Kind */
+            match_kind: string;
+            /** Provenance */
+            provenance?: string[];
             /** Published At Ms */
             published_at_ms: number;
             /** Reporting Origin */
             reporting_origin: string;
-            /** Source Id */
-            source_id: string;
-            /** Source Name */
-            source_name: string;
-            /** Tier */
-            tier: number;
             /** Title */
             title: string;
             /** Url */
-            url: string | null;
+            url?: string | null;
         };
-        /** NewsStoryMembersPageData */
-        NewsStoryMembersPageData: {
-            /** Has More */
-            has_more: boolean;
+        /** NewsFeedData */
+        NewsFeedData: {
+            /** Events */
+            events: components["schemas"]["NewsFeedEventData"][];
+            filters: components["schemas"]["NewsFeedFiltersData"];
             /** Next Cursor */
-            next_cursor: string | null;
-            /** Returned Count */
-            returned_count: number;
+            next_cursor?: string | null;
         };
-        /** NewsStoryStatusData */
-        NewsStoryStatusData: {
-            /** Active Items */
-            active_items: number;
-            /** Active Stories */
-            active_stories: number;
-            /** Classifier Version */
-            classifier_version: string;
-            /** Identity Version */
-            identity_version: string;
-            /** Importance Version */
-            importance_version: string;
-            /** Invalid Owner Count */
-            invalid_owner_count: number;
-            /** Invalid Story Aggregate Count */
-            invalid_story_aggregate_count: number;
-            /** Invariant Error Count */
-            invariant_error_count: number;
-            /** Last Attempt At Ms */
-            last_attempt_at_ms: number | null;
-            /** Last Error */
-            last_error: string | null;
-            /** Last Material Change At Ms */
-            last_material_change_at_ms: number | null;
-            /** Last Success At Ms */
-            last_success_at_ms: number | null;
-            /** Newest Item At Ms */
-            newest_item_at_ms: number | null;
-            /** Newest Story At Ms */
-            newest_story_at_ms: number | null;
-            /** Reasons */
-            reasons: string[];
+        /** NewsFeedEventData */
+        NewsFeedEventData: {
+            /** Admission */
+            admission: string;
+            /** Asset Class */
+            asset_class: string;
             /**
-             * Status
+             * Context Line
+             * @default
+             */
+            context_line: string;
+            delivery?: components["schemas"]["NewsDeliverySummaryData"] | null;
+            /** Display Title */
+            display_title: string;
+            /** Engine Type */
+            engine_type: string;
+            /** Event Id */
+            event_id: string;
+            /** Family */
+            family: string;
+            /** Grounded Assets */
+            grounded_assets?: string[];
+            /** Ingest Mode */
+            ingest_mode: string;
+            /** Last Member At Ms */
+            last_member_at_ms: number;
+            /**
+             * Leader Description
+             * @default
+             */
+            leader_description: string;
+            /** Leader Title */
+            leader_title: string;
+            /** Leader Url */
+            leader_url?: string | null;
+            /**
+             * Macro Lexicon
+             * @default false
+             */
+            macro_lexicon: boolean;
+            /** Member Count */
+            member_count: number;
+            /** Opened At Ms */
+            opened_at_ms: number;
+            /** Presentation Outcome */
+            presentation_outcome?: string | null;
+            /** Priority */
+            priority: string;
+            /** Provenance */
+            provenance?: string[];
+            /** Provider Score Max */
+            provider_score_max?: number | null;
+            /** Published At Ms */
+            published_at_ms?: number | null;
+            /**
+             * Reporting Origin
+             * @default
+             */
+            reporting_origin: string;
+            /**
+             * Storyline Key
+             * @default
+             */
+            storyline_key: string;
+            triage?: components["schemas"]["NewsTriageSummaryData"] | null;
+            /** Watchlist Hits */
+            watchlist_hits?: string[];
+        };
+        /** NewsFeedFiltersData */
+        NewsFeedFiltersData: {
+            /** Admission */
+            admission?: string | null;
+            /** Decision */
+            decision?: string | null;
+            /** Family */
+            family?: string | null;
+            /** Limit */
+            limit: number;
+            /** Priority */
+            priority?: string | null;
+            /** Q */
+            q?: string | null;
+            /**
+             * Sort
              * @enum {string}
              */
-            status: "ready" | "warming" | "degraded";
+            sort: "latest" | "priority";
+            /** Symbol */
+            symbol?: string | null;
         };
-        /** NewsTitlePresentation24hData */
-        NewsTitlePresentation24hData: {
-            /** Attempted */
-            attempted: number;
-            /** Fallback */
-            fallback: number;
-            /** Fallback Counts */
-            fallback_counts: {
-                [key: string]: number;
-            };
-            /** Latency P95 Ms */
-            latency_p95_ms: number | null;
-            /** Not Needed */
-            not_needed: number;
-            /** Provider Counts */
-            provider_counts: {
-                [key: string]: number;
-            };
-            /** Sample Complete */
-            sample_complete: boolean;
-            /** Total */
-            total: number;
-            /** Translated */
-            translated: number;
+        /** NewsIncidentData */
+        NewsIncidentData: {
+            /** Cause Class */
+            cause_class: string;
+            /** Incident Id */
+            incident_id: number;
+            /** Opened At Ms */
+            opened_at_ms: number;
+            /** Planned */
+            planned: boolean;
         };
-        /** NewsTitlePresentationStatusData */
-        NewsTitlePresentationStatusData: {
-            /** Deepl Configured */
-            deepl_configured: boolean;
-            /** Deepl Deadline Ms */
-            deepl_deadline_ms: number;
-            /** Deepl Key Count */
-            deepl_key_count: number;
-            /** Deepseek Configured */
-            deepseek_configured: boolean;
-            /** Deepseek Deadline Ms */
-            deepseek_deadline_ms: number;
+        /** NewsIngestStatusData */
+        NewsIngestStatusData: {
+            /** Configured Strategy Ids */
+            configured_strategy_ids?: string[];
+            /** Connected */
+            connected: boolean;
+            /** Last Error Code */
+            last_error_code?: string | null;
+            /** Last Frame At Ms */
+            last_frame_at_ms?: number | null;
+            /** Last Publish At Ms */
+            last_publish_at_ms?: number | null;
+            /** Open Incidents */
+            open_incidents?: components["schemas"]["NewsIncidentData"][];
+            /** Provider Enabled Strategy Ids */
+            provider_enabled_strategy_ids?: string[] | null;
+            /** Strategy Warnings */
+            strategy_warnings?: string[];
+            /** Token Configured */
+            token_configured: boolean;
+        };
+        /** NewsMarketMarkData */
+        NewsMarketMarkData: {
+            /** Captured At Ms */
+            captured_at_ms: number;
+            /** Event Id */
+            event_id: string;
+            /** Mark */
+            mark: string;
+            /** Market Type */
+            market_type?: string | null;
+            /** Oi Change Pct */
+            oi_change_pct?: number | null;
+            /** Open Interest */
+            open_interest?: number | null;
+            /** Price */
+            price?: number | null;
+            /** Price Change Pct */
+            price_change_pct?: number | null;
+            /** Symbol */
+            symbol: string;
+        };
+        /** NewsPipelineStatusData */
+        NewsPipelineStatusData: {
+            /** Analyst Model */
+            analyst_model?: string | null;
+            /**
+             * Candidates 24H
+             * @default 0
+             */
+            candidates_24h: number;
+            /**
+             * Decided Push 24H
+             * @default 0
+             */
+            decided_push_24h: number;
+            /**
+             * Deep 24H
+             * @default 0
+             */
+            deep_24h: number;
+            /**
+             * Events 1H
+             * @default 0
+             */
+            events_1h: number;
+            /**
+             * Events 24H
+             * @default 0
+             */
+            events_24h: number;
+            /**
+             * Throttled 24H
+             * @default 0
+             */
+            throttled_24h: number;
+            /**
+             * Triage 24H
+             * @default 0
+             */
+            triage_24h: number;
+            /**
+             * Triage Degraded 24H
+             * @default 0
+             */
+            triage_degraded_24h: number;
+            /** Triage Model */
+            triage_model?: string | null;
+            /** Triage P50 Ms */
+            triage_p50_ms?: number | null;
+            /** Triage P95 Ms */
+            triage_p95_ms?: number | null;
+        };
+        /** NewsPresentationData */
+        NewsPresentationData: {
+            /** Display Title */
+            display_title: string;
+            /** Outcome */
+            outcome: string;
+            /** Provider */
+            provider?: string | null;
+        };
+        /** NewsStatusData */
+        NewsStatusData: {
+            broker: components["schemas"]["NewsBrokerStatusData"];
+            control: components["schemas"]["NewsControlStateData"];
+            delivery: components["schemas"]["NewsDeliveryStatusData"];
+            ingest: components["schemas"]["NewsIngestStatusData"];
             /** Measured At Ms */
             measured_at_ms: number;
-            /** Oldest Pending At Ms */
-            oldest_pending_at_ms: number | null;
-            /** Oldest Push Blocking At Ms */
-            oldest_push_blocking_at_ms: number | null;
-            /** Oldest Resolving At Ms */
-            oldest_resolving_at_ms: number | null;
-            /** Pending Count */
-            pending_count: number;
-            /** Policy Version */
-            policy_version: string;
-            /** Reasons */
-            reasons: string[];
-            resolution_24h: components["schemas"]["NewsTitlePresentation24hData"];
-            /** Resolving Count */
-            resolving_count: number;
+            pipeline: components["schemas"]["NewsPipelineStatusData"];
             /**
-             * Status
+             * State
              * @enum {string}
              */
-            status: "ready" | "degraded";
+            state: "ready" | "degraded" | "warming" | "unavailable";
+            /** Watchlist */
+            watchlist?: string[];
+            /** Workers State */
+            workers_state?: string | null;
+        };
+        /** NewsTriageSummaryData */
+        NewsTriageSummaryData: {
+            /**
+             * Degraded
+             * @default false
+             */
+            degraded: boolean;
+            /** Direction */
+            direction?: string | null;
+            /** Event Type */
+            event_type?: string | null;
+            /** Final Decision */
+            final_decision: string;
+            /** Headline Zh */
+            headline_zh?: string | null;
+            /** Magnitude */
+            magnitude?: number | null;
+            /** Override Rule */
+            override_rule?: string | null;
+            /** Scope */
+            scope?: string | null;
+            /** Throttled By */
+            throttled_by?: string | null;
+        };
+        /** NewsVerdictData */
+        NewsVerdictData: {
+            /** Created At Ms */
+            created_at_ms: number;
+            /**
+             * Degraded
+             * @default false
+             */
+            degraded: boolean;
+            /** Error Code */
+            error_code?: string | null;
+            /** Final Decision */
+            final_decision: string;
+            /** Model */
+            model?: string | null;
+            /** Model Decision */
+            model_decision?: string | null;
+            /** Override Rule */
+            override_rule?: string | null;
+            /** Policy Version */
+            policy_version: string;
+            /** Prompt Version */
+            prompt_version?: string | null;
+            /** Published At Ms */
+            published_at_ms?: number | null;
+            /** Rule Baseline Decision */
+            rule_baseline_decision: string;
+            /** Stage */
+            stage: string;
+            /** Throttled By */
+            throttled_by?: string | null;
+            /** Trace */
+            trace?: {
+                [key: string]: unknown;
+            };
+            /** Verdict */
+            verdict?: {
+                [key: string]: unknown;
+            };
         };
         /** ProviderOperationalData */
         ProviderOperationalData: {
@@ -3876,88 +3251,6 @@ export interface components {
             timeline: {
                 [key: string]: unknown;
             };
-        };
-        /** TokenRadarData */
-        TokenRadarData: {
-            /** Eligible Total */
-            eligible_total: number;
-            /** Items */
-            items: components["schemas"]["TokenRadarItemData"][];
-            /**
-             * Schema Version
-             * @constant
-             */
-            schema_version: "token_radar_snapshot_v5";
-            /** Social Evidence As Of Ms */
-            social_evidence_as_of_ms: number;
-        };
-        /** TokenRadarEvidenceData */
-        TokenRadarEvidenceData: {
-            /** Duplicate Share */
-            duplicate_share: number;
-            /** Independent Author Count */
-            independent_author_count: number;
-            /** Independent Text Count */
-            independent_text_count: number;
-            /** Time To Nth Author Ms */
-            time_to_nth_author_ms: number;
-        };
-        /** TokenRadarItemData */
-        TokenRadarItemData: {
-            evidence: components["schemas"]["TokenRadarEvidenceData"];
-            market: components["schemas"]["TokenRadarMarketData"];
-            /** Qualified At Ms */
-            qualified_at_ms: number;
-            target: components["schemas"]["TokenRadarTargetData"];
-            /** Trigger Event Id */
-            trigger_event_id: string;
-            /** Trigger Source Event At Ms */
-            trigger_source_event_at_ms: number;
-            why_now: components["schemas"]["TokenRadarWhyNowData"];
-        };
-        /** TokenRadarMarketData */
-        TokenRadarMarketData: {
-            /** Market Cap Observed At Ms */
-            market_cap_observed_at_ms: number | null;
-            /** Market Cap Usd */
-            market_cap_usd: number | null;
-            /** Price Change Since Signal */
-            price_change_since_signal: number | null;
-            /** Price Observed At Ms */
-            price_observed_at_ms: number | null;
-            /** Price Usd */
-            price_usd: number | null;
-        };
-        /** TokenRadarTargetData */
-        TokenRadarTargetData: {
-            /** Address */
-            address: string | null;
-            /** Chain */
-            chain: string | null;
-            /** Exchange */
-            exchange: string | null;
-            /** Logo Url */
-            logo_url: string | null;
-            /** Name */
-            name: string | null;
-            /** Symbol */
-            symbol: string;
-            /** Target Id */
-            target_id: string;
-            /**
-             * Target Type
-             * @enum {string}
-             */
-            target_type: "Asset" | "CexToken";
-        };
-        /** TokenRadarWhyNowData */
-        TokenRadarWhyNowData: {
-            /** Current Mentions */
-            current_mentions: number;
-            /** Mention Delta */
-            mention_delta: number;
-            /** Prior Mentions */
-            prior_mentions: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -4331,11 +3624,13 @@ export interface operations {
             };
         };
     };
-    get_news_world_brief_api_news_brief_get: {
+    get_news_event_api_news_events__event_id__get: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                event_id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4346,7 +3641,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NewsBriefData_"];
+                    "application/json": components["schemas"]["ApiEnvelope_NewsEventDetailData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -4354,11 +3658,11 @@ export interface operations {
     get_news_feed_api_news_feed_get: {
         parameters: {
             query?: {
-                category?: string;
-                level?: string;
-                source_id?: string;
-                reporting_origin?: string;
-                provider_score_gt?: number | null;
+                family?: string;
+                admission?: string;
+                priority?: string;
+                decision?: string;
+                symbol?: string;
                 q?: string;
                 sort?: string;
                 limit?: number;
@@ -4390,43 +3694,9 @@ export interface operations {
             };
         };
     };
-    get_news_sources_api_news_sources_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NewsSourcesData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     get_news_status_api_news_status_get: {
         parameters: {
-            query?: {
-                view?: string;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -4439,50 +3709,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NewsStatusData_"] | components["schemas"]["ApiEnvelope_NewsRealtimeStatusResponseData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_news_story_api_news_stories__story_id__get: {
-        parameters: {
-            query?: {
-                members_limit?: number;
-                members_cursor?: string;
-            };
-            header?: never;
-            path: {
-                story_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NewsStoryDetailData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiEnvelope_NewsStatusData_"];
                 };
             };
         };
@@ -4713,43 +3940,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
-            };
-        };
-    };
-    token_radar_api_token_radar_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                "If-None-Match"?: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    /** @description Requires revalidation before reuse. */
-                    "Cache-Control"?: string;
-                    /** @description Strong validator for the complete served snapshot. */
-                    ETag?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TokenRadarData_"];
-                };
-            };
-            /** @description Not Modified */
-            304: {
-                headers: {
-                    /** @description Requires revalidation before reuse. */
-                    "Cache-Control"?: string;
-                    /** @description Strong validator for the complete served snapshot. */
-                    ETag?: string;
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

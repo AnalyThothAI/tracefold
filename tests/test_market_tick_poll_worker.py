@@ -17,7 +17,6 @@ class _Registry:
             }
             for index in range(101)
         ]
-        self.priority_product_targets: tuple[tuple[str, str], ...] | None = None
 
     def ranked_market_targets(
         self,
@@ -25,25 +24,9 @@ class _Registry:
         since_ms: int,
         target_types: tuple[str, ...],
         limit: int,
-        priority_product_targets: tuple[tuple[str, str], ...],
     ) -> list[dict[str, str]]:
         del since_ms, target_types
-        self.priority_product_targets = priority_product_targets
         return self.rows[:limit]
-
-
-class _TokenRadarCurrent:
-    def served_snapshot(self) -> dict[str, object]:
-        return {
-            "items": [
-                {
-                    "target": {
-                        "target_type": "Asset",
-                        "target_id": "asset-priority",
-                    }
-                }
-            ]
-        }
 
 
 class _Database:
@@ -60,10 +43,7 @@ class _Database:
 
     @contextmanager
     def worker_session(self, _application_name: str):
-        yield SimpleNamespace(
-            registry=self.registry,
-            token_radar_current=_TokenRadarCurrent(),
-        )
+        yield SimpleNamespace(registry=self.registry)
 
 
 class _DexQuotes:
@@ -109,4 +89,3 @@ def test_consecutive_samples_refresh_the_same_recent_hot_targets() -> None:
     assert quotes.calls[0] == quotes.calls[1]
     assert quotes.calls[0][0] == "token-000"
     assert len(quotes.calls[0]) == 100
-    assert poll.db.registry.priority_product_targets == (("Asset", "asset-priority"),)

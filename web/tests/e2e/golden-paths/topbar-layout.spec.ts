@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installMockApi } from "@tests/e2e/support/mockApi";
-import { newsFeedFixture } from "@tests/fixtures/newsFixture";
+import { newsFeedEventFixture, newsFeedFixture } from "@tests/fixtures/newsFixture";
 
 // @desktop-only-spec
 test.beforeEach(({}, testInfo) => {
@@ -51,9 +51,9 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   );
   await page.goto("/news");
 
-  const rows = page.locator(".news-story-row");
+  const rows = page.locator(".news-event-row");
   await expect(rows).toHaveCount(6);
-  await expect(page.getByRole("link", { name: "全部" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".news-provider-score")).toHaveCount(6);
   await expect(page.locator(".news-provider-score").first()).toContainText("OpenNews88");
   const fullyVisible = await rows.evaluateAll(
@@ -70,34 +70,22 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
 test("News missing-asset evidence remains readable at AA contrast", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 720 });
   await installMockApi(page);
-  const feed = newsFeedFixture();
-  const baseStory = feed.stories[0];
-  feed.stories = [
-    {
-      ...baseStory,
-      provider_evidence: {
-        ...baseStory.provider_evidence!,
-        provider_metadata: {
-          ...baseStory.provider_evidence!.provider_metadata,
-          assets: null,
-        },
-      },
-      story_id: "news-assetless-contrast",
-      title: "News Story without upstream assets",
-    },
-    {
-      ...baseStory,
-      provider_evidence: {
-        ...baseStory.provider_evidence!,
-        provider_metadata: {
-          ...baseStory.provider_evidence!.provider_metadata,
-          assets: [{ market_type: "futures", match: "Crude oil", symbol: "CL" }],
-        },
-      },
-      story_id: "news-cl-only-contrast",
-      title: "News Story with only CL-family assets",
-    },
-  ];
+  const feed = newsFeedFixture({
+    events: [
+      newsFeedEventFixture({
+        display_title: "News Event without grounded assets",
+        event_id: "news-assetless-contrast",
+        grounded_assets: [],
+        watchlist_hits: [],
+      }),
+      newsFeedEventFixture({
+        display_title: "News Event with a grounded asset",
+        event_id: "news-grounded-contrast",
+        grounded_assets: ["CL"],
+        watchlist_hits: [],
+      }),
+    ],
+  });
   await page.route("**/api/news/feed*", (route) =>
     route.fulfill({
       body: JSON.stringify({ data: feed, ok: true }),
@@ -107,7 +95,7 @@ test("News missing-asset evidence remains readable at AA contrast", async ({ pag
   );
   await page.goto("/news");
 
-  const reasons = page.locator(".news-related-assets-empty");
+  const reasons = page.locator(".news-grounded-assets-empty");
   await expect(reasons).toHaveCount(1);
   const contrastRatios = await reasons.evaluateAll((elements) => {
     const probe = document.createElement("span");
@@ -144,12 +132,12 @@ test("News missing-asset evidence remains readable at AA contrast", async ({ pag
   for (const ratio of contrastRatios) expect(ratio).toBeGreaterThanOrEqual(4.5);
 });
 
-test("desktop News detail keeps navigation adjacent to the story", async ({ page }) => {
+test("desktop News detail keeps navigation adjacent to the event", async ({ page }) => {
   await installMockApi(page);
-  await page.goto("/news/stories/story-global-policy");
+  await page.goto("/news/events/evt-global-policy");
 
-  const backLink = page.getByRole("link", { name: "返回全球新闻" });
-  const hero = page.locator(".news-story-hero");
+  const backLink = page.getByRole("link", { name: "返回新闻事件流" });
+  const hero = page.locator(".news-event-hero");
   await expect(backLink).toBeVisible();
   await expect(hero).toBeVisible();
 
@@ -157,8 +145,8 @@ test("desktop News detail keeps navigation adjacent to the story", async ({ page
   const heroBox = await hero.boundingBox();
   if (!backBox || !heroBox) throw new Error("News detail layout boxes are unavailable");
 
-  const navigationToStoryGap = heroBox.y - (backBox.y + backBox.height);
-  expect(navigationToStoryGap).toBeLessThanOrEqual(32);
+  const navigationToEventGap = heroBox.y - (backBox.y + backBox.height);
+  expect(navigationToEventGap).toBeLessThanOrEqual(32);
 });
 
 test("a 668-character News feed title renders at no more than two lines", async ({ page }) => {
@@ -168,7 +156,7 @@ test("a 668-character News feed title renders at no more than two lines", async 
   await routeNewsFeed(page, [longTitle]);
   await page.goto("/news");
 
-  const headline = page.locator(".news-story-title h2");
+  const headline = page.locator(".news-event-title h2");
   await expect(headline).toHaveText(longTitle);
   const metrics = await headline.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -185,34 +173,34 @@ test("a 668-character News feed title renders at no more than two lines", async 
   expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight * 2 + 1);
 });
 
-test("News card disclosures stay interactive above the primary row link", async ({ page }) => {
+test("News card secondary actions stay interactive above the primary row link", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1366, height: 720 });
   await installMockApi(page);
   await routeNewsFeed(page, ["Readable News card with secondary evidence"]);
   await page.goto("/news");
 
-  const disclosure = page.locator(".news-story-why");
-  const summary = disclosure.locator("summary");
   const originalLink = page.getByRole("link", { name: /查看原文/ });
+  const rowLink = page.getByRole("link", { name: "Readable News card with secondary evidence" });
 
-  await expect(disclosure).not.toHaveAttribute("open", "");
-  await summary.click();
-  await expect(disclosure).toHaveAttribute("open", "");
+  await expect(originalLink).toBeVisible();
+  await expect(rowLink).toBeVisible();
   await originalLink.click({ trial: true });
-
-  await summary.focus();
-  await expect(summary).toBeFocused();
-  await summary.press("Enter");
-  await expect(disclosure).not.toHaveAttribute("open", "");
+  await expect(page.locator(".news-event-triage")).toContainText("看空 · M2 · macro");
+  await expect(page.locator(".news-event-delivery")).toContainText("已发送");
 });
 
 async function routeNewsFeed(page: Page, titles: string[]) {
-  const feed = newsFeedFixture();
-  feed.stories = titles.map((title, index) => ({
-    ...feed.stories[0],
-    story_id: `news-density-${index + 1}`,
-    title,
-  }));
+  const feed = newsFeedFixture({
+    events: titles.map((title, index) =>
+      newsFeedEventFixture({
+        display_title: title,
+        event_id: `news-density-${index + 1}`,
+        leader_title: title,
+      }),
+    ),
+  });
   await page.route("**/api/news/feed*", (route) =>
     route.fulfill({
       body: JSON.stringify({ data: feed, ok: true }),

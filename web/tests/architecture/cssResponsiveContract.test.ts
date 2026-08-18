@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,45 +44,18 @@ describe("responsive CSS contract", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps RadarPage and its queue as one bounded full-height scroll surface", () => {
-    const liveCssPath = join(srcRoot, "features/live/ui/live.css");
-    const liveCss = readFileSync(liveCssPath, "utf8");
-    const rules = findRules(liveCss);
-    const livePageRules = rules.filter((rule) =>
-      selectorContains(rule.selector, ".live-radar-page"),
-    );
-    const radarQueueRules = rules.filter((rule) =>
-      selectorContains(rule.selector, ".live-radar-queue"),
-    );
-    const radarItemsRules = rules.filter((rule) =>
-      selectorContains(rule.selector, ".live-radar-items"),
-    );
+  it("removes the retired Live Radar feature and its owner CSS", () => {
+    expect(existsSync(join(srcRoot, "features/live"))).toBe(false);
+    const offenders = collectFiles(srcRoot)
+      .filter((path) => [".css", ".ts", ".tsx"].includes(extname(path)))
+      .flatMap((path) => {
+        const source = readFileSync(path, "utf8");
+        return [".live-radar-", ".radar-panel", "features/live", "token-radar"]
+          .filter((fragment) => source.includes(fragment))
+          .map((fragment) => `${relativeToWeb(path)} retains ${fragment}`);
+      });
 
-    expect(
-      livePageRules.some(
-        (rule) =>
-          declarationValue(rule.body, "grid-template-rows") === "minmax(0, 1fr)" &&
-          declarationValue(rule.body, "overflow") === "hidden",
-      ),
-      ".live-radar-page must reserve exactly one full-height Radar row",
-    ).toBe(true);
-    expect(
-      radarQueueRules.some(
-        (rule) =>
-          selectorContains(rule.selector, ".live-radar-queue") &&
-          declarationValue(rule.body, "grid-template-rows") === "auto minmax(0, 1fr)" &&
-          declarationValue(rule.body, "overflow") === "hidden",
-      ),
-      ".live-radar-queue must bound its header and queue scroller without an empty delay row",
-    ).toBe(true);
-    expect(
-      radarItemsRules.some(
-        (rule) =>
-          declarationValue(rule.body, "overflow") === "auto" &&
-          declarationValue(rule.body, "min-height") === "0",
-      ),
-      ".live-radar-items must own the bounded queue scroll",
-    ).toBe(true);
+    expect(offenders).toEqual([]);
   });
 
   it("keeps the shadcn sidebar trigger in the shell contract", () => {
@@ -156,54 +129,6 @@ describe("responsive CSS contract", () => {
         "Route-specific filters belong to their feature pages; the shell owns only navigation, frame, and scroll.",
       ].join("\n"),
     ).toEqual([]);
-  });
-
-  it("keeps retired generic radar table selectors out of live CSS", () => {
-    const liveCssPath = join(srcRoot, "features/live/ui/live.css");
-    const liveCss = readFileSync(liveCssPath, "utf8");
-    const forbiddenSelectors = [
-      ".radar-head",
-      ".radar-row",
-      ".radar-row-select",
-      ".radar-control-row",
-      ".token-cell",
-      ".case-cell",
-      ".venue-cell",
-      ".metric",
-      ".phase",
-      ".direction",
-      ".radar-skeleton",
-      ".segmented",
-      ".scope-toggle",
-      ".venue-filter",
-      ".sort-toggle",
-      ".account-lane-card",
-      ".account-kv",
-      ".entity-tags",
-      ".timeline-summary",
-      ".timeline-chart",
-      ".timeline-skeleton",
-      ".replay-focus-head",
-      ".replay-focus-grid",
-      ".replay-event-rail",
-      ".replay-metrics",
-      ".score-overview",
-      ".settlement-grid",
-      ".evidence-query-kv",
-      ".tabs",
-    ];
-    const offenders = findRules(liveCss).flatMap((rule) =>
-      forbiddenSelectors
-        .filter((selector) => selectorContains(rule.selector, selector))
-        .map(
-          (selector) =>
-            `${relativeToSrc(liveCssPath)}:${lineNumber(liveCss, rule.start)} keeps retired ${selector} via ${compactSelector(
-              rule.selector,
-            )}`,
-        ),
-    );
-
-    expect(offenders, "Live Radar must use live-radar-* selectors owned by live.css.").toEqual([]);
   });
 
   it("keeps shared primitive selectors out of feature CSS buckets", () => {
