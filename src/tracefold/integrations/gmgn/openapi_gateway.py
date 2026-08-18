@@ -41,8 +41,8 @@ class GmgnOpenApiGateway:
         client: GmgnOpenApiClient,
         *,
         token_info_cache_ttl_seconds: int = 60,
-        rate_per_second: float = 20.0,
-        rate_capacity: float = 20.0,
+        rate_per_second: float = 1.0,
+        rate_capacity: float = 1.0,
         provider_cooldown_seconds: float = 300.0,
         retry_attempts: int = 2,
         retry_initial_wait_seconds: float = 0.25,
@@ -95,26 +95,28 @@ class GmgnOpenApiGateway:
         self._token_info_cache: dict[tuple[str, str], tuple[float, GmgnTokenInfo | None]] = {}
 
     def lookup_token_info(self, *, chain: str, address: str) -> GmgnTokenInfoLookup:
+        """Cache hit or one provider call. The lock guards only cache and circuit state, so
+        concurrent lookups (the DEX quote batch) overlap on the network and share one rate bucket."""
+        key = (str(chain), str(address))
         with self._lock:
-            key = (str(chain), str(address))
-            now = self._clock()
-            self._prune_expired_token_info(now)
+            self._prune_expired_token_info(self._clock())
             cached = self._token_info_cache.get(key)
-            if cached is not None:
-                return GmgnTokenInfoLookup(info=cached[1], cache_status="hit")
+        if cached is not None:
+            return GmgnTokenInfoLookup(info=cached[1], cache_status="hit")
 
-            lookup = self._execute(
-                TOKEN_INFO_ROUTE,
-                lambda: self._client.lookup_token_info(chain=chain, address=address),
-            )
-            if self._token_info_cache_ttl_seconds > 0:
+        lookup = self._execute(
+            TOKEN_INFO_ROUTE,
+            lambda: self._client.lookup_token_info(chain=chain, address=address),
+        )
+        if self._token_info_cache_ttl_seconds > 0:
+            with self._lock:
                 if len(self._token_info_cache) >= _TOKEN_INFO_CACHE_MAX_ENTRIES:
                     self._token_info_cache.pop(next(iter(self._token_info_cache)))
                 self._token_info_cache[key] = (
                     self._clock() + self._token_info_cache_ttl_seconds,
                     lookup.info,
                 )
-            return GmgnTokenInfoLookup(info=lookup.info, cache_status="miss")
+        return GmgnTokenInfoLookup(info=lookup.info, cache_status="miss")
 
     def close(self) -> None:
         with self._lock:
@@ -148,7 +150,8 @@ class GmgnOpenApiGateway:
         raise RuntimeError(f"GMGN gateway route {route.name} exited without a result")
 
     def _raise_if_circuit_open(self) -> None:
-        remaining = self._circuit_open_until - self._clock()
+        with self._lock:
+            remaining = self._circuit_open_until - self._clock()
         if remaining > 0:
             raise GmgnOpenApiProviderUnavailableError(
                 f"GMGN OpenAPI circuit open for {remaining:.1f}s",
@@ -159,17 +162,21 @@ class GmgnOpenApiGateway:
         cooldown = exc.cooldown_seconds
         if cooldown is None:
             cooldown = self._provider_cooldown_seconds
-        self._circuit_open_until = max(
-            self._circuit_open_until,
-            self._clock()
-            + require_nonnegative_float(
-                cooldown,
-                error_code="gmgn_openapi_provider_cooldown_seconds_required",
-            ),
-        )
+        with self._lock:
+            self._circuit_open_until = max(
+                self._circuit_open_until,
+                self._clock()
+                + require_nonnegative_float(
+                    cooldown,
+                    error_code="gmgn_openapi_provider_cooldown_seconds_required",
+                ),
+            )
 
 
 class _WeightedLeakyBucket:
+    """Thread-safe token bucket: callers reserve their weight under the lock and sleep off any debt
+    outside it, so concurrent lookups pace to ``rate_per_second`` without serializing on the sleep."""
+
     def __init__(
         self,
         *,
@@ -184,15 +191,16 @@ class _WeightedLeakyBucket:
         self._sleep = sleep
         self._tokens = capacity
         self._updated_at = clock()
+        self._lock = Lock()
 
     def acquire(self, weight: float) -> None:
         requested = require_positive_float(weight, error_code="gmgn_openapi_route_weight_required")
-        self._refill()
-        if self._tokens < requested:
-            wait_seconds = (requested - self._tokens) / self._rate_per_second
-            self._sleep(wait_seconds)
+        with self._lock:
             self._refill()
-        self._tokens = max(0.0, self._tokens - requested)
+            self._tokens -= requested
+            wait_seconds = 0.0 if self._tokens >= 0 else -self._tokens / self._rate_per_second
+        if wait_seconds > 0:
+            self._sleep(wait_seconds)
 
     def _refill(self) -> None:
         now = self._clock()

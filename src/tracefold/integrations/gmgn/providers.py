@@ -20,50 +20,85 @@ from tracefold.market import (
 )
 from tracefold.platform.config.settings import Settings
 
+# The public GMGN OpenAPI is paced at 1 request per second per key (docs.gmgn.ai: "The default
+# rate limit is 1 request per second"; violations get the IP banned), and the token-info route is per
+# token. A poll batch therefore quotes sequentially in the caller's order until the deadline and returns
+# the finished part; the caller orders targets stalest-first so successive batches rotate the set.
+QUOTE_BATCH_DEADLINE_SECONDS = 25.0
+
 
 class GmgnDexMarketProvider:
-    def __init__(self, gateway: GmgnOpenApiGateway) -> None:
+    """DEX quotes from the GMGN OpenAPI token-info route (one request per token, 1 req/s pacing).
+
+    One token's failure never fails the batch: unknown tokens and per-token provider errors are simply
+    absent from the result, tokens not reached before the batch deadline are left for the next batch,
+    and only a batch with zero successful lookups raises ``DexProviderTemporarilyUnavailable``
+    (typically an open circuit after a rate-limit ban).
+    """
+
+    def __init__(
+        self,
+        gateway: GmgnOpenApiGateway,
+        *,
+        batch_deadline_seconds: float = QUOTE_BATCH_DEADLINE_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._gateway = gateway
+        self._batch_deadline_seconds = float(batch_deadline_seconds)
+        self._clock = clock
 
     def token_quotes(self, tokens: list[DexTokenQuoteRequest]) -> list[DexTokenQuote]:
+        requests = list(tokens)
+        if not requests:
+            return []
         observed_at_ms = int(time.time() * 1000)
+        deadline = self._clock() + self._batch_deadline_seconds
         quotes: list[DexTokenQuote] = []
-        for token in tokens:
-            lookup = self._lookup_token_info(chain_id=token.chain_id, address=token.address)
-            info = lookup.info
-            if info is None:
+        succeeded = 0
+        first_error: GmgnOpenApiError | None = None
+        for index, token in enumerate(requests):
+            if index > 0 and self._clock() >= deadline:
+                break
+            try:
+                lookup = self._gateway.lookup_token_info(chain=token.chain_id, address=token.address)
+            except GmgnOpenApiError as exc:
+                first_error = first_error or exc
                 continue
-            raw = {**info.raw, "cache_status": lookup.cache_status, "source_provider": "gmgn_dex_quote"}
-            raw_price_payload = raw.get("price")
-            price_payload: dict[str, Any] = raw_price_payload if isinstance(raw_price_payload, dict) else {}
-            quotes.append(
-                DexTokenQuote(
-                    chain_id=info.chain,
-                    address=canonical_chain_address(info.chain, info.address),
-                    observed_at_ms=observed_at_ms,
-                    price_usd=info.price,
-                    raw=raw,
-                    market_cap_usd=info.market_cap,
-                    liquidity_usd=info.liquidity,
-                    volume_24h_usd=_number_from_mapping(
-                        {**price_payload, **info.raw},
-                        "volume_24h_usd",
-                        "volume24hUsd",
-                        "volume_24h",
-                    ),
-                    holders=info.holder_count,
-                )
-            )
+            succeeded += 1
+            quote = _quote_from_lookup(lookup, observed_at_ms=observed_at_ms)
+            if quote is not None:
+                quotes.append(quote)
+        if succeeded == 0 and first_error is not None:
+            raise DexProviderTemporarilyUnavailable(str(first_error)) from first_error
         return quotes
-
-    def _lookup_token_info(self, *, chain_id: str, address: str) -> GmgnTokenInfoLookup:
-        try:
-            return self._gateway.lookup_token_info(chain=chain_id, address=address)
-        except GmgnOpenApiError as exc:
-            raise DexProviderTemporarilyUnavailable(str(exc)) from exc
 
     def close(self) -> None:
         self._gateway.close()
+
+
+def _quote_from_lookup(lookup: GmgnTokenInfoLookup, *, observed_at_ms: int) -> DexTokenQuote | None:
+    info = lookup.info
+    if info is None:
+        return None
+    raw = {**info.raw, "cache_status": lookup.cache_status, "source_provider": "gmgn_dex_quote"}
+    raw_price_payload = raw.get("price")
+    price_payload: dict[str, Any] = raw_price_payload if isinstance(raw_price_payload, dict) else {}
+    return DexTokenQuote(
+        chain_id=info.chain,
+        address=canonical_chain_address(info.chain, info.address),
+        observed_at_ms=observed_at_ms,
+        price_usd=info.price,
+        raw=raw,
+        market_cap_usd=info.market_cap,
+        liquidity_usd=info.liquidity,
+        volume_24h_usd=_number_from_mapping(
+            {**price_payload, **info.raw},
+            "volume_24h_usd",
+            "volume24hUsd",
+            "volume_24h",
+        ),
+        holders=info.holder_count,
+    )
 
 
 def gmgn_dex_market(settings: Settings) -> GmgnDexMarketProvider:

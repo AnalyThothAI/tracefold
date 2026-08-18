@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from tracefold.platform.postgres.write_contract import returning_mutation_count
@@ -20,6 +20,21 @@ class MarketTickCurrentRepository:
             (str(target_type), str(target_id)),
         ).fetchone()
         return cast("dict[str, Any] | None", row)
+
+    def observed_at_by_target(self, *, target_type: str, target_ids: Sequence[str]) -> dict[str, int]:
+        """Current tick age per target so pollers can refresh the stalest targets first."""
+        requested = [str(value) for value in dict.fromkeys(target_ids) if str(value)]
+        if not requested:
+            return {}
+        rows = self.conn.execute(
+            """
+            SELECT target_id, tick_observed_at_ms
+            FROM market_tick_current
+            WHERE target_type = %s AND target_id = ANY(%s::text[])
+            """,
+            (str(target_type), requested),
+        ).fetchall()
+        return {str(row["target_id"]): int(row["tick_observed_at_ms"]) for row in rows}
 
     def upsert_current_from_tick(self, tick_row: Mapping[str, Any]) -> bool:
         params = market_tick_current_row(tick_row)

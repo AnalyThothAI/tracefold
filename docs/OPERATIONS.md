@@ -248,13 +248,18 @@ Market current is maintained transactionally with `market_ticks`; it has no
 projection worker or dirty queue. Repair uses bounded
 `tracefold ops rebuild-market-current --execute` fact replay.
 The normal poll rereads the database-ordered most recently active 100 market
-targets from the fixed 24-hour fact window every 35 seconds. Consecutive turns
-intentionally refresh the same still-hot targets so their live-market
-facts remain fresh; there is no cross-turn exclusion cursor,
-24-hour round-robin sweep, or product-driven priority slot. DEX quotes come
+targets from the fixed 24-hour fact window every 35 seconds; there is no
+cross-turn exclusion cursor or product-driven priority slot. DEX quotes come
 from the GMGN OpenAPI token-info lookup (`gmgn_dex_quote`, cached for
-`gmgn.token_info_cache_ttl_seconds`); CEX ticks come from Binance USD-M
-futures (`binance_cex_rest`).
+`gmgn.token_info_cache_ttl_seconds`), which is one request per token paced at
+the public 1 request/second limit (a violation gets the IP banned and opens the
+gateway circuit for the provider cooldown). A poll turn therefore quotes chain
+targets stalest-first (never-quoted, then oldest `market_tick_current` tick)
+until the provider's 25 s batch deadline and leaves the rest for the next turn,
+so the hot set rotates in roughly two minutes; unknown tokens and single-token
+errors are skipped, and only a turn with zero successful lookups is a
+`market tick poll batch quote failed` warning. CEX ticks come from Binance
+USD-M futures (`binance_cex_rest`) in one batch request.
 
 News:
 

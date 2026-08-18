@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Lock
+from threading import Lock
 from typing import cast
 
 import pytest
@@ -11,6 +10,7 @@ from tracefold.app.provider_ownership import gmgn_stream_enabled
 from tracefold.integrations.gmgn.openapi_client import (
     GmgnOpenApiClient,
     GmgnOpenApiError,
+    GmgnTokenInfo,
     GmgnTokenInfoLookup,
 )
 from tracefold.integrations.gmgn.openapi_gateway import GmgnOpenApiGateway
@@ -46,13 +46,43 @@ class _RecordingGmgnClient:
         self.closed = True
 
 
-class _BlockingGmgnClient(_RecordingGmgnClient):
-    def __init__(self) -> None:
+def _info(address: str, *, price: float | None = 1.5) -> GmgnTokenInfo:
+    return GmgnTokenInfo(
+        chain="solana",
+        address=address,
+        symbol=address.upper(),
+        name=None,
+        icon_url=None,
+        banner_url=None,
+        decimals=None,
+        price=price,
+        previous_price=None,
+        market_cap=None,
+        liquidity=None,
+        holder_count=None,
+        circulating_supply=None,
+        total_supply=None,
+        max_supply=None,
+        website=None,
+        twitter_username=None,
+        telegram=None,
+        gmgn_url=None,
+        geckoterminal_url=None,
+        description=None,
+        pool=None,
+        dev=None,
+        stat=None,
+        link=None,
+        raw={"symbol": address.upper()},
+    )
+
+
+class _ScriptedGmgnClient(_RecordingGmgnClient):
+    """Per-address behaviour: a GmgnTokenInfo, None (unknown token), or an exception to raise."""
+
+    def __init__(self, script: dict[str, object]) -> None:
         super().__init__()
-        self.first_lookup_entered = Event()
-        self.release_first_lookup = Event()
-        self.second_lookup_entered = Event()
-        self.close_entered = Event()
+        self.script = script
         self._state_lock = Lock()
         self._active_lookups = 0
         self.max_active_lookups = 0
@@ -60,24 +90,16 @@ class _BlockingGmgnClient(_RecordingGmgnClient):
     def lookup_token_info(self, *, chain: str, address: str) -> GmgnTokenInfoLookup:
         with self._state_lock:
             self.calls.append((chain, address))
-            call_number = len(self.calls)
             self._active_lookups += 1
             self.max_active_lookups = max(self.max_active_lookups, self._active_lookups)
         try:
-            if call_number == 1:
-                self.first_lookup_entered.set()
-                if not self.release_first_lookup.wait(timeout=2.0):
-                    raise TimeoutError("test did not release the first GMGN lookup")
-            else:
-                self.second_lookup_entered.set()
-            return GmgnTokenInfoLookup(info=None, cache_status="miss")
+            behaviour = self.script.get(address)
+            if isinstance(behaviour, BaseException):
+                raise behaviour
+            return GmgnTokenInfoLookup(info=cast(GmgnTokenInfo | None, behaviour), cache_status="miss")
         finally:
             with self._state_lock:
                 self._active_lookups -= 1
-
-    def close(self) -> None:
-        self.close_entered.set()
-        super().close()
 
 
 def _gmgn_provider(client: object, *, clock: _ManualClock | None = None) -> GmgnDexMarketProvider:
@@ -103,52 +125,60 @@ def test_gmgn_provider_failure_is_a_local_expected_failure() -> None:
         provider.token_quotes([_quote("token")])
 
 
-def test_gmgn_adapter_serializes_concurrent_quote_lookups() -> None:
-    client = _BlockingGmgnClient()
+def test_gmgn_batch_quotes_are_sequential_in_input_order_and_skip_unknown_tokens() -> None:
+    client = _ScriptedGmgnClient({"a": _info("a"), "b": None, "c": _info("c", price=2.0)})
     provider = _gmgn_provider(client)
-    second_started = Event()
 
-    def quote_lookup() -> list:
-        second_started.set()
-        return provider.token_quotes([_quote("quote-token")])
+    quotes = provider.token_quotes([_quote("a"), _quote("b"), _quote("c")])
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(provider.token_quotes, [_quote("first-token")])
-        assert client.first_lookup_entered.wait(timeout=1.0)
-        second = executor.submit(quote_lookup)
-        assert second_started.wait(timeout=1.0)
-        try:
-            assert not client.second_lookup_entered.wait(timeout=0.1)
-        finally:
-            client.release_first_lookup.set()
-        assert first.result(timeout=1.0) == []
-        assert second.result(timeout=1.0) == []
-
-    assert client.max_active_lookups == 1
+    assert [quote.address for quote in quotes] == ["a", "c"]  # "b" is unknown to GMGN
+    assert client.calls == [("solana", "a"), ("solana", "b"), ("solana", "c")]
+    assert client.max_active_lookups == 1  # 1 req/s pacing: no fan-out
 
 
-def test_gmgn_adapter_close_waits_for_an_active_lookup() -> None:
-    client = _BlockingGmgnClient()
+def test_gmgn_batch_isolates_per_token_failures() -> None:
+    client = _ScriptedGmgnClient({"bad": GmgnOpenApiError("token route failed"), "good": _info("good")})
     provider = _gmgn_provider(client)
-    close_started = Event()
 
-    def close_provider() -> None:
-        close_started.set()
-        provider.close()
+    quotes = provider.token_quotes([_quote("bad"), _quote("good")])
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        lookup = executor.submit(provider.token_quotes, [_quote("first-token")])
-        assert client.first_lookup_entered.wait(timeout=1.0)
-        close = executor.submit(close_provider)
-        assert close_started.wait(timeout=1.0)
-        try:
-            assert not client.close_entered.wait(timeout=0.1)
-        finally:
-            client.release_first_lookup.set()
-        assert lookup.result(timeout=1.0) == []
-        close.result(timeout=1.0)
+    assert [quote.address for quote in quotes] == ["good"]
 
-    assert client.closed is True
+
+def test_gmgn_batch_with_zero_successful_lookups_is_a_local_expected_failure() -> None:
+    client = _ScriptedGmgnClient({"x": GmgnOpenApiError("circuit open"), "y": GmgnOpenApiError("circuit open")})
+    provider = _gmgn_provider(client)
+
+    with pytest.raises(DexProviderTemporarilyUnavailable, match="circuit open"):
+        provider.token_quotes([_quote("x"), _quote("y")])
+
+
+def test_gmgn_batch_stops_at_the_deadline_and_returns_the_finished_quotes() -> None:
+    clock = _ManualClock()
+    client = _ScriptedGmgnClient({"first": _info("first"), "second": _info("second"), "third": _info("third")})
+    provider = GmgnDexMarketProvider(
+        GmgnOpenApiGateway(
+            cast(GmgnOpenApiClient, client),
+            token_info_cache_ttl_seconds=60,
+            retry_attempts=1,
+            clock=clock,
+            sleep=lambda _: None,
+        ),
+        batch_deadline_seconds=25.0,
+        clock=lambda: clock.value,
+    )
+
+    def advance(seconds: float):
+        def _lookup(*, chain: str, address: str) -> GmgnTokenInfoLookup:
+            clock.value += seconds
+            return GmgnTokenInfoLookup(info=_info(address), cache_status="miss")
+
+        return _lookup
+
+    client.lookup_token_info = advance(13.0)  # type: ignore[method-assign]
+    quotes = provider.token_quotes([_quote("first"), _quote("second"), _quote("third")])
+
+    assert [quote.address for quote in quotes] == ["first", "second"]  # 26 s elapsed: "third" waits for the next batch
 
 
 def test_gmgn_adapter_token_info_cache_expires_through_public_interfaces() -> None:

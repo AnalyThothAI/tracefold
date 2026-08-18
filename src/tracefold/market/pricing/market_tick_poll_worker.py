@@ -30,6 +30,10 @@ from tracefold.market.provider_contracts import (
 from tracefold.market.windows import PRODUCT_WINDOW_MS
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
+# GMGN token-info is one paced request (1 req/s) per token; the provider stops at its own 25 s deadline
+# and returns the finished quotes, so this bound only guards a hung request.
+DEX_QUOTE_BATCH_TIMEOUT_SECONDS = 30.0
+
 SOURCE_TIER: MarketTickSourceTier = "tier2_poll"
 DEX_SOURCE_PROVIDER: MarketTickSourceProvider = "gmgn_dex_quote"
 CEX_SOURCE_PROVIDER: MarketTickSourceProvider = "binance_cex_rest"
@@ -90,12 +94,24 @@ class MarketTickPoll:
     def _list_poll_rows(self) -> list[dict[str, Any]]:
         now_ms = int(self.clock())
         with self.db.worker_session("market_tick_poll") as repos:
-            rows = repos.registry.ranked_market_targets(
-                since_ms=now_ms - PRODUCT_WINDOW_MS["24h"],
-                target_types=("chain_token", "cex_symbol"),
-                limit=self.batch_size,
+            rows = [
+                dict(row)
+                for row in repos.registry.ranked_market_targets(
+                    since_ms=now_ms - PRODUCT_WINDOW_MS["24h"],
+                    target_types=("chain_token", "cex_symbol"),
+                    limit=self.batch_size,
+                )
+            ]
+            # DEX quotes are one paced provider request per token, so a batch may not reach every
+            # target; carrying the current tick age lets the poll refresh the stalest targets first.
+            observed_at = repos.market_tick_current.observed_at_by_target(
+                target_type="chain_token",
+                target_ids=[str(row.get("target_id") or "") for row in rows if row.get("target_type") == "chain_token"],
             )
-        return [dict(row) for row in rows]
+        for row in rows:
+            if row.get("target_type") == "chain_token":
+                row["current_tick_observed_at_ms"] = observed_at.get(str(row.get("target_id") or ""))
+        return rows
 
     async def _poll_chain_targets_async(
         self,
@@ -115,7 +131,7 @@ class MarketTickPoll:
                 "market_tick_poll_dex",
                 provider.token_quotes,
                 requests,
-                timeout_seconds=10.0,
+                timeout_seconds=DEX_QUOTE_BATCH_TIMEOUT_SECONDS,
             )
         except (MarketProviderExpectedError, ResourceOperationOverrun) as exc:
             reason = _provider_error_reason(exc)
@@ -128,30 +144,19 @@ class MarketTickPoll:
                 skipped_reasons=Counter({reason: len(targets)}),
             )
 
-        skipped_reasons: Counter[str] = Counter()
         quotes_by_key = {_target_key(quote.chain_id, quote.address): quote for quote in quotes}
-        ticks: list[MarketTick] = []
+        outcomes: list[_SingleTargetOutcome] = []
         for target in targets:
             quote = quotes_by_key.get(_target_key(target.chain_id, target.address))
             if quote is None:
-                skipped_reasons["dex_quote_unavailable"] += 1
-                logger.bind(
-                    target_type="chain_token",
-                    target_id=target.target_id,
-                    reason="dex_quote_unavailable",
-                ).warning("market tick poll quote skipped")
+                outcomes.append(_SingleTargetOutcome(tick=None, skip_reason="dex_quote_unavailable"))
                 continue
             tick = _tick_from_dex_quote(quote, target=target, received_at_ms=int(self.clock()))
             if tick is None:
-                skipped_reasons["invalid_price"] += 1
-                logger.bind(
-                    target_type="chain_token",
-                    target_id=target.target_id,
-                    reason="invalid_price",
-                ).warning("market tick poll quote skipped")
+                outcomes.append(_SingleTargetOutcome(tick=None, skip_reason="invalid_price"))
                 continue
-            ticks.append(tick)
-        return _PollProviderResult(ticks=ticks, skipped_reasons=skipped_reasons)
+            outcomes.append(_SingleTargetOutcome(tick=tick, skip_reason=None))
+        return self._collect_outcomes(targets_kind="chain_token", targets=targets, outcomes=outcomes)
 
     async def _poll_cex_targets_async(
         self,
@@ -218,11 +223,17 @@ class MarketTickPoll:
                 continue
             reason = outcome.skip_reason or "provider_error"
             skipped_reasons[reason] += 1
+            logger.bind(target_type=targets_kind, target_id=target.target_id, reason=reason).debug(
+                "market tick poll quote skipped"
+            )
+        if skipped_reasons:
+            # One line per batch: unknown tokens recur every poll cycle and are not an incident.
             logger.bind(
                 target_type=targets_kind,
-                target_id=target.target_id,
-                reason=reason,
-            ).warning("market tick poll quote skipped")
+                target_count=len(targets),
+                tick_count=len(ticks),
+                skipped=dict(skipped_reasons),
+            ).info("market tick poll quotes skipped")
         return _PollProviderResult(ticks=ticks, skipped_reasons=skipped_reasons)
 
     def _persist_ticks(self, ticks: Iterable[MarketTick]) -> MarketTickPersistenceResult:
@@ -245,6 +256,7 @@ class _ChainTarget:
     target_id: str
     chain_id: str
     address: str
+    current_tick_observed_at_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,7 +294,7 @@ def _poll_targets(rows: Sequence[Mapping[str, Any]]) -> _PollTargets:
         target_type = _clean_str(row.get("target_type"))
         target_id = _clean_str(row.get("target_id"))
         if target_type == "chain_token":
-            chain_target = _chain_target(target_id)
+            chain_target = _chain_target(target_id, current_tick_observed_at_ms=row.get("current_tick_observed_at_ms"))
             if chain_target is None:
                 skipped_reasons["invalid_chain_target"] += 1
                 continue
@@ -297,6 +309,8 @@ def _poll_targets(rows: Sequence[Mapping[str, Any]]) -> _PollTargets:
             continue
         skipped_reasons["unsupported_target_type"] += 1
 
+    # Never-quoted targets first, then the oldest current tick; the ranked order breaks ties.
+    chain_targets.sort(key=_staleness_rank)
     return _PollTargets(
         chain_targets=chain_targets,
         cex_targets=cex_targets,
@@ -304,7 +318,11 @@ def _poll_targets(rows: Sequence[Mapping[str, Any]]) -> _PollTargets:
     )
 
 
-def _chain_target(target_id: str) -> _ChainTarget | None:
+def _staleness_rank(target: _ChainTarget) -> tuple[bool, int]:
+    return (target.current_tick_observed_at_ms is not None, target.current_tick_observed_at_ms or 0)
+
+
+def _chain_target(target_id: str, *, current_tick_observed_at_ms: Any = None) -> _ChainTarget | None:
     chain_id, separator, address = target_id.rpartition(":")
     if not separator:
         return None
@@ -312,7 +330,10 @@ def _chain_target(target_id: str) -> _ChainTarget | None:
     address = address.strip()
     if not chain_id or not address:
         return None
-    return _ChainTarget(target_id=target_id, chain_id=chain_id, address=address)
+    observed_at = int(current_tick_observed_at_ms) if current_tick_observed_at_ms is not None else None
+    return _ChainTarget(
+        target_id=target_id, chain_id=chain_id, address=address, current_tick_observed_at_ms=observed_at
+    )
 
 
 def _cex_target(target_id: str) -> _CexTarget | None:
