@@ -150,7 +150,7 @@ def build_evidence_bundle(
     macro_rows = news.macro_state()
     macro_block: dict[str, Any] = {"modules": macro_rows}
     if macro_rows:
-        macro_block["evidence_id"] = register("macro", {"modules": [r.get("module_key") for r in macro_rows]})
+        macro_block["evidence_id"] = register("macro", {"modules": [r.get("module_id") for r in macro_rows]})
 
     status_row = dict(news.event_status(storyline_key=storyline, now_ms=int(now_ms)) or {})
     status_block = {
