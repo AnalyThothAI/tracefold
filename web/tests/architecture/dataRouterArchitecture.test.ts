@@ -50,7 +50,7 @@ describe("data router architecture", () => {
       "routes/shellChromeData.ts",
     ].map(readSource);
     const importSources = shellSources.flatMap(importSpecifiers);
-    const pageExportingFeatureBarrels = ["@features/macro", "@features/news"];
+    const pageExportingFeatureBarrels = ["@features/news"];
 
     expect(importSources.filter((source) => pageExportingFeatureBarrels.includes(source))).toEqual(
       [],
@@ -70,10 +70,10 @@ describe("data router architecture", () => {
     expect(existsSync(join(srcRoot, "features/cockpit/ui/SearchShell.tsx"))).toBe(false);
   });
 
-  it("keeps only News and Macro route families plus the News landing redirect", () => {
+  it("keeps only the News route family plus the News landing redirect", () => {
     const routerSource = readSource("routes/router.tsx");
 
-    expect(routerSource).toContain('path: "macro/:modulePath"');
+    expect(routerSource).not.toMatch(/path: "macro/);
     expect(routerSource).toContain('<Navigate replace to="/news" />');
     expect(routerSource).not.toContain('path: "search"');
     expect(routerSource).not.toContain('path: "token/:targetType/:targetId"');
@@ -81,19 +81,6 @@ describe("data router architecture", () => {
     for (const removed of ["routes/search.route.tsx", "routes/token-target.route.tsx"]) {
       expect(existsSync(join(srcRoot, removed)), `${removed} must stay deleted`).toBe(false);
     }
-  });
-
-  it("keeps macro routing on the data-router module path without legacy prop wrappers", () => {
-    const macroFeatureRoot = join(srcRoot, "features/macro");
-    const legacyFiles = ["MacroPage.tsx", "api/useMacroQuery.ts"]
-      .map((path) => join(macroFeatureRoot, path))
-      .filter(existsSync)
-      .map((path) => relative(webRoot, path));
-    const macroBarrel = readSource("features/macro/index.ts");
-
-    expect(legacyFiles).toEqual([]);
-    expect(macroBarrel).not.toMatch(/\bMacroPage\b/);
-    expect(macroBarrel).not.toContain("useMacroQuery");
   });
 
   it("keeps only the current public News route family", () => {

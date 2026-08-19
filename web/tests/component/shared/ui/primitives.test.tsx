@@ -63,7 +63,7 @@ describe("shared UI primitives", () => {
   it("keeps Radix Tabs behavior behind the shared wrapper", () => {
     render(
       <TabsNamespace.Root defaultValue="overview">
-        <TabsNamespace.List aria-label="Macro modules" className="custom-tabs-list">
+        <TabsNamespace.List aria-label="News modules" className="custom-tabs-list">
           <TabsNamespace.Trigger value="overview" className="custom-trigger">
             Overview
           </TabsNamespace.Trigger>
@@ -76,7 +76,7 @@ describe("shared UI primitives", () => {
       </TabsNamespace.Root>,
     );
 
-    expect(screen.getByRole("tablist", { name: "Macro modules" })).toHaveClass("custom-tabs-list");
+    expect(screen.getByRole("tablist", { name: "News modules" })).toHaveClass("custom-tabs-list");
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveClass("custom-trigger");
     expect(screen.getByText("Overview panel")).toBeVisible();
 

@@ -10,7 +10,7 @@ const testRoot = join(webRoot, "tests");
 const sourceExtensions = new Set([".ts", ".tsx", ".css"]);
 
 // #50 removed the GMGN lane: social tweet Events, token identity, Search, Token Case, DEX/CEX
-// market data, the `/ws` live WebSocket, and the News market marks. The console is News + Macro.
+// market data, the `/ws` live WebSocket, and the News market marks. The console is News only.
 const removedSourcePaths = [
   "domain",
   "features/search",
@@ -89,13 +89,17 @@ describe("GMGN lane hard cut", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the generated OpenAPI mirror to bootstrap, status, News, and Macro", () => {
+  it("keeps the generated OpenAPI mirror to bootstrap, status, and News", () => {
     const openapi = readFileSync(join(srcRoot, "lib/types/openapi.ts"), "utf8");
     const paths = [...openapi.matchAll(/^ {4}"(\/[^"]+)": \{$/gm)].map((match) => match[1]);
 
-    expect(
-      paths.filter((path) => !path.startsWith("/api/news/") && !path.startsWith("/api/macro/")),
-    ).toEqual(["/api/bootstrap", "/api/status", "/healthz", "/metrics", "/readyz"]);
+    expect(paths.filter((path) => !path.startsWith("/api/news/"))).toEqual([
+      "/api/bootstrap",
+      "/api/status",
+      "/healthz",
+      "/metrics",
+      "/readyz",
+    ]);
     expect(openapi).not.toMatch(
       /SearchData|SearchInspectData|TokenCase|LiveMarket|TargetPostsData|TargetSocialTimelineData|ProviderStatus|NewsMarketMarkData|replay_limit/,
     );
@@ -117,7 +121,7 @@ describe("GMGN lane hard cut", () => {
     expect(packageJson).not.toContain("reconnecting-websocket");
   });
 
-  it("keeps frontend tests, fixtures, and mocks on the News + Macro surface", () => {
+  it("keeps frontend tests, fixtures, and mocks on the News surface", () => {
     const offenders = collectFiles(testRoot)
       .filter((path) => sourceExtensions.has(extname(path)))
       .filter((path) => !relative(testRoot, path).startsWith("architecture/"))

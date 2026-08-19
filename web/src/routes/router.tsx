@@ -7,7 +7,6 @@ import {
 
 import { RouteErrorElement, RouteNotFoundElement } from "./routeErrorElement";
 import { ShellChromeRoute, ShellRoute } from "./shell.route";
-import { useShellRouteContext } from "./shellRouteContext";
 
 export type AppRouter = ReturnType<typeof createBrowserRouter>;
 export type AppRouterFactory = () => AppRouter;
@@ -32,46 +31,6 @@ export function createAppRouteObjects(): RouteObject[] {
             {
               path: "news/status",
               lazy: () => import("./news.route"),
-            },
-            {
-              path: "macro",
-              lazy: async () => {
-                const { MacroOverviewPage } = await import("@features/macro");
-                return {
-                  Component: function MacroOverviewRoute() {
-                    const { bootstrapError, bootstrapLoading, token } = useShellRouteContext();
-                    return (
-                      <MacroOverviewPage
-                        bootstrapError={bootstrapError}
-                        bootstrapLoading={bootstrapLoading}
-                        token={token}
-                      />
-                    );
-                  },
-                };
-              },
-            },
-            {
-              path: "macro/overview",
-              lazy: async () => {
-                const { MacroOverviewPage } = await import("@features/macro");
-                return {
-                  Component: function MacroOverviewAliasRoute() {
-                    const { bootstrapError, bootstrapLoading, token } = useShellRouteContext();
-                    return (
-                      <MacroOverviewPage
-                        bootstrapError={bootstrapError}
-                        bootstrapLoading={bootstrapLoading}
-                        token={token}
-                      />
-                    );
-                  },
-                };
-              },
-            },
-            {
-              path: "macro/:modulePath",
-              lazy: () => import("./macro.route"),
             },
             {
               index: true,

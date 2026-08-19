@@ -22,7 +22,6 @@ to `make logs`.
 
 ```bash
 make status            # fail closed on infrastructure/runtime readiness
-make macro-acceptance  # verify all six Macro product reads after deployment
 make logs              # follow PostgreSQL, migration, Serve, and Workers logs
 make down              # stop containers; preserve config, passwords, and database data
 ```
@@ -59,8 +58,7 @@ using `--force`.
 static example or `.env` fallback. The generated default creates a local API
 token but contains no model, OpenNews, or Feishu credential, points
 `news.broker.url` at the compose RabbitMQ service, leaves
-`news.opennews_strategy_ids` empty, enables the free Macro source families,
-and leaves News push disabled. Edit only the operator-owned
+`news.opennews_strategy_ids` empty, and leaves News push disabled. Edit only the operator-owned
 `~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
 terminal output, docs, tests, and commits.
 
@@ -76,11 +74,10 @@ contract is not valid.
 
 The credentials a live deployment can hold are exactly: the OpenNews token
 (`news.opennews_token`), the direct model triple (`llm.api_key`,
-`llm.base_url`, `llm.news_triage_model`, plus the optional Fed
-document-analysis switch and model), the RabbitMQ URL (`news.broker.url`), the
+`llm.base_url`, `llm.news_triage_model`, plus the optional
+`llm.news_triage_fallback` triple), the RabbitMQ URL (`news.broker.url`), the
 Feishu webhook and optional signing secret (`news.push.*`), and the PostgreSQL
-role password files. Macro sources are keyless; `providers.macro_sources` only
-enables the free families and sets the user agent.
+role password files.
 
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
@@ -89,18 +86,13 @@ lanes report explicit degradation or unavailable evidence:
   false, no incidents); when a token is configured while News is enabled,
   `news.opennews_strategy_ids` must be non-empty or configuration fails closed;
 - absent or unreachable `news.broker.url` makes Workers fail startup while News
-  is enabled (the broker is the News transport plane); disable News with
-  `news.enabled: false` to run Macro alone without RabbitMQ;
+  is enabled (the broker is the News transport plane);
 - an absent direct DeepSeek triple (`llm.api_key`, `llm.base_url`,
   `llm.news_triage_model`) makes Triage fall back to fail-closed rules
   (`triage_degraded_24h` grows); a degraded verdict carries no Chinese text, so
   the feed and card fall back to the original title;
-  `llm.macro_document_analysis_enabled: false` (the default) keeps Fed
-  document analysis `disabled` without lowering Rates/Fed health;
 - News push remains off until `news.push.enabled: true` and a supported
-  `news.push.feishu_webhook_url` are both configured;
-- a disabled Macro source family leaves its datasets `unavailable` and visible
-  as such; nothing is proxied.
+  `news.push.feishu_webhook_url` are both configured.
 
 `tracefold config` reports the effective file paths, configured booleans,
 `opennews_strategy_count`, broker `url_configured`, model names, and watchlist
@@ -178,7 +170,8 @@ delivery settles `terminal/delivery_unavailable`.
 The compose stack runs `rabbitmq:4-management` with the default user
 `tracefold` and password `${TRACEFOLD_RABBITMQ_PASSWORD:-tracefold}`; ports
 5672/15672 bind to `127.0.0.1`. The broker URL in `config.yaml` must match.
-Set `news.enabled: false` to run Macro without RabbitMQ.
+Setting `news.enabled: false` leaves Workers with only the probe and control
+children and needs no RabbitMQ.
 
 Workers validate the configured Strategy allowlist against the provider
 Strategy list at startup and expose `strategy_warnings` in `/api/news/status`;
@@ -213,118 +206,36 @@ Useful live-data smoke checks:
 uv run tracefold config
 uv run tracefold news bus-check
 uv run tracefold db audit
-uv run tracefold macro status
 ```
 
 The first command confirms the real config paths. `news bus-check` proves the
 broker URL, declares the News topology idempotently, and prints per-queue
-message/consumer counts. `db audit` confirms the migration head, the Macro
-core-table counts, and the exact eleven `news_*` tables. `macro status`
-reports acquisition targets and the six module rows without calling a
-provider. Source blocks, rate limits, and missing rows surface as explicit
-diagnostic results, not as fake facts.
+message/consumer counts. `db audit` confirms the migration head, the eleven
+`news_*` row counts, and that the schema holds exactly those tables. Source
+blocks, rate limits, and missing rows surface as explicit diagnostic results,
+not as fake facts.
 
-Macro live-data debugging starts the same way: first run
-`uv run tracefold config` and confirm `config_path` points at
-`~/.tracefold/config.yaml`. Report only paths,
-booleans, and diagnostic command status; do not paste the API token, model
-keys, provider passwords, or full config payloads into docs or chat.
+Live-data debugging starts the same way: first run `uv run tracefold config`
+and confirm `config_path` points at `~/.tracefold/config.yaml`. Report only
+paths, booleans, and diagnostic command status; do not paste the API token,
+model keys, provider passwords, or full config payloads into docs or chat.
 
-Macro acquisition uses free, keyless sources first: Treasury XML for the
-current nominal/real curve; FRED public CSV for official history; BLS Public
-Data API and BEA public current-release pages for scheduled release facts;
-Federal Reserve official pages for policy documents; CFTC TFF Futures Only for
-rates/credit/cross-asset positioning; Cboe CFE settlement files for VIX
-futures; Binance public spot klines for the completed UTC BTC settlement; and
-the bounded Yahoo Chart JSON endpoint for best-effort five-minute
-ETFs, BTC, VIX, and major futures plus five-year daily continuous-futures
-proxies. Nasdaq public ETF history supplies the separate five-year daily ETF
-lane.
-`providers.macro_sources` can disable the entire family or FRED, Cboe, CFTC,
-Nasdaq daily, and Yahoo Chart independently and owns only provider admission
-and user-agent identity. Request timeout and bounded-operation budgets are
-code-owned. The retired `request_timeout_seconds` key is rejected; remove it
-from an existing operator config before upgrading. Provider config does not own
-dataset membership, formulas, freshness, or scheduling. Capabilities that
-require unavailable paid data are not part of the current product contract and
-are not filled with a fake proxy.
-
-Five explicit acquisition due loops own distinct clocks:
-`macro_intraday_market`, `macro_settlements`, `macro_economic_releases`,
-`macro_official_state`, and `macro_official_documents`. The two backfill
-commands synchronously process their explicit bounded targets and then exit;
-backfill is not a steady loop or automatic clock.
-The EDF projection coordinator rebuilds only affected module-local current
-rows from the static dataset/calculation/module dependency graph. The serial
-native-state model arbiter writes only immutable, exact-evidence-bound
-FOMC/speech analyses.
-
-For an operator-triggered repair of one bounded dataset window:
-
-```bash
-uv run tracefold macro backfill --dataset fred.dgs10 --start YYYY-MM-DD --end YYYY-MM-DD
-uv run tracefold macro status
-```
-
-For the code-owned five-year history policy:
-
-```bash
-uv run tracefold macro backfill-professional
-uv run tracefold macro status
-```
-
-Treasury, FOMC, speech, completed BTC settlement, fixed ETF Nasdaq daily, and
-Yahoo continuous-futures daily datasets use the most recent five years.
-Yahoo intraday acquisition requests one month of five-minute bars initially
-for ETFs and VIX. High-session futures and continuous BTC request five days
-initially so one batch remains within the code-owned 5,000-fact budget. Every
-Yahoo intraday dataset requests the rolling day thereafter. Older deep history
-is optional enrichment.
-No optional backfill state blocks Coverage, Current Health, or projection;
-History Depth remains explicit. Credit and WTI retain longer reliable public
-history where one bounded source response makes that history cheap and
-material to percentile context.
-
-Rerun the explicit backfill command after a retry deadline until the desired
-targets are `current`; incomplete targets remain visible without blocking the
-workbench. Open or failed document analyses remain explicit module-local gaps.
-
-A good `macro status` reports bounded acquisition target counts/statuses, all
-six current module rows with health/history/fact-cutoff clocks, Fed
-document-analysis job counts, and the optional analysis runtime state. A
-default `disabled` analysis worker is supporting evidence, not a Rates/Fed
-outage. Diagnose a missing value by concept ID and source role through its
-target current state/cursor, fact family, and three module quality axes. A
-public-source timeout, weekend settlement lag, or delayed Yahoo proxy is a
-visible quality state; it is not a frontend defect.
-
-After `uv run tracefold db migrate`, the database contains exactly 28 tables:
-the eleven `news_*` tables; the Macro fact tables (`macro_series_facts`,
-`macro_release_facts`, `macro_documents`, `macro_fed_official_role_facts`)
-and Macro's general market fact tables (`market_instruments`,
-`market_observations`, `market_settlements`, `market_position_facts`);
-acquisition targets, dataset projection states, module frontiers, six current
-module rows, document-analysis jobs, and immutable document analyses; and the
-platform tables `alembic_version`, `queue_terminal_events`, and
+After `uv run tracefold db migrate`, the database contains exactly 13 tables:
+the eleven `news_*` tables plus the platform tables `alembic_version` and
 `workers_runtime`.
 The Alembic chain is the `20260818_0275` current-schema baseline (root; it
 executes `current_schema_20260818_0275.sql` and `runtime_roles.sql`) followed
-by `20260818_0276_review_49_hard_cut` and `20260818_0277_gmgn_lane_removal`.
-A new empty database applies all three without replaying retired runtime
-tables, compatibility columns, historical backfills, or intermediate
-contracts. A database stamped at `20260818_0276` (the live one) migrates
-forward once with `tracefold db migrate`; 0277 drops the social evidence,
-token identity/registry, DEX/CEX market, live broadcast, provider circuit,
-and News market-mark tables and is irreversible (see `OPERATIONS.md`). Stop
-Serve and Workers before applying it, remove the retired config keys, and
-enable the workers only after the migration is current. Worker startup
-reconstructs missing/version-mismatched Macro frontiers from persisted Dataset
-projection state, while matching clean frontiers remain zero-write; the sole
-Macro projection writer reconciles all six frontiers.
+by `20260818_0276_review_49_hard_cut`, `20260818_0277_gmgn_lane_removal`, and
+`20260819_0278_macro_lane_removal`. A new empty database applies all four
+without replaying retired runtime tables, compatibility columns, historical
+backfills, or intermediate contracts. A database stamped at an earlier
+revision migrates forward with `tracefold db migrate`; 0278 drops the whole
+Macro lane and `queue_terminal_events` and is irreversible (see
+`OPERATIONS.md`). Stop Serve and Workers before applying it, remove the
+retired `providers.macro_sources` and `llm.macro_document_analysis_*` config
+keys, and start the workers only after the migration is current.
 
-The overview and six typed module reads are persisted-only and never trigger a
-provider, model, target advance, projection rebuild, or write. Retired routes
-return `404`; there is no compatibility alias.
+Retired routes return `404`; there is no compatibility alias.
 
 The full CLI surface is documented by `uv run tracefold --help`.
 Treat that output as the source of truth — do not enumerate commands
@@ -332,7 +243,7 @@ here. A snapshot lives at `generated/cli-help.md`.
 
 ## Container deployment
 
-`make up`, `make status`, `make macro-acceptance`, `make logs`, and `make down`
+`make up`, `make status`, `make logs`, and `make down`
 are the supported operator lifecycle. `make up` passes an existing
 `GITHUB_TOKEN` into the image
 build as a BuildKit secret; when unset, it uses `gh auth token` if available.
@@ -352,10 +263,8 @@ management ports bound to `127.0.0.1`), the one-shot migration service, and
 separate Serve/Workers runtimes; Workers waits for the broker health check. `make status` returns
 non-zero for a failed/missing migration, stopped or unhealthy required
 container, failed Serve or Workers readiness endpoint, or missing HTML console.
-It intentionally does not make business-data freshness part of readiness. Run
-`make macro-acceptance` after deployment to validate the overview and six
-current modules; use `make logs` for the bounded startup evidence named by a
-failure.
+It intentionally does not make business-data freshness part of readiness. Use
+`make logs` for the bounded startup evidence named by a failure.
 
 The preflight verifies `uv`, the Docker CLI, Compose plugin, `curl`, and daemon
 access before a build starts. If the daemon is unavailable, start Docker

@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News + Macro workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/macro/overview`, and the six `/api/macro/*` module routes over HTTP. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, and no provider image lane; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out.
+The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, and `/api/news/status` over HTTP. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out, and the Macro lane was removed in #68 and `web/tests/architecture/macroLaneHardCut.test.ts` keeps it out.
 
 ## Source Layer Map (`web/src/`)
 
@@ -44,19 +44,18 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Design contract and page archetypes.** Tracefold has one dark, restrained
   operator-workbench language. `styles/tokens.css` is the only semantic color,
   type, radius, focus, and shell token contract; production code must not add a
-  parallel theme or compatibility alias. Stable routes declare one of three
+  parallel theme or compatibility alias. Stable routes declare one of two
   information archetypes with `data-page-archetype`: `scan` for the News
-  Event feed and News status; `case` for News Event detail; `decision` for
-  Macro. The archetype governs hierarchy and density, never data ownership or
-  business inference.
+  Event feed and News status; `case` for News Event detail. The archetype
+  governs hierarchy and density, never data ownership or business inference.
 - **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads/writes. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, `postApi`, or `queryClient.set*` directly. `frontendDataOwnership.test.ts` enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
-- **URL state.** Shareable route options (News feed `q`/filters/sort, Macro
-  hash sections) live in the URL and their owning route-state helpers. No route
+- **URL state.** Shareable route options (News feed `q`/filters/sort) live in
+  the URL and their owning route-state helpers. No route
   carries hidden same-session scroll or selection state that would not survive
   a hard reload.
 - **Transport.** The browser talks HTTP only. `useAppSession` reads
   `/api/bootstrap` (`{ws_token}`) once and installs the bearer token on
-  `lib/api/client`; feature hooks poll `/api/news/*` and `/api/macro/*` on
+  `lib/api/client`; feature hooks poll `/api/news/*` on
   code-owned intervals with ETag revalidation. There is no `/ws` client, no
   socket provider, no live-market cache patching, and no subscription registry;
   the shell status pill derives only from `/api/status.runtime`.
@@ -155,64 +154,6 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   cached body. There is no archive, revision timeline, read state, favorites,
   subscriptions, per-Event AI panel, push inbox, notification settings,
   browser model call, or adjustable threshold.
-- **Macro routes.** `/macro` and `/macro/overview` render one compact index over
-  the six current modules. `/macro/rates-fed`, `/macro/economy-inflation`,
-  `/macro/liquidity-funding`, `/macro/credit`, `/macro/volatility`, and
-  `/macro/cross-asset` are the only Macro detail routes and are backed by their
-  matching `/api/macro/*` reads. They do not accept a generic window parameter.
-
-  The overview shows transport state, latest fact time, each module's
-  availability/currentness/coverage/history depth, and aggregate data quality.
-  It does not synthesize a daily narrative, asset call, or historical session.
-
-  Each module is a typed fact workbench. Its header shows as-of clocks and
-  quality; hash-selected sections render only the server-provided facts,
-  charts, tables, lineage, contradictions, falsifiers, and checkpoints that
-  belong to that module. Empty semantic sections are omitted. Release modules
-  distinguish expected, actual, surprise, revision, source publication time,
-  and ingestion time. Dataset details keep data, market, and source state
-  separate; optional history affects History Depth, not Current Health.
-  Current blockers are expanded before the workbench. Historical partial-depth
-  audit remains collapsed below the primary task; it must never push the first
-  useful section thousands of pixels down the page.
-
-  Rates begins with the persisted 2Y/10Y/30Y completed-session matrix,
-  2s10s/10s30s, and aligned 10Y/30Y nominal-real-breakeven decomposition. It
-  then renders maturity cross-sections, source clocks, the official FOMC
-  meeting calendar, recent Treasury auction-demand facts, Fed institutional
-  stance, officials distribution, and the event timeline. The optional Fed
-  analysis runtime configuration is a separate `disabled`/`unconfigured`/`active`
-  evidence lane. `active` means the worker's configuration admission conditions
-  are satisfied; it is not a process-liveness signal. Disabled analysis does not
-  make official Rates/Fed facts unavailable,
-  and `no_call` never renders as a zero-score distribution. Bill discount rate,
-  investment rate, and high yield retain distinct labels and nullable values.
-  Economy releases show their Registry-owned seasonal-adjustment convention
-  beside reference, publication, and ingestion clocks. Cross-Asset keeps the fixed
-  ETF matrix, normalized comparison, futures, and USD-index facts distinct. Its
-  normalized charts state that the comparison base is 100; a compact benchmark
-  strip exposes each price/return source and as-of time. The correlation window
-  selector is generated solely from the server's correlation contract, and the
-  mirrored matrix/diagonal are display-only derivations.
-  Credit keeps its four concurrent dimensions and no composite score.
-  Volatility alone owns the official-expiry CFE VX settlement curve.
-
-  The browser never calculates a Macro metric, merges source identities,
-  chooses a fallback conclusion, invokes a model, or repairs persisted state.
-  A missing module renders its typed unavailable reason without hiding the
-  other five. At desktop, tablet, and mobile widths, content becomes labelled
-  stacked sections without page-level horizontal scrolling or hover-only
-  evidence. Dense correlation matrices may use one labelled local scroller.
-
-  Module headers and the Dataset audit render server-owned group/Dataset
-  health, exact reasons, affected Dataset IDs, source/effective/received
-  clocks, recovery mode, and next-check time. A cached refetch failure is
-  visibly stale instead of silently presenting the cached body as current;
-  typed unavailable states retain their retry or operator-recovery action.
-  Module reads poll every 60 seconds with a 30-second query stale time and use
-  a stable per-module ETag cache key. Unchanged bodies reuse the cached typed
-  response after `304`; transport failures keep the last body only behind the
-  visible update-delayed state.
 - **Page state.** Only an active first HTTP request may show Loading.
   Bootstrap pending/error, disabled query, transport error, same-session stale
   cache, and typed module-unavailable states use distinct `PageState.*`
@@ -222,13 +163,13 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, and side-effect class names reused across feature roots. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
 - **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, and the shadcn sidebar composition (`SidebarProvider`, `AppSidebar`, `SidebarInset`, and `SidebarTrigger`) split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Mobile and tablet route navigation uses the shadcn `Sheet` drawer opened from the topbar trigger.
-- **Route controls.** Shells do not render route-specific filter controls. News and Macro controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, the main route scroll container, and the `/` search hotkey.
-- **Shell navigation.** Desktop users navigate through the collapsible shadcn `AppSidebar`; tablet and mobile users open the same route tree through the topbar `SidebarTrigger` and shadcn drawer. The primary route tree contains exactly News and Macro in that order; `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/status`, `/news/events/:eventId`, `/macro`, `/macro/overview`, and the six `/macro/<module>` routes; `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
+- **Route controls.** Shells do not render route-specific filter controls. News controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, the main route scroll container, and the `/` search hotkey.
+- **Shell navigation.** Desktop users navigate through the collapsible shadcn `AppSidebar`; tablet and mobile users open the same route tree through the topbar `SidebarTrigger` and shadcn drawer. The primary route tree contains exactly News; `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
-- **Score display.** Displayed scores and labels (Triage magnitude and confidence, the News `outcome`/`*_zh`/`label_zh` copy, Macro data quality) are server-owned values rendered as-is. The UI does not recompute, rank, translate, or synthesize them locally; `features/news/newsLabels.ts` holds UI affordance copy and tone mapping only.
+- **Score display.** Displayed scores and labels (Triage magnitude and confidence, the News `outcome`/`*_zh`/`label_zh` copy) are server-owned values rendered as-is. The UI does not recompute, rank, translate, or synthesize them locally; `features/news/newsLabels.ts` holds UI affordance copy and tone mapping only.
 - **No token or provider-image surfaces.** There is no token profile, logo, chain/address link, DEX/CEX market panel, or image proxy anywhere in `web/src`; the API exposes no image URL or image route. Do not add a frontend proxy, helper, or filter that loads or rewrites provider image URLs.
 
 ## Build And Test
@@ -265,11 +206,11 @@ Production bundles ship inside the same Docker image as the Python service and a
 
 Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manually before declaring completion. The minimum checklist for frontend architecture changes is:
 
-1. Hard-reload `/`, `/news`, `/news/status`, `/news/events/:eventId`,
-   `/macro`, and each `/macro/<module>` with representative query params;
-   confirm `/search` and `/token/...` render the not-found surface.
-2. Submit the topbar search from `/macro` and from `/news` and confirm the URL
-   becomes `/news?q=<submitted-query>` (existing News filters survive).
+1. Hard-reload `/`, `/news`, `/news/status`, and `/news/events/:eventId` with
+   representative query params; confirm `/macro`, `/search`, and `/token/...`
+   render the not-found surface.
+2. Submit the topbar search from `/news/status` and from `/news` and confirm
+   the URL becomes `/news?q=<submitted-query>` (existing News filters survive).
 3. Verify visible loading/empty/error states are structured, labelled, and non-overlapping.
 4. Confirm no failing `/api/*` requests and no WebSocket connection attempt in the browser session.
 5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
@@ -291,9 +232,3 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    Strategy counts (never IDs), a collapsed 技术指标, and no operator controls.
    Confirm about two News rows remain scannable at 390px and at least four at
    desktop height without horizontal overflow.
-9. At `1920px`, `1366px`, `834px`, and `390px`, verify `/macro` keeps all six
-   module summaries, latest fact time, coverage, History Depth, and Data Quality
-   readable without horizontal overflow or machine-only labels. Verify each
-   module route has a real-sized module-specific chart, exact source clocks, an
-   equivalent data table, and only its active hash section mounted. Select a
-   non-default section, reload, and verify the same section remains active.

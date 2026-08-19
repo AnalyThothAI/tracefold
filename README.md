@@ -1,13 +1,11 @@
 # Tracefold
 
-Tracefold is an evidence-first market research system with exactly two
-business capabilities. News V3 turns the operator's OpenNews Strategy pushes
-into deduplicated Events, triages and analyses them with bounded structured
-model calls under deterministic rules, and delivers Feishu cards; Macro turns
-free official and exchange data into six deterministic current modules plus
-optional Fed document analyses. One Python service persists material facts in
-PostgreSQL, builds deterministic read models, and serves a React operator
-console plus stable HTTP and CLI contracts.
+Tracefold is an evidence-first market research system with exactly one
+business capability. News V3 turns the operator's OpenNews Strategy pushes
+into deduplicated Events, triages them with bounded structured model calls
+under deterministic rules, and delivers Feishu cards. One Python service
+persists material facts in PostgreSQL, builds a deterministic read model, and
+serves a React operator console plus stable HTTP and CLI contracts.
 
 Tracefold is not a trading bot or a chat product. Provider frames are inputs,
 not business truth.
@@ -15,11 +13,10 @@ not business truth.
 ## Architecture
 
 ```text
-OpenNews WSS / official macro sources
+OpenNews WSS
   -> integrations (RabbitMQ is the News transport plane)
   -> PostgreSQL material facts
-  -> durable frontiers / bounded catch-up
-  -> single-writer read models or immutable publications
+  -> single-writer read models
   -> HTTP / CLI / React
 ```
 
@@ -29,9 +26,8 @@ The hard invariants are:
 - Current rows use stable product/window/target keys, never run or attempt IDs.
 - Each current read model has exactly one writer and is rebuildable from facts.
 - Unchanged projections write zero serving rows.
-- Macro workers recover by polling durable PostgreSQL state at bounded
-  intervals; News consumers recover by re-consuming durable broker queues plus
-  database idempotency keys.
+- News consumers recover by re-consuming durable broker queues plus database
+  idempotency keys.
 - Read surfaces never call providers or models.
 - Missing evidence is explicit, never replaced by a fabricated zero or fallback.
 
@@ -40,14 +36,13 @@ The Python package is deliberately shallow:
 ```text
 src/tracefold/
   news/           broker-driven Event pipeline: Deduper, Gate, Triage, delivery, labels
-  macro/          Dataset Registry, acquisition clocks, general market facts, six modules, Fed document analysis
-  integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu, macro sources)
+  integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu)
   platform/       config, PostgreSQL/Alembic, telemetry, bounded resource primitives
   app/            composition (`tracefold.app.workers` root), HTTP, and CLI adapters
 ```
 
-Other packages import business capabilities from `tracefold.news` or
-`tracefold.macro`, not from their internal modules. See
+Other packages import the business capability from `tracefold.news`, not from
+its internal modules. See
 [Architecture](docs/ARCHITECTURE.md).
 
 ## Start the complete product
@@ -105,8 +100,7 @@ truth. Confirm the active path and redacted credential booleans with:
 ```bash
 uv run tracefold config
 uv run tracefold news bus-check   # broker reachable, topology declared, queue depths
-uv run tracefold macro status     # acquisition targets and the six module rows
-uv run tracefold db audit         # migration head, Macro core counts, exact news_* tables
+uv run tracefold db audit         # migration head, news_* row counts, exact news_* tables
 uv run tracefold --help
 ```
 

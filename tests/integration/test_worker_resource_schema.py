@@ -31,9 +31,4 @@ def test_worker_runtime_v2_schema_keeps_only_native_domain_state_and_one_runtime
     finally:
         conn.close()
 
-    assert [row["table_name"] for row in rows] == [
-        "macro_dataset_projection_states",
-        "macro_module_frontiers",
-        "queue_terminal_events",
-        "workers_runtime",
-    ]
+    assert [row["table_name"] for row in rows] == ["workers_runtime"]

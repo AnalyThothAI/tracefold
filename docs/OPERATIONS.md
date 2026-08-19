@@ -7,7 +7,7 @@ diagnosis, and safe repair boundaries.
 
 The only operator-owned Tracefold application configuration is
 `~/.tracefold/config.yaml`: deployment/domain choices, role-specific
-PostgreSQL references, Macro source-family switches, credentials, API/auth,
+PostgreSQL references, credentials, API/auth,
 models, and storage. Worker topology, cadence, deadlines, batches, leases,
 retry policy, timeouts, and resource budgets are code-owned.
 
@@ -23,7 +23,6 @@ The canonical complete-product lifecycle is:
 ```bash
 make up
 make status
-make macro-acceptance
 make logs
 make down
 ```
@@ -48,8 +47,6 @@ contract; startup never repairs an unknown role/schema boundary.
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
 HTML console all pass. It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
-`make macro-acceptance` is the separate product-data gate for the overview and
-six Macro reads; it is not part of `/readyz`.
 
 ## Health and status
 
@@ -61,17 +58,13 @@ six Macro reads; it is not part of `/readyz`.
 | `/api/status` | `{measured_at_ms, runtime}`: database probe plus the Workers heartbeat row | bounded control read |
 | `/api/news/status` | four-layer News state (`ingest`, `broker`, `pipeline`, `delivery`) plus `control` | bounded News reads |
 | `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
-| `make macro-acceptance` | exact Macro contracts, current health, coverage, and ETag revalidation | persisted product-read acceptance |
-| `tracefold ops ...` | explicit on-demand queue diagnosis and resolution | command-specific |
+| `tracefold ops validate-projections` | bounded News singleton and delivery-state invariants | strict Serve-role read |
 
-Source degradation and a missing Fed document analysis do not make the HTTP
-process unready. `/api/status` has no provider block; it fails closed only on
-a stale Workers heartbeat or a database/schema mismatch. Use `tracefold ops
-queue-inspect` for exact on-demand queue detail; its owners are
-`macro_document_analysis` (`macro_document_analysis_jobs`) and
-`macro_projection` (`macro_module_frontiers`). Domain freshness and native
-model-job state remain visible through `/api/news/status`, `macro status`, and
-the Macro reads.
+Source degradation does not make the HTTP process unready. `/api/status` has no
+provider block; it fails closed only on a stale Workers heartbeat or a
+database/schema mismatch. There is no durable worker queue left to inspect:
+News backlog lives in RabbitMQ and is reported by `/api/news/status.broker`
+and `tracefold news bus-check`.
 
 ## Worker ownership
 
@@ -92,34 +85,17 @@ tracefold workers
      (1 singleton lock + 2 business + 4 News lane + 1 control)
   -> one pinned singleton session / business DB executor 2 / News DB lane 4 /
      control DB executor 1
-  -> finite external-operation executor 3 / synchronous model adapter 1
-  -> spawn-only Pebble ProcessPool 1 for Macro
+  -> finite external-operation executor 3
   -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
-     news-triage, news-deliverer, news-janitor); one durable-due
-     task per Macro acquisition clock (macro_intraday_market, macro_settlements,
-     macro_economic_releases, macro_official_state, macro_official_documents);
-     projection-edf (Macro frontier coordinator); model-arbiter (Fed document
-     analysis); workers-control
+     news-triage, news-deliverer, news-janitor); workers-control
 ```
 
-Every acquisition/projection/model task uses a short claim transaction,
-bounded load plus provider/compute/model work with no database connection, and
-a short compare-and-set publication transaction. The stateless EDF
-coordinator polls typed Macro candidates and runs one
-eligible semantic shard at a time, ordered by the real freshness deadline.
-After every productive shard turn it yields cooperatively and immediately
-rereads every typed frontier head. Failed and idle shard turns wait on the fixed
-250 ms bounded polling cadence. Other due loops and the model arbiter retain
-their bounded code-owned productive and idle cadences. This preserves
-single-shard resource ownership while allowing a real projection backlog to
-converge.
-`deadline_at_ms` is not a not-before time. Material changes are eligible
-immediately; `next_attempt_at_ms` delays only a scheduled recheck or retry.
-The eligibility expression has a bounded partial index on every projection
-frontier. There is no
-generic scheduler, database wake plane, startup rebuild, phased load shifting,
-or configurable concurrency.
+Every News consumer turn is one short idempotent transaction; provider and
+model work happens with no database connection held. There is no generic
+scheduler, projection frontier, EDF coordinator, model arbiter, database wake
+plane, startup rebuild, phased load shifting, or configurable concurrency
+beyond `news.triage.concurrency`.
 
 The control child distinguishes the pinned singleton session from its pooled
 heartbeat write. Loss of the pinned advisory-lock session remains immediately
@@ -139,7 +115,7 @@ child outside it. Only the owning source seam may map an outer
 finite-operation overrun into its existing durable failure policy. A typed
 recurring business-DB overrun remains local to its natural loop; its occupied
 permit remains bound to the native future and the loop retries on its normal
-cadence. Control-DB, model, CPU, cleanup, and unclassified overruns remain
+cadence. Control-DB, model, cleanup, and unclassified overruns remain
 process-fatal. Classification uses the typed physical capability carried by
 the exception, never an operation-name or error-string prefix. A caller timeout
 never releases a resource permit before the underlying future actually
@@ -172,28 +148,22 @@ single-active queues use prefetch 1. When the News lane cannot admit a message
 the consumer raises `DeferError` and the message requeues uncounted through
 the retry lane.
 
-Macro projection claims retain their 30-second lease envelope.
 News has no projection lease: the broker's single-active-consumer and
 per-message ack are the fences.
 
 `/metrics` exposes low-cardinality worker transaction and shared capability
-resource signals. Frontier-backed domains additionally expose projection
-source/candidate/written counts, queue depth, oldest-due delay, and cumulative
-deadline misses. Use shared resource and PostgreSQL activity/lock evidence for
+resource signals. Use shared resource and PostgreSQL activity/lock evidence for
 diagnosis; CPU alone is not a root-cause claim.
 
-## Durable queue and transaction rules
+## Durable state and transaction rules
 
-- PostgreSQL facts/control rows are the only recovery source.
-- Claims are bounded and leased with `SKIP LOCKED` or compare-and-set.
-- Queue identity is the stable product target, not an event or attempt.
-- Success writes the current model and acknowledges the exact claim in one
+- PostgreSQL facts/control rows plus the durable broker queues are the only
+  recovery sources.
+- Every News write is idempotent by key; the broker owns retry, buffering, and
+  the dead-letter lane.
+- Success writes the current model and acknowledges the exact message in one
   application-owned transaction.
-- Retry clears the lease and schedules a bounded future attempt.
-- Exhaustion preserves the source snapshot in
-  `queue_terminal_events`.
-- Workers re-read durable work on bounded intervals; there is no wake plane.
-- Provider/network/subprocess/filesystem I/O occurs outside DB transactions.
+- Provider/network/filesystem I/O occurs outside DB transactions.
 - Current rows use stable keys and skip unchanged payload writes.
 
 ## First checks
@@ -202,11 +172,10 @@ For missing or stale live data:
 
 1. run `uv run tracefold config`;
 2. check `/healthz` and `/readyz`;
-3. inspect authenticated `/api/status`, then `/api/news/status` or
-   `uv run tracefold macro status`;
-4. run `uv run tracefold ops queue-inspect --status active`;
-5. inspect unresolved terminal events;
-6. trace one stable target from fact -> frontier/queue row -> current row -> API.
+3. inspect authenticated `/api/status`, then `/api/news/status`;
+4. run `uv run tracefold news bus-check` for per-queue depths;
+5. run `uv run tracefold news why <event_id>` for one Event's whole chain;
+6. trace one stable target from fact -> Event row -> API.
 
 | Symptom | Inspect first |
 |---|---|
@@ -367,79 +336,6 @@ Retention: `news_items`/`news_events` older than 30 days are purged by the
 Janitor; bands expire with their family window. Feed shows Events from the
 first frame after deployment; there is no backfill of pre-V3 history.
 
-Macro:
-
-The current Macro runtime contains material facts, acquisition targets, six
-deterministic module rows, and immutable Fed document analyses. It has no
-second daily publication or historical product lane.
-
-```text
-clock-specific target claim -> provider I/O -> typed fact + target cursor/state
-  -> typed affected-module frontier -> EDF module-local projection
-  -> stable macro_module_current row
-
-official FOMC/speech body + effective-dated role fact
-  -> macro_document_analysis_jobs
-  -> exact-excerpt-validated immutable document analysis
-  -> rates-fed module input
-```
-
-The five explicit Macro due loops claim only their own clock family from
-`macro_acquisition_targets` with `SKIP LOCKED`. `macro backfill` and
-`macro backfill-professional` enqueue and synchronously drain only their
-explicit bounded targets before returning. Every loop claims one target/page
-per bounded turn; provider I/O happens after claim commit. Completion appends
-changed facts, advances the durable cursor, and compare-and-set updates the
-target's current success/error state. Unchanged replay writes zero fact rows.
-One failed source cannot head-of-line block another clock or target.
-
-The professional backfill applies the code-owned Treasury/Fed/credit/WTI/BTC/
-CFTC/ETF/futures history policy. Required windows remain visible through
-History Depth but do not lower Current Health. Optional deep history has lower
-urgency than current coverage and cannot block a current module.
-
-Diagnose a missing metric in this order: Registry `concept_id` and
-`source_role`, acquisition target state/lease/cursor/current error, persisted
-fact clocks (reference/published/received), module Coverage/Current Health/
-History Depth, then the current-row hash. Do not mask source or calculation
-errors with frontend fallback content. `untrusted_proxy` Nasdaq/Yahoo rows stay
-labelled. Closed and maintenance market sessions are judged against the last
-expected bar rather than wall time.
-
-FOMC/Board/Reserve Bank full-text facts feed
-`macro_document_analysis_jobs`. A speech waits for its effective-dated role
-match. Each claim performs model I/O outside the write transaction, validates
-exact excerpts against the frozen official body, then atomically inserts the
-immutable analysis, completes the job, advances the derived Dataset state, and
-dirties the `rates_fed` frontier. Restart reclaims an expired lease without
-duplicating analysis identity. A failed or disabled analysis affects only the
-supporting document evidence; official Rates/Fed Current Health stays
-independent and Fed judgment fields remain `no_call`.
-
-The Macro projection domain maps changed datasets through the static
-dataset/calculation/module dependency graph. One EDF turn loads only the
-affected module's bounded history, computes outside the database, rechecks the
-input fingerprint, and publishes that module in one short transaction.
-Unchanged payloads write zero serving rows. The overview and six module fact
-payloads read only `macro_module_current`; Rates additionally exposes the
-secret-free optional-analysis runtime state. They never call a provider/model
-or repair state.
-
-`uv run tracefold macro status` reports actionable steady acquisition and
-explicit maintenance backfills separately, including active and expired claims.
-A historical backfill state is
-therefore never counted as live Worker backlog. The same response includes
-each module's current health, history depth, fact cutoff and update time, Fed
-document-analysis job counts, and whether the optional analysis worker
-configuration is `disabled`, `unconfigured`, or active. Active means its
-configuration admission conditions are satisfied, not that a worker process
-heartbeat was observed. The command performs no provider call and no write.
-Reconciliation reactivates an `unavailable` steady target on process startup
-only when its adapter is currently enabled, so enabling a previously disabled
-source requires no repair command while a still-disabled source creates no
-restart burst. The
-`uv run tracefold config` command exposes the same secret-free booleans.
-
 ## Migrations
 
 The Alembic chain is the `20260818_0275` baseline (root; it executes
@@ -447,12 +343,13 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed
-by `20260818_0276_review_49_hard_cut` and `20260818_0277_gmgn_lane_removal`.
-A live database stamped `20260818_0276` upgrades to 0277 with `tracefold db
-migrate`; a fresh database runs the baseline, 0276, and 0277. All three are
-irreversible; a downgrade is a backup restore. Stop Serve and Workers before
-applying a chained revision (each takes the maintenance gate advisory lock
-and refuses to run while Workers hold the steady lock).
+by `20260818_0276_review_49_hard_cut`, `20260818_0277_gmgn_lane_removal`, and
+`20260819_0278_macro_lane_removal`. A live database stamped at an earlier
+revision upgrades with `tracefold db migrate`; a fresh database runs the
+baseline and the three hard cuts. All four are irreversible; a downgrade is a
+backup restore. Stop Serve and Workers before applying a chained revision
+(each takes the maintenance gate advisory lock and refuses to run while
+Workers hold the steady lock).
 
 0276 drops `news_title_presentations`, `token_discovery_results`,
 `token_discovery_dirty_lookup_keys`, `asset_profiles`,
@@ -472,32 +369,36 @@ tables, and deletes their `queue_terminal_events` rows.
 `us_equity_symbols`, and `provider_circuit_state`; it drops the
 `forbid_market_fact_update()` function and deletes the
 `queue_terminal_events` rows of `event_anchor_backfill_jobs` and
-`collector_pending_items`. Macro's general market fact tables
-(`market_instruments`, `market_observations`, `market_settlements`,
-`market_position_facts`) stay. Neither revision performs a provider, broker,
-or outbound call.
+`collector_pending_items`.
 
-Before applying 0277 remove `gmgn`, `upstream`, `providers.binance`,
-`api.heartbeat_interval`, and `api.replay_limit` from
-`~/.tracefold/config.yaml`; the settings schema rejects them. Verify after
-restart: `tracefold db audit` reports `migration_status` `ready`, `counts` for
-the Macro core tables, and `news_schema.exact` for the eleven `news_*`
-tables; `tracefold news bus-check` shows one consumer on `news.raw` and
-`news.deliver`; `/api/news/status.state` becomes `ready` once the WSS
-connects; `/api/macro/overview` lists six modules; and the first candidate
+0278 drops the whole Macro lane in child-before-parent order:
+`macro_document_analysis_jobs`, `macro_document_analyses`, `macro_documents`,
+`macro_fed_official_role_facts`, `macro_release_facts`, `macro_series_facts`,
+`macro_module_current`, `macro_module_frontiers`,
+`macro_dataset_projection_states`, `macro_acquisition_targets`,
+`market_position_facts`, `market_settlements`, `market_observations`,
+`market_instruments`, and `queue_terminal_events` (whose only writers were the
+Macro repository and the projection frontier); it also drops the
+`reject_macro_fact_mutation()` function. No revision performs a provider,
+broker, or outbound call.
+
+Before applying 0278 remove `providers.macro_sources` and the
+`llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
+settings schema rejects them and Serve/Workers fail to start with them
+present. Verify after restart: `tracefold db audit` reports
+`migration_status` `ready`, `counts` for the eleven `news_*` tables, and
+`news_schema.exact`; `tracefold news bus-check` shows one consumer on
+`news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` once
+the WSS connects; `/api/macro/overview` answers `404`; and the first candidate
 Event receives a Triage verdict within seconds.
 
 ## Operator actions and retention
 
-Supported terminal actions are:
-
-- retry: recreate the supported source transition and record reason/time;
-- archive: preserve evidence but remove it from unresolved work;
-- quarantine: preserve and mark evidence for investigation.
-
-Retired queues have no retry path. Successful operational attempts may have
-short retention; failed/terminal evidence and unresolved side effects are kept
-longer. Current models retain one stable row per identity.
+There is no durable worker queue and therefore no terminal-evidence retry,
+archive, or quarantine action. Failed News messages retry through the broker's
+30 s lane three times and then dead-letter to `news.dead`, which
+`tracefold news dlq inspect|replay|purge` owns. Current models retain one
+stable row per identity.
 
 Destructive migrations use bounded timeouts, transform data before constraints,
 drop children before parents, avoid `CASCADE`/`IF EXISTS`, and preserve material
@@ -547,7 +448,7 @@ LIMIT 20;
 
 `uv run tracefold db query-audit` verifies that every public HTTP route is
 assigned to a bounded read-query family (`/readyz`, `/api/status`,
-`/api/news/*`, `/api/macro/*`; `/healthz`, `/metrics`, and `/api/bootstrap`
+`/api/news/*`; `/healthz`, `/metrics`, and `/api/bootstrap`
 are declared no-SQL) and checks that every query can be planned. `uv run
 tracefold db query-audit --analyze` executes those read-only queries with JSON
 `EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated large-table sequential
@@ -567,18 +468,17 @@ or `MERGE` in `BEGIN` and `ROLLBACK`.
 
 Frontier-backed hot paths claim narrow stable keys and hydrate wide JSONB only
 after selection. Partial indexes must match the real due/status predicate. An
-idle frontier worker must not scan broad facts merely to prove that no work is
+idle worker must not scan broad facts merely to prove that no work is
 due. Use one representative `EXPLAIN (ANALYZE, BUFFERS)` for a
 bounded evidence path; do not create a second planner-assertion control
 plane. Current models remain bounded by stable product keys; a
 latest-generation pointer is not a retention policy.
 
-Projection sessions disable PostgreSQL parallel gather and JIT and use 16 MB
-`work_mem`; foreground ingestion and API sessions keep PostgreSQL defaults.
-This prevents two bounded background iterations from multiplying into all
-available PostgreSQL CPU workers while preserving deterministic source-to-
-current work. The News feed hot paths use ordered composite indexes; do not
-replace them with periodic broad scans.
+Worker sessions disable PostgreSQL parallel gather and JIT and use 16 MB
+`work_mem`; API sessions keep PostgreSQL defaults. This prevents bounded
+background iterations from multiplying into all available PostgreSQL CPU
+workers. The News feed hot paths use ordered composite indexes; do not replace
+them with periodic broad scans.
 
 Compose uses the official PostgreSQL 18 Bookworm image and preloads only
 `pg_stat_statements` for query diagnosis. `compute_query_id` remains enabled.
@@ -594,6 +494,6 @@ For an ordinary migration or production cutover:
 3. record Alembic head and non-empty fact/read-model counts;
 4. apply migrations with bounded lock and statement timeouts;
 5. verify the same fact identities and expected counts;
-6. start one writer per current model, then verify readiness, queue movement,
-   and unchanged-projection zero-write behavior;
+6. start one writer per current model, then verify readiness, broker queue
+   movement, and unchanged-payload zero-write behavior;
 7. retain the backup until the new runtime passes smoke checks.

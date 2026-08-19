@@ -7,7 +7,6 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
-from enum import Enum, auto
 from typing import Any
 from uuid import uuid4
 
@@ -18,27 +17,12 @@ from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, Qu
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import WorkerDatabase
-from tracefold.app.llm import configured_chat_model, llm_is_configured
-from tracefold.app.workers.capabilities import CpuProcess, FiniteOperations, ModelAdapter
-from tracefold.app.workers.cpu_prewarm import prewarm_projection_cpu_modules
-from tracefold.app.workers.model_arbiter import run_model_arbiter
+from tracefold.app.llm import configured_chat_model
+from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
-from tracefold.app.workers.projection_edf import run_projection_edf
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
 from tracefold.integrations.feishu import FeishuNewsPushSender
-from tracefold.integrations.macro_sources import MacroSourceClient
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
-from tracefold.macro import (
-    FED_DOCUMENT_ANALYSIS_PROMPT_VERSION,
-    FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
-    FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
-    FedDocumentAnalysisAgent,
-    MacroAcquisition,
-    MacroAcquisitionService,
-    MacroDocumentAnalysisService,
-    MacroProjectionCandidate,
-    acquisition_loop_policy,
-)
 from tracefold.news import DecidePolicy
 from tracefold.news.agents.triage_model import TriageModel
 from tracefold.news.consumers import (
@@ -58,11 +42,7 @@ from tracefold.platform.config.settings import (
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
-from tracefold.platform.resource import (
-    ResourceAdmissionTimeout,
-    ResourceCapability,
-    ResourceOperationOverrun,
-)
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
 FATAL_EXIT_TIMEOUT_SECONDS = 5.0
@@ -72,26 +52,10 @@ _HEARTBEAT_SECONDS = 5.0
 _CONTROL_TIMEOUT_SECONDS = 1.0
 _CONTROL_RETRY_SECONDS = 0.250
 _CONTROL_HEARTBEAT_STALE_SECONDS = 15.0
-_DOCUMENT_MODEL_TIMEOUT_SECONDS = 180.0
-_MODEL_MAX_TOKENS = 6_000
 # One TriageVerdict is ~250-300 output tokens (JSON + three Chinese reader strings); successful calls were hitting a
 # 300 cap and truncated tool calls surfaced as `news_triage_output_invalid`. Keep ~2x headroom.
 _TRIAGE_MAX_TOKENS = 700
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
-_PRODUCTIVE_REPOLL_SECONDS = 0.250
-_MACRO_CLOCKS = (
-    ("macro_intraday_market", "intraday_market"),
-    ("macro_settlements", "daily_settlement"),
-    ("macro_economic_releases", "scheduled_release"),
-    ("macro_official_state", "official_state"),
-    ("macro_official_documents", "official_document"),
-)
-
-
-class _Disposition(Enum):
-    PROGRESSED = auto()
-    RETRY_SOON = auto()
-    IDLE = auto()
 
 
 class _FreshRuntimeRowExists(RuntimeError):
@@ -142,12 +106,6 @@ class _ProbeState:
 class _Components:
     news_pipeline: NewsPipeline | None
     news_bus: Any | None
-    macro_source: MacroSourceClient | None
-    macro_turns: tuple[MacroAcquisition, ...]
-    due_turns: tuple[tuple[Callable[[], Awaitable[bool | str | None]], float], ...]
-    projections: tuple[Any, ...]
-    models: tuple[Any, ...]
-    document_model: MacroDocumentAnalysisService | None
 
 
 async def run_workers(settings: Settings) -> None:
@@ -171,8 +129,6 @@ async def run_workers(settings: Settings) -> None:
     db: WorkerDatabase | None = None
     lock_conn: Any | None = None
     finite = FiniteOperations(telemetry=telemetry)
-    model_adapter = ModelAdapter(telemetry=telemetry)
-    projection_cpu = CpuProcess(telemetry=telemetry)
     components: _Components | None = None
     server: uvicorn.Server | None = None
     graceful = False
@@ -200,8 +156,6 @@ async def run_workers(settings: Settings) -> None:
         if server is not None:
             server.should_exit = True
         finite.close_admission()
-        model_adapter.close_admission()
-        projection_cpu.close_admission()
         if db is not None:
             db.close_business_admission()
         fatal_watchdog = signal_loop.call_later(
@@ -219,12 +173,6 @@ async def run_workers(settings: Settings) -> None:
         lock_conn = db.acquire_steady_runtime_lock()
         db.check_pinned_liveness(lock_conn)
         db.prewarm_control_connection()
-        await projection_cpu.prewarm()
-        await projection_cpu.run(
-            "projection_cpu_modules_prewarm",
-            prewarm_projection_cpu_modules,
-            service_timeout_seconds=20.0,
-        )
         began: bool = await db.run_control(
             "workers_runtime_begin",
             _runtime_begin,
@@ -238,22 +186,11 @@ async def run_workers(settings: Settings) -> None:
             db.release_steady_runtime_lock(lock_conn)
             lock_conn = None
             finite.close()
-            model_adapter.close()
-            projection_cpu.close()
             await db.aclose()
             db.close_executors()
             raise _FreshRuntimeRowExists("workers_runtime_fresh_row_exists")
 
-        components = await _wire_components(
-            settings=settings,
-            db=db,
-            telemetry=telemetry,
-            finite=finite,
-            model_adapter=model_adapter,
-            projection_cpu=projection_cpu,
-            runtime_id=runtime_id,
-        )
-        await _reconcile_once(components)
+        components = await _wire_components(settings=settings, db=db, finite=finite)
         server = _probe_server(probe_state=probe_state, telemetry=telemetry)
 
         async with asyncio.TaskGroup() as group:
@@ -274,54 +211,6 @@ async def run_workers(settings: Settings) -> None:
                             name=task_name,
                         )
                     )
-            for index, (turn, idle_seconds) in enumerate(components.due_turns):
-                business_tasks.append(
-                    group.create_task(
-                        _guard_child(
-                            _run_due(
-                                turn,
-                                idle_seconds=idle_seconds,
-                                stop_event=work_stop_event,
-                            ),
-                            on_fatal=enter_fatal,
-                        ),
-                        name=f"durable-due-{index}",
-                    )
-                )
-            business_tasks.append(
-                group.create_task(
-                    _guard_child(
-                        _run_recurring_database_overrun_boundary(
-                            lambda: run_projection_edf(
-                                components.projections,
-                                stop_event=work_stop_event,
-                                telemetry=telemetry,
-                            ),
-                            stop_event=work_stop_event,
-                            worker="projection-edf",
-                        ),
-                        on_fatal=enter_fatal,
-                    ),
-                    name="projection-edf",
-                )
-            )
-            business_tasks.append(
-                group.create_task(
-                    _guard_child(
-                        _run_recurring_database_overrun_boundary(
-                            lambda: run_model_arbiter(
-                                components.models,
-                                stop_event=work_stop_event,
-                            ),
-                            stop_event=work_stop_event,
-                            worker="model-arbiter",
-                        ),
-                        on_fatal=enter_fatal,
-                    ),
-                    name="model-arbiter",
-                )
-            )
-
             await _guard_child(
                 _wait_for_probe_start(server),
                 on_fatal=enter_fatal,
@@ -405,8 +294,6 @@ async def run_workers(settings: Settings) -> None:
                     started_at=shutdown_started,
                     db=db,
                     finite=finite,
-                    model_adapter=model_adapter,
-                    projection_cpu=projection_cpu,
                     components=components,
                 ),
                 on_fatal=enter_fatal,
@@ -471,8 +358,6 @@ async def run_workers(settings: Settings) -> None:
             db=db,
             runtime_id=runtime_id,
             finite=finite,
-            model_adapter=model_adapter,
-            projection_cpu=projection_cpu,
             phase=phase,
         )
     finally:
@@ -495,61 +380,6 @@ async def _guard_child(
     except BaseException as exc:
         on_fatal(exc)
         raise
-
-
-async def _run_due(
-    turn: Callable[[], Awaitable[bool | str | None]],
-    *,
-    idle_seconds: float,
-    stop_event: asyncio.Event,
-) -> None:
-    while not stop_event.is_set():
-        try:
-            value = await turn()
-        except ResourceOperationOverrun as exc:
-            if exc.capability is not ResourceCapability.DATABASE_BUSINESS:
-                raise
-            _log_recurring_database_overrun("durable-due", exc)
-            await _wait_or_stop(stop_event, float(idle_seconds))
-            continue
-        disposition = (
-            _Disposition.PROGRESSED
-            if value is True or value in {"processed", "failed", "terminal"}
-            else _Disposition.IDLE
-            if value is False
-            else _Disposition.RETRY_SOON
-        )
-        if disposition is _Disposition.PROGRESSED:
-            await _wait_or_stop(stop_event, _PRODUCTIVE_REPOLL_SECONDS)
-        elif disposition is _Disposition.RETRY_SOON:
-            await _wait_or_stop(stop_event, min(float(idle_seconds), 0.250))
-        else:
-            await _wait_or_stop(stop_event, float(idle_seconds))
-
-
-async def _run_recurring_database_overrun_boundary(
-    start: Callable[[], Awaitable[None]],
-    *,
-    stop_event: asyncio.Event,
-    worker: str,
-) -> None:
-    while not stop_event.is_set():
-        try:
-            await start()
-            return
-        except ResourceOperationOverrun as exc:
-            if exc.capability is not ResourceCapability.DATABASE_BUSINESS:
-                raise
-            _log_recurring_database_overrun(worker, exc)
-            await _wait_or_stop(stop_event, _PRODUCTIVE_REPOLL_SECONDS)
-
-
-def _log_recurring_database_overrun(worker: str, exc: ResourceOperationOverrun) -> None:
-    logger.bind(
-        worker=worker,
-        capability=exc.capability.value,
-        operation_name=exc.operation_name,
-    ).warning("Recurring database operation outlived its wrapper; native capability remains authoritative")
 
 
 async def _run_control(
@@ -682,90 +512,13 @@ async def _wire_components(
     *,
     settings: Settings,
     db: WorkerDatabase,
-    telemetry: TelemetryRegistry,
     finite: FiniteOperations,
-    model_adapter: ModelAdapter,
-    projection_cpu: CpuProcess,
-    runtime_id: str,
 ) -> _Components:
-    due_turns: list[tuple[Callable[[], Awaitable[bool | str | None]], float]] = []
-    model_candidates: list[Any] = []
     news_pipeline: NewsPipeline | None = None
     news_bus: Any | None = None
     if settings.news.enabled:
         news_bus, news_pipeline = await _wire_news_pipeline(settings=settings, db=db, finite=finite)
-
-    document_model: MacroDocumentAnalysisService | None = None
-    document_analysis_model_name: str | None = None
-    if settings.llm.macro_document_analysis_enabled and llm_is_configured(settings):
-        model, effective_model = configured_chat_model(
-            settings,
-            model_name=settings.llm.macro_document_analysis_model,
-            request_timeout_seconds=_DOCUMENT_MODEL_TIMEOUT_SECONDS,
-            max_tokens=_MODEL_MAX_TOKENS,
-        )
-        document_model = MacroDocumentAnalysisService(
-            db=db,
-            database=db,
-            agent=FedDocumentAnalysisAgent(
-                model=model,
-                model_name=effective_model,
-                completion_timeout_seconds=_DOCUMENT_MODEL_TIMEOUT_SECONDS,
-            ),
-            worker_name="macro_document_analysis",
-            lease_owner=f"macro_document_analysis:{runtime_id}",
-            stable_order=30,
-        )
-        document_analysis_model_name = effective_model
-        model_candidates.append(document_model)
-
-    macro_source: MacroSourceClient | None = None
-    macro_turns: list[MacroAcquisition] = []
-    source_config = settings.providers.macro_sources
-    if source_config.enabled:
-        macro_source = MacroSourceClient(
-            user_agent=str(source_config.user_agent),
-            fred_enabled=source_config.fred_enabled,
-            cboe_enabled=source_config.cboe_enabled,
-            cftc_enabled=source_config.cftc_enabled,
-            nasdaq_daily_enabled=source_config.nasdaq_daily_enabled,
-            yfinance_enabled=source_config.yfinance_enabled,
-        )
-        for worker_name, clock_kind in _MACRO_CLOCKS:
-            turn = MacroAcquisition(
-                db=db,
-                finite_operations=finite,
-                service=MacroAcquisitionService(
-                    db=db,
-                    worker_name=worker_name,
-                    clock_kind=clock_kind,
-                    source_client=macro_source,
-                    enabled_adapter_ids=macro_source.enabled_adapter_ids,
-                    lease_owner=f"{worker_name}:{runtime_id}",
-                    document_analysis_model_name=document_analysis_model_name,
-                    document_analysis_prompt_version=(
-                        FED_DOCUMENT_ANALYSIS_PROMPT_VERSION if document_analysis_model_name is not None else None
-                    ),
-                    document_analysis_max_attempts=3,
-                    document_analysis_fomc_lookback_days=FED_FOMC_ANALYSIS_LOOKBACK_DAYS,
-                    document_analysis_speech_lookback_days=FED_SPEECH_ANALYSIS_LOOKBACK_DAYS,
-                ),
-            )
-            macro_turns.append(turn)
-            idle_seconds = acquisition_loop_policy(clock_kind)[0]
-            due_turns.append((turn.turn, idle_seconds))
-
-    projections = (MacroProjectionCandidate(db=db, cpu=projection_cpu, runtime_id=runtime_id, stable_order=20),)
-    return _Components(
-        news_pipeline=news_pipeline,
-        news_bus=news_bus,
-        macro_source=macro_source,
-        macro_turns=tuple(macro_turns),
-        due_turns=tuple(due_turns),
-        projections=projections,
-        models=tuple(model_candidates),
-        document_model=document_model,
-    )
+    return _Components(news_pipeline=news_pipeline, news_bus=news_bus)
 
 
 async def _wire_news_pipeline(
@@ -886,59 +639,25 @@ async def _wire_news_pipeline(
     return bus, pipeline
 
 
-async def _reconcile_once(components: _Components) -> None:
-    for turn in components.macro_turns:
-        await turn.reconcile()
-    if components.document_model is not None:
-        await components.document_model.reconcile()
-    macro_projections = tuple(
-        projection for projection in components.projections if isinstance(projection, MacroProjectionCandidate)
-    )
-    if len(macro_projections) > 1:
-        raise RuntimeError("macro_projection_candidate_wiring_duplicate")
-    if macro_projections:
-        await macro_projections[0].reconcile()
-
-
 async def _graceful_cleanup(
     *,
     started_at: float,
     db: WorkerDatabase,
     finite: FiniteOperations,
-    model_adapter: ModelAdapter,
-    projection_cpu: CpuProcess,
     components: _Components,
 ) -> None:
     try:
         db.close_business_admission()
         finite.close_admission()
-        model_adapter.close_admission()
-        projection_cpu.close_admission()
         if components.news_pipeline is not None:
             await _within(components.news_pipeline.close(), started_at)
         if components.news_bus is not None:
             await _within(components.news_bus.close(), started_at)
-        if components.macro_source is not None:
-            await _within(
-                finite.run(
-                    "macro_source_close",
-                    components.macro_source.close,
-                    timeout_seconds=min(5.0, _remaining(started_at)),
-                    allow_shutdown=True,
-                ),
-                started_at,
-            )
         if not await db.drain_business(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("worker_database_business_drain_timeout")
         if not await finite.drain(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("finite_operation_drain_timeout")
-        if not await model_adapter.drain(timeout_seconds=_remaining(started_at)):
-            raise RuntimeError("model_adapter_drain_timeout")
-        if not await projection_cpu.drain(timeout_seconds=_remaining(started_at)):
-            raise RuntimeError("cpu_process_drain_timeout")
         finite.close()
-        model_adapter.close()
-        projection_cpu.close()
     except TimeoutError as exc:
         raise RuntimeError("graceful_deadline_exceeded") from exc
     except Exception as exc:
@@ -953,14 +672,10 @@ async def _fatal_exit(
     db: WorkerDatabase | None,
     runtime_id: str,
     finite: FiniteOperations,
-    model_adapter: ModelAdapter,
-    projection_cpu: CpuProcess,
     phase: str,
 ) -> None:
     logger.opt(exception=exc).critical("Workers runtime fatal exit")
     finite.close_admission()
-    model_adapter.close_admission()
-    projection_cpu.close_admission()
     fatal_code = _fatal_code(exc, phase=phase)
     if db is not None:
         db.close_business_admission()

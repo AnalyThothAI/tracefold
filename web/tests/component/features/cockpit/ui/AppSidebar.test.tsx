@@ -17,58 +17,31 @@ describe("AppSidebar", () => {
     expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Research"]);
   });
 
-  it("renders exactly the two supported primary destinations in task order", () => {
+  it("renders exactly the one supported primary destination", () => {
     renderSidebar();
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
     expect(links.map((link) => [link.textContent?.trim(), link.getAttribute("href")])).toEqual([
       ["News", "/news"],
-      ["Macro", "/macro"],
     ]);
   });
 
-  it("marks Macro current for the overview route", () => {
-    renderSidebar({ route: "/macro" });
+  it("marks News current for the feed route and keeps it current on a drilldown", () => {
+    renderSidebar({ route: "/news/events/evt-1" });
 
-    const macroLink = screen.getByRole("link", { name: "Macro" });
-    expect(macroLink).toHaveAttribute("href", "/macro");
-    expect(macroLink).toHaveAttribute("aria-current", "page");
+    const newsLink = screen.getByRole("link", { name: "News" });
+    expect(newsLink).toHaveAttribute("href", "/news");
+    expect(newsLink).toHaveAttribute("aria-current", "page");
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 
-  it("keeps the single Macro destination current on a drilldown", () => {
-    renderSidebar({ route: "/macro?session_date=2026-07-22" });
+  it("does not expose a retired Macro destination or persistent health chrome", () => {
+    renderSidebar({ route: "/news" });
 
-    expect(screen.getByRole("link", { name: "Macro" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
-  });
-
-  it("does not expose nested Macro navigation or persistent health chrome", () => {
-    renderSidebar({ route: "/macro" });
-
-    for (const label of [
-      "总览",
-      "跨资产",
-      "利率与通胀",
-      "增长与就业",
-      "流动性与资金",
-      "信用",
-      "大类资产",
-      "利率",
-      "流动性",
-      "经济数据",
-      "波动率",
-      "美股",
-      "收益率曲线",
-      "相关性",
-      "美联储",
-      "Dashboard",
-      "CDS 代理",
-    ]) {
+    for (const label of ["Macro", "宏观", "总览", "跨资产", "利率与通胀", "美联储"]) {
       expect(screen.queryByRole("link", { name: label })).not.toBeInTheDocument();
     }
-    expect(screen.queryByRole("button", { name: /宏观/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("status", { name: "Desk status" })).not.toBeInTheDocument();
   });
 

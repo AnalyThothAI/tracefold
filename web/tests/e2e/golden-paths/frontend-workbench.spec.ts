@@ -15,8 +15,6 @@ const archetypes = [
   },
 ] as const;
 
-const macroPages = [["facts", "/macro", "宏观事实总览"]] as const;
-
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-07-23T10:00:00Z"));
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
@@ -31,23 +29,6 @@ test("freezes representative news and case archetypes", async ({ page }) => {
     await expect(page).toHaveScreenshot(`archetype-${route.name}.png`, {
       animations: "disabled",
       caret: "hide",
-      scale: "css",
-    });
-  }
-
-  await expectNoUnhandledApiRequests(page);
-});
-
-test("freezes the current Macro facts workbench", async ({ page }) => {
-  for (const [name, path, title] of macroPages) {
-    await page.goto(path);
-    await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
-    await waitForStableWorkbench(page);
-    await expect(page).toHaveScreenshot(`macro-${name}.png`, {
-      animations: "disabled",
-      caret: "hide",
-      mask: [page.locator(".topbar-anomaly")],
-      maskColor: "#182332",
       scale: "css",
     });
   }

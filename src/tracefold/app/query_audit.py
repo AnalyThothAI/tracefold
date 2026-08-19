@@ -38,13 +38,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_delivery_1h",
         "news_control_state",
     ),
-    "/api/macro/overview": ("macro_modules_current",),
-    "/api/macro/rates-fed": ("macro_module_current", "macro_modules_current"),
-    "/api/macro/economy-inflation": ("macro_module_current", "macro_modules_current"),
-    "/api/macro/liquidity-funding": ("macro_module_current", "macro_modules_current"),
-    "/api/macro/credit": ("macro_module_current", "macro_modules_current"),
-    "/api/macro/volatility": ("macro_module_current", "macro_modules_current"),
-    "/api/macro/cross-asset": ("macro_module_current", "macro_modules_current"),
 }
 
 PUBLIC_NO_SQL_ROUTES = frozenset(

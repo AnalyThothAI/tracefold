@@ -43,18 +43,6 @@ class QueryAuditCatalog:
             raise ValueError("query audit names must be unique")
 
 
-CORE_TABLES = (
-    "macro_series_facts",
-    "macro_release_facts",
-    "macro_documents",
-    "macro_document_analyses",
-    "macro_module_current",
-    "market_instruments",
-    "market_observations",
-    "market_settlements",
-    "market_position_facts",
-)
-
 NEWS_TABLES = (
     "news_ingest_state",
     "news_opennews_incidents",
@@ -75,26 +63,6 @@ _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
         "sql": "SELECT version_num FROM alembic_version LIMIT 1",
         "params": (),
     },
-    {
-        "name": "macro_modules_current",
-        "sql": """
-            SELECT module_id, payload_hash
-            FROM macro_module_current
-            ORDER BY module_id
-            LIMIT 6
-        """,
-        "params": (),
-    },
-    {
-        "name": "macro_module_current",
-        "sql": """
-            SELECT module_id, payload_hash
-            FROM macro_module_current
-            WHERE module_id = %s
-            LIMIT 1
-        """,
-        "params": ("rates_fed",),
-    },
 )
 
 
@@ -114,7 +82,7 @@ class PostgresOperationalAudit:
         self.expected_migration_version = expected_migration_version or latest_migration_version()
 
     def run(self) -> dict[str, Any]:
-        counts = self._counts(CORE_TABLES)
+        counts = self._counts(NEWS_TABLES)
         actual_news_tables = self._news_tables()
         news_schema = {
             "expected_tables": list(NEWS_TABLES),

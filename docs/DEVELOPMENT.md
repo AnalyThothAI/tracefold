@@ -25,8 +25,8 @@ outputs, or evaluation control planes require an explicit current need.
 
 ## Package design
 
-Business capabilities are exported from `tracefold.news` and
-`tracefold.macro`. Code outside the owning package imports only those roots.
+The business capability is exported from `tracefold.news`. Code outside the
+owning package imports only that root.
 Keep internal modules cohesive and move behavior behind the root interface
 instead of adding forwarding modules, aliases, or compatibility packages.
 
@@ -49,7 +49,7 @@ delete the old path and update all consumers in the same change.
 | Contract | `tests/contract/` | public HTTP/CLI and generated schemas |
 | Integration | `tests/integration/` | real PostgreSQL and composed service behavior |
 | Golden | `tests/golden/` | curated fact-to-product expectations |
-| E2E | `tests/e2e/` | one served process: `/readyz`, `/api/status`, `/api/news/status`, `/api/macro/overview` shapes, retired routes `404` |
+| E2E | `tests/e2e/` | one served process: `/readyz`, `/api/status`, `/api/news/status` shapes, retired routes `404` |
 | Frontend | `web/tests/` | UI, route, model, and frontend architecture behavior |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
@@ -110,12 +110,13 @@ service and corpus lanes, and `make test-all` everything (~6.5 minutes).
 Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. There are no historical migration-path tests: the Alembic chain is the
-`20260818_0275` current-schema baseline plus `20260818_0276` and
-`20260818_0277`, and schema tests run against that migrated head. The e2e
-lane (`tests/e2e/test_golden_path.py`) starts one uvicorn Serve subprocess
-against a freshly migrated testcontainers PostgreSQL and asserts `/readyz`, the `/api/status`,
-`/api/news/status`, and `/api/macro/overview` shapes, and that the retired
-GMGN-lane routes answer `404`; it runs no Workers subprocess. There is no
+`20260818_0275` current-schema baseline plus `20260818_0276`,
+`20260818_0277`, and `20260819_0278`, and schema tests run against that
+migrated head. The e2e lane (`tests/e2e/test_golden_path.py`) starts one
+uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
+and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
+that the retired GMGN-lane and Macro routes answer `404`; it runs no Workers
+subprocess. There is no
 acceptance-bundle, collector, or sealing workflow; runtime evidence comes from
 the maintained lanes above.
 

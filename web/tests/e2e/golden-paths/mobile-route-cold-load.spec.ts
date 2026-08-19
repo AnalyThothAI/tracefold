@@ -84,26 +84,6 @@ const routeCases: RouteCase[] = [
     ],
     lastMeaningfulSelector: ".news-technical",
   },
-  {
-    name: "macro",
-    path: "/macro",
-    primary: async (page) => {
-      await expect(page.getByRole("heading", { level: 1, name: "宏观事实总览" })).toBeVisible();
-    },
-    specific: async (page) => {
-      await expect(page.getByRole("navigation", { name: "宏观页面" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "当前事实摘要" })).toBeVisible();
-      await expect(
-        page.getByRole("region", { name: "六个宏观模块" }).locator("article"),
-      ).toHaveCount(6);
-    },
-    nestedOverflowSelectors: [
-      ".macro-decision",
-      ".macro-decision__header",
-      ".macro-decision__module-grid",
-    ],
-    lastMeaningfulSelector: ".macro-decision__module-grid article:last-of-type",
-  },
 ];
 
 for (const routeCase of routeCases) {

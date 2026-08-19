@@ -41,7 +41,6 @@ def _arguments() -> argparse.Namespace:
             "child_failure",
             "finite_overrun",
             "finite_never_returns",
-            "model_overrun",
             "control_overrun",
             "control_native_timeout",
             "control_transient_startup",
@@ -49,10 +48,38 @@ def _arguments() -> argparse.Namespace:
             "control_transient_runtime",
             "shutdown_stopping_control_never_returns",
             "provider_publication",
-            "cpu_bounded_recovery",
         ),
     )
     return parser.parse_args()
+
+
+class _TurnPipeline:
+    """Carry the test turns through the runtime's one business-task slot."""
+
+    def __init__(self, turns: tuple[tuple[Any, float], ...]) -> None:
+        self._turns = turns
+
+    def runners(self) -> list[tuple[str, Any]]:
+        return [
+            (f"test-turn-{index}", _turn_runner(turn, idle_seconds))
+            for index, (turn, idle_seconds) in enumerate(self._turns)
+        ]
+
+    async def close(self) -> None:
+        return None
+
+
+def _turn_runner(turn: Any, idle_seconds: float) -> Any:
+    async def run(stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            progressed = await turn()
+            delay = 0.25 if progressed else float(idle_seconds)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            except TimeoutError:
+                continue
+
+    return run
 
 
 def _components(
@@ -61,31 +88,15 @@ def _components(
     due_turns: tuple[tuple[Any, float], ...],
 ) -> Any:
     return workers_module._Components(
-        news_pipeline=None,
+        news_pipeline=_TurnPipeline(due_turns),
         news_bus=None,
-        macro_source=None,
-        macro_turns=(),
-        due_turns=due_turns,
-        projections=(),
-        models=(),
-        document_model=None,
     )
 
 
 async def _main() -> None:
     arguments = _arguments()
-    if arguments.mode == "cpu_bounded_recovery":
-        from pebble import CONSTS
-
-        # Make the native TERM -> KILL interval longer than the old fixed
-        # wrapper grace so the process test deterministically exercises a
-        # late, but still classified and recoverable, native CPU timeout.
-        CONSTS.term_timeout = 4.5
-
     from tracefold.app import workers
     from tracefold.platform.config.settings import Settings
-    from tracefold.platform.model_candidate import ModelCandidate
-    from tracefold.platform.resource import CpuTaskTimeout
 
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1
@@ -240,71 +251,8 @@ async def _main() -> None:
 
             return _components(workers, due_turns=((overrun, 1.0),))
 
-        if arguments.mode == "model_overrun":
-            model_adapter = kwargs["model_adapter"]
-            model_never_release = threading.Event()
-
-            def model_never_returns() -> None:
-                print("MODEL_STARTED", flush=True)
-                model_never_release.wait()
-
-            class NeverReturningModelCandidate:
-                async def peek(self, *, now_ms: int) -> ModelCandidate:
-                    return ModelCandidate(
-                        kind="test_model",
-                        target_key="singleton",
-                        due_at_ms=now_ms,
-                        stable_order=1,
-                    )
-
-                async def execute(self, _candidate: ModelCandidate) -> bool:
-                    await model_adapter.run(
-                        "model_never_returns",
-                        model_never_returns,
-                        timeout_seconds=1.0,
-                    )
-                    return True
-
-            components = _components(workers, due_turns=())
-            components.models = (NeverReturningModelCandidate(),)
-            return components
-
         if arguments.mode == "control_overrun":
             return _components(workers, due_turns=())
-
-        if arguments.mode == "cpu_bounded_recovery":
-            projection_cpu = kwargs["projection_cpu"]
-            assert projection_cpu is not None
-            calls = 0
-
-            async def bounded_cpu_turn() -> bool:
-                nonlocal calls
-                calls += 1
-                if calls == 1:
-                    try:
-                        await projection_cpu.run(
-                            "test_cpu_bounded_timeout",
-                            _ignore_sigterm_and_sleep,
-                            30.0,
-                            service_timeout_seconds=0.05,
-                        )
-                    except CpuTaskTimeout:
-                        print("CPU_BOUNDED_TIMEOUT", flush=True)
-                        return True
-                if calls == 2:
-                    assert (
-                        await projection_cpu.run(
-                            "test_cpu_recovery",
-                            _return_one,
-                            service_timeout_seconds=1.0,
-                        )
-                        == 1
-                    )
-                    print("CPU_RECOVERED", flush=True)
-                    return True
-                return False
-
-            return _components(workers, due_turns=((bounded_cpu_turn, 0.1),))
 
         db = kwargs["db"]
         published = False

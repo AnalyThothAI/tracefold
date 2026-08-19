@@ -33,7 +33,6 @@ const featureClassPrefixes: Record<string, string[]> = {
     "topbar",
     "topbar-",
   ],
-  macro: ["active-trigger-column", "macro-"],
   news: ["news-"],
 };
 

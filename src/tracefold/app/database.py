@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import Counter
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
@@ -249,7 +248,7 @@ class WorkerDatabase:
         on_submitted: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> T:
-        """The News consumers' own DB lane: Market/Macro backlog never starves a live Event."""
+        """The News consumers' own DB lane, separate from the control lane."""
 
         if not self._accepting_business or self._executors_closed:
             raise RuntimeError("worker_database_business_closed")
@@ -487,7 +486,6 @@ class WorkerDatabase:
         started = time.perf_counter()
         conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
         self._record_pool_wait("worker", (time.perf_counter() - started) * 1000)
-        projection_transitions: list[tuple[str, str]] = []
         try:
             with conn.transaction():
                 _set_worker_operation_config(
@@ -506,7 +504,6 @@ class WorkerDatabase:
                             seconds,
                         )
                     ),
-                    projection_transitions=projection_transitions,
                 )
         except BaseException:
             if bool(getattr(conn, "closed", False)):
@@ -516,9 +513,6 @@ class WorkerDatabase:
             raise
         else:
             self.worker_pool.putconn(conn)
-            if self.telemetry is not None:
-                for (domain, transition), count in Counter(projection_transitions).items():
-                    self.telemetry.record_projection_transition(domain, transition, count)
 
     async def aclose(self) -> None:
         await _close_pool(self.worker_pool)

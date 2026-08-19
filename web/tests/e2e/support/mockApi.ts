@@ -1,5 +1,4 @@
 import type { Page, Route } from "@playwright/test";
-import { macroModuleFixture, macroOverviewFixture } from "@tests/fixtures/macroFixture";
 import {
   newsEventDetailFixture,
   newsEventFixture,
@@ -37,21 +36,6 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
     if (path === "/api/news/feed") return fulfill(route, newsFeedData());
     if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
-    if (path === "/api/macro/overview") return fulfill(route, macroOverviewFixture());
-    if (path === "/api/macro/rates-fed") return fulfill(route, macroModuleFixture("rates_fed"));
-    if (path === "/api/macro/economy-inflation") {
-      return fulfill(route, macroModuleFixture("economy_inflation"));
-    }
-    if (path === "/api/macro/liquidity-funding") {
-      return fulfill(route, macroModuleFixture("liquidity_funding"));
-    }
-    if (path === "/api/macro/credit") return fulfill(route, macroModuleFixture("credit"));
-    if (path === "/api/macro/volatility") {
-      return fulfill(route, macroModuleFixture("volatility"));
-    }
-    if (path === "/api/macro/cross-asset") {
-      return fulfill(route, macroModuleFixture("cross_asset"));
-    }
     recordUnhandledApiRequest(page, url);
     return route.fulfill({
       status: 404,

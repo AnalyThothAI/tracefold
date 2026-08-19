@@ -25,10 +25,9 @@ test.describe("desktop sidebar navigation", () => {
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
     await expect(primaryNavigation).toBeVisible();
 
-    for (const routeName of ["News", "Macro"]) {
-      await expect(primaryNavigation.getByRole("link", { name: routeName })).toBeVisible();
-    }
-    await expect(primaryNavigation.getByRole("link")).toHaveCount(2);
+    await expect(primaryNavigation.getByRole("link", { name: "News" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link")).toHaveCount(1);
+    await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 
     const sidebarRoot = page.locator('[data-slot="sidebar"]');
@@ -48,9 +47,8 @@ test.describe("desktop sidebar navigation", () => {
     page,
   }) => {
     await installMockApi(page);
-    await page.goto("/");
+    await page.goto("/news/status");
 
-    await expectSidebarRouteChange(page, "Macro", "/macro");
     await expectSidebarRouteChange(page, "News", "/news");
 
     await expectNoDocumentHorizontalOverflow(page);
@@ -61,17 +59,15 @@ test.describe("desktop sidebar navigation", () => {
     page,
   }) => {
     await installMockApi(page, { delayNonBootstrapMs: 5_000 });
-    await page.goto("/");
+    await page.goto("/news/status");
 
-    await expectSidebarRouteChange(page, "Macro", "/macro");
     await expectSidebarRouteChange(page, "News", "/news");
   });
 
   test("keeps desktop sidebar navigation available when route APIs fail", async ({ page }) => {
     await installMockApi(page, { failNonBootstrap: true });
-    await page.goto("/");
+    await page.goto("/news/status");
 
-    await expectSidebarRouteChange(page, "Macro", "/macro");
     await expectSidebarRouteChange(page, "News", "/news");
   });
 });

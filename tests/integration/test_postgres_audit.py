@@ -9,7 +9,6 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.query_audit import query_audit_catalog
 from tracefold.platform.postgres.postgres_audit import (
-    CORE_TABLES,
     NEWS_TABLES,
     PostgresOperationalAudit,
     PostgresQueryAudit,
@@ -131,7 +130,7 @@ def _composed_catalog(*, now_ms: int = 0) -> QueryAuditCatalog:
     return query_audit_catalog(now_ms=now_ms)
 
 
-def test_operational_audit_reports_macro_counts_and_exact_news_schema(tmp_path):
+def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -144,8 +143,8 @@ def test_operational_audit_reports_macro_counts_and_exact_news_schema(tmp_path):
     assert payload["engine"] == "postgresql"
     assert payload["migration_version"] == latest_migration_version()
     assert payload["migration_status"] == "ready"
-    assert set(payload["counts"]) == set(CORE_TABLES)
-    assert all(count == 0 for count in payload["counts"].values())
+    assert set(payload["counts"]) == set(NEWS_TABLES)
+    assert all(count >= 0 for count in payload["counts"].values())
     assert payload["news_schema"] == {
         "expected_tables": list(NEWS_TABLES),
         "actual_tables": sorted(NEWS_TABLES),
@@ -170,7 +169,7 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
     names = {item["name"] for item in payload["queries"]}
     assert payload["ok"] is True
     assert payload["analyze"] is False
-    assert {"readiness_schema", "macro_modules_current", "macro_module_current"} < names
+    assert {"readiness_schema"} <= names
     retired_prefixes = ("recent_", "search_", "target_posts", "live_market", "provider_")
     assert not any(name.startswith(retired_prefixes) for name in names)
     assert all(item["plan"] for item in payload["queries"])

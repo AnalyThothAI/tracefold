@@ -33,7 +33,6 @@ def main() -> int:
     ws_token = os.environ.get("TRACEFOLD_E2E_WS_TOKEN", "e2e-token")
 
     # Import after env validation to keep error pretty.
-    from tracefold.app.http import routes_macro
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.settings import Settings
 
@@ -55,10 +54,6 @@ def main() -> int:
         print("FATAL: TRACEFOLD_E2E_APP_HOME not set", file=sys.stderr)
         return 1
     settings.set_config_dir(Path(app_home))
-
-    fixed_now_ms = os.environ.get("TRACEFOLD_E2E_FIXED_NOW_MS")
-    if fixed_now_ms:
-        routes_macro._now_ms = lambda: int(fixed_now_ms)
 
     app = create_app(
         settings=settings,

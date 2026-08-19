@@ -2,7 +2,7 @@
 
 Tracefold is one Python codebase/image with two mutually exclusive runtime
 composition roots, one CLI, one React console, and one PostgreSQL database.
-It has exactly two business capabilities, News V3 and Macro. The architecture
+It has exactly one business capability, News V3. The architecture
 remains Kappa/CQRS: append-oriented material facts are the only business
 truth; deterministic current views and bounded immutable model publications
 are derived state.
@@ -10,23 +10,20 @@ are derived state.
 ## Data flow
 
 ```text
-OpenNews Strategy WSS / official macro sources
+OpenNews Strategy WSS
   -> tracefold workers (RabbitMQ is the News transport plane)
-  -> PostgreSQL material facts + bounded projection state + native model state
-  -> single-writer read models or immutable publications
+  -> PostgreSQL material facts
+  -> single-writer read models
   -> tracefold serve
   -> HTTP / React
 ```
 
 `tracefold serve` initializes only public HTTP/static, read repositories, and
-serve telemetry. `tracefold workers` initializes Macro acquisition, the bounded
-external/model capabilities, one short-projection CPU lane, singleton runtime
-status, the RabbitMQ-driven News consumers when News is enabled, and one EDF
-projection coordinator for the Macro frontier. Macro workers recover
-exclusively by re-reading PostgreSQL facts, the typed Macro frontier, native
-Fed-document model state, and queues on bounded code-owned clocks; News
-consumers recover by re-consuming durable broker queues plus database
-idempotency keys. There is no database wake plane or in-memory correctness
+serve telemetry. `tracefold workers` initializes the bounded external
+capability, singleton runtime status, and the RabbitMQ-driven News consumers
+when News is enabled. News consumers recover by re-consuming durable broker
+queues plus database idempotency keys. There is no database wake plane, no
+projection/EDF coordinator, no CPU-process lane, and no in-memory correctness
 dependency. Provider raw frames remain inputs until normalized and persisted
 as material facts.
 
@@ -52,28 +49,16 @@ construction and Compose startup do not become alternate configuration
 sources: `tracefold init` remains the single generated-default authority and
 `~/.tracefold/config.yaml` remains the single live application config.
 
-The projection coordinator executes exactly one semantic shard at a time.
-A productive turn yields cooperatively and immediately rereads every typed
-frontier head so a real backlog can converge. Failed and idle turns wait on the
-fixed 250 ms code-owned cadence to prevent contention from becoming a hot loop;
-that cadence is scheduling policy, not a correctness authority.
-
 ## Truth, control state, and derived state
 
 Material facts include:
 
 - news: canonical provider Item facts admitted by the operator's OpenNews
   Strategy allowlist in `news_items` (provenance union, provider metadata,
-  raw first line, first ingest mode);
-- macro: revision-preserving `macro_series_facts`, `macro_release_facts`,
-  `macro_documents`, and `macro_fed_official_role_facts`, plus Macro's general
-  market observation facts `market_instruments`, `market_observations`,
-  `market_settlements`, and `market_position_facts` (the exchange, ETF,
-  futures-proxy, settlement, and CFTC positioning inputs of the six modules).
+  raw first line, first ingest mode).
 
-Current read models are `news_events` (plus `news_event_members`,
-`news_event_bands`, `news_event_assets`) and the six stable rows in
-`macro_module_current`. Each uses stable product/window/target identity, has
+The current read model is `news_events` (plus `news_event_members`,
+`news_event_bands`, `news_event_assets`). It uses stable product identity, has
 exactly one runtime writer, is rebuildable from facts, and writes zero serving
 rows when its business payload is unchanged. `news_events` is rebuildable by
 replaying `news_items` through the Deduper (`tracefold news replay` performs
@@ -83,24 +68,15 @@ source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 
 OpenNews connection state in `news_ingest_state`, explicit incident intervals
 in `news_opennews_incidents`, News control state (`news_control_state`),
-queues, leases, retries, native model runs/jobs, and terminal events are
-control state. The typed Macro frontier stores stable
-module identity, input fingerprint, earliest deadline, lease, failure,
-and publication checkpoints. `first_dirty_at_ms` records the causal change,
-`deadline_at_ms` is the freshness SLA, and `next_attempt_at_ms` is only an
-eligibility clock for a scheduled recheck or retry. An eligible shard may run
-before its deadline; the deadline is never a start gate. Retry attempts and
-terminal reasons are likewise queue policy, not facts.
-`news_verdicts` (Triage decisions bound to a policy version) and rows in
-`macro_document_analyses` are derived model outputs bound to frozen evidence;
-they are not material facts. `news_deliveries` is the one-attempt outbound
+and broker queues are control state. Retry attempts and terminal reasons are
+likewise queue policy, not facts. `news_verdicts` (Triage decisions bound to a
+policy version) are derived model outputs bound to frozen evidence; they are
+not material facts. `news_deliveries` is the one-attempt outbound
 ledger keyed by `(event_id, kind)`; there is no retry, lease, or backfill.
 `news_event_labels` is the learning-plane truth for evaluating decisions.
 
-The current schema is exactly 28 tables: the eleven `news_*` tables, the ten
-`macro_*` tables plus the four general market fact tables owned by Macro, and
-the three platform tables `alembic_version`, `queue_terminal_events`, and
-`workers_runtime`.
+The current schema is exactly 13 tables: the eleven `news_*` tables and the two
+platform tables `alembic_version` and `workers_runtime`.
 
 ## Package map
 
@@ -120,32 +96,20 @@ tracefold.news
   repository.py / query_specs.py  news_* access and audited reads
   eval/               offline label evaluation, decision replay, hits replay
 
-tracefold.macro
-  registry.py    code-owned Dataset Registry and six-module membership
-  acquisition.py clock-driven claim, provider-I/O, fact and cursor flow
-  calculations.py versioned calculation registry and transparent features
-  projection.py  six current decision modules
-  market_facts.py / market_facts_repository.py  general market observation, settlement,
-                 and positioning facts (market_instruments, market_observations,
-                 market_settlements, market_position_facts)
-  fed_analysis.py evidence-bound FOMC/speech analysis contract
-  fed_document_agent.py one structured model call over the official body's evidence catalog
-
 tracefold.integrations
-  provider and external-system adapters: OpenNews, RabbitMQ, Feishu, macro sources
+  provider and external-system adapters: OpenNews, RabbitMQ, Feishu
 
 tracefold.platform
-  config, PostgreSQL/Alembic (baseline + two chained hard cuts), telemetry, paths,
+  config, PostgreSQL/Alembic (baseline + three chained hard cuts), telemetry, paths,
   bounded resource primitives, docker host translation
 
 tracefold.app
   composition, repositories, the worker root package (`app/workers/`), HTTP, and CLI
 ```
 
-The two business package roots are their public Python interfaces:
-`tracefold.news` and `tracefold.macro`. Consumers outside an owning package
-import from the root only. Internal subpackages may change without creating a
-repository-wide import graph.
+The business package root is its public Python interface: `tracefold.news`.
+Consumers outside the owning package import from the root only. Internal
+subpackages may change without creating a repository-wide import graph.
 
 The application composition root and concrete provider adapters are private
 implementation collaborators, not product consumers. Where one of them must
@@ -161,14 +125,13 @@ The dependency direction is:
 app -> integrations + business packages + platform
 integrations -> business package interfaces + platform
 news -> platform
-macro -> platform
 platform -> Python / third-party libraries only
 ```
 
 Business packages never import `tracefold.app`, provider integrations, or each
 other. Transport adapters do not own business rules. The Workers root and its
 private TaskGroup loops live in `tracefold.app.workers`; platform exposes only
-bounded resource/projection/model candidate contracts. Queue state machines and
+bounded resource contracts. Queue state machines and
 read-model behavior stay with their business owner. These rules are executable
 in `tests/architecture/test_backend_boundaries.py`.
 
@@ -176,21 +139,17 @@ A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
 into a business-package protocol. The adapters are OpenNews (the authenticated
 Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
-(`aio-pika`), Feishu (the custom-bot webhook), and the Macro source client
-(Treasury, FRED, BLS, BEA, Federal Reserve pages, CFTC, Cboe, Nasdaq, Yahoo
-Chart, and Binance public spot klines as one Macro dataset). No provider owns
-a durable queue. Expected provider failures stay inside the owning bounded
+(`aio-pika`), and Feishu (the custom-bot webhook). No provider owns a durable
+queue. Expected provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
 
-SQL ownership follows the same boundary: News owns `news_*`; Macro owns
-`macro_*` plus `market_instruments`, `market_observations`,
-`market_settlements`, and `market_position_facts`. Platform owns Alembic,
-`queue_terminal_events`, and `workers_runtime`. News makes no cross-domain
-read: its single read-only seam (`macro_module_current` as Analyst evidence)
-went with the Analyst lane in #57. Macro has no live or hidden dependency on
-News. The architecture gate checks SQL table references against the generated
-current schema.
+SQL ownership follows the same boundary: News owns `news_*`; platform owns
+Alembic and `workers_runtime`. News makes no cross-domain read: its single
+read-only seam (`macro_module_current` as Analyst evidence) went with the
+Analyst lane in #57, and the Macro tables themselves went in #68. The
+architecture gate checks SQL table references against the generated current
+schema.
 
 ## Transaction ownership
 
@@ -200,29 +159,24 @@ transactions.
 
 Important atomic units are:
 
-- one Macro acquisition completion: normalized fact insert, cursor advance, and
-  compare-and-set target completion;
-- current read-model write plus acknowledgement of the exact claim;
 - one accepted OpenNews frame: NewsItem upsert with provenance union plus its
   Event assignment (new Event, bands, assets, or membership);
-- one Triage verdict insert; one delivery begin or settle;
-- immutable Fed document analysis plus completion of its exact native job;
-- retry or terminal transition plus mutation of its source queue row.
+- one Triage verdict insert; one delivery begin or settle.
 
-Provider, model, subprocess, filesystem, and network I/O occurs outside
-database transactions.
+Provider, model, filesystem, and network I/O occurs outside database
+transactions.
 
 Each Worker database session owns exactly one bounded PostgreSQL transaction.
 It installs its statement and transaction limits as transaction-local settings
 in one setup round trip, so PostgreSQL is the native deadline authority for all
 SQL in that session. Transaction exit restores the connection automatically;
-there is no session reset round trip. Awaiting DB, CPU, finite-operation, and
-model work adds only a bounded completion grace so the native result wins at
+there is no session reset round trip. Awaiting DB, finite-operation, and model
+work adds only a bounded completion grace so the native result wins at
 its deadline. If an asyncio wrapper callback is delayed, an already-completed
 native future is consumed directly. A typed recurring business-DB future that
 remains alive beyond the grace is a local loop failure: its permit stays bound
 to native completion and the loop retries on its natural cadence. Control-DB,
-model, CPU, cleanup, and otherwise unclassified overruns remain fatal. This
+model, cleanup, and otherwise unclassified overruns remain fatal. This
 decision uses the exception's typed physical capability, never an error-string
 or operation-name prefix. A business-lane PostgreSQL idle-transaction
 disconnect is bounded admission failure. The idempotent runtime-heartbeat
@@ -233,23 +187,20 @@ native control future remain fatal. Only an explicitly classified true
 external provider seam may translate a finite-operation overrun into its
 existing durable retry, degradation, or terminal policy; doing so never
 releases the shared capability permit before the underlying future actually
-finishes. Frontier-backed projection turns therefore have phase-native
-deadlines and no aggregate fatal watchdog.
+finishes.
 
-The Macro projection claim lease covers the complete legal phase envelope (30
-seconds). News consumers have no frontier lease; the broker's
-single-active-consumer and per-message ack are their fences.
+News consumers have no frontier lease; the broker's single-active-consumer and
+per-message ack are their fences.
 
 ## Workers task set
 
 The Workers root TaskGroup contains exactly: `workers-probe` (loopback
 health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
-`news-deliverer`, `news-janitor`), one `durable-due-N` task per Macro
-acquisition clock family, `projection-edf` (the Macro frontier
-coordinator), `model-arbiter` (Fed document analysis), and `workers-control`
-(singleton lock, heartbeat, runtime row). There is no periodic market poll,
-stream ingester, identity backfill, or universe sync task.
+`news-deliverer`, `news-janitor`), and `workers-control` (singleton lock,
+heartbeat, runtime row). There is no acquisition clock, projection
+coordinator, model arbiter, periodic market poll, stream ingester, identity
+backfill, or universe sync task.
 
 ## Product flows
 
@@ -295,7 +246,7 @@ consumers wired by `tracefold.app.workers._wire_news_pipeline`; they run as
 asyncio tasks in the single Workers process but coordinate only through the
 broker and PostgreSQL keys, so they can be scaled out without code changes.
 News consumers use their own four-slot database lane
-(`WorkerDatabase.run_news`) so Macro backlog never starves a live Event;
+(`WorkerDatabase.run_news`) so background backlog never starves a live Event;
 a lane admission timeout is a `DeferError` (uncounted requeue), a statement
 overrun is a `TransientError` (counted).
 
@@ -479,128 +430,11 @@ chain (item, gate, triage, decide, delivery) with a one-line outcome.
 `news_v3_expectations.json` the trajectory-prefix regression over them. There
 is no market-mark or price-reaction lane.
 
-### Macro
-
-```text
-code-owned Dataset Registry + Coverage Manifest
-  -> one of six clock families
-  -> macro_acquisition_targets claim
-  -> free official / exchange / disclosed proxy adapter
-  -> typed append-only macro or general market fact + target cursor/current state
-  -> static dataset -> calculation -> module dependency graph
-  -> typed affected-module frontier
-  -> one EDF module-local reducer
-  -> one stable macro_module_current closure
-  -> persisted-only overview and module reads
-
-official FOMC / speech body + effective-dated role fact
-  -> macro_document_analysis_jobs claim
-  -> immutable evidence-bound document analysis
-  -> institutional stance + officials communication distribution
-```
-
-The acquisition clock families are `intraday_market`, `daily_settlement`,
-`scheduled_release`, `official_state`, `official_document`, and explicit
-`backfill`. The five steady families are explicit private due loops over one
-target table, not Worker objects or a uniform bundle poller. Claims use
-`SKIP LOCKED`; provider I/O occurs outside database transactions; completion
-atomically writes facts, cursor, and current target success/error state.
-Unchanged source content writes zero fact rows. Revisions append a new fact and
-never overwrite history.
-
-Macro bounded history reads and the Calculation Registry's typed builder
-contracts execute inside the six module payload builds, outside the write
-transaction. There is no second generic feature-materialization engine. A
-short compare-and-set write phase
-publishes the stable module row and projection fingerprint. Unchanged module
-payloads write zero serving rows.
-
-The Dataset Registry fixes ownership, concept identity, source role, clock,
-adapter, trust tier, freshness, criticality, and module membership in code.
-Every concept has one primary current source and may have an explicitly labelled
-official-history or proxy source. Dataset and source identities stay explicit
-and are never blended. The Coverage Manifest contains only
-capabilities that the supported free-data system can truthfully provide;
-missing paid or unimplementable capabilities are deleted rather than displayed
-as permanent product gaps. Operator config only enables source families;
-cadence, lease, timeout, batch, and resource limits are code-owned.
-
-OpenBB is not a runtime dependency or provider router. It does not supply data
-or entitlement, and routing an existing source through it would add a second
-provider/configuration/error layer without changing source identity. Macro uses
-its direct, narrow adapters and never adds a provider waterfall around them.
-
-The current nominal and real curves come from Treasury, with FRED as labelled
-history. CPI and labor release facts come from BLS, while GDP, PCE, and core PCE
-release facts come from BEA's public official release pages; the matching FRED
-series are history only. Release timestamps are parsed from the official
-release clock, never substituted with ingestion time.
-
-Coverage (`complete`, `partial`), Current Health (`current`, `degraded`,
-`unavailable`), and History Depth (`complete`, `partial`, `insufficient`,
-`not_required`) are independent descriptive axes. Optional history cannot
-degrade current-state health or reader-facing History Depth. Dataset rows also
-expose market and source state;
-closed and maintenance sessions do not age the last expected market bar against
-wall time.
-
-The six product modules are `rates_fed`, `economy_inflation`,
-`liquidity_funding`, `credit`, `volatility`, and `cross_asset`. One code-owned
-module descriptor fixes each ID, label, schema version, and builder key. Each
-has one explicit typed payload (rates v8, economy v6, liquidity v5,
-credit/volatility v7, and cross-asset v8), deterministic module-specific analysis, exact
-market timestamps, natural publication cadence, source roles, importance
-ranks with factor explanations, and evidence lineage. Release payloads keep expected, actual, surprise,
-revision, publication time, and Registry-owned seasonal-adjustment semantics
-distinct. ETF daily history is the Nasdaq public
-five-year lane; Yahoo supplies ETF intraday prices and paired intraday/daily
-continuous-contract futures proxies. No generic chart-array contract survives. The Calculation
-Registry records every feature's inputs, formula version, windows, minimum
-observations, units, gap policy, freshness, baseline, and output shape.
-The Natural Change Calculation Registry separately fixes every Dataset's
-cadence-native windows, minimum observations, formula, unit, revision/surprise
-rules, bounded-gap policy, and output schema. Exact month/quarter lags cannot
-fall back to an older available row while retaining the requested window label.
-Treasury shape, matched breakevens, normalized asset returns, 30/90/252
-common-daily-return correlations, credit ladder history, and funding
-comparisons remain deterministic. Correlation pair facts are undirected and
-exclude diagonals; the payload's presentation contract owns the default window
-and mirrored unit-diagonal display rule. Credit exposes spread,
-funding cost, bank supply, and borrower quality concurrently and never reduces
-them to a score.
-
-Rates v8 also carries the current official FOMC calendar snapshot and recent
-Treasury auction-demand facts. The calendar adapter emits one immutable
-revision across all meetings on the official page, so an official reschedule
-replaces the prior snapshot in the read model without deleting its audit facts.
-Auction bid-to-cover, Bill discount rate, investment rate, high yield, offering
-amount, and bidder award shares enter the existing release-fact family from
-Treasury Fiscal Data as distinct fields. The competitive
-close is a scheduled clock; no result publication time is invented. SOFR has
-one Registry owner and one fact identity while the dependency graph makes that
-same fact available to both Rates and Liquidity.
-
-Macro has no second judgment publication, daily narrative, or archive product.
-The overview is a compact index over the six current module rows; each module
-is a deterministic descriptive view over persisted facts.
-One unavailable module affects only that module, and read requests never invoke
-a provider, model, backfill, or projection.
-
-Fed document analysis is the only model-derived Macro state. It receives one
-bounded official body plus effective-dated role/prior-signal context, verifies
-exact excerpts against that body, and inserts one immutable analysis for the
-exact document/model/prompt identity. It feeds the descriptive `rates_fed`
-module as a supporting capability and never gates official Rates/Fed current
-health. Publication, completion of the native job, advancement of the derived
-Dataset projection state, and dirtying the `rates_fed` frontier share one
-transaction. A maintenance rebuild derives the same state from immutable
-analyses and native jobs.
-
 Migration history is squashed. `20260818_0275_baseline` is the single root
 revision: it executes the frozen `current_schema_20260818_0275.sql` dump
 (every table, index, constraint, seed row of the schema as it stood after the
 News V3 hard cut and Radar removal) plus `runtime_roles.sql`, and it is
-irreversible. Two chained revisions follow. `20260818_0276_review_49_hard_cut`
+irreversible. Three chained revisions follow. `20260818_0276_review_49_hard_cut`
 drops the retired title-translation, DEX discovery, token profile, token
 image, and Radar-era checkpoint tables. `20260818_0277_gmgn_lane_removal`
 drops the whole GMGN lane: the social evidence tables (`raw_frames`, `events`,
@@ -614,9 +448,15 @@ DEX/CEX market data tables (`market_ticks` with its default partition,
 broadcast journal (`persisted_live_events`), `provider_circuit_state`, and the
 News market-mark table (`news_event_market_marks`), plus the
 `forbid_market_fact_update()` trigger function and the terminal-evidence rows
-of the dropped queues. Neither chained revision has a downgrade. Earlier hard
-cuts live only in git history; a fresh database and a database upgraded
-through the chain reach byte-identical schemas.
+of the dropped queues. `20260819_0278_macro_lane_removal` drops the whole Macro
+lane: the ten `macro_*` fact/derived/queue/frontier tables, the four general
+market observation tables (`market_instruments`, `market_observations`,
+`market_settlements`, `market_position_facts`), the durable queue
+terminal-evidence table (`queue_terminal_events`, whose only writers were the
+Macro repository and the projection frontier), and the
+`reject_macro_fact_mutation()` trigger function. No chained revision has a
+downgrade. Earlier hard cuts live only in git history; a fresh database and a
+database upgraded through the chain reach byte-identical schemas.
 
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.

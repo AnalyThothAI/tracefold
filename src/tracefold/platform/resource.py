@@ -17,8 +17,6 @@ class ResourceCapability(StrEnum):
     DATABASE_BUSINESS = "database_business"
     DATABASE_CONTROL = "database_control"
     FINITE_OPERATION = "finite_operation"
-    MODEL_ADAPTER = "model_adapter"
-    CPU_PROCESS = "cpu_process"
 
 
 class ResourceOperationOverrun(RuntimeError):
@@ -33,14 +31,6 @@ class ResourceOperationOverrun(RuntimeError):
         self.capability = capability
         self.operation_name = str(operation_name).strip() or "unknown"
         super().__init__(f"resource_operation_overrun:{self.capability.value}:{self.operation_name}")
-
-
-class CpuTaskTimeout(TimeoutError):
-    """A deterministic CPU child reached its declared execution timeout."""
-
-
-class CpuTaskProcessExpired(RuntimeError):
-    """The spawn-only CPU child exited unexpectedly."""
 
 
 async def await_concurrent_future[T](
@@ -106,8 +96,6 @@ class ResourceSubmissionTracker:
 
 
 __all__ = [
-    "CpuTaskProcessExpired",
-    "CpuTaskTimeout",
     "ResourceAdmissionTimeout",
     "ResourceCapability",
     "ResourceOperationOverrun",

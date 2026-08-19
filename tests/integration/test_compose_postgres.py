@@ -217,7 +217,6 @@ def test_retired_ops_tree_and_orphan_scripts_are_absent() -> None:
     assert not Path("ops").exists()
     scripts = {path.name for path in Path("scripts").iterdir() if path.is_file()}
     assert scripts == {
-        "check_macro_acceptance.py",
         "regen_cli_help.py",
         "regen_db_schema.py",
         "regen_openapi.py",

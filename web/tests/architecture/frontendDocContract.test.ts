@@ -85,10 +85,7 @@ describe("frontend documentation contract", () => {
   });
 
   it("keeps primary route docs aligned with the app navigation tree", () => {
-    const documentedRoutes = [
-      { term: "News", to: "/news" },
-      { term: "Macro", to: "/macro" },
-    ];
+    const documentedRoutes = [{ term: "News", to: "/news" }];
     const navigationItems = flattenNavigation(
       APP_NAVIGATION_GROUPS.flatMap((group) => group.items),
     );
@@ -98,7 +95,7 @@ describe("frontend documentation contract", () => {
       expect(frontendDoc).toContain(term);
       expect(navigationTargets).toContain(to);
     }
-    expect(navigationTargets).toEqual(["/news", "/macro"]);
+    expect(navigationTargets).toEqual(["/news"]);
     expect(navigationTargets).not.toContain("/");
     expect(frontendDoc).not.toMatch(/Token Radar|RadarPage|live-radar|features\/live/);
 
@@ -110,7 +107,7 @@ describe("frontend documentation contract", () => {
     expect(topbar).toContain("topbar-anomaly");
   });
 
-  it("describes the News + Macro console without the retired GMGN lane", () => {
+  it("describes the News console without the retired GMGN or Macro lanes", () => {
     expect(frontendDoc).toContain("gmgnLaneHardCut.test.ts");
     expect(frontendDoc).toContain("`/news?q=<query>`");
     expect(frontendDoc).toContain("`news search`");

@@ -79,9 +79,9 @@ describe("Tracefold design-system hard cut", () => {
     expect(sharedUiCss).not.toMatch(/\.research-|\.token-case|\.case-file/);
   });
 
-  it("exposes two primary research destinations with no duplicate Macro tree", () => {
+  it("exposes the single primary research destination with no nested tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
-    expect(items.map((item) => item.to)).toEqual(["/news", "/macro"]);
+    expect(items.map((item) => item.to)).toEqual(["/news"]);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);
 
     const sidebar = readSource("features/cockpit/ui/AppSidebar.tsx");
@@ -106,7 +106,6 @@ describe("Tracefold design-system hard cut", () => {
   it("assigns every supported route family to a page archetype", () => {
     const owners = {
       case: ["features/news/NewsEventDetailPage.tsx"],
-      decision: ["features/macro/ui/MacroDecisionPage.tsx"],
       scan: ["features/news/NewsPage.tsx", "features/news/NewsStatusPage.tsx"],
     } as const;
 
