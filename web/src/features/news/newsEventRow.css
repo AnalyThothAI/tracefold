@@ -165,5 +165,25 @@
       justify-items: start;
       text-align: left;
     }
+
+    /*
+     * Phone reading: the meta line's controls are sized for a mouse. Padding grows the hit area in flow, which
+     * keeps neighbours from overlapping the way an absolutely-positioned target would.
+     */
+    /* Padding must not land on the clamped headline: it widens the -webkit-box and the third line shows
+       through the padding band. Only the inline links grow. */
+    .news-event-link {
+      padding-block: 0.4rem;
+    }
+
+    .news-event-headline a {
+      font-size: 1rem;
+      line-height: 1.45;
+    }
+
+    .news-event-meta {
+      gap: 0.4rem 0.6rem;
+      font-size: 0.78rem;
+    }
   }
 }

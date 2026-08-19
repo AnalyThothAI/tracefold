@@ -41,8 +41,10 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 
 ## Conventions
 
-- **Design contract and page archetypes.** Tracefold has one dark, restrained
-  operator-workbench language. `styles/tokens.css` is the only semantic color,
+- **Design contract and page archetypes.** Tracefold has one light, restrained
+  operator-workbench language (#74). The console is read in Chinese, and Han glyphs
+  bloom under light-on-dark at these sizes, so the ground is light and the ink
+  near-black; surfaces separate by border and shadow, never by lightening. `styles/tokens.css` is the only semantic color,
   type, radius, focus, and shell token contract; production code must not add a
   parallel theme or compatibility alias. Stable routes declare one of two
   information archetypes with `data-page-archetype`: `scan` for the News
@@ -170,6 +172,27 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
 - **Accessibility.** Icon-only controls use `IconButton` with an explicit `aria-label`; route status regions use polite live regions; form controls need visible or screen-reader labels. `jsx-a11y/recommended` is enforced as an error gate.
+- **Colour axes.** Colour carries exactly two axes and they never share a hue.
+  *Market direction* owns red and green — 红 = 利多, 绿 = 利空, the mainland
+  convention (`--dir-bullish` / `--dir-bearish`, `directionTone`). *Pipeline outcome*
+  owns blue, amber and grey and must never use red or green (`--signal-done` /
+  `-info` / `-caution` / `-alert` / `-neutral`, `outcomeTone`): 已推送 is a completed
+  step, not a market opinion, and colouring it green would read as a second,
+  contradicting 利空. Every foreground token clears 4.5:1 on white. The direction red
+  and green sit at near-equal luminance by necessity, so the arrow glyph and the
+  Chinese word carry the meaning and colour only reinforces it.
+- **Shared primitives.** `Card`, `FactGrid` and `KeyValue` in `shared/ui` own the
+  console's panel, labelled-fact and key/value shapes. A feature may frame a
+  primitive with its own class but must not restyle one; `cssArchitectureHarness`
+  enforces this.
+- **Phone reading.** The console has to be comfortable to read on a phone. The shell
+  sets `viewport-fit=cover`, a `theme-color` matching the canvas, `format-detection`
+  off, `text-size-adjust: 100%` so a reader's larger font scales coherently, `100dvh`
+  so the shell does not jump as mobile toolbars slide, `env(safe-area-inset-bottom)`
+  on the route column, and a CJK-first font stack. Below `767px` the funnel tiles
+  compress to one scrollable row and the page subtitle is dropped so the first Event
+  sits within the first screen. Padding must never land on a `-webkit-line-clamp`
+  element — the clamped line shows through the padding band.
 - **Score display.** Displayed scores and labels (Triage magnitude and confidence, the News `outcome`/`*_zh`/`label_zh` copy) are server-owned values rendered as-is. The UI does not recompute, rank, translate, or synthesize them locally; `features/news/newsLabels.ts` holds UI affordance copy and tone mapping only.
 - **No token or provider-image surfaces.** There is no token profile, logo, chain/address link, DEX/CEX market panel, or image proxy anywhere in `web/src`; the API exposes no image URL or image route. Do not add a frontend proxy, helper, or filter that loads or rewrites provider image URLs.
 

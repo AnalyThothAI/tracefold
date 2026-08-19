@@ -409,12 +409,47 @@
       padding: 0.75rem 0.75rem 1.25rem;
     }
 
+    /*
+     * Phone reading: the four funnel tiles used to stack 2x2 and pushed the first Event roughly a screen and a
+     * half down. They are context, not the reason the page was opened, so they compress to one scannable row and
+     * the feed starts near the top.
+     */
     .news-funnel-strip {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      display: flex;
+      gap: 0.4rem;
+      overflow-x: auto;
+      padding-bottom: 0.15rem;
+      scrollbar-width: none;
+    }
+
+    .news-funnel-strip::-webkit-scrollbar {
+      display: none;
+    }
+
+    .news-funnel-strip li {
+      flex: 0 0 auto;
+      min-width: 5.75rem;
+      padding: 0.4rem 0.6rem;
     }
 
     .news-funnel-strip li + li::before {
       display: none;
+    }
+
+    .news-funnel-strip b {
+      font-size: 1rem;
+    }
+
+    .news-funnel-strip small {
+      display: none;
+    }
+
+    .news-heading-copy p {
+      display: none;
+    }
+
+    .news-heading-copy h1 {
+      font-size: 1.15rem;
     }
 
     .news-filter-disclosure > div {
