@@ -350,7 +350,12 @@ console-only `title_zh` (the faithful Chinese title), and an `audience`
 and `restates` (the ledger index a restatement points at; -1 otherwise) —
 the reader-facing memory Triage has (issue #61): dedup is byte/word-level,
 novelty is the semantic last line against the same fact told again from
-another outlet or under another storyline key. `decide()` owns the final
+another outlet or under another storyline key. Magnitude and `actionable`
+are calibrated in the prompt (its magnitude scale, the `actionable` definition
+and the classification examples), never in code; prompt v8 files a listed
+company's or token issuer's own product update at magnitude 2 and defines
+`actionable` because the `model_push_actionable` branch of `decide()` requires
+it (the other push paths do not check it). `decide()` owns the final
 decision under a `DecidePolicy` whose defaults are the live policy and whose
 values come from `news.policy`: mute -> drop; noise -> drop; a *grounded*
 restatement (the model cites a ledger entry it was shown and the direction did
