@@ -104,8 +104,6 @@ class LlmConfig(BaseModel):
     base_url: str | None = None
     news_triage_model: str | None = None
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
-    macro_document_analysis_enabled: bool = False
-    macro_document_analysis_model: str = "gpt-5.4-mini"
 
     @field_validator("api_key", "news_triage_model", mode="before")
     @classmethod
@@ -121,14 +119,6 @@ class LlmConfig(BaseModel):
         normalized = str(value or "").strip().rstrip("/")
         return normalized or None
 
-    @field_validator("macro_document_analysis_model", mode="before")
-    @classmethod
-    def parse_model(cls, value: Any) -> str:
-        normalized = str(value or "").strip()
-        if not normalized:
-            raise ValueError("llm model is required")
-        return normalized
-
     @model_validator(mode="after")
     def require_complete_direct_configuration(self) -> LlmConfig:
         configured = (self.api_key, self.base_url, self.news_triage_model)
@@ -137,24 +127,6 @@ class LlmConfig(BaseModel):
         if self.news_triage_fallback.configured and not all(configured):
             raise ValueError("llm_fallback_without_primary")
         return self
-
-
-class MacroSourcesConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = True
-    fred_enabled: bool = True
-    cboe_enabled: bool = True
-    cftc_enabled: bool = True
-    nasdaq_daily_enabled: bool = True
-    yfinance_enabled: bool = True
-    user_agent: str = "TracefoldMacro/1.0 research@localhost"
-
-
-class ProvidersConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    macro_sources: MacroSourcesConfig = Field(default_factory=MacroSourcesConfig)
 
 
 class NewsPushSettings(BaseModel):
@@ -377,7 +349,6 @@ class Settings(BaseModel):
     api: ApiConfig = Field(default_factory=ApiConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
-    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     news: NewsSettings = Field(default_factory=NewsSettings)
 
     def set_config_dir(self, value: Path) -> None:
@@ -558,18 +529,6 @@ llm:
     api_key:
     base_url:
     model:
-  macro_document_analysis_enabled: false
-  macro_document_analysis_model: "gpt-5.4-mini"
-
-providers:
-  macro_sources:
-    enabled: true
-    fred_enabled: true
-    cboe_enabled: true
-    cftc_enabled: true
-    nasdaq_daily_enabled: true
-    yfinance_enabled: true
-    user_agent: "TracefoldMacro/1.0 research@localhost"
 
 news:
   enabled: true

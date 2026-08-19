@@ -11,7 +11,7 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up status macro-acceptance logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help up status logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -168,9 +168,6 @@ status: preflight ## fail closed unless database, API, Workers, and console are 
 			echo "Run make logs for diagnostics." >&2; \
 			exit 1; \
 		fi
-
-macro-acceptance: ## verify Macro overview, six typed modules, health, and conditional reads
-	@TRACEFOLD_API_URL="$(TRACEFOLD_API_URL)" uv run python scripts/check_macro_acceptance.py
 
 logs: preflight ## tail Serve, Workers, migration, PostgreSQL, and RabbitMQ logs
 	@docker compose logs -f --tail=100 serve workers migrate postgres rabbitmq

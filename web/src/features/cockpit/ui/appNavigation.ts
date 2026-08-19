@@ -1,4 +1,4 @@
-import { BriefcaseBusiness, Newspaper, type LucideIcon } from "lucide-react";
+import { Newspaper, type LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
   children?: AppNavigationItem[];
@@ -17,9 +17,6 @@ export type AppNavigationGroup = {
 export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
   {
     label: "Research",
-    items: [
-      { icon: Newspaper, label: "News", matchPath: "/news/*", to: "/news" },
-      { icon: BriefcaseBusiness, label: "Macro", matchPath: "/macro/*", to: "/macro" },
-    ],
+    items: [{ icon: Newspaper, label: "News", matchPath: "/news/*", to: "/news" }],
   },
 ];

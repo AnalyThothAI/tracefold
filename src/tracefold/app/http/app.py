@@ -124,17 +124,6 @@ def _mount_frontend(app: FastAPI, *, frontend_dist: str | Path | None) -> None:
     app.add_api_route("/app/{path:path}", frontend_index, include_in_schema=False)
     app.add_api_route("/news", frontend_index, include_in_schema=False)
     app.add_api_route("/news/{path:path}", frontend_index, include_in_schema=False)
-    app.add_api_route("/macro", frontend_index, include_in_schema=False)
-    for macro_path in (
-        "overview",
-        "rates-fed",
-        "economy-inflation",
-        "liquidity-funding",
-        "credit",
-        "volatility",
-        "cross-asset",
-    ):
-        app.add_api_route(f"/macro/{macro_path}", frontend_index, include_in_schema=False)
 
 
 def _frontend_dist_dir(frontend_dist: str | Path | None = None) -> Path | None:

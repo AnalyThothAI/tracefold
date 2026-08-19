@@ -502,22 +502,6 @@ def test_real_workers_never_returning_finite_operation_is_fatal() -> None:
         _ensure_process_stopped(process)
 
 
-def test_real_workers_never_returning_model_operation_is_fatal() -> None:
-    prepare_postgres_database()
-    port = _free_port()
-    process = _start_workers_process("model_overrun", port)
-    try:
-        _wait_ready(process, port)
-        _wait_for_output(process, "MODEL_STARTED")
-        assert process.wait(timeout=6.0) != 0
-        _assert_probe_closed(port)
-        row = _runtime_row()
-        assert row["lifecycle_state"] == "failed"
-        assert row["fatal_code"] == "resource_operation_overrun"
-    finally:
-        _ensure_process_stopped(process)
-
-
 def test_real_workers_never_returning_control_operation_is_fatal() -> None:
     prepare_postgres_database()
     port = _free_port()
@@ -534,34 +518,6 @@ def test_real_workers_never_returning_control_operation_is_fatal() -> None:
         # lane. External restart observes the non-zero exit immediately and
         # the retained starting row fails closed as stale.
         assert row["lifecycle_state"] == "starting"
-        assert row["fatal_code"] is None
-    finally:
-        _ensure_process_stopped(process)
-
-
-def test_real_workers_projection_cpu_native_timeout_recovers_without_root_restart() -> None:
-    prepare_postgres_database()
-    port = _free_port()
-    process = _start_workers_process("cpu_bounded_recovery", port)
-    try:
-        _wait_ready(process, port)
-        _wait_for_outputs(
-            process,
-            (
-                "CPU_BOUNDED_TIMEOUT",
-                "CPU_RECOVERED",
-            ),
-            timeout_seconds=12.0,
-        )
-        assert process.poll() is None
-        row = _runtime_row()
-        assert row["lifecycle_state"] == "running"
-        assert row["fatal_code"] is None
-
-        process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=5.0) == 0
-        row = _runtime_row()
-        assert row["lifecycle_state"] == "stopped"
         assert row["fatal_code"] is None
     finally:
         _ensure_process_stopped(process)

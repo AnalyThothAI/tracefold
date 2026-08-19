@@ -6,10 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
-BUSINESS_PACKAGES = ("news", "macro")
+BUSINESS_PACKAGES = ("news",)
 ALLOWED_BUSINESS_DEPENDENCIES = {
     "news": {"news", "platform"},
-    "macro": {"macro", "platform"},
 }
 # Exact private seams for the composition root and concrete adapters. They are
 # implementation collaborators of the public News capabilities, not
@@ -57,7 +56,6 @@ SQL_TABLE_RE = re.compile(
 )
 PLATFORM_TABLES = {
     "alembic_version",
-    "queue_terminal_events",
     "workers_runtime",
 }
 RETIRED_NEWS_RUNTIME_MARKERS = (
@@ -124,7 +122,6 @@ def test_backend_has_only_the_expected_package_shape() -> None:
     assert {path.name for path in SRC.iterdir() if path.is_dir() and path.name != "__pycache__"} == {
         "app",
         "integrations",
-        "macro",
         "news",
         "platform",
     }
@@ -378,6 +375,4 @@ def test_news_kiss_retired_tables_have_no_production_owner() -> None:
 def _business_table_owner(table: str) -> str:
     if table.startswith("news_"):
         return "news"
-    if table.startswith("macro_") or table.startswith("market_"):
-        return "macro"  # market_* are Macro's general market observation facts
     raise AssertionError(f"unowned business table: {table}")

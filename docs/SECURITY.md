@@ -16,8 +16,8 @@
 The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
 and password-file references, the OpenNews token, the RabbitMQ URL, the
-Feishu webhook, the API bind address and bearer token, Macro source-family
-enablement, and model provider/name.
+Feishu webhook, the API bind address and bearer token, and model
+provider/name.
 
 The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
@@ -44,8 +44,8 @@ environment variables, or move code-owned safety budgets into
 
 ## Model capability boundary
 
-`news_triage` and `macro_document_analysis` are the only production
-product-model consumers. News Triage is one structured call with a
+`news_triage` is the only production product-model consumer. It is one
+structured call with a
 byte-frozen system prompt whose output never decides delivery by itself: the
 pure `decide()` rules own the final decision, model failure is fail-closed,
 and every verdict row stores the model intent next to the rule baseline. It
@@ -54,8 +54,7 @@ capability, and one Event gets exactly one judgment and one card — the second
 model stage (the Analyst lane) was removed in #57. The card's Chinese text is
 the Triage verdict's `headline_zh` and `why_zh`; no separate title,
 translation, or follow-up provider exists. Item identity, Event identity, Gate
-admission, storyline keys, and feed ordering remain deterministic. The six
-Macro modules are also deterministic views over persisted facts.
+admission, storyline keys, and feed ordering remain deterministic.
 
 PostgreSQL runtime roles are code-owned:
 `src/tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
@@ -141,19 +140,9 @@ AMQP and management ports to `127.0.0.1` by default and uses a
 `TRACEFOLD_RABBITMQ_PASSWORD` environment override. Consumers connect with one
 robust connection; queue names are prefixed by `news.broker.name_prefix`.
 
-Fed document analysis receives one bounded official source body plus
-effective-dated role and prior-signal context. It has no provider or web tool,
-and every returned excerpt is verified against that frozen body before
-immutable insertion. Regulation, technology, inclusion, and ceremonial
-material may remain `not_policy_signal`/`no_call`; the worker cannot create a
-permanent official label or universal score.
-
-The Macro overview and six module reads expose only persisted current module
-state. They contain no credentials, invoke no provider/model, and cannot
-advance targets or rebuild state. Direct provider data, live web, and News are
-not alternate Macro fact sources. Public APIs return only validated product
-payloads and bounded sanitized errors, never raw credentials, authorization
-headers, hidden reasoning, or unsanitized provider failures.
+Public APIs return only validated product payloads and bounded sanitized
+errors, never raw credentials, authorization headers, hidden reasoning, or
+unsanitized provider failures.
 
 ## Sensitive change confirmation
 

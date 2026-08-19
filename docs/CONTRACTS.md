@@ -8,8 +8,8 @@ There are no compatibility aliases for retired products, tables, worker names, r
 
 The active operator-owned application file is
 `~/.tracefold/config.yaml`. It contains deployment/domain choices,
-PostgreSQL role DSNs and password-file references, the Macro source-family
-switches, credentials, API bind/auth, and News settings. Worker topology,
+PostgreSQL role DSNs and password-file references, credentials, API bind/auth,
+and News settings. Worker topology,
 cadence, deadlines, resource limits, batches, leases, retries, and model
 reservations are code-owned and are not configuration fields.
 
@@ -30,8 +30,8 @@ existing database passwords. The generated config has a new API bearer token
 is false, and `news.broker.url` points at the compose RabbitMQ service.
 
 The configuration schema is exactly the top-level keys `ws_token`, `api`
-(`host`, `port`), `storage.postgres`, `llm`, `providers.macro_sources`, and
-`news`, each a typed nested model with `extra=forbid`. `ws_token` is the HTTP
+(`host`, `port`), `storage.postgres`, `llm`, and `news`, each a typed nested
+model with `extra=forbid`. `ws_token` is the HTTP
 API bearer token; the key name is kept so operator configs need not churn.
 Root-level `postgres_*`, `api_*`, provider, and LLM forwarding aliases are not
 part of the configuration contract.
@@ -62,18 +62,11 @@ error, truncated or invalid output — or while the primary breaker
 answered and the trace carries `model_fallback_from` (the primary's error code
 or `primary_circuit_open`) or, when both links failed, `primary_error`.
 `/api/news/status.pipeline` and `tracefold config` report both
-`triage_model` and `triage_fallback_model`. `llm.macro_document_analysis_enabled`
-and `llm.macro_document_analysis_model` admit the optional Fed document
-analysis on the primary gateway. The card's Chinese text is the Triage verdict's
+`triage_model` and `triage_fallback_model`. The card's Chinese text is the Triage verdict's
 `headline_zh` and `why_zh` (with `title_zh` for the console); no other model
 or provider produces copy. Model execution policy, timeouts, token budgets,
 cadence, retries, and reservations are code-owned. Environment variables are
 not a credential contract.
-
-`providers.macro_sources` (`enabled`, `fred_enabled`, `cboe_enabled`,
-`cftc_enabled`, `nasdaq_daily_enabled`, `yfinance_enabled`, `user_agent`)
-enables the free Macro source families and identifies the client; it owns no
-dataset membership, formula, freshness, or schedule.
 
 `news.opennews_token` is the operator-owned secret for the production News
 source. `news.opennews_strategy_ids` is the operator-owned, duplicate-free
@@ -103,11 +96,9 @@ webhook is a valid Feishu HTTPS custom-bot v2 URL; otherwise Serve and
 Workers still start and deliveries settle `terminal/delivery_unavailable`.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
-Worker topology, News broker topology and consumer set, private due loops, the
-projection EDF, the serial native-state model arbiter, and all resource
+Worker topology, News broker topology and consumer set, and all resource
 capacities are code-owned. Configuration cannot add another worker or derived
-product lane. Explicit Macro backfill is a synchronous CLI maintenance action
-and is absent from the steady Workers root.
+product lane.
 
 ## Operator lifecycle
 
@@ -127,14 +118,14 @@ an unknown non-empty database.
 ## HTTP
 
 The service exposes `/healthz`, `/readyz`, `/metrics`, static frontend assets
-(the console routes `/`, `/app`, `/app/*`, `/news`, `/news/*`, `/macro`,
-`/macro/<module>`), and `/api/*`. There is no WebSocket endpoint.
+(the console routes `/`, `/app`, `/app/*`, `/news`, `/news/*`), and `/api/*`.
+There is no WebSocket endpoint.
 
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
 - `/api/bootstrap` returns `{ws_token}` so the served console can authenticate; every other `/api/*` route requires that token as an HTTP bearer token (`Authorization: Bearer <ws_token>`; routes that allow it also accept a `token` query parameter). A missing or wrong token is `401`.
 - `/api/status` is exactly `{measured_at_ms, runtime}`. `runtime` combines the database probe (schema revision match) with the Workers heartbeat row and fails closed on stale heartbeats; there is no provider block.
-- Read endpoints do not call providers, execute models, mutate facts, or rebuild projections.
+- Read endpoints do not call providers, execute models, or mutate facts.
 
 Status contains no provider/model credentials, base URLs, request policy,
 capacity counters, prompt contents, or raw model responses. Code-owned
@@ -155,7 +146,6 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status` | broker-driven Event feed, one Event with members/verdicts/deliveries/labels, and four-layer News status |
-| Macro | `/api/macro/overview` and six typed module routes | persisted six-module current rows built from Macro facts and Fed document analysis |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -290,171 +280,19 @@ crash dead-letters. Control is not a broker message: `tracefold news control
 --ttl-minutes]` writes `news_control_state` and consumers read that row on
 every message.
 
-### Macro
-
-Macro exposes one overview and six typed current-module reads:
-
-```text
-/api/macro/overview
-/api/macro/rates-fed
-/api/macro/economy-inflation
-/api/macro/liquidity-funding
-/api/macro/credit
-/api/macro/volatility
-/api/macro/cross-asset
-```
-
-These reads accept no query parameters. The overview is
-`macro_overview_v9`: it returns read time, transport state, latest fact time,
-six module availability summaries, and aggregate data quality. It is not a
-daily narrative or historical-session product. Each module route returns its
-matching persisted schema or `macro_module_unavailable_v1` with a typed reason:
-
-- overview: `macro_overview_v9`
-- `macro_rates_fed_v8`
-- `macro_economy_inflation_v6`
-- `macro_liquidity_funding_v5`
-- `macro_credit_v7`
-- `macro_volatility_v7`
-- `macro_cross_asset_v8`
-
-The five non-rates modules share identity, clocks, status, summary,
-contradictions, falsifiers, checkpoints, and evidence lineage. Rates v8
-deliberately has no generic `summary`, `top_changes`, contradiction, or
-falsifier fields. Its `decision` contract is tenor-native: 2Y/10Y/30Y current
-facts, actual baseline dates for 1D/1W/MTD/3M/past-30-day changes,
-session-completeness state, 2s10s/10s30s summaries, same-day 10Y/30Y
-nominal-real-Breakeven decomposition, window-qualified classifications, and
-fact references. It additionally exposes one revisioned official FOMC meeting
-calendar and recent typed Treasury auction results. Bill discount rate,
-investment rate, and high yield are three independent nullable fields; the
-service never collapses them into one first-available value. Bid-to-cover,
-offering amount, and indirect/direct/primary-dealer award shares remain
-separate facts. Treasury
-completed-session curves are decision-primary; FRED
-single-tenor series are history/reconciliation only. Treasury cross-sections,
-Fed events, credit ladders, and the ETF comparison matrix are explicit typed
-fields, not generic chart arrays. Coverage is `complete` or `partial`; Current
-Health is `current`, `degraded`, or `unavailable`; rates session completeness
-is an independent `complete`, `unaligned`, or `incomplete` axis. History Depth
-is `complete`, `partial`, `insufficient`, or `not_required`. Each Dataset
-additionally exposes market state and source state. Optional history cannot
-lower Current Health. Only declared required windows affect reader-facing
-History Depth. One missing or schema-mismatched module produces a typed
-unavailable slot without failing the other five. All seven fact payloads use
-`macro_module_current` only; the Rates read additionally attaches the
-secret-free optional-analysis runtime state from Serve configuration. Reads
-never call a provider/model, advance a target, rebuild a projection, or write
-fallback content.
-
-Economy v6 adds one required `seasonal_adjustment` enum to every official
-release observation. The value is Registry-owned source metadata
-(`seasonally_adjusted`, `not_seasonally_adjusted`, or
-`seasonally_adjusted_annual_rate`); it is never inferred from the number.
-Cross-Asset v8 publishes pair facts for 30, 90, and 252 common daily-return
-observations plus a server-owned `correlation_contract`. The browser uses its
-default window, minimum common-observation count, supported windows, and
-mirrored-matrix presentation rule; it does not invent a correlation default or
-persist duplicate reverse/diagonal facts.
-
-Each successful module representation has a weak semantic `ETag` and
-`Cache-Control: private, no-cache`; an unchanged `If-None-Match` read returns an
-empty `304`. The weak validator safely spans identity and gzip transfer
-representations; responses above the transport threshold are gzip-compressed. The
-overview remains a read-time snapshot because `read_at_ms` changes per read.
-
-The Dataset and Calculation Registries are code-owned public semantics, not
-runtime configuration. Provider config may only enable the free source
-families. A dataset's owner, fact family, source/adapter, acquisition clock,
-freshness, trust tier, criticality, module membership, and formula identity do
-not come from YAML. General cross-asset observations, settlements, and
-positioning are Macro's general market facts (`market_instruments`,
-`market_observations`, `market_settlements`, `market_position_facts`);
-macroeconomic series, release events, and official documents are `macro_*`
-facts. The legacy generic evidence route, window parameter, bundle/sync
-surface, `macro_observations`, and unclassified facts do not exist.
-
-Every Registry row has a stable `concept_id` and `source_role`.
-`decision_primary` is authoritative for the current decision; `release`,
-`history`, `intraday_proxy`, and `reconciliation_only` remain separately
-labelled inputs. Values from different identities are never averaged or
-silently substituted. Release facts preserve actual, expected, surprise,
-revision, reference date, optional source publication time, and ingestion time
-as separate fields.
-
-Treasury owns the current nominal/real curve and FRED owns its history. BLS
-owns CPI/labor release facts; BEA public release pages own GDP, PCE, and core
-PCE release facts; FRED owns the matching history. The natural-change contract
-is Dataset-specific: daily/weekly gaps are bounded and monthly/quarterly
-comparisons require the exact calendar lag. A missing period yields a missing
-change, never a mislabeled fallback.
-
-The Cross-Asset payload always owns the fixed ETF basket SPY, QQQ, IWM, TLT,
-IEF, LQD, HYG, UUP, GLD, and USO plus ES, NQ, RTY, ZB, ZN, GC, CL, and HG
-major-futures rows and the Yahoo DXY index. ETF rows use Nasdaq public daily
-history for five-year changes, normalization, and correlations, paired with
-Yahoo Finance five-minute prices. Futures pair Yahoo five-minute prices with
-Yahoo continuous-contract daily history. Both Yahoo lanes and Nasdaq public
-history are explicitly `untrusted_proxy`; each row exposes separate history
-and price Dataset IDs, its actual market timestamp, price kind, and source
-lineage. A closed or maintenance market preserves the last expected bar as
-`current`; staleness is measured against the market clock, never wall-clock
-age alone. WTI is the separate official FRED/EIA `DCOILWTICO` benchmark. The Rates
-payload exposes Treasury nominal and real maturity cross-sections for current,
-1W, 1M, and 3M snapshots, matched breakevens, 2s10s/3m10s/5s30s histories,
-transparent curve-shape inputs, the official FOMC schedule snapshot, Treasury
-auction-demand facts, and the shared SOFR fact. Paid CME probabilities are not
-part of the supported contract and no probability proxy is synthesized.
-
-Volatility exclusively owns the official CFE VX settlement curve. A served
-`market_settlement_v2` fact requires the official `Expiration Date`; schema
-version and expiration participate in both fact hash and settlement identity.
-Provable legacy raw rows receive a new append-only v2 revision while the v1 row
-remains unchanged. Unprovable v1 rows stay audit-only and are never sorted by a
-guessed contract-code expiry. Cross-Asset does not duplicate this curve.
-
-FOMC statement, implementation, minutes, and SEP documents plus Board/Reserve
-Bank speeches retain official full body text and source hashes. SEP PDF text is
-extracted from the official PDF with bounded page/content limits. The
-`macro_document_analysis` native candidate writes one immutable, model/prompt-versioned,
-exact-evidence-bound analysis per source body after effective-dated role facts
-are available. Institutional FOMC stance and the 90-day officials
-communication distribution remain separate. Non-policy material is
-`not_policy_signal`; no static official label or universal hawk/dove score
-exists. The current immutable-analysis admission window is 550 days for FOMC
-materials and 120 days for speeches. Older official bodies remain durable raw
-evidence but do not block current module reads.
-
-Document analysis is a supporting capability. Missing, disabled, or
-unconfigured analysis cannot lower official Rates/Fed Current Health; the Fed
-stance/distribution remains typed `no_call`. The Rates read adds a secret-free
-`document_analysis_runtime` state (`disabled`, `unconfigured`, or `active`)
-from Serve runtime configuration, while the persisted v7 module remains a
-deterministic fact projection. `active`/`worker_active` means only that the
-configuration admission conditions are satisfied (`enabled && configured`);
-it is not a worker heartbeat or process-liveness claim. Successful immutable
-analysis publication and its Dataset/frontier advancement are atomic.
-
-Credit exposes IG/BBB/BB/B/CCC OAS, actual-sample history statistics, IG/HY
-effective yields, deterministic comparisons with EFFR and 10Y Treasury, SLOOS
-standards and demand for C&I/CRE/consumer, loan delinquency/charge-off facts,
-and labelled ETF/CFTC confirmations. Four concurrent credit dimensions are
-returned; no composite score exists. Paid TRACE/NAV and unavailable historical
-ICE placeholders were deleted from the product contract.
-
-Macro has no second judgment, historical-session, or archive contract. Retired
-paths return the ordinary application `404`; there is no alias or fallback
-publication.
-
 The Alembic chain is `20260818_0275` (the root baseline: it executes
 `current_schema_20260818_0275.sql` plus `runtime_roles.sql`) followed by
 `20260818_0276_review_49_hard_cut` (drops the retired News title table, the
 DEX discovery/token-profile/token-image tables, and the unused LangGraph
-`checkpoint_*` tables) and `20260818_0277_gmgn_lane_removal` (drops the
+`checkpoint_*` tables), `20260818_0277_gmgn_lane_removal` (drops the
 social evidence, token identity/registry, DEX/CEX market, live broadcast,
-provider circuit, and News market-mark tables). A database at `20260818_0276`
-upgrades with `tracefold db migrate`; a fresh database runs the baseline, 0276,
-and 0277. The resulting schema is exactly 28 tables. News owns exactly eleven:
+provider circuit, and News market-mark tables), and
+`20260819_0278_macro_lane_removal` (drops the ten `macro_*` tables, the four
+general market observation tables, `queue_terminal_events`, and the
+`reject_macro_fact_mutation()` trigger function). A database at an earlier
+revision upgrades with `tracefold db migrate`; a fresh database runs the
+baseline and the three hard cuts. The resulting schema is exactly 13 tables.
+News owns exactly eleven:
 `news_ingest_state`, `news_opennews_incidents`, `news_items`, `news_events`,
 `news_event_members`, `news_event_bands`, `news_event_assets`,
 `news_verdicts`, `news_deliveries`, `news_control_state`,
@@ -468,9 +306,8 @@ observed after deployment.
 
 - service/config: `serve`, `workers`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
-- Macro: `macro backfill|backfill-professional|status`;
 - News: `news bus-check|control|label|eval|replay-decisions|replay|dlq|why`;
-- maintenance: `ops queue-inspect|queue-resolve|queue-resolve-bucket|validate-projections`.
+- maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
 maintenance command. Mutating maintenance commands require an explicit
@@ -478,17 +315,13 @@ execution flag where the parser offers a dry-run mode. They operate from
 persisted facts and stable target keys. A rebuild does not create an alternate
 generation/run identity or make a provider response the source of truth.
 
-`queue-inspect` and `validate-projections` are strict Serve-role reads. They
-do not acquire the maintenance lock, so operators can inspect the running
-singleton without interrupting it. Queue resolution commands remain exclusive
-maintenance operations.
+`validate-projections` is a strict Serve-role read. It does not acquire the
+maintenance lock, so operators can inspect the running singleton without
+interrupting it.
 
-`db audit` reports the migration revision, row `counts` for the Macro core
-tables (`macro_series_facts`, `macro_release_facts`, `macro_documents`,
-`macro_document_analyses`, `macro_module_current`, `market_instruments`,
-`market_observations`, `market_settlements`, `market_position_facts`), and
-`news_schema` exactness over the eleven `news_*` tables. `db query-audit`
-covers `/readyz`, `/api/status`, `/api/news/*`, and `/api/macro/*`;
+`db audit` reports the migration revision, row `counts` for the eleven
+`news_*` tables, and `news_schema` exactness over those same tables.
+`db query-audit` covers `/readyz`, `/api/status`, and `/api/news/*`;
 `/healthz`, `/metrics`, and `/api/bootstrap` are declared no-SQL routes.
 
 `news bus-check` connects, declares the topology idempotently, and prints
@@ -517,27 +350,11 @@ Event with admission, grounded assets, and preliminary storyline. `news why
 and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
 peeks, republishes, or purges `news.dead`.
 
-`macro status` separates steady acquisition from explicit maintenance. The
-steady summary reports actionable due work, future schedules, active and
-expired claims, status counts, and current error-code counts; maintenance
-reports every explicit backfill target and its claim state separately,
-so a stopped or failed historical backfill is never presented as live Worker
-backlog. It also reports each of the six module current rows with its health,
-history depth, fact cutoff, and update time, Fed document-analysis job counts,
-and the secret-free analysis runtime state (`enabled`, gateway `configured`,
-configuration-derived `worker_active`, and model name). It invokes no
-provider/model and writes nothing; `worker_active` is admission state, not
-observed process liveness.
-
-The `ops` family is exactly `queue-inspect`, `queue-resolve`,
-`queue-resolve-bucket`, and `validate-projections`. Queue owners are
-`macro_document_analysis` (`macro_document_analysis_jobs`) and
-`macro_projection` (`macro_module_frontiers`). Each command constructs only the
+The `ops` family is exactly `validate-projections`. It constructs only the
 dependencies required by the named domain operation and invokes that bounded
 operation directly; there is no generic one-shot worker adapter or free-form
-result object.
-
-Queue resolution is auditable: retry mutates the source queue and resolves terminal evidence in one transaction; quarantine/archive resolves the terminal row without pretending the source work succeeded.
+result object. It checks the bounded News singletons and delivery-state
+invariants against persisted facts and writes nothing.
 
 ## Contract change discipline
 

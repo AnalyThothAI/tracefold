@@ -14,7 +14,6 @@ CANONICAL_DOCS = {
     "OPERATIONS.md",
     "SECURITY.md",
     "SETUP.md",
-    "收益率0730.md",
 }
 GENERATED_FILES = {
     "README.md",

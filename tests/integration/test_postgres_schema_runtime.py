@@ -131,9 +131,8 @@ RETIRED_MACRO_RESEARCH_TABLES = {
 }
 
 
-def test_current_postgres_schema_is_news_v3_plus_macro(tmp_path) -> None:
-    """After #50 the schema is exactly: News V3 tables, Macro facts/projection/current tables, Macro's general
-    market observation tables, and the two runtime tables (workers_runtime, queue_terminal_events)."""
+def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
+    """After #68 the schema is exactly the News V3 tables plus alembic_version and workers_runtime."""
 
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
@@ -160,21 +159,10 @@ def test_current_postgres_schema_is_news_v3_plus_macro(tmp_path) -> None:
         news_delivery_columns = columns("news_deliveries")
         news_control_columns = columns("news_control_state")
         news_ingest_columns = columns("news_ingest_state")
-        market_settlement_columns = columns("market_settlements")
         news_v3_indexes = {
             str(row["indexname"]): str(row["indexdef"])
             for row in conn.execute(
                 "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname LIKE 'ix_news_%%'"
-            ).fetchall()
-        }
-        macro_market_projection_index = conn.execute(
-            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'"
-            " AND indexname = 'idx_market_observations_projection_history'"
-        ).fetchone()
-        projection_eligibility_indexes = {
-            row["indexname"]
-            for row in conn.execute(
-                "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname LIKE '%%frontiers_eligible'"
             ).fetchall()
         }
         functions = {
@@ -190,28 +178,13 @@ def test_current_postgres_schema_is_news_v3_plus_macro(tmp_path) -> None:
     assert tables == {
         "alembic_version",
         "workers_runtime",
-        "queue_terminal_events",
-        "market_instruments",
-        "market_observations",
-        "market_settlements",
-        "market_position_facts",
-        "macro_series_facts",
-        "macro_release_facts",
-        "macro_documents",
-        "macro_fed_official_role_facts",
-        "macro_document_analyses",
-        "macro_document_analysis_jobs",
-        "macro_acquisition_targets",
-        "macro_dataset_projection_states",
-        "macro_module_frontiers",
-        "macro_module_current",
         *PROFESSIONAL_NEWS_TABLES,
     }
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
     assert RETIRED_MACRO_RESEARCH_TABLES.isdisjoint(tables)
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
-    assert {"news_strategy_provenance_valid", "reject_macro_fact_mutation"} <= functions
-    assert "forbid_market_fact_update" not in functions
+    assert {"news_strategy_provenance_valid"} <= functions
+    assert {"forbid_market_fact_update", "reject_macro_fact_mutation"}.isdisjoint(functions)
     assert {
         "event_id",
         "family",
@@ -250,12 +223,6 @@ def test_current_postgres_schema_is_news_v3_plus_macro(tmp_path) -> None:
         "broker_snapshot",
         "updated_at_ms",
     }
-    assert {"fact_schema_version", "contract_expiration_date"} <= market_settlement_columns
-    assert macro_market_projection_index is not None
-    assert (
-        "(dataset_id, ((observed_at_ms / 86400000)) DESC, observed_at_ms DESC, "
-        "received_at_ms DESC, observation_id DESC)" in macro_market_projection_index["indexdef"]
-    )
     assert {
         "ix_news_incidents_open",
         "ix_news_incidents_recovery",
@@ -279,8 +246,7 @@ def test_current_postgres_schema_is_news_v3_plus_macro(tmp_path) -> None:
     assert "ix_news_marks_due" not in news_v3_indexes
     assert "state = 'sent'" in news_v3_indexes["ix_news_deliveries_sent"]
     assert "gin" in news_v3_indexes["ix_news_events_search"].lower()
-    assert projection_eligibility_indexes == {"idx_macro_module_frontiers_eligible"}
-    assert version == latest_migration_version() == "20260818_0277"
+    assert version == latest_migration_version() == "20260819_0278"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -305,4 +271,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260818_0277"
+    assert version == latest_migration_version() == "20260819_0278"

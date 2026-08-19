@@ -5,17 +5,15 @@
 ## Top level
 
 ```
-usage: tracefold [-h] {serve,workers,init,config,db,macro,news,ops} ...
+usage: tracefold [-h] {serve,workers,init,config,db,news,ops} ...
 
 positional arguments:
-  {serve,workers,init,config,db,macro,news,ops}
+  {serve,workers,init,config,db,news,ops}
     serve               run the read-only HTTP and frontend runtime
-    workers             run the ingestion, projection, provider, and model
-                        runtime
+    workers             run the News ingestion, triage, and delivery runtime
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
-    macro               Macro acquisition and current-module commands
     news                News V3 broker, control, label, and evaluation
                         commands
     ops                 maintenance commands
@@ -121,57 +119,6 @@ usage: tracefold db query-audit [-h] [--analyze]
 options:
   -h, --help  show this help message and exit
   --analyze   run EXPLAIN ANALYZE with buffers
-
-```
-
-## `macro`
-
-```
-usage: tracefold macro [-h] {backfill,backfill-professional,status} ...
-
-positional arguments:
-  {backfill,backfill-professional,status}
-    backfill            execute an explicit dataset backfill
-    backfill-professional
-                        execute the code-owned professional Macro history
-                        policy
-    status              print acquisition and current-module status
-
-options:
-  -h, --help            show this help message and exit
-
-```
-
-## `macro backfill`
-
-```
-usage: tracefold macro backfill [-h] --dataset DATASET --start START --end END
-
-options:
-  -h, --help         show this help message and exit
-  --dataset DATASET  Dataset Registry id
-  --start START      history start date (YYYY-MM-DD)
-  --end END          history end date (YYYY-MM-DD)
-
-```
-
-## `macro backfill-professional`
-
-```
-usage: tracefold macro backfill-professional [-h]
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
-## `macro status`
-
-```
-usage: tracefold macro status [-h]
-
-options:
-  -h, --help  show this help message and exit
 
 ```
 
@@ -349,80 +296,16 @@ options:
 ## `ops`
 
 ```
-usage: tracefold ops [-h]
-                     {queue-inspect,queue-resolve,queue-resolve-bucket,validate-projections} ...
+usage: tracefold ops [-h] {validate-projections} ...
 
 positional arguments:
-  {queue-inspect,queue-resolve,queue-resolve-bucket,validate-projections}
-    queue-inspect       inspect worker queue terminal evidence
-    queue-resolve       resolve worker queue terminal evidence
-    queue-resolve-bucket
-                        resolve a bounded worker queue terminal evidence
-                        bucket
+  {validate-projections}
     validate-projections
                         validate projection read models against PostgreSQL
                         facts
 
 options:
   -h, --help            show this help message and exit
-
-```
-
-## `ops queue-inspect`
-
-```
-usage: tracefold ops queue-inspect [-h] [--owner OWNER]
-                                   [--source-table SOURCE_TABLE]
-                                   [--status {terminal,active}]
-                                   [--reason-bucket REASON_BUCKET]
-                                   [--limit LIMIT]
-
-options:
-  -h, --help            show this help message and exit
-  --owner OWNER
-  --source-table SOURCE_TABLE
-  --status {terminal,active}
-  --reason-bucket REASON_BUCKET
-  --limit LIMIT
-
-```
-
-## `ops queue-resolve`
-
-```
-usage: tracefold ops queue-resolve [-h] --terminal-id TERMINAL_ID
-                                   --action {retry,quarantine,archive}
-                                   --reason REASON --execute
-
-options:
-  -h, --help            show this help message and exit
-  --terminal-id TERMINAL_ID
-  --action {retry,quarantine,archive}
-  --reason REASON
-  --execute
-
-```
-
-## `ops queue-resolve-bucket`
-
-```
-usage: tracefold ops queue-resolve-bucket [-h] --owner OWNER
-                                          --source-table SOURCE_TABLE
-                                          --reason-bucket REASON_BUCKET
-                                          --action {retry,quarantine,archive}
-                                          --reason REASON [--limit LIMIT]
-                                          (--dry-run | --execute)
-
-options:
-  -h, --help            show this help message and exit
-  --owner OWNER
-  --source-table SOURCE_TABLE
-  --reason-bucket REASON_BUCKET
-  --action {retry,quarantine,archive}
-  --reason REASON
-  --limit LIMIT
-  --dry-run
-  --execute
 
 ```
 

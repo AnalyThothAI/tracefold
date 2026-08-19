@@ -72,18 +72,6 @@ class TelemetryRegistry:
             ("worker", "outcome"),
             registry=self.registry,
         )
-        self.projection_deadline_misses_total = Counter(
-            "tracefold_worker_projection_deadline_misses_total",
-            "Projection shards completed after their freshness deadline.",
-            ("worker", "domain"),
-            registry=self.registry,
-        )
-        self.projection_transitions_total = Counter(
-            "tracefold_worker_projection_transitions_total",
-            "Committed executable arrivals and completions for deterministic projection frontiers.",
-            ("domain", "transition"),
-            registry=self.registry,
-        )
         self.news_story_projection_value = Gauge(
             "tracefold_news_story_projection_value",
             "Aggregate, content-free diagnostics for the current News Story projection.",
@@ -118,8 +106,6 @@ class TelemetryRegistry:
             "database_business",
             "database_control",
             "finite_operation",
-            "model_adapter",
-            "cpu_process",
         ):
             self.resource_active.labels(capability=capability).set(0)
 
@@ -168,25 +154,6 @@ class TelemetryRegistry:
             worker=_label(worker),
             outcome=_label(outcome),
         ).inc()
-
-    def record_projection_deadline_miss(
-        self,
-        worker: str,
-        domain: str,
-    ) -> None:
-        self.projection_deadline_misses_total.labels(
-            worker=_label(worker),
-            domain=_label(domain),
-        ).inc()
-
-    def record_projection_transition(self, domain: str, transition: str, count: int = 1) -> None:
-        normalized_count = int(count)
-        if normalized_count <= 0:
-            return
-        self.projection_transitions_total.labels(
-            domain=_label(domain),
-            transition=_label(transition),
-        ).inc(normalized_count)
 
     def set_news_story_projection_value(self, measure: str, value: int) -> None:
         self.news_story_projection_value.labels(measure=_label(measure)).set(max(0, int(value)))

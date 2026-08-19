@@ -10,7 +10,7 @@ test.beforeEach(({}, testInfo) => {
   test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only layout contract");
 });
 
-test("mobile shell exposes News and Macro navigation around the News landing", async ({ page }) => {
+test("mobile shell exposes News navigation around the News landing", async ({ page }) => {
   await installMockApi(page);
   await page.goto("/");
   await expect(page).toHaveURL(/\/news(?:\?|$)/);
@@ -21,7 +21,7 @@ test("mobile shell exposes News and Macro navigation around the News landing", a
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(navigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
   await expect(navigation.getByRole("link", { name: "News" })).toBeVisible();
-  await expect(navigation.getByRole("link", { name: "Macro" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
   await page.keyboard.press("Escape");
 
   await expect(page.getByRole("heading", { name: "新闻事件流" })).toBeVisible();

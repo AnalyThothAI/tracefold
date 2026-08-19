@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from typing import Any
 
 import pytest
@@ -11,23 +11,15 @@ from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, Qu
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import ServeDatabase, ServeDatabaseBusy, WorkerDatabase
-from tracefold.macro.acquisition import MacroAcquisitionService
-from tracefold.macro.projection import MacroProjectionService
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
-def test_projection_services_default_to_canonical_terminal_owner() -> None:
-    service = MacroProjectionService(db=_RecordingSessionDatabase())
-
-    assert service.worker_name == "macro_projection"
-
-
-def test_background_projection_session_bounds_postgres_parallelism() -> None:
+def test_background_worker_session_bounds_postgres_parallelism() -> None:
     conn = _FakeConnection()
     pool = _FakePool(conn)
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
 
-    with bundle.worker_session("macro_projection"):
+    with bundle.worker_session("news_janitor"):
         pass
 
     configured = _combined_config(conn.executed[0])
@@ -52,7 +44,7 @@ def test_steady_worker_session_default_sql_budget_leaves_native_cleanup_grace() 
     conn = _FakeConnection()
     bundle = WorkerDatabase(worker_pool=_FakePool(conn), telemetry=None)
 
-    with bundle.worker_session("macro_projection"):
+    with bundle.worker_session("news_janitor"):
         pass
 
     assert len(conn.executed) == 1
@@ -67,7 +59,7 @@ def test_worker_session_enforces_transaction_local_timeout() -> None:
     bundle = WorkerDatabase(worker_pool=pool, telemetry=None)
 
     with bundle.worker_session(
-        "macro_projection",
+        "news_janitor",
         transaction_timeout_seconds=0.5,
     ):
         pass
@@ -98,94 +90,6 @@ def test_worker_session_applies_dynamic_policy_in_one_local_round_trip() -> None
         "statement_timeout": "500ms",
         "transaction_timeout": "500ms",
     }
-
-
-def test_projection_transitions_flush_only_after_outer_worker_transaction_commits() -> None:
-    telemetry = _RecordingTelemetry()
-    bundle = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=telemetry)
-
-    with bundle.worker_session("macro_projection") as repos:
-        repos.projection_frontiers._observe("macro", "arrival")
-        repos.projection_frontiers._observe("macro", "arrival")
-        repos.projection_frontiers._observe("macro", "completion")
-        assert telemetry.transitions == []
-
-    assert telemetry.transitions == [
-        ("macro", "arrival", 2),
-        ("macro", "completion", 1),
-    ]
-
-
-def test_projection_transitions_are_discarded_on_outer_or_nested_rollback() -> None:
-    telemetry = _RecordingTelemetry()
-    bundle = WorkerDatabase(worker_pool=_FakePool(_FakeConnection()), telemetry=telemetry)
-
-    with pytest.raises(ValueError, match="outer"), bundle.worker_session("macro_projection") as repos:
-        repos.projection_frontiers._observe("macro", "arrival")
-        raise ValueError("outer")
-
-    with (
-        bundle.worker_session("macro_projection") as repos,
-        pytest.raises(
-            ValueError,
-            match="nested",
-        ),
-        repos.transaction(),
-    ):
-        repos.projection_frontiers._observe("macro", "arrival")
-        raise ValueError("nested")
-
-    assert telemetry.transitions == []
-
-
-def test_projection_maintenance_sessions_do_not_inherit_steady_sql_deadline() -> None:
-    cases = (
-        (
-            MacroProjectionService,
-            {},
-            "macro_maintenance_rebuild",
-        ),
-    )
-    for service_type, kwargs, worker_name in cases:
-        database = _RecordingSessionDatabase()
-        service = service_type(
-            db=database,
-            worker_name=worker_name,
-            **kwargs,
-        )
-
-        service._session()
-
-        assert database.calls == [
-            {
-                "name": worker_name,
-                "statement_timeout_seconds": 120.0,
-                "transaction_timeout_seconds": None,
-            }
-        ]
-
-
-def test_macro_acquisition_uses_one_native_budget_for_statement_and_transaction() -> None:
-    database = _RecordingSessionDatabase()
-    service = object.__new__(MacroAcquisitionService)
-    service.db = database
-    service.worker_name = "macro_acquisition"
-
-    service._session()
-    service._session(timeout_seconds=0.5)
-
-    assert database.calls == [
-        {
-            "name": "macro_acquisition",
-            "statement_timeout_seconds": 5.0,
-            "transaction_timeout_seconds": 5.0,
-        },
-        {
-            "name": "macro_acquisition",
-            "statement_timeout_seconds": 0.5,
-            "transaction_timeout_seconds": 0.5,
-        },
-    ]
 
 
 def test_worker_lock_timeout_is_recoverable_bounded_contention() -> None:
@@ -473,38 +377,3 @@ class _TimedOutApiPool:
 class _TimedOutWorkerPool:
     def getconn(self, timeout: float | None = None) -> _FakeConnection:
         raise PoolTimeout("test")
-
-
-class _RecordingSessionDatabase:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    def worker_session(
-        self,
-        name: str,
-        *,
-        statement_timeout_seconds: float | None = None,
-        transaction_timeout_seconds: float | None = None,
-    ) -> object:
-        self.calls.append(
-            {
-                "name": name,
-                "statement_timeout_seconds": statement_timeout_seconds,
-                "transaction_timeout_seconds": transaction_timeout_seconds,
-            }
-        )
-        return nullcontext()
-
-
-class _RecordingTelemetry:
-    def __init__(self) -> None:
-        self.transitions: list[tuple[str, str, int]] = []
-
-    def record_pool_wait(self, pool: str, wait_ms: float) -> None:
-        return None
-
-    def record_transaction_seconds(self, worker: str, seconds: float) -> None:
-        return None
-
-    def record_projection_transition(self, domain: str, transition: str, count: int) -> None:
-        self.transitions.append((domain, transition, count))

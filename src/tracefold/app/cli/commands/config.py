@@ -4,7 +4,6 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from tracefold.app.runtime_capabilities import macro_document_analysis_runtime
 from tracefold.platform.config.settings import (
     load_settings,
     news_model_availability,
@@ -95,17 +94,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),
                         "hourly_cap": settings.news.push.hourly_cap,
                         "min_interval_seconds": settings.news.push.min_interval_seconds,
-                    },
-                },
-                "macro": {"document_analysis": macro_document_analysis_runtime(settings)},
-                "providers": {
-                    "macro_sources": {
-                        "enabled": settings.providers.macro_sources.enabled,
-                        "fred_enabled": settings.providers.macro_sources.fred_enabled,
-                        "cboe_enabled": settings.providers.macro_sources.cboe_enabled,
-                        "cftc_enabled": settings.providers.macro_sources.cftc_enabled,
-                        "nasdaq_daily_enabled": settings.providers.macro_sources.nasdaq_daily_enabled,
-                        "yfinance_enabled": settings.providers.macro_sources.yfinance_enabled,
                     },
                 },
             },

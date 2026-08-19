@@ -27,7 +27,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 E2E_WS_TOKEN = "e2e-token"
-E2E_MACRO_NOW_MS = "1785247200000"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -188,7 +187,6 @@ def e2e_uvicorn(
         **os.environ,
         "TRACEFOLD_POSTGRES_DSN": e2e_postgres,
         "TRACEFOLD_E2E_WS_TOKEN": e2e_ws_token,
-        "TRACEFOLD_E2E_FIXED_NOW_MS": E2E_MACRO_NOW_MS,
         "TRACEFOLD_E2E_APP_HOME": str(e2e_app_home),
         "TRACEFOLD_FRONTEND_DIST": str(e2e_frontend_dist),
         "PYTHONPATH": str(ROOT / "src"),

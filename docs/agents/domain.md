@@ -5,14 +5,13 @@ backend architecture map.
 
 Before changing business behavior:
 
-1. identify the owning root interface: `tracefold.news` or
-   `tracefold.macro` (Macro's general market observation facts live under
-   `tracefold.macro`; there is no separate market package);
+1. identify the owning root interface: `tracefold.news` (the only business
+   capability since the Macro hard cut, #68);
 2. trace provider input to PostgreSQL fact, durable target or broker queue,
    current row, and public consumer;
 3. preserve the glossary embodied by persisted fact names and public
    contracts;
-4. import another business capability only from its package root;
+4. import a business capability only from its package root;
 5. update the GitHub Issue when the accepted domain decision changes.
 
 Optional root `CONTEXT.md`, `CONTEXT-MAP.md`, or ADR files may be consulted when

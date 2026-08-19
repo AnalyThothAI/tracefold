@@ -37,10 +37,6 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         from .commands import db
 
         return _finish(db.handle_db(args), stdout)
-    if command == "macro":
-        from .commands import macro
-
-        return _finish(macro.handle_macro(args), stdout)
     if command == "news":
         from .commands import news
 

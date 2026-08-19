@@ -106,7 +106,6 @@ class CliTests(unittest.TestCase):
             ["db", "query-audit"],
             ["db", "query-audit", "--analyze"],
             ["ops", "validate-projections", "--sample", "5"],
-            ["ops", "queue-inspect", "--owner", "macro_projection", "--status", "active"],
             ["news", "label", "ev-1", "noise", "--note", "template"],
             ["news", "dlq", "inspect", "--limit", "5"],
             ["news", "replay-decisions", "--hours", "24", "--min-push-magnitude", "3"],
@@ -120,14 +119,11 @@ class CliTests(unittest.TestCase):
         self.assertTrue(parsed[2].analyze)
         self.assertEqual(parsed[3].ops_command, "validate-projections")
         self.assertEqual(parsed[3].sample, 5)
-        self.assertEqual(
-            (parsed[4].ops_command, parsed[4].owner, parsed[4].status), ("queue-inspect", "macro_projection", "active")
-        )
-        self.assertEqual(parsed[5].news_command, "label")
-        self.assertEqual((parsed[5].event_id, parsed[5].label, parsed[5].note), ("ev-1", "noise", "template"))
-        self.assertEqual((parsed[6].news_command, parsed[6].dlq_action, parsed[6].limit), ("dlq", "inspect", 5))
-        self.assertEqual(parsed[7].news_command, "replay-decisions")
-        self.assertEqual((parsed[7].hours, parsed[7].min_push_magnitude), (24, 3))
+        self.assertEqual(parsed[4].news_command, "label")
+        self.assertEqual((parsed[4].event_id, parsed[4].label, parsed[4].note), ("ev-1", "noise", "template"))
+        self.assertEqual((parsed[5].news_command, parsed[5].dlq_action, parsed[5].limit), ("dlq", "inspect", 5))
+        self.assertEqual(parsed[6].news_command, "replay-decisions")
+        self.assertEqual((parsed[6].hours, parsed[6].min_push_magnitude), (24, 3))
 
     def test_cli_rejects_retired_hard_cut_commands(self):
         parser = build_parser()
@@ -211,7 +207,8 @@ class CliTests(unittest.TestCase):
         )
         self.assertNotIn("agent_execution", payload["data"])
         self.assertNotIn("llm", payload["data"])
-        self.assertEqual(set(payload["data"]["providers"]), {"macro_sources"})
+        self.assertNotIn("providers", payload["data"])
+        self.assertNotIn("macro", payload["data"])
         self.assertNotIn("upstream", payload["data"])
         news = payload["data"]["news"]
         self.assertTrue(news["opennews_strategy_ids_configured"])
@@ -274,11 +271,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["news"]["broker"]["url"], "amqp://tracefold:tracefold@rabbitmq:5672/")
         self.assertEqual(settings.news.broker.name_prefix, "")
         self.assertFalse(settings.news.push.enabled)
-        self.assertTrue(settings.providers.macro_sources.enabled)
-        self.assertTrue(settings.providers.macro_sources.nasdaq_daily_enabled)
-        self.assertNotIn("request_timeout_seconds", payload["providers"]["macro_sources"])
-        self.assertEqual(set(payload), {"ws_token", "api", "storage", "llm", "providers", "news"})
-        self.assertEqual(set(payload["providers"]), {"macro_sources"})
+        self.assertNotIn("providers", payload)
+        self.assertNotIn("macro_document_analysis_enabled", payload["llm"])
+        self.assertEqual(set(payload), {"ws_token", "api", "storage", "llm", "news"})
 
     def test_settings_reject_retired_watchlist_notification_and_news_source_config(self):
         retired_payloads = {
@@ -294,7 +289,8 @@ class CliTests(unittest.TestCase):
                     ]
                 }
             },
-            "macro source request timeout": {"providers": {"macro_sources": {"request_timeout_seconds": 15}}},
+            "retired macro sources": {"providers": {"macro_sources": {"enabled": True}}},
+            "retired macro document analysis": {"llm": {"macro_document_analysis_enabled": True}},
             "gmgn stream": {"upstream": {"chains": ["sol"]}},
             "gmgn openapi": {"gmgn": {"api_key": "x"}},
             "binance": {"providers": {"binance": {"enabled": True}}},

@@ -1,6 +1,4 @@
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { macroOverviewFixture } from "@tests/fixtures/macroFixture";
-import { ok } from "@tests/msw/fixtures";
 import { mockAppRoutes } from "@tests/msw/scenarios";
 import { renderAppRoute } from "@tests/render/renderRoute";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -35,31 +33,6 @@ describe("news route", () => {
       expect(apiMock.readApi).toHaveBeenCalledWith(
         "/api/news/feed",
         expect.objectContaining({ params: expect.objectContaining({ q: "BTC ETF" }) }),
-      );
-    });
-  });
-
-  it("routes topbar search from a non-News route to the News feed", async () => {
-    setupAppRouteTest((mock) => {
-      mockAppRoutes(mock);
-      const baseGetApi = mock.getApiImpl;
-      mock.getApiImpl = async (path, options) =>
-        path === "/api/macro/overview" ? ok(macroOverviewFixture()) : baseGetApi(path, options);
-    });
-    renderAppRoute("/macro");
-    await screen.findByRole("heading", { name: "宏观事实总览" });
-
-    const search = screen.getByRole("textbox", { name: "news search" });
-    expect(search).toHaveValue("");
-    fireEvent.change(search, { target: { value: "ETF" } });
-    fireEvent.click(screen.getByRole("button", { name: "检索" }));
-
-    expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
-    expect(search).toHaveValue("ETF");
-    await waitFor(() => {
-      expect(apiMock.readApi).toHaveBeenCalledWith(
-        "/api/news/feed",
-        expect.objectContaining({ params: expect.objectContaining({ q: "ETF" }) }),
       );
     });
   });
