@@ -55,6 +55,8 @@ NEWS_TABLES = (
     "news_deliveries",
     "news_control_state",
     "news_event_labels",
+    "news_market_instruments",
+    "news_symbol_aliases",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (

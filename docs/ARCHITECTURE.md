@@ -266,11 +266,17 @@ functions and keep no name table of their own: grounded assets are the
 provider's grade B+/A/A+ coin tags plus any literal `$TICKER` cashtag (the
 provider already resolved Bitcoin -> BTC, Home Depot -> HD); `CL`/`XYZ-CL` is
 grounded only in energy context and a short stop-list drops English-word tags.
+Behind `news.gate.require_tradeable_assets` (default off) a tag must also name
+an instrument in the venue universe (#75); that existence check removes symbols
+that trade nowhere (`CCXI`, `CARDS`) but is independent of the stop-list, since
+`NEAR`/`ACT`/`W`/`BILL`/`FLOCK` are real listings *and* ordinary English words.
 The Gate does not decide relevance: every Item is a `candidate` unless it is a
-recovery replay, a deterministic `listing` frame, a law-firm template notice
-(strong template phrases always; weak ones only without a grounded asset), an
-under-80 market-telemetry frame, or — behind `news.gate.suppress_low_signal`,
-default off — an ungrounded, non-macro social post under 70. A member that
+recovery replay, a law-firm template notice (strong template phrases always;
+weak ones only without a grounded asset), an under-80 market-telemetry frame,
+or — behind `news.gate.suppress_low_signal`, default off — an ungrounded,
+non-macro social post under 70. A `listing` frame takes the
+`listing_deterministic` admission, which is admitted and judged like a
+candidate (#72). A member that
 joins a suppressed Event with stronger evidence (score >= 80, an A/A+ grounded
 tag, or a different source) re-gates it in place and it publishes once.
 Priority is `high` (AMQP priority 5) for score >= 90, watchlist hits, listing

@@ -49,6 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     news_control.add_argument("--key", default="", help="theme name or symbol for mute/unmute")
     news_control.add_argument("--ttl-minutes", type=_positive_int, default=360, help="mute duration")
+    news_instruments = news_subcommands.add_parser(
+        "instruments", help="tradeable instrument universe: snapshot the venues, or inspect what is stored"
+    )
+    news_instruments.add_argument(
+        "action", choices=("snapshot", "summary", "listings", "resolve"), nargs="?", default="summary"
+    )
+    news_instruments.add_argument("--symbol", default="", help="symbol to resolve (action=resolve)")
+    news_instruments.add_argument("--hours", type=_positive_int, default=168, help="look-back (action=listings)")
+    news_instruments.add_argument("--limit", type=_positive_int, default=50, help="max rows (action=listings)")
     news_label = news_subcommands.add_parser("label", help="record an operator label for one Event (learning plane)")
     news_label.add_argument("event_id")
     news_label.add_argument("label", choices=("good", "noise", "late", "wrong_direction", "dup", "missed"))

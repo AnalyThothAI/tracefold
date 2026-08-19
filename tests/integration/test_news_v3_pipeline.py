@@ -30,6 +30,9 @@ NEWS_TABLES = {
     "news_deliveries",
     "news_control_state",
     "news_event_labels",
+    # #75 instrument universe: a News-owned provider fact table plus its alias map.
+    "news_market_instruments",
+    "news_symbol_aliases",
 }
 
 

@@ -1332,6 +1332,52 @@
         "title": "NewsIngestStatusData",
         "type": "object"
       },
+      "NewsInstrumentUniverse": {
+        "additionalProperties": false,
+        "description": "#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.",
+        "properties": {
+          "base_symbols": {
+            "default": 0,
+            "title": "Base Symbols",
+            "type": "integer"
+          },
+          "by_venue": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Venue",
+            "type": "object"
+          },
+          "delisted": {
+            "default": 0,
+            "title": "Delisted",
+            "type": "integer"
+          },
+          "last_snapshot_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Snapshot Ms"
+          },
+          "trading": {
+            "default": 0,
+            "title": "Trading",
+            "type": "integer"
+          },
+          "venues": {
+            "default": 0,
+            "title": "Venues",
+            "type": "integer"
+          }
+        },
+        "title": "NewsInstrumentUniverse",
+        "type": "object"
+      },
       "NewsLabelData": {
         "additionalProperties": false,
         "properties": {
@@ -1622,6 +1668,9 @@
           },
           "ingest": {
             "$ref": "#/components/schemas/NewsIngestStatusData"
+          },
+          "instruments": {
+            "$ref": "#/components/schemas/NewsInstrumentUniverse"
           },
           "measured_at_ms": {
             "title": "Measured At Ms",

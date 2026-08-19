@@ -47,8 +47,14 @@ PR_TEMPLATE_LEXICON = re.compile(
     r"securities (investigation|class action)|law ?firm|class action|securities fraud lawsuit", re.IGNORECASE
 )
 _HIGH_PRIORITY_MACRO = re.compile(r"yield|rate|fed|fomc|cpi|收益率|加息|降息|美联储", re.IGNORECASE)
-# Provider tags that are English words / organisations, not tradable assets (observed false positives).
-_TICKER_TAG_STOP: Final = frozenset({"OPENAI", "ANTHROPIC", "GENIUS", "ACT", "NEAR", "W", "LIQUID", "SPOT"})
+# Provider tags whose symbol collides with an ordinary English word, so the tag is usually about the word rather
+# than the asset ("near-instant" -> NEAR, "SPOT GOLD" -> SPOT, "the Clarity bill" -> BILL). This is a *collision*
+# list, not a tradability list: all of these except SPOT/CORE/PRIME are real listed contracts (OPENAI and ANTHROPIC
+# trade on binance.perp and hl.vntl), so the instrument universe cannot replace it — the two conditions are
+# independent and both apply (#75).
+_TICKER_TAG_STOP: Final = frozenset(
+    {"OPENAI", "ANTHROPIC", "GENIUS", "ACT", "NEAR", "W", "LIQUID", "SPOT", "CORE", "PRIME", "BILL", "FLOCK"}
+)
 _GROUNDING_GRADES: Final = frozenset({"B+", "A", "A+"})
 _STRONG_GRADES: Final = frozenset({"A", "A+"})
 _LOW_SIGNAL_SCORE: Final = 70.0
@@ -66,6 +72,8 @@ class GateInput:
     watchlist_symbols: frozenset[str] = frozenset()
     raw_first_line: str = ""
     suppress_low_signal: bool = False
+    # #75: the instrument universe, when a snapshot has landed. None disables the existence check entirely.
+    tradeable_symbols: frozenset[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,15 +103,25 @@ def _cashtag_in_text(symbol: str, text: str) -> bool:
 
 
 def grounded_assets(
-    title: str, coins: Sequence[Mapping[str, Any]], *, raw_first_line: str = "", strong_only: bool = False
+    title: str,
+    coins: Sequence[Mapping[str, Any]],
+    *,
+    raw_first_line: str = "",
+    strong_only: bool = False,
+    tradeable_symbols: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     """Provider coins the pipeline treats as grounded: grade B+/A/A+ tags and any literal ``$TICKER`` cashtag.
 
     The provider already resolved names to symbols (Bitcoin -> BTC:A, Home Depot -> HD:A, SafePal -> SFP:A); the
     Gate does not second-guess that with its own name table. ``CL`` (crude) counts only in energy context and a
-    short stop-list drops tags that are English words rather than assets. Triage decides which grounded assets are
+    short stop-list drops tags whose symbol collides with an English word. Triage decides which grounded assets are
     primary; ``decide()`` only trusts primaries that are also grounded. ``strong_only`` keeps A/A+ tags and
     cashtags — the ones allowed to open a preliminary storyline before Triage has spoken.
+
+    ``tradeable_symbols`` (#75) is the instrument universe: when supplied, a tag must also name something listed on
+    a venue. It removes tags that exist nowhere (``CCXI``, ``CHL``, ``CARDS``, ``MAYA``) but deliberately does not
+    replace the collision stop-list above — most of those symbols *are* listed. ``None`` disables the check, which
+    is how every pure caller and a worker whose first snapshot has not landed yet behaves.
     """
 
     text = f"{title} {raw_first_line}".strip()
@@ -115,6 +133,8 @@ def grounded_assets(
         if not symbol:
             continue
         base = _base_symbol(symbol)
+        if tradeable_symbols is not None and base not in tradeable_symbols and symbol.upper() not in tradeable_symbols:
+            continue
         if base == "CL":
             if energy:
                 out.append(symbol)
@@ -144,8 +164,16 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     energy = bool(ENERGY_LEXICON.search(text))
     pr_strong = bool(PR_TEMPLATE_STRONG_LEXICON.search(text))
     pr_template = pr_strong or bool(PR_TEMPLATE_LEXICON.search(text))
-    grounded = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line)
-    strong = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line, strong_only=True)
+    grounded = grounded_assets(
+        title, inp.coins, raw_first_line=inp.raw_first_line, tradeable_symbols=inp.tradeable_symbols
+    )
+    strong = grounded_assets(
+        title,
+        inp.coins,
+        raw_first_line=inp.raw_first_line,
+        strong_only=True,
+        tradeable_symbols=inp.tradeable_symbols,
+    )
     score = float(inp.provider_score) if inp.provider_score is not None else 0.0
     watch_hits = tuple(sorted(s for s in grounded if _base_symbol(s) in inp.watchlist_symbols))
     reasons: list[str] = []

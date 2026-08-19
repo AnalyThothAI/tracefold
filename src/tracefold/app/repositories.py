@@ -6,6 +6,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from tracefold.news.instruments_repository import InstrumentsRepository
 from tracefold.news.repository import NewsRepository
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
@@ -19,6 +20,7 @@ from tracefold.platform.postgres.postgres_client import (
 class RepositorySession:
     conn: Any
     news: NewsRepository
+    instruments: InstrumentsRepository
     transaction_observer: Callable[[float], None] | None = None
 
     def transaction(self) -> AbstractContextManager[None]:
@@ -46,6 +48,7 @@ def repositories_for_connection(
     return RepositorySession(
         conn=conn,
         news=NewsRepository(conn),
+        instruments=InstrumentsRepository(conn),
         transaction_observer=transaction_observer,
     )
 

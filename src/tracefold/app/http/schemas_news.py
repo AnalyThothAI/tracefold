@@ -291,6 +291,17 @@ class NewsReasonCountData(ExactApiSchema):
     count: int
 
 
+class NewsInstrumentUniverse(ExactApiSchema):
+    """#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands."""
+
+    trading: int = 0
+    delisted: int = 0
+    base_symbols: int = 0
+    venues: int = 0
+    last_snapshot_ms: int | None = None
+    by_venue: dict[str, int] = Field(default_factory=dict)
+
+
 class NewsStatusData(ExactApiSchema):
     state: Literal["ready", "degraded", "warming", "unavailable"]
     workers_state: str | None = None
@@ -303,6 +314,7 @@ class NewsStatusData(ExactApiSchema):
     delivery: NewsDeliveryStatusData
     control: NewsControlStateData
     watchlist: list[str] = Field(default_factory=list)
+    instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
     measured_at_ms: int
 
 

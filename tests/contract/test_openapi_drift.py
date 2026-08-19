@@ -182,6 +182,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "delivery",
         "control",
         "watchlist",
+        "instruments",
         "measured_at_ms",
     }
     state = components["NewsStatusData"]["properties"]["state"]
