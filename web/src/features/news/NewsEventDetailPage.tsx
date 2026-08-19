@@ -6,6 +6,7 @@ import { useState } from "react";
 
 import "./news.css";
 import "./newsDetail.css";
+import { NewsDirectionChip } from "./NewsDirectionChip";
 import { NewsOutcomeBadge } from "./NewsOutcomeBadge";
 import { NewsSectionTabs } from "./NewsSectionTabs";
 import {
@@ -23,6 +24,7 @@ import {
   type NewsEventMember,
   type NewsLabel,
   type NewsTimelineStep,
+  type NewsTriageSummary,
   type NewsVerdict,
   useNewsEventWithToken,
 } from "./useNewsPage";
@@ -52,20 +54,14 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
 }
 
 function EventDocument({ detail }: { detail: NewsEventDetail }) {
-  const { event, outcome } = detail;
-  const triage = detail.verdicts.filter((verdict) => verdict.stage === "triage").at(-1);
-  const verdict = (triage?.verdict ?? {}) as {
-    headline_zh?: string;
-    title_zh?: string;
-    why_zh?: string;
-  };
-  const headline = verdict.headline_zh?.trim() || verdict.title_zh?.trim() || event.leader_title;
-  const translated = verdict.title_zh?.trim();
+  const { event, outcome, triage } = detail;
+  const headline = triage?.headline_zh?.trim() || triage?.title_zh?.trim() || event.leader_title;
+  const translated = triage?.title_zh?.trim();
   const url = validExternalUrl(event.leader_url);
   const assets = displayAssets(event.grounded_assets ?? []);
   return (
     <>
-      <article className="news-detail-hero">
+      <article className="news-detail-hero" data-direction={triage?.direction ?? undefined}>
         <div className="news-detail-hero-top">
           <NewsOutcomeBadge detailed outcome={outcome} size="lg" />
           <time
@@ -80,7 +76,14 @@ function EventDocument({ detail }: { detail: NewsEventDetail }) {
         {translated && translated !== headline ? (
           <p className="news-detail-translated">{translated}</p>
         ) : null}
-        {verdict.why_zh ? <p className="news-detail-why">{verdict.why_zh}</p> : null}
+        {triage ? (
+          <div aria-label="模型判定" className="news-detail-verdict">
+            <NewsDirectionChip size="lg" triage={triage} />
+          </div>
+        ) : null}
+        {triage?.why_zh ? <p className="news-detail-why">{triage.why_zh}</p> : null}
+        {triage ? <VerdictFacts triage={triage} /> : null}
+        {triage ? <ModelIntent triage={triage} /> : null}
         <p className="news-detail-original">
           <span className="news-detail-original-label">原文</span>
           <span>{event.leader_title}</span>
@@ -130,6 +133,71 @@ function EventDocument({ detail }: { detail: NewsEventDetail }) {
 
       <TechnicalDetails detail={detail} />
     </>
+  );
+}
+
+/**
+ * The rest of the model's judgment, in the server's own words. A cell is omitted rather than rendered as a dash
+ * when the server has nothing for it, so a macro Event with no assets does not show an empty row.
+ */
+function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
+  const assets = triage.assets ?? [];
+  const primary = assets.filter((asset) => asset.role === "primary").map((a) => a.symbol);
+  const mentioned = assets.filter((asset) => asset.role !== "primary").map((a) => a.symbol);
+  const cells: Array<[string, string]> = [
+    ["类型", triage.event_type_zh],
+    ["范围", triage.scope_zh],
+    ["把握", triage.confidence == null ? "" : `${Math.round(triage.confidence * 100)}%`],
+    ["新颖度", triage.novelty_zh],
+    ["可操作", triage.actionable == null ? "" : triage.actionable ? "是" : "否"],
+    ["受众", triage.audience_zh],
+  ];
+  const filled = cells.filter(([, value]) => Boolean(value));
+  if (!filled.length && !primary.length && !mentioned.length) return null;
+  return (
+    <>
+      <dl aria-label="判定明细" className="news-detail-grid-facts">
+        {filled.map(([label, value]) => (
+          <div className="news-detail-fact" key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {primary.length || mentioned.length ? (
+        <p className="news-detail-intent">
+          {primary.length ? (
+            <span className="news-detail-asset-group">
+              <small>主要标的</small>
+              {primary.map((symbol) => (
+                <code key={symbol}>{symbol}</code>
+              ))}
+            </span>
+          ) : null}
+          {mentioned.length ? (
+            <span className="news-detail-asset-group">
+              <small>提及</small>
+              {mentioned.map((symbol) => (
+                <code key={symbol}>{symbol}</code>
+              ))}
+            </span>
+          ) : null}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/** Shown only when the deterministic policy overruled the model — otherwise the outcome badge already said it. */
+function ModelIntent({ triage }: { triage: NewsTriageSummary }) {
+  if (!triage.model_decision || triage.model_decision === triage.final_decision) return null;
+  return (
+    <p className="news-detail-intent">
+      <span>模型建议</span>
+      <b>{triage.model_decision_zh || triage.model_decision}</b>
+      <span>→ 最终</span>
+      <b>{triage.decision_zh || triage.final_decision}</b>
+    </p>
   );
 }
 

@@ -2,7 +2,10 @@
   .news-panel.news-detail-shell {
     grid-template-rows: none;
     grid-auto-rows: max-content;
+    /* A reading measure, centred in the column. The sidebar used to absorb the leftover width; it defaults
+       collapsed since #70, so without this the case page hugs the left edge on a wide display. */
     max-width: 68rem;
+    margin-inline: auto;
   }
 
   .news-detail-toolbar {
@@ -14,11 +17,17 @@
   }
 
   /* ------------------------------------------------------------------ hero */
+  /*
+   * The hero carries the market judgment. A left rail in the direction colour makes 利多 / 利空 readable before
+   * any text is parsed; neutral and unclear stay uncoloured on purpose (~42% of live verdicts are neutral, and
+   * colouring them would drown the ones that matter).
+   */
   .news-detail-hero {
     display: grid;
     gap: 0.55rem;
     padding: 1.1rem 1.25rem 1.2rem;
     border: 1px solid var(--border-subtle);
+    border-left: 3px solid var(--news-direction-rail, var(--border-subtle));
     border-radius: var(--radius-lg);
     background:
       radial-gradient(
@@ -354,5 +363,83 @@
     .news-detail-hero {
       padding: 0.9rem 0.95rem 1rem;
     }
+  }
+
+  /* ------------------------------------------------------------- verdict */
+  .news-detail-hero[data-direction="bullish"] {
+    --news-direction-rail: var(--signal-positive);
+  }
+
+  .news-detail-hero[data-direction="bearish"] {
+    --news-direction-rail: var(--signal-negative);
+  }
+
+  .news-detail-verdict {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.9rem;
+    align-items: center;
+    margin: 0.15rem 0 0;
+  }
+
+  .news-detail-grid-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+    gap: 0.5rem;
+    margin: 0.35rem 0 0;
+    padding: 0;
+  }
+
+  .news-detail-fact {
+    display: grid;
+    gap: 0.15rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--surface-raised) 55%, transparent);
+  }
+
+  .news-detail-fact dt {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 0.68rem;
+    letter-spacing: 0.02em;
+  }
+
+  .news-detail-fact dd {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  /* The model asked for one thing and the policy did another — the single most useful line for an operator. */
+  .news-detail-intent {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: baseline;
+    margin: 0.1rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+  }
+
+  .news-detail-intent b {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .news-detail-asset-group {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    align-items: center;
+  }
+
+  .news-detail-asset-group > small {
+    color: var(--text-subtle);
+    font-size: 0.7rem;
   }
 }

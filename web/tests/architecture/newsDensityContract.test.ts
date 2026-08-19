@@ -14,10 +14,15 @@ describe("News console contract", () => {
   it("renders exactly one outcome badge per Event row and clamps the headline", () => {
     const row = readSource("src/features/news/NewsEventRow.tsx");
     const rowCss = readSource("src/features/news/newsEventRow.css");
+    const chip = readSource("src/features/news/NewsDirectionChip.tsx");
 
     expect(row.match(/<NewsOutcomeBadge /g)).toHaveLength(1);
     expect(row).toContain("event.outcome");
-    expect(row).toContain("triage.direction_zh");
+    // Direction is a toned chip of its own so a scan separates 利多 from 利空; it still renders the
+    // server's word, never a frontend translation.
+    expect(row.match(/<NewsDirectionChip /g)).toHaveLength(1);
+    expect(chip).toContain("triage.direction_zh");
+    expect(chip).toContain("triage.magnitude_zh");
     expect(row).toContain("triage.event_type_zh");
     // Bare rule / admission / decision keys must never be rendered as row copy.
     for (const banned of [

@@ -5,8 +5,19 @@ import {
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
-async function expectSidebarRouteChange(page: Page, routeName: string, expectedPath: string) {
+/**
+ * The sidebar is offcanvas and starts collapsed on every width (#70), so desktop enters the route tree through
+ * the same topbar trigger as tablet and mobile.
+ */
+async function openSidebar(page: Page) {
+  await page.getByRole("button", { name: "Toggle Sidebar" }).click();
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
+  await expect(primaryNavigation).toBeVisible();
+  return primaryNavigation;
+}
+
+async function expectSidebarRouteChange(page: Page, routeName: string, expectedPath: string) {
+  const primaryNavigation = await openSidebar(page);
   await Promise.all([
     page.waitForURL((url) => url.pathname === expectedPath, { timeout: 2_000 }),
     primaryNavigation.getByRole("link", { name: routeName }).click({ noWaitAfter: true }),
@@ -18,26 +29,31 @@ test.describe("desktop sidebar navigation", () => {
     test.skip(!testInfo.project.name.startsWith("desktop-"), "desktop-only sidebar contract");
   });
 
-  test("shows dense primary navigation and a clickable rail toggle", async ({ page }) => {
+  test("starts collapsed and opens the single primary destination from the topbar", async ({
+    page,
+  }) => {
     await installMockApi(page);
     await page.goto("/");
 
-    const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-    await expect(primaryNavigation).toBeVisible();
+    const sidebarRoot = page.locator('[data-slot="sidebar"]');
+    await expect(sidebarRoot).toHaveAttribute("data-state", "collapsed");
+    // Desktop offcanvas leaves the nav in the DOM, so assert the area it occupies rather than CSS visibility:
+    // either it has no layout box at all, or it sits entirely left of the viewport.
+    const navBox = await page.getByRole("navigation", { name: "Primary navigation" }).boundingBox();
+    expect(navBox === null || navBox.x + navBox.width <= 0).toBe(true);
+    // The point of the change: the route column starts at the left edge.
+    const column = await page.locator(".center-column").boundingBox();
+    expect(column?.x ?? 999).toBeLessThanOrEqual(1);
 
+    const primaryNavigation = await openSidebar(page);
+    await expect(sidebarRoot).toHaveAttribute("data-state", "expanded");
     await expect(primaryNavigation.getByRole("link", { name: "News" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link")).toHaveCount(1);
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 
-    const sidebarRoot = page.locator('[data-slot="sidebar"]');
-    const railToggle = page.locator('[data-sidebar="rail"]');
-    await expect(railToggle).toBeVisible();
-    await railToggle.click();
+    await page.getByRole("button", { name: "Toggle Sidebar" }).click();
     await expect(sidebarRoot).toHaveAttribute("data-state", "collapsed");
-    await expect(railToggle).toBeVisible();
-    await railToggle.click();
-    await expect(sidebarRoot).toHaveAttribute("data-state", "expanded");
 
     await expectNoDocumentHorizontalOverflow(page);
     await expectNoUnhandledApiRequests(page);

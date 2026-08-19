@@ -160,6 +160,9 @@ DIRECTION_ZH: Final[dict[str, str]] = {
 }
 MAGNITUDE_ZH: Final[dict[int, str]] = {0: "影响很小", 1: "影响有限", 2: "影响明显", 3: "影响重大"}
 SCOPE_ZH: Final[dict[str, str]] = {"macro": "宏观", "sector": "板块", "single_name": "个别标的"}
+# The model's novelty judgment against the told ledger (issue #61) and the reader group the card is for.
+NOVELTY_ZH: Final[dict[str, str]] = {"new_fact": "新事实", "progression": "新进展", "restatement": "复述"}
+AUDIENCE_ZH: Final[dict[str, str]] = {"crypto": "加密", "us_equity": "美股", "macro": "宏观", "none": "无"}
 PRIORITY_ZH: Final[dict[str, str]] = {"high": "高优先级", "normal": "普通"}
 DECISION_ZH: Final[dict[str, str]] = {
     "push": "推送",
@@ -279,6 +282,14 @@ def decision_zh(value: str | None) -> str:
     return DECISION_ZH.get(str(value or ""), str(value or ""))
 
 
+def novelty_zh(value: str | None) -> str:
+    return NOVELTY_ZH.get(str(value or ""), str(value or ""))
+
+
+def audience_zh(value: str | None) -> str:
+    return AUDIENCE_ZH.get(str(value or ""), str(value or ""))
+
+
 # ------------------------------------------------------------------------------------------------ outcome
 _HELD_DECISIONS: Final = frozenset({"drop", "throttled", "degraded"})
 _PUSH_DECISIONS: Final = frozenset({"push", "escalate"})
@@ -343,6 +354,7 @@ def _outcome(kind: OutcomeKind, text_zh: str, reason_zh: str) -> Outcome:
 
 __all__ = [
     "ADMISSION_ZH",
+    "AUDIENCE_ZH",
     "DECISION_ZH",
     "DELIVERY_ERROR_ZH",
     "DIRECTION_ZH",
@@ -351,6 +363,7 @@ __all__ = [
     "FAMILY_ZH",
     "INCIDENT_CAUSE_ZH",
     "MAGNITUDE_ZH",
+    "NOVELTY_ZH",
     "OUTCOME_GROUP",
     "OUTCOME_VERSION",
     "OVERRIDE_RULE_ZH",
@@ -360,6 +373,7 @@ __all__ = [
     "Outcome",
     "OutcomeKind",
     "admission_zh",
+    "audience_zh",
     "decision_zh",
     "delivery_error_zh",
     "direction_zh",
@@ -369,6 +383,7 @@ __all__ = [
     "family_zh",
     "incident_cause_zh",
     "magnitude_zh",
+    "novelty_zh",
     "override_rule_zh",
     "scope_zh",
     "storyline_key_zh",

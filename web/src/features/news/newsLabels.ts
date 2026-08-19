@@ -31,6 +31,33 @@ export function outcomeTone(kind: NewsOutcomeKind): Tone {
   return OUTCOME_TONE[kind] ?? "neutral";
 }
 
+/**
+ * Market direction → visual tone and a colour-independent arrow. Both maps are UI affordances: the Chinese
+ * word itself always comes from the server as `direction_zh`. `neutral` and `unclear` intentionally resolve to
+ * the quiet tone so the ~42% of neutral verdicts do not drown the red/green ones.
+ */
+const DIRECTION_TONE: Record<string, Tone> = {
+  bullish: "positive",
+  bearish: "negative",
+  neutral: "neutral",
+  unclear: "neutral",
+};
+
+const DIRECTION_GLYPH: Record<string, string> = {
+  bullish: "\u25b2",
+  bearish: "\u25bc",
+  neutral: "\u2014",
+  unclear: "?",
+};
+
+export function directionTone(direction: string | null | undefined): Tone {
+  return DIRECTION_TONE[direction ?? ""] ?? "neutral";
+}
+
+export function directionGlyph(direction: string | null | undefined): string {
+  return DIRECTION_GLYPH[direction ?? ""] ?? "\u2014";
+}
+
 const OUTCOME_TAB_LABELS: Record<NewsFeedOutcome, string> = {
   pushed: "已推送",
   held: "被拦截",

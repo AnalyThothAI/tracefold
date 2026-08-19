@@ -681,6 +681,16 @@
             "title": "Timeline",
             "type": "array"
           },
+          "triage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsTriageSummaryData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "verdicts": {
             "items": {
               "$ref": "#/components/schemas/NewsVerdictData"
@@ -1711,9 +1721,79 @@
         "title": "NewsTimelineStepData",
         "type": "object"
       },
-      "NewsTriageSummaryData": {
+      "NewsTriageAssetData": {
         "additionalProperties": false,
         "properties": {
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "role"
+        ],
+        "title": "NewsTriageAssetData",
+        "type": "object"
+      },
+      "NewsTriageSummaryData": {
+        "additionalProperties": false,
+        "description": "The reader-facing view of one Triage verdict. Every `*_zh` is server-owned copy; the raw enum stays\nbeside it so the browser can map it to a visual tone without owning a vocabulary table.",
+        "properties": {
+          "actionable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actionable"
+          },
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/NewsTriageAssetData"
+            },
+            "title": "Assets",
+            "type": "array"
+          },
+          "audience": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience"
+          },
+          "audience_zh": {
+            "default": "",
+            "title": "Audience Zh",
+            "type": "string"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "decision_zh": {
+            "default": "",
+            "title": "Decision Zh",
+            "type": "string"
+          },
           "degraded": {
             "default": false,
             "title": "Degraded",
@@ -1793,6 +1873,38 @@
             "title": "Magnitude Zh",
             "type": "string"
           },
+          "model_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Decision"
+          },
+          "model_decision_zh": {
+            "default": "",
+            "title": "Model Decision Zh",
+            "type": "string"
+          },
+          "novelty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Novelty"
+          },
+          "novelty_zh": {
+            "default": "",
+            "title": "Novelty Zh",
+            "type": "string"
+          },
           "override_rule": {
             "anyOf": [
               {
@@ -1815,6 +1927,11 @@
             ],
             "title": "Scope"
           },
+          "scope_zh": {
+            "default": "",
+            "title": "Scope Zh",
+            "type": "string"
+          },
           "throttled_by": {
             "anyOf": [
               {
@@ -1836,6 +1953,17 @@
               }
             ],
             "title": "Title Zh"
+          },
+          "why_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Zh"
           }
         },
         "required": [

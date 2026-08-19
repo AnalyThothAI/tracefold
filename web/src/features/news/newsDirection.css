@@ -1,0 +1,63 @@
+@layer app.features {
+  /*
+   * Market direction is a different axis from the pipeline outcome, so it gets a different weight in the same
+   * hue family: the outcome badge stays an outlined pill with a dot, direction is a solid fill with an arrow.
+   * The arrow carries the meaning on its own, so the chip never depends on colour alone.
+   *
+   * `neutral` is ~42% of live verdicts. A solid grey block on half the feed would drown the red/green it exists
+   * to highlight, so neutral and unclear deliberately drop to quiet text.
+   */
+  .news-direction {
+    display: inline-flex;
+    gap: 0.3rem;
+    align-items: center;
+    min-height: 1.5rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-subtle);
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .news-direction[data-size="lg"] {
+    min-height: 1.9rem;
+    padding: 0.2rem 0.7rem;
+    font-size: 0.9rem;
+  }
+
+  .news-direction[data-tone="positive"],
+  .news-direction[data-tone="negative"] {
+    background: var(--news-direction-fill);
+    color: var(--surface-canvas);
+  }
+
+  .news-direction[data-tone="positive"] {
+    --news-direction-fill: var(--signal-positive);
+  }
+
+  .news-direction[data-tone="negative"] {
+    --news-direction-fill: var(--signal-negative);
+  }
+
+  .news-direction-glyph {
+    font-size: 0.85em;
+    line-height: 1;
+  }
+
+  /* Magnitude rides beside the direction as its qualifier, never as a second coloured badge. */
+  .news-direction-strength {
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+    font-weight: 500;
+  }
+
+  .news-direction-pair {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+  }
+}

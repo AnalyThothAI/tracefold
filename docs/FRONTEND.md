@@ -46,7 +46,8 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   type, radius, focus, and shell token contract; production code must not add a
   parallel theme or compatibility alias. Stable routes declare one of two
   information archetypes with `data-page-archetype`: `scan` for the News
-  Event feed and News status; `case` for News Event detail. The archetype
+  Event feed and News status; `case` for News Event detail, whose hero leads with
+  the model's market direction. The archetype
   governs hierarchy and density, never data ownership or business inference.
 - **Data ownership.** Feature-owned API hooks, page hooks, and controller hooks own server reads/writes. Route modules and presentational UI components consume those feature hooks and must not call `useQuery`, `useMutation`, `useInfiniteQuery`, `getApi`, `postApi`, or `queryClient.set*` directly. `frontendDataOwnership.test.ts` enforces this boundary for `web/src/routes` and `web/src/features/*/ui`.
 - **URL state.** Shareable route options (News feed `q`/filters/sort) live in
@@ -164,7 +165,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
 - **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, and the shadcn sidebar composition (`SidebarProvider`, `AppSidebar`, `SidebarInset`, and `SidebarTrigger`) split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Mobile and tablet route navigation uses the shadcn `Sheet` drawer opened from the topbar trigger.
 - **Route controls.** Shells do not render route-specific filter controls. News controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, the main route scroll container, and the `/` search hotkey.
-- **Shell navigation.** Desktop users navigate through the collapsible shadcn `AppSidebar`; tablet and mobile users open the same route tree through the topbar `SidebarTrigger` and shadcn drawer. The primary route tree contains exactly News; `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** The `AppSidebar` is `collapsible="offcanvas"` and starts collapsed on every width (#70), so the topbar `SidebarTrigger` is the single entry to the route tree — desktop, tablet, and mobile alike. There is no rail: it duplicated the trigger and claimed the same accessible name. `defaultOpen={false}` means every load starts collapsed; `shared/ui/sidebar.tsx` writes the `sidebar_state` cookie but never reads it, so a toggle is per-page and not remembered. Route surfaces get the full column width, and `.news-detail-shell` centres its reading measure rather than hugging the left edge. The primary route tree contains exactly News; `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
@@ -224,10 +225,15 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    shows the health pill and the 24 h funnel strip; every row shows time,
    headline, meta line, and exactly one outcome badge with Chinese copy — no
    rule, admission, decision, or score keys — and held rows show their
-   `reason_zh`. On `/news/events/:eventId`, verify hero (outcome + reason,
-   headline, why), timeline, 同类报道 / 运营标注, and a collapsed 技术详情 appear
-   in that order with no market-mark table, and the back link returns to
-   `/news`. Verify `/news/status` shows four coloured health cards, the overall
+   `reason_zh`, and every row with a verdict shows the direction chip (利多 filled
+   green / 利空 filled red / 中性 quiet text, each with its own arrow). On
+   `/news/events/:eventId`, verify hero (outcome + reason, headline, direction +
+   magnitude, why, the 判定 grid of 类型/范围/把握/新颖度/可操作/受众, 主要标的 vs 提及),
+   timeline, 同类报道 / 运营标注, and a collapsed 技术详情 appear in that order with
+   no market-mark table; the hero's left rail carries the direction colour and a
+   neutral verdict leaves it uncoloured; an Event with no Triage verdict renders
+   the hero without the 判定 block instead of empty cells; and the back link
+   returns to `/news`. Verify `/news/status` shows four coloured health cards, the overall
    pill, the funnel, Chinese reason bars, read-only control (mute table),
    Strategy counts (never IDs), a collapsed 技术指标, and no operator controls.
    Confirm about two News rows remain scannable at 390px and at least four at

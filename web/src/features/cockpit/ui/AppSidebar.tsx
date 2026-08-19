@@ -8,7 +8,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarRail,
   useSidebar,
 } from "@shared/ui/sidebar";
 import { NavLink, useMatch } from "react-router-dom";
@@ -21,7 +20,7 @@ export function AppSidebar() {
     <Sidebar
       aria-label="Application sidebar"
       className="cockpit-app-sidebar"
-      collapsible="icon"
+      collapsible="offcanvas"
       variant="sidebar"
     >
       <SidebarHeader className="cockpit-app-sidebar-header">
@@ -53,7 +52,6 @@ export function AppSidebar() {
           ))}
         </nav>
       </SidebarContent>
-      <SidebarRail className="cockpit-app-sidebar-rail" />
     </Sidebar>
   );
 }
