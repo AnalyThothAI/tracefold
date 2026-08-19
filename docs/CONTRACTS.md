@@ -258,7 +258,7 @@ model telemetry). `triage` is the only
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v2`,
-`news_triage_prompt_v7`, `news_triage_policy_v3`, and `news_delivery_card_v9`.
+`news_triage_prompt_v8`, `news_triage_policy_v3`, and `news_delivery_card_v9`.
 `news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
 `min_watchlist_magnitude`, `unclear_push_min_magnitude`,
 `unclear_push_event_types`, `theme_cap_4h`, `storyline_throttle`,

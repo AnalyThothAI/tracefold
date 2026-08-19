@@ -350,7 +350,23 @@ console-only `title_zh` (the faithful Chinese title), and an `audience`
 and `restates` (the ledger index a restatement points at; -1 otherwise) —
 the reader-facing memory Triage has (issue #61): dedup is byte/word-level,
 novelty is the semantic last line against the same fact told again from
-another outlet or under another storyline key. `decide()` owns the final
+another outlet or under another storyline key. Magnitude is calibrated in the
+prompt, not in code: a listed company's or token issuer's *own product update*
+(a new product or model, its launch date, a new production line / plant /
+capacity commitment, a new business line, a pricing change) is magnitude 2 —
+a product update moves the name by itself and is never filed as "routine"
+because the amount looks small next to the company — and a product launch or
+capacity commitment is bullish for that name unless the text says delayed,
+cancelled, recalled or below plan (prompt v8); magnitude 1 is reserved for
+milestones, partnership recaps, pilots and integrations that ship nothing new,
+testnets, developer tools, re-announcements and "on track" reaffirmations.
+`actionable` is defined there too — a trader could open, close or hedge a
+position now: the named listed stock or token on any exchange (a listed
+company's product update is actionable for its stock even without a tagged
+ticker) or a clear risk-asset direction; false for private or unlisted
+subjects with no listed proxy — because `decide()` honours model push intent
+only when it is actionable.
+`decide()` owns the final
 decision under a `DecidePolicy` whose defaults are the live policy and whose
 values come from `news.policy`: mute -> drop; noise -> drop; a *grounded*
 restatement (the model cites a ledger entry it was shown and the direction did
