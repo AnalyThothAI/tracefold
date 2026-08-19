@@ -29,6 +29,11 @@
       padding-bottom: 0;
     }
 
+    /* The home indicator and the WeChat bottom bar both sit over the last rows without this. */
+    .center-column {
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
     .cockpit-main {
       height: 100dvh;
     }

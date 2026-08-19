@@ -12,10 +12,19 @@ import type {
  * server enums to visual tone.
  */
 
-export type Tone = "positive" | "info" | "caution" | "negative" | "neutral";
+/**
+ * Two colour axes that never share a hue (#74):
+ *
+ *   `Direction` — the market call. Red is 利多 and green is 利空, the mainland convention.
+ *   `Tone`      — where the Event got to in the pipeline. Blue / amber / grey, deliberately never red or green,
+ *                 because "已推送" is a completed step rather than a market opinion and would otherwise read as
+ *                 a second, contradictory 利多 / 利空.
+ */
+export type Tone = "done" | "info" | "caution" | "alert" | "neutral";
+export type Direction = "bullish" | "bearish" | "flat";
 
 const OUTCOME_TONE: Record<NewsOutcomeKind, Tone> = {
-  delivered: "positive",
+  delivered: "done",
   pending_delivery: "info",
   queued_triage: "info",
   queued_publish: "info",
@@ -23,24 +32,33 @@ const OUTCOME_TONE: Record<NewsOutcomeKind, Tone> = {
   dropped: "neutral",
   held_gate: "neutral",
   held_recovery: "neutral",
-  degraded_dropped: "negative",
-  delivery_failed: "negative",
+  degraded_dropped: "alert",
+  delivery_failed: "alert",
 };
 
 export function outcomeTone(kind: NewsOutcomeKind): Tone {
   return OUTCOME_TONE[kind] ?? "neutral";
 }
 
+const HEALTH_TONE: Record<NewsHealthLevel, Tone> = {
+  ok: "done",
+  warn: "caution",
+  bad: "alert",
+  off: "neutral",
+};
+
 /**
- * Market direction → visual tone and a colour-independent arrow. Both maps are UI affordances: the Chinese
- * word itself always comes from the server as `direction_zh`. `neutral` and `unclear` intentionally resolve to
- * the quiet tone so the ~42% of neutral verdicts do not drown the red/green ones.
+ * Market direction → its own axis plus a colour-independent arrow. The Chinese word always comes from the
+ * server as `direction_zh`; red and green only reinforce it, and the glyph carries the same meaning for a
+ * reader who cannot separate the two hues (they sit at nearly equal luminance by necessity — both have to
+ * clear 4.5:1 on white). `neutral` and `unclear` resolve to `flat` so the ~42% of neutral verdicts stay quiet
+ * and do not drown the ones that moved.
  */
-const DIRECTION_TONE: Record<string, Tone> = {
-  bullish: "positive",
-  bearish: "negative",
-  neutral: "neutral",
-  unclear: "neutral",
+const DIRECTION: Record<string, Direction> = {
+  bullish: "bullish",
+  bearish: "bearish",
+  neutral: "flat",
+  unclear: "flat",
 };
 
 const DIRECTION_GLYPH: Record<string, string> = {
@@ -50,8 +68,8 @@ const DIRECTION_GLYPH: Record<string, string> = {
   unclear: "?",
 };
 
-export function directionTone(direction: string | null | undefined): Tone {
-  return DIRECTION_TONE[direction ?? ""] ?? "neutral";
+export function directionTone(direction: string | null | undefined): Direction {
+  return DIRECTION[direction ?? ""] ?? "flat";
 }
 
 export function directionGlyph(direction: string | null | undefined): string {
@@ -80,10 +98,7 @@ export function healthLevelLabel(level: NewsHealthLevel): string {
 }
 
 export function healthTone(level: NewsHealthLevel): Tone {
-  if (level === "ok") return "positive";
-  if (level === "warn") return "caution";
-  if (level === "bad") return "negative";
-  return "neutral";
+  return HEALTH_TONE[level] ?? "neutral";
 }
 
 const HEALTH_ITEM_TITLES = {
@@ -117,7 +132,7 @@ const TIMELINE_STAGE_TONE: Record<NewsTimelineStep["stage"], Tone> = {
   gate: "neutral",
   triage: "info",
   decide: "info",
-  delivery: "positive",
+  delivery: "done",
 };
 
 export function timelineStageTone(stage: NewsTimelineStep["stage"]): Tone {

@@ -1,0 +1,26 @@
+@layer app.primitives {
+  /* Raw key/value evidence — the technical-details and timeline field dumps. Monospace values so hashes and
+     ids align; the container is the caller's, this only owns the pair layout. */
+  .ui-kv {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.25rem 0.9rem;
+    margin: 0;
+    font-size: 0.74rem;
+  }
+
+  .ui-kv-row {
+    display: contents;
+  }
+
+  .ui-kv dt {
+    color: var(--text-muted);
+  }
+
+  .ui-kv dd {
+    margin: 0;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+}

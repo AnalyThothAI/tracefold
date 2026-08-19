@@ -6,8 +6,7 @@
   .cockpit-app-sidebar [data-sidebar="sidebar"],
   [data-sidebar="sidebar"][data-mobile="true"] {
     border-color: var(--border-subtle);
-    background:
-      linear-gradient(180deg, rgba(95, 211, 255, 0.035), transparent 180px), var(--surface-sidebar);
+    background: var(--surface-sidebar);
   }
 
   .cockpit-app-sidebar-header {

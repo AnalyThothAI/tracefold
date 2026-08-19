@@ -5,7 +5,11 @@
     <style>
       @layer properties, theme, base, components, utilities, app.base, app.primitives, app.shell, app.features, app.overrides;
     </style>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- Colours the WeChat / Safari chrome to match the canvas instead of a default white or black bar. -->
+    <meta name="theme-color" content="#f4f6f8" />
+    <!-- Wire copy is full of figures; iOS otherwise turns them into tel: links inside the feed. -->
+    <meta name="format-detection" content="telephone=no" />
     <link rel="icon" href="/favicon.svg" />
     <title>Tracefold</title>
   </head>

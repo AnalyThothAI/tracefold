@@ -1,91 +1,119 @@
 @layer properties, theme, base, components, utilities, app.base, app.primitives, app.shell, app.features, app.overrides;
 
+/*
+ * Tracefold console theme — light (#74).
+ *
+ * The product is a Chinese-language reading surface: a headline, one why sentence, a few chips. Han glyphs carry
+ * far more strokes per em than Latin, and light-on-dark blooms them at the small sizes this console uses, so the
+ * ground is light and the ink is near-black. Surfaces separate by border and shadow, not by lightening.
+ *
+ * Colour carries exactly two axes and they never share a hue:
+ *
+ *   market direction — red = 利多, green = 利空 (the mainland convention this console is read in)
+ *   pipeline outcome — blue / amber / grey, never red or green
+ *
+ * Before #74 both axes used red and green, so a delivered 利空 card showed one green for "sent" and another for
+ * "bearish", and a failed delivery looked bullish. Reserving red and green for direction is what makes a scan
+ * down the feed mean something.
+ */
+
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  /* Surfaces */
-  --surface-canvas: #060a11;
-  --surface-root: #0a0f18;
-  --surface-sidebar: #080d15;
-  --surface-panel: #101722;
-  --surface-raised: #151e2c;
-  --surface-hover: #1b2636;
+  /* Surfaces — the canvas is a hair cool so a full-width white column does not glare. */
+  --surface-canvas: #f4f6f8;
+  --surface-root: #ffffff;
+  --surface-sidebar: #fbfcfd;
+  --surface-panel: #ffffff;
+  --surface-raised: #f7f9fb;
+  --surface-hover: #eef1f5;
 
-  /* Typography */
-  --text-primary: #f4f7fb;
-  --text-secondary: #d0d8e4;
-  --text-muted: #8f9bae;
-  --text-subtle: #5f6b7c;
+  /* Typography — every step clears 4.5:1 on #ffffff (18.5 / 8.4 / 5.9 / 4.6), so even a field label is
+     ordinary readable text rather than decoration. */
+  --text-primary: #101418;
+  --text-secondary: #454e5a;
+  --text-muted: #5c6572;
+  --text-subtle: #6d7684;
 
   /* Structure */
-  --border-faint: #182230;
-  --border-subtle: #243142;
-  --border-strong: #35465d;
+  --border-faint: #eff1f4;
+  --border-subtle: #e3e7ec;
+  --border-strong: #c9d0d9;
 
   /* Product accent */
-  --accent-primary: #5fd3ff;
-  --accent-soft: rgba(95, 211, 255, 0.12);
-  --accent-border: rgba(95, 211, 255, 0.42);
+  --accent-primary: #0e7490;
+  --accent-soft: rgba(14, 116, 144, 0.08);
+  --accent-border: rgba(14, 116, 144, 0.3);
 
-  /* State grammar */
-  --signal-positive: #60d6a7;
-  --signal-positive-soft: rgba(96, 214, 167, 0.12);
-  --signal-positive-border: rgba(96, 214, 167, 0.4);
-  --signal-caution: #f3bf62;
-  --signal-caution-soft: rgba(243, 191, 98, 0.13);
-  --signal-caution-border: rgba(243, 191, 98, 0.44);
-  --signal-negative: #ff718c;
-  --signal-negative-soft: rgba(255, 113, 140, 0.13);
-  --signal-negative-border: rgba(255, 113, 140, 0.42);
-  --signal-info: #79a9ff;
-  --signal-info-soft: rgba(121, 169, 255, 0.12);
-  --signal-info-border: rgba(121, 169, 255, 0.38);
-  --signal-neutral: #8f9bae;
+  /*
+   * Axis 1 — market direction. Red is 利多 and green is 利空, matching how mainland market software is read.
+   * Both are dark enough to carry white text in a filled chip and to be read as text on white.
+   */
+  --dir-bullish: #d32029;
+  --dir-bullish-soft: rgba(211, 32, 41, 0.09);
+  --dir-bullish-border: rgba(211, 32, 41, 0.32);
+  --dir-bearish: #0a7d4a;
+  --dir-bearish-soft: rgba(10, 125, 74, 0.09);
+  --dir-bearish-border: rgba(10, 125, 74, 0.3);
 
-  /* Quantitative series palette */
-  --chart-series-1: #67d4ff;
-  --chart-series-2: #f6c85f;
-  --chart-series-3: #9d8cff;
-  --chart-series-4: #ff7c8b;
-  --chart-series-5: #66c2a5;
-  --chart-series-6: #fc8d62;
-  --chart-series-7: #8da0cb;
-  --chart-series-8: #e78ac3;
-  --chart-series-9: #a6d854;
-  --chart-series-10: #ffd92f;
+  /*
+   * Axis 2 — pipeline outcome. Deliberately no red and no green: "已推送" is a completed step, not a market
+   * opinion, and colouring it green would compete with 利空.
+   */
+  --signal-done: #1554c0;
+  --signal-done-soft: rgba(21, 84, 192, 0.09);
+  --signal-done-border: rgba(21, 84, 192, 0.28);
+  --signal-info: #2b6cb0;
+  --signal-info-soft: rgba(43, 108, 176, 0.1);
+  --signal-info-border: rgba(43, 108, 176, 0.3);
+  --signal-caution: #a35a06;
+  --signal-caution-soft: rgba(163, 90, 6, 0.1);
+  --signal-caution-border: rgba(163, 90, 6, 0.3);
+  --signal-alert: #b8460e;
+  --signal-alert-soft: rgba(184, 70, 14, 0.1);
+  --signal-alert-border: rgba(184, 70, 14, 0.3);
+  --signal-neutral: #6b7480;
+  --signal-neutral-soft: rgba(107, 116, 128, 0.09);
+  --signal-neutral-border: rgba(107, 116, 128, 0.26);
 
-  /* Shape, density and motion */
+  /* Shape, density and motion — light elevation is a shadow, not a lighter surface. */
   --radius-sm: 5px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  --shadow-elevated: 0 18px 52px rgba(0, 0, 0, 0.28);
-  --focus-ring: #8ce0ff;
+  --shadow-raised: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-elevated: 0 1px 2px rgba(16, 24, 40, 0.06), 0 10px 28px rgba(16, 24, 40, 0.08);
+  --focus-ring: #0e7490;
   --shell-topbar-height: 54px;
   --shell-mobile-topbar-height: 50px;
+  /* Minimum comfortable touch target; used by every control a thumb can reach. */
+  --tap-target: 44px;
   --font-mono: "SFMono-Regular", "Roboto Mono", Menlo, Consolas, monospace;
-  --font-sans: Inter, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  /* CJK first: the console is read in Chinese, and a Latin-first stack sends Han glyphs to an arbitrary fallback. */
+  --font-sans:
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", Inter, system-ui,
+    -apple-system, sans-serif;
 
   /* Radix/shadcn integration */
   --background: var(--surface-root);
   --foreground: var(--text-secondary);
   --card: var(--surface-panel);
   --card-foreground: var(--text-secondary);
-  --popover: var(--surface-raised);
+  --popover: var(--surface-panel);
   --popover-foreground: var(--text-secondary);
   --primary: var(--accent-primary);
-  --primary-foreground: #061018;
+  --primary-foreground: #ffffff;
   --secondary: var(--surface-raised);
   --secondary-foreground: var(--text-secondary);
   --muted-foreground: var(--text-muted);
   --accent-foreground: var(--text-primary);
-  --destructive: var(--signal-negative);
+  --destructive: var(--signal-alert);
   --border: var(--border-subtle);
   --input: var(--border-strong);
   --ring: var(--focus-ring);
   --sidebar: var(--surface-sidebar);
   --sidebar-foreground: var(--text-secondary);
   --sidebar-primary: var(--accent-primary);
-  --sidebar-primary-foreground: #061018;
+  --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: var(--surface-hover);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-subtle);

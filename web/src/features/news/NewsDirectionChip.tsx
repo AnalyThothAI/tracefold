@@ -20,7 +20,7 @@ export function NewsDirectionChip({
   const strength = withStrength ? triage.magnitude_zh : "";
   return (
     <span className="news-direction-pair">
-      <span className="news-direction" data-size={size} data-tone={directionTone(triage.direction)}>
+      <span className="news-direction" data-dir={directionTone(triage.direction)} data-size={size}>
         <span aria-hidden className="news-direction-glyph">
           {directionGlyph(triage.direction)}
         </span>

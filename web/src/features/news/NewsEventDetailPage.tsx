@@ -1,4 +1,5 @@
 import { newsPath } from "@shared/routing/paths";
+import { Card } from "@shared/ui/Card";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
 import { Copy, ExternalLink } from "lucide-react";
@@ -107,28 +108,25 @@ function EventDocument({ detail }: { detail: NewsEventDetail }) {
         </p>
       </article>
 
-      <section aria-label="处理时间线" className="news-card">
-        <div className="news-card-header">
-          <h2>这条新闻经历了什么</h2>
-          <small>每一步一句话；展开可看原始字段</small>
-        </div>
+      <Card
+        title="这条新闻经历了什么"
+        hint="每一步一句话；展开可看原始字段"
+        aria-label="处理时间线"
+      >
         <NewsTimeline steps={detail.timeline ?? []} />
-      </section>
+      </Card>
 
       <div className="news-detail-grid">
-        <section aria-label="同类报道" className="news-card">
-          <div className="news-card-header">
-            <h2>同类报道</h2>
-            <small>{detail.members.length} 条，按到达时间</small>
-          </div>
+        <Card
+          title="同类报道"
+          hint={<>{detail.members.length} 条，按到达时间</>}
+          aria-label="同类报道"
+        >
           <MemberList members={detail.members} />
-        </section>
-        <section aria-label="运营标注" className="news-card">
-          <div className="news-card-header">
-            <h2>运营标注</h2>
-          </div>
+        </Card>
+        <Card title="运营标注" aria-label="运营标注">
           <LabelList eventId={event.event_id} labels={detail.labels ?? []} />
-        </section>
+        </Card>
       </div>
 
       <TechnicalDetails detail={detail} />
@@ -156,9 +154,9 @@ function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
   if (!filled.length && !primary.length && !mentioned.length) return null;
   return (
     <>
-      <dl aria-label="判定明细" className="news-detail-grid-facts">
+      <dl aria-label="判定明细" className="ui-fact-grid">
         {filled.map(([label, value]) => (
-          <div className="news-detail-fact" key={label}>
+          <div className="ui-fact" key={label}>
             <dt>{label}</dt>
             <dd>{value}</dd>
           </div>
@@ -246,9 +244,9 @@ function TimelineStep({ last, step }: { last: boolean; step: NewsTimelineStep })
           </button>
         ) : null}
         {open ? (
-          <dl className="news-kv">
+          <dl className="ui-kv news-timeline-fields">
             {facts.map(([key, value]) => (
-              <div className="news-kv-row" key={key}>
+              <div className="ui-kv-row" key={key}>
                 <dt>{key}</dt>
                 <dd>{formatFact(value)}</dd>
               </div>
@@ -347,7 +345,7 @@ function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
       <div>
         <section>
           <h4>事件</h4>
-          <dl className="news-kv">
+          <dl className="ui-kv">
             <KV k="event_id" v={event.event_id} />
             <KV k="storyline_key" v={event.storyline_key} />
             <KV k="family" v={event.family} />
@@ -376,7 +374,7 @@ function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
         {detail.members.length ? (
           <section>
             <h4>成员</h4>
-            <dl className="news-kv">
+            <dl className="ui-kv">
               {detail.members.map((member) => (
                 <KV
                   k={member.item_id.slice(0, 12)}
@@ -396,7 +394,7 @@ function VerdictRecord({ verdict }: { verdict: NewsVerdict }) {
   return (
     <section>
       <h4>判定 · {verdict.stage}</h4>
-      <dl className="news-kv">
+      <dl className="ui-kv">
         <KV k="policy_version" v={verdict.policy_version} />
         <KV k="prompt_version" v={verdict.prompt_version ?? "—"} />
         <KV k="model" v={verdict.model ?? "—"} />
@@ -421,7 +419,7 @@ function DeliveryRecord({ delivery }: { delivery: NewsDelivery }) {
   return (
     <section>
       <h4>投递 · {delivery.kind}</h4>
-      <dl className="news-kv">
+      <dl className="ui-kv">
         <KV k="state" v={delivery.state} />
         <KV k="error_code" v={delivery.error_code ?? "—"} />
         <KV k="attempted_at_ms" v={absoluteTime(delivery.attempted_at_ms)} />
@@ -436,7 +434,7 @@ function DeliveryRecord({ delivery }: { delivery: NewsDelivery }) {
 
 function KV({ k, v }: { k: string; v: string | number }) {
   return (
-    <div className="news-kv-row">
+    <div className="ui-kv-row">
       <dt>{k}</dt>
       <dd>{String(v)}</dd>
     </div>

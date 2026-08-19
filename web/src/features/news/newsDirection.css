@@ -4,8 +4,8 @@
    * hue family: the outcome badge stays an outlined pill with a dot, direction is a solid fill with an arrow.
    * The arrow carries the meaning on its own, so the chip never depends on colour alone.
    *
-   * `neutral` is ~42% of live verdicts. A solid grey block on half the feed would drown the red/green it exists
-   * to highlight, so neutral and unclear deliberately drop to quiet text.
+   * Red is 利多 and green is 利空 (#74, the mainland convention). `flat` is ~42% of live verdicts; a solid grey
+   * block on half the feed would drown the red/green it exists to highlight, so it drops to quiet text.
    */
   .news-direction {
     display: inline-flex;
@@ -28,18 +28,18 @@
     font-size: 0.9rem;
   }
 
-  .news-direction[data-tone="positive"],
-  .news-direction[data-tone="negative"] {
+  .news-direction[data-dir="bullish"],
+  .news-direction[data-dir="bearish"] {
     background: var(--news-direction-fill);
-    color: var(--surface-canvas);
+    color: #ffffff;
   }
 
-  .news-direction[data-tone="positive"] {
-    --news-direction-fill: var(--signal-positive);
+  .news-direction[data-dir="bullish"] {
+    --news-direction-fill: var(--dir-bullish);
   }
 
-  .news-direction[data-tone="negative"] {
-    --news-direction-fill: var(--signal-negative);
+  .news-direction[data-dir="bearish"] {
+    --news-direction-fill: var(--dir-bearish);
   }
 
   .news-direction-glyph {

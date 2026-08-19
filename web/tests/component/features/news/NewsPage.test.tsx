@@ -431,7 +431,7 @@ describe("NewsPage", () => {
 
     const pill = await screen.findByRole("link", { name: "查看流水线状态" });
     expect(pill).toHaveTextContent("流水线正常");
-    expect(pill).toHaveAttribute("data-tone", "positive");
+    expect(pill).toHaveAttribute("data-tone", "done");
     expect(pill).toHaveAttribute("href", "/news/status");
     const funnel = screen.getByRole("list", { name: "过去 24 小时漏斗" });
     expect(
@@ -463,7 +463,7 @@ describe("NewsPage", () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
     const pill = await screen.findByRole("link", { name: "查看流水线状态" });
     await waitFor(() => expect(pill).toHaveTextContent("流水线异常"));
-    expect(pill).toHaveAttribute("data-tone", "negative");
+    expect(pill).toHaveAttribute("data-tone", "alert");
     expect(pill).toHaveTextContent("24 小时降级率 20%（30/150）");
   });
 
@@ -671,7 +671,7 @@ describe("NewsPage", () => {
     const badge = region.querySelector(".news-outcome")!;
     expect(badge).toHaveTextContent("未送达");
     expect(badge).toHaveTextContent("飞书发送失败（FeishuServerError）");
-    expect(badge).toHaveAttribute("data-tone", "negative");
+    expect(badge).toHaveAttribute("data-tone", "alert");
     const timeline = screen.getByRole("region", { name: "处理时间线" });
     expect(
       within(timeline).getByText("模型不可用：模型输出被截断，按规则兜底"),
