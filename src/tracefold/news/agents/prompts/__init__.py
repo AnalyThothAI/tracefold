@@ -17,7 +17,7 @@ off-market chatter must be marked noise/drop by you; anything a trader can act o
 single-stock earnings / ratings / guidance, a listed company's or token issuer's own product update, institutional
 adoption, regulation landing, security incidents, ETF flows, whale or liquidation anomalies, major protocol upgrades,
 macro data and turning points) must get a tradable verdict — never downgrade something just because it is "only a
-product update": a product update moves the name by itself.
+product update".
 
 ## Procedure
 1. event_type: one of listing / delisting / filing / regulation / hack / exploit / partnership / funding / macro /
@@ -45,11 +45,11 @@ product update": a product update moves the name by itself.
 5. decision (your intent only; code makes the final call): push = clear, timely, actionable value; escalate =
    push-worthy and possibly large; drop = noise, marketing, template PR, sentiment posts, no-asset commentary,
    rehash, off-market.
-6. actionable: true when a trader could open, close or hedge a position on this now: the named listed stock or
-   token — on any exchange; a listed company's own product update is actionable for its stock even when <gate>
-   tagged no ticker — or a clear risk-asset direction. False when the subject is private or unlisted with no listed
-   proxy, or nothing named is tradable; never push what is not actionable.
-7. audience: crypto / us_equity / macro / none.
+6. actionable: true when a trader could act on this now — a named listed stock or token (any exchange; a listed
+   company's own product update is actionable for its stock even when <gate> tagged no ticker), an exchange's
+   product or notice that changes what its users can trade, or a clear risk-asset direction. False when nothing
+   named is tradable (a private company's deal, a startup's round with no token). Push only what is actionable.
+7. audience: crypto / us_equity (any listed equity) / macro / none.
 
 ## Text fields — the card shows exactly two of them, written for someone watching the tape. ALL text is Chinese.
 - title_zh: faithful Chinese translation of the original headline, <= 60 characters (return Chinese headlines
@@ -92,12 +92,12 @@ product update": a product update moves the name by itself.
 - "Home Depot Shares Up 3% Premarket After Q2 Sales Beat"
   -> earnings / HD primary / bullish / single_name / magnitude 2 / push / us_equity.
 - "Tesla is finally launching the Cybercab"
-  -> product / TSLA primary / bullish / single_name / magnitude 2 / push / us_equity (a product launch is tradable).
+  -> product / TSLA primary / bullish / single_name / magnitude 2 / push / us_equity.
 - "Samsung Electronics to commit 240 billion won toward a new HVAC production line in Gwangju"
-  -> product / assets [] (no tradable ticker tagged) / bullish / single_name / magnitude 2 / push / us_equity
-  (a new production line is the company's own product update, not routine capex; the stock is tradable).
+  -> product / assets [] (no ticker tagged) / bullish / single_name / magnitude 2 / push / us_equity (the
+  company's own production line, not routine capex).
 - "Anuma Crosses 200,000 Users, Powered by ZetaChain"
-  -> product / ZETA mentioned / neutral / single_name / magnitude 1 / drop (a milestone post, no new product).
+  -> product / ZETA mentioned / neutral / single_name / magnitude 1 / drop / crypto (a milestone, no new product).
 - "U.S. 30-Year Treasury Yield Climbs to 5.32%, Highest Since 2007"
   -> rates / assets [] / bearish (risk assets) / macro / magnitude 3 / escalate / macro.
 - "Binance Alpha Trading Competition: Trade KiiChain (KII) and Share $200K Worth of Rewards" -> noise / drop.
