@@ -594,6 +594,11 @@ def test_fallback_is_not_silent() -> None:
         admission="candidate",
     )
     assert fallback_verdict(strong, error_code="x")[1].final == "push"
+    assert (
+        fallback_verdict(strong, error_code="x", title="  Fed  holds rates\nsteady ")[0].headline_zh
+        == "Fed holds rates steady"
+    )
+    assert fallback_verdict(strong, error_code="x")[0].headline_zh == "模型不可用（规则兜底）"  # no wire title at all
 
 
 # ---------------------------------------------------------------- delivery / control / bus
@@ -652,6 +657,31 @@ def test_card_is_the_reader_contract() -> None:
     )
     assert escalated["header"]["title"]["content"] == "⚡ Nvidia to invest $100bn"  # URL in AI copy -> code fallback
     assert escalated["elements"][0]["content"] == "利多 · 影响重大 · -"
+    # Degraded (model chain failed, rule baseline pushes): the wire text itself, no verdict words the model never gave.
+    degraded = render_first_card(
+        event={
+            "event_id": "e2",
+            "leader_title": "BREAKING: SEC approves spot **ETH** ETF options https://x.y/z",
+            "leader_description": "The SEC approved options on spot ether ETFs on Thursday.\nMore to follow.",
+            "leader_url": "https://x.y/z",
+            "reporting_origin": "wire",
+            "member_count": 1,
+            "leader_published_at_ms": 1787064000000,
+        },
+        verdict={"direction": "neutral", "magnitude": 2, "headline_zh": "BREAKING: SEC approves spot ETH ETF options"},
+        decision="escalate",
+        grounded_assets=["ETH"],
+        degraded=True,
+    )
+    assert degraded["header"]["title"]["content"] == "⚡ BREAKING: SEC approves spot ETH ETF options"
+    assert degraded["header"]["template"] == "grey"
+    assert degraded["elements"][0]["content"].splitlines() == [
+        "The SEC approved options on spot ether ETFs on Thursday. More to follow.",
+        "ETH · wire · 22:40",
+    ]
+    assert "模型" not in json.dumps(degraded, ensure_ascii=False) and "中性" not in json.dumps(
+        degraded, ensure_ascii=False
+    )
     # Card assets are the verdict primaries the Gate grounded; a small grounded set shows when the model named none.
     assert card_assets({"assets": [{"symbol": "CC", "role": "primary"}]}, ["CC"]) == ["CC"]
     assert card_assets({"assets": []}, ["A", "B", "C", "D", "E"]) == []

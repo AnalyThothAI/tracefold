@@ -269,12 +269,12 @@ def test_triage_without_model_escalates_watchlist_or_high_score_and_persists_deg
     assert inserted["model"] is None and inserted["model_decision"] is None
     assert inserted["prompt_version"] == TRIAGE_PROMPT_VERSION
     assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "escalate"
-    assert inserted["verdict"]["headline_zh"] == "模型不可用（规则兜底）"
+    assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
     trace = inserted["trace"]
     assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
     assert len(trace["prompt_sha256"]) == 64 and trace["status"] == status_row  # replayable snapshot
     assert "latency_ms" not in trace and "input_sha256" not in trace  # no model call happened
-    assert "模型不可用" in news.kwargs_of("set_context_line")["context_line"]
+    assert "NVIDIA to invest $100bn" in news.kwargs_of("set_context_line")["context_line"]
     # escalate is a high-importance push (⚡ + priority); there is no second lane to notify
     assert [(m.routing_key, m.payload) for m in bus.published] == [
         (RK_VERDICT_PUSH, {"event_id": "ev-strong", "kind": "first"}),

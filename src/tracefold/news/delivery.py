@@ -7,6 +7,11 @@
 
 No original headline, no translated title, no scope/type enums, no provider score, no "AI" label, no follow-up
 card. Pipeline internals live in the console and `tracefold news why`.
+
+Degraded Events (the model chain failed and the rule baseline still pushes) get the wire text instead of a
+verdict view (issue #65): the header is the original headline, the body is the original description when there
+is one, and the facts line carries only tickers / source / time — no direction or magnitude the model never judged,
+and no "model unavailable" copy in the reader's face.
 """
 
 from __future__ import annotations
@@ -42,6 +47,15 @@ def sanitize_ai_text(value: object, *, limit: int, fallback: str = "") -> str:
     return (cleaned or fallback)[:limit]
 
 
+def _wire_text(value: object, *, limit: int) -> str:
+    """Provider text for a degraded card: control characters, markdown and whitespace cleaned, URLs kept out of the
+    header/body (the source button carries the link)."""
+
+    cleaned = _URL_RE.sub("", _CONTROL_RE.sub(" ", str(value or "")))
+    cleaned = _MARKDOWN_RE.sub("", cleaned)
+    return _SPACE_RE.sub(" ", cleaned).strip()[:limit]
+
+
 def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> list[str]:
     """Assets shown on the card: the verdict's primary assets that the Gate grounded (code fact ∩ model claim);
     when the model named no grounded primary, the grounded assets themselves — never provider noise alone."""
@@ -59,9 +73,17 @@ def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> l
 
 
 def _facts_line(
-    *, direction: str, magnitude: int, assets: Sequence[str], source: str, members: int, at_ms: int | None
+    *,
+    direction: str | None,
+    magnitude: int | None,
+    assets: Sequence[str],
+    source: str,
+    members: int,
+    at_ms: int | None,
 ) -> str:
-    parts = [DIRECTION_ZH.get(direction, direction), MAGNITUDE_ZH.get(magnitude, str(magnitude))]
+    parts: list[str] = []
+    if direction is not None and magnitude is not None:
+        parts += [DIRECTION_ZH.get(direction, direction), MAGNITUDE_ZH.get(magnitude, str(magnitude))]
     if assets:
         parts.append(" ".join(assets))
     origin = source or "-"
@@ -77,15 +99,22 @@ def render_first_card(
     verdict: Mapping[str, Any],
     decision: str,
     grounded_assets: Sequence[str],
+    degraded: bool = False,
 ) -> dict[str, Any]:
     original_title = str(event.get("leader_title") or "")
     link = str(event.get("leader_url") or "")
-    direction = str(verdict.get("direction") or "unclear")
-    magnitude = int(verdict.get("magnitude") or 0)
-    headline = sanitize_ai_text(verdict.get("headline_zh"), limit=60)
-    title_zh = sanitize_ai_text(verdict.get("title_zh"), limit=120)
-    why = sanitize_ai_text(verdict.get("why_zh"), limit=140)
-    header_text = headline or title_zh or original_title
+    if degraded:
+        header_text = _wire_text(original_title, limit=100)
+        why = _wire_text(event.get("leader_description"), limit=140)
+        direction: str | None = None
+        magnitude: int | None = None
+    else:
+        direction = str(verdict.get("direction") or "unclear")
+        magnitude = int(verdict.get("magnitude") or 0)
+        headline = sanitize_ai_text(verdict.get("headline_zh"), limit=60)
+        title_zh = sanitize_ai_text(verdict.get("title_zh"), limit=120)
+        why = sanitize_ai_text(verdict.get("why_zh"), limit=140)
+        header_text = headline or title_zh or original_title
     header_title = f"{'⚡ ' if decision == 'escalate' else ''}{header_text}"
     lines: list[str] = []
     if why:
@@ -125,7 +154,7 @@ def render_first_card(
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": header_title[:100]},
-            "template": _DIRECTION_COLOR.get(direction, "grey"),
+            "template": _DIRECTION_COLOR.get(direction or "", "grey"),
         },
         "elements": elements,
     }

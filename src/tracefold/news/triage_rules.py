@@ -240,10 +240,13 @@ def _storyline_throttle(
     return None
 
 
-def fallback_verdict(facts: GateFacts, *, error_code: str) -> tuple[TriageVerdict, DecisionResult]:
-    """Fail-closed degraded verdict when the model is unavailable."""
+def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> tuple[TriageVerdict, DecisionResult]:
+    """Fail-closed degraded verdict when the model is unavailable. ``headline_zh`` carries the wire headline (the
+    console and the context line show what the Event is, not that the model failed; the card renders the wire text
+    itself, see delivery)."""
 
     baseline = rule_baseline(facts)
+    wire_headline = " ".join(str(title or "").split())[:60] or "模型不可用（规则兜底）"
     verdict = TriageVerdict(
         novelty="new_fact",
         event_type="noise" if baseline == "drop" else "macro",
@@ -254,7 +257,7 @@ def fallback_verdict(facts: GateFacts, *, error_code: str) -> tuple[TriageVerdic
         actionable=baseline == "push",
         confidence=0.0,
         decision=baseline,
-        headline_zh="模型不可用（规则兜底）",
+        headline_zh=wire_headline,
         why_zh="",
     )
     return verdict, DecisionResult(baseline, "fail_closed_fallback", None, baseline)

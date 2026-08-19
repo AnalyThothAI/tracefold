@@ -674,16 +674,17 @@ class TriageConsumer:
             "told_count": len(told),
         }
         model_name = self.model.model_name if self.model else None
+        wire_title = str(card.get("leader_title") or "")
         reasked = False
         first_verdict: TriageVerdict | None = None
         while True:
             degraded = False
             error_code = None
             if self.model is None:
-                verdict, _ = fallback_verdict(facts, error_code="news_triage_model_unconfigured")
+                verdict, _ = fallback_verdict(facts, error_code="news_triage_model_unconfigured", title=wire_title)
                 degraded, error_code = True, "news_triage_model_unconfigured"
             elif self.circuit.is_open(stamp) and first_verdict is None:
-                verdict, _ = fallback_verdict(facts, error_code="news_triage_circuit_open")
+                verdict, _ = fallback_verdict(facts, error_code="news_triage_circuit_open", title=wire_title)
                 degraded, error_code = True, "news_triage_circuit_open"
             elif self.circuit.is_open(stamp) and first_verdict is not None:
                 verdict = first_verdict  # the re-ask cannot run; the model's own judgment beats the rule baseline
@@ -746,7 +747,7 @@ class TriageConsumer:
                         verdict = first_verdict
                         trace["reask_failed"] = exc.code
                     else:
-                        verdict, _ = fallback_verdict(facts, error_code=exc.code)
+                        verdict, _ = fallback_verdict(facts, error_code=exc.code, title=wire_title)
                         degraded, error_code = True, exc.code
                 else:
                     self.circuit.record_success()
@@ -994,6 +995,7 @@ class DelivererConsumer:
             verdict=tv,
             decision=str(triage_row["final_decision"]),
             grounded_assets=list(card.get("grounded_assets") or []),
+            degraded=bool(triage_row.get("degraded")),
         )
         if control.get("paused"):
             # News is perishable: a paused lane drops instead of holding an unacked message.
