@@ -223,19 +223,33 @@ window (market telemetry 2 h, disaster 6 h, filing 72 h, general 12 h).
 Fingerprints of at most two tokens never share an Event.
 
 Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
-`event_type`, `assets[{symbol, market_type?, role}]`, `direction`, `scope`,
-`magnitude 0..3`, `actionable`, `confidence`, `decision` (model intent),
-`audience`, `headline_zh` (the card header: a complete headline that keeps the
-decisive number / condition / consequence clause, prompt target 15–45
+`novelty` (`new_fact` / `progression` / `restatement`, judged against the told
+ledger in the status bar; required in the tool schema, replayed as `new_fact`
+for pre-v7 rows), `restates` (told-ledger index a restatement points at, -1
+otherwise), `event_type`, `assets[{symbol, market_type?, role}]`, `direction`,
+`scope`, `magnitude 0..3`, `actionable`, `confidence`, `decision` (model
+intent), `audience`, `headline_zh` (the card header: a complete headline that
+keeps the decisive number / condition / consequence clause, prompt target 15–45
 characters, at most 60), `title_zh` (faithful Chinese title, console only, at
 most 160 characters), `why_zh` (one plain sentence adding mechanism and who is
-exposed, prompt target <= 70 characters, at most 140); the stored row adds `model_decision`,
-`rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
-`degraded`, `error_code`, `trace`. `triage` is the only stage written; the
-retired Analyst lane's `deep` rows survive as history (issue #57). The current
-versions are `news_title_norm_v2`, `news_gate_v4` (lexicon
-`news_gate_lexicon_v2`), `news_storyline_v2`, `news_triage_prompt_v6`,
-`news_triage_policy_v2`, and `news_delivery_card_v8`.
+exposed, prompt target <= 70 characters, at most 140); the stored row adds
+`model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`
+(policy v3 adds `restatement` and `novel_bypass`), `throttled_by`
+(`storyline:<key>`, `storyline:<key>:cap<N>`, `storyline:<key>:hard<N>`,
+`hourly_cap`), `degraded`, `error_code`, `trace` (`prompt_sha256`,
+`input_sha256`, `storyline_key_preliminary`, `status`, `status_final`,
+`storyline_key`, `told[{i, event_id, at_ms, m, dir, headline_zh}]`,
+`told_count`, `restates_event_id`, `reasked_after_told_change`,
+`first_verdict`, `novelty_defaulted`, model telemetry). `triage` is the only
+stage written; the retired Analyst lane's `deep` rows survive as history
+(issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
+(lexicon `news_gate_lexicon_v2`), `news_storyline_v2`,
+`news_triage_prompt_v7`, `news_triage_policy_v3`, and `news_delivery_card_v8`.
+`news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
+`min_watchlist_magnitude`, `unclear_push_min_magnitude`,
+`unclear_push_event_types`, `theme_cap_4h`, `storyline_throttle`,
+`hourly_cap_enabled`, `restatement_drop`, `novel_min_magnitude`,
+`theme_hard_cap_4h` (>= `theme_cap_4h`), `asset_hard_cap_2h`.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
@@ -477,10 +491,12 @@ count as moved, `noise`/`dup` as flat; an Event without a verdict counts as
 per-admission, `override_rule`, `throttled_by`, asset-class, audience, and
 event-type confusion tables, and storyline statistics. `news
 replay-decisions --hours [--escalate-magnitude --min-push-magnitude
---min-watchlist-magnitude --theme-cap-4h --no-storyline-throttle
---no-unclear-push]` re-runs `decide()` over stored verdicts with a candidate
-`DecidePolicy` (unspecified values come from `news.policy`) and no model
-call. `news replay <hits.json> [--gate-policy config|open|strict]` runs
+--min-watchlist-magnitude --theme-cap-4h --theme-hard-cap-4h
+--asset-hard-cap-2h --novel-min-magnitude --no-restatement-drop
+--no-storyline-throttle --no-unclear-push]` re-runs `decide()` over stored
+verdicts with a candidate `DecidePolicy` (unspecified values come from
+`news.policy`) and no model call, reporting `restatement_drops` and
+`novel_bypass` alongside the changed decisions. `news replay <hits.json> [--gate-policy config|open|strict]` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
 Event with admission, grounded assets, and preliminary storyline. `news why
 <event_id>` prints the Event's chain (item, gate, triage, decide, delivery)

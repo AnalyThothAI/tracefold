@@ -64,6 +64,8 @@ class RecordingNews:
             if name == "write_control":
                 self.control_state = {"paused": bool(kwargs["paused"]), "mutes": list(kwargs["mutes"])}
                 return None
+            if name == "told_ledger" and name not in self.responses:
+                return []  # nothing pushed yet: an empty told ledger
             value = self.responses.get(name)
             return value(*args, **kwargs) if callable(value) else value
 
@@ -418,6 +420,7 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
     bus = FakeBus()
     ok = TriageCallResult(
         verdict=TriageVerdict(
+            novelty="new_fact",
             event_type="partnership",
             assets=[],
             direction="bullish",
@@ -577,3 +580,171 @@ def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
     assert bus.routing_keys() == ["event.general.normal"]
     assert bus.published[0].payload == {"event_id": "ev-lost"} and bus.published[0].trace_id == "trace-1"
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-lost"
+
+
+class _ScriptedTriageModel:
+    """TriageModel double that records every human input and answers with scripted verdicts."""
+
+    model_name = "fake"
+
+    def __init__(self, verdicts: list[Any]) -> None:
+        self.verdicts = list(verdicts)
+        self.inputs: list[str] = []
+
+    async def triage(self, human: str) -> Any:
+        from tracefold.news.agents.triage_model import TriageCallResult
+
+        self.inputs.append(human)
+        verdict = self.verdicts.pop(0)
+        return TriageCallResult(
+            verdict=verdict, latency_ms=10, input_tokens=1, output_tokens=1, cached_tokens=None, model="fake"
+        )
+
+
+def _model_verdict(**overrides: Any) -> Any:
+    from tracefold.news.models import TriageVerdict
+
+    base: dict[str, Any] = {
+        "novelty": "new_fact",
+        "restates": -1,
+        "event_type": "partnership",
+        "assets": [{"symbol": "NVDA", "role": "primary"}],
+        "direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 2,
+        "actionable": True,
+        "confidence": 0.8,
+        "decision": "push",
+        "headline_zh": "英伟达投资 OpenAI",
+    }
+    base.update(overrides)
+    return TriageVerdict(**base)
+
+
+def _ledger_row(
+    event_id: str, at_ms: int, *, key: str = "asset:NVDA", headline: str = "英伟达投资 OpenAI"
+) -> dict[str, Any]:
+    return {
+        "event_id": event_id,
+        "at_ms": at_ms,
+        "storyline_key": key,
+        "magnitude": 2,
+        "direction": "bullish",
+        "headline_zh": headline,
+    }
+
+
+def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restatement() -> None:
+    """The told ledger (what the reader already received) is in the status bar and the trace; a restatement the
+    model grounds in it drops with the restated card's event id recorded; the persist step locks the final key."""
+
+    ledger = [_ledger_row("ev-earlier", NOW_MS - 300_000), _ledger_row("ev-other", NOW_MS - 900_000, key="asset:BTC")]
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(),
+        event_status={"pushed_2h": 1, "pushed_4h": 1, "max_magnitude_2h": 2, "max_magnitude_4h": 2},
+        sent_count_since=0,
+        insert_verdict=True,
+        told_ledger=ledger,
+    )
+    bus = FakeBus()
+    model = _ScriptedTriageModel([_model_verdict(novelty="restatement", restates=0, decision="drop")])
+    triage = _triage_with_model(news, bus, model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert len(model.inputs) == 1
+    human = model.inputs[0]
+    assert '"told": [{"ago_min": ' in human and "英伟达投资 OpenAI" in human and "ev-earlier" not in human
+    assert human.count('"headline_zh": "英伟达投资 OpenAI"') == 2
+    assert human.index("<event_status>") < human.index('"told"')
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "restatement"
+    assert inserted["verdict"]["novelty"] == "restatement" and inserted["verdict"]["restates"] == 0
+    trace = inserted["trace"]
+    assert trace["storyline_key_preliminary"] == "asset:NVDA" and trace["storyline_key"] == "asset:NVDA"
+    assert trace["told_count"] == 2 and [t["event_id"] for t in trace["told"]] == ["ev-earlier", "ev-other"]
+    assert trace["restates_event_id"] == "ev-earlier"
+    assert "status_final" in trace and "input_sha256" in trace and "reasked_after_told_change" not in trace
+    assert news.kwargs_of("lock_storyline")["arg0"] == "asset:NVDA"
+    # decide -> insert happen after the lock, inside the same persist call.
+    names = news.names()
+    assert names.index("lock_storyline") < names.index("insert_verdict")
+    assert bus.published == []
+
+
+def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() -> None:
+    """A push committed between the ledger snapshot and the persist step means the model judged novelty against a
+    stale ledger: the consumer asks once more with the fresh ledger and persists that verdict."""
+
+    fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
+    ledger_calls = {"n": 0}
+
+    def told_ledger(*, now_ms: int, window_ms: int, limit: int) -> list[dict[str, Any]]:
+        del now_ms, window_ms
+        ledger_calls["n"] += 1
+        # First read (load): nothing yet. Every later read (in-lock check, refresh) sees the new card.
+        if ledger_calls["n"] == 1:
+            return []
+        return [fresh_push][:limit]
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(),
+        event_status={},
+        sent_count_since=0,
+        insert_verdict=True,
+        told_ledger=told_ledger,
+    )
+    bus = FakeBus()
+    model = _ScriptedTriageModel(
+        [
+            _model_verdict(novelty="new_fact"),  # judged against the empty ledger
+            _model_verdict(novelty="restatement", restates=0, decision="drop"),  # sees ev-just-pushed
+        ]
+    )
+    triage = _triage_with_model(news, bus, model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert len(model.inputs) == 2 and '"told": []' in model.inputs[0] and "ev-just-pushed" not in model.inputs[0]
+    assert '"headline_zh": "英伟达投资 OpenAI"' in model.inputs[1]
+    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
+    assert len(inserted) == 1  # the stale round wrote nothing
+    row = inserted[0]
+    assert row["final_decision"] == "drop" and row["override_rule"] == "restatement"
+    trace = row["trace"]
+    assert trace["reasked_after_told_change"] is True
+    assert trace["first_verdict"]["novelty"] == "new_fact" and trace["first_verdict"]["decision"] == "push"
+    assert trace["told_count"] == 1 and trace["restates_event_id"] == "ev-just-pushed"
+    assert news.names().count("lock_storyline") == 2
+    assert bus.published == []
+
+
+def test_triage_novel_event_passes_the_soft_throttle_and_publishes() -> None:
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(priority="normal", provider_score_max=75.0),
+        event_status={
+            "pushed_2h": 1,
+            "pushed_4h": 1,
+            "max_magnitude_2h": 2,
+            "max_magnitude_4h": 2,
+            "directions_2h": ["bullish"],
+            "directions_4h": ["bullish"],
+        },
+        sent_count_since=0,
+        insert_verdict=True,
+        told_ledger=[_ledger_row("ev-earlier", NOW_MS - 300_000, headline="英伟达发布新芯片")],
+    )
+    bus = FakeBus()
+    model = _ScriptedTriageModel([_model_verdict(novelty="progression")])
+    triage = _triage_with_model(news, bus, model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "novel_bypass"
+    assert inserted["throttled_by"] is None
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]
+    assert "restates_event_id" not in inserted["trace"]

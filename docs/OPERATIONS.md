@@ -339,7 +339,15 @@ Diagnose News in this order:
    audience/event-type confusion tables. `tracefold news replay-decisions
    --hours 168 --min-push-magnitude 2 --no-storyline-throttle ...` re-runs
    `decide()` with a candidate policy over the same stored verdicts; change
-   `news.policy` only after the replay and the labels agree.
+   `news.policy` only after the replay and the labels agree. The novelty knobs
+   (`--theme-hard-cap-4h`, `--asset-hard-cap-2h`, `--novel-min-magnitude`,
+   `--no-restatement-drop`) trade reader volume for coverage: on the
+   2026-08-18 replay (issue #61) hard caps 4/2 gave 80 pushes, 5/3 88, 6/3 92
+   against 68 without novelty, with 14 restatements dropped in every setting.
+   `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
+   duplicates the reader was spared; `pipeline.reasked_24h` counts Events the
+   model was asked twice because a card landed while it was thinking (expect
+   a handful per day; a surge means same-key floods).
 6. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 

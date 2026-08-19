@@ -209,6 +209,12 @@ class NewsPolicySettings(BaseModel):
     theme_cap_4h: int = 3
     storyline_throttle: bool = True
     hourly_cap_enabled: bool = True
+    # Policy v3 (issue #61): novelty against the told ledger — restatements never push; novel events (m >= the
+    # minimum) may pass the storyline throttle up to a hard cap.
+    restatement_drop: bool = True
+    novel_min_magnitude: int = 2
+    theme_hard_cap_4h: int = 6
+    asset_hard_cap_2h: int = 3
 
     @field_validator("unclear_push_event_types", mode="before")
     @classmethod
@@ -227,6 +233,12 @@ class NewsPolicySettings(BaseModel):
                 raise ValueError(f"news_policy_{name}_invalid")
         if not 1 <= self.theme_cap_4h <= 100:
             raise ValueError("news_policy_theme_cap_invalid")
+        if not 0 <= int(self.novel_min_magnitude) <= 3:
+            raise ValueError("news_policy_novel_min_magnitude_invalid")
+        if not self.theme_cap_4h <= self.theme_hard_cap_4h <= 100:
+            raise ValueError("news_policy_theme_hard_cap_invalid")
+        if not 1 <= self.asset_hard_cap_2h <= 100:
+            raise ValueError("news_policy_asset_hard_cap_invalid")
         return self
 
 
@@ -534,6 +546,10 @@ news:
     theme_cap_4h: 3
     storyline_throttle: true
     hourly_cap_enabled: true
+    restatement_drop: true
+    novel_min_magnitude: 2
+    theme_hard_cap_4h: 6
+    asset_hard_cap_2h: 3
   gate:
     suppress_low_signal: false
   watchlist: []

@@ -18,6 +18,10 @@ from .triage_rules import ESCALATE_WINDOW_MS, PUSH_WINDOW_MS
 _JSON_SEPARATORS = (",", ":")
 
 
+# 'NEWS' — a two-int advisory-lock namespace distinct from the (0x54524644, n) session locks in app.database.
+_STORYLINE_LOCK_NAMESPACE = 0x4E455753
+
+
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=_JSON_SEPARATORS, default=str)
 
@@ -520,6 +524,32 @@ class NewsRepository:
         ).fetchone()
         return dict(row) if row else {}
 
+    def told_ledger(self, *, now_ms: int, window_ms: int, limit: int) -> list[dict[str, Any]]:
+        """Cards the reader received in the window: the newest ``limit`` push/escalate verdicts (degraded fallbacks
+        excluded — their placeholder headline is not a card the reader can recognise). Newest first; the consumer
+        reorders/trims for the status bar (``told_ledger_for_prompt``) and compares ``at_ms`` for staleness."""
+
+        rows = self.conn.execute(
+            """
+            SELECT v.event_id, v.created_at_ms AS at_ms, e.storyline_key,
+                   (v.verdict ->> 'magnitude')::int AS magnitude, v.verdict ->> 'direction' AS direction,
+                   v.verdict ->> 'headline_zh' AS headline_zh
+              FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
+             WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate') AND NOT v.degraded
+               AND v.created_at_ms >= %s
+             ORDER BY v.created_at_ms DESC
+             LIMIT %s
+            """,
+            (int(now_ms) - int(window_ms), int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def lock_storyline(self, storyline_key: str) -> None:
+        """Transaction-scoped advisory lock on one storyline key so "read window facts -> decide -> insert verdict"
+        is serialised per key across concurrent Triage handlers (and processes). Released at commit/rollback."""
+
+        self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_STORYLINE_LOCK_NAMESPACE, storyline_key))
+
     # ------------------------------------------------------------------ verdicts
     def insert_verdict(
         self,
@@ -896,9 +926,12 @@ class NewsRepository:
                 WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'latency_ms') AS triage_p95_ms,
               (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY (trace ->> 'queue_lag_ms')::double precision)
                  FROM news_verdicts
-                WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'queue_lag_ms') AS queue_lag_p95_ms
+                WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'queue_lag_ms') AS queue_lag_p95_ms,
+              (SELECT count(*) FROM news_verdicts
+                WHERE stage = 'triage' AND created_at_ms >= %s
+                  AND COALESCE((trace ->> 'reasked_after_told_change')::boolean, false)) AS reasked_24h
             """,
-            (hour_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago),
+            (hour_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago),
         ).fetchone()
         delivery = self.conn.execute(
             """

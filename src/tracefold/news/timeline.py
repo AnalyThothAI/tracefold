@@ -37,6 +37,25 @@ def _first_delivery(deliveries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any
     return first[-1] if first else None
 
 
+def restated_card(trace: Mapping[str, Any], verdict: Mapping[str, Any], *, at_ms: int) -> dict[str, Any] | None:
+    """The told-ledger entry a restatement verdict points at (``verdict.restates`` indexes ``trace.told``), with its
+    age at decision time; None when the verdict is not a grounded restatement."""
+
+    if str(verdict.get("novelty") or "") != "restatement":
+        return None
+    told = trace.get("told")
+    index = verdict.get("restates")
+    if not isinstance(told, list) or not isinstance(index, int) or not 0 <= index < len(told):
+        return None
+    entry = told[index] if isinstance(told[index], Mapping) else {}
+    entry_at = int(entry.get("at_ms") or 0)
+    return {
+        "event_id": entry.get("event_id"),
+        "headline_zh": str(entry.get("headline_zh") or ""),
+        "ago_min": max(0, at_ms - entry_at) // 60_000 if entry_at else int(entry.get("ago_min") or 0),
+    }
+
+
 def event_timeline(
     *,
     event: Mapping[str, Any],
@@ -159,10 +178,13 @@ def event_timeline(
         )
         final = str(latest.get("final_decision") or "")
         trace = dict(latest.get("trace") or {})
+        restated = restated_card(trace, verdict, at_ms=int(latest["created_at_ms"]))
         if final == "throttled":
             decide_summary = "限流 · " + throttled_by_zh(latest.get("throttled_by"))
         else:
             reason = override_rule_zh(latest.get("override_rule"))
+            if latest.get("override_rule") == "restatement" and restated is not None:
+                reason = f"重复：{restated['ago_min']} 分钟前已推「{restated['headline_zh']}」"
             decide_summary = decision_zh(final) + (f" · {reason}" if reason else "")
         steps.append(
             {
@@ -177,8 +199,14 @@ def event_timeline(
                     "rule_baseline_decision": latest.get("rule_baseline_decision"),
                     "storyline_key": trace.get("storyline_key") or event.get("storyline_key"),
                     "storyline_zh": storyline_key_zh(trace.get("storyline_key") or event.get("storyline_key")),
+                    "storyline_key_preliminary": trace.get("storyline_key_preliminary"),
                     "status_preliminary": trace.get("status"),
                     "status_final": trace.get("status_final"),
+                    "novelty": verdict.get("novelty"),
+                    "restates_event_id": trace.get("restates_event_id"),
+                    "restated_headline_zh": restated["headline_zh"] if restated else None,
+                    "told_count": trace.get("told_count"),
+                    "reasked_after_told_change": bool(trace.get("reasked_after_told_change")),
                     "queue_lag_ms": trace.get("queue_lag_ms"),
                     "latency_ms": trace.get("latency_ms"),
                     "published_at_ms": latest.get("published_at_ms"),
@@ -212,4 +240,7 @@ def event_timeline(
     return outcome, steps
 
 
-__all__ = ["event_timeline"]
+__all__ = [
+    "event_timeline",
+    "restated_card",
+]

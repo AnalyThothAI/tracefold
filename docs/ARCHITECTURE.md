@@ -331,41 +331,66 @@ verdict's grounded primaries and scope, written back to `news_events`, and
 used by every window query, throttle, and mute.
 
 Triage (`tracefold.news.agents.triage_model`, `tracefold.news.triage_rules`)
-never retrieves: the Deduper computes `event_status` (storyline window facts)
-and the consumer passes it last in the human message. The byte-frozen system
+never retrieves: the Deduper computes `event_status` (storyline window facts),
+the consumer adds the **told ledger** — the cards the reader actually received
+in the last 4 h (`repository.told_ledger`: newest push/escalate verdicts, no
+degraded fallbacks; at most 12 entries, the preliminary storyline's own first,
+each with index `i`, age, magnitude, direction, `headline_zh`) — and passes
+both last in the human message as the status bar. The byte-frozen system
 prompt is English (instructions) and every text field the verdict returns is
 Chinese: `headline_zh` (the card header — a complete headline that keeps the
 decisive fact, not a stub), `why_zh` (the one card sentence adding what the
 headline does not say), a
 console-only `title_zh` (the faithful Chinese title), and an `audience`
-(crypto / us_equity / macro / none). `decide()` owns the final decision under
-a `DecidePolicy` whose defaults are the live policy and whose values come from
-`news.policy`: mute -> drop; noise -> drop; magnitude >= 3 with a direction or
-macro scope -> escalate; high priority + push -> escalate; model push/escalate
-intent, actionable, magnitude >= `min_push_magnitude` (1) and a direction ->
-push (`model_push_actionable`); unclear direction with a clear event type
-(product, listing, delisting, regulation, hack, exploit, partnership, filing)
-at magnitude >= 2 -> push (`unclear_but_clear_event`); other unclear -> drop;
-watchlist primary at magnitude >= 1 -> push; else drop (`below_threshold`).
-Storyline throttling (switch `storyline_throttle`) keeps the window-max +
-direction-flip rule for `asset:` keys and caps `theme:`/`macro:` keys at
-`theme_cap_4h` (3) pushes per 4 h unless magnitude exceeds the window max or
-the direction flips; the hourly cap (switch `hourly_cap_enabled`,
-`news.push.hourly_cap`, default 30) throttles pushes only. Every path names
-its rule; nothing drops silently. A fast retryable model failure (timeout,
-rate limit, connection) earns one more attempt inside the deadline; model
-failure is degraded, not silent: `rule_baseline` (watchlist primary, or score
->= 80 with a grounded asset) still pushes, everything else drops with
-`degraded=true`, and three consecutive transport failures open a 60-second
-circuit that also opens a `triage_circuit_open` incident (closed by the next
-success); an output failure (`news_triage_output_truncated` when the tool call
-hit `max_tokens`, `news_triage_output_invalid` on a schema mismatch) is
-degraded but never counts toward the circuit and records `finish_reason`,
-`output_tokens`, and `parsing_error` in the trace. `news_verdicts` stores
-`model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`,
-`throttled_by`, `degraded`, and a replayable trace (latency, tokens, model
-attempts, prompt sha, input sha, the preliminary and final status-bar
-snapshots, the final storyline key).
+(crypto / us_equity / macro / none). The verdict also carries `novelty`
+(`new_fact` / `progression` / `restatement`, judged against the told ledger)
+and `restates` (the ledger index a restatement points at; -1 otherwise) —
+the reader-facing memory Triage has (issue #61): dedup is byte/word-level,
+novelty is the semantic last line against the same fact told again from
+another outlet or under another storyline key. `decide()` owns the final
+decision under a `DecidePolicy` whose defaults are the live policy and whose
+values come from `news.policy`: mute -> drop; noise -> drop; a *grounded*
+restatement (the model cites a ledger entry it was shown and the direction did
+not flip against it; switch `restatement_drop`) -> drop (`restatement`);
+magnitude >= 3 with a direction or macro scope -> escalate; high priority +
+push -> escalate; model push/escalate intent, actionable, magnitude >=
+`min_push_magnitude` (1) and a direction -> push (`model_push_actionable`);
+unclear direction with a clear event type (product, listing, delisting,
+regulation, hack, exploit, partnership, filing) at magnitude >= 2 -> push
+(`unclear_but_clear_event`); other unclear -> drop; watchlist primary at
+magnitude >= 1 -> push; else drop (`below_threshold`). Storyline throttling
+(switch `storyline_throttle`) keeps the window-max + direction-flip rule for
+`asset:` keys and caps `theme:`/`macro:` keys at `theme_cap_4h` (3) pushes
+per 4 h unless magnitude exceeds the window max or the direction flips; a
+novel event (`new_fact`/`progression` at magnitude >= `novel_min_magnitude`,
+2) passes that soft throttle as `novel_bypass` until the hard cap
+(`asset_hard_cap_2h` 3 pushes per 2 h, `theme_hard_cap_4h` 6 per 4 h;
+`throttled_by = storyline:<key>:hard<N>` beyond it); the hourly cap (switch
+`hourly_cap_enabled`, `news.push.hourly_cap`, default 30) throttles pushes
+only. Every path names its rule; nothing drops silently. A fast retryable
+model failure (timeout, rate limit, connection) or an unusable answer that is
+not a `max_tokens` truncation (empty tool call, missing field) earns one more
+attempt inside the deadline; model failure is degraded, not silent:
+`rule_baseline` (watchlist primary, or score >= 80 with a grounded asset)
+still pushes, everything else drops with `degraded=true`, and three
+consecutive transport failures open a 60-second circuit that also opens a
+`triage_circuit_open` incident (closed by the next success); an output failure
+(`news_triage_output_truncated` when the tool call hit `max_tokens`,
+`news_triage_output_invalid` on a schema mismatch) is degraded but never
+counts toward the circuit and records `finish_reason`, `output_tokens`, and
+`parsing_error` in the trace. After the model call the consumer decides and
+persists in one transaction under a per-storyline advisory lock on the final
+key (`repository.lock_storyline`; `pg_advisory_xact_lock('NEWS', hashtext(key))`),
+re-reading the window facts inside the lock so two same-key Events in flight
+cannot both pass the throttle; when a card landed after the model saw the
+ledger, the consumer asks the model once more with the fresh ledger
+(`reasked_after_told_change`) instead of pushing a restatement the reader just
+received. `news_verdicts` stores `model_decision`, `rule_baseline_decision`,
+`final_decision`, `override_rule`, `throttled_by`, `degraded`, and a
+replayable trace (latency, tokens, model attempts, prompt sha, input sha, the
+preliminary storyline key, the preliminary and final status-bar snapshots,
+the told ledger as shown with event ids, `told_count`, `restates_event_id`,
+`first_verdict` when re-asked, the final storyline key).
 
 There is no second model stage: one Event gets one structured judgment and one
 card (issue #57). `escalate` stays a `decide()` outcome — a high-importance

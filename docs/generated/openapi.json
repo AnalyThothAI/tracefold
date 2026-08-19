@@ -7354,6 +7354,11 @@
             ],
             "title": "Queue Lag P95 Ms"
           },
+          "reasked_24h": {
+            "default": 0,
+            "title": "Reasked 24H",
+            "type": "integer"
+          },
           "suppressed_by_reason": {
             "additionalProperties": {
               "type": "integer"

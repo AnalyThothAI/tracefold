@@ -2650,6 +2650,11 @@ export interface components {
             };
             /** Queue Lag P95 Ms */
             queue_lag_p95_ms?: number | null;
+            /**
+             * Reasked 24H
+             * @default 0
+             */
+            reasked_24h: number;
             /** Suppressed By Reason */
             suppressed_by_reason?: {
                 [key: string]: number;

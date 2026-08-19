@@ -148,6 +148,12 @@ def _handle_replay_decisions(args: Namespace) -> tuple[int, dict[str, Any]]:
         theme_cap_4h=int(args.theme_cap_4h if args.theme_cap_4h is not None else live.theme_cap_4h),
         storyline_throttle=not args.no_storyline_throttle and live.storyline_throttle,
         hourly_cap_enabled=live.hourly_cap_enabled,
+        restatement_drop=not args.no_restatement_drop and live.restatement_drop,
+        novel_min_magnitude=int(
+            args.novel_min_magnitude if args.novel_min_magnitude is not None else live.novel_min_magnitude
+        ),
+        theme_hard_cap_4h=int(args.theme_hard_cap_4h if args.theme_hard_cap_4h is not None else live.theme_hard_cap_4h),
+        asset_hard_cap_2h=int(args.asset_hard_cap_2h if args.asset_hard_cap_2h is not None else live.asset_hard_cap_2h),
     )
     with repositories(settings) as repos:
         report = replay_decisions(

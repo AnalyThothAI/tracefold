@@ -24,6 +24,7 @@ from tracefold.news.triage_rules import (
     decide,
     fallback_verdict,
     rule_baseline,
+    storyline_status_from_row,
 )
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
@@ -298,6 +299,7 @@ def test_storyline_keys() -> None:
 # ---------------------------------------------------------------- triage rules
 def _verdict(**kw) -> TriageVerdict:
     base = dict(
+        novelty="new_fact",
         event_type="partnership",
         assets=[TriageAsset(symbol="NVDA", role="primary")],
         direction="bullish",
@@ -350,12 +352,14 @@ def test_decide_rules_and_throttle() -> None:
         admission="candidate",
     )
     assert decide(_verdict(), high, None).final == "escalate"
-    # Asset storylines: window-max plus direction flip.
+    # Asset storylines: window-max plus direction flip. (SOFT keeps the v3 novelty bypass out of the way: at
+    # novel_min_magnitude=3 an m2 new_fact cannot pass the soft throttle.)
+    SOFT = DecidePolicy(novel_min_magnitude=3)
     status = StorylineStatus(key="asset:NVDA", pushed_2h=1, max_magnitude_2h=2, directions_2h=("bullish",))
-    throttled = decide(_verdict(), _FACTS, status)
+    throttled = decide(_verdict(), _FACTS, status, policy=SOFT)
     assert throttled.final == "throttled" and throttled.throttled_by == "storyline:asset:NVDA"
-    assert decide(_verdict(magnitude=3), _FACTS, status).final == "escalate"  # magnitude exceeds window max
-    assert decide(_verdict(direction="bearish"), _FACTS, status).final == "push"  # genuine flip
+    assert decide(_verdict(magnitude=3), _FACTS, status, policy=SOFT).final == "escalate"  # exceeds window max
+    assert decide(_verdict(direction="bearish"), _FACTS, status, policy=SOFT).final == "push"  # genuine flip
     # Theme storylines: a cap per 4 h instead of "only ever higher magnitude".
     theme = StorylineStatus(
         key="theme:mideast_energy",
@@ -366,7 +370,7 @@ def test_decide_rules_and_throttle() -> None:
         directions_2h=("bullish",),
         directions_4h=("bullish",),
     )
-    assert decide(_verdict(magnitude=2, scope="sector"), _FACTS, theme).final == "push"  # 2 < cap 3
+    assert decide(_verdict(magnitude=2, scope="sector"), _FACTS, theme, policy=SOFT).final == "push"  # 2 < cap 3
     capped = StorylineStatus(
         key="theme:mideast_energy",
         pushed_2h=3,
@@ -377,10 +381,12 @@ def test_decide_rules_and_throttle() -> None:
         directions_4h=("bullish",),
     )
     assert (
-        decide(_verdict(magnitude=2, scope="sector"), _FACTS, capped).throttled_by
+        decide(_verdict(magnitude=2, scope="sector"), _FACTS, capped, policy=SOFT).throttled_by
         == "storyline:theme:mideast_energy:cap3"
     )
-    assert decide(_verdict(magnitude=2, scope="sector", direction="bearish"), _FACTS, capped).final == "push"  # flip
+    assert (
+        decide(_verdict(magnitude=2, scope="sector", direction="bearish"), _FACTS, capped, policy=SOFT).final == "push"
+    )  # flip
     # Switches.
     assert decide(_verdict(), _FACTS, status, policy=DecidePolicy(storyline_throttle=False)).final == "push"
     assert decide(_verdict(), _FACTS, None, hourly_cap_reached=True).throttled_by == "hourly_cap"
@@ -401,6 +407,104 @@ def test_decide_rules_and_throttle() -> None:
         ).final
         == "drop"
     )
+
+
+def test_decide_v3_novelty_restatement_and_bypass() -> None:
+    """Policy v3 (issue #61): a grounded restatement never pushes; a novel event at m>=2 may pass the soft throttle
+    up to the hard cap; an ungrounded restatement is neither dropped nor let through."""
+
+    quiet = StorylineStatus(key="asset:NVDA", told_directions=("bullish", "bearish"))
+    # Grounded restatement of entry 0 (same direction) -> drop, named.
+    dropped = decide(_verdict(novelty="restatement", restates=0), _FACTS, quiet)
+    assert dropped.final == "drop" and dropped.override_rule == "restatement"
+    # Restatement of entry 1 whose direction was bearish while this one is bullish: a flip is never a restatement.
+    assert decide(_verdict(novelty="restatement", restates=1), _FACTS, quiet).final == "push"
+    # Out-of-range index or an empty ledger: the claim is ignored (never drops a card), and it does not bypass.
+    assert decide(_verdict(novelty="restatement", restates=7), _FACTS, quiet).final == "push"
+    assert (
+        decide(_verdict(novelty="restatement", restates=0), _FACTS, StorylineStatus(key="asset:NVDA")).final == "push"
+    )
+    assert decide(_verdict(novelty="restatement", restates=0), _FACTS, None).final == "push"
+    # An m3 restatement (the duplicated 4.75% yield escalate) drops too; noise stays noise; muted stays muted.
+    assert decide(_verdict(novelty="restatement", restates=0, magnitude=3), _FACTS, quiet).final == "drop"
+    assert (
+        decide(_verdict(novelty="restatement", restates=0, event_type="noise"), _FACTS, quiet).override_rule == "noise"
+    )
+    assert decide(_verdict(novelty="restatement", restates=0), _FACTS, quiet, muted=True).override_rule == "muted"
+    # The switch.
+    assert (
+        decide(
+            _verdict(novelty="restatement", restates=0), _FACTS, quiet, policy=DecidePolicy(restatement_drop=False)
+        ).final
+        == "push"
+    )
+
+    # Novel bypass on an asset storyline: the window-max rule would throttle an m2 after an m2 push...
+    busy = StorylineStatus(
+        key="asset:NVDA",
+        pushed_2h=1,
+        pushed_4h=1,
+        max_magnitude_2h=2,
+        max_magnitude_4h=2,
+        directions_2h=("bullish",),
+        directions_4h=("bullish",),
+    )
+    novel = decide(_verdict(novelty="new_fact"), _FACTS, busy)
+    assert novel.final == "push" and novel.override_rule == "novel_bypass" and novel.throttled_by is None
+    assert decide(_verdict(novelty="progression"), _FACTS, busy).override_rule == "novel_bypass"
+    # ...but not below the novelty magnitude floor, and not once the hard cap is reached.
+    assert decide(_verdict(novelty="new_fact", magnitude=1), _FACTS, busy).final == "throttled"
+    full = StorylineStatus(
+        key="asset:NVDA",
+        pushed_2h=3,
+        pushed_4h=3,
+        max_magnitude_2h=2,
+        max_magnitude_4h=2,
+        directions_2h=("bullish",),
+        directions_4h=("bullish",),
+    )
+    hard = decide(_verdict(novelty="new_fact"), _FACTS, full)
+    assert hard.final == "throttled" and hard.throttled_by == "storyline:asset:NVDA:hard3"
+    assert decide(_verdict(novelty="new_fact"), _FACTS, full, policy=DecidePolicy(asset_hard_cap_2h=4)).final == "push"
+    # An ungrounded restatement never bypasses the soft throttle either.
+    assert decide(_verdict(novelty="restatement", restates=-1), _FACTS, busy).final == "throttled"
+    # Theme storyline: soft cap 3 / 4 h, novel events pass up to the hard cap 6.
+    capped = StorylineStatus(
+        key="theme:rates",
+        pushed_2h=3,
+        pushed_4h=3,
+        max_magnitude_2h=3,
+        max_magnitude_4h=3,
+        directions_2h=("bearish",),
+        directions_4h=("bearish",),
+    )
+    passed = decide(_verdict(novelty="progression", scope="macro", direction="bearish"), _FACTS, capped)
+    assert passed.final == "push" and passed.override_rule == "novel_bypass"
+    at_hard = StorylineStatus(
+        key="theme:rates",
+        pushed_2h=6,
+        pushed_4h=6,
+        max_magnitude_2h=3,
+        max_magnitude_4h=3,
+        directions_2h=("bearish",),
+        directions_4h=("bearish",),
+    )
+    assert (
+        decide(_verdict(novelty="progression", scope="macro", direction="bearish"), _FACTS, at_hard).throttled_by
+        == "storyline:theme:rates:hard6"
+    )
+    # An escalate that passes via the bypass keeps its escalate final.
+    esc = decide(_verdict(novelty="progression", scope="macro", direction="bearish", magnitude=3), _FACTS, capped)
+    assert esc.final == "escalate" and esc.override_rule == "novel_bypass"
+    # Hourly cap still applies after a bypass.
+    assert decide(_verdict(novelty="new_fact"), _FACTS, busy, hourly_cap_reached=True).throttled_by == "hourly_cap"
+
+
+def test_storyline_status_from_row_carries_told_directions() -> None:
+    told = [{"i": 0, "dir": "bullish", "headline_zh": "a"}, {"i": 1, "dir": "neutral", "headline_zh": "b"}]
+    status = storyline_status_from_row({"pushed_2h": 1}, "asset:BTC", told=told)
+    assert status.told_directions == ("bullish", "neutral") and status.told_count == 2 and status.pushed_2h == 1
+    assert storyline_status_from_row(None, "asset:BTC").told_count == 0
 
 
 def test_fallback_is_not_silent() -> None:

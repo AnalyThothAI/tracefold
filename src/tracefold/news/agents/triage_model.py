@@ -19,6 +19,11 @@ from .prompts import TRIAGE_SYSTEM_PROMPT
 _RETRYABLE_MARKERS = ("timeout", "ratelimit", "connect", "serviceunavailable", "internalserver", "remoteprotocol")
 _MIN_RETRY_BUDGET_SECONDS = 1.5
 _DETAIL_CHARS = 400
+# The told ledger: cards the reader received in the last 4 h, at most 12 entries in the status bar (same preliminary
+# storyline first, then the newest global pushes). Code-owned, not policy: it shapes the model input.
+TOLD_WINDOW_MS = 4 * 3600_000
+TOLD_MAX = 12
+TOLD_SAME_KEY_MAX = 6
 
 
 class TriageModelError(RuntimeError):
@@ -72,6 +77,37 @@ class TriageCallResult:
     cached_tokens: int | None
     model: str
     attempts: int = 1
+    novelty_defaulted: bool = False
+
+
+def told_ledger_for_prompt(
+    rows: Sequence[Mapping[str, Any]], *, now_ms: int, prefer_key: str, limit: int = TOLD_MAX
+) -> list[dict[str, Any]]:
+    """Order and trim ledger rows (``repository.told_ledger``) for the status bar: entries on the preliminary
+    storyline first (up to ``TOLD_SAME_KEY_MAX``), then the newest of the rest, all newest-first; ``i`` is the index
+    the model cites in ``restates`` and ``event_id``/``at_ms`` stay for the trace (they are not sent)."""
+
+    ordered = sorted(rows, key=lambda r: -int(r.get("at_ms") or 0))
+    same = [r for r in ordered if str(r.get("storyline_key") or "") == prefer_key][:TOLD_SAME_KEY_MAX]
+    chosen = list(same)
+    for row in ordered:
+        if len(chosen) >= limit:
+            break
+        if row not in chosen:
+            chosen.append(row)
+    chosen.sort(key=lambda r: -int(r.get("at_ms") or 0))
+    return [
+        {
+            "i": i,
+            "event_id": str(r.get("event_id") or ""),
+            "at_ms": int(r.get("at_ms") or 0),
+            "ago_min": max(0, int(now_ms) - int(r.get("at_ms") or 0)) // 60_000,
+            "m": int(r.get("magnitude") or 0),
+            "dir": str(r.get("direction") or ""),
+            "headline_zh": str(r.get("headline_zh") or "")[:60],
+        }
+        for i, r in enumerate(chosen[:limit])
+    ]
 
 
 def build_triage_input(
@@ -80,8 +116,9 @@ def build_triage_input(
     gate: Mapping[str, Any],
     event_status: Mapping[str, Any],
     watchlist: Sequence[str],
+    told: Sequence[Mapping[str, Any]] = (),
 ) -> str:
-    """Fixed order: <event> (untrusted material) -> <gate> facts -> <event_status> last (status bar)."""
+    """Fixed order: <event> (untrusted material) -> <gate> facts -> <event_status> last (status bar, incl. told)."""
 
     event_block = {
         "source": event.get("reporting_origin") or "",
@@ -123,6 +160,16 @@ def build_triage_input(
             ),
         },
         "queue_lag_s": int(event_status.get("queue_lag_ms") or 0) // 1000,
+        "told": [
+            {
+                "i": int(t.get("i", i)),
+                "ago_min": int(t.get("ago_min") or 0),
+                "m": int(t.get("m") or 0),
+                "dir": str(t.get("dir") or ""),
+                "headline_zh": str(t.get("headline_zh") or ""),
+            }
+            for i, t in enumerate(told)
+        ],
     }
     return (
         "<event source=opennews>\n"
@@ -142,7 +189,8 @@ class TriageModel:
         self.deadline_seconds = float(deadline_seconds)
 
     async def triage(self, human_text: str) -> TriageCallResult:
-        """One structured call within ``deadline_seconds``; a fast retryable failure earns one more attempt."""
+        """One structured call within ``deadline_seconds``; a fast retryable failure — transport, or an unusable
+        answer (empty tool call, missing field) — earns one more attempt inside the deadline."""
 
         started = time.perf_counter()
         deadline = started + self.deadline_seconds
@@ -153,7 +201,6 @@ class TriageModel:
             remaining = deadline - time.perf_counter()
             try:
                 out = await asyncio.wait_for(self._structured.ainvoke(messages), timeout=max(0.001, remaining))
-                break
             except Exception as exc:  # provider/network failures are expected here
                 retryable = is_retryable_model_failure(exc)
                 if retryable and attempts < 2 and (deadline - time.perf_counter()) >= _MIN_RETRY_BUDGET_SECONDS:
@@ -164,13 +211,23 @@ class TriageModel:
                     else (f"news_triage_model_failed:{type(exc).__name__}")
                 )
                 raise TriageModelError(code, retryable=retryable, attempts=attempts) from exc
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        parsed = out.get("parsed") if isinstance(out, Mapping) else None
-        raw = out.get("raw") if isinstance(out, Mapping) else None
-        usage = getattr(raw, "usage_metadata", None) or {}
-        details = usage.get("input_token_details") or {}
-        if not isinstance(parsed, TriageVerdict):
+            parsed = out.get("parsed") if isinstance(out, Mapping) else None
+            raw = out.get("raw") if isinstance(out, Mapping) else None
+            usage = getattr(raw, "usage_metadata", None) or {}
+            novelty_defaulted = False
+            if isinstance(parsed, TriageVerdict):
+                break
+            parsed = _verdict_without_novelty(raw)
+            if parsed is not None:
+                novelty_defaulted = True  # a complete verdict minus the novelty field: use it as new_fact (v5 quality)
+                break
             finish_reason = _finish_reason(raw)
+            if (
+                finish_reason != "length"
+                and attempts < 2
+                and (deadline - time.perf_counter()) >= _MIN_RETRY_BUDGET_SECONDS
+            ):
+                continue  # an empty/invalid tool call is usually transient at temperature 0 (#61 probe: 31/44 recover)
             parsing_error = out.get("parsing_error") if isinstance(out, Mapping) else None
             raise TriageModelError(
                 "news_triage_output_truncated" if finish_reason == "length" else "news_triage_output_invalid",
@@ -180,6 +237,8 @@ class TriageModel:
                 output_tokens=usage.get("output_tokens"),
                 detail=(f"{type(parsing_error).__name__}: {parsing_error}"[:_DETAIL_CHARS] if parsing_error else None),
             )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        details = usage.get("input_token_details") or {}
         return TriageCallResult(
             verdict=parsed,
             latency_ms=latency_ms,
@@ -188,14 +247,34 @@ class TriageModel:
             cached_tokens=details.get("cache_read") if isinstance(details, Mapping) else None,
             model=self.model_name,
             attempts=attempts,
+            novelty_defaulted=novelty_defaulted,
         )
 
 
+def _verdict_without_novelty(raw: Any) -> TriageVerdict | None:
+    """The one lenient parse: a tool call that is a full verdict except for the required ``novelty`` field. Such an
+    answer carries a usable judgment (it is exactly what prompt v5 returned), so it is accepted as ``new_fact`` and
+    traced as ``novelty_defaulted`` instead of being counted as an output failure; anything else stays a failure."""
+
+    calls = getattr(raw, "tool_calls", None) or []
+    args = calls[0].get("args") if calls and isinstance(calls[0], Mapping) else None
+    if not isinstance(args, Mapping) or "novelty" in args or not args:
+        return None
+    try:
+        return TriageVerdict.model_validate({"novelty": "new_fact", **dict(args)})
+    except ValueError:
+        return None
+
+
 __all__ = [
+    "TOLD_MAX",
+    "TOLD_SAME_KEY_MAX",
+    "TOLD_WINDOW_MS",
     "TRIAGE_PROMPT_VERSION",
     "TriageCallResult",
     "TriageModel",
     "TriageModelError",
     "build_triage_input",
     "is_retryable_model_failure",
+    "told_ledger_for_prompt",
 ]
