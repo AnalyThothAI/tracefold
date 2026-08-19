@@ -1,4 +1,5 @@
 import { newsPath } from "@shared/routing/paths";
+import { Card } from "@shared/ui/Card";
 import * as PageState from "@shared/ui/PageState";
 import { Link } from "react-router-dom";
 
@@ -71,36 +72,25 @@ export function NewsStatusPage({ token }: { token: string }) {
             </div>
 
             <div className="news-status-grid">
-              <section aria-label="过去 24 小时漏斗" className="news-card">
-                <div className="news-card-header">
-                  <h2>过去 24 小时去向</h2>
-                  <small>点击一层可跳到对应事件</small>
-                </div>
+              <Card
+                title="过去 24 小时去向"
+                hint="点击一层可跳到对应事件"
+                aria-label="过去 24 小时漏斗"
+              >
                 <Funnel status={status} />
-              </section>
-              <section aria-label="拦截与推送原因" className="news-card">
-                <div className="news-card-header">
-                  <h2>原因排行</h2>
-                  <small>过去 24 小时，按事件数</small>
-                </div>
+              </Card>
+              <Card title="原因排行" hint="过去 24 小时，按事件数" aria-label="拦截与推送原因">
                 <ReasonBars reasons={status.reasons_24h ?? []} />
-              </section>
+              </Card>
             </div>
 
             <div className="news-status-grid">
-              <section aria-label="控制状态" className="news-card">
-                <div className="news-card-header">
-                  <h2>控制</h2>
-                  <small>用 tracefold news control 修改</small>
-                </div>
+              <Card title="控制" hint="用 tracefold news control 修改" aria-label="控制状态">
                 <ControlView status={status} />
-              </section>
-              <section aria-label="关注列表与策略" className="news-card">
-                <div className="news-card-header">
-                  <h2>关注列表与策略</h2>
-                </div>
+              </Card>
+              <Card title="关注列表与策略" aria-label="关注列表与策略">
                 <WatchAndStrategies status={status} />
-              </section>
+              </Card>
             </div>
 
             <TechnicalMetrics status={status} />
@@ -366,7 +356,7 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
       <div>
         <section>
           <h4>流水线</h4>
-          <dl className="news-kv">
+          <dl className="ui-kv">
             <KV k="state" v={status.state} />
             <KV k="workers_state" v={status.workers_state ?? "—"} />
             <KV k="triage_model" v={status.pipeline.triage_model ?? "—"} />
@@ -387,7 +377,7 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
         </section>
         <section>
           <h4>接入</h4>
-          <dl className="news-kv">
+          <dl className="ui-kv">
             <KV k="connected" v={String(status.ingest.connected)} />
             <KV k="token_configured" v={String(status.ingest.token_configured)} />
             <KV k="last_frame_at_ms" v={optionalTime(status.ingest.last_frame_at_ms)} />
@@ -418,7 +408,7 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
         </section>
         <section>
           <h4>队列</h4>
-          <dl className="news-kv">
+          <dl className="ui-kv">
             <KV k="configured" v={String(status.broker.configured)} />
             <KV k="connected" v={String(status.broker.connected ?? "unknown")} />
             <KV k="observed_at_ms" v={optionalTime(status.broker.observed_at_ms)} />
@@ -435,7 +425,7 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
 
 function KV({ k, v }: { k: string; v: string | number }) {
   return (
-    <div className="news-kv-row">
+    <div className="ui-kv-row">
       <dt>{k}</dt>
       <dd>{String(v)}</dd>
     </div>

@@ -1,0 +1,39 @@
+@layer app.primitives {
+  /*
+   * A labelled fact grid: the shape the Event detail verdict block introduced in #70 and the status page needs
+   * for the same job. Cells wrap on their own, so a caller only supplies the pairs it actually has — an empty
+   * cell is omitted rather than rendered as a dash.
+   */
+  .ui-fact-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0;
+  }
+
+  .ui-fact {
+    display: grid;
+    gap: 0.15rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+  }
+
+  .ui-fact dt {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 0.7rem;
+    letter-spacing: 0.01em;
+  }
+
+  .ui-fact dd {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.88rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+}

@@ -227,16 +227,13 @@
     color: var(--accent-primary);
   }
 
-  .news-timeline .news-kv {
+  /* The timeline's own container for a shared KeyValue; the primitive owns the pair layout, this owns the box. */
+  .news-timeline-fields {
     margin-top: 0.3rem;
     padding: 0.55rem 0.7rem;
-    border: 1px solid var(--border-faint);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    background: var(--surface-root);
-  }
-
-  .news-kv-row {
-    display: contents;
+    background: var(--surface-raised);
   }
 
   /* ------------------------------------------------------------------ members + labels */
@@ -380,39 +377,6 @@
     gap: 0.5rem 0.9rem;
     align-items: center;
     margin: 0.15rem 0 0;
-  }
-
-  .news-detail-grid-facts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
-    gap: 0.5rem;
-    margin: 0.35rem 0 0;
-    padding: 0;
-  }
-
-  .news-detail-fact {
-    display: grid;
-    gap: 0.15rem;
-    padding: 0.45rem 0.6rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: color-mix(in srgb, var(--surface-raised) 55%, transparent);
-  }
-
-  .news-detail-fact dt {
-    margin: 0;
-    color: var(--text-subtle);
-    font-size: 0.68rem;
-    letter-spacing: 0.02em;
-  }
-
-  .news-detail-fact dd {
-    margin: 0;
-    color: var(--text-primary);
-    font-size: 0.85rem;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    overflow-wrap: anywhere;
   }
 
   /* The model asked for one thing and the policy did another — the single most useful line for an operator. */

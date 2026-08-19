@@ -1,0 +1,37 @@
+@layer app.primitives {
+  /*
+   * The console's one panel shape. It lived as `.news-card` inside the News feature bucket and was hand-repeated
+   * at 14 call sites across three pages; the second page that needed a titled panel is what made it a primitive.
+   * On a light ground a card separates from the canvas by border and a hairline shadow, never by lightening.
+   */
+  .ui-card {
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+    box-shadow: var(--shadow-raised);
+  }
+
+  .ui-card-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.75rem;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+  }
+
+  .ui-card-header h2,
+  .ui-card-header h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    font-weight: 620;
+    letter-spacing: 0.01em;
+  }
+
+  .ui-card-header small {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+  }
+}
