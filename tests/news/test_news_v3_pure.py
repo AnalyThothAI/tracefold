@@ -498,6 +498,58 @@ def test_decide_v3_novelty_restatement_and_bypass() -> None:
     assert esc.final == "escalate" and esc.override_rule == "novel_bypass"
     # Hourly cap still applies after a bypass.
     assert decide(_verdict(novelty="new_fact"), _FACTS, busy, hourly_cap_reached=True).throttled_by == "hourly_cap"
+    # A degraded (rule-baseline) verdict never earns the bypass; the asset hard cap counts the 2 h window even for
+    # an escalate (the config key and the console copy both say 2 h).
+    assert decide(_verdict(novelty="new_fact"), _FACTS, busy, degraded=True).final == "throttled"
+    old_pushes = StorylineStatus(
+        key="asset:NVDA",
+        pushed_2h=0,
+        pushed_4h=3,
+        max_magnitude_2h=0,
+        max_magnitude_4h=3,
+        directions_2h=(),
+        directions_4h=("bullish",),
+    )
+    esc_asset = decide(_verdict(novelty="new_fact", magnitude=3), _FACTS, old_pushes)
+    assert esc_asset.final == "escalate" and esc_asset.override_rule == "novel_bypass"
+
+
+def test_told_ledger_for_prompt_reserves_same_key_slots_and_keeps_cross_key_cards() -> None:
+    from tracefold.news.agents.triage_model import TOLD_MAX, TOLD_SAME_KEY_MAX, told_ledger_for_prompt
+
+    now = 1_800_000_000_000
+    same = [
+        {
+            "event_id": f"s{i}",
+            "at_ms": now - i * 60_000,
+            "storyline_key": "theme:rates",
+            "magnitude": 2,
+            "direction": "bearish",
+            "headline_zh": f"同 {i}",
+        }
+        for i in range(10)
+    ]
+    other = [
+        {
+            "event_id": f"o{i}",
+            "at_ms": now - (20 + i) * 60_000,
+            "storyline_key": "asset:BTC",
+            "magnitude": 2,
+            "direction": "bullish",
+            "headline_zh": f"他 {i}",
+        }
+        for i in range(5)
+    ]
+    told = told_ledger_for_prompt(same + other, now_ms=now, prefer_key="theme:rates")
+    assert len(told) == TOLD_MAX
+    same_ids = [t["event_id"] for t in told if t["event_id"].startswith("s")]
+    other_ids = [t["event_id"] for t in told if t["event_id"].startswith("o")]
+    # Six same-key slots reserved, all five cross-key cards kept, one more same-key card tops up to twelve.
+    assert len(other_ids) == 5 and len(same_ids) == TOLD_MAX - 5 >= TOLD_SAME_KEY_MAX
+    assert [t["i"] for t in told] == list(range(TOLD_MAX))
+    assert told[0]["ago_min"] == 0 and told[0]["headline_zh"] == "同 0"
+    # Newest-first regardless of key.
+    assert [t["at_ms"] for t in told] == sorted((t["at_ms"] for t in told), reverse=True)
 
 
 def test_storyline_status_from_row_carries_told_directions() -> None:

@@ -347,7 +347,10 @@ Diagnose News in this order:
    `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
    duplicates the reader was spared; `pipeline.reasked_24h` counts Events the
    model was asked twice because a card landed while it was thinking (expect
-   a handful per day; a surge means same-key floods).
+   a handful per day; a surge means same-key floods); `pipeline.novelty_defaulted_24h`
+   counts verdicts the model returned without the `novelty` field (accepted as
+   `new_fact` after the retry — a rising count means the schema stopped
+   landing and novelty is silently off).
 6. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 

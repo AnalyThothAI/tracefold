@@ -680,10 +680,12 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
     ledger_calls = {"n": 0}
 
-    def told_ledger(*, now_ms: int, window_ms: int, limit: int) -> list[dict[str, Any]]:
-        del now_ms, window_ms
+    def told_ledger(
+        *, now_ms: int, window_ms: int, limit: int, prefer_key: str | None = None, **_: Any
+    ) -> list[dict[str, Any]]:
+        del now_ms, window_ms, prefer_key
         ledger_calls["n"] += 1
-        # First read (load): nothing yet. Every later read (in-lock check, refresh) sees the new card.
+        # First read (load): nothing yet. Every later read (in-lock check, reload) sees the new card.
         if ledger_calls["n"] == 1:
             return []
         return [fresh_push][:limit]
@@ -718,6 +720,79 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     assert trace["first_verdict"]["novelty"] == "new_fact" and trace["first_verdict"]["decision"] == "push"
     assert trace["told_count"] == 1 and trace["restates_event_id"] == "ev-just-pushed"
     assert news.names().count("lock_storyline") == 2
+    # The re-ask reloads everything the model and decide() look at (card, window facts, control, hourly count).
+    assert news.names().count("event_card") == 2 and news.names().count("read_control") == 2
+    assert bus.published == []
+
+
+def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseline() -> None:
+    """If the re-ask itself fails, the model's first (valid) judgment is persisted, not a degraded fallback."""
+
+    from tracefold.news.agents.triage_model import TriageModelError
+
+    fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
+    ledger_calls = {"n": 0}
+
+    def told_ledger(**kwargs: Any) -> list[dict[str, Any]]:
+        ledger_calls["n"] += 1
+        return [] if ledger_calls["n"] == 1 else [fresh_push][: int(kwargs.get("limit") or 1)]
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(priority="normal", provider_score_max=70.0),
+        event_status={},
+        sent_count_since=0,
+        insert_verdict=True,
+        told_ledger=told_ledger,
+    )
+    bus = FakeBus()
+
+    class _FirstOkThenTimeout(_ScriptedTriageModel):
+        async def triage(self, human: str) -> Any:
+            if self.inputs:
+                self.inputs.append(human)
+                raise TriageModelError("news_triage_timeout", retryable=True)
+            return await super().triage(human)
+
+    model = _FirstOkThenTimeout([_model_verdict(novelty="new_fact", magnitude=3, direction="bearish", scope="macro")])
+    triage = _triage_with_model(news, bus, model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert len(model.inputs) == 2
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["degraded"] is False and inserted["error_code"] is None
+    assert inserted["final_decision"] == "escalate" and inserted["verdict"]["magnitude"] == 3
+    assert inserted["trace"]["reask_failed"] == "news_triage_timeout"
+    assert inserted["trace"]["reasked_after_told_change"] is True
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]
+
+
+def test_triage_degraded_fallback_never_earns_the_novelty_bypass() -> None:
+    """A rule-baseline placeholder verdict (no model judgment) is soft-throttled like before policy v3."""
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(),  # watchlist NVDA -> rule baseline pushes
+        event_status={
+            "pushed_2h": 1,
+            "pushed_4h": 1,
+            "max_magnitude_2h": 2,
+            "max_magnitude_4h": 2,
+            "directions_2h": ["neutral"],
+            "directions_4h": ["neutral"],
+        },
+        sent_count_since=0,
+        insert_verdict=True,
+    )
+    bus = FakeBus()
+    triage = _triage(news, bus)  # model=None -> degraded fallback
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["degraded"] is True and inserted["final_decision"] == "throttled"
+    assert inserted["throttled_by"] == "storyline:asset:NVDA" and inserted["override_rule"] != "novel_bypass"
     assert bus.published == []
 
 

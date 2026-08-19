@@ -137,9 +137,12 @@ def decide(
     *,
     hourly_cap_reached: bool = False,
     muted: bool = False,
+    degraded: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
-    """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently."""
+    """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently.
+
+    ``degraded`` marks a rule-baseline fallback verdict (no model judgment): it never earns the novelty bypass."""
 
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
@@ -185,7 +188,7 @@ def decide(
     if final in {"push", "escalate"} and status is not None and policy.storyline_throttle:
         throttled_by = _storyline_throttle(verdict, status, final, policy)
         if throttled_by is not None:
-            hard = _novel_bypass(verdict, status, final, policy)
+            hard = None if degraded else _novel_bypass(verdict, status, policy)
             if hard is None:
                 return DecisionResult("throttled", rule, throttled_by, baseline, watch_hits)
             if hard:
@@ -197,16 +200,19 @@ def decide(
     return DecisionResult(final, rule, None, baseline, watch_hits)
 
 
-def _novel_bypass(verdict: TriageVerdict, status: StorylineStatus, final: Decision, policy: DecidePolicy) -> str | None:
-    """A novel event (new_fact / progression, m >= novel_min_magnitude) may pass the soft throttle up to a hard cap.
-    Returns None when the event is not novel enough (the soft throttle stands), "" when it passes, or the hard-cap
-    ``throttled_by`` key when the hard cap is reached."""
+def _novel_bypass(verdict: TriageVerdict, status: StorylineStatus, policy: DecidePolicy) -> str | None:
+    """A novel event (new_fact / progression, m >= novel_min_magnitude) may pass the soft throttle up to a hard cap:
+    ``asset_hard_cap_2h`` pushes in the last 2 h for asset keys (push and escalate alike — the cap is named by its
+    window), ``theme_hard_cap_4h`` in the last 4 h for theme/macro keys. Returns None when the event is not novel
+    enough (the soft throttle stands), "" when it passes, or the hard-cap ``throttled_by`` key when the cap is
+    reached."""
 
     if verdict.novelty not in {"new_fact", "progression"} or verdict.magnitude < policy.novel_min_magnitude:
         return None
     if status.key.startswith("asset:"):
-        pushed = status.pushed_2h if final == "push" else status.pushed_4h
-        return "" if pushed < policy.asset_hard_cap_2h else f"storyline:{status.key}:hard{policy.asset_hard_cap_2h}"
+        if status.pushed_2h < policy.asset_hard_cap_2h:
+            return ""
+        return f"storyline:{status.key}:hard{policy.asset_hard_cap_2h}"
     return (
         "" if status.pushed_4h < policy.theme_hard_cap_4h else f"storyline:{status.key}:hard{policy.theme_hard_cap_4h}"
     )

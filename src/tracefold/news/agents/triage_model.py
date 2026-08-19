@@ -88,13 +88,13 @@ def told_ledger_for_prompt(
     the model cites in ``restates`` and ``event_id``/``at_ms`` stay for the trace (they are not sent)."""
 
     ordered = sorted(rows, key=lambda r: -int(r.get("at_ms") or 0))
-    same = [r for r in ordered if str(r.get("storyline_key") or "") == prefer_key][:TOLD_SAME_KEY_MAX]
-    chosen = list(same)
-    for row in ordered:
-        if len(chosen) >= limit:
-            break
-        if row not in chosen:
-            chosen.append(row)
+    same = [r for r in ordered if str(r.get("storyline_key") or "") == prefer_key]
+    others = [r for r in ordered if str(r.get("storyline_key") or "") != prefer_key]
+    # Reserve up to TOLD_SAME_KEY_MAX slots for the preliminary storyline, fill the rest with the newest cards on
+    # other storylines (cross-key restatements are the point), then top up with more same-key cards if slots remain.
+    chosen = same[:TOLD_SAME_KEY_MAX]
+    chosen += others[: max(0, limit - len(chosen))]
+    chosen += same[TOLD_SAME_KEY_MAX:][: max(0, limit - len(chosen))]
     chosen.sort(key=lambda r: -int(r.get("at_ms") or 0))
     return [
         {
@@ -217,10 +217,6 @@ class TriageModel:
             novelty_defaulted = False
             if isinstance(parsed, TriageVerdict):
                 break
-            parsed = _verdict_without_novelty(raw)
-            if parsed is not None:
-                novelty_defaulted = True  # a complete verdict minus the novelty field: use it as new_fact (v5 quality)
-                break
             finish_reason = _finish_reason(raw)
             if (
                 finish_reason != "length"
@@ -228,6 +224,12 @@ class TriageModel:
                 and (deadline - time.perf_counter()) >= _MIN_RETRY_BUDGET_SECONDS
             ):
                 continue  # an empty/invalid tool call is usually transient at temperature 0 (#61 probe: 31/44 recover)
+            parsed = _verdict_without_novelty(raw)
+            if parsed is not None:
+                # The retry (or the deadline) is spent and the answer is a complete verdict minus the novelty field:
+                # use it as new_fact (prompt-v5 quality, no novelty judgment) rather than fall back on rules.
+                novelty_defaulted = True
+                break
             parsing_error = out.get("parsing_error") if isinstance(out, Mapping) else None
             raise TriageModelError(
                 "news_triage_output_truncated" if finish_reason == "length" else "news_triage_output_invalid",
@@ -252,9 +254,10 @@ class TriageModel:
 
 
 def _verdict_without_novelty(raw: Any) -> TriageVerdict | None:
-    """The one lenient parse: a tool call that is a full verdict except for the required ``novelty`` field. Such an
-    answer carries a usable judgment (it is exactly what prompt v5 returned), so it is accepted as ``new_fact`` and
-    traced as ``novelty_defaulted`` instead of being counted as an output failure; anything else stays a failure."""
+    """The one lenient parse, tried only once the retry budget is spent: a tool call that is a full verdict except
+    for the required ``novelty`` field. Such an answer carries a usable judgment (it is exactly what prompt v5
+    returned), so it is accepted as ``new_fact`` and traced as ``novelty_defaulted`` instead of being counted as an
+    output failure; anything else stays a failure."""
 
     calls = getattr(raw, "tool_calls", None) or []
     args = calls[0].get("args") if calls and isinstance(calls[0], Mapping) else None

@@ -524,30 +524,45 @@ class NewsRepository:
         ).fetchone()
         return dict(row) if row else {}
 
-    def told_ledger(self, *, now_ms: int, window_ms: int, limit: int) -> list[dict[str, Any]]:
-        """Cards the reader received in the window: the newest ``limit`` push/escalate verdicts (degraded fallbacks
-        excluded — their placeholder headline is not a card the reader can recognise). Newest first; the consumer
-        reorders/trims for the status bar (``told_ledger_for_prompt``) and compares ``at_ms`` for staleness."""
+    def told_ledger(
+        self, *, now_ms: int, window_ms: int, limit: int, prefer_key: str | None = None, prefer_limit: int = 8
+    ) -> list[dict[str, Any]]:
+        """Cards the reader received in the window: push/escalate verdicts whose first card was not terminalised
+        (a Feishu failure, sender unavailable, paused lane, hourly cap or crash never reached the reader; degraded
+        fallbacks are excluded too — their placeholder headline is not a card the reader can recognise). The newest
+        ``limit`` overall plus, when ``prefer_key`` is given, the newest ``prefer_limit`` on that storyline (which
+        may be older than the global window's newest); newest first, one row per event. The consumer trims for the
+        status bar (``told_ledger_for_prompt``) and compares the event-id set for staleness."""
 
-        rows = self.conn.execute(
-            """
+        base = """
             SELECT v.event_id, v.created_at_ms AS at_ms, e.storyline_key,
                    (v.verdict ->> 'magnitude')::int AS magnitude, v.verdict ->> 'direction' AS direction,
                    v.verdict ->> 'headline_zh' AS headline_zh
-              FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
+              FROM news_verdicts v
+              JOIN news_events e ON e.event_id = v.event_id
+              LEFT JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first'
              WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate') AND NOT v.degraded
-               AND v.created_at_ms >= %s
-             ORDER BY v.created_at_ms DESC
-             LIMIT %s
-            """,
-            (int(now_ms) - int(window_ms), int(limit)),
-        ).fetchall()
-        return [dict(r) for r in rows]
+               AND v.created_at_ms >= %s AND COALESCE(d.state, '') <> 'terminal'
+        """
+        since = int(now_ms) - int(window_ms)
+        rows = self.conn.execute(base + " ORDER BY v.created_at_ms DESC LIMIT %s", (since, int(limit))).fetchall()
+        merged = {str(r["event_id"]): dict(r) for r in rows}
+        if prefer_key:
+            same = self.conn.execute(
+                base + " AND e.storyline_key = %s ORDER BY v.created_at_ms DESC LIMIT %s",
+                (since, prefer_key, int(prefer_limit)),
+            ).fetchall()
+            for r in same:
+                merged.setdefault(str(r["event_id"]), dict(r))
+        return sorted(merged.values(), key=lambda r: -int(r["at_ms"]))
 
     def lock_storyline(self, storyline_key: str) -> None:
         """Transaction-scoped advisory lock on one storyline key so "read window facts -> decide -> insert verdict"
-        is serialised per key across concurrent Triage handlers (and processes). Released at commit/rollback."""
+        is serialised per key across concurrent Triage handlers (and processes). Released at commit/rollback. The
+        worker pool's 250 ms ``lock_timeout`` is raised for this transaction only: a same-key holder finishes in a
+        few ms, and a waiter that gave up would re-run the whole handler including a second paid model call."""
 
+        self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_STORYLINE_LOCK_NAMESPACE, storyline_key))
 
     # ------------------------------------------------------------------ verdicts
@@ -929,9 +944,12 @@ class NewsRepository:
                 WHERE stage = 'triage' AND created_at_ms >= %s AND trace ? 'queue_lag_ms') AS queue_lag_p95_ms,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND created_at_ms >= %s
-                  AND COALESCE((trace ->> 'reasked_after_told_change')::boolean, false)) AS reasked_24h
+                  AND COALESCE((trace ->> 'reasked_after_told_change')::boolean, false)) AS reasked_24h,
+              (SELECT count(*) FROM news_verdicts
+                WHERE stage = 'triage' AND created_at_ms >= %s
+                  AND COALESCE((trace ->> 'novelty_defaulted')::boolean, false)) AS novelty_defaulted_24h
             """,
-            (hour_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago, day_ago),
+            (hour_ago, *([day_ago] * 11)),
         ).fetchone()
         delivery = self.conn.execute(
             """

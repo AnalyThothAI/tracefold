@@ -235,6 +235,9 @@ class NewsPolicySettings(BaseModel):
             raise ValueError("news_policy_theme_cap_invalid")
         if not 0 <= int(self.novel_min_magnitude) <= 3:
             raise ValueError("news_policy_novel_min_magnitude_invalid")
+        if "theme_hard_cap_4h" not in self.model_fields_set:
+            # An operator who only raised the soft cap keeps a valid config: the hard cap follows it.
+            self.theme_hard_cap_4h = max(self.theme_hard_cap_4h, self.theme_cap_4h)
         if not self.theme_cap_4h <= self.theme_hard_cap_4h <= 100:
             raise ValueError("news_policy_theme_hard_cap_invalid")
         if not 1 <= self.asset_hard_cap_2h <= 100:

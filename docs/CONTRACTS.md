@@ -240,7 +240,8 @@ exposed, prompt target <= 70 characters, at most 140); the stored row adds
 `input_sha256`, `storyline_key_preliminary`, `status`, `status_final`,
 `storyline_key`, `told[{i, event_id, at_ms, m, dir, headline_zh}]`,
 `told_count`, `restates_event_id`, `reasked_after_told_change`,
-`first_verdict`, `novelty_defaulted`, model telemetry). `triage` is the only
+`first_verdict`, `first_input_sha256`, `reask_failed`, `novelty_defaulted`,
+model telemetry). `triage` is the only
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v2`,

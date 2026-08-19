@@ -2644,6 +2644,11 @@ export interface components {
              * @default 0
              */
             labeled_missed_24h: number;
+            /**
+             * Novelty Defaulted 24H
+             * @default 0
+             */
+            novelty_defaulted_24h: number;
             /** Pushed By Rule */
             pushed_by_rule?: {
                 [key: string]: number;

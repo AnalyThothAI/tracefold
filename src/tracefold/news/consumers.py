@@ -549,7 +549,7 @@ class _TriageSettle:
     facts: GateFacts
     final_key: str
     told: Sequence[Mapping[str, Any]]
-    told_latest_ms: int
+    told_seen: frozenset[str]
     control: Mapping[str, Any]
     cap_reached: bool
     degraded: bool
@@ -565,6 +565,14 @@ class _TriageOutcome:
     stale: bool
     final: str
     decision: DecisionResult | None
+
+
+def _open_circuit_incident(repos: Any, *, now_ms: int) -> Any:
+    return repos.news.open_incident(cause_class="triage_circuit_open", now_ms=now_ms)
+
+
+def _close_circuit_incidents(repos: Any, *, now_ms: int) -> Any:
+    return repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms)
 
 
 def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -649,9 +657,10 @@ class TriageConsumer:
         )
         prelim_key = str(card.get("storyline_key") or "")
         # The told ledger: what the reader already received (newest first, same preliminary storyline first). The
-        # model judges novelty against it; ``told_latest_ms`` is the snapshot the persist step compares against.
+        # model judges novelty against it; ``told_seen`` (event ids) is the snapshot the persist step compares against
+        # — ids, not clocks, because verdict rows carry their handler's start stamp, not commit time.
         told = told_ledger_for_prompt(ledger_rows, now_ms=stamp, prefer_key=prelim_key)
-        told_latest_ms = max((int(r.get("at_ms") or 0) for r in ledger_rows), default=0)
+        told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
         status = storyline_status_from_row(status_row, prelim_key, told=told)
         cap_reached = sent_last_hour >= self.hourly_cap
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
@@ -666,15 +675,19 @@ class TriageConsumer:
         }
         model_name = self.model.model_name if self.model else None
         reasked = False
+        first_verdict: TriageVerdict | None = None
         while True:
             degraded = False
             error_code = None
             if self.model is None:
                 verdict, _ = fallback_verdict(facts, error_code="news_triage_model_unconfigured")
                 degraded, error_code = True, "news_triage_model_unconfigured"
-            elif self.circuit.is_open(stamp):
+            elif self.circuit.is_open(stamp) and first_verdict is None:
                 verdict, _ = fallback_verdict(facts, error_code="news_triage_circuit_open")
                 degraded, error_code = True, "news_triage_circuit_open"
+            elif self.circuit.is_open(stamp) and first_verdict is not None:
+                verdict = first_verdict  # the re-ask cannot run; the model's own judgment beats the rule baseline
+                trace["reask_failed"] = "news_triage_circuit_open"
             else:
                 status_payload = {
                     **dict(status_row or {}),
@@ -723,10 +736,16 @@ class TriageConsumer:
                         with contextlib.suppress(TransientError, DeferError):
                             await self.db.tx(
                                 "news_triage_circuit",
-                                lambda repos: repos.news.open_incident(cause_class="triage_circuit_open", now_ms=stamp),
+                                functools.partial(_open_circuit_incident, now_ms=stamp),
                             )
-                    verdict, _ = fallback_verdict(facts, error_code=exc.code)
-                    degraded, error_code = True, exc.code
+                    if first_verdict is not None:
+                        # The re-ask failed: keep the model's first, valid judgment (its novelty was judged against
+                        # the older ledger, so the restatement rule may miss the newest card) rather than the baseline.
+                        verdict = first_verdict
+                        trace["reask_failed"] = exc.code
+                    else:
+                        verdict, _ = fallback_verdict(facts, error_code=exc.code)
+                        degraded, error_code = True, exc.code
                 else:
                     self.circuit.record_success()
                     if self._circuit_incident_open:
@@ -734,9 +753,7 @@ class TriageConsumer:
                         with contextlib.suppress(TransientError, DeferError):
                             await self.db.tx(
                                 "news_triage_circuit_close",
-                                lambda repos: repos.news.close_open_incidents(
-                                    cause_classes=["triage_circuit_open"], now_ms=stamp
-                                ),
+                                functools.partial(_close_circuit_incidents, now_ms=stamp),
                             )
                     verdict = call.verdict
                     trace.update(
@@ -765,7 +782,7 @@ class TriageConsumer:
                 facts=facts,
                 final_key=final_key,
                 told=told,
-                told_latest_ms=told_latest_ms,
+                told_seen=told_seen,
                 control=control,
                 cap_reached=cap_reached,
                 degraded=degraded,
@@ -778,8 +795,10 @@ class TriageConsumer:
             outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
             if outcome.stale:
                 # A card landed while the model was thinking: ask once more with the ledger it did not see (rare,
-                # ~0.6% of calls at 8 pushes/h) instead of pushing a restatement the reader just received.
+                # ~0.6% of calls at 8 pushes/h) instead of pushing a restatement the reader just received. Everything
+                # the model and decide() look at is re-read under a fresh stamp so the second input is consistent.
                 reasked = True
+                first_verdict = verdict
                 trace["reasked_after_told_change"] = True
                 trace["first_input_sha256"] = trace.get("input_sha256")
                 trace["first_verdict"] = {
@@ -790,13 +809,18 @@ class TriageConsumer:
                     "direction": verdict.direction,
                     "headline_zh": verdict.headline_zh,
                 }
-                ledger_rows = await self.db.read(
-                    "news_triage_told_refresh",
-                    lambda repos: repos.news.told_ledger(now_ms=now_ms(), window_ms=TOLD_WINDOW_MS, limit=TOLD_MAX * 2),
+                stamp = now_ms()
+                bundle = await self.db.read(
+                    "news_triage_reload", functools.partial(self._load, event_id=event_id, stamp=stamp)
                 )
-                told = told_ledger_for_prompt(ledger_rows, now_ms=now_ms(), prefer_key=final_key)
-                told_latest_ms = max((int(r.get("at_ms") or 0) for r in ledger_rows), default=told_latest_ms)
+                if bundle is None:
+                    raise PermanentError("news_event_missing")
+                card, status_row, control, sent_last_hour, ledger_rows = bundle
+                told = told_ledger_for_prompt(ledger_rows, now_ms=stamp, prefer_key=prelim_key)
+                told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
                 status = storyline_status_from_row(status_row, prelim_key, told=told)
+                cap_reached = sent_last_hour >= self.hourly_cap
+                trace["status"] = json_ready(dict(status_row or {}))
                 trace["told"] = _told_trace(told)
                 trace["told_count"] = len(told)
                 continue
@@ -812,16 +836,24 @@ class TriageConsumer:
         saw the ledger and the caller may still re-ask."""
 
         repos.news.lock_storyline(s.final_key)
-        newest = repos.news.told_ledger(now_ms=s.stamp, window_ms=TOLD_WINDOW_MS, limit=1)
-        latest_ms = int(newest[0]["at_ms"]) if newest else 0
-        if s.allow_stale and latest_ms > s.told_latest_ms:
-            return _TriageOutcome(stale=True, final="drop", decision=None)
+        if s.allow_stale:
+            fresh = repos.news.told_ledger(now_ms=s.stamp, window_ms=TOLD_WINDOW_MS, limit=TOLD_MAX * 2)
+            if any(str(r.get("event_id") or "") not in s.told_seen for r in fresh):
+                return _TriageOutcome(stale=True, final="drop", decision=None)
         final_row = repos.news.event_status(storyline_key=s.final_key, now_ms=s.stamp)
         status = storyline_status_from_row(final_row, s.final_key, told=s.told)
         muted = bool(s.control.get("paused")) or is_muted(
             s.control, storyline_key=s.final_key, grounded_assets=s.facts.grounded_assets, now_ms=s.stamp
         )
-        decision = decide(s.verdict, s.facts, status, hourly_cap_reached=s.cap_reached, muted=muted, policy=self.policy)
+        decision = decide(
+            s.verdict,
+            s.facts,
+            status,
+            hourly_cap_reached=s.cap_reached,
+            muted=muted,
+            degraded=s.degraded,
+            policy=self.policy,
+        )
         if s.degraded and decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
             decision = DecisionResult(
                 "drop", "fail_closed_fallback", None, decision.rule_baseline, decision.watchlist_hits
@@ -870,7 +902,12 @@ class TriageConsumer:
         status_row = repos.news.event_status(storyline_key=str(card.get("storyline_key") or ""), now_ms=stamp)
         control = repos.news.read_control(now_ms=stamp)
         sent = repos.news.sent_count_since(since_ms=stamp - 3600_000)
-        ledger = repos.news.told_ledger(now_ms=stamp, window_ms=TOLD_WINDOW_MS, limit=TOLD_MAX * 2)
+        ledger = repos.news.told_ledger(
+            now_ms=stamp,
+            window_ms=TOLD_WINDOW_MS,
+            limit=TOLD_MAX * 2,
+            prefer_key=str(card.get("storyline_key") or "") or None,
+        )
         return card, status_row, control, sent, ledger
 
     async def _publish_decision(self, event_id: str, final: str, *, trace_id: str, amqp_priority: int) -> None:

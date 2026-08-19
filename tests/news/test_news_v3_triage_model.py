@@ -125,12 +125,25 @@ def test_a_full_verdict_missing_only_novelty_is_accepted_as_new_fact() -> None:
         tool_calls=[{"name": "TriageVerdict", "args": args, "id": "call-1", "type": "tool_call"}],
         usage_metadata={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
     )
-    model = _StructuredModel([{"raw": raw, "parsed": None, "parsing_error": ValueError("novelty missing")}])
+    missing = {"raw": raw, "parsed": None, "parsing_error": ValueError("novelty missing")}
+    # The retry comes first (the omission is usually transient); only a second omission is accepted leniently.
+    model = _StructuredModel([dict(missing), _ok()])
     triage = TriageModel(model=model, model_name="m", deadline_seconds=6.0)  # type: ignore[arg-type]
     result = asyncio.run(triage.triage("<event/>"))
-    assert model.calls == 1 and result.attempts == 1
+    assert model.calls == 2 and result.attempts == 2 and result.novelty_defaulted is False
+
+    model = _StructuredModel([dict(missing), dict(missing)])
+    triage = TriageModel(model=model, model_name="m", deadline_seconds=6.0)  # type: ignore[arg-type]
+    result = asyncio.run(triage.triage("<event/>"))
+    assert model.calls == 2 and result.attempts == 2
     assert result.novelty_defaulted is True and result.verdict.novelty == "new_fact" and result.verdict.restates == -1
     assert result.verdict.headline_zh == "英伟达投资"
+
+    # No retry budget left: the lenient parse applies on the first answer.
+    tight = _StructuredModel([dict(missing)])
+    triage = TriageModel(model=tight, model_name="m", deadline_seconds=1.0)  # type: ignore[arg-type]
+    result = asyncio.run(triage.triage("<event/>"))
+    assert tight.calls == 1 and result.novelty_defaulted is True
 
     # A tool call missing anything else is still an output failure (retried once, then classified).
     broken = dict(args)
