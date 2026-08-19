@@ -225,14 +225,16 @@ Fingerprints of at most two tokens never share an Event.
 Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
 `event_type`, `assets[{symbol, market_type?, role}]`, `direction`, `scope`,
 `magnitude 0..3`, `actionable`, `confidence`, `decision` (model intent),
-`audience`, `headline_zh` (the card header), `title_zh` (faithful Chinese
-title, console only, at most 160 characters), `why_zh` (one plain sentence, at
-most 140 characters); the stored row adds `model_decision`,
+`audience`, `headline_zh` (the card header: a complete headline that keeps the
+decisive number / condition / consequence clause, prompt target 15–45
+characters, at most 60), `title_zh` (faithful Chinese title, console only, at
+most 160 characters), `why_zh` (one plain sentence adding mechanism and who is
+exposed, prompt target <= 70 characters, at most 140); the stored row adds `model_decision`,
 `rule_baseline_decision`, `final_decision`, `override_rule`, `throttled_by`,
 `degraded`, `error_code`, `trace`. `triage` is the only stage written; the
 retired Analyst lane's `deep` rows survive as history (issue #57). The current
 versions are `news_title_norm_v2`, `news_gate_v4` (lexicon
-`news_gate_lexicon_v2`), `news_storyline_v2`, `news_triage_prompt_v5`,
+`news_gate_lexicon_v2`), `news_storyline_v2`, `news_triage_prompt_v6`,
 `news_triage_policy_v2`, and `news_delivery_card_v8`.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
