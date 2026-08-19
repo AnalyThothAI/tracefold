@@ -47,11 +47,24 @@ generated-source fallback. Remove them from an existing operator config before
 upgrading.
 
 `llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
-DeepSeek-compatible configuration. They are all absent or all present; a
-partial triple fails validation, and Tracefold never supplies an implicit
-endpoint or model. `llm.macro_document_analysis_enabled` and
-`llm.macro_document_analysis_model` admit the optional Fed document analysis
-on the same gateway. The card's Chinese text is the Triage verdict's
+OpenAI-compatible configuration (DeepSeek, or a LAN llama.cpp / vLLM server).
+They are all absent or all present; a partial triple fails validation, and
+Tracefold never supplies an implicit endpoint or model. `qwen*` models are
+called with `chat_template_kwargs.enable_thinking=false` (code-owned): Qwen3
+otherwise spends the Triage token budget on reasoning before the tool call.
+`llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
+only valid next to a complete primary triple; issue #65) is a second direct
+endpoint used only when the primary Triage call fails — timeout, transport
+error, truncated or invalid output — or while the primary breaker
+(`news.triage.circuit_failures` consecutive primary failures open it for
+`news.triage.circuit_open_seconds`) is open. Each link gets its own
+`news.triage.deadline_seconds`; `news_verdicts.model` records the model that
+answered and the trace carries `model_fallback_from` (the primary's error code
+or `primary_circuit_open`) or, when both links failed, `primary_error`.
+`/api/news/status.pipeline` and `tracefold config` report both
+`triage_model` and `triage_fallback_model`. `llm.macro_document_analysis_enabled`
+and `llm.macro_document_analysis_model` admit the optional Fed document
+analysis on the primary gateway. The card's Chinese text is the Triage verdict's
 `headline_zh` and `why_zh` (with `title_zh` for the console); no other model
 or provider produces copy. Model execution policy, timeouts, token budgets,
 cadence, retries, and reservations are code-owned. Environment variables are

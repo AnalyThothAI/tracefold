@@ -712,6 +712,8 @@ class TriageConsumer:
                     call = await self.model.triage(human)
                 except TriageModelError as exc:
                     trace.update({"model_attempts": exc.attempts, "model_failure_retryable": exc.retryable})
+                    if exc.primary_code:
+                        trace["primary_error"] = exc.primary_code
                     if exc.output_failure:
                         # The model answered but the verdict is unusable (max_tokens truncation, schema mismatch):
                         # record why, and keep the transport circuit closed — falling back on every Event would be
@@ -756,6 +758,7 @@ class TriageConsumer:
                                 functools.partial(_close_circuit_incidents, now_ms=stamp),
                             )
                     verdict = call.verdict
+                    model_name = call.model
                     trace.update(
                         {
                             "latency_ms": call.latency_ms,
@@ -767,6 +770,14 @@ class TriageConsumer:
                     )
                     if call.novelty_defaulted:
                         trace["novelty_defaulted"] = True
+                    if call.fallback_from:
+                        trace["model_fallback_from"] = call.fallback_from
+                        log.warning(
+                            "news triage fallback answered event=%s model=%s primary_error=%s",
+                            event_id,
+                            call.model,
+                            call.fallback_from,
+                        )
             # The final storyline key comes from the verdict (primaries/scope); the throttle windows must use it.
             final_key = final_storyline_key(
                 title=str(card.get("leader_title") or ""),

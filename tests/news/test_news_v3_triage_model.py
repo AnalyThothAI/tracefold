@@ -181,3 +181,74 @@ def test_retryable_classification_covers_transport_and_limit_failures() -> None:
     assert is_retryable_model_failure(type("APIConnectionError", (Exception,), {})())
     assert not is_retryable_model_failure(_BadRequestError())
     assert not is_retryable_model_failure(ValueError())
+
+
+# --- fallback chain (issue #65) -------------------------------------------------------------------------------------
+
+
+def _chain(primary_outcomes: list[Any], fallback_outcomes: list[Any], **kwargs: Any) -> tuple[Any, Any, TriageModel]:
+    primary = _StructuredModel(primary_outcomes)
+    fallback = _StructuredModel(fallback_outcomes)
+    fb = TriageModel(model=fallback, model_name="deepseek-chat", deadline_seconds=6.0)  # type: ignore[arg-type]
+    chain = TriageModel(
+        model=primary,  # type: ignore[arg-type]
+        model_name="qwen3.8-27b",
+        deadline_seconds=6.0,
+        fallback=fb,
+        primary_breaker_failures=kwargs.get("breaker_failures", 3),
+        primary_breaker_open_seconds=kwargs.get("breaker_open_seconds", 60.0),
+    )
+    return primary, fallback, chain
+
+
+def test_primary_success_never_touches_the_fallback() -> None:
+    primary, fallback, chain = _chain([_ok()], [_ok()])
+    result = asyncio.run(chain.triage("<event/>"))
+    assert result.model == "qwen3.8-27b" and result.fallback_from is None
+    assert primary.calls == 1 and fallback.calls == 0
+
+
+def test_primary_failure_is_answered_by_the_fallback_and_recorded() -> None:
+    primary, fallback, chain = _chain([_BadRequestError("schema")], [_ok()])
+    result = asyncio.run(chain.triage("<event/>"))
+    assert result.model == "deepseek-chat"
+    assert result.fallback_from == "news_triage_model_failed:_BadRequestError"
+    assert result.attempts == 2 and primary.calls == 1 and fallback.calls == 1
+
+
+def test_primary_output_failure_also_falls_back() -> None:
+    truncated = {"raw": AIMessage(content="", response_metadata={"finish_reason": "length"}), "parsed": None}
+    _, fallback, chain = _chain([truncated], [_ok()])
+    result = asyncio.run(chain.triage("<event/>"))
+    assert result.model == "deepseek-chat" and result.fallback_from == "news_triage_output_truncated"
+    assert fallback.calls == 1
+
+
+def test_both_links_failing_raises_the_fallback_error_with_the_primary_code() -> None:
+    _, _, chain = _chain([_RateLimitError("429"), _RateLimitError("429")], [_BadRequestError("schema")])
+    with pytest.raises(TriageModelError) as exc:
+        asyncio.run(chain.triage("<event/>"))
+    assert exc.value.code == "news_triage_model_failed:_BadRequestError"
+    assert exc.value.primary_code == "news_triage_model_failed:_RateLimitError"
+    assert exc.value.attempts == 3 and exc.value.retryable is False
+
+
+def test_primary_breaker_skips_a_failing_primary_until_it_reopens() -> None:
+    outcomes = [_BadRequestError("x"), _BadRequestError("x"), _ok()]
+    primary, fallback, chain = _chain(outcomes, [_ok(), _ok(), _ok(), _ok()], breaker_failures=2)
+    asyncio.run(chain.triage("<event/>"))  # failure 1 -> fallback
+    asyncio.run(chain.triage("<event/>"))  # failure 2 -> breaker opens
+    third = asyncio.run(chain.triage("<event/>"))  # primary skipped
+    assert third.fallback_from == "primary_circuit_open" and third.model == "deepseek-chat"
+    assert primary.calls == 2 and fallback.calls == 3
+    chain._breaker.open_until = 0.0  # the window elapsed
+    fourth = asyncio.run(chain.triage("<event/>"))
+    assert fourth.model == "qwen3.8-27b" and fourth.fallback_from is None and primary.calls == 3
+
+
+def test_without_fallback_the_error_surfaces_unchanged() -> None:
+    model = _StructuredModel([_BadRequestError("schema")])
+    triage = TriageModel(model=model, model_name="m", deadline_seconds=6.0)  # type: ignore[arg-type]
+    with pytest.raises(TriageModelError) as exc:
+        asyncio.run(triage.triage("<event/>"))
+    assert exc.value.primary_code is None

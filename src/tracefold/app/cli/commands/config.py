@@ -81,6 +81,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                     "models": {
                         "triage_configured": model_availability.triage_configured,
                         "triage_model": model_availability.triage_model,
+                        "triage_fallback_model": model_availability.triage_fallback_model,
                     },
                     "triage": settings.news.triage.model_dump(),
                     "watchlist": sorted(settings.news.watchlist_symbols),

@@ -1,4 +1,10 @@
-"""Triage: one structured LangChain call with a byte-frozen system prompt and an end-of-message status bar."""
+"""Triage: one structured LangChain call with a byte-frozen system prompt and an end-of-message status bar.
+
+With a configured fallback endpoint (issue #65) the call is a two-link chain: the primary model gets
+``deadline_seconds``; when it raises a Triage model error (timeout, transport, truncated or invalid output) the
+fallback model gets one call under its own deadline, and the verdict records which model answered. A small primary
+breaker skips a primary that keeps failing so Events stop paying the primary deadline before the fallback.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +12,7 @@ import asyncio
 import json
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -44,6 +50,7 @@ class TriageModelError(RuntimeError):
         finish_reason: str | None = None,
         output_tokens: int | None = None,
         detail: str | None = None,
+        primary_code: str | None = None,
     ) -> None:
         self.code = code
         self.retryable = retryable
@@ -52,6 +59,7 @@ class TriageModelError(RuntimeError):
         self.finish_reason = finish_reason
         self.output_tokens = output_tokens
         self.detail = detail
+        self.primary_code = primary_code  # set when the fallback link failed too: the primary's error code
         super().__init__(code)
 
 
@@ -78,6 +86,8 @@ class TriageCallResult:
     model: str
     attempts: int = 1
     novelty_defaulted: bool = False
+    # The primary's error code (or ``primary_circuit_open``) when the fallback model answered.
+    fallback_from: str | None = None
 
 
 def told_ledger_for_prompt(
@@ -182,13 +192,80 @@ def build_triage_input(
     )
 
 
+class _PrimaryBreaker:
+    """Consecutive primary failures open the breaker for ``open_seconds``; the fallback answers alone meanwhile."""
+
+    def __init__(self, *, threshold: int, open_seconds: float) -> None:
+        self.threshold = max(1, int(threshold))
+        self.open_seconds = float(open_seconds)
+        self.failures = 0
+        self.open_until = 0.0
+
+    def is_open(self, now: float) -> bool:
+        return now < self.open_until
+
+    def record_failure(self, now: float) -> None:
+        self.failures += 1
+        if self.failures >= self.threshold:
+            self.open_until = now + self.open_seconds
+            self.failures = 0
+
+    def record_success(self) -> None:
+        self.failures = 0
+        self.open_until = 0.0
+
+
 class TriageModel:
-    def __init__(self, *, model: BaseChatModel, model_name: str, deadline_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        model: BaseChatModel,
+        model_name: str,
+        deadline_seconds: float,
+        fallback: TriageModel | None = None,
+        primary_breaker_failures: int = 3,
+        primary_breaker_open_seconds: float = 60.0,
+    ) -> None:
         self._structured = model.with_structured_output(TriageVerdict, method="function_calling", include_raw=True)
         self.model_name = model_name
         self.deadline_seconds = float(deadline_seconds)
+        self.fallback = fallback
+        self._breaker = _PrimaryBreaker(threshold=primary_breaker_failures, open_seconds=primary_breaker_open_seconds)
 
     async def triage(self, human_text: str) -> TriageCallResult:
+        """Primary call, then — only with a configured fallback — one fallback call when the primary fails."""
+
+        if self.fallback is None:
+            return await self._call(human_text)
+        if self._breaker.is_open(time.monotonic()):
+            return await self._fallback_call(human_text, primary_code="primary_circuit_open", primary_attempts=0)
+        try:
+            result = await self._call(human_text)
+        except TriageModelError as exc:
+            self._breaker.record_failure(time.monotonic())
+            return await self._fallback_call(human_text, primary_code=exc.code, primary_attempts=exc.attempts)
+        self._breaker.record_success()
+        return result
+
+    async def _fallback_call(self, human_text: str, *, primary_code: str, primary_attempts: int) -> TriageCallResult:
+        if self.fallback is None:  # pragma: no cover - guarded by triage()
+            raise TriageModelError(primary_code)
+        try:
+            result = await self.fallback._call(human_text)
+        except TriageModelError as exc:
+            raise TriageModelError(
+                exc.code,
+                retryable=exc.retryable,
+                attempts=primary_attempts + exc.attempts,
+                output_failure=exc.output_failure,
+                finish_reason=exc.finish_reason,
+                output_tokens=exc.output_tokens,
+                detail=exc.detail,
+                primary_code=primary_code,
+            ) from exc
+        return replace(result, attempts=primary_attempts + result.attempts, fallback_from=primary_code)
+
+    async def _call(self, human_text: str) -> TriageCallResult:
         """One structured call within ``deadline_seconds``; a fast retryable failure — transport, or an unusable
         answer (empty tool call, missing field) — earns one more attempt inside the deadline."""
 

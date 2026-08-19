@@ -451,6 +451,42 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
     assert [row["degraded"] for row in inserted] == [True, True, True, False]
 
 
+def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
+    from tracefold.news.agents.triage_model import TriageCallResult
+    from tracefold.news.models import TriageVerdict
+
+    news = RecordingNews(get_verdict=None, event_card=_card(), event_status={}, sent_count_since=0, insert_verdict=True)
+    bus = FakeBus()
+    answered_by_fallback = TriageCallResult(
+        verdict=TriageVerdict(
+            event_type="partnership",
+            assets=[],
+            direction="bullish",
+            scope="single_name",
+            magnitude=1,
+            actionable=True,
+            confidence=0.6,
+            decision="push",
+            headline_zh="ok",
+        ),
+        latency_ms=10,
+        input_tokens=1,
+        output_tokens=1,
+        cached_tokens=None,
+        model="deepseek-chat",
+        attempts=2,
+        fallback_from="news_triage_timeout",
+    )
+    triage = _triage_with_model(news, bus, _FailingTriageModel([answered_by_fallback]))
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-fallback"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["model"] == "deepseek-chat" and inserted["degraded"] is False
+    assert inserted["trace"]["model_fallback_from"] == "news_triage_timeout"
+    assert inserted["trace"]["model_attempts"] == 2
+
+
 def test_triage_replays_an_existing_unpublished_decision_without_reinserting() -> None:
     news = RecordingNews(
         get_verdict={"final_decision": "push", "published_at_ms": None},

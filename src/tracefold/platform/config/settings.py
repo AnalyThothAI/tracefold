@@ -62,12 +62,48 @@ class StorageConfig(BaseModel):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
 
 
+class LlmFallbackConfig(BaseModel):
+    """A second direct endpoint used only when the primary Triage call fails (issue #65); all-or-nothing."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+
+    @field_validator("api_key", "model", mode="before")
+    @classmethod
+    def parse_optional_string(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def parse_optional_base_url(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip().rstrip("/")
+        return normalized or None
+
+    @model_validator(mode="after")
+    def require_complete_configuration(self) -> LlmFallbackConfig:
+        configured = (self.api_key, self.base_url, self.model)
+        if any(configured) and not all(configured):
+            raise ValueError("llm_fallback_configuration_incomplete")
+        return self
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key and self.base_url and self.model)
+
+
 class LlmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     api_key: str | None = None
     base_url: str | None = None
     news_triage_model: str | None = None
+    news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     macro_document_analysis_enabled: bool = False
     macro_document_analysis_model: str = "gpt-5.4-mini"
 
@@ -98,6 +134,8 @@ class LlmConfig(BaseModel):
         configured = (self.api_key, self.base_url, self.news_triage_model)
         if any(configured) and not all(configured):
             raise ValueError("llm_direct_configuration_incomplete")
+        if self.news_triage_fallback.configured and not all(configured):
+            raise ValueError("llm_fallback_without_primary")
         return self
 
 
@@ -410,13 +448,18 @@ def news_push_availability(settings: Settings) -> NewsPushAvailability:
 class NewsModelAvailability:
     triage_configured: bool
     triage_model: str | None
+    triage_fallback_model: str | None = None
 
 
 def news_model_availability(settings: Settings) -> NewsModelAvailability:
     direct = bool(settings.llm.api_key and _is_http_base_url(settings.llm.base_url))
     triage = direct and bool(settings.llm.news_triage_model)
+    fallback = settings.llm.news_triage_fallback
+    fallback_ok = triage and fallback.configured and _is_http_base_url(fallback.base_url)
     return NewsModelAvailability(
-        triage_configured=triage, triage_model=settings.llm.news_triage_model if triage else None
+        triage_configured=triage,
+        triage_model=settings.llm.news_triage_model if triage else None,
+        triage_fallback_model=fallback.model if fallback_ok else None,
     )
 
 
@@ -511,6 +554,10 @@ llm:
   api_key:
   base_url:
   news_triage_model:
+  news_triage_fallback:
+    api_key:
+    base_url:
+    model:
   macro_document_analysis_enabled: false
   macro_document_analysis_model: "gpt-5.4-mini"
 

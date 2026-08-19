@@ -273,8 +273,9 @@ holding an unacked message; `resume_delivery` clears it. `mute_theme --key
 `decide()` drop matching events; `unmute --key <key>` removes a mute. State
 is visible in `/api/news/status.control`.
 
-Model failure: Triage timeouts/5xx produce degraded verdicts that are never
-silent (the rule baseline still pushes watchlist primaries and provider score
+Model failure: with a configured `llm.news_triage_fallback` the fallback model
+answers first (below); the degraded path applies when the whole chain fails.
+Triage timeouts/5xx produce degraded verdicts that are never silent (the rule baseline still pushes watchlist primaries and provider score
 >= 80 with a grounded asset; everything else drops with `degraded=true` and
 is counted in `triage_degraded_24h`);
 a retryable failure (timeout, rate limit, connection) gets one more attempt
@@ -290,7 +291,14 @@ the worker logs one warning per Event. Triage output is capped at
 a rising `news_triage_output_truncated` count means the prompt grew and the
 cap must follow. The verdict trace records `prompt_sha256`, `input_sha256`,
 the `event_status` snapshot, `model_attempts`, and `model_failure_retryable`.
-There is no second model
+With `llm.news_triage_fallback` configured (issue #65) a primary failure is
+answered by the fallback model instead: `news_verdicts.model` names the model
+that answered, the trace carries `model_fallback_from`, and the worker logs
+one `news triage fallback answered` warning per Event; only a chain where both
+links fail is degraded, and `primary_error` in the trace keeps the primary's
+code. A LAN llama.cpp server is single-slot: at consumer concurrency 4 a
+4-5 s call queues to ~18 s, so pair a local primary with `concurrency: 2`
+and `deadline_seconds: 20`. There is no second model
 stage behind Triage — one Event gets one judgment and one card — so
 `triage_24h` next to `triage_degraded_24h` in status is the first place to
 look when pushes stop.
