@@ -211,6 +211,8 @@ class NewsPipelineStatusData(ExactApiSchema):
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None
     queue_lag_p95_ms: float | None = None
+    reasked_24h: int = 0
+    novelty_defaulted_24h: int = 0
     triage_model: str | None = None
     suppressed_by_reason: dict[str, int] = Field(default_factory=dict)
     dropped_by_rule: dict[str, int] = Field(default_factory=dict)

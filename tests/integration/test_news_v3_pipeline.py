@@ -13,7 +13,7 @@ from tracefold.app.repositories import repositories_for_connection
 from tracefold.news.events import admit_item
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.triage_rules import GateFacts, decide, storyline_status_from_row
+from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status_from_row
 
 pytestmark = pytest.mark.integration
 
@@ -121,6 +121,7 @@ def test_storyline_status_and_verdict_idempotency(conn) -> None:
     assert row is not None
     now_ms = int(row["opened_at_ms"]) + 60_000
     verdict = TriageVerdict(
+        novelty="new_fact",
         event_type="macro",
         assets=[],
         direction="bullish",
@@ -185,8 +186,69 @@ def test_storyline_status_and_verdict_idempotency(conn) -> None:
         repos.news.event_status(storyline_key=row["storyline_key"], now_ms=now_ms + 1000), row["storyline_key"]
     )
     assert status1.pushed_2h == 1 and status1.max_magnitude_2h == 2
-    second = decide(verdict, facts, status1)
+    # The soft throttle (window max) stands for a non-novel event; a novel m2 passes it under policy v3.
+    soft = DecidePolicy(novel_min_magnitude=3)
+    second = decide(verdict, facts, status1, policy=soft)
     assert second.final == "throttled" and second.throttled_by == f"storyline:{row['storyline_key']}"
+    novel = decide(verdict, facts, status1)
+    assert novel.final == "push" and novel.override_rule == "novel_bypass"
+    # The told ledger is what the reader received: the push above, newest first, with what decide()/the console need.
+    told = repos.news.told_ledger(now_ms=now_ms + 1000, window_ms=4 * 3600_000, limit=12)
+    assert [t["event_id"] for t in told] == [row["event_id"]]
+    assert told[0]["headline_zh"] == "测试" and told[0]["magnitude"] == 2 and told[0]["direction"] == "bullish"
+    assert told[0]["storyline_key"] == row["storyline_key"] and told[0]["at_ms"] == now_ms
+    assert repos.news.told_ledger(now_ms=now_ms + 5 * 3600_000, window_ms=4 * 3600_000, limit=12) == []
+    # A card the reader never received (first delivery terminalised) leaves the ledger; a sent one stays; and the
+    # preliminary storyline's own cards are fetched even when the global limit would not reach them.
+    later = now_ms + 1000
+    window = 4 * 3600_000
+    with repos.transaction():
+        assert repos.news.begin_delivery(event_id=row["event_id"], kind="first", card={}, now_ms=now_ms + 10) == "new"
+        assert repos.news.settle_delivery(
+            event_id=row["event_id"],
+            kind="first",
+            state="terminal",
+            receipt=None,
+            error_code="delivery_unavailable",
+            now_ms=now_ms + 20,
+        )
+    assert repos.news.told_ledger(now_ms=later, window_ms=window, limit=12) == []
+    with repos.transaction():
+        conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
+        assert repos.news.begin_delivery(event_id=row["event_id"], kind="first", card={}, now_ms=now_ms + 10) == "new"
+        assert repos.news.settle_delivery(
+            event_id=row["event_id"],
+            kind="first",
+            state="sent",
+            receipt={"ok": True},
+            error_code=None,
+            now_ms=now_ms + 20,
+        )
+    assert [t["event_id"] for t in repos.news.told_ledger(now_ms=later, window_ms=window, limit=12)] == [
+        row["event_id"]
+    ]
+    preferred = repos.news.told_ledger(now_ms=later, window_ms=window, limit=1, prefer_key=row["storyline_key"])
+    assert [t["event_id"] for t in preferred] == [row["event_id"]]
+    assert len(repos.news.told_ledger(now_ms=later, window_ms=window, limit=12, prefer_key="asset:NOPE")) == 1
+    with repos.transaction():
+        conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
+    # A grounded restatement of that card drops, and the storyline lock is a plain transaction-scoped advisory lock.
+    told_status = storyline_status_from_row(
+        repos.news.event_status(storyline_key=row["storyline_key"], now_ms=now_ms + 1000),
+        row["storyline_key"],
+        told=[{"i": 0, "dir": t["direction"], "headline_zh": t["headline_zh"]} for t in told],
+    )
+    restated = decide(verdict.model_copy(update={"novelty": "restatement", "restates": 0}), facts, told_status)
+    assert restated.final == "drop" and restated.override_rule == "restatement"
+    held_sql = (
+        "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = %s AND pid = pg_backend_pid()"
+    )
+    with repos.transaction():
+        repos.news.lock_storyline(row["storyline_key"])
+        held = conn.execute(held_sql, (0x4E455753,)).fetchone()
+        assert held is not None and int(held["n"]) == 1
+    released = conn.execute(held_sql, (0x4E455753,)).fetchone()
+    assert released is not None and int(released["n"]) == 0
     conn.commit()
 
 

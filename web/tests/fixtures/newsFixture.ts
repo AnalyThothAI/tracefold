@@ -342,6 +342,8 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       events_24h: 320,
       labeled_missed_24h: 1,
       pushed_by_rule: { model_push_actionable: 30, magnitude3: 10 },
+      reasked_24h: 1,
+      novelty_defaulted_24h: 0,
       suppressed_by_reason: { suppressed_pr_template: 8 },
       throttled_24h: 9,
       throttled_by_key: { "storyline:theme:mideast_energy:cap3": 9 },

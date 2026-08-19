@@ -1,7 +1,8 @@
 """Frozen prompt text for Triage (byte-stable; the version lives in news.models).
 
 The instructions are English (the model reads them best); every text field the reader sees is Chinese and the
-prompt says so explicitly. The status bar and the whole human message are built by code (see triage_model).
+prompt says so explicitly. The status bar (including the told ledger the Novelty section judges against) and the
+whole human message are built by code (see triage_model).
 """
 
 from __future__ import annotations
@@ -111,6 +112,23 @@ verdict — never downgrade something just because it is "only a product update"
   headline_zh: 日经平均指数期货早盘下跌 2.0%
   why_zh: 亚洲第一个开盘的主要股指期货低开 2%，美股隔夜的抛压正在传导到亚太风险资产
   NOT: 日经期货早盘大跌 2%，反映亚洲风险资产开盘承压，是当日亚太市场情绪的直接读数
+
+## Novelty — compare with <event_status>.told
+`told` lists the cards the reader already received in the last 4 h, newest first: index `i`, age in minutes `ago_min`,
+magnitude `m`, direction `dir`, and the Chinese headline. Set `novelty`:
+- new_fact: nothing in told is about this event. restates = -1.
+- progression: told covers the same story, but this event adds a materially new development — a new number, a new
+  actor's action, the outcome of something announced earlier, a reversal, an official confirmation of a rumor.
+  restates = -1.
+- restatement: the same fact as one told entry — another outlet, a paraphrase, an analysis or market-reaction piece
+  that only repeats it, another detail of the same announcement, more color that changes nothing for a trader. Set
+  restates to that entry's `i` and decision = drop.
+A direction flip versus the told entry is never a restatement. When told is empty, novelty is new_fact.
+Examples — told i=0 "特朗普称霍尔木兹海峡开放通行": "Trump: no talks scheduled with Iran, strait open" -> restatement,
+restates 0; "Trump: mines in Hormuz cleared or detonated" -> progression; "Iran resumes attacks on tankers" ->
+progression. Told i=0 "迪拜居民收到导弹威胁警报": "UAE intercepts two Iranian missiles" -> progression; "UAE says a
+missile alert sounded in Dubai" -> restatement, restates 0. Told i=0 "美10年期收益率升至4.75%创2025年1月以来新高":
+"US 10-year yield hits 19-month high at 4.75%" -> restatement, restates 0 (same fact, new framing).
 """
 
 

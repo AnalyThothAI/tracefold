@@ -268,6 +268,10 @@ usage: tracefold news replay-decisions [-h] [--hours HOURS]
                                        [--min-push-magnitude MIN_PUSH_MAGNITUDE]
                                        [--min-watchlist-magnitude MIN_WATCHLIST_MAGNITUDE]
                                        [--theme-cap-4h THEME_CAP_4H]
+                                       [--theme-hard-cap-4h THEME_HARD_CAP_4H]
+                                       [--asset-hard-cap-2h ASSET_HARD_CAP_2H]
+                                       [--novel-min-magnitude NOVEL_MIN_MAGNITUDE]
+                                       [--no-restatement-drop]
                                        [--no-storyline-throttle]
                                        [--no-unclear-push]
 
@@ -282,6 +286,17 @@ options:
                         default: news.policy
   --theme-cap-4h THEME_CAP_4H
                         default: news.policy
+  --theme-hard-cap-4h THEME_HARD_CAP_4H
+                        novel-event hard cap per theme / 4 h; default:
+                        news.policy
+  --asset-hard-cap-2h ASSET_HARD_CAP_2H
+                        novel-event hard cap per asset / 2 h; default:
+                        news.policy
+  --novel-min-magnitude NOVEL_MIN_MAGNITUDE
+                        minimum magnitude for the novelty bypass; default:
+                        news.policy
+  --no-restatement-drop
+                        replay without dropping grounded restatements
   --no-storyline-throttle
                         replay with storyline throttling switched off
   --no-unclear-push     replay without the unclear-but-clear-event push rule

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import logging
 import time
@@ -19,7 +20,14 @@ from typing import Any
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
 from .agents.prompts import TRIAGE_PROMPT_SHA256
-from .agents.triage_model import TriageModel, TriageModelError, build_triage_input
+from .agents.triage_model import (
+    TOLD_MAX,
+    TOLD_WINDOW_MS,
+    TriageModel,
+    TriageModelError,
+    build_triage_input,
+    told_ledger_for_prompt,
+)
 from .bus import (
     Q_DELIVER,
     Q_RAW,
@@ -41,6 +49,7 @@ from .events import admit_item
 from .models import (
     TRIAGE_POLICY_VERSION,
     TRIAGE_PROMPT_VERSION,
+    TriageVerdict,
     json_ready,
 )
 from .opennews import (
@@ -50,7 +59,16 @@ from .opennews import (
     parse_opennews_strategy_hits,
 )
 from .storyline import final_storyline_key
-from .triage_rules import DEFAULT_POLICY, DecidePolicy, GateFacts, decide, fallback_verdict, storyline_status_from_row
+from .triage_rules import (
+    DEFAULT_POLICY,
+    DecidePolicy,
+    DecisionResult,
+    GateFacts,
+    decide,
+    fallback_verdict,
+    grounded_restatement,
+    storyline_status_from_row,
+)
 
 log = logging.getLogger("tracefold.news")
 
@@ -522,6 +540,58 @@ class _Circuit:
         self.failures = 0
 
 
+@dataclass(frozen=True, slots=True)
+class _TriageSettle:
+    """Everything the in-transaction decide-and-persist step needs (built after the model call)."""
+
+    event_id: str
+    verdict: TriageVerdict
+    facts: GateFacts
+    final_key: str
+    told: Sequence[Mapping[str, Any]]
+    told_seen: frozenset[str]
+    control: Mapping[str, Any]
+    cap_reached: bool
+    degraded: bool
+    error_code: str | None
+    model_name: str | None
+    trace: dict[str, Any]
+    stamp: int
+    allow_stale: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _TriageOutcome:
+    stale: bool
+    final: str
+    decision: DecisionResult | None
+
+
+def _open_circuit_incident(repos: Any, *, now_ms: int) -> Any:
+    return repos.news.open_incident(cause_class="triage_circuit_open", now_ms=now_ms)
+
+
+def _close_circuit_incidents(repos: Any, *, now_ms: int) -> Any:
+    return repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms)
+
+
+def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The ledger exactly as the model saw it (plus event ids), so ``news why`` can name the restated card and
+    ``replay-decisions`` can rebuild ``StorylineStatus.told_directions``."""
+
+    return [
+        {
+            "i": int(t.get("i", i)),
+            "event_id": str(t.get("event_id") or ""),
+            "at_ms": int(t.get("at_ms") or 0),
+            "m": int(t.get("m") or 0),
+            "dir": str(t.get("dir") or ""),
+            "headline_zh": str(t.get("headline_zh") or ""),
+        }
+        for i, t in enumerate(told)
+    ]
+
+
 class TriageConsumer:
     def __init__(
         self,
@@ -577,7 +647,7 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, status_row, control, sent_last_hour = bundle
+        card, status_row, control, sent_last_hour, ledger_rows = bundle
         facts = GateFacts(
             grounded_assets=tuple(card.get("grounded_assets") or []),
             watchlist_symbols=self.watchlist_symbols,
@@ -585,170 +655,260 @@ class TriageConsumer:
             priority=str(card.get("priority") or "normal"),
             admission=str(card.get("admission") or ""),
         )
-        status = storyline_status_from_row(status_row, str(card.get("storyline_key") or ""))
-        muted = bool(control.get("paused")) or is_muted(
-            control, storyline_key=status.key, grounded_assets=facts.grounded_assets, now_ms=stamp
-        )
+        prelim_key = str(card.get("storyline_key") or "")
+        # The told ledger: what the reader already received (newest first, same preliminary storyline first). The
+        # model judges novelty against it; ``told_seen`` (event ids) is the snapshot the persist step compares against
+        # — ids, not clocks, because verdict rows carry their handler's start stamp, not commit time.
+        told = told_ledger_for_prompt(ledger_rows, now_ms=stamp, prefer_key=prelim_key)
+        told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
+        status = storyline_status_from_row(status_row, prelim_key, told=told)
         cap_reached = sent_last_hour >= self.hourly_cap
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         trace: dict[str, Any] = {
             "queue_lag_ms": queue_lag_ms,
             "attempt": message.attempt,
             "prompt_sha256": TRIAGE_PROMPT_SHA256,
+            "storyline_key_preliminary": prelim_key,
             "status": json_ready(dict(status_row or {})),
+            "told": _told_trace(told),
+            "told_count": len(told),
         }
         model_name = self.model.model_name if self.model else None
-        degraded = False
-        error_code = None
-        if self.model is None:
-            verdict, decision = fallback_verdict(facts, error_code="news_triage_model_unconfigured")
-            degraded, error_code = True, "news_triage_model_unconfigured"
-        elif self.circuit.is_open(stamp):
-            verdict, decision = fallback_verdict(facts, error_code="news_triage_circuit_open")
-            degraded, error_code = True, "news_triage_circuit_open"
-        else:
-            status_payload = {
-                **dict(status_row or {}),
-                "storyline_key": status.key,
-                "preliminary": True,
-                "queue_lag_ms": queue_lag_ms,
-            }
-            human = build_triage_input(
-                event=card,
-                gate={
-                    "asset_class": card.get("asset_class"),
-                    "grounded_assets": facts.grounded_assets,
-                    "macro_lexicon": card.get("macro_lexicon"),
-                    "pr_template": False,
-                },
-                event_status=status_payload,
-                watchlist=self.watchlist,
-            )
-            trace["input_sha256"] = hashlib.sha256(human.encode("utf-8")).hexdigest()
-            try:
-                call = await self.model.triage(human)
-            except TriageModelError as exc:
-                trace.update({"model_attempts": exc.attempts, "model_failure_retryable": exc.retryable})
-                if exc.output_failure:
-                    # The model answered but the verdict is unusable (max_tokens truncation, schema mismatch): record
-                    # why, and keep the transport circuit closed — falling back on every Event would be worse.
+        reasked = False
+        first_verdict: TriageVerdict | None = None
+        while True:
+            degraded = False
+            error_code = None
+            if self.model is None:
+                verdict, _ = fallback_verdict(facts, error_code="news_triage_model_unconfigured")
+                degraded, error_code = True, "news_triage_model_unconfigured"
+            elif self.circuit.is_open(stamp) and first_verdict is None:
+                verdict, _ = fallback_verdict(facts, error_code="news_triage_circuit_open")
+                degraded, error_code = True, "news_triage_circuit_open"
+            elif self.circuit.is_open(stamp) and first_verdict is not None:
+                verdict = first_verdict  # the re-ask cannot run; the model's own judgment beats the rule baseline
+                trace["reask_failed"] = "news_triage_circuit_open"
+            else:
+                status_payload = {
+                    **dict(status_row or {}),
+                    "storyline_key": status.key,
+                    "preliminary": True,
+                    "queue_lag_ms": queue_lag_ms,
+                }
+                human = build_triage_input(
+                    event=card,
+                    gate={
+                        "asset_class": card.get("asset_class"),
+                        "grounded_assets": facts.grounded_assets,
+                        "macro_lexicon": card.get("macro_lexicon"),
+                        "pr_template": False,
+                    },
+                    event_status=status_payload,
+                    watchlist=self.watchlist,
+                    told=told,
+                )
+                trace["input_sha256"] = hashlib.sha256(human.encode("utf-8")).hexdigest()
+                try:
+                    call = await self.model.triage(human)
+                except TriageModelError as exc:
+                    trace.update({"model_attempts": exc.attempts, "model_failure_retryable": exc.retryable})
+                    if exc.output_failure:
+                        # The model answered but the verdict is unusable (max_tokens truncation, schema mismatch):
+                        # record why, and keep the transport circuit closed — falling back on every Event would be
+                        # worse.
+                        trace.update(
+                            {
+                                "finish_reason": exc.finish_reason,
+                                "output_tokens": exc.output_tokens,
+                                "parsing_error": exc.detail,
+                            }
+                        )
+                        log.warning(
+                            "news triage output unusable event=%s code=%s finish_reason=%s output_tokens=%s detail=%s",
+                            event_id,
+                            exc.code,
+                            exc.finish_reason,
+                            exc.output_tokens,
+                            exc.detail,
+                        )
+                    elif self.circuit.record_failure(stamp):
+                        self._circuit_incident_open = True
+                        with contextlib.suppress(TransientError, DeferError):
+                            await self.db.tx(
+                                "news_triage_circuit",
+                                functools.partial(_open_circuit_incident, now_ms=stamp),
+                            )
+                    if first_verdict is not None:
+                        # The re-ask failed: keep the model's first, valid judgment (its novelty was judged against
+                        # the older ledger, so the restatement rule may miss the newest card) rather than the baseline.
+                        verdict = first_verdict
+                        trace["reask_failed"] = exc.code
+                    else:
+                        verdict, _ = fallback_verdict(facts, error_code=exc.code)
+                        degraded, error_code = True, exc.code
+                else:
+                    self.circuit.record_success()
+                    if self._circuit_incident_open:
+                        self._circuit_incident_open = False
+                        with contextlib.suppress(TransientError, DeferError):
+                            await self.db.tx(
+                                "news_triage_circuit_close",
+                                functools.partial(_close_circuit_incidents, now_ms=stamp),
+                            )
+                    verdict = call.verdict
                     trace.update(
                         {
-                            "finish_reason": exc.finish_reason,
-                            "output_tokens": exc.output_tokens,
-                            "parsing_error": exc.detail,
+                            "latency_ms": call.latency_ms,
+                            "model_attempts": call.attempts,
+                            "input_tokens": call.input_tokens,
+                            "output_tokens": call.output_tokens,
+                            "cached_tokens": call.cached_tokens,
                         }
                     )
-                    log.warning(
-                        "news triage output unusable event=%s code=%s finish_reason=%s output_tokens=%s detail=%s",
-                        event_id,
-                        exc.code,
-                        exc.finish_reason,
-                        exc.output_tokens,
-                        exc.detail,
-                    )
-                elif self.circuit.record_failure(stamp):
-                    self._circuit_incident_open = True
-                    with contextlib.suppress(TransientError, DeferError):
-                        await self.db.tx(
-                            "news_triage_circuit",
-                            lambda repos: repos.news.open_incident(cause_class="triage_circuit_open", now_ms=stamp),
-                        )
-                verdict, decision = fallback_verdict(facts, error_code=exc.code)
-                degraded, error_code = True, exc.code
-            else:
-                self.circuit.record_success()
-                if self._circuit_incident_open:
-                    self._circuit_incident_open = False
-                    with contextlib.suppress(TransientError, DeferError):
-                        await self.db.tx(
-                            "news_triage_circuit_close",
-                            lambda repos: repos.news.close_open_incidents(
-                                cause_classes=["triage_circuit_open"], now_ms=stamp
-                            ),
-                        )
-                verdict = call.verdict
-                trace.update(
-                    {
-                        "latency_ms": call.latency_ms,
-                        "model_attempts": call.attempts,
-                        "input_tokens": call.input_tokens,
-                        "output_tokens": call.output_tokens,
-                        "cached_tokens": call.cached_tokens,
-                    }
-                )
-        # The final storyline key comes from the verdict (primaries/scope); the throttle windows must use it.
-        final_key = final_storyline_key(
-            title=str(card.get("leader_title") or ""),
-            headline_zh=verdict.headline_zh,
-            scope=verdict.scope,
-            verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
-            grounded_assets=facts.grounded_assets,
-            family=str(card.get("family") or "general"),
-        )
-        if final_key != status.key:
-            final_row = await self.db.read(
-                "news_triage_status_final",
-                lambda repos: repos.news.event_status(storyline_key=final_key, now_ms=stamp),
+                    if call.novelty_defaulted:
+                        trace["novelty_defaulted"] = True
+            # The final storyline key comes from the verdict (primaries/scope); the throttle windows must use it.
+            final_key = final_storyline_key(
+                title=str(card.get("leader_title") or ""),
+                headline_zh=verdict.headline_zh,
+                scope=verdict.scope,
+                verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
+                grounded_assets=facts.grounded_assets,
+                family=str(card.get("family") or "general"),
             )
-            status = storyline_status_from_row(final_row, final_key)
-            muted = bool(control.get("paused")) or is_muted(
-                control, storyline_key=final_key, grounded_assets=facts.grounded_assets, now_ms=stamp
-            )
-            trace["status_final"] = json_ready(dict(final_row or {}))
-        trace["storyline_key"] = final_key
-        decision = decide(verdict, facts, status, hourly_cap_reached=cap_reached, muted=muted, policy=self.policy)
-        if degraded and decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
-            decision = type(decision)(
-                "drop", "fail_closed_fallback", None, decision.rule_baseline, decision.watchlist_hits
-            )
-        final = decision.final
-        headline = verdict.headline_zh
-        reason = decision.throttled_by or decision.override_rule or ""
-        context_line = (
-            f"[{verdict.audience}/{verdict.event_type}/{verdict.direction} m{verdict.magnitude}"
-            f" → {final}·{reason}] {headline}"
-        )
-
-        def _persist(repos: Any) -> bool:
-            inserted = repos.news.insert_verdict(
+            settle = _TriageSettle(
                 event_id=event_id,
-                stage="triage",
-                policy_version=TRIAGE_POLICY_VERSION,
-                model_decision=None
-                if degraded and error_code == "news_triage_model_unconfigured"
-                else verdict.decision,
-                rule_baseline_decision=decision.rule_baseline,
-                final_decision=final,
-                override_rule=decision.override_rule,
-                throttled_by=decision.throttled_by,
-                verdict=json_ready(verdict),
-                model=model_name,
-                prompt_version=TRIAGE_PROMPT_VERSION,
+                verdict=verdict,
+                facts=facts,
+                final_key=final_key,
+                told=told,
+                told_seen=told_seen,
+                control=control,
+                cap_reached=cap_reached,
                 degraded=degraded,
                 error_code=error_code,
+                model_name=model_name,
                 trace=trace,
-                now_ms=stamp,
+                stamp=stamp,
+                allow_stale=not reasked and not degraded,
             )
-            repos.news.set_storyline_key(event_id=event_id, storyline_key=final_key, now_ms=stamp)
-            repos.news.set_context_line(event_id=event_id, context_line=context_line, followup_of=None, now_ms=stamp)
-            return bool(inserted)
+            outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
+            if outcome.stale:
+                # A card landed while the model was thinking: ask once more with the ledger it did not see (rare,
+                # ~0.6% of calls at 8 pushes/h) instead of pushing a restatement the reader just received. Everything
+                # the model and decide() look at is re-read under a fresh stamp so the second input is consistent.
+                reasked = True
+                first_verdict = verdict
+                trace["reasked_after_told_change"] = True
+                trace["first_input_sha256"] = trace.get("input_sha256")
+                trace["first_verdict"] = {
+                    "novelty": verdict.novelty,
+                    "restates": verdict.restates,
+                    "decision": verdict.decision,
+                    "magnitude": verdict.magnitude,
+                    "direction": verdict.direction,
+                    "headline_zh": verdict.headline_zh,
+                }
+                stamp = now_ms()
+                bundle = await self.db.read(
+                    "news_triage_reload", functools.partial(self._load, event_id=event_id, stamp=stamp)
+                )
+                if bundle is None:
+                    raise PermanentError("news_event_missing")
+                card, status_row, control, sent_last_hour, ledger_rows = bundle
+                told = told_ledger_for_prompt(ledger_rows, now_ms=stamp, prefer_key=prelim_key)
+                told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
+                status = storyline_status_from_row(status_row, prelim_key, told=told)
+                cap_reached = sent_last_hour >= self.hourly_cap
+                trace["status"] = json_ready(dict(status_row or {}))
+                trace["told"] = _told_trace(told)
+                trace["told_count"] = len(told)
+                continue
+            break
+        if outcome.final in {"push", "escalate"}:
+            await self._publish_decision(
+                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
+            )
 
-        await self.db.tx("news_triage_persist", _persist)
-        if final in {"push", "escalate"}:
-            await self._publish_decision(event_id, final, trace_id=message.trace_id, amqp_priority=message.priority)
+    def _decide_and_persist(self, repos: Any, s: _TriageSettle) -> _TriageOutcome:
+        """Inside one transaction, under the storyline's advisory lock: re-read the window facts and the newest
+        told entry, decide, and insert the verdict. Reports ``stale`` (no write) when a card landed after the model
+        saw the ledger and the caller may still re-ask."""
+
+        repos.news.lock_storyline(s.final_key)
+        if s.allow_stale:
+            fresh = repos.news.told_ledger(now_ms=s.stamp, window_ms=TOLD_WINDOW_MS, limit=TOLD_MAX * 2)
+            if any(str(r.get("event_id") or "") not in s.told_seen for r in fresh):
+                return _TriageOutcome(stale=True, final="drop", decision=None)
+        final_row = repos.news.event_status(storyline_key=s.final_key, now_ms=s.stamp)
+        status = storyline_status_from_row(final_row, s.final_key, told=s.told)
+        muted = bool(s.control.get("paused")) or is_muted(
+            s.control, storyline_key=s.final_key, grounded_assets=s.facts.grounded_assets, now_ms=s.stamp
+        )
+        decision = decide(
+            s.verdict,
+            s.facts,
+            status,
+            hourly_cap_reached=s.cap_reached,
+            muted=muted,
+            degraded=s.degraded,
+            policy=self.policy,
+        )
+        if s.degraded and decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
+            decision = DecisionResult(
+                "drop", "fail_closed_fallback", None, decision.rule_baseline, decision.watchlist_hits
+            )
+        trace = s.trace
+        trace["status_final"] = json_ready(dict(final_row or {}))
+        trace["storyline_key"] = s.final_key
+        if grounded_restatement(s.verdict, status):
+            trace["restates_event_id"] = s.told[s.verdict.restates]["event_id"]
+        final = decision.final
+        reason = decision.throttled_by or decision.override_rule or ""
+        context_line = (
+            f"[{s.verdict.audience}/{s.verdict.event_type}/{s.verdict.direction} m{s.verdict.magnitude}"
+            f" → {final}·{reason}] {s.verdict.headline_zh}"
+        )
+        repos.news.insert_verdict(
+            event_id=s.event_id,
+            stage="triage",
+            policy_version=TRIAGE_POLICY_VERSION,
+            model_decision=None
+            if s.degraded and s.error_code == "news_triage_model_unconfigured"
+            else s.verdict.decision,
+            rule_baseline_decision=decision.rule_baseline,
+            final_decision=final,
+            override_rule=decision.override_rule,
+            throttled_by=decision.throttled_by,
+            verdict=json_ready(s.verdict),
+            model=s.model_name,
+            prompt_version=TRIAGE_PROMPT_VERSION,
+            degraded=s.degraded,
+            error_code=s.error_code,
+            trace=trace,
+            now_ms=s.stamp,
+        )
+        repos.news.set_storyline_key(event_id=s.event_id, storyline_key=s.final_key, now_ms=s.stamp)
+        repos.news.set_context_line(event_id=s.event_id, context_line=context_line, followup_of=None, now_ms=s.stamp)
+        return _TriageOutcome(stale=False, final=final, decision=decision)
 
     @staticmethod
     def _load(
         repos: Any, event_id: str, stamp: int
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int] | None:
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int, list[dict[str, Any]]] | None:
         card = repos.news.event_card(event_id)
         if card is None:
             return None
         status_row = repos.news.event_status(storyline_key=str(card.get("storyline_key") or ""), now_ms=stamp)
         control = repos.news.read_control(now_ms=stamp)
         sent = repos.news.sent_count_since(since_ms=stamp - 3600_000)
-        return card, status_row, control, sent
+        ledger = repos.news.told_ledger(
+            now_ms=stamp,
+            window_ms=TOLD_WINDOW_MS,
+            limit=TOLD_MAX * 2,
+            prefer_key=str(card.get("storyline_key") or "") or None,
+        )
+        return card, status_row, control, sent, ledger
 
     async def _publish_decision(self, event_id: str, final: str, *, trace_id: str, amqp_priority: int) -> None:
         stamp = now_ms()

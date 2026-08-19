@@ -2644,12 +2644,22 @@ export interface components {
              * @default 0
              */
             labeled_missed_24h: number;
+            /**
+             * Novelty Defaulted 24H
+             * @default 0
+             */
+            novelty_defaulted_24h: number;
             /** Pushed By Rule */
             pushed_by_rule?: {
                 [key: string]: number;
             };
             /** Queue Lag P95 Ms */
             queue_lag_p95_ms?: number | null;
+            /**
+             * Reasked 24H
+             * @default 0
+             */
+            reasked_24h: number;
             /** Suppressed By Reason */
             suppressed_by_reason?: {
                 [key: string]: number;

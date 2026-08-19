@@ -7336,6 +7336,11 @@
             "title": "Labeled Missed 24H",
             "type": "integer"
           },
+          "novelty_defaulted_24h": {
+            "default": 0,
+            "title": "Novelty Defaulted 24H",
+            "type": "integer"
+          },
           "pushed_by_rule": {
             "additionalProperties": {
               "type": "integer"
@@ -7353,6 +7358,11 @@
               }
             ],
             "title": "Queue Lag P95 Ms"
+          },
+          "reasked_24h": {
+            "default": 0,
+            "title": "Reasked 24H",
+            "type": "integer"
           },
           "suppressed_by_reason": {
             "additionalProperties": {

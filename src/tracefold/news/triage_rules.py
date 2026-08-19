@@ -39,6 +39,13 @@ class DecidePolicy:
     theme_cap_4h: int = 3
     storyline_throttle: bool = True
     hourly_cap_enabled: bool = True
+    # Policy v3 (issue #61): the model's novelty verdict against the told ledger. A grounded restatement never
+    # pushes; a novel event (new_fact / progression) at >= novel_min_magnitude may pass the storyline throttle up to a
+    # hard cap (theme: pushes per 4 h; asset: pushes per 2 h). Defaults are the values measured in the #61 replay.
+    restatement_drop: bool = True
+    novel_min_magnitude: int = 2
+    theme_hard_cap_4h: int = 6
+    asset_hard_cap_2h: int = 3
 
 
 DEFAULT_POLICY = DecidePolicy()
@@ -55,7 +62,8 @@ class GateFacts:
 
 @dataclass(frozen=True, slots=True)
 class StorylineStatus:
-    """Window facts computed by SQL for the event's storyline key (see repository.event_status)."""
+    """Window facts computed by SQL for the event's storyline key (see repository.event_status), plus the direction
+    of every told-ledger entry the model saw (index = the ``i`` it cites in ``restates``; empty when no ledger)."""
 
     key: str
     pushed_2h: int = 0
@@ -65,6 +73,11 @@ class StorylineStatus:
     directions_2h: tuple[str, ...] = ()
     directions_4h: tuple[str, ...] = ()
     last_push_ago_ms: int | None = None
+    told_directions: tuple[str, ...] = ()
+
+    @property
+    def told_count(self) -> int:
+        return len(self.told_directions)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +114,22 @@ def _direction_flip(direction: str, seen: Sequence[str]) -> bool:
     return opposite in seen and direction not in seen
 
 
+def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None) -> bool:
+    """True when the model called this a restatement *of a ledger entry it was actually shown* and the direction did
+    not flip against that entry. An out-of-range ``restates`` (or an empty ledger) is ignored: novelty then counts as
+    new_fact, so a hallucinated restatement can never drop a card."""
+
+    if verdict.novelty != "restatement" or status is None or status.told_count == 0:
+        return False
+    if not 0 <= verdict.restates < status.told_count:
+        return False
+    told_direction = status.told_directions[verdict.restates]
+    flipped = (
+        verdict.direction in _DIRECTIONAL and told_direction in _DIRECTIONAL and told_direction != verdict.direction
+    )
+    return not flipped
+
+
 def decide(
     verdict: TriageVerdict,
     facts: GateFacts,
@@ -108,9 +137,12 @@ def decide(
     *,
     hourly_cap_reached: bool = False,
     muted: bool = False,
+    degraded: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
-    """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently."""
+    """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently.
+
+    ``degraded`` marks a rule-baseline fallback verdict (no model judgment): it never earns the novelty bypass."""
 
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
@@ -121,6 +153,8 @@ def decide(
         return DecisionResult("drop", "muted", None, baseline, watch_hits)
     if verdict.event_type == "noise":
         return DecisionResult("drop", "noise", None, baseline, watch_hits)
+    if policy.restatement_drop and grounded_restatement(verdict, status):
+        return DecisionResult("drop", "restatement", None, baseline, watch_hits)
 
     final: Decision
     rule: str | None = None
@@ -154,11 +188,34 @@ def decide(
     if final in {"push", "escalate"} and status is not None and policy.storyline_throttle:
         throttled_by = _storyline_throttle(verdict, status, final, policy)
         if throttled_by is not None:
-            return DecisionResult("throttled", rule, throttled_by, baseline, watch_hits)
+            hard = None if degraded else _novel_bypass(verdict, status, policy)
+            if hard is None:
+                return DecisionResult("throttled", rule, throttled_by, baseline, watch_hits)
+            if hard:
+                return DecisionResult("throttled", rule, hard, baseline, watch_hits)
+            rule = "novel_bypass"
 
     if final == "push" and hourly_cap_reached and policy.hourly_cap_enabled:
         return DecisionResult("throttled", rule, "hourly_cap", baseline, watch_hits)
     return DecisionResult(final, rule, None, baseline, watch_hits)
+
+
+def _novel_bypass(verdict: TriageVerdict, status: StorylineStatus, policy: DecidePolicy) -> str | None:
+    """A novel event (new_fact / progression, m >= novel_min_magnitude) may pass the soft throttle up to a hard cap:
+    ``asset_hard_cap_2h`` pushes in the last 2 h for asset keys (push and escalate alike — the cap is named by its
+    window), ``theme_hard_cap_4h`` in the last 4 h for theme/macro keys. Returns None when the event is not novel
+    enough (the soft throttle stands), "" when it passes, or the hard-cap ``throttled_by`` key when the cap is
+    reached."""
+
+    if verdict.novelty not in {"new_fact", "progression"} or verdict.magnitude < policy.novel_min_magnitude:
+        return None
+    if status.key.startswith("asset:"):
+        if status.pushed_2h < policy.asset_hard_cap_2h:
+            return ""
+        return f"storyline:{status.key}:hard{policy.asset_hard_cap_2h}"
+    return (
+        "" if status.pushed_4h < policy.theme_hard_cap_4h else f"storyline:{status.key}:hard{policy.theme_hard_cap_4h}"
+    )
 
 
 def _storyline_throttle(
@@ -188,6 +245,7 @@ def fallback_verdict(facts: GateFacts, *, error_code: str) -> tuple[TriageVerdic
 
     baseline = rule_baseline(facts)
     verdict = TriageVerdict(
+        novelty="new_fact",
         event_type="noise" if baseline == "drop" else "macro",
         assets=[],
         direction="neutral",  # a rule verdict has no view on direction; "unclear" would veto its own push
@@ -202,9 +260,14 @@ def fallback_verdict(facts: GateFacts, *, error_code: str) -> tuple[TriageVerdic
     return verdict, DecisionResult(baseline, "fail_closed_fallback", None, baseline)
 
 
-def storyline_status_from_row(row: Mapping[str, Any] | None, key: str) -> StorylineStatus:
+def storyline_status_from_row(
+    row: Mapping[str, Any] | None, key: str, *, told: Sequence[Mapping[str, Any]] = ()
+) -> StorylineStatus:
+    """``told`` is the ledger the model saw (status-bar order); only its directions matter to decide()."""
+
+    told_directions = tuple(str(t.get("dir") or "") for t in told)
     if not row:
-        return StorylineStatus(key=key)
+        return StorylineStatus(key=key, told_directions=told_directions)
     return StorylineStatus(
         key=key,
         pushed_2h=int(row.get("pushed_2h") or 0),
@@ -214,6 +277,7 @@ def storyline_status_from_row(row: Mapping[str, Any] | None, key: str) -> Storyl
         directions_2h=tuple(row.get("directions_2h") or ()),
         directions_4h=tuple(row.get("directions_4h") or ()),
         last_push_ago_ms=(int(row["last_push_ago_ms"]) if row.get("last_push_ago_ms") is not None else None),
+        told_directions=told_directions,
     )
 
 
@@ -227,6 +291,7 @@ __all__ = [
     "StorylineStatus",
     "decide",
     "fallback_verdict",
+    "grounded_restatement",
     "rule_baseline",
     "storyline_status_from_row",
 ]

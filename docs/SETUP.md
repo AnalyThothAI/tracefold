@@ -147,6 +147,10 @@ news:
     theme_cap_4h: 3
     storyline_throttle: true
     hourly_cap_enabled: true
+    restatement_drop: true      # a restatement of a card the reader already received never pushes
+    novel_min_magnitude: 2      # new facts / progressions at this magnitude may pass the storyline throttle...
+    theme_hard_cap_4h: 6        # ...up to this many pushes per theme / 4 h (>= theme_cap_4h)
+    asset_hard_cap_2h: 3        # ...and this many per asset / 2 h
   gate:
     suppress_low_signal: false  # true = drop ungrounded, non-macro social posts under score 70 without a model call
   watchlist:

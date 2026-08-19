@@ -146,12 +146,15 @@ def replay_decisions(
     rows = _rows(repos, since_ms=since_ms, policy_version=None)
     replayed: list[dict[str, Any]] = []
     skipped = 0
+    restatement_drops = 0
+    novel_bypass = 0
     changed: collections.Counter[str] = collections.Counter()
     for r in rows:
         if not r.get("verdict"):
             continue  # never reached Triage: nothing to re-decide
         try:
-            verdict = TriageVerdict.model_validate(dict(r.get("verdict") or {}))
+            # Verdicts stored before prompt v7 have no novelty field: replay them as new_fact (never a restatement).
+            verdict = TriageVerdict.model_validate({"novelty": "new_fact", **dict(r.get("verdict") or {})})
         except ValueError:
             skipped += 1
             continue
@@ -166,11 +169,16 @@ def replay_decisions(
         status = storyline_status_from_row(
             trace.get("status_final") or trace.get("status"),
             str(trace.get("storyline_key") or r.get("storyline_key") or ""),
+            told=[t for t in (trace.get("told") or []) if isinstance(t, Mapping)],
         )
         outcome = decide(verdict, facts, status, policy=policy)
         replayed.append({**r, "final_decision": outcome.final, "override_rule": outcome.override_rule})
         if outcome.final != r["final_decision"]:
             changed[f"{r['final_decision']}->{outcome.final}"] += 1
+        if outcome.override_rule == "restatement":
+            restatement_drops += 1
+        elif outcome.override_rule == "novel_bypass":
+            novel_bypass += 1
     return {
         "window_hours": int(hours),
         "policy": {
@@ -182,12 +190,18 @@ def replay_decisions(
             "theme_cap_4h": policy.theme_cap_4h,
             "storyline_throttle": policy.storyline_throttle,
             "hourly_cap_enabled": policy.hourly_cap_enabled,
+            "restatement_drop": policy.restatement_drop,
+            "novel_min_magnitude": policy.novel_min_magnitude,
+            "theme_hard_cap_4h": policy.theme_hard_cap_4h,
+            "asset_hard_cap_2h": policy.asset_hard_cap_2h,
         },
         "events": len(rows),
         "verdicts": sum(1 for r in rows if r.get("verdict")),
         "replayed": len(replayed),
         "skipped_invalid_verdicts": skipped,
         "changed": dict(changed),
+        "restatement_drops": restatement_drops,
+        "novel_bypass": novel_bypass,
         "stored": _rates(rows),
         "candidate": _rates(replayed),
         "candidate_by_override_rule": _confusion(replayed, "override_rule"),

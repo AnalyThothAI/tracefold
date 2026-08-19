@@ -80,6 +80,27 @@ def build_parser() -> argparse.ArgumentParser:
     news_replay_decisions.add_argument("--min-watchlist-magnitude", type=int, default=None, help="default: news.policy")
     news_replay_decisions.add_argument("--theme-cap-4h", type=_positive_int, default=None, help="default: news.policy")
     news_replay_decisions.add_argument(
+        "--theme-hard-cap-4h",
+        type=_positive_int,
+        default=None,
+        help="novel-event hard cap per theme / 4 h; default: news.policy",
+    )
+    news_replay_decisions.add_argument(
+        "--asset-hard-cap-2h",
+        type=_positive_int,
+        default=None,
+        help="novel-event hard cap per asset / 2 h; default: news.policy",
+    )
+    news_replay_decisions.add_argument(
+        "--novel-min-magnitude",
+        type=int,
+        default=None,
+        help="minimum magnitude for the novelty bypass; default: news.policy",
+    )
+    news_replay_decisions.add_argument(
+        "--no-restatement-drop", action="store_true", help="replay without dropping grounded restatements"
+    )
+    news_replay_decisions.add_argument(
         "--no-storyline-throttle", action="store_true", help="replay with storyline throttling switched off"
     )
     news_replay_decisions.add_argument(

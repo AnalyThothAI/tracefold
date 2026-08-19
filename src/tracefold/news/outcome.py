@@ -77,6 +77,8 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "magnitude3": "重大事件",
     "high_priority_push": "高优先级来源，模型建议推送",
     "fail_closed_fallback": "模型不可用，按规则兜底",
+    "restatement": "重复：读者已收到同一事实",
+    "novel_bypass": "新进展放行：同话题已推过，但这是新事实",
     # Retired rules (policy v1 / Analyst lane) still present on historical verdicts.
     "magnitude2_actionable": "影响明显且可操作（旧规则）",
     "verify_failed": "分析结果未通过校验（已退役）",
@@ -169,9 +171,9 @@ DECISION_ZH: Final[dict[str, str]] = {
 
 # Asset windows are 2 h for a push and 4 h for an escalate (triage_rules._storyline_throttle) and the key does not
 # say which applied, so the copy names the window generically instead of guessing.
-_THROTTLE_ASSET_RE = re.compile(r"^storyline:asset:(?P<symbol>[^:]+)$")
-_THROTTLE_THEME_RE = re.compile(r"^storyline:theme:(?P<theme>[^:]+)(?::cap(?P<cap>\d+))?$")
-_THROTTLE_FAMILY_RE = re.compile(r"^storyline:macro:(?P<family>[^:]+)(?::cap(?P<cap>\d+))?$")
+_THROTTLE_ASSET_RE = re.compile(r"^storyline:asset:(?P<symbol>[^:]+)(?::hard(?P<hard>\d+))?$")
+_THROTTLE_THEME_RE = re.compile(r"^storyline:theme:(?P<theme>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
+_THROTTLE_FAMILY_RE = re.compile(r"^storyline:macro:(?P<family>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
 
 
 def admission_zh(admission: str | None) -> str:
@@ -230,16 +232,24 @@ def throttled_by_zh(key: str | None) -> str:
     if text == "hourly_cap":
         return "已达每小时推送上限"
     if (m := _THROTTLE_ASSET_RE.match(text)) is not None:
+        if m.group("hard"):
+            return f"{m.group('symbol')} 2 小时内已推 {m.group('hard')} 条（含新进展放行），达到硬上限"
         return f"{m.group('symbol')} 同一话题在节流窗口内已推过同等或更重要的消息"
     if (m := _THROTTLE_THEME_RE.match(text)) is not None:
         theme = THEME_ZH.get(m.group("theme"), m.group("theme"))
-        cap = m.group("cap")
-        return f"「{theme}」话题 4 小时内已推 {cap} 条" if cap else f"「{theme}」话题 4 小时内已推过更重要的消息"
+        return _window_cap_zh(f"「{theme}」话题", cap=m.group("cap"), hard=m.group("hard"))
     if (m := _THROTTLE_FAMILY_RE.match(text)) is not None:
         family = FAMILY_ZH.get(m.group("family"), m.group("family"))
-        cap = m.group("cap")
-        return f"「{family}」类 4 小时内已推 {cap} 条" if cap else f"「{family}」类 4 小时内已推过更重要的消息"
+        return _window_cap_zh(f"「{family}」类", cap=m.group("cap"), hard=m.group("hard"))
     return text
+
+
+def _window_cap_zh(subject: str, *, cap: str | None, hard: str | None) -> str:
+    if hard:
+        return f"{subject} 4 小时内已推 {hard} 条（含新进展放行），达到硬上限"
+    if cap:
+        return f"{subject} 4 小时内已推 {cap} 条"
+    return f"{subject} 4 小时内已推过更重要的消息"
 
 
 def event_type_zh(value: str | None) -> str:

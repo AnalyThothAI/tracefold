@@ -10,8 +10,8 @@ NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v4"
 STORYLINE_POLICY_VERSION = "news_storyline_v2"
-TRIAGE_PROMPT_VERSION = "news_triage_prompt_v6"
-TRIAGE_POLICY_VERSION = "news_triage_policy_v2"
+TRIAGE_PROMPT_VERSION = "news_triage_prompt_v7"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v3"
 DELIVERY_CARD_VERSION = "news_delivery_card_v8"
 
 Admission = Literal[
@@ -25,6 +25,7 @@ Audience = Literal["crypto", "us_equity", "macro", "none"]
 AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
 Decision = Literal["push", "escalate", "drop", "throttled"]
+Novelty = Literal["new_fact", "progression", "restatement"]
 
 
 class ExactNewsModel(BaseModel):
@@ -51,10 +52,24 @@ class TriageAsset(BaseModel):
 
 
 class TriageVerdict(BaseModel):
-    """Structured output of the Triage call. `decision` is the model's intent only."""
+    """Structured output of the Triage call. `decision` is the model's intent only.
+
+    ``novelty`` is judged against the told ledger in the status bar (cards the reader already received) and comes
+    first in the schema on purpose: the model fills the tool call in property order, and a required field placed
+    last was the one it dropped (issue #61 probe: 7/44 hard inputs omitted it). It stays *required* in the tool
+    schema (no default); verdicts stored before v7 are replayed with ``novelty="new_fact"``. ``restates`` is an
+    integer sentinel (-1 = none) rather than ``int | None`` because the anyOf/null shape raised the empty-tool-call
+    rate.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
+    novelty: Novelty = Field(
+        description="REQUIRED. new_fact | progression | restatement, judged against <event_status>.told",
+    )
+    restates: int = Field(
+        default=-1, ge=-1, description="index i of the told entry this event restates; -1 unless novelty=restatement"
+    )
     event_type: Literal[
         "listing",
         "delisting",
@@ -114,6 +129,7 @@ __all__ = [
     "EngineType",
     "ExactNewsModel",
     "NewsFeedEntry",
+    "Novelty",
     "TriageAsset",
     "TriageVerdict",
     "json_ready",
