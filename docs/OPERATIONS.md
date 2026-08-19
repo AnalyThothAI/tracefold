@@ -298,7 +298,8 @@ one `news triage fallback answered` warning per Event; only a chain where both
 links fail is degraded, and `primary_error` in the trace keeps the primary's
 code. A LAN llama.cpp server is single-slot: at consumer concurrency 4 a
 4-5 s call queues to ~18 s, so pair a local primary with `concurrency: 2`
-and `deadline_seconds: 20`. There is no second model
+and `deadline_seconds: 25` (a cold prompt cache after idle costs ~20 s on
+the first call; the fallback covers a timeout). There is no second model
 stage behind Triage — one Event gets one judgment and one card — so
 `triage_24h` next to `triage_degraded_24h` in status is the first place to
 look when pushes stop.

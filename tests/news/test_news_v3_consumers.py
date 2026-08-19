@@ -459,6 +459,7 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
     bus = FakeBus()
     answered_by_fallback = TriageCallResult(
         verdict=TriageVerdict(
+            novelty="new_fact",
             event_type="partnership",
             assets=[],
             direction="bullish",
