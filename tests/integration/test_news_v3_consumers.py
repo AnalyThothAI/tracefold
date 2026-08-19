@@ -254,7 +254,7 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
     triage = _triage(conn, bus)
     strong = conn.execute(
         """
-        SELECT event_id, priority FROM news_events
+        SELECT event_id, priority, leader_title FROM news_events
          WHERE admission = 'candidate' AND priority = 'high'
            AND jsonb_array_length(grounded_assets) > 0
            AND (jsonb_array_length(watchlist_hits) > 0 OR provider_score_max >= 90)
@@ -305,7 +305,7 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
         assert row["degraded"] is True
         assert row["error_code"] == "news_triage_model_unconfigured"
         assert row["model_decision"] is None and row["model"] is None
-        assert row["verdict"]["headline_zh"] == "模型不可用（规则兜底）"
+        assert row["verdict"]["headline_zh"] and "模型不可用" not in row["verdict"]["headline_zh"]  # the wire headline
     strong_row = verdicts[strong["event_id"]]
     weak_row = verdicts[weak["event_id"]]
     assert strong_row["rule_baseline_decision"] == "push"
@@ -322,7 +322,7 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
     context = conn.execute(
         "SELECT context_line, storyline_key FROM news_events WHERE event_id = %s", (strong["event_id"],)
     ).fetchone()
-    assert "模型不可用" in context["context_line"]
+    assert " ".join(strong["leader_title"].split())[:60] in context["context_line"]  # the wire headline, not an apology
     assert "→ escalate·high_priority_push" in context["context_line"]  # the feed shows the reason, not just the verdict
     # Triage wrote the final storyline key back and recorded it in the replayable trace.
     assert context["storyline_key"] == strong_row["trace"]["storyline_key"]

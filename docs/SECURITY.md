@@ -20,8 +20,9 @@ Feishu webhook, the API bind address and bearer token, Macro source-family
 enablement, and model provider/name.
 
 The complete secret inventory is: `ws_token` (HTTP API bearer token),
-`news.opennews_token`, `llm.api_key`, `news.broker.url` (carries the broker
-credentials), `news.push.feishu_webhook_url` and the optional
+`news.opennews_token`, `llm.api_key`, the optional
+`llm.news_triage_fallback.api_key` (second Triage endpoint, issue #65),
+`news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, and the four PostgreSQL password files.
 There is no other provider key or credential.
 

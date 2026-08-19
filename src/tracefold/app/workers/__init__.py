@@ -811,6 +811,22 @@ async def _wire_news_pipeline(
     models = news_model_availability(settings)
     triage_model: TriageModel | None = None
     if models.triage_configured and models.triage_model:
+        fallback_model: TriageModel | None = None
+        if models.triage_fallback_model:
+            fallback_endpoint = settings.llm.news_triage_fallback
+            fallback_chat, fallback_effective = configured_chat_model(
+                settings,
+                model_name=models.triage_fallback_model,
+                request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
+                max_tokens=_TRIAGE_MAX_TOKENS,
+                api_key=fallback_endpoint.api_key,
+                base_url=fallback_endpoint.base_url,
+            )
+            fallback_model = TriageModel(
+                model=fallback_chat,
+                model_name=fallback_effective,
+                deadline_seconds=settings.news.triage.deadline_seconds,
+            )
         chat_model, effective = configured_chat_model(
             settings,
             model_name=models.triage_model,
@@ -818,7 +834,12 @@ async def _wire_news_pipeline(
             max_tokens=_TRIAGE_MAX_TOKENS,
         )
         triage_model = TriageModel(
-            model=chat_model, model_name=effective, deadline_seconds=settings.news.triage.deadline_seconds
+            model=chat_model,
+            model_name=effective,
+            deadline_seconds=settings.news.triage.deadline_seconds,
+            fallback=fallback_model,
+            primary_breaker_failures=settings.news.triage.circuit_failures,
+            primary_breaker_open_seconds=settings.news.triage.circuit_open_seconds,
         )
 
     push = news_push_availability(settings)

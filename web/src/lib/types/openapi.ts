@@ -2687,6 +2687,8 @@ export interface components {
             triage_degraded_by_code_24h?: {
                 [key: string]: number;
             };
+            /** Triage Fallback Model */
+            triage_fallback_model?: string | null;
             /** Triage Model */
             triage_model?: string | null;
             /** Triage P50 Ms */

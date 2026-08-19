@@ -269,12 +269,12 @@ def test_triage_without_model_escalates_watchlist_or_high_score_and_persists_deg
     assert inserted["model"] is None and inserted["model_decision"] is None
     assert inserted["prompt_version"] == TRIAGE_PROMPT_VERSION
     assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "escalate"
-    assert inserted["verdict"]["headline_zh"] == "模型不可用（规则兜底）"
+    assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
     trace = inserted["trace"]
     assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
     assert len(trace["prompt_sha256"]) == 64 and trace["status"] == status_row  # replayable snapshot
     assert "latency_ms" not in trace and "input_sha256" not in trace  # no model call happened
-    assert "模型不可用" in news.kwargs_of("set_context_line")["context_line"]
+    assert "NVIDIA to invest $100bn" in news.kwargs_of("set_context_line")["context_line"]
     # escalate is a high-importance push (⚡ + priority); there is no second lane to notify
     assert [(m.routing_key, m.payload) for m in bus.published] == [
         (RK_VERDICT_PUSH, {"event_id": "ev-strong", "kind": "first"}),
@@ -449,6 +449,43 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
     assert news.kwargs_of("close_open_incidents")["cause_classes"] == ["triage_circuit_open"]
     inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
     assert [row["degraded"] for row in inserted] == [True, True, True, False]
+
+
+def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
+    from tracefold.news.agents.triage_model import TriageCallResult
+    from tracefold.news.models import TriageVerdict
+
+    news = RecordingNews(get_verdict=None, event_card=_card(), event_status={}, sent_count_since=0, insert_verdict=True)
+    bus = FakeBus()
+    answered_by_fallback = TriageCallResult(
+        verdict=TriageVerdict(
+            novelty="new_fact",
+            event_type="partnership",
+            assets=[],
+            direction="bullish",
+            scope="single_name",
+            magnitude=1,
+            actionable=True,
+            confidence=0.6,
+            decision="push",
+            headline_zh="ok",
+        ),
+        latency_ms=10,
+        input_tokens=1,
+        output_tokens=1,
+        cached_tokens=None,
+        model="deepseek-chat",
+        attempts=2,
+        fallback_from="news_triage_timeout",
+    )
+    triage = _triage_with_model(news, bus, _FailingTriageModel([answered_by_fallback]))
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-fallback"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["model"] == "deepseek-chat" and inserted["degraded"] is False
+    assert inserted["trace"]["model_fallback_from"] == "news_triage_timeout"
+    assert inserted["trace"]["model_attempts"] == 2
 
 
 def test_triage_replays_an_existing_unpublished_decision_without_reinserting() -> None:

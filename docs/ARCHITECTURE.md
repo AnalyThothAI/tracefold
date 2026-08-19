@@ -415,7 +415,7 @@ rows that are never written again, and topology declaration deletes an old
 `news.deep` queue at startup.
 
 Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders the
-reader contract (`news_delivery_card_v8`): the header is `headline_zh` (⚡ when
+reader contract (`news_delivery_card_v9`): the header is `headline_zh` (⚡ when
 the decision is escalate; it falls back to `title_zh`, then the original
 title), the first body line is `why_zh`, and the second is the facts in plain
 words — direction label, magnitude label, the tickers the model called primary
@@ -424,6 +424,12 @@ time in the reader's zone (UTC+8) — followed by a 打开来源 button and a sm
 `Tracefold · <event_id[:8]>` note. There is no original headline line, no
 translated title, no event type or scope enum, no provider score, and no line
 labelled as AI: those internals stay in the console and `tracefold news why`.
+A degraded Event (the model chain failed and the rule baseline still pushes)
+gets the wire text instead of a verdict view: the original headline as header,
+the original description as the body line, and a facts line of tickers,
+source and time only — no direction or magnitude the model never judged and
+no "模型不可用" copy; the degraded verdict's `headline_zh` is the wire headline
+too, so the console feed and the context line name the Event (issue #65).
 AI copy is sanitized (URLs fall back to the code-owned title). There is no
 retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
