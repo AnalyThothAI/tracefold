@@ -138,11 +138,16 @@ def decide(
     hourly_cap_reached: bool = False,
     muted: bool = False,
     degraded: bool = False,
+    novelty_defaulted: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
     """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently.
 
-    ``degraded`` marks a rule-baseline fallback verdict (no model judgment): it never earns the novelty bypass."""
+    ``degraded`` marks a rule-baseline fallback verdict (no model judgment): it never earns the novelty bypass.
+    ``novelty_defaulted`` marks a verdict the lenient parse accepted without a ``novelty`` field, whose
+    ``new_fact`` was invented by ``_verdict_without_novelty`` rather than judged against the told ledger. An
+    invented novelty is *unknown*, not novel, so it is disqualified from the bypass on the same grounds as
+    ``degraded`` — otherwise omitting a required field would promote a card past the soft throttle (issue #72)."""
 
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
@@ -188,7 +193,7 @@ def decide(
     if final in {"push", "escalate"} and status is not None and policy.storyline_throttle:
         throttled_by = _storyline_throttle(verdict, status, final, policy)
         if throttled_by is not None:
-            hard = None if degraded else _novel_bypass(verdict, status, policy)
+            hard = None if (degraded or novelty_defaulted) else _novel_bypass(verdict, status, policy)
             if hard is None:
                 return DecisionResult("throttled", rule, throttled_by, baseline, watch_hits)
             if hard:

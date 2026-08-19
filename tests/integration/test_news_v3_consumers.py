@@ -28,7 +28,7 @@ from tracefold.news.bus import (
 )
 from tracefold.news.consumers import DeduperConsumer, DelivererConsumer, TriageConsumer
 from tracefold.news.control import apply_control, parse_control
-from tracefold.news.models import TRIAGE_POLICY_VERSION
+from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION
 
 pytestmark = pytest.mark.integration
 
@@ -165,15 +165,21 @@ def test_deduper_publishes_each_new_candidate_once_and_marks_published(conn) -> 
         (published_ids,),
     ).fetchall()
     assert len(rows) == len(published_ids)
-    assert all(row["admission"] == "candidate" and row["published_at_ms"] is not None for row in rows)
+    # Both admitted admissions route to Triage: `candidate` and `listing_deterministic` (#72 — listing frames used
+    # to be stored, marked high priority, and then silently dropped instead of published).
+    assert all(row["admission"] in ADMITTED_ADMISSIONS and row["published_at_ms"] is not None for row in rows)
     for row in rows:
         assert f"event.{row['family']}.{row['priority']}" in bus.routing_keys()
-    unpublished_candidates = conn.execute(
-        "SELECT count(*) AS n FROM news_events WHERE admission = 'candidate' AND published_at_ms IS NULL"
+    unpublished_admitted = conn.execute(
+        "SELECT count(*) AS n FROM news_events WHERE admission = ANY(%s) AND published_at_ms IS NULL",
+        (sorted(ADMITTED_ADMISSIONS),),
     ).fetchone()["n"]
-    assert unpublished_candidates == 0
-    suppressed = conn.execute("SELECT count(*) AS n FROM news_events WHERE admission <> 'candidate'").fetchone()["n"]
-    assert suppressed > 0  # non-candidates are stored but never routed to Triage
+    assert unpublished_admitted == 0
+    suppressed = conn.execute(
+        "SELECT count(*) AS n FROM news_events WHERE NOT (admission = ANY(%s))",
+        (sorted(ADMITTED_ADMISSIONS),),
+    ).fetchone()["n"]
+    assert suppressed > 0  # suppressed admissions are stored but never routed to Triage
 
     # Redelivery of every raw message is a no-op: same items, same events, zero new publishes.
     before = conn.execute(

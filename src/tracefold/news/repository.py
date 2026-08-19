@@ -420,7 +420,8 @@ class NewsRepository:
         rows = self.conn.execute(
             """
             SELECT event_id FROM news_events
-             WHERE published_at_ms IS NULL AND admission = 'candidate' AND opened_at_ms <= %s
+             WHERE published_at_ms IS NULL AND admission IN ('candidate', 'listing_deterministic')
+               AND opened_at_ms <= %s
              ORDER BY opened_at_ms LIMIT %s
             """,
             (int(older_than_ms), int(limit)),

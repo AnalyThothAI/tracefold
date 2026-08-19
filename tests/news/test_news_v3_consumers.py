@@ -160,6 +160,15 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 family="general",
                 gate=SimpleNamespace(priority="normal", amqp_priority=0),
             ),
+            # `listing_deterministic` is an admitted admission, not a suppression: exchange listing/delisting
+            # frames must reach Triage like any candidate (#72 — they used to die silently right here).
+            SimpleNamespace(
+                event_created=True,
+                admission="listing_deterministic",
+                event_id="ev-3",
+                family="listing",
+                gate=SimpleNamespace(priority="high", amqp_priority=5),
+            ),
         ]
     )
     seen: list[dict[str, Any]] = []
@@ -192,6 +201,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
         await deduper.handle(raw)
         await deduper.handle(raw)  # redelivery: admit_item reports nothing new
         await deduper.handle(raw)  # a suppressed admission never reaches Triage
+        await deduper.handle(raw)  # a listing admission does
         foreign = _message(
             "raw",
             {"params": {**params, "strategy": {"id": 4242, "name": "other"}}, "strategy_id": "4242"},
@@ -203,14 +213,15 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
     asyncio.run(scenario())
 
-    assert len(seen) == 3
+    assert len(seen) == 4
     assert seen[0]["ingest_mode"] == "live" and seen[0]["observed_at_ms"] == NOW_MS - 5
     assert seen[0]["trace_id"] == "trace-1" and seen[0]["watchlist_symbols"] == frozenset({"BTC"})
     assert seen[0]["event"].provider_record_id == "3568501"
-    assert bus.routing_keys() == ["event.macro.high"]
+    assert bus.routing_keys() == ["event.macro.high", "event.listing.high"]
     assert bus.published[0].payload == {"event_id": "ev-1"}
     assert bus.published[0].priority == 5 and bus.published[0].message_id == "event:ev-1"
-    assert news.names() == ["mark_event_published"]
+    assert bus.published[1].payload == {"event_id": "ev-3"}
+    assert news.names() == ["mark_event_published", "mark_event_published"]
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-1"
 
 

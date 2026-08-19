@@ -155,9 +155,10 @@ news:
 ```
 
 `news.policy` and `news.gate` are the operator's recall/precision knobs: the
-Gate admits nearly every Item (only recovery replays, deterministic listing
-frames, law-firm templates, and — behind `suppress_low_signal` — low-score
-ungrounded social posts skip the model), Triage is the semantic filter, and
+Gate admits nearly every Item (only recovery replays, law-firm templates,
+and — behind `suppress_low_signal` — low-score ungrounded social posts skip
+the model; exchange listing/delisting frames are admitted and judged like any
+candidate), Triage is the semantic filter, and
 `decide()` applies these thresholds. Change them after `tracefold news
 replay-decisions` and operator labels agree; `tracefold config` prints the
 effective values.

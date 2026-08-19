@@ -47,6 +47,7 @@ from .control import is_muted
 from .delivery import render_first_card
 from .events import admit_item
 from .models import (
+    ADMITTED_ADMISSIONS,
     TRIAGE_POLICY_VERSION,
     TRIAGE_PROMPT_VERSION,
     TriageVerdict,
@@ -506,7 +507,7 @@ class DeduperConsumer:
             ),
             timeout_seconds=5.0,
         )
-        if result.event_created and result.admission == "candidate":
+        if result.event_created and result.admission in ADMITTED_ADMISSIONS:
             await publish_event(
                 self.bus,
                 self.db,
@@ -553,6 +554,7 @@ class _TriageSettle:
     control: Mapping[str, Any]
     cap_reached: bool
     degraded: bool
+    novelty_defaulted: bool
     error_code: str | None
     model_name: str | None
     trace: dict[str, Any]
@@ -798,6 +800,7 @@ class TriageConsumer:
                 control=control,
                 cap_reached=cap_reached,
                 degraded=degraded,
+                novelty_defaulted=bool(trace.get("novelty_defaulted")),
                 error_code=error_code,
                 model_name=model_name,
                 trace=trace,
@@ -864,6 +867,7 @@ class TriageConsumer:
             hourly_cap_reached=s.cap_reached,
             muted=muted,
             degraded=s.degraded,
+            novelty_defaulted=s.novelty_defaulted,
             policy=self.policy,
         )
         if s.degraded and decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
