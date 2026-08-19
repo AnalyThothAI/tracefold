@@ -1,6 +1,6 @@
 """Feishu card rendering — the reader contract (issue #57): one Event, one card, three lines.
 
-    header  ⚡? headline_zh            (model: one factual sentence, Chinese)
+    header  ⚡? headline_zh            (model: one complete headline incl. the decisive fact, Chinese)
     line 1  why_zh                     (model: why it matters now and to whom, Chinese)
     line 2  利多 · 影响明显 · BTC ETH · CoinDesk, 2 条报道 · 14:32
             (code: direction, magnitude, tickers, source, local time)

@@ -334,7 +334,9 @@ Triage (`tracefold.news.agents.triage_model`, `tracefold.news.triage_rules`)
 never retrieves: the Deduper computes `event_status` (storyline window facts)
 and the consumer passes it last in the human message. The byte-frozen system
 prompt is English (instructions) and every text field the verdict returns is
-Chinese: `headline_zh` (the card header), `why_zh` (the one card sentence), a
+Chinese: `headline_zh` (the card header — a complete headline that keeps the
+decisive fact, not a stub), `why_zh` (the one card sentence adding what the
+headline does not say), a
 console-only `title_zh` (the faithful Chinese title), and an `audience`
 (crypto / us_equity / macro / none). `decide()` owns the final decision under
 a `DecidePolicy` whose defaults are the live policy and whose values come from
