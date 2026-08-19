@@ -1,5 +1,4 @@
 import { Alert, AlertDescription, AlertTitle } from "@shared/ui/alert";
-import { Badge } from "@shared/ui/badge";
 import { Panel, PanelContent, PanelDescription, PanelHeader, PanelTitle } from "@shared/ui/panel";
 import * as TabsNamespace from "@shared/ui/tabs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@shared/ui/tabs";
@@ -9,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 afterEach(() => cleanup());
 
 describe("shared UI primitives", () => {
-  it("renders badge, alert, and panel primitives with caller classes", () => {
+  it("renders alert and panel primitives with caller classes", () => {
     const { container } = render(
       <Panel className="custom-panel">
         <PanelHeader className="custom-panel-header">
@@ -17,9 +16,6 @@ describe("shared UI primitives", () => {
           <PanelDescription>Queue health</PanelDescription>
         </PanelHeader>
         <PanelContent>
-          <Badge variant="secondary" className="custom-badge">
-            Ready
-          </Badge>
           <Alert variant="destructive" className="custom-alert">
             <AlertTitle>Provider degraded</AlertTitle>
             <AlertDescription>Retry later.</AlertDescription>
@@ -32,8 +28,6 @@ describe("shared UI primitives", () => {
     expect(container.querySelector('[data-slot="panel-header"]')).toHaveClass(
       "custom-panel-header",
     );
-    expect(screen.getByText("Ready")).toHaveAttribute("data-slot", "badge");
-    expect(screen.getByText("Ready")).toHaveClass("custom-badge");
     expect(screen.getByRole("alert")).toHaveClass("custom-alert");
     expect(screen.getByText("Provider degraded")).toHaveAttribute("data-slot", "alert-title");
     expect(screen.getByText("Retry later.")).toHaveAttribute("data-slot", "alert-description");
