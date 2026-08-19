@@ -1,15 +1,18 @@
 @layer app.features {
-  /* Tone grammar shared by the outcome badge, health cards, and timeline markers (`.news-toned[data-tone]`). */
+  /*
+   * Tone grammar shared by the outcome badge, health cards and timeline markers (`.news-toned[data-tone]`).
+   * This is the pipeline axis only — no red and no green live here (#74); those belong to market direction.
+   */
   .news-toned {
     --news-tone: var(--signal-neutral);
-    --news-tone-soft: color-mix(in srgb, var(--signal-neutral) 12%, transparent);
-    --news-tone-border: color-mix(in srgb, var(--signal-neutral) 34%, transparent);
+    --news-tone-soft: var(--signal-neutral-soft);
+    --news-tone-border: var(--signal-neutral-border);
   }
 
-  .news-toned[data-tone="positive"] {
-    --news-tone: var(--signal-positive);
-    --news-tone-soft: var(--signal-positive-soft);
-    --news-tone-border: var(--signal-positive-border);
+  .news-toned[data-tone="done"] {
+    --news-tone: var(--signal-done);
+    --news-tone-soft: var(--signal-done-soft);
+    --news-tone-border: var(--signal-done-border);
   }
 
   .news-toned[data-tone="info"] {
@@ -24,10 +27,10 @@
     --news-tone-border: var(--signal-caution-border);
   }
 
-  .news-toned[data-tone="negative"] {
-    --news-tone: var(--signal-negative);
-    --news-tone-soft: var(--signal-negative-soft);
-    --news-tone-border: var(--signal-negative-border);
+  .news-toned[data-tone="alert"] {
+    --news-tone: var(--signal-alert);
+    --news-tone-soft: var(--signal-alert-soft);
+    --news-tone-border: var(--signal-alert-border);
   }
 
   .news-outcome {

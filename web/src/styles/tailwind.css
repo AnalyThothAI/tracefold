@@ -15,7 +15,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--surface-raised);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: #1b211c;
+  --color-accent: var(--surface-hover);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);

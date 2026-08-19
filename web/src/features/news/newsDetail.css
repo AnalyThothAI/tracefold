@@ -367,11 +367,11 @@
 
   /* ------------------------------------------------------------- verdict */
   .news-detail-hero[data-direction="bullish"] {
-    --news-direction-rail: var(--signal-positive);
+    --news-direction-rail: var(--dir-bullish);
   }
 
   .news-detail-hero[data-direction="bearish"] {
-    --news-direction-rail: var(--signal-negative);
+    --news-direction-rail: var(--dir-bearish);
   }
 
   .news-detail-verdict {

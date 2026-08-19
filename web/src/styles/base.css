@@ -3,27 +3,42 @@
     box-sizing: border-box;
   }
 
+  html {
+    /* WeChat and iOS Safari both reflow text on their own; pinning the adjust keeps a user's larger font a
+       larger font instead of an unpredictable per-block inflation that breaks the layout. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
   html,
   body,
   #root {
     width: 100%;
+    /* dvh so the shell does not jump when the WeChat / Safari toolbars slide away; % is the fallback. */
     height: 100%;
+    height: 100dvh;
     min-width: 0;
-    min-height: 100%;
+    min-height: 0;
   }
 
   body {
     margin: 0;
     overflow: hidden;
     color: var(--text-secondary);
-    background:
-      radial-gradient(circle at 14% 0%, rgba(95, 211, 255, 0.055), transparent 28rem),
-      radial-gradient(circle at 82% 4%, rgba(121, 169, 255, 0.04), transparent 24rem),
-      var(--surface-canvas);
-    background-size: auto, auto, auto;
+    background: var(--surface-canvas);
     font-family: var(--font-sans);
-    font-size: 12px;
+    /* rem-relative so WeChat's reader font setting scales the whole console coherently. */
+    font-size: 0.8125rem;
+    line-height: 1.55;
     letter-spacing: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  @media (max-width: 767px) {
+    body {
+      /* Han glyphs need more absolute size than Latin to stay legible on a phone. */
+      font-size: 0.875rem;
+    }
   }
 
   button,
@@ -41,9 +56,15 @@
   }
 
   .lucide {
-    width: 13px;
-    height: 13px;
+    width: 14px;
+    height: 14px;
     flex: 0 0 auto;
+  }
+
+  /* One focus treatment for the whole console; light grounds show a thin ring poorly. */
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
   }
 
   .sr-only {

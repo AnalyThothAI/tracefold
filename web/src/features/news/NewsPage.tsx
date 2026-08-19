@@ -487,7 +487,7 @@ function ActiveFilterChips({
 function NewsHealthPill({ error, status }: { error: boolean; status?: NewsStatus }) {
   if (error) {
     return (
-      <Link className="news-health-pill news-toned" data-tone="negative" to={newsStatusPath()}>
+      <Link className="news-health-pill news-toned" data-tone="alert" to={newsStatusPath()}>
         <span aria-hidden className="news-outcome-dot" />
         <b>状态暂不可用</b>
       </Link>
