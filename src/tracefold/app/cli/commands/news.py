@@ -136,7 +136,9 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
             },
         }
 
-    with repositories(settings, role="serve") as repos:
+    # The workers role, like every other read-only News command: the CLI runs inside the workers container, which
+    # is the only place the serve password file is absent.
+    with repositories(settings) as repos:
         if action == "summary":
             return 0, {"ok": True, "data": repos.instruments.universe_summary()}
         if action == "listings":
