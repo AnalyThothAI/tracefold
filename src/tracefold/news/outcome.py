@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
+from .models import ADMITTED_ADMISSIONS
+
 OUTCOME_VERSION: Final = "news_outcome_v1"
 
 OutcomeKind = Literal[
@@ -311,7 +313,7 @@ def event_outcome(
     admission_text = str(admission or "")
     if admission_text == "recovery":
         return _outcome("held_recovery", "补抄件，不推送", ADMISSION_ZH["recovery"])
-    if admission_text not in {"candidate", "listing_deterministic"}:
+    if admission_text not in ADMITTED_ADMISSIONS:
         return _outcome("held_gate", "未送审", admission_zh(admission_text))
     state = str((delivery or {}).get("state") or "")
     if state == "sent" and triage is None:

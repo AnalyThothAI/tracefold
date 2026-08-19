@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +21,12 @@ Admission = Literal[
     "suppressed_low_signal",
     "recovery",
 ]
+# The admissions that go on to Triage. `listing_deterministic` is an admitted state, not a suppression: the funnel,
+# the outcome vocabulary (the admitted "上币/下币公告" wording) and the re-gate set have always counted it as
+# admitted, but the Deduper published only `candidate`, so every exchange listing/delisting frame died between
+# the Gate and the queue (#72: 19 events, 0 verdicts, 0 deliveries since launch). One constant, so it cannot
+# drift again.
+ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset({"candidate", "listing_deterministic"})
 Audience = Literal["crypto", "us_equity", "macro", "none"]
 AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
@@ -115,6 +121,7 @@ def json_ready(value: Any) -> Any:
 
 
 __all__ = [
+    "ADMITTED_ADMISSIONS",
     "DELIVERY_CARD_VERSION",
     "EVENT_IDENTITY_VERSION",
     "GATE_POLICY_VERSION",

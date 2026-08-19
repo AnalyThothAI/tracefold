@@ -452,6 +452,11 @@ def test_decide_v3_novelty_restatement_and_bypass() -> None:
     novel = decide(_verdict(novelty="new_fact"), _FACTS, busy)
     assert novel.final == "push" and novel.override_rule == "novel_bypass" and novel.throttled_by is None
     assert decide(_verdict(novelty="progression"), _FACTS, busy).override_rule == "novel_bypass"
+    # ...but an invented novelty is unknown, not novel: the lenient parse (`novelty_defaulted`) is disqualified
+    # from the bypass exactly like a degraded verdict, so omitting a required field cannot promote a card (#72).
+    defaulted = decide(_verdict(novelty="new_fact"), _FACTS, busy, novelty_defaulted=True)
+    assert defaulted.final == "throttled" and defaulted.throttled_by == "storyline:asset:NVDA"
+    assert decide(_verdict(novelty="new_fact"), _FACTS, busy, degraded=True).final == "throttled"
     # ...but not below the novelty magnitude floor, and not once the hard cap is reached.
     assert decide(_verdict(novelty="new_fact", magnitude=1), _FACTS, busy).final == "throttled"
     full = StorylineStatus(
