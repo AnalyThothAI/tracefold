@@ -9,6 +9,7 @@ import type {
   NewsStatus,
   NewsTimelineStep,
   NewsVerdict,
+  NewsTriageSummary,
 } from "@features/news/useNewsPage";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
@@ -49,23 +50,43 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     reporting_origin: "Reuters World",
     storyline_key: "asset:BTC",
     title_zh: "央行应对新的全球政策冲击",
-    triage: {
-      degraded: false,
-      direction: "bearish",
-      direction_zh: "利空",
-      error_code: null,
-      event_type: "macro",
-      event_type_zh: "宏观",
-      final_decision: "push",
-      headline_zh: "央行政策转向，风险资产承压",
-      magnitude: 2,
-      magnitude_zh: "影响明显",
-      override_rule: "model_push_actionable",
-      scope: "macro",
-      throttled_by: null,
-      title_zh: "央行应对新的全球政策冲击",
-    },
+    triage: newsTriageFixture(),
     watchlist_hits: ["BTC"],
+    ...overrides,
+  };
+}
+
+export function newsTriageFixture(overrides: Partial<NewsTriageSummary> = {}): NewsTriageSummary {
+  return {
+    actionable: true,
+    assets: [
+      { role: "primary", symbol: "BTC" },
+      { role: "mentioned", symbol: "ETH" },
+    ],
+    audience: "macro",
+    audience_zh: "宏观",
+    confidence: 0.78,
+    decision_zh: "推送",
+    degraded: false,
+    direction: "bearish",
+    direction_zh: "利空",
+    error_code: null,
+    event_type: "macro",
+    event_type_zh: "宏观",
+    final_decision: "push",
+    headline_zh: "央行政策转向，风险资产承压",
+    magnitude: 2,
+    magnitude_zh: "影响明显",
+    model_decision: "push",
+    model_decision_zh: "推送",
+    novelty: "new_fact",
+    novelty_zh: "新事实",
+    override_rule: "model_push_actionable",
+    scope: "macro",
+    scope_zh: "宏观",
+    throttled_by: null,
+    title_zh: "央行应对新的全球政策冲击",
+    why_zh: "利率指引与市场预期背离，风险资产定价需要重估",
     ...overrides,
   };
 }
@@ -238,6 +259,7 @@ export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {})
     deliveries: [newsDeliveryFixture()],
     event: newsEventFixture(),
     outcome: newsOutcomeFixture(),
+    triage: newsTriageFixture(),
     timeline: newsTimelineFixture(),
     members: [
       newsEventMemberFixture(),

@@ -3,6 +3,7 @@ import { ExternalLink, Layers, Zap } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import "./newsEventRow.css";
+import { NewsDirectionChip } from "./NewsDirectionChip";
 import { NewsOutcomeBadge } from "./NewsOutcomeBadge";
 import {
   absoluteTime,
@@ -16,6 +17,8 @@ import type { NewsFeedEvent } from "./useNewsPage";
 /**
  * One Event in the feed: when · what (Chinese headline, original wire line) · one outcome. Model facts
  * (direction / magnitude / type) come pre-labelled from the server; nothing here maps a rule key to copy.
+ * Direction leads the meta line as a toned chip so a scan down the column separates 利多 from 利空; the
+ * remaining facts stay quiet secondary text.
  */
 export function NewsEventRow({ event }: { event: NewsFeedEvent }) {
   const triage = event.triage;
@@ -23,9 +26,7 @@ export function NewsEventRow({ event }: { event: NewsFeedEvent }) {
   const showOriginal = headline !== event.leader_title;
   const url = validExternalUrl(event.leader_url);
   const assets = displayAssets(event.grounded_assets ?? []);
-  const facts = triage
-    ? [triage.direction_zh, triage.magnitude_zh, triage.event_type_zh].filter(Boolean)
-    : [];
+  const facts = triage ? [triage.event_type_zh].filter(Boolean) : [];
   const held = event.outcome.group === "held";
   return (
     <article
@@ -60,6 +61,7 @@ export function NewsEventRow({ event }: { event: NewsFeedEvent }) {
               {event.member_count} 条报道
             </span>
           ) : null}
+          {triage ? <NewsDirectionChip triage={triage} /> : null}
           {facts.length ? <span className="news-event-facts">{facts.join(" · ")}</span> : null}
           {assets.length ? (
             <span aria-label="关联资产" className="news-event-assets">

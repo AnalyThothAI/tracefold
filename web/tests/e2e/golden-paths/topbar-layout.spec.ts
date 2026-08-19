@@ -187,7 +187,9 @@ test("News card secondary actions stay interactive above the primary row link", 
   await expect(originalLink).toBeVisible();
   await expect(rowLink).toBeVisible();
   await originalLink.click({ trial: true });
-  await expect(page.locator(".news-event-facts")).toContainText("利空 · 影响明显 · 宏观");
+  await expect(page.locator(".news-direction")).toContainText("利空");
+  await expect(page.locator(".news-direction-strength")).toContainText("影响明显");
+  await expect(page.locator(".news-event-facts")).toContainText("宏观");
   await expect(page.locator(".news-event-outcome")).toContainText("已推送");
   await expect(page.locator(".news-event-outcome")).toContainText("推送于");
 });

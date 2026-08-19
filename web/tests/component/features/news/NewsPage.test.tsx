@@ -100,7 +100,9 @@ describe("NewsPage", () => {
     ).toBeInTheDocument();
     expect(inRow.getByText("Reuters World")).toBeInTheDocument();
     expect(inRow.getByText("4 条报道")).toBeInTheDocument();
-    expect(inRow.getByText("利空 · 影响明显 · 宏观")).toBeInTheDocument();
+    expect(inRow.getByText("利空")).toBeInTheDocument();
+    expect(inRow.getByText("影响明显")).toBeInTheDocument();
+    expect(inRow.getByText("宏观")).toBeInTheDocument();
     expect(inRow.getByLabelText("关联资产")).toHaveTextContent("BTCETH");
     expect(inRow.getByRole("link", { name: "打开原文" })).toHaveAttribute(
       "href",

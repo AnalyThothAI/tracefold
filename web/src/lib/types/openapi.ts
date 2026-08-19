@@ -364,6 +364,7 @@ export interface components {
             outcome: components["schemas"]["NewsOutcomeData"];
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
+            triage?: components["schemas"]["NewsTriageSummaryData"] | null;
             /** Verdicts */
             verdicts: components["schemas"]["NewsVerdictData"][];
         };
@@ -767,8 +768,37 @@ export interface components {
             /** Title Zh */
             title_zh: string;
         };
-        /** NewsTriageSummaryData */
+        /** NewsTriageAssetData */
+        NewsTriageAssetData: {
+            /** Role */
+            role: string;
+            /** Symbol */
+            symbol: string;
+        };
+        /**
+         * NewsTriageSummaryData
+         * @description The reader-facing view of one Triage verdict. Every `*_zh` is server-owned copy; the raw enum stays
+         *     beside it so the browser can map it to a visual tone without owning a vocabulary table.
+         */
         NewsTriageSummaryData: {
+            /** Actionable */
+            actionable?: boolean | null;
+            /** Assets */
+            assets?: components["schemas"]["NewsTriageAssetData"][];
+            /** Audience */
+            audience?: string | null;
+            /**
+             * Audience Zh
+             * @default
+             */
+            audience_zh: string;
+            /** Confidence */
+            confidence?: number | null;
+            /**
+             * Decision Zh
+             * @default
+             */
+            decision_zh: string;
             /**
              * Degraded
              * @default false
@@ -801,14 +831,35 @@ export interface components {
              * @default
              */
             magnitude_zh: string;
+            /** Model Decision */
+            model_decision?: string | null;
+            /**
+             * Model Decision Zh
+             * @default
+             */
+            model_decision_zh: string;
+            /** Novelty */
+            novelty?: string | null;
+            /**
+             * Novelty Zh
+             * @default
+             */
+            novelty_zh: string;
             /** Override Rule */
             override_rule?: string | null;
             /** Scope */
             scope?: string | null;
+            /**
+             * Scope Zh
+             * @default
+             */
+            scope_zh: string;
             /** Throttled By */
             throttled_by?: string | null;
             /** Title Zh */
             title_zh?: string | null;
+            /** Why Zh */
+            why_zh?: string | null;
         };
         /** NewsVerdictData */
         NewsVerdictData: {

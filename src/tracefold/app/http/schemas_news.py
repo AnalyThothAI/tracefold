@@ -29,7 +29,15 @@ class NewsOutcomeData(ExactApiSchema):
     group: Literal["pushed", "held", "pending"]
 
 
+class NewsTriageAssetData(ExactApiSchema):
+    symbol: str
+    role: str
+
+
 class NewsTriageSummaryData(ExactApiSchema):
+    """The reader-facing view of one Triage verdict. Every `*_zh` is server-owned copy; the raw enum stays
+    beside it so the browser can map it to a visual tone without owning a vocabulary table."""
+
     final_decision: str
     override_rule: str | None = None
     throttled_by: str | None = None
@@ -39,11 +47,23 @@ class NewsTriageSummaryData(ExactApiSchema):
     magnitude: int | None = None
     event_type: str | None = None
     scope: str | None = None
+    novelty: str | None = None
+    audience: str | None = None
+    confidence: float | None = None
+    actionable: bool | None = None
+    model_decision: str | None = None
     headline_zh: str | None = None
     title_zh: str | None = None
+    why_zh: str | None = None
+    assets: list[NewsTriageAssetData] = Field(default_factory=list)
     direction_zh: str = ""
     magnitude_zh: str = ""
     event_type_zh: str = ""
+    scope_zh: str = ""
+    novelty_zh: str = ""
+    audience_zh: str = ""
+    decision_zh: str = ""
+    model_decision_zh: str = ""
 
 
 class NewsDeliverySummaryData(ExactApiSchema):
@@ -161,6 +181,7 @@ class NewsTimelineStepData(ExactApiSchema):
 class NewsEventDetailData(ExactApiSchema):
     event: NewsEventData
     outcome: NewsOutcomeData
+    triage: NewsTriageSummaryData | None = None
     timeline: list[NewsTimelineStepData] = Field(default_factory=list)
     members: list[NewsEventMemberData]
     verdicts: list[NewsVerdictData]

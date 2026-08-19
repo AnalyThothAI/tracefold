@@ -187,6 +187,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
     assert set(schemas_news.NewsEventDetailData.model_fields) == {
         "event",
         "outcome",
+        "triage",
         "timeline",
         "members",
         "verdicts",

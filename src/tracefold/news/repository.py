@@ -11,7 +11,16 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from .outcome import direction_zh, event_outcome, event_type_zh, magnitude_zh
+from .outcome import (
+    audience_zh,
+    decision_zh,
+    direction_zh,
+    event_outcome,
+    event_type_zh,
+    magnitude_zh,
+    novelty_zh,
+    scope_zh,
+)
 from .timeline import event_timeline
 from .triage_rules import ESCALATE_WINDOW_MS, PUSH_WINDOW_MS
 
@@ -818,6 +827,7 @@ class NewsRepository:
                    t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
                    t.verdict ->> 'event_type' AS event_type, t.verdict ->> 'headline_zh' AS headline_zh,
                    t.verdict ->> 'scope' AS scope, t.verdict ->> 'title_zh' AS title_zh,
+                   t.model_decision, t.verdict AS triage_verdict,
                    d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
@@ -904,9 +914,20 @@ class NewsRepository:
         outcome, timeline = event_timeline(
             event=event, members=member_rows, verdicts=verdict_rows, deliveries=delivery_rows
         )
+        latest_triage = next((v for v in reversed(verdict_rows) if v.get("stage") == "triage"), None)
         return {
             "event": event,
             "outcome": outcome.as_dict(),
+            "triage": _triage_summary(
+                final_decision=(latest_triage or {}).get("final_decision"),
+                override_rule=(latest_triage or {}).get("override_rule"),
+                throttled_by=(latest_triage or {}).get("throttled_by"),
+                degraded=(latest_triage or {}).get("degraded"),
+                error_code=(latest_triage or {}).get("error_code"),
+                model_decision=(latest_triage or {}).get("model_decision"),
+                verdict=(latest_triage or {}).get("verdict") or {},
+                full=True,
+            ),
             "timeline": timeline,
             "members": member_rows,
             "verdicts": verdict_rows,
@@ -1138,26 +1159,110 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _triage_summary(
+    *,
+    final_decision: Any,
+    override_rule: Any = None,
+    throttled_by: Any = None,
+    degraded: Any = False,
+    error_code: Any = None,
+    model_decision: Any = None,
+    verdict: Mapping[str, Any] | None = None,
+    full: bool = False,
+) -> dict[str, Any] | None:
+    """The reader-facing Triage summary shared by the feed row and the Event detail.
+
+    Every business word is resolved to Chinese here so no browser owns a vocabulary table (the Feishu card in
+    ``delivery.py`` emits the same `DIRECTION_ZH`/`MAGNITUDE_ZH` words, and one definition keeps the card and
+    the console from drifting); the raw enum ships beside it purely so the UI can pick a visual tone.
+
+    ``full`` is the Event detail. The feed row renders only direction/magnitude/type over 25 rows, so it takes
+    the slim shape — carrying the detail fields there cost 20.7% of the feed payload for nothing."""
+
+    if not final_decision:
+        return None
+    v: Mapping[str, Any] = verdict or {}
+    direction = v.get("direction")
+    magnitude = _optional_int(v.get("magnitude"))
+    event_type = v.get("event_type")
+    scope = v.get("scope")
+    summary = {
+        "final_decision": final_decision,
+        "override_rule": override_rule,
+        "throttled_by": throttled_by,
+        "degraded": bool(degraded),
+        "error_code": error_code,
+        "direction": direction,
+        "magnitude": magnitude,
+        "event_type": event_type,
+        "headline_zh": v.get("headline_zh"),
+        "title_zh": v.get("title_zh"),
+        "direction_zh": direction_zh(direction),
+        "magnitude_zh": magnitude_zh(magnitude),
+        "event_type_zh": event_type_zh(event_type),
+    }
+    if not full:
+        return summary
+    novelty = v.get("novelty")
+    audience = v.get("audience")
+    return summary | {
+        "scope": scope,
+        "novelty": novelty,
+        "audience": audience,
+        "confidence": _optional_float(v.get("confidence")),
+        "actionable": _optional_bool(v.get("actionable")),
+        "model_decision": model_decision,
+        "why_zh": v.get("why_zh"),
+        "assets": _triage_assets(v.get("assets")),
+        "scope_zh": scope_zh(scope),
+        "novelty_zh": novelty_zh(novelty),
+        "audience_zh": audience_zh(audience),
+        "decision_zh": decision_zh(final_decision),
+        "model_decision_zh": decision_zh(model_decision),
+    }
+
+
+def _triage_assets(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        symbol = str(item.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        out.append({"symbol": symbol, "role": str(item.get("role") or "mentioned")})
+    return out
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return bool(value) if isinstance(value, bool) else None
+
+
 def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    triage = (
-        {
-            "final_decision": row["final_decision"],
-            "override_rule": row.get("override_rule"),
-            "throttled_by": row.get("throttled_by"),
-            "degraded": bool(row.get("triage_degraded")),
-            "error_code": row.get("triage_error_code"),
-            "direction": row.get("direction"),
-            "magnitude": row.get("magnitude"),
-            "event_type": row.get("event_type"),
-            "scope": row.get("scope"),
-            "headline_zh": row.get("headline_zh"),
-            "title_zh": row.get("title_zh"),
-            "direction_zh": direction_zh(row.get("direction")),
-            "magnitude_zh": magnitude_zh(row.get("magnitude")),
-            "event_type_zh": event_type_zh(row.get("event_type")),
-        }
-        if row.get("final_decision")
-        else None
+    triage = _triage_summary(
+        final_decision=row.get("final_decision"),
+        override_rule=row.get("override_rule"),
+        throttled_by=row.get("throttled_by"),
+        degraded=row.get("triage_degraded"),
+        error_code=row.get("triage_error_code"),
+        model_decision=row.get("model_decision"),
+        verdict=row.get("triage_verdict") or {},
     )
     delivery = (
         {

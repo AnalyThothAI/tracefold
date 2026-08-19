@@ -139,18 +139,4 @@
     svg {
     color: var(--accent-primary);
   }
-
-  .cockpit-app-sidebar-rail:hover::after {
-    background: var(--accent-border);
-  }
-
-  [data-collapsible="icon"] .cockpit-app-sidebar-brand {
-    grid-template-columns: 27px;
-    padding-inline: 3px;
-  }
-
-  [data-collapsible="icon"] .cockpit-app-sidebar-brand > span:last-child,
-  [data-collapsible="icon"] .cockpit-app-sidebar-group-heading {
-    display: none;
-  }
 }
