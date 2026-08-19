@@ -138,6 +138,19 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_market_instruments`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `venue` | `TEXT` | False | `None` |
+| `venue_symbol` | `TEXT` | False | `None` |
+| `base_symbol` | `TEXT` | False | `None` |
+| `instrument_class` | `TEXT` | False | `'unknown'::text` |
+| `quote_asset` | `TEXT` | True | `None` |
+| `status` | `TEXT` | False | `'trading'::text` |
+| `first_seen_ms` | `BIGINT` | False | `None` |
+| `last_seen_ms` | `BIGINT` | False | `None` |
+
 ## `news_opennews_incidents`
 
 | Column | Type | Nullable | Default |
@@ -154,6 +167,15 @@
 | `recovered_count` | `INTEGER` | False | `0` |
 | `last_error_code` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_symbol_aliases`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `alias` | `TEXT` | False | `None` |
+| `base_symbol` | `TEXT` | False | `None` |
+| `source` | `TEXT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_verdicts`

@@ -1,0 +1,104 @@
+"""Binance instrument catalogue: spot pairs and USD-M perpetuals.
+
+The USD-M futures catalogue is the interesting half — besides crypto it carries the equity/commodity perps
+(``UNITREEUSDT``, ``OPENAIUSDT``, ``TENCENTUSDT``, ``CLUSDT``, ``MRVLUSDT``). Querying spot alone understates
+coverage by roughly a factor of three, which is exactly the mistake that made an earlier review conclude Binance
+could price only a third of our symbols.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any, Final
+
+import httpx
+
+from tracefold.news.instruments import Instrument, classify, is_valid_symbol, strip_quote_suffix
+
+from .errors import VenueExpectedError
+
+BINANCE_SPOT_BASE_URL: Final = "https://api.binance.com"
+BINANCE_FUTURES_BASE_URL: Final = "https://fapi.binance.com"
+_TIMEOUT_SECONDS: Final = 20.0
+# exchangeInfo is a large document (spot is ~17 MB); cap it so a pathological response cannot exhaust memory.
+_MAX_BYTES: Final = 48 * 1024 * 1024
+_SPOT_QUOTES: Final = frozenset({"USDT", "USDC", "FDUSD"})
+
+
+async def fetch_binance_instruments(
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    spot_base_url: str = BINANCE_SPOT_BASE_URL,
+    futures_base_url: str = BINANCE_FUTURES_BASE_URL,
+) -> tuple[Instrument, ...]:
+    """Spot (USDT/USDC/FDUSD quoted) plus USD-M perpetuals, both filtered to actively trading symbols."""
+
+    out: list[Instrument] = []
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(_TIMEOUT_SECONDS), follow_redirects=False, transport=transport
+    ) as client:
+        spot = await _get(client, f"{spot_base_url.rstrip('/')}/api/v3/exchangeInfo", venue="binance.spot")
+        out.extend(_parse(spot, venue="binance.spot", quote_filter=_SPOT_QUOTES))
+        futures = await _get(client, f"{futures_base_url.rstrip('/')}/fapi/v1/exchangeInfo", venue="binance.perp")
+        out.extend(_parse(futures, venue="binance.perp", quote_filter=None))
+    return tuple(out)
+
+
+def _parse(payload: Mapping[str, Any], *, venue: str, quote_filter: frozenset[str] | None) -> tuple[Instrument, ...]:
+    symbols = payload.get("symbols")
+    if not isinstance(symbols, Sequence):
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    out: list[Instrument] = []
+    seen: set[str] = set()
+    for entry in symbols:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("status") or "") != "TRADING":
+            continue
+        quote = str(entry.get("quoteAsset") or "").upper()
+        if quote_filter is not None and quote not in quote_filter:
+            continue
+        venue_symbol = str(entry.get("symbol") or "").upper()
+        base = str(entry.get("baseAsset") or "").upper() or strip_quote_suffix(venue_symbol, quote_asset=quote)
+        if not venue_symbol or not is_valid_symbol(base) or venue_symbol in seen:
+            continue
+        seen.add(venue_symbol)
+        out.append(
+            Instrument(
+                venue=venue,
+                venue_symbol=venue_symbol,
+                base_symbol=base,
+                instrument_class=classify(base, venue=venue),
+                quote_asset=quote or None,
+            )
+        )
+    if not out:
+        raise VenueExpectedError("venue_payload_empty", venue=venue)
+    return tuple(out)
+
+
+async def _get(client: httpx.AsyncClient, url: str, *, venue: str) -> Mapping[str, Any]:
+    try:
+        response = await client.get(url)
+    except httpx.TimeoutException:
+        raise VenueExpectedError("venue_timeout", venue=venue) from None
+    except httpx.HTTPError:
+        raise VenueExpectedError("venue_http_error", venue=venue) from None
+    if response.status_code in {403, 451}:
+        raise VenueExpectedError("venue_blocked", venue=venue, status_code=response.status_code)
+    if response.status_code == 429:
+        raise VenueExpectedError("venue_rate_limited", venue=venue, status_code=response.status_code)
+    if response.status_code >= 400:
+        raise VenueExpectedError("venue_http_error", venue=venue, status_code=response.status_code)
+    if len(response.content) > _MAX_BYTES:
+        raise VenueExpectedError("venue_payload_too_large", venue=venue)
+    try:
+        payload = response.json()
+    except ValueError:
+        raise VenueExpectedError("venue_payload_invalid", venue=venue) from None
+    if not isinstance(payload, Mapping):
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    return payload
+
+
+__all__ = ["BINANCE_FUTURES_BASE_URL", "BINANCE_SPOT_BASE_URL", "fetch_binance_instruments"]

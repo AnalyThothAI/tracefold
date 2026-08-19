@@ -23,11 +23,13 @@ from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
+from tracefold.integrations.venues import fetch_binance_instruments, fetch_hyperliquid_instruments
 from tracefold.news import DecidePolicy
 from tracefold.news.agents.triage_model import TriageModel
 from tracefold.news.consumers import (
     DeduperConsumer,
     DelivererConsumer,
+    InstrumentSnapshotLoop,
     JanitorLoop,
     NewsPipeline,
     OpenNewsReceiver,
@@ -613,6 +615,7 @@ async def _wire_news_pipeline(
             strategy_ids=strategy_ids,
             watchlist_symbols=watchlist_symbols,
             suppress_low_signal=settings.news.gate.suppress_low_signal,
+            require_tradeable_assets=settings.news.gate.require_tradeable_assets,
         ),
         triage=TriageConsumer(
             bus=bus,
@@ -635,8 +638,29 @@ async def _wire_news_pipeline(
             hourly_cap=settings.news.push.hourly_cap,
         ),
         janitor=JanitorLoop(db=db, bus=bus),
+        instruments=_instrument_snapshot_loop(settings, db=db),
     )
     return bus, pipeline
+
+
+def _instrument_snapshot_loop(settings: Any, *, db: Any) -> InstrumentSnapshotLoop | None:
+    """#75: one fetcher per venue family, each independently skippable. No credentials are involved."""
+
+    venues = settings.news.venues
+    if not venues.enabled:
+        return None
+    fetchers: list[tuple[str, Callable[[], Any]]] = []
+    if venues.binance:
+        fetchers.append(("binance", fetch_binance_instruments))
+    if venues.hyperliquid:
+        fetchers.append(("hyperliquid", fetch_hyperliquid_instruments))
+    if not fetchers:
+        return None
+    return InstrumentSnapshotLoop(
+        db=db,
+        fetchers=fetchers,
+        period_seconds=float(venues.snapshot_period_hours) * 3600.0,
+    )
 
 
 async def _graceful_cleanup(

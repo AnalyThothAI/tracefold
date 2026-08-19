@@ -259,6 +259,26 @@ class NewsGateSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     suppress_low_signal: bool = False
+    # #75: require a provider coin tag to also name a listed instrument before it counts as grounded. Defaults off
+    # so the first deploy only collects the universe; turn on after a snapshot has landed and been eyeballed.
+    require_tradeable_assets: bool = False
+
+
+class NewsVenuesSettings(BaseModel):
+    """Instrument-universe snapshot (#75). Read-only, unauthenticated public catalogues; no credentials."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    binance: bool = True
+    hyperliquid: bool = True
+    snapshot_period_hours: float = 6.0
+
+    @model_validator(mode="after")
+    def validate_period(self) -> NewsVenuesSettings:
+        if not 0.5 <= self.snapshot_period_hours <= 168.0:
+            raise ValueError("news_venues_snapshot_period_invalid")
+        return self
 
 
 class NewsWatchlistEntry(BaseModel):
@@ -287,6 +307,7 @@ class NewsSettings(BaseModel):
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
     policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
     gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
+    venues: NewsVenuesSettings = Field(default_factory=NewsVenuesSettings)
     watchlist: tuple[NewsWatchlistEntry, ...] = ()
 
     @field_validator("opennews_token", mode="before")
@@ -561,6 +582,12 @@ news:
     asset_hard_cap_2h: 3
   gate:
     suppress_low_signal: false
+    require_tradeable_assets: false
+  venues:
+    enabled: true
+    binance: true
+    hyperliquid: true
+    snapshot_period_hours: 6.0
   watchlist: []
 """
 

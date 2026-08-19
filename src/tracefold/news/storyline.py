@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
+
+from .instruments import resolve_base_symbol
 
 STORYLINE_LEXICON_VERSION: Final = "news_storyline_lexicon_v2"
 
@@ -58,15 +60,21 @@ def storyline_key(
     scope: str,
     primary_assets: Sequence[str],
     family: str,
+    aliases: Mapping[str, str] | None = None,
 ) -> str:
     """Asset-level key when a non-CL primary asset exists and scope is not macro; else theme; else family.
 
     Called twice per Event: before Triage with the Gate's grounded assets (preliminary key, status bar only) and
     after Triage with the verdict's primary assets and scope (final key, written back to the Event and used by the
     storyline windows and throttling).
+
+    ``aliases`` (#75) collapses the several symbols one issuer trades under before the key is formed. ``SKHY`` and
+    ``SKHX`` are both real hl.xyz contracts for SK Hynix, so keeping them apart at the venue level is right — but
+    an ``asset:<symbol>`` throttle bucket per *contract* let one buyback ship nine cards on 2026-08-19. ``None``
+    uses the built-in seeds, which is what every pure caller and every test gets.
     """
 
-    primaries = sorted(a.upper().replace("XYZ-", "") for a in primary_assets if a.upper() not in _CL_SYMBOLS)
+    primaries = sorted(resolve_base_symbol(a, aliases) for a in primary_assets if a.upper() not in _CL_SYMBOLS)
     if primaries and scope != "macro":
         return f"asset:{primaries[0]}"
     text = f"{title} {headline_zh}".lower()
@@ -97,15 +105,25 @@ def final_storyline_key(
     verdict_primaries: Sequence[str],
     grounded_assets: Sequence[str],
     family: str,
+    aliases: Mapping[str, str] | None = None,
 ) -> str:
     """Key computed after Triage: verdict primaries that the Gate grounded win; otherwise any grounded asset;
-    macro scope always falls back to a theme."""
+    macro scope always falls back to a theme. ``aliases`` resolves symbols to one issuer first (#75)."""
 
-    grounded = {a.upper().replace("XYZ-", "") for a in grounded_assets}
-    primaries = [a for a in verdict_primaries if a.upper().replace("XYZ-", "") in grounded]
+    grounded = {resolve_base_symbol(a, aliases) for a in grounded_assets}
+    primaries = [a for a in verdict_primaries if resolve_base_symbol(a, aliases) in grounded]
     if primaries and scope != "macro":
-        return storyline_key(title=title, headline_zh=headline_zh, scope=scope, primary_assets=primaries, family=family)
-    themed = storyline_key(title=title, headline_zh=headline_zh, scope="macro", primary_assets=(), family=family)
+        return storyline_key(
+            title=title,
+            headline_zh=headline_zh,
+            scope=scope,
+            primary_assets=primaries,
+            family=family,
+            aliases=aliases,
+        )
+    themed = storyline_key(
+        title=title, headline_zh=headline_zh, scope="macro", primary_assets=(), family=family, aliases=aliases
+    )
     if themed.startswith("theme:"):
         return themed
     # No theme matched: a grounded asset is a better storyline than the `macro:<family>` catch-all, even when the
@@ -113,7 +131,12 @@ def final_storyline_key(
     fallback = sorted(a for a in grounded_assets if a.upper() not in _CL_SYMBOLS)
     if fallback:
         return storyline_key(
-            title=title, headline_zh=headline_zh, scope="single_name", primary_assets=fallback, family=family
+            title=title,
+            headline_zh=headline_zh,
+            scope="single_name",
+            primary_assets=fallback,
+            family=family,
+            aliases=aliases,
         )
     return themed
 

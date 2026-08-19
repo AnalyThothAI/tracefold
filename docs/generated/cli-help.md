@@ -126,13 +126,15 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,control,label,eval,replay-decisions,replay,why,dlq} ...
+                      {bus-check,control,instruments,label,eval,replay-decisions,replay,why,dlq} ...
 
 positional arguments:
-  {bus-check,control,label,eval,replay-decisions,replay,why,dlq}
+  {bus-check,control,instruments,label,eval,replay-decisions,replay,why,dlq}
     bus-check           connect to RabbitMQ, declare the News topology, and
                         print queue depths
     control             write a delivery control command to news_control_state
+    instruments         tradeable instrument universe: snapshot the venues, or
+                        inspect what is stored
     label               record an operator label for one Event (learning
                         plane)
     eval                offline evaluation of Triage decisions against labels
@@ -173,6 +175,24 @@ options:
   --key KEY             theme name or symbol for mute/unmute
   --ttl-minutes TTL_MINUTES
                         mute duration
+
+```
+
+## `news instruments`
+
+```
+usage: tracefold news instruments [-h] [--symbol SYMBOL] [--hours HOURS]
+                                  [--limit LIMIT]
+                                  [{snapshot,summary,listings,resolve}]
+
+positional arguments:
+  {snapshot,summary,listings,resolve}
+
+options:
+  -h, --help            show this help message and exit
+  --symbol SYMBOL       symbol to resolve (action=resolve)
+  --hours HOURS         look-back (action=listings)
+  --limit LIMIT         max rows (action=listings)
 
 ```
 

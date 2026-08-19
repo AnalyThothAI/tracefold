@@ -17,6 +17,8 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_bus_check()
     if args.news_command == "control":
         return _handle_control(args)
+    if args.news_command == "instruments":
+        return _handle_instruments(args)
     if args.news_command == "label":
         return _handle_label(args)
     if args.news_command == "eval":
@@ -83,6 +85,77 @@ def _handle_control(args: Namespace) -> tuple[int, dict[str, Any]]:
         new_state = apply_control(state, command, now_ms=stamp)
         repos.news.write_control(paused=new_state["paused"], mutes=new_state["mutes"], now_ms=stamp)
     return 0, {"ok": True, "data": {"command": payload, "control": new_state}}
+
+
+def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
+    """Tradeable instrument universe (#75). `snapshot` writes; the rest are read-only."""
+
+    from tracefold.app.repositories import repositories
+
+    settings = load_settings(require_ws_token=False)
+    stamp = int(time.time() * 1000)
+    action = str(getattr(args, "action", "summary") or "summary")
+
+    if action == "snapshot":
+        from tracefold.integrations.venues import fetch_binance_instruments, fetch_hyperliquid_instruments
+
+        venues = settings.news.venues
+        fetchers = []
+        if venues.binance:
+            fetchers.append(("binance", fetch_binance_instruments))
+        if venues.hyperliquid:
+            fetchers.append(("hyperliquid", fetch_hyperliquid_instruments))
+        if not fetchers:
+            return 1, {"ok": False, "error": "news_venues_all_disabled"}
+        instruments: list[Any] = []
+        errors: list[str] = []
+        for venue, fetch in fetchers:
+            try:
+                instruments.extend(asyncio.run(fetch()))
+            except Exception as exc:
+                errors.append(f"{venue}:{getattr(exc, 'code', None) or type(exc).__name__}")
+        if not instruments:
+            return 1, {"ok": False, "error": "news_venue_snapshot_empty", "venues": errors}
+        with repositories(settings) as repos, repos.transaction():
+            repos.instruments.seed_aliases(now_ms=stamp)
+            result = repos.instruments.apply_snapshot(instruments, now_ms=stamp)
+            aliases = repos.instruments.learn_aliases_from_universe(now_ms=stamp)
+        reportable = result.reportable
+        return 0, {
+            "ok": True,
+            "data": {
+                "total": result.total,
+                "seeded_venues": list(result.seeded_venues),
+                "listed": [f"{i.venue}:{i.venue_symbol}" for i in reportable.listed[:100]],
+                "delisted": [f"{i.venue}:{i.venue_symbol}" for i in reportable.delisted[:100]],
+                "listed_count": len(reportable.listed),
+                "delisted_count": len(reportable.delisted),
+                "unchanged": reportable.unchanged,
+                "aliases_learned": aliases,
+                "venue_errors": errors,
+            },
+        }
+
+    with repositories(settings, role="serve") as repos:
+        if action == "summary":
+            return 0, {"ok": True, "data": repos.instruments.universe_summary()}
+        if action == "listings":
+            since = stamp - int(args.hours) * 3600_000
+            rows = repos.instruments.recent_listings(since_ms=since, limit=int(args.limit))
+            return 0, {"ok": True, "data": {"hours": int(args.hours), "listings": rows}}
+        symbol = str(getattr(args, "symbol", "") or "").strip()
+        if not symbol:
+            return 1, {"ok": False, "error": "news_instruments_symbol_required"}
+        base = repos.instruments.resolve(symbol)
+        return 0, {
+            "ok": True,
+            "data": {
+                "symbol": symbol,
+                "base_symbol": base,
+                "venues": list(repos.instruments.venues_for(base)),
+                "instrument_class": repos.instruments.instrument_classes().get(base),
+            },
+        }
 
 
 def _handle_label(args: Namespace) -> tuple[int, dict[str, Any]]:

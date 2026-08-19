@@ -150,7 +150,7 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert len(payload["news_schema"]["actual_tables"]) == 11
+    assert len(payload["news_schema"]["actual_tables"]) == 13
     retired = {"news_stories", "news_brief_current", "news_push_state", "news_sources", "news_event_market_marks"}
     assert retired.isdisjoint(payload["news_schema"]["actual_tables"])
     assert "projection_schema" not in payload

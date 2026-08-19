@@ -124,9 +124,24 @@ class _FakeConnection:
         return _FakeCursor()
 
 
+class _FakeInstrumentsRepository:
+    """#75 universe as the status route sees it before any snapshot has landed."""
+
+    def universe_summary(self) -> dict[str, object]:
+        return {
+            "trading": 0,
+            "delisted": 0,
+            "base_symbols": 0,
+            "venues": 0,
+            "last_snapshot_ms": None,
+            "by_venue": {},
+        }
+
+
 class _FakeRepositories:
     def __init__(self, news: _FakeNewsRepository) -> None:
         self.news = news
+        self.instruments = _FakeInstrumentsRepository()
         self.conn = _FakeConnection()
 
 
@@ -207,6 +222,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "delivery",
         "control",
         "watchlist",
+        "instruments",
         "measured_at_ms",
     }
     assert set(schemas_news.NewsIngestStatusData.model_fields) == {

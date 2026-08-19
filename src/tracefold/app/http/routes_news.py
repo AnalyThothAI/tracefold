@@ -110,6 +110,7 @@ def get_news_status(request: Request) -> Response:
     with runtime.repositories() as repos:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
         workers_state, _ = _news_workers_observation(repos.conn, now_ms=now_ms)
+        instruments = repos.instruments.universe_summary()
     push = news_push_availability(settings)
     models = news_model_availability(settings)
     observed = dict(snapshot.get("broker") or {})
@@ -157,6 +158,7 @@ def get_news_status(request: Request) -> Response:
         "delivery": delivery,
         "control": control,
         "watchlist": sorted(settings.news.watchlist_symbols),
+        "instruments": instruments,
         "measured_at_ms": now_ms,
     }
     return _validated_etag_json(

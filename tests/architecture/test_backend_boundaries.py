@@ -24,6 +24,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.query_specs",
     },
     "src/tracefold/app/repositories.py": {
+        "tracefold.news.instruments_repository",
         "tracefold.news.repository",
     },
     "src/tracefold/app/workers/__init__.py": {
@@ -31,6 +32,10 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.consumers",
     },
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},
+    # The venue adapters are the #75 analogue of the OpenNews adapter: they parse a provider catalogue into the
+    # pure `Instrument` shape the News package owns.
+    "src/tracefold/integrations/venues/binance.py": {"tracefold.news.instruments"},
+    "src/tracefold/integrations/venues/hyperliquid.py": {"tracefold.news.instruments"},
     "src/tracefold/integrations/rabbitmq.py": {"tracefold.news.bus"},
 }
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge

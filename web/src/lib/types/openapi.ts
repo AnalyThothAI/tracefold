@@ -592,6 +592,38 @@ export interface components {
             /** Token Configured */
             token_configured: boolean;
         };
+        /**
+         * NewsInstrumentUniverse
+         * @description #75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.
+         */
+        NewsInstrumentUniverse: {
+            /**
+             * Base Symbols
+             * @default 0
+             */
+            base_symbols: number;
+            /** By Venue */
+            by_venue?: {
+                [key: string]: number;
+            };
+            /**
+             * Delisted
+             * @default 0
+             */
+            delisted: number;
+            /** Last Snapshot Ms */
+            last_snapshot_ms?: number | null;
+            /**
+             * Trading
+             * @default 0
+             */
+            trading: number;
+            /**
+             * Venues
+             * @default 0
+             */
+            venues: number;
+        };
         /** NewsLabelData */
         NewsLabelData: {
             /** Created At Ms */
@@ -735,6 +767,7 @@ export interface components {
             funnel_24h: components["schemas"]["NewsFunnelData"];
             health: components["schemas"]["NewsHealthData"];
             ingest: components["schemas"]["NewsIngestStatusData"];
+            instruments?: components["schemas"]["NewsInstrumentUniverse"];
             /** Measured At Ms */
             measured_at_ms: number;
             pipeline: components["schemas"]["NewsPipelineStatusData"];

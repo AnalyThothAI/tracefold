@@ -78,18 +78,40 @@ class RecordingNews:
         return next(kwargs for called, kwargs in self.calls if called == name)
 
 
+class RecordingInstruments:
+    """The #75 universe as the consumers see it: empty by default, so the Gate filter and the alias table both
+    stay disabled and every pre-existing expectation holds unchanged."""
+
+    def __init__(self, *, tradeable: frozenset[str] = frozenset(), aliases: dict[str, str] | None = None) -> None:
+        self.tradeable = tradeable
+        self.aliases = aliases or {}
+
+    def tradeable_base_symbols(self) -> frozenset[str]:
+        return self.tradeable
+
+    def alias_map(self) -> dict[str, str]:
+        return dict(self.aliases)
+
+
 class FakeWorkerDatabase:
     """Only the News lane exists on the fake; a consumer that reaches for run_business is a wiring bug."""
 
-    def __init__(self, news: RecordingNews, *, admission_timeout_for: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        news: RecordingNews,
+        *,
+        admission_timeout_for: set[str] | None = None,
+        instruments: RecordingInstruments | None = None,
+    ) -> None:
         self.news = news
+        self.instruments = instruments or RecordingInstruments()
         self.operations: list[str] = []
         self.admission_timeout_for = admission_timeout_for or set()
 
     @contextmanager
     def worker_session(self, name: str, *_args: Any, **_kwargs: Any):
         del name
-        yield SimpleNamespace(news=self.news, transaction=nullcontext)
+        yield SimpleNamespace(news=self.news, instruments=self.instruments, transaction=nullcontext)
 
     async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
         del operation_timeout_seconds

@@ -80,6 +80,10 @@ _WS_RECONNECT_SECONDS = 3.0
 _OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
 _RETENTION_MS = 30 * 24 * 3600_000
+# #75 instrument universe: the Gate's cached copy, and how often the snapshot loop asks the venues.
+_TRADEABLE_TTL_MS = 10 * 60_000
+_INSTRUMENT_SNAPSHOT_PERIOD_SECONDS = 6 * 3600.0
+_INSTRUMENT_RETRY_SECONDS = 15 * 60.0
 
 _WS_CAUSE = {
     "opennews_network_connect": "network_connect",
@@ -471,12 +475,31 @@ class DeduperConsumer:
         strategy_ids: Sequence[str],
         watchlist_symbols: frozenset[str],
         suppress_low_signal: bool = False,
+        require_tradeable_assets: bool = False,
     ) -> None:
         self.bus = bus
         self.db = _Db(db)
         self.strategy_ids = frozenset(strategy_ids)
         self.watchlist_symbols = watchlist_symbols
         self.suppress_low_signal = bool(suppress_low_signal)
+        # #75: when enabled, a provider coin tag must also name a listed instrument. The universe changes once a
+        # day, so it is cached; `None` (no snapshot yet, or the feature off) leaves the Gate's behaviour unchanged.
+        self.require_tradeable_assets = bool(require_tradeable_assets)
+        self._tradeable: frozenset[str] | None = None
+        self._tradeable_at_ms = 0
+
+    def _current_tradeable(self, repos: Any, *, now: int) -> frozenset[str] | None:
+        """Cached instrument universe for the Gate, refreshed at most once per `_TRADEABLE_TTL_MS`."""
+
+        if not self.require_tradeable_assets:
+            return None
+        if self._tradeable is not None and now - self._tradeable_at_ms < _TRADEABLE_TTL_MS:
+            return self._tradeable
+        symbols = repos.instruments.tradeable_base_symbols()
+        self._tradeable_at_ms = now
+        # An empty universe means no snapshot has landed: fall back to no filtering rather than grounding nothing.
+        self._tradeable = symbols or None
+        return self._tradeable
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         await self.bus.consume(Q_RAW, self.handle, prefetch=1, stop_event=stop_event)
@@ -504,6 +527,7 @@ class DeduperConsumer:
                 watchlist_symbols=self.watchlist_symbols,
                 now_ms=stamp,
                 suppress_low_signal=self.suppress_low_signal,
+                tradeable_symbols=self._current_tradeable(repos, now=stamp),
             ),
             timeout_seconds=5.0,
         )
@@ -619,6 +643,17 @@ class TriageConsumer:
         self.circuit = _Circuit(threshold=circuit_failures, open_seconds=circuit_open_seconds)
         self._circuit_incident_open = False
         self.policy = policy
+        # #75: symbol aliases collapse one issuer's several contracts into one storyline bucket. Loaded lazily
+        # from the universe snapshot and refreshed on the same TTL as the Gate's copy; `None` uses the seeds.
+        self._aliases: dict[str, str] | None = None
+        self._aliases_at_ms = 0
+
+    def _refresh_aliases(self, repos: Any, *, now: int) -> None:
+        if self._aliases is not None and now - self._aliases_at_ms < _TRADEABLE_TTL_MS:
+            return
+        self._aliases_at_ms = now
+        table = repos.instruments.alias_map()
+        self._aliases = table or None
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         # A fresh process starts with a closed circuit: an incident left open by a previous process is over.
@@ -646,7 +681,7 @@ class TriageConsumer:
                     event_id, existing["final_decision"], trace_id=message.trace_id, amqp_priority=message.priority
                 )
             return
-        bundle = await self.db.read("news_triage_load", lambda repos: self._load(repos, event_id, stamp))
+        bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
         card, status_row, control, sent_last_hour, ledger_rows = bundle
@@ -789,6 +824,7 @@ class TriageConsumer:
                 verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
                 grounded_assets=facts.grounded_assets,
                 family=str(card.get("family") or "general"),
+                aliases=self._aliases,
             )
             settle = _TriageSettle(
                 event_id=event_id,
@@ -907,6 +943,14 @@ class TriageConsumer:
         repos.news.set_storyline_key(event_id=s.event_id, storyline_key=s.final_key, now_ms=s.stamp)
         repos.news.set_context_line(event_id=s.event_id, context_line=context_line, followup_of=None, now_ms=s.stamp)
         return _TriageOutcome(stale=False, final=final, decision=decision)
+
+    def _load_with_aliases(
+        self, repos: Any, event_id: str, stamp: int
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int, list[dict[str, Any]]] | None:
+        """The Triage bundle plus a refreshed alias table, both from the one session (#75)."""
+
+        self._refresh_aliases(repos, now=stamp)
+        return self._load(repos, event_id, stamp)
 
     @staticmethod
     def _load(
@@ -1085,6 +1129,92 @@ class DelivererConsumer:
 
 
 # ---------------------------------------------------------------------------- Janitor
+# ---------------------------------------------------------------------------- Instrument universe
+class InstrumentSnapshotLoop:
+    """Venue listing catalogues -> `market_instruments`, one bounded snapshot per period (#75).
+
+    The universe is a provider fact, so the snapshot is idempotent and rebuildable: re-running it on an unchanged
+    catalogue only moves `last_seen_ms`. Diffing consecutive snapshots yields listing/delisting facts that do not
+    depend on a news frame arriving — the lane #72 showed can fail silently.
+
+    A venue that fails is skipped, never fatal: `apply_snapshot` only reconciles venues that actually answered, so
+    an unreachable Binance cannot read as a mass delisting. The first snapshot for a venue is a seed, not thousands
+    of listings, and `SnapshotResult.reportable` is what a listing card may be built from.
+    """
+
+    def __init__(
+        self,
+        *,
+        db: Any,
+        fetchers: Sequence[tuple[str, Callable[[], Any]]],
+        period_seconds: float = _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS,
+        enabled: bool = True,
+    ) -> None:
+        self.db = _Db(db)
+        self.fetchers = tuple(fetchers)
+        self.period = float(period_seconds)
+        self.enabled = bool(enabled)
+        self.last_result: Any | None = None
+        self.last_error: str | None = None
+
+    async def run(self, *, stop_event: asyncio.Event) -> None:
+        if not self.enabled or not self.fetchers:
+            await stop_event.wait()
+            return
+        while not stop_event.is_set():
+            ok = await self.turn()
+            await _sleep_or_stop(stop_event, self.period if ok else _INSTRUMENT_RETRY_SECONDS)
+
+    async def turn(self) -> bool:
+        """One snapshot. Returns False when no venue answered, so the caller retries sooner."""
+
+        instruments: list[Any] = []
+        errors: list[str] = []
+        for venue, fetch in self.fetchers:
+            try:
+                instruments.extend(await fetch())
+            except Exception as exc:  # adapters raise VenueExpectedError; anything else is equally non-fatal here
+                code = getattr(exc, "code", None) or type(exc).__name__
+                errors.append(f"{venue}:{code}")
+                log.warning("news instrument snapshot venue failed venue=%s code=%s", venue, code)
+        self.last_error = ",".join(errors) or None
+        if not instruments:
+            return False
+        stamp = now_ms()
+
+        def _apply(repos: Any, items: list[Any] = instruments, s: int = stamp) -> Any:
+            repos.instruments.seed_aliases(now_ms=s)
+            result = repos.instruments.apply_snapshot(items, now_ms=s)
+            repos.instruments.learn_aliases_from_universe(now_ms=s)
+            return result
+
+        try:
+            result = await self.db.tx("news_instrument_snapshot", _apply, timeout_seconds=30.0)
+        except (TransientError, DeferError) as exc:
+            self.last_error = f"db:{type(exc).__name__}"
+            return False
+        self.last_result = result
+        reportable = result.reportable
+        if result.seeded_venues:
+            log.info(
+                "news instrument universe seeded venues=%s total=%d",
+                ",".join(result.seeded_venues),
+                result.total,
+            )
+        if not reportable.empty:
+            log.info(
+                "news instrument universe changed listed=%d delisted=%d unchanged=%d",
+                len(reportable.listed),
+                len(reportable.delisted),
+                reportable.unchanged,
+            )
+            for item in reportable.listed[:20]:
+                log.info("news instrument listed venue=%s symbol=%s", item.venue, item.venue_symbol)
+            for item in reportable.delisted[:20]:
+                log.info("news instrument delisted venue=%s symbol=%s", item.venue, item.venue_symbol)
+        return True
+
+
 class JanitorLoop:
     """Outbox catch-up, band expiry, retention, broker snapshot — one bounded turn per period."""
 
@@ -1188,6 +1318,7 @@ class NewsPipeline:
     triage: TriageConsumer
     deliverer: DelivererConsumer
     janitor: JanitorLoop
+    instruments: InstrumentSnapshotLoop | None = None
     tasks: list[tuple[str, Callable[..., Any]]] = field(default_factory=list)
 
     def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Any]]]:
@@ -1204,6 +1335,8 @@ class NewsPipeline:
                 ("news-janitor", lambda stop: self.janitor.run(stop_event=stop)),
             ]
         )
+        if self.instruments is not None:
+            out.append(("news-instruments", lambda stop: self.instruments.run(stop_event=stop)))  # type: ignore[union-attr]
         return out
 
     async def close(self) -> None:
@@ -1213,6 +1346,7 @@ class NewsPipeline:
 __all__ = [
     "DeduperConsumer",
     "DelivererConsumer",
+    "InstrumentSnapshotLoop",
     "JanitorLoop",
     "NewsPipeline",
     "OpenNewsReceiver",
