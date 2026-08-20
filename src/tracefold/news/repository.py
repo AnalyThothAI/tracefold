@@ -811,7 +811,8 @@ class NewsRepository:
             where.append("t.final_decision = %s")
             params.append(decision)
         # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
-        counts = self._feed_counts(where=where, params=params) if cursor_opened is None else None
+        # Snapshot the clauses so the outcome group and cursor appended below cannot reach the count query.
+        counts = self._feed_counts(where=list(where), params=list(params)) if cursor_opened is None else None
         if outcome in _OUTCOME_GROUP_SQL:
             where.append(_OUTCOME_GROUP_SQL[outcome])
         if cursor_opened is not None:
