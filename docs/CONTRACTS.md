@@ -192,8 +192,9 @@ surface is exactly three read-only routes:
 
   Every Event carries `grounded_assets` (the raw provider coin tags the Gate
   admitted on) and beside it `assets[]` — the same tags resolved against the
-  #75 instrument universe, one entry per tag, each `{symbol, base_symbol,
-  venue, listed}`. Entries are keyed by the raw provider tag and `symbol` comes
+  #75 instrument universe, one entry per *instrument named* (the provider ships
+  both `CL` and `XYZ-CL` for one contract, and those resolve to a single
+  entry), each `{symbol, base_symbol, venue, listed}`. Entries are keyed by the raw provider tag and `symbol` comes
   back normalized, so `UNITREE` and `XYZ-UNITREE` resolve to the same listed
   contract. `venue` is the preferred venue when a base trades on
   several (deepest first, HIP-3 builder DEXs last) so a chip is stable across
