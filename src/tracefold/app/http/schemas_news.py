@@ -284,6 +284,8 @@ class NewsPipelineStatusData(ExactApiSchema):
     pushed_by_rule: dict[str, int] = Field(default_factory=dict)
     labeled_missed_24h: int = 0
     labeled_missed_without_event_24h: int = 0
+    # #100: {"throttled": n, "all": n} — duplicates withheld, by the path that measured the card.
+    duplicates_withheld_24h: dict[str, int] = Field(default_factory=dict)
     tagged_24h: int = 0
     grounded_24h: int = 0
     ungrounded_by_symbol_24h: dict[str, int] = Field(default_factory=dict)

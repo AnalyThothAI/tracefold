@@ -1619,6 +1619,13 @@
             "title": "Dropped By Rule",
             "type": "object"
           },
+          "duplicates_withheld_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Duplicates Withheld 24H",
+            "type": "object"
+          },
           "events_1h": {
             "default": 0,
             "title": "Events 1H",

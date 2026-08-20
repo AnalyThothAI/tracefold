@@ -1223,10 +1223,11 @@ class NewsRepository:
             """
             SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
                    COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
+                   COALESCE(trace ->> 'seen_scope', '') AS seen_scope,
                    count(*) AS n
               FROM news_verdicts
              WHERE stage = 'triage' AND created_at_ms >= %s
-             GROUP BY 1, 2, 3, 4, 5
+             GROUP BY 1, 2, 3, 4, 5, 6
             """,
             (day_ago,),
         ).fetchall()
@@ -1234,6 +1235,10 @@ class NewsRepository:
         throttled: dict[str, int] = {}
         pushed_by_rule: dict[str, int] = {}
         degraded_by_code: dict[str, int] = {}
+        # #100: duplicates the reader was spared, split by which path measured the card. `all` only exists under
+        # policy v6; a zero there on a busy day means `similarity_all_pushes` is off, or the every-push
+        # measurement is finding nothing the count throttle would not have caught anyway.
+        duplicates: dict[str, int] = {"throttled": 0, "all": 0}
         for row in verdict_groups:
             n = int(row["n"])
             final = str(row["final_decision"])
@@ -1241,6 +1246,12 @@ class NewsRepository:
                 dropped[str(row["rule"])] = dropped.get(str(row["rule"]), 0) + n
             elif final == "throttled":
                 throttled[str(row["key"])] = throttled.get(str(row["key"]), 0) + n
+                if str(row["key"]).endswith(":seen"):
+                    # Rows written before v6 — and by a worker the rolling restart has not reached — carry no
+                    # `seen_scope`. They are all v5 withholds by construction, so credit them to `throttled`
+                    # rather than to neither: otherwise the metric reads near-zero for a day after every deploy.
+                    scope = str(row["seen_scope"] or "") or "throttled"
+                    duplicates[scope] = duplicates.get(scope, 0) + n
             elif final in {"push", "escalate"}:
                 pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
             if row["degraded"]:
@@ -1275,6 +1286,7 @@ class NewsRepository:
             "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
             "labeled_missed_24h": int(missed["n"] or 0) if missed else 0,
             "labeled_missed_without_event_24h": int(missed["without_event"] or 0) if missed else 0,
+            "duplicates_withheld_24h": duplicates,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
         }
 

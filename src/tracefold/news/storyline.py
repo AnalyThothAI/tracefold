@@ -53,6 +53,27 @@ THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
 _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 
 
+# A model primary is free text (`TriageAsset.symbol` is any 1-16 characters) and this fallback is reached
+# precisely when nothing grounded it, so it is the least validated string in the pipeline — and it becomes a
+# throttle bucket, an advisory-lock key and a console label. Accept only something shaped like a symbol; an
+# exchange-qualified identifier we have no bucket for (`0001.HK`) falls through to the next step instead.
+_SYMBOL_SHAPE: Final = re.compile(r"^[A-Z0-9]{1,10}$")
+
+
+def _symbol_in_text(symbol: str, text: str) -> bool:
+    """True when the base symbol appears in the text as its own uppercase token (a `$TICKER` cashtag counts: `$`
+    is not a word character).
+
+    Case-sensitive on purpose. Provider tags collide with ordinary English words — `NOT`, `ME`, `ID`, `IO`, `ON`,
+    `AI` are all real symbols — and a case-insensitive match turned "he will not sell his stake" into evidence for
+    `asset:NOT`, which is the exact mis-bucketing this fallback exists to prevent. A Chinese headline carrying the
+    ticker still matches, because it carries it in caps. Strict on token boundaries too: `ETH` does not match
+    `ETHEREUM`, `MU` does not match `MUSK`."""
+
+    base = re.escape(symbol.replace("XYZ-", "").upper())
+    return re.search(rf"(?<![A-Za-z0-9]){base}(?![A-Za-z0-9])", text) is not None
+
+
 def storyline_key(
     *,
     title: str,
@@ -106,9 +127,18 @@ def final_storyline_key(
     grounded_assets: Sequence[str],
     family: str,
     aliases: Mapping[str, str] | None = None,
+    degraded: bool = False,
 ) -> str:
-    """Key computed after Triage: verdict primaries that the Gate grounded win; otherwise any grounded asset;
-    macro scope always falls back to a theme. ``aliases`` resolves symbols to one issuer first (#75)."""
+    """Key computed after Triage. Grounded verdict primaries win; then a theme; then the model's own primaries
+    even when the provider did not tag them; then a grounded tag that the text actually names; then
+    ``macro:<family>``. ``aliases`` resolves symbols to one issuer first (#75); the last two steps are #100.
+
+    ``degraded`` marks a rule-baseline verdict, whose ``assets`` are empty by construction (see
+    ``triage_rules.fallback_verdict``). "The model named no primary" is evidence only when a model actually
+    answered, so a degraded card keeps the pre-#100 fallback: the provider's tags are the only evidence there is.
+
+    This key is a throttle bucket and an operator-facing grouping, never a claim shown to the reader — the card's
+    tickers come from ``delivery.card_assets`` (verdict primaries ∩ grounded), which this does not touch."""
 
     grounded = {resolve_base_symbol(a, aliases) for a in grounded_assets}
     primaries = [a for a in verdict_primaries if resolve_base_symbol(a, aliases) in grounded]
@@ -126,9 +156,34 @@ def final_storyline_key(
     )
     if themed.startswith("theme:"):
         return themed
-    # No theme matched: a grounded asset is a better storyline than the `macro:<family>` catch-all, even when the
-    # model called the scope macro (a stock falling on a trial is still that stock's storyline).
-    fallback = sorted(a for a in grounded_assets if a.upper() not in _CL_SYMBOLS)
+    # No theme matched. The model named the subject even when the provider did not tag it, and its own primary is
+    # a better bucket than an arbitrary grounded tag: OKX's listing notices all carry an `OKB` tag, so "Johnson &
+    # Johnson appears on OKX" was keyed `asset:OKB`; VeChain's upgrade vote was keyed `asset:SKHY`. 16% of the
+    # asset-keyed cards of a live day sat in a bucket that was not about them (#100).
+    named = sorted(
+        a
+        for a in verdict_primaries
+        if a.upper() not in _CL_SYMBOLS and _SYMBOL_SHAPE.match(a.upper().replace("XYZ-", ""))
+    )
+    if named:
+        return storyline_key(
+            title=title,
+            headline_zh=headline_zh,
+            scope="single_name",
+            primary_assets=named,
+            family=family,
+            aliases=aliases,
+        )
+    # A model that answered and still named nothing is saying the headline has no tradable subject, so a provider
+    # tag is only a storyline when the text is actually about it — the symbol appearing as its own token is the
+    # cheap evidence for that. Everything else is the family bucket: `asset:BTC` was collecting Polish jets
+    # scrambling and a lending protocol being drained, and those counts throttled real BTC cards. A false negative
+    # here costs a coarser bucket; a false positive costs another card's window. A degraded verdict is exempt: it
+    # has no `assets` to begin with, and "NVIDIA to invest $100bn" never spells `NVDA`.
+    text = f"{title} {headline_zh}"
+    fallback = sorted(
+        a for a in grounded_assets if a.upper() not in _CL_SYMBOLS and (degraded or _symbol_in_text(a, text))
+    )
     if fallback:
         return storyline_key(
             title=title,

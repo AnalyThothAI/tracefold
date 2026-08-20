@@ -286,7 +286,9 @@ def replay_corpus(corpus: Corpus, policy: DecidePolicy, *, hourly_cap: int) -> A
     """Re-decide every case in order, rebuilding the storyline windows and the reader's ledger as we go."""
 
     pushes: dict[str, list[tuple[int, int, str]]] = collections.defaultdict(list)
-    ledger: list[tuple[int, str, str]] = []
+    # (at_ms, headline_zh, event_id, direction) — the direction is what lets the replay exercise the reversal
+    # exemption `decide()` applies to the similarity withhold (#100).
+    ledger: list[tuple[int, str, str, str]] = []
     delivered: list[str] = []
     withheld: list[str] = []
     withheld_by_rule: list[str] = []
@@ -307,8 +309,9 @@ def replay_corpus(corpus: Corpus, policy: DecidePolicy, *, hourly_cap: int) -> A
             directions_4h=tuple(sorted({h[2] for h in window_4h})),
             last_push_ago_ms=(case.at_ms - max(h[0] for h in history)) if history else None,
             told_directions=tuple(str(t.get("dir") or "") for t in case.told),
-            seen_headlines=tuple(headline for (_, headline, _) in reversed(seen)),
-            seen_event_ids=tuple(event_id for (_, _, event_id) in reversed(seen)),
+            seen_headlines=tuple(headline for (_, headline, _, _) in reversed(seen)),
+            seen_event_ids=tuple(event_id for (_, _, event_id, _) in reversed(seen)),
+            seen_directions=tuple(direction for (_, _, _, direction) in reversed(seen)),
         )
         sent_last_hour = sum(1 for entry in ledger if entry[0] >= case.at_ms - _HOUR_MS)
         result = decide(
@@ -331,7 +334,7 @@ def replay_corpus(corpus: Corpus, policy: DecidePolicy, *, hourly_cap: int) -> A
             if not case.degraded:
                 # A degraded card is a placeholder headline; it is not what the reader recognises as a card, and
                 # the told ledger excludes it for the same reason.
-                ledger.append((case.at_ms, case.verdict.headline_zh, case.event_id))
+                ledger.append((case.at_ms, case.verdict.headline_zh, case.event_id, case.verdict.direction))
         else:
             withheld.append(case.event_id)
             if result.throttled_by or pushed:
@@ -348,13 +351,13 @@ def _score(
     withheld_by_rule: Sequence[str],
     rules: Mapping[str, int],
     throttled: Mapping[str, int],
-    ledger: Sequence[tuple[int, str, str]],
+    ledger: Sequence[tuple[int, str, str, str]],
 ) -> ArmReport:
-    by_hour = collections.Counter(at // _HOUR_MS for (at, _, _) in ledger)
+    by_hour = collections.Counter(at // _HOUR_MS for (at, _, _, _) in ledger)
     counts = sorted(by_hour.values())
     duplicates = strong = 0
-    for index, (at, headline, _) in enumerate(ledger):
-        for other_at, other, _ in ledger[index + 1 :]:
+    for index, (at, headline, _, _) in enumerate(ledger):
+        for other_at, other, _, _ in ledger[index + 1 :]:
             if other_at - at > _SEEN_WINDOW_MS:
                 break
             score = _containment(headline, other)
@@ -379,7 +382,7 @@ def _score(
     )
 
 
-def _missed_facts(withheld: Iterable[CorpusCase], ledger: Sequence[tuple[int, str, str]]) -> int:
+def _missed_facts(withheld: Iterable[CorpusCase], ledger: Sequence[tuple[int, str, str, str]]) -> int:
     """Facts the reader never received in any wording — the recall cost of the arm.
 
     A withheld card counts only when nothing resembling it was delivered in the surrounding window (so a card
@@ -392,7 +395,7 @@ def _missed_facts(withheld: Iterable[CorpusCase], ledger: Sequence[tuple[int, st
         nearest = max(
             (
                 _containment(headline, delivered)
-                for (at, delivered, _) in ledger
+                for (at, delivered, _, _) in ledger
                 if abs(at - case.at_ms) <= _SEEN_WINDOW_MS
             ),
             default=0.0,

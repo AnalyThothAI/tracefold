@@ -763,6 +763,10 @@ export interface components {
             dropped_by_rule?: {
                 [key: string]: number;
             };
+            /** Duplicates Withheld 24H */
+            duplicates_withheld_24h?: {
+                [key: string]: number;
+            };
             /**
              * Events 1H
              * @default 0

@@ -976,3 +976,34 @@ def test_triage_withholds_a_card_the_reader_already_received() -> None:
     assert seen_against["event_id"] == "ev-earlier"
     assert seen_against["headline_zh"] == "英伟达投资 OpenAI 数据中心"
     assert seen_against["at_ms"] == NOW_MS - 300_000  # `news why` can say how long ago the reader got it
+    # #100: which path measured it, so `status.pipeline.duplicates_withheld_24h` can separate the two.
+    assert inserted["trace"]["seen_scope"] == "throttled"
+
+
+def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on() -> None:
+    """#100: the OKX batch. Each frame opens its own `asset:` key, so the count throttle never fires and policy
+    v5 never measured the card at all — even with the reader's ledger already loaded."""
+
+    news = _throttling_news(ledger_headline="Ciena Corporation（$CIENx）出现在 OKX")
+    news.responses["event_status"] = {  # a storyline nobody has pushed on: the v5 throttle cannot see this card
+        "pushed_2h": 0,
+        "pushed_4h": 0,
+        "max_magnitude_2h": 0,
+        "max_magnitude_4h": 0,
+        "directions_2h": [],
+        "directions_4h": [],
+    }
+    bus = FakeBus()
+    triage = _triage_with_model(
+        news,
+        bus,
+        _ScriptedTriageModel([_model_verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")]),
+    )
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "throttled"
+    assert inserted["throttled_by"] == "storyline:asset:NVDA:seen"
+    assert inserted["trace"]["seen_scope"] == "all"
+    assert bus.published == []

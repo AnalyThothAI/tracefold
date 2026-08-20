@@ -213,6 +213,7 @@ def event_timeline(
                     "told_count": trace.get("told_count"),
                     "seen_count": trace.get("seen_count"),
                     "seen_similarity": trace.get("seen_similarity"),
+                    "seen_scope": trace.get("seen_scope"),
                     "seen_against_event_id": (seen_against or {}).get("event_id"),
                     "seen_against_headline_zh": (seen_against or {}).get("headline_zh"),
                     "reasked_after_told_change": bool(trace.get("reasked_after_told_change")),
