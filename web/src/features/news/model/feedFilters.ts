@@ -75,7 +75,15 @@ export function nextFeedParams(
 ): URLSearchParams {
   const params = new URLSearchParams(searchParams);
   params.set("sort", changes.sort ?? filters.sort);
-  for (const name of ["q", "family", "admission", "priority", "decision", "symbol", "outcome"] as const) {
+  for (const name of [
+    "q",
+    "family",
+    "admission",
+    "priority",
+    "decision",
+    "symbol",
+    "outcome",
+  ] as const) {
     const value = changes[name] === undefined ? filters[name] : changes[name];
     if (value) params.set(name, String(value));
     else params.delete(name);

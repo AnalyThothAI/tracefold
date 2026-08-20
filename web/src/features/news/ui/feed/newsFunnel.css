@@ -4,8 +4,12 @@
    * before any number is read: almost everything arrives, almost everything is judged, and a fifth survives.
    * Every figure is a server number or a subtraction of two — the browser never re-derives the pipeline.
    */
+  /*
+   * Context, not the reason the page was opened: the feed's density target is at least four rows visible at
+   * 1366x720, so this card is kept deliberately short — one head line, a 6px bar, one row of tiles.
+   */
   .news-funnel-card {
-    padding: 0.8rem 1rem 0.85rem;
+    padding: 0.5rem 0.85rem 0.55rem;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     background: var(--surface-panel);
@@ -15,10 +19,10 @@
   .news-funnel-card-head {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35rem 0.7rem;
+    gap: 0.25rem 0.7rem;
     align-items: baseline;
     justify-content: space-between;
-    margin-bottom: 0.6rem;
+    margin-bottom: 0.4rem;
   }
 
   .news-funnel-eyebrow {
@@ -42,8 +46,8 @@
   .news-funnel-proportion {
     display: flex;
     gap: 2px;
-    height: 6px;
-    margin-bottom: 0.75rem;
+    height: 5px;
+    margin-bottom: 0.5rem;
     overflow: hidden;
     border-radius: 999px;
     background: var(--border-faint);
@@ -109,7 +113,7 @@
 
   .news-funnel-tile b {
     color: var(--text-primary);
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     font-weight: 660;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;

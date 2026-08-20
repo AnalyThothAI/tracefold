@@ -44,6 +44,7 @@ export function NewsEventRow({
   const url = validExternalUrl(event.leader_url);
   const assets = displayAssets(event.grounded_assets ?? []);
   const held = event.outcome.group === "held";
+  const sentAt = event.delivery?.state === "sent" ? event.delivery.settled_at_ms : null;
   const to = newsEventPath(event.event_id);
   const openState = searchState == null ? undefined : { feedSearch: searchState };
   return (
@@ -109,46 +110,53 @@ export function NewsEventRow({
       </div>
 
       <div className="news-event-outcome">
-        {held ? null : (
-          <NewsOutcomeBadge
-            emphasis={event.priority === "high" && event.outcome.group === "pushed" ? "solid" : "soft"}
-            outcome={event.outcome}
-          />
-        )}
-        {event.outcome.reason_zh ? (
+        {/* Actions share the badge's line rather than claiming one of their own: a reserved third line cost
+            roughly a quarter of the rows visible at 1366x720, and hiding it on hover would make the list
+            jump. */}
+        <span className="news-event-outcome-top">
+          <span className="news-event-actions">
+            {url ? (
+              <a aria-label="打开原文" href={url} rel="noreferrer" target="_blank" title="原文">
+                <ExternalLink aria-hidden />
+              </a>
+            ) : null}
+            <button
+              aria-label="复制标题"
+              onClick={() => onCopy?.(headline, "已复制标题")}
+              title="复制标题"
+              type="button"
+            >
+              <Copy aria-hidden />
+            </button>
+            <button
+              aria-label="复制标注命令"
+              onClick={() =>
+                onCopy?.(labelCommand(event.event_id, "bad"), "已复制「判错了」标注命令")
+              }
+              title="复制「判错了」的 tracefold news label 命令"
+              type="button"
+            >
+              <Tag aria-hidden />
+              判错了
+            </button>
+          </span>
+          {held ? null : (
+            <NewsOutcomeBadge
+              emphasis={
+                event.priority === "high" && event.outcome.group === "pushed" ? "solid" : "soft"
+              }
+              outcome={event.outcome}
+            />
+          )}
+        </span>
+        {/* One line under the badge, never two: a sent row wants the time it went out, everything else
+            wants the server's reason. */}
+        {sentAt ? (
+          <span className="news-event-reason">推送于 {clockTime(sentAt)}</span>
+        ) : event.outcome.reason_zh ? (
           <span className="news-event-reason">{event.outcome.reason_zh}</span>
         ) : null}
-        {event.delivery?.state === "sent" && event.delivery.settled_at_ms ? (
-          <span className="news-event-reason">
-            推送于 {clockTime(event.delivery.settled_at_ms)}
-          </span>
-        ) : null}
-        <span className="news-event-actions">
-          {url ? (
-            <a aria-label="打开原文" href={url} rel="noreferrer" target="_blank" title="原文">
-              <ExternalLink aria-hidden />
-            </a>
-          ) : null}
-          <button
-            aria-label="复制标题"
-            onClick={() => onCopy?.(headline, "已复制标题")}
-            title="复制标题"
-            type="button"
-          >
-            <Copy aria-hidden />
-          </button>
-          <button
-            aria-label="复制标注命令"
-            onClick={() => onCopy?.(labelCommand(event.event_id, "bad"), "已复制「判错了」标注命令")}
-            title="复制「判错了」的 tracefold news label 命令"
-            type="button"
-          >
-            <Tag aria-hidden />
-            判错了
-          </button>
-        </span>
       </div>
     </article>
   );
 }
-

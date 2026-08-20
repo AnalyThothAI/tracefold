@@ -406,7 +406,10 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="triage_model" v={status.pipeline.triage_model ?? "—"} />
           <KeyValueRow k="triage_p50_ms" v={optionalDuration(status.pipeline.triage_p50_ms)} />
           <KeyValueRow k="triage_p95_ms" v={optionalDuration(status.pipeline.triage_p95_ms)} />
-          <KeyValueRow k="queue_lag_p95_ms" v={optionalDuration(status.pipeline.queue_lag_p95_ms)} />
+          <KeyValueRow
+            k="queue_lag_p95_ms"
+            v={optionalDuration(status.pipeline.queue_lag_p95_ms)}
+          />
           <KeyValueRow k="e2e_p95_ms" v={optionalDuration(status.delivery.e2e_p95_ms)} />
           <KeyValueRow k="events_24h" v={String(status.pipeline.events_24h)} />
           <KeyValueRow k="candidates_24h" v={String(status.pipeline.candidates_24h)} />
@@ -414,7 +417,10 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="triage_degraded_24h" v={String(status.pipeline.triage_degraded_24h)} />
           <KeyValueRow k="throttled_24h" v={String(status.pipeline.throttled_24h)} />
           <KeyValueRow k="labeled_missed_24h" v={String(status.pipeline.labeled_missed_24h)} />
-          <KeyValueRow k="candidate_share_24h" v={String(status.pipeline.candidate_share_24h ?? "—")} />
+          <KeyValueRow
+            k="candidate_share_24h"
+            v={String(status.pipeline.candidate_share_24h ?? "—")}
+          />
           <KeyValueRow k="delivery.terminal_24h" v={String(status.delivery.terminal_24h)} />
           <KeyValueRow k="delivery.last_error_code" v={status.delivery.last_error_code ?? "—"} />
         </KeyValue>
@@ -458,7 +464,11 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="observed_at_ms" v={optionalTime(status.broker.observed_at_ms)} />
           <KeyValueRow k="error_code" v={status.broker.error_code ?? "—"} />
           {queues.map(([name, queue]) => (
-            <KeyValueRow k={name} key={name} v={`${queue.messages} 条 · ${queue.consumers} 消费者`} />
+            <KeyValueRow
+              k={name}
+              key={name}
+              v={`${queue.messages} 条 · ${queue.consumers} 消费者`}
+            />
           ))}
         </KeyValue>
       </section>

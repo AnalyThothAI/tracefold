@@ -35,7 +35,6 @@ import { NewsToast } from "../chrome/NewsToast";
 import { NewsEventPager } from "./NewsEventPager";
 import { NewsTimeline } from "./NewsTimeline";
 
-
 import "./newsDetail.css";
 
 export function NewsEventDetailPage({ eventId, token }: { eventId: string; token: string }) {
@@ -153,11 +152,7 @@ function EventDocument({
 
         <div className="news-detail-side">
           <Card title="这条判得对吗" hint="标注写回模型阈值的回归集" aria-label="运营标注">
-            <LabelBlock
-              eventId={event.event_id}
-              labels={detail.labels ?? []}
-              onCopy={onCopy}
-            />
+            <LabelBlock eventId={event.event_id} labels={detail.labels ?? []} onCopy={onCopy} />
           </Card>
           <Card
             title="同类报道"
@@ -174,7 +169,6 @@ function EventDocument({
   );
 }
 
-
 /**
  * The rest of the model's judgment, in the server's own words. A cell is omitted rather than rendered as a dash
  * when the server has nothing for it, so a macro Event with no assets does not show an empty row.
@@ -187,7 +181,10 @@ function VerdictFacts({ memberCount, triage }: { memberCount: number; triage: Ne
     { label: "TYPE", value: triage.event_type_zh },
     { label: "SCOPE", value: triage.scope_zh },
     { label: "NOVELTY", value: triage.novelty_zh },
-    { label: "ACTIONABLE", value: triage.actionable == null ? "" : triage.actionable ? "是" : "否" },
+    {
+      label: "ACTIONABLE",
+      value: triage.actionable == null ? "" : triage.actionable ? "是" : "否",
+    },
     { label: "AUDIENCE", value: triage.audience_zh },
     { label: "MEMBERS", value: String(Math.max(1, memberCount)) },
   ];
@@ -413,4 +410,3 @@ function DeliveryRecord({ delivery }: { delivery: NewsDelivery }) {
     </section>
   );
 }
-

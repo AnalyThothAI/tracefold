@@ -197,10 +197,19 @@
   /* ------------------------------------------------------------------ outcome column */
   .news-event-outcome {
     display: grid;
-    gap: 0.3rem;
+    gap: 0.25rem;
     justify-items: end;
     min-width: 0;
     text-align: right;
+  }
+
+  /* Actions and badge share one line; a held row keeps the line's height for the actions alone. */
+  .news-event-outcome-top {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    justify-content: flex-end;
+    min-height: 1.5rem;
   }
 
   .news-event-reason {

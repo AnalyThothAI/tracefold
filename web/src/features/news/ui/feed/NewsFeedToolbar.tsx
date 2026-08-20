@@ -116,7 +116,10 @@ function OutcomeTabs({
   );
 }
 
-function tabCount(counts: NewsFeedCounts | undefined, value: NewsFeedOutcome | null): number | null {
+function tabCount(
+  counts: NewsFeedCounts | undefined,
+  value: NewsFeedOutcome | null,
+): number | null {
   if (!counts) return null;
   return value == null ? counts.total : counts[value];
 }

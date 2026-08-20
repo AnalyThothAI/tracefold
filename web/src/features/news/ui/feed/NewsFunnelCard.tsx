@@ -31,7 +31,13 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
         <span className="news-funnel-summary">
           转化 <b>{percent(funnel.delivered, funnel.received)}</b> · 拦下{" "}
           <b>{formatCount(Math.max(0, funnel.received - funnel.delivered))}</b> 条 ·{" "}
-          {failed ? <>投递失败 <b>{formatCount(failed)}</b> 条</> : "无投递失败"}
+          {failed ? (
+            <>
+              投递失败 <b>{formatCount(failed)}</b> 条
+            </>
+          ) : (
+            "无投递失败"
+          )}
         </span>
       </div>
       <div aria-hidden className="news-funnel-proportion">

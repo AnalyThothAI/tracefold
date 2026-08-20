@@ -115,7 +115,10 @@ describe("Tracefold design-system hard cut", () => {
     // only place `data-page-archetype` is written.
     const owners = {
       case: ["features/news/ui/detail/NewsEventDetailPage.tsx"],
-      scan: ["features/news/ui/feed/NewsFeedPage.tsx", "features/news/ui/status/NewsStatusPage.tsx"],
+      scan: [
+        "features/news/ui/feed/NewsFeedPage.tsx",
+        "features/news/ui/status/NewsStatusPage.tsx",
+      ],
     } as const;
 
     for (const [archetype, paths] of Object.entries(owners)) {

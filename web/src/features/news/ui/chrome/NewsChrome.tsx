@@ -20,7 +20,11 @@ export function NewsPageShell({
   label: string;
 }) {
   return (
-    <section aria-label={label} className={cn("news-panel", className)} data-page-archetype={archetype}>
+    <section
+      aria-label={label}
+      className={cn("news-panel", className)}
+      data-page-archetype={archetype}
+    >
       {children}
     </section>
   );

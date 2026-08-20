@@ -17,8 +17,16 @@
     align-content: start;
   }
 
+  /* Grid items default to `min-width: auto`, so a wide child (the funnel's scrolling tile row on a phone)
+     would push the whole panel past the viewport instead of scrolling inside itself. */
+  .news-feed-shell > *,
+  .news-detail-shell > *,
+  .news-status-shell > * {
+    min-width: 0;
+  }
+
   .news-feed-shell {
-    gap: 0.7rem;
+    gap: 0.55rem;
   }
 
   .news-detail-shell,

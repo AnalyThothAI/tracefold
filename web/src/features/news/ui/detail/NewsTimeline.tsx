@@ -2,7 +2,12 @@ import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import { useState } from "react";
 
 import type { NewsTimelineStep } from "../../api/newsQueries";
-import { absoluteTime, clockTime, optionalDuration, timelineStageTone } from "../../model/newsLabels";
+import {
+  absoluteTime,
+  clockTime,
+  optionalDuration,
+  timelineStageTone,
+} from "../../model/newsLabels";
 import { NewsEmptyNote } from "../chrome/NewsChrome";
 
 import "./newsTimeline.css";
