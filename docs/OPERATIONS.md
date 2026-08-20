@@ -88,8 +88,18 @@ tracefold workers
   -> finite external-operation executor 3
   -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
-     news-triage, news-deliverer, news-janitor); workers-control
+     news-triage, news-deliverer, news-janitor); the cold loops
+     (news-instruments, and with venues enabled news-quotes, news-reactions);
+     workers-control
 ```
+
+The three cold loops (#75 instruments, #88 quotes and Event Reactions) admit
+their database work through the one-slot heavy-business lane, never the four
+News hot-path slots, so a price backlog cannot starve a live Event. Their
+provider calls are bounded (quotes: one batch per source, concurrency 4, a 10 s
+turn deadline, 5 s cadence, never overlapping; reactions: at most 32 merged
+candle requests per 60 s turn, concurrency 4) and none of them holds a database
+connection while calling out.
 
 Every News consumer turn is one short idempotent transaction; provider and
 model work happens with no database connection held. There is no generic
@@ -342,6 +352,52 @@ Diagnose News in this order:
 Retention: `news_items`/`news_events` older than 30 days are purged by the
 Janitor; bands expire with their family window. Feed shows Events from the
 first frame after deployment; there is no backfill of pre-V3 history.
+
+### Price Review plane (#88)
+
+`/api/news/status.price` is the first place to look:
+
+- `sources[]` — one row per provider source with `age_ms` and `state`. A source
+  whose state has been `stale` for minutes is either rate-limited or blocked;
+  the loop's last error names which (`venue_rate_limited`, `venue_blocked`,
+  `venue_timeout`). One failing venue never clears another and never blanks a
+  price: the previous row stays and simply ages.
+- `reaction_partial_7d` / `reaction_complete_7d` / `reaction_unavailable_7d` —
+  the Reaction backlog. A rising `partial` count with a flat `complete` count
+  means the 4H leg is not landing; a rising `unavailable` count is a data
+  question, not a health one, and `/api/news/review` names the reason.
+
+Read-only SQL for the same questions:
+
+```sql
+-- how old is each source's quote map, and how many quotes does it hold
+SELECT source_key, target_count, jsonb_object_keys_count, received_at_ms
+  FROM (SELECT source_key, target_count, received_at_ms,
+               (SELECT count(*) FROM jsonb_object_keys(quotes)) AS jsonb_object_keys_count
+          FROM news_quote_snapshots) s
+ ORDER BY source_key;
+
+-- the oldest Event-asset still waiting for a horizon
+SELECT min(a.opened_at_ms) AS oldest_due
+  FROM news_event_assets a
+  JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+  LEFT JOIN news_event_reactions r
+    ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = 'reaction_v1'
+ WHERE a.opened_at_ms <= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - 3600000
+   AND (r.state IS NULL OR r.state IN ('pending', 'partial'));
+
+-- why Events could not be priced, by named reason
+SELECT unavailable_reason, count(*) FROM news_event_reactions
+ WHERE state = 'unavailable' GROUP BY 1 ORDER BY 2 DESC;
+```
+
+Nothing here is on the delivery path. If both venues are unavailable the price
+plane reports degraded coverage and the News feed, status, Triage, Delivery,
+readiness and shutdown are unaffected. There is no operator knob: cadence,
+caps, concurrency, freshness limit, metric version, candle interval and gap
+tolerance are code-owned; `news.venues.binance` / `news.venues.hyperliquid` /
+`news.venues.enabled` are the only switches, shared with the instrument
+snapshot.
 
 ## Migrations
 

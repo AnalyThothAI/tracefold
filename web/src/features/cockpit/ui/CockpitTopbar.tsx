@@ -14,9 +14,17 @@ const NEWS_SEARCH_ARIA_LABEL = "news search";
  */
 const NEWS_SEARCH_PLACEHOLDER = "搜索新闻事件 / 标题 / 资产";
 
-/** One always-visible number from the pipeline. `value` is undefined until the status poll answers. */
+/**
+ * One always-visible number from the pipeline. `value` is undefined until the poll answers.
+ *
+ * `text` is the escape hatch for a figure that is not a plain count (#88): a hit rate has to arrive with its
+ * denominator or not at all, and `56% · N=225` is one server-decided string rather than two numbers the
+ * topbar would have to relate to each other.
+ */
 export type CockpitTopbarFigure = {
   label: string;
+  text?: string;
+  title?: string;
   tone?: "caution";
   value?: number;
 };
@@ -83,14 +91,14 @@ export function CockpitTopbar({
        * The two figures an operator glances at without opening a page (#87). They are hidden until the poll
        * answers rather than shown as zero — a zero that means "not loaded yet" is worse than a gap.
        */}
-      {figures?.some((figure) => figure.value != null) ? (
+      {figures?.some((figure) => figure.value != null || figure.text) ? (
         <span className="topbar-figures">
           {figures
-            .filter((figure) => figure.value != null)
+            .filter((figure) => figure.value != null || figure.text)
             .map((figure) => (
-              <span data-tone={figure.tone} key={figure.label}>
+              <span data-tone={figure.tone} key={figure.label} title={figure.title}>
                 <small>{figure.label}</small>
-                <b>{new Intl.NumberFormat("zh-CN").format(figure.value ?? 0)}</b>
+                <b>{figure.text ?? new Intl.NumberFormat("zh-CN").format(figure.value ?? 0)}</b>
               </span>
             ))}
         </span>

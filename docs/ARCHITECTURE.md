@@ -18,6 +18,15 @@ OpenNews Strategy WSS
   -> HTTP / React
 ```
 
+Beside that hot path runs one strictly bounded cold plane, the Price Review
+plane (#88): two polling loops in Workers read their own work from PostgreSQL,
+call public venue REST with no database connection held, and write two derived
+read models — latest-only current quotes and versioned Event Reactions. It is
+not a market lane: no tick history, no socket, no OI, no order book, and no
+price reaches the Gate, Triage, `decide()` or a delivery card. Its failure is
+local by construction; News ingestion, judgment, delivery and readiness do not
+depend on it.
+
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
 capability, singleton runtime status, and the RabbitMQ-driven News consumers
@@ -57,6 +66,21 @@ Material facts include:
   Strategy allowlist in `news_items` (provenance union, provider metadata,
   raw first line, first ingest mode).
 
+The two Price Review read models are derived and rebuildable, with different
+lifecycles on purpose (#88). `news_quote_snapshots` is last-value-wins current
+display state: one row per provider source holding a bounded normalized quote
+map, no history, no tick id, no raw payload. `news_event_reactions` is the
+deterministic return between an Event's market anchor (`opened_at_ms`, the
+provider publication time) and a fixed horizon, keyed by
+`(event_id, symbol, metric_version)`; `reaction_v1` freezes candle interval,
+alignment, gap tolerance, source selection, aggregation and the hit definition,
+so a later revision publishes a new version beside v1 rather than changing what
+a stored row means. The row also records `is_primary` — whether the model called
+that asset a primary at measurement time — because the review's event-level
+sample is the median over primaries and re-deriving that from verdict JSONB per
+request costs 1.2 s at the 720 h bound, past Serve's one-second statement
+timeout. Both tables cascade with their Event under existing retention.
+
 The current read model is `news_events` (plus `news_event_members`,
 `news_event_bands`, `news_event_assets`). It uses stable product identity, has
 exactly one runtime writer, is rebuildable from facts, and writes zero serving
@@ -75,8 +99,10 @@ not material facts. `news_deliveries` is the one-attempt outbound
 ledger keyed by `(event_id, kind)`; there is no retry, lease, or backfill.
 `news_event_labels` is the learning-plane truth for evaluating decisions.
 
-The current schema is exactly 13 tables: the eleven `news_*` tables and the two
-platform tables `alembic_version` and `workers_runtime`.
+The current schema is exactly 17 tables: the fifteen `news_*` tables (eleven
+News V3 tables, the two instrument-universe tables from #75/#89, and the two
+Price Review tables from #88) and the two platform tables `alembic_version` and
+`workers_runtime`.
 
 ## Package map
 
@@ -88,6 +114,9 @@ tracefold.news
   exact_atom_identity.py comparison normalization, event family, windows
   tokens.py / minhash.py  comparison tokens, MinHash 32x4 band keys
   gate.py / storyline.py  deterministic admission, priority, grounded assets, storyline keys
+  pricing.py          Price Review domain: source order, quote/candle normalization, reaction_v1 metric
+  price_loops.py      the two cold loops (QuoteSnapshotLoop, EventReactionLoop) and their one-slot DB lane
+  price_repository.py quote snapshots, Event Reactions, and the bounded review aggregates
   events.py           the Deduper transaction (admit_item)
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
   agents/             the Triage structured call and its byte-frozen prompt
@@ -197,10 +226,14 @@ per-message ack are their fences.
 The Workers root TaskGroup contains exactly: `workers-probe` (loopback
 health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
-`news-deliverer`, `news-janitor`), and `workers-control` (singleton lock,
-heartbeat, runtime row). There is no acquisition clock, projection
-coordinator, model arbiter, periodic market poll, stream ingester, identity
-backfill, or universe sync task.
+`news-deliverer`, `news-janitor`), the bounded cold loops
+(`news-instruments`, and with venues enabled `news-quotes`,
+`news-reactions`), and `workers-control` (singleton lock, heartbeat, runtime
+row). There is no acquisition clock, projection coordinator, model arbiter,
+stream ingester, identity backfill, or universe sync task. The three cold
+loops poll public catalogues and prices on code-owned cadences and admit their
+database work through a separate one-slot lane, never the four News hot-path
+slots.
 
 ## Product flows
 
@@ -238,6 +271,42 @@ OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
      broker depth snapshot
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
+
+#### Price Review plane (#88)
+
+Two cold loops beside the hot path, sharing one instrument-resolution strategy
+and no state with it:
+
+```text
+recent live Events + watchlist -> exact-symbol-first resolution (alias only as fallback,
+  reference tiers never candidates) -> unique Price Instruments deduplicated by
+  (venue, venue_symbol, price_kind) -> grouped by provider source
+  -> one batch REST request per source (Binance spot/USD-M ticker, Hyperliquid
+     metaAndAssetCtxs / spotMetaAndAssetCtxs / one per HIP-3 dex)
+  -> one latest-only row per source in news_quote_snapshots
+  -> GET /api/news/quotes (<=100 symbols, resolved server-side, fresh|stale|unavailable|unlisted)
+
+due Event-assets (live Events, pushed and held alike) -> pinned or resolved instrument
+  -> merged historical 5m candle ranges (<=32 requests/turn, concurrency 4)
+  -> p0 = last closed candle at or before opened_at_ms; p1/p4 the same at +1H/+4H
+  -> (pH/p0)-1 in integer basis points -> news_event_reactions (reaction_v1)
+  -> Feed/Detail attachment + GET /api/news/review
+```
+
+Work is `O(source groups)`, never `O(Events x assets)`: a hundred Events naming
+BTC are one Quote target and one provider result. Reaction identity keeps its
+Event anchor — that cannot be deduplicated without corrupting the metric — but
+its provider reads are coalesced by instrument and merged time range, so one
+candle response fills many Events.
+
+Failure is local: a venue that times out, blocks, rate-limits or answers
+nonsense is skipped for that turn and leaves its previous row untouched, so a
+stale quote stays visibly stale rather than becoming zero or vanishing. A
+transient provider failure writes no Reaction row at all, which leaves the work
+due; only a stable semantic reason (`instrument_unresolved`, `reference_only`,
+`history_expired`, `no_candle_within_gap`) terminalizes one. Price never enters
+the Gate, Triage, `decide()`, a card, a throttle key or a ranking signal.
+
 
 Ownership: `tracefold.integrations.rabbitmq` is the only module that imports
 `aio_pika`; `tracefold.news.bus` owns the envelope, routing keys, error classes,

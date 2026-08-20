@@ -1,0 +1,319 @@
+@layer app.features {
+  /*
+   * 命中复盘 (#88). A scan surface like the status route, so it reuses the same panel, card and table
+   * rhythm rather than inventing a third one. Two rules shape everything here:
+   *
+   * 1. Coverage reads before accuracy — the first card is the denominators, and every rate carries its N
+   *    beside it in a smaller weight, so a percentage can never be read without one.
+   * 2. Market direction is red-up / green-down (`tokens.css`), the same hues as the direction chip, applied
+   *    only to actual returns. Pipeline outcome colours are not used on this page at all.
+   */
+  .news-review-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .news-review-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+    gap: 1rem;
+  }
+
+  .news-review-window select {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+  }
+
+  /* ---- coverage ---- */
+  .news-review-coverage {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 0.9rem;
+  }
+
+  .news-review-coverage article {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+  }
+
+  .news-review-coverage header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+
+  .news-review-coverage-title {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+
+  .news-review-coverage-pct {
+    color: var(--text-primary);
+    font: 600 1.1rem/1.2 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-review-bar {
+    height: 6px;
+    border-radius: 999px;
+    background: var(--surface-sunken, var(--secondary));
+    overflow: hidden;
+  }
+
+  .news-review-bar span {
+    display: block;
+    height: 100%;
+    background: var(--text-subtle);
+  }
+
+  .news-review-coverage-line {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 0.74rem;
+  }
+
+  .news-review-reasons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.7rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-review-reasons li {
+    display: inline-flex;
+    gap: 0.3rem;
+    align-items: baseline;
+    color: var(--text-subtle);
+    font-size: 0.72rem;
+  }
+
+  .news-review-reasons b {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- tables ---- */
+  .news-review-table-wrap {
+    overflow-x: auto;
+  }
+
+  .news-review-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+  }
+
+  .news-review-table th,
+  .news-review-table td {
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border-subtle);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .news-review-table thead th {
+    color: var(--text-subtle);
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  .news-review-table tbody th {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .news-review-table .news-review-n {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  .news-review-table td[data-tone="up"] {
+    color: var(--dir-bullish);
+  }
+
+  .news-review-table td[data-tone="down"] {
+    color: var(--dir-bearish);
+  }
+
+  .news-review-table tbody tr:last-child th,
+  .news-review-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* A rate and its denominator are one visual unit; the N is never in a column the eye can skip. */
+  .news-review-hit {
+    display: inline-flex;
+    gap: 0.3rem;
+    align-items: baseline;
+    font-weight: 600;
+  }
+
+  .news-review-hit small,
+  .news-review-table small {
+    color: var(--text-subtle);
+    font-size: 0.68rem;
+    font-weight: 400;
+  }
+
+  .news-review-muted {
+    color: var(--text-subtle);
+  }
+
+  /* ---- potential misses ---- */
+  .news-review-misses {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-review-misses li {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding-bottom: 0.7rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .news-review-misses li:last-child {
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+
+  .news-review-miss-head {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+
+  .news-review-miss-move {
+    min-width: 4.5rem;
+    color: var(--text-secondary);
+    font: 600 0.95rem/1.3 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-review-miss-move[data-tone="up"] {
+    color: var(--dir-bullish);
+  }
+
+  .news-review-miss-move[data-tone="down"] {
+    color: var(--dir-bearish);
+  }
+
+  .news-review-miss-title {
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    font-weight: 600;
+    line-height: 1.5;
+    text-decoration: none;
+  }
+
+  .news-review-miss-title:hover {
+    text-decoration: underline;
+  }
+
+  .news-review-miss-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.7rem;
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 0.74rem;
+  }
+
+  .news-review-miss-decision {
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+
+  .news-review-miss-assets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin: 0;
+  }
+
+  .news-review-miss-assets code {
+    display: inline-flex;
+    gap: 0.35rem;
+    align-items: baseline;
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font: 500 0.66rem/1.6 var(--font-mono);
+  }
+
+  .news-review-miss-assets b[data-tone="up"] {
+    color: var(--dir-bullish);
+  }
+
+  .news-review-miss-assets b[data-tone="down"] {
+    color: var(--dir-bearish);
+  }
+
+  .news-review-miss-label {
+    align-self: flex-start;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-subtle);
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+
+  .news-review-miss-label:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
+  }
+
+  .news-review-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.5rem 1rem;
+    margin: 0;
+  }
+
+  .news-review-meta dt {
+    color: var(--text-subtle);
+    font-size: 0.72rem;
+  }
+
+  .news-review-meta dd {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+  }
+
+  @media (max-width: 767px) {
+    .news-review-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .news-review-miss-head {
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+  }
+}

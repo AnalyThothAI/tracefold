@@ -10,6 +10,10 @@ import type {
   NewsTimelineStep,
   NewsVerdict,
   NewsTriageSummary,
+  NewsEventReaction,
+  NewsQuote,
+  NewsReaction,
+  NewsReview,
 } from "@features/news/api/newsQueries";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
@@ -415,6 +419,200 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     state: "ready",
     watchlist: ["BTC", "ETH", "SOL"],
     workers_state: "running",
+    ...overrides,
+  };
+}
+
+export function newsQuoteFixture(overrides: Partial<NewsQuote> = {}): NewsQuote {
+  return {
+    age_ms: 2_000,
+    base_symbol: "BTC",
+    change_basis: "rolling_24h",
+    change_basis_zh: "滚动 24H",
+    change_pct: 1.52,
+    instrument_class: "crypto",
+    price: "68123.4",
+    price_kind: "last",
+    price_kind_zh: "最新成交价",
+    quote_asset: "USDT",
+    received_at_ms: NEWS_NOW_MS - 2_000,
+    requested_symbol: "BTC",
+    source_at_ms: NEWS_NOW_MS - 2_100,
+    state: "fresh",
+    state_zh: "实时",
+    symbol: "BTC",
+    venue: "binance.perp",
+    venue_symbol: "BTCUSDT",
+    ...overrides,
+  };
+}
+
+export function newsReactionFixture(overrides: Partial<NewsReaction> = {}): NewsReaction {
+  return {
+    asset_n: 1,
+    metric_version: "reaction_v1",
+    priced_n: 1,
+    return_1h_bps: 152,
+    return_4h_bps: -87,
+    state: "complete",
+    state_zh: "已完成",
+    unavailable_reason: null,
+    unavailable_reason_zh: "",
+    ...overrides,
+  };
+}
+
+export function newsEventReactionFixture(
+  overrides: Partial<NewsEventReaction> = {},
+): NewsEventReaction {
+  return {
+    anchor_at_ms: NEWS_NOW_MS - 6 * 3_600_000,
+    instrument_class: "crypto",
+    metric_version: "reaction_v1",
+    p0: "68000.0",
+    p0_at_ms: NEWS_NOW_MS - 6 * 3_600_000,
+    p1: "69033.6",
+    p1_at_ms: NEWS_NOW_MS - 5 * 3_600_000,
+    p4: "67408.4",
+    p4_at_ms: NEWS_NOW_MS - 2 * 3_600_000,
+    return_1h_bps: 152,
+    return_4h_bps: -87,
+    state: "complete",
+    state_zh: "已完成",
+    symbol: "BTC",
+    unavailable_reason: null,
+    unavailable_reason_zh: "",
+    updated_at_ms: NEWS_NOW_MS,
+    venue: "binance.perp",
+    venue_symbol: "BTCUSDT",
+    ...overrides,
+  };
+}
+
+/** A review window with one hit, one bearish miss the reader never received, and one uncovered Event. */
+export function newsReviewFixture(overrides: Partial<NewsReview> = {}): NewsReview {
+  return {
+    coverage: [
+      {
+        coverage_pct: 66.7,
+        degraded_n: 1,
+        eligible_n: 3,
+        horizon: "1h",
+        horizon_zh: "事件后 1H",
+        no_primary_n: 1,
+        priced_n: 2,
+        unavailable: [
+          { n: 1, reason: "no_candle_within_gap", reason_zh: "该时段没有成交 K 线，不做前向填充" },
+        ],
+      },
+      {
+        coverage_pct: 33.3,
+        degraded_n: 1,
+        eligible_n: 3,
+        horizon: "4h",
+        horizon_zh: "事件后 4H",
+        no_primary_n: 1,
+        priced_n: 1,
+        unavailable: [],
+      },
+    ],
+    directions: [
+      {
+        coverage_pct: 50,
+        direction: "bullish",
+        direction_zh: "利多",
+        eligible_n: 2,
+        hit_pct: 100,
+        hits: 1,
+        horizon: "1h",
+        horizon_zh: "事件后 1H",
+        median_abs_bps: 152,
+        median_bps: 152,
+        priced_n: 1,
+        scored: true,
+      },
+      {
+        coverage_pct: 100,
+        direction: "neutral",
+        direction_zh: "中性",
+        eligible_n: 1,
+        hit_pct: null,
+        hits: null,
+        horizon: "1h",
+        horizon_zh: "事件后 1H",
+        median_abs_bps: 40,
+        median_bps: -40,
+        priced_n: 1,
+        scored: false,
+      },
+    ],
+    event_types: [
+      {
+        coverage_1h_pct: 66.7,
+        eligible_n: 3,
+        escalated_n: 0,
+        event_type: "listing",
+        event_type_zh: "上币",
+        held_n: 1,
+        median_1h_bps: 152,
+        median_4h_bps: -87,
+        median_abs_1h_bps: 152,
+        median_abs_4h_bps: 87,
+        priced_1h_n: 2,
+        pushed_n: 2,
+        pushed_pct: 66.7,
+      },
+    ],
+    magnitudes: [
+      {
+        coverage_1h_pct: 66.7,
+        eligible_n: 3,
+        magnitude: 2,
+        magnitude_zh: "影响明显",
+        mean_abs_1h_bps: 526,
+        mean_abs_4h_bps: 87,
+        median_abs_1h_bps: 152,
+        median_abs_4h_bps: 87,
+        priced_1h_n: 2,
+        priced_4h_n: 1,
+        share_pct: 100,
+      },
+    ],
+    meta: {
+      hours: 168,
+      measured_at_ms: NEWS_NOW_MS,
+      metric_version: "reaction_v1",
+      window_end_ms: NEWS_NOW_MS,
+      window_start_ms: NEWS_NOW_MS - 168 * 3_600_000,
+    },
+    potential_misses: [
+      {
+        asset_n: 1,
+        assets: [
+          newsEventReactionFixture({ return_1h_bps: 900, symbol: "ETH", venue_symbol: "ETHUSDT" }),
+        ],
+        decision_zh: "限流",
+        direction: "bearish",
+        direction_zh: "利空",
+        event_id: "evt-throttled-eth",
+        event_type: "listing",
+        event_type_zh: "上币",
+        final_decision: "throttled",
+        headline_zh: "以太坊质押上限调整",
+        leader_title: "Ethereum staking cap adjusted",
+        magnitude: 2,
+        magnitude_zh: "影响明显",
+        opened_at_ms: NEWS_NOW_MS - 6 * 3_600_000,
+        override_rule: null,
+        override_rule_zh: "",
+        return_1h_bps: 900,
+        return_4h_bps: 1200,
+        storyline_key: "asset:ETH",
+        throttled_by: "storyline:asset:ETH:seen",
+        throttled_by_zh: "同一资产窗口内已推送过相似卡片",
+      },
+    ],
+    summary: { coverage_1h_pct: 66.7, hit_1h_n: 2, hit_1h_pct: 50 },
     ...overrides,
   };
 }

@@ -73,6 +73,31 @@
 | `match_kind` | `TEXT` | False | `None` |
 | `jaccard_estimate` | `DOUBLE PRECISION` | True | `None` |
 
+## `news_event_reactions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `symbol` | `TEXT` | False | `None` |
+| `metric_version` | `TEXT` | False | `None` |
+| `venue` | `TEXT` | False | `''::text` |
+| `venue_symbol` | `TEXT` | False | `''::text` |
+| `instrument_class` | `TEXT` | False | `'unknown'::text` |
+| `anchor_at_ms` | `BIGINT` | False | `None` |
+| `p0` | `NUMERIC` | True | `None` |
+| `p0_at_ms` | `BIGINT` | True | `None` |
+| `p1` | `NUMERIC` | True | `None` |
+| `p1_at_ms` | `BIGINT` | True | `None` |
+| `p4` | `NUMERIC` | True | `None` |
+| `p4_at_ms` | `BIGINT` | True | `None` |
+| `return_1h_bps` | `INTEGER` | True | `None` |
+| `return_4h_bps` | `INTEGER` | True | `None` |
+| `is_primary` | `BOOLEAN` | False | `false` |
+| `state` | `TEXT` | False | `'pending'::text` |
+| `unavailable_reason` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_events`
 
 | Column | Type | Nullable | Default |
@@ -169,6 +194,18 @@
 | `recovered_count` | `INTEGER` | False | `0` |
 | `last_error_code` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `news_quote_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `source_key` | `TEXT` | False | `None` |
+| `quotes` | `JSONB` | False | `'{}'::jsonb` |
+| `target_count` | `INTEGER` | False | `0` |
+| `payload_sha256` | `TEXT` | False | `''::text` |
+| `source_at_ms` | `BIGINT` | True | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_symbol_aliases`

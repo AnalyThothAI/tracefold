@@ -2,11 +2,12 @@ import { newsEventPath } from "@shared/routing/paths";
 import { Layers, Zap } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import type { NewsFeedEvent } from "../../api/newsQueries";
+import type { NewsFeedEvent, NewsQuote } from "../../api/newsQueries";
 import { absoluteTime, clockTime, displayAssetRefs, relativeTime } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
+import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
 import "./newsEventRow.css";
 
@@ -28,10 +29,12 @@ import "./newsEventRow.css";
 export function NewsEventRow({
   cursor = false,
   event,
+  quotes,
   searchState,
 }: {
   cursor?: boolean;
   event: NewsFeedEvent;
+  quotes?: Record<string, NewsQuote>;
   searchState?: string;
 }) {
   const triage = event.triage;
@@ -94,8 +97,16 @@ export function NewsEventRow({
               <span className="news-event-facts">{triage.event_type_zh}</span>
             </>
           ) : null}
-          <NewsAssetChips assets={assets} />
+          <NewsAssetChips assets={assets} quotes={quotes} />
         </p>
+        {/* The fixed return after this Event, next to the model's judgment about it. Two time semantics, so
+            never in the same chip: the judgment is a coloured pill, the outcome is plain figures. */}
+        {event.reaction ? (
+          <p className="news-event-reaction">
+            <NewsReactionValue horizon="1h" reaction={event.reaction} />
+            <NewsReactionValue horizon="4h" reaction={event.reaction} />
+          </p>
+        ) : null}
       </div>
 
       {/* Badge and reason are siblings rather than one column, so the grid can put the conclusion beside the

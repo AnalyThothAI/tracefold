@@ -26,6 +26,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     },
     "src/tracefold/app/repositories.py": {
         "tracefold.news.instruments_repository",
+        "tracefold.news.price_repository",
         "tracefold.news.repository",
     },
     "src/tracefold/app/workers/__init__.py": {
@@ -36,6 +37,10 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     # The venue adapters are the #75 analogue of the OpenNews adapter: they parse a provider catalogue into the
     # pure `Instrument` shape the News package owns.
     "src/tracefold/integrations/venues/binance.py": {"tracefold.news.instruments"},
+    # #88: the price adapters are the same seam one layer over — they parse provider quotes and candles into
+    # the pure `ProviderQuote` / `Candle` shapes the News package owns.
+    "src/tracefold/integrations/venues/candles.py": {"tracefold.news.pricing"},
+    "src/tracefold/integrations/venues/quotes.py": {"tracefold.news.pricing"},
     "src/tracefold/integrations/venues/hyperliquid.py": {"tracefold.news.instruments"},
     "src/tracefold/integrations/venues/us_reference.py": {"tracefold.news.instruments"},
     "src/tracefold/integrations/rabbitmq.py": {"tracefold.news.bus"},

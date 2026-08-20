@@ -125,6 +125,10 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "/api/news/feed": "ApiEnvelope_NewsFeedData_",
         "/api/news/events/{event_id}": "ApiEnvelope_NewsEventDetailData_",
         "/api/news/status": "ApiEnvelope_NewsStatusData_",
+        # #88: current quotes and 命中复盘 are separate response types on purpose — a current rolling change
+        # and a fixed post-Event return must never arrive in a field the browser could mistake for the other.
+        "/api/news/quotes": "ApiEnvelope_NewsQuotesData_",
+        "/api/news/review": "ApiEnvelope_NewsReviewData_",
     }
 
     assert {path for path in schema["paths"] if path.startswith("/api/news/")} == set(expected)
@@ -171,6 +175,9 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "deliveries",
         "labels",
         "normalization",
+        # #88: the event-level aggregate and every per-asset Reaction with the closes behind it.
+        "reaction",
+        "reactions",
     }
     assert set(components["NewsOutcomeData"]["properties"]) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(components["NewsStatusData"]["properties"]) == {
@@ -186,6 +193,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "control",
         "watchlist",
         "instruments",
+        # #88 §11: per-source quote freshness and Reaction backlog.
+        "price",
         "measured_at_ms",
     }
     state = components["NewsStatusData"]["properties"]["state"]

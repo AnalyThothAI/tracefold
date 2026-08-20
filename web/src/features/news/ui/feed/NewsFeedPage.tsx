@@ -9,6 +9,7 @@ import {
   type NewsFeedOutcome,
   useNewsFeedHistoryWithToken,
   useNewsFeedWithToken,
+  useNewsQuotesWithToken,
   useNewsStatusWithToken,
 } from "../../api/newsQueries";
 import {
@@ -72,6 +73,15 @@ export function NewsFeedPage({ token }: { token: string }) {
     feedIdentity,
   );
   const events = eventFeed.events;
+  // One quote request for everything on screen (#88): the symbols the server already resolved, deduplicated
+  // into a single query key. Prices never travel in the feed body — that would make its ETag useless.
+  const quotesQuery = useNewsQuotesWithToken(
+    token,
+    events.flatMap((event) => (event.assets ?? []).filter((a) => a.listed).map((a) => a.symbol)),
+  );
+  const quotes = Object.fromEntries(
+    (quotesQuery.data?.quotes ?? []).map((quote) => [quote.requested_symbol, quote]),
+  );
   const toast = useNewsToast();
   const feedSearch = searchParams.toString();
 
@@ -180,6 +190,7 @@ export function NewsFeedPage({ token }: { token: string }) {
                   cursor={event.event_id === cursor}
                   event={event}
                   key={event.event_id}
+                  quotes={quotes}
                   searchState={feedSearch}
                 />
               ))}

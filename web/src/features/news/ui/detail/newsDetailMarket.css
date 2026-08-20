@@ -1,0 +1,75 @@
+@layer app.features {
+  /*
+   * The Event detail's two market blocks (#88). Its own file rather than more of `newsDetail.css`: that
+   * bucket is at the 500-line budget the responsive harness enforces, and "current price" and "what happened
+   * after" are a self-contained pair the rest of the case surface does not touch.
+   *
+   * 当前报价 and 事件后反应 share one row shape so a symbol lines up across both blocks, and neither ever
+   * renders a missing value as a number — that is the whole point of keeping them apart.
+   */
+  .news-detail-quotes,
+  .news-detail-reaction-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-detail-quotes li,
+  .news-detail-reaction-list li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.75rem;
+    align-items: baseline;
+  }
+
+  .news-detail-quote-symbol {
+    display: inline-flex;
+    gap: 0.35rem;
+    align-items: baseline;
+    min-width: 9rem;
+  }
+
+  .news-detail-quote-symbol code {
+    color: var(--text-primary);
+    font: 600 0.78rem/1.5 var(--font-mono);
+  }
+
+  .news-detail-quote-symbol small,
+  .news-detail-quote-kind,
+  .news-detail-reaction-closes {
+    color: var(--text-subtle);
+    font-size: 0.7rem;
+  }
+
+  .news-detail-reactions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .news-detail-reaction-aggregate {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.75rem;
+    align-items: baseline;
+    margin: 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+  }
+
+  .news-detail-reaction-aggregate small {
+    color: var(--text-subtle);
+    font-size: 0.7rem;
+  }
+
+  @media (max-width: 767px) {
+    .news-detail-quote-symbol {
+      min-width: 0;
+    }
+  }
+}

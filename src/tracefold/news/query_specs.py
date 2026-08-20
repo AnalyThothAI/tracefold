@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tracefold.news.pricing import REACTION_METRIC_VERSION
 from tracefold.platform.postgres.postgres_audit import ReadQuerySpec
 
 
@@ -107,6 +108,45 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_control_state",
             sql="SELECT paused, mutes FROM news_control_state WHERE singleton_key = 'current'",
+        ),
+        # #88 price plane. The due scan and the review aggregates are the two reads that could grow without
+        # anyone noticing, so both are in the EXPLAIN registry with their real predicates.
+        ReadQuerySpec(
+            name="news_quote_snapshot_read",
+            sql="SELECT source_key, quotes, received_at_ms FROM news_quote_snapshots",
+        ),
+        ReadQuerySpec(
+            name="news_reaction_due_scan",
+            sql="""
+                SELECT a.event_id, a.symbol, a.opened_at_ms
+                  FROM news_event_assets a
+                  JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+                  LEFT JOIN news_event_reactions r
+                    ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
+                 WHERE a.opened_at_ms <= %s
+                   AND (r.state IS NULL OR r.state IN ('pending', 'partial'))
+                 ORDER BY a.opened_at_ms
+                 LIMIT 100
+            """,
+            params=(REACTION_METRIC_VERSION, hour_ago),
+        ),
+        ReadQuerySpec(
+            name="news_reaction_attach",
+            sql=(
+                "SELECT event_id, symbol, return_1h_bps, return_4h_bps, state FROM news_event_reactions"
+                " WHERE event_id = ANY(%s) AND metric_version = %s"
+            ),
+            params=(["event"], REACTION_METRIC_VERSION),
+        ),
+        ReadQuerySpec(
+            name="news_review_window",
+            sql="""
+                SELECT r.event_id, r.return_1h_bps, r.return_4h_bps, r.state
+                  FROM news_event_reactions r
+                  JOIN news_events e ON e.event_id = r.event_id
+                 WHERE r.metric_version = %s AND r.anchor_at_ms >= %s AND e.ingest_mode = 'live'
+            """,
+            params=(REACTION_METRIC_VERSION, day_ago),
         ),
     )
 

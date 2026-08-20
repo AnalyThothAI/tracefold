@@ -93,6 +93,28 @@ only, so importing it does not pull the route components into the eager shell ch
   allowlist; the browser neither displays the private Strategy IDs nor
   reimplements provider rules, Gate admission, Triage, or storyline throttling.
 
+  `/news/review` is the 命中复盘 destination (#88). It reads
+  `/api/news/review` every 60 s with a URL-owned `hours` window
+  (`24|72|168|720`, default 168) and renders coverage before accuracy: every
+  percentage is paired with the N it came from, neutral and unclear judgments
+  report their own N instead of entering the hit-rate denominator, and an empty
+  window says whether data is pending, unavailable or outside coverage rather
+  than showing `0%`. The potential-miss list is a review queue — each row names
+  the decision and the rule that withheld it, and the page writes no label; the
+  `复制「漏推」标注命令` button copies the existing `tracefold news label`
+  command, exactly like the feed's `X` shortcut.
+
+  Current quotes are a separate 3 s query (`/api/news/quotes`) keyed by the
+  sorted symbol batch, never a feed field: a price that changed must not
+  invalidate the feed's ETag or re-run its count query. A quote renders its
+  venue, price kind and age; a stale one stays on screen marked `陈旧` and an
+  unavailable or unlisted one says so in words. Market direction uses the
+  mainland `--dir-bullish` / `--dir-bearish` tokens (red up, green down) for
+  *actual* returns only, told apart from the model's judgment by weight — the
+  judgment is a filled chip, the outcome is plain figures. Pipeline outcome
+  colours stay blue/amber/grey and are never repurposed. A pending horizon says
+  `未到期`; nothing missing is ever drawn as `0.00%`.
+
   Feed query state is URL-owned and mirrors the server contract exactly:
   `q`, `family`, `admission`, `priority` (`high|normal`), `decision`
   (`push|escalate|drop|throttled|degraded`), `symbol`, `sort`
@@ -363,7 +385,9 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     `TYPE/SCOPE/NOVELTY/ACTIONABLE/AUDIENCE/MEMBERS` grid with framed cells,
     主要标的 vs 提及), the timeline with `+Δ` and an end-to-end figure,
     这条判得对吗 / 同类报道, and a collapsed 技术详情 appear in that order
-    with no market-mark table; the hero's left rail carries the direction colour and a
+    with no market-mark table — the two #88 market blocks (`当前报价` and
+    `事件后反应`) are separate cards, never one table, because a rolling change and a
+    fixed post-Event return are different time semantics; the hero's left rail carries the direction colour and a
     neutral verdict leaves it uncoloured; an Event with no Triage verdict renders
     the hero without the 判定 block instead of empty cells; and the back link
     returns to the feed the reader came from. Verify `/news/status` shows four

@@ -1,4 +1,6 @@
-import type { NewsAssetRef } from "../../api/newsQueries";
+import type { NewsAssetRef, NewsQuote } from "../../api/newsQueries";
+
+import { NewsQuoteValue } from "./NewsQuoteValue";
 
 import "./newsAssetChips.css";
 
@@ -12,13 +14,19 @@ import "./newsAssetChips.css";
  *
  * Whether a tag resolved is the server's answer, not this component's — it renders `listed` and never
  * consults a symbol table of its own.
+ *
+ * `quotes` is the current price for the same symbol, keyed by the tag that was requested (#88). It is an
+ * independent poll on its own query key, so a price that moved does not invalidate the feed body; a chip with
+ * no quote yet simply renders without one rather than holding the row back.
  */
 export function NewsAssetChips({
   assets,
   label = "关联资产",
+  quotes,
 }: {
   assets: NewsAssetRef[];
   label?: string;
+  quotes?: Record<string, NewsQuote>;
 }) {
   if (!assets.length) return null;
   return (
@@ -32,6 +40,9 @@ export function NewsAssetChips({
           >
             {asset.symbol}
           </span>
+          {quotes?.[asset.symbol] && asset.listed ? (
+            <NewsQuoteValue quote={quotes[asset.symbol]} />
+          ) : null}
         </code>
       ))}
     </span>

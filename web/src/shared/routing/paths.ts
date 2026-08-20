@@ -9,3 +9,7 @@ export function newsEventPath(eventId: string): string {
 export function newsStatusPath(): string {
   return "/news/status";
 }
+
+export function newsReviewPath(): string {
+  return "/news/review";
+}

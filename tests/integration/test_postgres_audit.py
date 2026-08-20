@@ -56,12 +56,17 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_feed_events",
         "news_feed_symbol_filter",
         "news_feed_search",
+        # #88: the feed attaches Event Reactions in one bounded batch, never one query per row.
+        "news_reaction_attach",
     )
     assert catalog.query_routes["/api/news/events/{event_id}"] == (
         "news_event_detail",
         "news_event_members",
         "news_event_verdicts",
+        "news_reaction_attach",
     )
+    assert catalog.query_routes["/api/news/quotes"] == ("news_quote_snapshot_read",)
+    assert catalog.query_routes["/api/news/review"] == ("news_review_window",)
     assert catalog.query_routes["/api/news/status"] == (
         "workers_runtime",
         "news_status_ingest",
@@ -115,6 +120,11 @@ _NEWS_QUERY_NAMES = (
     "news_status_pipeline_24h",
     "news_status_delivery_1h",
     "news_control_state",
+    # #88 price plane reads.
+    "news_quote_snapshot_read",
+    "news_reaction_due_scan",
+    "news_reaction_attach",
+    "news_review_window",
 )
 
 
@@ -150,7 +160,7 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert len(payload["news_schema"]["actual_tables"]) == 13
+    assert len(payload["news_schema"]["actual_tables"]) == 15
     retired = {"news_stories", "news_brief_current", "news_push_state", "news_sources", "news_event_market_marks"}
     assert retired.isdisjoint(payload["news_schema"]["actual_tables"])
     assert "projection_schema" not in payload

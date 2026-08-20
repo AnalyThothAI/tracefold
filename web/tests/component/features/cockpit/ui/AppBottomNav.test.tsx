@@ -17,7 +17,11 @@ describe("AppBottomNav", () => {
     expect(links.map((link) => link.getAttribute("href"))).toEqual(
       APP_NAVIGATION_GROUPS.flatMap((group) => group.items).map((item) => item.to),
     );
-    expect(links.map((link) => link.textContent?.trim())).toEqual(["事件流", "流水线状态"]);
+    expect(links.map((link) => link.textContent?.trim())).toEqual([
+      "事件流",
+      "命中复盘",
+      "流水线状态",
+    ]);
   });
 
   it("marks the feed current on an Event drilldown, and only the feed", () => {

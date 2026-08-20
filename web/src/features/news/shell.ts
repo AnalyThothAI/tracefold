@@ -5,5 +5,11 @@
  * route components in with it: `index.ts` exports pages, and importing that barrel from shell chrome would
  * make every route's code eager. This entrypoint carries hooks and types only.
  */
-export { useNewsStatusWithToken } from "./api/newsQueries";
-export type { NewsStatus } from "./api/newsQueries";
+export {
+  NEWS_REVIEW_DEFAULT_HOURS,
+  useNewsReviewWithToken,
+  useNewsStatusWithToken,
+} from "./api/newsQueries";
+export type { NewsReview, NewsStatus } from "./api/newsQueries";
+// #88: the topbar renders the review summary as one string, and the rule for that string belongs to News.
+export { hitFigure } from "./model/newsPrice";

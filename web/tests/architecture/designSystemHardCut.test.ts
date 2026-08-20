@@ -86,7 +86,7 @@ describe("Tracefold design-system hard cut", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
     // News is the whole product (#68), so its feed and its pipeline status are the navigation (#82). Event
     // detail is not a destination of its own — it highlights the feed it came from.
-    expect(items.map((item) => item.to)).toEqual(["/news", "/news/status"]);
+    expect(items.map((item) => item.to)).toEqual(["/news", "/news/review", "/news/status"]);
     expect(items.find((item) => item.to === "/news")?.isActive("/news/events/ev-1")).toBe(true);
     expect(items.find((item) => item.to === "/news")?.isActive("/news/status")).toBe(false);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);

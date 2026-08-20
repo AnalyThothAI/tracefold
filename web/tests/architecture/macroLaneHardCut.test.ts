@@ -96,7 +96,7 @@ describe("macro lane hard cut (#68)", () => {
   it("leaves exactly the two News destinations in the primary navigation tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
 
-    expect(items.map((item) => item.to)).toEqual(["/news", "/news/status"]);
+    expect(items.map((item) => item.to)).toEqual(["/news", "/news/review", "/news/status"]);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);
   });
 });

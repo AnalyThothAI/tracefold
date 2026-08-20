@@ -4,6 +4,8 @@ import {
   newsEventFixture,
   newsFeedEventFixture,
   newsFeedFixture,
+  newsQuoteFixture,
+  newsReviewFixture,
   newsStatusFixture,
 } from "@tests/fixtures/newsFixture";
 
@@ -44,6 +46,9 @@ export async function installMockApi(
     if (path === "/api/status") return fulfill(route, statusData());
     if (path === "/api/news/feed") return fulfill(route, newsFeedData(prepended));
     if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
+    // #88: the price surfaces answer on every route — the shell reads the review summary for the topbar.
+    if (path === "/api/news/quotes") return fulfill(route, newsQuotesData(url));
+    if (path === "/api/news/review") return fulfill(route, newsReviewFixture());
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
     recordUnhandledApiRequest(page, url);
     return route.fulfill({
@@ -138,5 +143,21 @@ function statusData() {
         unavailable_reason: null,
       },
     },
+  };
+}
+
+/** One quote per requested symbol, exactly like the server: a symbol it cannot price says `unlisted`. */
+function newsQuotesData(url: URL) {
+  const symbols = (url.searchParams.get("symbols") ?? "").split(",").filter(Boolean);
+  return {
+    measured_at_ms: NOW,
+    quotes: symbols.map((symbol) =>
+      newsQuoteFixture({
+        base_symbol: symbol,
+        requested_symbol: symbol,
+        symbol,
+        venue_symbol: `${symbol}USDT`,
+      }),
+    ),
   };
 }

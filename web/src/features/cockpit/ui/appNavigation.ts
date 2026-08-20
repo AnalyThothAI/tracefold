@@ -1,4 +1,4 @@
-import { Activity, Newspaper, type LucideIcon } from "lucide-react";
+import { Activity, Newspaper, Target, type LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
   children?: AppNavigationItem[];
@@ -17,8 +17,9 @@ export type AppNavigationGroup = {
 };
 
 /**
- * The console's whole route tree. News is the only product (#68), so its two surfaces are the navigation:
- * the Event feed and the pipeline status behind it. Event detail lives under the feed and highlights it.
+ * The console's whole route tree. News is the only product (#68), so its three surfaces are the navigation:
+ * the Event feed, the pipeline status behind it, and 命中复盘 — what the market actually did after the Events
+ * the pipeline judged (#88). Event detail lives under the feed and highlights it.
  */
 export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
   {
@@ -30,6 +31,12 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
         isActive: (pathname) => pathname === "/news" || pathname.startsWith("/news/events"),
         label: "事件流",
         to: "/news",
+      },
+      {
+        icon: Target,
+        isActive: (pathname) => pathname === "/news/review",
+        label: "命中复盘",
+        to: "/news/review",
       },
       {
         icon: Activity,

@@ -271,4 +271,16 @@
       font-size: 0.78rem;
     }
   }
+
+  /*
+   * The fixed post-Event return (#88), on its own line under the meta row. It is a different time semantic
+   * from everything above it — the judgment is about the future, this is what happened — so it gets its own
+   * line rather than another chip in the same sentence.
+   */
+  .news-event-reaction {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.9rem;
+    margin: 0.15rem 0 0;
+  }
 }

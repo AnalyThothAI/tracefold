@@ -25,7 +25,7 @@ test("tablet shell keeps top-level route navigation in the sidebar drawer", asyn
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(primaryNavigation).toBeVisible();
   await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-  await expect(primaryNavigation.getByRole("link")).toHaveCount(2);
+  await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
   await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
 
   await primaryNavigation.getByRole("link", { name: "事件流" }).click();
