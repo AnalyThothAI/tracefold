@@ -168,21 +168,6 @@
     font-size: 0.74rem;
   }
 
-  .news-detail-assets {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-  }
-
-  .news-detail-assets code {
-    padding: 0.05rem 0.45rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--surface-raised) 80%, transparent);
-    color: var(--text-secondary);
-    font: 600 0.68rem/1.5 var(--font-mono);
-  }
-
   /* ------------------------------------------------------------------ timeline + side column */
   /*
    * What happened, beside what to do about it. The timeline is the wider half because its sentences run long;
@@ -340,6 +325,49 @@
     }
   }
 
+  /* ------------------------------------------------------------- symbol normalization */
+  .news-detail-normalization ul {
+    display: grid;
+    gap: 0.45rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-detail-normalization li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .news-normalization-aliases {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .news-detail-normalization code {
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    color: var(--text-muted);
+    font: 500 0.68rem/1.6 var(--font-mono);
+  }
+
+  .news-detail-normalization .news-normalization-base {
+    border-color: var(--border-subtle);
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .news-detail-normalization svg {
+    width: 0.8rem;
+    height: 0.8rem;
+    color: var(--border-strong);
+  }
+
   @media (max-width: 767px) {
     .news-detail-hero {
       padding: 0.9rem 0.95rem 1rem;
@@ -352,6 +380,16 @@
 
     .news-detail-pager {
       justify-content: space-between;
+    }
+
+    /*
+     * Labelling is the one thing an operator does with a thumb, and it is destructive to get wrong — a
+     * mis-tap writes the opposite judgment into the regression set. Three equal targets at the full tap
+     * size (#87).
+     */
+    .news-label-action {
+      min-height: var(--tap-target);
+      font-size: 0.85rem;
     }
   }
 
@@ -370,23 +408,6 @@
     gap: 0.5rem 0.9rem;
     align-items: center;
     margin: 0.15rem 0 0;
-  }
-
-  .news-detail-verdict-rule {
-    width: 1px;
-    height: 0.9rem;
-    background: var(--border-subtle);
-  }
-
-  .news-detail-confidence {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-  }
-
-  .news-detail-confidence b {
-    color: var(--text-primary);
-    font-weight: 640;
-    font-variant-numeric: tabular-nums;
   }
 
   /* The verdict grid sits inside the hero, so it uses the hero's own raised ground rather than a second card. */

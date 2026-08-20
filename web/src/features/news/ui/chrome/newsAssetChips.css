@@ -1,0 +1,49 @@
+@layer app.features {
+  /*
+   * Asset chips (#87). One chip per grounded provider tag, shared by the feed row and the Event hero so the
+   * same symbol never reads two ways on two surfaces.
+   *
+   * A resolved tag is a solid chip; an unresolved one keeps the same box but goes dashed and struck through.
+   * The difference is deliberately structural rather than coloured: red and green are market direction in
+   * this console (`tokens.css`), and an unresolvable symbol is not a market opinion.
+   */
+  .news-asset-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .news-asset-chips code {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.05rem 0.4rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface-raised);
+    color: var(--text-muted);
+    font: 600 0.66rem/1.6 var(--font-mono);
+    letter-spacing: 0.02em;
+  }
+
+  .news-asset-chips code[data-listed] {
+    border-style: solid;
+    border-color: var(--border-subtle);
+    color: var(--text-secondary);
+  }
+
+  /* The venue is context for the ticker, not a second name: lighter and unbolded so the eye lands on the symbol. */
+  .news-asset-venue {
+    color: var(--text-subtle);
+    font-weight: 400;
+  }
+
+  .news-asset-chips code:not([data-listed]) .news-asset-symbol {
+    text-decoration: line-through;
+  }
+
+  @media (max-width: 767px) {
+    .news-asset-chips code {
+      font-size: 0.68rem;
+    }
+  }
+}

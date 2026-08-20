@@ -155,7 +155,7 @@ test("opens and closes the shortcut panel", async ({ page }) => {
   const panel = page.getByRole("dialog", { name: "快捷键" });
   await expect(panel).toBeVisible();
   await expect(panel.getByText("上一条 / 下一条")).toBeVisible();
-  await expect(panel.getByText("复制「判错了」标注命令")).toBeVisible();
+  await expect(panel.getByText("复制「不该推」标注命令")).toBeVisible();
 
   await page.keyboard.press("Escape");
   await expect(panel).toBeHidden();
@@ -171,9 +171,9 @@ test("copies the label command for the cursor row and says so", async ({ page, c
   await page.keyboard.press("j");
   await page.keyboard.press("x");
 
-  await expect(page.getByRole("status")).toHaveText("已复制「判错了」标注命令");
+  await expect(page.getByRole("status")).toHaveText("已复制「不该推」标注命令");
   // The console hands over the CLI rather than writing the label: the News API is read-only.
   const clipboard = await page.evaluate(() => navigator.clipboard.readText());
-  expect(clipboard).toBe("tracefold news label evt-global-policy --label bad");
+  expect(clipboard).toBe("tracefold news label evt-global-policy noise");
   await expectNoUnhandledApiRequests(page);
 });

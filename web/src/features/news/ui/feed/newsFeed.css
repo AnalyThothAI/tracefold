@@ -56,6 +56,15 @@
   }
 
   @media (max-width: 767px) {
+    /* The list is the container on a desktop table and only a stack on a phone: the cards carry their own
+       borders, so the wrapper's would double every edge. */
+    .news-event-list {
+      gap: 0.45rem;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }
+
     .news-page-header {
       align-items: stretch;
       flex-direction: column;

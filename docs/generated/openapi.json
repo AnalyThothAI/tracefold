@@ -258,6 +258,42 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "NewsAssetRefData": {
+        "additionalProperties": false,
+        "description": "#87: one grounded coin tag, resolved against the #75 instrument universe.\n\n``listed`` is the whole point: the provider tags `SPOT` on a Spot Gold headline and `NEAR` on the words\n\"near-instant\", and until now the console showed those exactly like a real token. ``venue`` is the preferred\nvenue when the base trades on several, and is ``None`` when the tag names nothing.",
+        "properties": {
+          "base_symbol": {
+            "title": "Base Symbol",
+            "type": "string"
+          },
+          "listed": {
+            "default": false,
+            "title": "Listed",
+            "type": "boolean"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue"
+          }
+        },
+        "required": [
+          "symbol",
+          "base_symbol"
+        ],
+        "title": "NewsAssetRefData",
+        "type": "object"
+      },
       "NewsBrokerQueueData": {
         "additionalProperties": false,
         "properties": {
@@ -512,6 +548,13 @@
             "title": "Asset Class",
             "type": "string"
           },
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/NewsAssetRefData"
+            },
+            "title": "Assets",
+            "type": "array"
+          },
           "context_line": {
             "default": "",
             "title": "Context Line",
@@ -669,6 +712,13 @@
               "$ref": "#/components/schemas/NewsEventMemberData"
             },
             "title": "Members",
+            "type": "array"
+          },
+          "normalization": {
+            "items": {
+              "$ref": "#/components/schemas/NewsSymbolNormalizationData"
+            },
+            "title": "Normalization",
             "type": "array"
           },
           "outcome": {
@@ -864,6 +914,13 @@
           "asset_class": {
             "title": "Asset Class",
             "type": "string"
+          },
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/NewsAssetRefData"
+            },
+            "title": "Assets",
+            "type": "array"
           },
           "context_line": {
             "default": "",
@@ -1169,6 +1226,11 @@
           "delivered_1h": {
             "default": 0,
             "title": "Delivered 1H",
+            "type": "integer"
+          },
+          "grounded": {
+            "default": 0,
+            "title": "Grounded",
             "type": "integer"
           },
           "received": {
@@ -1545,6 +1607,11 @@
             "title": "Events 24H",
             "type": "integer"
           },
+          "grounded_24h": {
+            "default": 0,
+            "title": "Grounded 24H",
+            "type": "integer"
+          },
           "labeled_missed_24h": {
             "default": 0,
             "title": "Labeled Missed 24H",
@@ -1662,6 +1729,13 @@
               }
             ],
             "title": "Triage P95 Ms"
+          },
+          "ungrounded_by_symbol_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Ungrounded By Symbol 24H",
+            "type": "object"
           }
         },
         "title": "NewsPipelineStatusData",
@@ -1688,7 +1762,8 @@
               "drop",
               "throttle",
               "push",
-              "degraded"
+              "degraded",
+              "ungrounded"
             ],
             "title": "Stage",
             "type": "string"
@@ -1782,6 +1857,35 @@
           "measured_at_ms"
         ],
         "title": "NewsStatusData",
+        "type": "object"
+      },
+      "NewsSymbolNormalizationData": {
+        "additionalProperties": false,
+        "description": "#87: the several names one issuer trades under, collapsed to the base the storyline throttle buckets by.",
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "base_symbol": {
+            "title": "Base Symbol",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "base_symbol"
+        ],
+        "title": "NewsSymbolNormalizationData",
         "type": "object"
       },
       "NewsTimelineStepData": {

@@ -26,7 +26,7 @@ describe("AppSidebar", () => {
     // The feed carries the 24 h intake behind it; the status route has no count of its own.
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1,463");
-    expect(links[1].textContent?.trim()).toBe("状态");
+    expect(links[1].textContent?.trim()).toBe("流水线状态");
   });
 
   it("marks the feed current on a drilldown, and only the feed", () => {
@@ -43,7 +43,10 @@ describe("AppSidebar", () => {
     // destinations announcing themselves as the current page.
     renderSidebar({ route: "/news/status" });
 
-    expect(screen.getByRole("link", { name: "状态" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "流水线状态" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
     expect(screen.getByRole("link", { name: "事件流" })).not.toHaveAttribute("aria-current");
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });

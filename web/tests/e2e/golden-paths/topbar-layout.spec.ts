@@ -173,25 +173,30 @@ test("a 668-character News feed title renders at no more than two lines", async 
   expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight * 2 + 1);
 });
 
-test("News card secondary actions stay interactive above the primary row link", async ({
-  page,
-}) => {
+test("a News row is one link and one conclusion, with no competing controls", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 720 });
   await installMockApi(page);
   await routeNewsFeed(page, ["Readable News card with secondary evidence"]);
   await page.goto("/news");
 
-  const originalLink = page.getByRole("link", { name: "打开原文" });
   const rowLink = page.getByRole("link", { name: "Readable News card with secondary evidence" });
-
-  await expect(originalLink).toBeVisible();
   await expect(rowLink).toBeVisible();
-  await originalLink.click({ trial: true });
+
+  /*
+   * #87: the row used to carry copy-title, copy-label and open-original beside the badge, each of them a
+   * hover-only target that had to be kept clickable above the stretched headline link. They all lead
+   * somewhere better one tap away, so the row is now exactly one link — nothing left to compete with it,
+   * and nothing that means anything different under a thumb.
+   */
+  const row = page.locator(".news-event-row").first();
+  await expect(row.getByRole("link")).toHaveCount(1);
+  await expect(row.getByRole("button")).toHaveCount(0);
+
   await expect(page.locator(".news-direction")).toContainText("利空");
   await expect(page.locator(".news-direction-strength")).toContainText("影响明显");
   await expect(page.locator(".news-event-facts")).toContainText("宏观");
-  await expect(page.locator(".news-event-outcome")).toContainText("已推送");
-  await expect(page.locator(".news-event-outcome")).toContainText("推送于");
+  await expect(page.locator(".news-event-badge")).toContainText("已推送");
+  await expect(page.locator(".news-event-reason")).toContainText("推送于");
 });
 
 async function routeNewsFeed(page: Page, titles: string[]) {

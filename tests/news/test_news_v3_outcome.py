@@ -296,6 +296,8 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "throttled_by_key": {"storyline:asset:BTC": 12},
             "pushed_by_rule": {"model_push_actionable": 18, "magnitude3": 2},
             "triage_degraded_by_code_24h": {"news_triage_timeout": 3},
+            "grounded_24h": 144,
+            "ungrounded_by_symbol_24h": {"SPOT": 38, "NEAR": 9},
         },
         "delivery": {
             "delivery_available": True,
@@ -328,6 +330,9 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
         "received": 200,
         "candidates": 150,
         "triaged": 150,
+        # #87: how many of the same Events named an asset that exists on a venue. It sits between "sent to
+        # the model" and "decided" because that is where the reader asks it, not because it is a stage.
+        "grounded": 144,
         "decided_push": 20,
         "delivered": 19,
         "received_1h": 10,
@@ -335,8 +340,10 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
     }
     reasons = out["reasons_24h"]
     assert reasons[0] == {"stage": "drop", "key": "noise", "label_zh": "模型判定为噪音", "count": 60}
-    assert {r["stage"] for r in reasons} == {"gate", "drop", "throttle", "push", "degraded"}
+    assert {r["stage"] for r in reasons} == {"gate", "drop", "throttle", "push", "degraded", "ungrounded"}
     assert all(r["label_zh"] for r in reasons)
+    # The provider tag is its own label — inventing the English word it collided with would be a guess.
+    assert {"stage": "ungrounded", "key": "SPOT", "label_zh": "SPOT", "count": 38} in reasons
 
 
 def test_status_health_thresholds_turn_amber_and_red() -> None:

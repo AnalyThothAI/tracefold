@@ -12,6 +12,10 @@
     position: relative;
     display: grid;
     grid-template-columns: 3.5rem minmax(0, 1fr) minmax(9.5rem, 13.5rem);
+    grid-template-areas:
+      "time main badge"
+      "time main reason";
+    grid-template-rows: auto 1fr;
     gap: 0.25rem 0.9rem;
     align-items: start;
     padding: 0.62rem 0.9rem 0.68rem;
@@ -53,6 +57,7 @@
   }
 
   .news-event-time {
+    grid-area: time;
     padding-top: 0.15rem;
     color: var(--text-secondary);
     font: 500 0.74rem/1.5 var(--font-mono);
@@ -65,6 +70,7 @@
   }
 
   .news-event-main {
+    grid-area: main;
     display: grid;
     gap: 0.18rem;
     min-width: 0;
@@ -178,41 +184,16 @@
     font-weight: 400;
   }
 
-  .news-event-assets {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-  }
-
-  .news-event-assets code {
-    padding: 0.05rem 0.4rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: 999px;
-    background: var(--surface-raised);
-    color: var(--text-secondary);
-    font: 600 0.66rem/1.5 var(--font-mono);
-    letter-spacing: 0.02em;
-  }
-
   /* ------------------------------------------------------------------ outcome column */
-  .news-event-outcome {
-    display: grid;
-    gap: 0.25rem;
-    justify-items: end;
-    min-width: 0;
-    text-align: right;
-  }
-
-  /* Actions and badge share one line; a held row keeps the line's height for the actions alone. */
-  .news-event-outcome-top {
+  .news-event-badge {
+    grid-area: badge;
     display: flex;
-    gap: 0.4rem;
-    align-items: center;
     justify-content: flex-end;
-    min-height: 1.5rem;
+    min-width: 0;
   }
 
   .news-event-reason {
+    grid-area: reason;
     display: flex;
     gap: 0.3rem;
     align-items: baseline;
@@ -220,6 +201,7 @@
     color: var(--text-muted);
     font-size: 0.7rem;
     line-height: 1.4;
+    text-align: right;
     overflow-wrap: anywhere;
   }
 
@@ -238,75 +220,41 @@
     display: none;
   }
 
-  /* ------------------------------------------------------------------ row actions */
-  .news-event-actions {
-    display: flex;
-    gap: 0.25rem;
-    align-items: center;
-    height: 1.4rem;
-    opacity: 0;
-    transition: opacity 110ms ease;
-  }
-
-  .news-event-row:hover .news-event-actions,
-  .news-event-row[data-cursor] .news-event-actions,
-  .news-event-actions:focus-within {
-    opacity: 1;
-  }
-
-  .news-event-actions a,
-  .news-event-actions button {
-    display: inline-flex;
-    gap: 0.25rem;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.5rem;
-    height: 1.4rem;
-    padding: 0 0.4rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    background: var(--surface-root);
-    color: var(--text-muted);
-    font-size: 0.66rem;
-    font-weight: 600;
-    text-decoration: none;
-  }
-
-  .news-event-actions a:hover,
-  .news-event-actions button:hover {
-    border-color: var(--border-strong);
-    color: var(--text-primary);
-  }
-
-  .news-event-actions svg {
-    width: 0.7rem;
-    height: 0.7rem;
-  }
-
   @media (max-width: 767px) {
+    /*
+     * Phone: each Event is its own card rather than a row in a table (#87). At 390px a shared left column
+     * for the clock left the headline about 19 characters of Han text per line; a card gives it the full
+     * width and separates Events by a gap and a rail instead of by alignment.
+     *
+     * The conclusion rides the top line beside the clock, where the eye lands first — the same order the
+     * desktop row reads left to right, turned ninety degrees.
+     */
     .news-event-row {
-      grid-template-columns: 3rem minmax(0, 1fr);
-      gap: 0.3rem 0.65rem;
-      padding: 0.65rem 0.75rem;
+      grid-template-columns: auto minmax(0, 1fr);
+      grid-template-areas:
+        "time badge"
+        "main main"
+        "reason reason";
+      grid-template-rows: auto auto auto;
+      gap: 0.4rem 0.6rem;
+      padding: 0.7rem 0.75rem 0.75rem;
+      border: 1px solid var(--border-subtle);
+      border-left-width: 3px;
+      border-radius: var(--radius-md);
+      background: var(--surface-root);
     }
 
-    .news-event-outcome {
-      grid-column: 2;
-      justify-items: start;
-      text-align: left;
+    .news-event-row:last-child {
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .news-event-badge {
+      justify-content: flex-start;
     }
 
     .news-event-reason {
       justify-content: flex-start;
-    }
-
-    /*
-     * Phone reading: hover has no meaning, and the row actions duplicate what the detail page offers one tap
-     * away. Padding must never land on the clamped headline — it widens the -webkit-box and a third line shows
-     * through the padding band — so only the standalone controls grow.
-     */
-    .news-event-actions {
-      display: none;
+      text-align: left;
     }
 
     .news-event-headline a {

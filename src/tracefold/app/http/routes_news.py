@@ -13,7 +13,7 @@ from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _json, _validated_etag_json
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
-from tracefold.news import status_health
+from tracefold.news import grounding_rollup, status_health
 from tracefold.platform.config.settings import news_model_availability, news_push_availability
 
 router = APIRouter()
@@ -83,6 +83,7 @@ def get_news_feed(
                 outcome=outcome or None,
                 hours=hours or None,
             )
+            _attach_asset_refs(data["events"], repos.instruments)
     except ValueError as exc:
         raise ApiBadRequest(str(exc), field="cursor") from exc
     return _etagged(data, request, envelope=_FeedEnvelope)
@@ -96,6 +97,9 @@ def get_news_event(request: Request, event_id: str) -> Response:
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         data = repos.news.event_detail(event_id)
+        if data is not None:
+            _attach_asset_refs([data["event"]], repos.instruments)
+            data["normalization"] = _normalization(data["event"], repos.instruments)
     if data is None:
         return _json({"ok": False, "error": "news_event_not_found"}, status_code=404)
     return _etagged(data, request, envelope=_EventEnvelope)
@@ -111,6 +115,13 @@ def get_news_status(request: Request) -> Response:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
         workers_state, _ = _news_workers_observation(repos.conn, now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
+        # #87: each repository answers only over its own tables and the fold happens here — News knows which
+        # tags an Event carried, the instrument universe knows which of them name something listed.
+        usage = repos.news.asset_usage_24h(now_ms=now_ms)
+        grounding = grounding_rollup(
+            usage,
+            repos.instruments.asset_refs({symbol for symbols in usage.values() for symbol in symbols}),
+        )
     push = news_push_availability(settings)
     models = news_model_availability(settings)
     observed = dict(snapshot.get("broker") or {})
@@ -124,6 +135,7 @@ def get_news_status(request: Request) -> Response:
     ingest = {**snapshot["ingest"], "token_configured": bool(settings.news.opennews_token)}
     pipeline = {
         **snapshot["pipeline"],
+        **grounding,
         "triage_model": models.triage_model,
         "triage_fallback_model": models.triage_fallback_model,
     }
@@ -169,6 +181,36 @@ def get_news_status(request: Request) -> Response:
         request=request,
         weak=True,
     )
+
+
+def _attach_asset_refs(events: list[dict[str, Any]], instruments: Any) -> None:
+    """Resolve every Event's provider coin tags against the instrument universe, in one batch (#87).
+
+    Assembly lives in the route because the two halves have different owners: `NewsRepository` reads the tags off
+    `news_events`, `InstrumentsRepository` reads what they name. One round trip per response, not one per Event.
+    """
+
+    refs = instruments.asset_refs({symbol for event in events for symbol in (event.get("grounded_assets") or [])})
+    for event in events:
+        event["assets"] = [
+            refs.get(
+                str(symbol).upper(),
+                {"symbol": str(symbol).upper(), "base_symbol": str(symbol).upper(), "venue": None, "listed": False},
+            )
+            for symbol in (event.get("grounded_assets") or [])
+        ]
+
+
+def _normalization(event: dict[str, Any], instruments: Any) -> list[dict[str, Any]]:
+    """The alias groups this Event's assets fall into — only the ones that actually collapse something.
+
+    A base that answers to exactly one name tells the reader nothing; the block exists to explain why several
+    contracts share one storyline bucket.
+    """
+
+    bases = {str(asset["base_symbol"]) for asset in event.get("assets") or []}
+    groups = instruments.aliases_by_base(bases)
+    return [group for _, group in sorted(groups.items()) if len(group.get("aliases") or []) > 1]
 
 
 def _derive_state(*, ingest: dict[str, Any], broker: dict[str, Any], workers_state: str | None, settings: Any) -> str:

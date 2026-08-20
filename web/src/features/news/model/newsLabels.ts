@@ -1,4 +1,5 @@
 import type {
+  NewsAssetRef,
   NewsFeedOutcome,
   NewsHealthLevel,
   NewsOutcomeKind,
@@ -147,6 +148,7 @@ const REASON_STAGE_TITLES: Record<string, string> = {
   throttle: "限流",
   push: "推送依据",
   degraded: "模型降级",
+  ungrounded: "符号未落标的表",
 };
 
 export function reasonStageLabel(stage: string): string {
@@ -160,6 +162,8 @@ const REASON_STAGE_TONE: Record<string, Tone> = {
   throttle: "caution",
   push: "done",
   degraded: "alert",
+  // A provider tag that names nothing is something to fix, not something that failed: amber, like limiting.
+  ungrounded: "caution",
 };
 
 export function reasonStageTone(stage: string): Tone {
@@ -239,6 +243,25 @@ export function displayAssets(grounded: readonly string[]): string[] {
   return Array.from(
     new Set(grounded.map((symbol) => symbol.replace(/^XYZ-/, "").toUpperCase())),
   ).slice(0, MAX_ASSET_CHIPS);
+}
+
+/**
+ * The same four chips, but resolved: each provider tag paired with what it names on a venue (#87).
+ *
+ * The server sends `assets` alongside the raw `grounded_assets`; a response served before #87, or one whose
+ * Event carried tags the resolver never saw, falls back to the bare symbol with `listed: false` — an unknown
+ * tag reads as "we cannot place this", never as a confirmed listing.
+ */
+export function displayAssetRefs(
+  grounded: readonly string[],
+  assets: readonly NewsAssetRef[] | undefined,
+): NewsAssetRef[] {
+  const bySymbol = new Map(
+    (assets ?? []).map((asset) => [asset.symbol.replace(/^XYZ-/, "").toUpperCase(), asset]),
+  );
+  return displayAssets(grounded).map(
+    (symbol) => bySymbol.get(symbol) ?? { base_symbol: symbol, listed: false, symbol, venue: null },
+  );
 }
 
 /** The six values `tracefold news label` accepts as its positional argument (cli/parser.py), plus `must_push`. */

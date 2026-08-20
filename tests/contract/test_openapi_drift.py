@@ -170,6 +170,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "verdicts",
         "deliveries",
         "labels",
+        "normalization",
     }
     assert set(components["NewsOutcomeData"]["properties"]) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(components["NewsStatusData"]["properties"]) == {

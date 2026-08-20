@@ -1,16 +1,10 @@
 import { newsEventPath } from "@shared/routing/paths";
-import { Copy, ExternalLink, Layers, Tag, Zap } from "lucide-react";
+import { Layers, Zap } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import type { NewsFeedEvent } from "../../api/newsQueries";
-import {
-  absoluteTime,
-  clockTime,
-  displayAssets,
-  labelCommand,
-  relativeTime,
-  validExternalUrl,
-} from "../../model/newsLabels";
+import { absoluteTime, clockTime, displayAssetRefs, relativeTime } from "../../model/newsLabels";
+import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 
@@ -23,6 +17,10 @@ import "./newsEventRow.css";
  * A held Event does not get a badge — see `newsEventRow.css` for why. Its `outcome.reason_zh` still carries
  * the conclusion, and `data-outcome` / `data-outcome-group` remain on the row for styling and for tests.
  *
+ * The row carries no buttons of its own (#87). Copy-title, copy-label and open-original all lived here and
+ * all led somewhere better one tap away, while costing every row a hover target that meant nothing on a
+ * phone. The keyboard keeps its `l` shortcut through the feed cursor, so the fast path did not move.
+ *
  * The whole row opens the Event, but the row itself is not a click target: the headline link stretches over
  * it. One link, one accessible name, and `Enter` works from the keyboard without the row pretending to be a
  * button that contains other buttons.
@@ -30,19 +28,16 @@ import "./newsEventRow.css";
 export function NewsEventRow({
   cursor = false,
   event,
-  onCopy,
   searchState,
 }: {
   cursor?: boolean;
   event: NewsFeedEvent;
-  onCopy?: (text: string, note: string) => void;
   searchState?: string;
 }) {
   const triage = event.triage;
   const headline = triage?.headline_zh?.trim() || event.title_zh?.trim() || event.leader_title;
   const showOriginal = headline !== event.leader_title;
-  const url = validExternalUrl(event.leader_url);
-  const assets = displayAssets(event.grounded_assets ?? []);
+  const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
   const held = event.outcome.group === "held";
   const sentAt = event.delivery?.state === "sent" ? event.delivery.settled_at_ms : null;
   const to = newsEventPath(event.event_id);
@@ -99,64 +94,29 @@ export function NewsEventRow({
               <span className="news-event-facts">{triage.event_type_zh}</span>
             </>
           ) : null}
-          {assets.length ? (
-            <span aria-label="关联资产" className="news-event-assets">
-              {assets.map((symbol) => (
-                <code key={symbol}>{symbol}</code>
-              ))}
-            </span>
-          ) : null}
+          <NewsAssetChips assets={assets} />
         </p>
       </div>
 
-      <div className="news-event-outcome">
-        {/* Actions share the badge's line rather than claiming one of their own: a reserved third line cost
-            roughly a quarter of the rows visible at 1366x720, and hiding it on hover would make the list
-            jump. */}
-        <span className="news-event-outcome-top">
-          <span className="news-event-actions">
-            {url ? (
-              <a aria-label="打开原文" href={url} rel="noreferrer" target="_blank" title="原文">
-                <ExternalLink aria-hidden />
-              </a>
-            ) : null}
-            <button
-              aria-label="复制标题"
-              onClick={() => onCopy?.(headline, "已复制标题")}
-              title="复制标题"
-              type="button"
-            >
-              <Copy aria-hidden />
-            </button>
-            <button
-              aria-label="复制标注命令"
-              onClick={() =>
-                onCopy?.(labelCommand(event.event_id, "noise"), "已复制「不该推」标注命令")
-              }
-              title="复制「不该推」的 tracefold news label 命令"
-              type="button"
-            >
-              <Tag aria-hidden />
-              不该推
-            </button>
-          </span>
-          {held ? null : (
-            <NewsOutcomeBadge
-              emphasis={
-                event.priority === "high" && event.outcome.group === "pushed" ? "solid" : "soft"
-              }
-              outcome={event.outcome}
-            />
-          )}
-        </span>
-        {/* One line under the badge, never two: a sent row wants the time it went out, everything else
-            wants the server's reason. */}
-        {sentAt ? (
-          <span className="news-event-reason">推送于 {clockTime(sentAt)}</span>
-        ) : event.outcome.reason_zh ? (
-          <span className="news-event-reason">{event.outcome.reason_zh}</span>
-        ) : null}
-      </div>
+      {/* Badge and reason are siblings rather than one column, so the grid can put the conclusion beside the
+          clock on a phone card and above the reason on a desktop row without the DOM changing shape. */}
+      <span className="news-event-badge">
+        {held ? null : (
+          <NewsOutcomeBadge
+            emphasis={
+              event.priority === "high" && event.outcome.group === "pushed" ? "solid" : "soft"
+            }
+            outcome={event.outcome}
+          />
+        )}
+      </span>
+      {/* One line under the badge, never two: a sent row wants the time it went out, everything else
+          wants the server's reason. */}
+      {sentAt ? (
+        <span className="news-event-reason">推送于 {clockTime(sentAt)}</span>
+      ) : event.outcome.reason_zh ? (
+        <span className="news-event-reason">{event.outcome.reason_zh}</span>
+      ) : null}
     </article>
   );
 }

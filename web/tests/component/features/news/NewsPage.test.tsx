@@ -108,11 +108,12 @@ describe("NewsPage", () => {
     expect(inRow.getByText("利空")).toBeInTheDocument();
     expect(inRow.getByText("影响明显")).toBeInTheDocument();
     expect(inRow.getByText("宏观")).toBeInTheDocument();
-    expect(inRow.getByLabelText("关联资产")).toHaveTextContent("BTCETH");
-    expect(inRow.getByRole("link", { name: "打开原文" })).toHaveAttribute(
-      "href",
-      "https://www.reuters.com/world/story",
-    );
+    // #87: a chip names the venue as well as the ticker, so the reader can tell a Binance perp from a
+    // Hyperliquid builder-DEX equity without opening the Event.
+    expect(inRow.getByLabelText("关联资产")).toHaveTextContent("binance.perp:BTCbinance.perp:ETH");
+    // #87: the row carries no buttons of its own — copy, label and open-original all live on the Event.
+    expect(inRow.queryByRole("link", { name: "打开原文" })).toBeNull();
+    expect(inRow.queryByRole("button", { name: "复制标题" })).toBeNull();
     // Exactly one outcome badge; its reason travels as the title, not as a second label.
     const badges = row!.querySelectorAll(".news-outcome");
     expect(badges).toHaveLength(1);
@@ -453,6 +454,8 @@ describe("NewsPage", () => {
     ).toEqual([
       "收到320最近 1 小时 12",
       "送审56%180门禁挡下 140",
+      // #87: how many of the same Events named an asset that exists on a venue.
+      "符号落表53%168未落标的表 7",
       "决定推送13%40模型判不推 135",
       "已送达102%41最近 1 小时 2",
     ]);
@@ -611,17 +614,17 @@ describe("NewsPage", () => {
       within(labels)
         .getAllByRole("button")
         .map((button) => button.textContent),
-    ).toEqual(["判得对", "判错了", "漏推"]);
+    ).toEqual(["判得对", "不该推", "漏推", "必须推"]);
     const clipboard: string[] = [];
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: (text: string) => (clipboard.push(text), Promise.resolve()) },
     });
-    fireEvent.click(within(labels).getByRole("button", { name: "判错了" }));
+    fireEvent.click(within(labels).getByRole("button", { name: "不该推" }));
     await waitFor(() =>
-      expect(clipboard).toEqual(["tracefold news label evt-global-policy --label bad"]),
+      expect(clipboard).toEqual(["tracefold news label evt-global-policy noise"]),
     );
-    expect(await screen.findByRole("status")).toHaveTextContent("已复制「判错了」标注命令");
+    expect(await screen.findByRole("status")).toHaveTextContent("已复制「不该推」标注命令");
 
     const technical = screen.getByText(/技术详情/).closest("details")!;
     expect(technical).not.toHaveAttribute("open");

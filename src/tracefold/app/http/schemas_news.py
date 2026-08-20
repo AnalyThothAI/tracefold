@@ -34,6 +34,28 @@ class NewsTriageAssetData(ExactApiSchema):
     role: str
 
 
+class NewsAssetRefData(ExactApiSchema):
+    """#87: one grounded coin tag, resolved against the #75 instrument universe.
+
+    ``listed`` is the whole point: the provider tags `SPOT` on a Spot Gold headline and `NEAR` on the words
+    "near-instant", and until now the console showed those exactly like a real token. ``venue`` is the preferred
+    venue when the base trades on several, and is ``None`` when the tag names nothing.
+    """
+
+    symbol: str
+    base_symbol: str
+    venue: str | None = None
+    listed: bool = False
+
+
+class NewsSymbolNormalizationData(ExactApiSchema):
+    """#87: the several names one issuer trades under, collapsed to the base the storyline throttle buckets by."""
+
+    base_symbol: str
+    aliases: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+
+
 class NewsTriageSummaryData(ExactApiSchema):
     """The reader-facing view of one Triage verdict. Every `*_zh` is server-owned copy; the raw enum stays
     beside it so the browser can map it to a visual tone without owning a vocabulary table."""
@@ -88,6 +110,9 @@ class NewsEventData(ExactApiSchema):
     engine_type: str
     asset_class: str
     grounded_assets: list[str] = Field(default_factory=list)
+    # #87: `grounded_assets` stays the raw provider tags; `assets` is the same list resolved against the
+    # instrument universe, so the browser never has to guess whether a tag names something real.
+    assets: list[NewsAssetRefData] = Field(default_factory=list)
     watchlist_hits: list[str] = Field(default_factory=list)
     macro_lexicon: bool = False
     storyline_key: str = ""
@@ -203,6 +228,7 @@ class NewsEventDetailData(ExactApiSchema):
     verdicts: list[NewsVerdictData]
     deliveries: list[NewsDeliveryData]
     labels: list[NewsLabelData] = Field(default_factory=list)
+    normalization: list[NewsSymbolNormalizationData] = Field(default_factory=list)
 
 
 class NewsIncidentData(ExactApiSchema):
@@ -258,6 +284,8 @@ class NewsPipelineStatusData(ExactApiSchema):
     pushed_by_rule: dict[str, int] = Field(default_factory=dict)
     labeled_missed_24h: int = 0
     labeled_missed_without_event_24h: int = 0
+    grounded_24h: int = 0
+    ungrounded_by_symbol_24h: dict[str, int] = Field(default_factory=dict)
     candidate_share_24h: float | None = None
     triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
 
@@ -295,6 +323,7 @@ class NewsFunnelData(ExactApiSchema):
     received: int = 0
     candidates: int = 0
     triaged: int = 0
+    grounded: int = 0
     decided_push: int = 0
     delivered: int = 0
     received_1h: int = 0
@@ -302,7 +331,7 @@ class NewsFunnelData(ExactApiSchema):
 
 
 class NewsReasonCountData(ExactApiSchema):
-    stage: Literal["gate", "drop", "throttle", "push", "degraded"]
+    stage: Literal["gate", "drop", "throttle", "push", "degraded", "ungrounded"]
     key: str
     label_zh: str
     count: int
@@ -336,6 +365,7 @@ class NewsStatusData(ExactApiSchema):
 
 
 __all__ = [
+    "NewsAssetRefData",
     "NewsBrokerQueueData",
     "NewsBrokerStatusData",
     "NewsControlStateData",
@@ -359,6 +389,7 @@ __all__ = [
     "NewsPipelineStatusData",
     "NewsReasonCountData",
     "NewsStatusData",
+    "NewsSymbolNormalizationData",
     "NewsTimelineStepData",
     "NewsTriageSummaryData",
     "NewsVerdictData",

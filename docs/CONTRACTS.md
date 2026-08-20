@@ -189,6 +189,16 @@ surface is exactly three read-only routes:
   when anything in the window moves — an Event ageing out at the tail, a
   delivery settling on a later page — even when its own events are unchanged.
   Later pages keep the stricter stability.
+
+  Every Event carries `grounded_assets` (the raw provider coin tags the Gate
+  admitted on) and beside it `assets[]` — the same tags resolved against the
+  #75 instrument universe, one entry per tag, each `{symbol, base_symbol,
+  venue, listed}`. `venue` is the preferred venue when a base trades on
+  several (deepest first, HIP-3 builder DEXs last) so a chip is stable across
+  polls, and is `null` with `listed: false` when the tag names nothing on any
+  venue — which is how a reader tells `SPOT` on a Spot Gold headline from a
+  real listing. Resolution is the same two steps the Gate takes (alias, then
+  existence) and costs one batched query per response, never one per Event.
 - `GET /api/news/events/{event_id}` returns one Event, its `outcome`, a
   `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
   `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw
@@ -197,16 +207,21 @@ surface is exactly three read-only routes:
   every Triage verdict (model decision, rule baseline, final decision,
   override rule, throttle reason, verdict payload, model, prompt version,
   degraded flag, trace), deliveries, and operator labels (`label_version`,
-  `source`, label payload, created time). `tracefold news why` prints the same
-  `outcome` sentence and timeline. Unknown ids return 404.
+  `source`, label payload, created time), and `normalization[]` — the alias
+  groups this Event's assets fall into (`base_symbol`, every `alias` that
+  resolves into it including the base itself, and the alias `sources`). Only
+  groups that actually collapse more than one name are sent, so the surface
+  explains a surprise (SKHY / SKHX / SKHYNIX share one storyline bucket)
+  rather than restating a ticker that answers to itself. `tracefold news why`
+  prints the same `outcome` sentence and timeline. Unknown ids return 404.
 - `GET /api/news/status` returns `state` (`ready`, `warming`, `degraded`,
   `unavailable`), the Workers state, `health` (four thresholded items
   `ingest`/`broker`/`model`/`delivery` with `level` `ok|warn|bad|off`,
   `summary_zh`, `detail_zh`, and `overall`; thresholds are code-owned, see
   `docs/OPERATIONS.md`), `funnel_24h` (`received`, `candidates`, `triaged`,
-  `decided_push`, `delivered`, plus `received_1h`/`delivered_1h`),
-  `reasons_24h` (`stage` `gate|drop|throttle|push|degraded`, raw `key`,
-  `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
+  `grounded`, `decided_push`, `delivered`, plus `received_1h`/`delivered_1h`),
+  `reasons_24h` (`stage` `gate|drop|throttle|push|degraded|ungrounded`, raw
+  `key`, `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
   connected, last frame/publish, error, configured and provider-enabled
   Strategy IDs, strategy warnings, open incidents, token configured), `broker`
   (configured, connected, per-queue message/consumer counts when observed,
@@ -214,9 +229,24 @@ surface is exactly three read-only routes:
   degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
   throttled, Triage p50/p95, queue lag p95, the Triage model name, and the
   named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
-  `throttled_by_key`, `pushed_by_rule`), and `delivery` (sent/terminal
+  `throttled_by_key`, `pushed_by_rule`, plus `grounded_24h` and the top-ten
+  `ungrounded_by_symbol_24h`), and `delivery` (sent/terminal
   counts, last error, end-to-end p95, availability, hourly cap), plus
-  `control` (paused, mutes) and the watchlist symbols.
+  `control` (paused, mutes), the watchlist symbols, and `instruments` (the
+  #75 universe summary: trading/delisted counts, base symbols, venues, last
+  snapshot time, per-venue counts).
+
+  `funnel_24h.grounded` and `ungrounded_by_symbol_24h` are folded in the route
+  from two halves neither repository reaches across for: News reports which
+  tags each Event carried (`news_event_assets`), the instrument universe
+  reports which of them name something listed. An Event counts as grounded
+  when *any* of its tags resolves — the same condition the Gate admits on, so
+  the console's funnel and the Gate cannot drift apart. The per-symbol tally
+  is deliberately per-symbol rather than per-Event: the operator question is
+  which provider tag keeps failing, and one bad tag can cost dozens of Events.
+  The count is not clamped against the window's Event total — a funnel segment
+  wider than the one above it is a visible bug, and a silently clamped one is
+  an invisible one.
 
 The Chinese vocabulary behind `outcome`, `*_zh`, and `label_zh` lives in
 `tracefold.news.outcome` (admissions, `decide()` rules, throttle keys, error

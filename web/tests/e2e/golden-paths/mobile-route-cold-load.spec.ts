@@ -29,7 +29,7 @@ const routeCases: RouteCase[] = [
       await expect(page.getByRole("region", { name: "新闻事件流" })).toBeVisible();
     },
     specific: async (page) => {
-      // Section navigation is in the shell drawer on mobile (#82), not on the route.
+      // Section navigation is the shell's bottom bar on mobile (#87), not on the route.
       await expect(page.getByRole("navigation", { name: "新闻视图" })).toHaveCount(0);
       await expect(page.getByLabel("news search")).toBeVisible();
       await expect(page.getByRole("combobox", { name: "事件排序" })).toBeVisible();
@@ -94,8 +94,9 @@ for (const routeCase of routeCases) {
     await page.goto(routeCase.path);
 
     await routeCase.primary(page);
-    await expect(page.getByRole("button", { name: "Toggle Sidebar" })).toBeVisible();
-    await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeHidden();
+    // #87: the drawer is gone on a phone; the bottom bar carries navigation and is always visible.
+    await expect(page.getByRole("button", { name: "Toggle Sidebar" })).toHaveCount(0);
+    await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();
     await expect(page.locator(".live-task-nav")).toHaveCount(0);
 
     await routeCase.specific(page);

@@ -96,6 +96,88 @@ class InstrumentsRepository:
         ).fetchall()
         return tuple(str(row["venue"]) for row in rows)
 
+    def asset_refs(self, symbols: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Provider coin tags -> what each one actually names on a venue, for one bounded batch (#87).
+
+        The console shows a grounded asset as `hl.perp:HYPE`, and shows a tag that resolves to nothing as struck
+        through — that is the only place a reader sees the difference between "the provider tagged a token" and
+        "the token exists". Resolution is the same two steps the Gate takes: alias first, then existence.
+
+        A batch, never one query per symbol: the feed serves up to 100 Events on a three-second poll. Loading
+        the whole universe (`tradeable_base_symbols`) instead would be ~1.3k rows per poll to answer at most a
+        few dozen questions.
+
+        `venue` is the *preferred* venue when a base trades on several — deepest first, HIP-3 builder DEXs last —
+        so a chip is stable across polls rather than reshuffling with whatever the planner returned.
+        """
+
+        wanted = sorted({str(symbol).upper() for symbol in symbols if str(symbol).strip()})
+        if not wanted:
+            return {}
+        rows = self.conn.execute(
+            """
+            SELECT s.symbol,
+                   COALESCE(a.base_symbol, s.symbol) AS base_symbol,
+                   m.venue
+              FROM unnest(%s::text[]) AS s(symbol)
+              LEFT JOIN news_symbol_aliases a ON a.alias = s.symbol
+              LEFT JOIN LATERAL (
+                SELECT i.venue
+                  FROM news_market_instruments i
+                 WHERE i.base_symbol = COALESCE(a.base_symbol, s.symbol) AND i.status = 'trading'
+                 ORDER BY CASE i.venue
+                            WHEN 'binance.perp' THEN 0
+                            WHEN 'binance.spot' THEN 1
+                            WHEN 'hl.perp' THEN 2
+                            WHEN 'hl.spot' THEN 3
+                            ELSE 4
+                          END, i.venue
+                 LIMIT 1
+              ) m ON true
+            """,
+            (wanted,),
+        ).fetchall()
+        return {
+            str(row["symbol"]): {
+                "symbol": str(row["symbol"]),
+                "base_symbol": str(row["base_symbol"]),
+                "venue": str(row["venue"]) if row["venue"] else None,
+                "listed": row["venue"] is not None,
+            }
+            for row in rows
+        }
+
+    def aliases_by_base(self, base_symbols: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """base_symbol -> every name that resolves into it, for the detail page's normalization block (#87).
+
+        This is what makes the storyline throttle legible: SKHY / SKHX / SKHYNIX are three real contracts for one
+        issuer, and the reader needs to see that they share a bucket rather than wonder why one buyback shipped
+        one card. Only bases that actually collapse something are worth a row, so the caller drops singletons.
+        """
+
+        wanted = sorted({str(symbol).upper() for symbol in base_symbols if str(symbol).strip()})
+        if not wanted:
+            return {}
+        rows = self.conn.execute(
+            "SELECT alias, base_symbol, source FROM news_symbol_aliases WHERE base_symbol = ANY(%s)"
+            " ORDER BY base_symbol, alias",
+            (wanted,),
+        ).fetchall()
+        # The base is one of the names, not something outside the group: the console renders the row as
+        # `SKHY SKHX SKHYNIX -> SKHY`, and dropping the base would make one third of the collapse invisible.
+        out: dict[str, dict[str, Any]] = {
+            base: {"base_symbol": base, "aliases": [base], "sources": []} for base in wanted
+        }
+        for row in rows:
+            entry = out[str(row["base_symbol"]).upper()]
+            alias = str(row["alias"]).upper()
+            if alias not in entry["aliases"]:
+                entry["aliases"].append(alias)
+            source = str(row["source"])
+            if source not in entry["sources"]:
+                entry["sources"].append(source)
+        return out
+
     def universe_summary(self) -> dict[str, Any]:
         row = self.conn.execute(
             """

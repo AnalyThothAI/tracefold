@@ -31,7 +31,7 @@ describe("CockpitTopbar", () => {
     );
     const input = screen.getByRole("textbox", { name: "news search" });
     expect(input).toHaveValue("bitcoin");
-    expect(input).toHaveAttribute("placeholder", "搜索新闻事件 / 标题 / 资产");
+    expect(input).toHaveAttribute("placeholder", "搜索事件 / base_symbol / 场所");
 
     fireEvent.change(input, { target: { value: "local draft" } });
     expect(input).toHaveValue("local draft");

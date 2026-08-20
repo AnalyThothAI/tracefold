@@ -32,7 +32,9 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
         "provider_score_max": 75.0,
         "engine_type": "news",
         "asset_class": "macro",
-        "grounded_assets": [],
+        # One tag that names a listed contract and one that names an English word — the pair the console
+        # has to tell apart (#87).
+        "grounded_assets": ["COPPER", "SPOT"],
         "watchlist_hits": [],
         "macro_lexicon": True,
         "storyline_key": "copper",
@@ -94,6 +96,10 @@ class _FakeNewsRepository:
             "labels": [],
         }
 
+    def asset_usage_24h(self, *, now_ms: int) -> dict[str, list[str]]:
+        self.calls.append(("asset_usage_24h", {"now_ms": now_ms}))
+        return {"ev-1": ["COPPER", "SPOT"], "ev-2": ["SPOT"]}
+
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         self.calls.append(("status_snapshot", {"now_ms": now_ms}))
         return {
@@ -127,6 +133,25 @@ class _FakeConnection:
 
 class _FakeInstrumentsRepository:
     """#75 universe as the status route sees it before any snapshot has landed."""
+
+    def asset_refs(self, symbols: Any) -> dict[str, dict[str, Any]]:
+        listed = {"COPPER": "hl.xyz"}
+        return {
+            str(symbol): {
+                "symbol": str(symbol),
+                "base_symbol": str(symbol),
+                "venue": listed.get(str(symbol)),
+                "listed": str(symbol) in listed,
+            }
+            for symbol in symbols
+        }
+
+    def aliases_by_base(self, base_symbols: Any) -> dict[str, dict[str, Any]]:
+        groups = {"COPPER": ["COPPER", "HG"]}
+        return {
+            str(base): {"base_symbol": str(base), "aliases": groups.get(str(base), [str(base)]), "sources": ["venue"]}
+            for base in base_symbols
+        }
 
     def universe_summary(self) -> dict[str, object]:
         return {
@@ -210,7 +235,10 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "verdicts",
         "deliveries",
         "labels",
+        "normalization",
     }
+    assert set(schemas_news.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
+    assert set(schemas_news.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
     assert set(schemas_news.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(schemas_news.NewsStatusData.model_fields) == {
         "state",
@@ -277,6 +305,13 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
     assert body["data"]["events"][0]["event_id"] == "ev-1"
     assert body["data"]["events"][0]["outcome"]["kind"] == "queued_publish"
     assert body["data"]["events"][0]["title_zh"] == "铜价冲击纪录"
+    # #87: the raw provider tags stay, and beside them the same tags resolved against the instrument
+    # universe — so the browser can strike through a tag that names nothing without owning a symbol table.
+    assert body["data"]["events"][0]["grounded_assets"] == ["COPPER", "SPOT"]
+    assert body["data"]["events"][0]["assets"] == [
+        {"symbol": "COPPER", "base_symbol": "COPPER", "venue": "hl.xyz", "listed": True},
+        {"symbol": "SPOT", "base_symbol": "SPOT", "venue": None, "listed": False},
+    ]
     assert response.headers.get("etag")
     assert news.calls[0][1]["cursor"] is None
 
@@ -330,6 +365,31 @@ def test_feed_query_shape_violations_are_422(client, params) -> None:
     response = http.get("/api/news/feed", params={"token": TOKEN, **params})
 
     assert response.status_code == 422
+
+
+def test_feed_resolves_every_tag_even_when_the_universe_knows_none_of_them(client) -> None:
+    """A tag the universe cannot place still gets an entry, never a hole the browser has to guess about."""
+
+    http, _ = client
+
+    body = http.get("/api/news/feed", params={"token": TOKEN}).json()
+
+    assert [asset["symbol"] for asset in body["data"]["events"][0]["assets"]] == ["COPPER", "SPOT"]
+    assert [asset["listed"] for asset in body["data"]["events"][0]["assets"]] == [True, False]
+
+
+def test_status_counts_grounding_from_both_owners_without_either_reaching_across(client) -> None:
+    """#87: News owns which tags an Event carried, the universe owns what they name; the route folds them."""
+
+    http, news = client
+
+    body = http.get("/api/news/status", params={"token": TOKEN}).json()
+
+    # ev-1 has COPPER (listed) so it grounds; ev-2 has only SPOT so it does not.
+    assert body["data"]["funnel_24h"]["grounded"] == 1
+    assert body["data"]["pipeline"]["ungrounded_by_symbol_24h"] == {"SPOT": 2}
+    assert {"stage": "ungrounded", "key": "SPOT", "label_zh": "SPOT", "count": 2} in body["data"]["reasons_24h"]
+    assert any(call[0] == "asset_usage_24h" for call in news.calls)
 
 
 def test_event_detail_returns_envelope_or_bounded_404(client) -> None:

@@ -6,9 +6,17 @@ import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import "./CockpitTopbar.css";
 
 const NEWS_SEARCH_ARIA_LABEL = "news search";
-const NEWS_SEARCH_PLACEHOLDER = "搜索新闻事件 / 标题 / 资产";
+const NEWS_SEARCH_PLACEHOLDER = "搜索事件 / base_symbol / 场所";
+
+/** One always-visible number from the pipeline. `value` is undefined until the status poll answers. */
+export type CockpitTopbarFigure = {
+  label: string;
+  tone?: "caution";
+  value?: number;
+};
 
 export type CockpitTopbarProps = {
+  figures?: CockpitTopbarFigure[];
   navigationTrigger?: ReactNode;
   search: {
     inputRef: RefObject<HTMLInputElement | null>;
@@ -25,6 +33,7 @@ export type CockpitTopbarProps = {
 };
 
 export function CockpitTopbar({
+  figures,
   navigationTrigger,
   search,
   status,
@@ -64,6 +73,22 @@ export function CockpitTopbar({
         <button type="submit">检索</button>
       </form>
 
+      {/*
+       * The two figures an operator glances at without opening a page (#87). They are hidden until the poll
+       * answers rather than shown as zero — a zero that means "not loaded yet" is worse than a gap.
+       */}
+      {figures?.some((figure) => figure.value != null) ? (
+        <span className="topbar-figures">
+          {figures
+            .filter((figure) => figure.value != null)
+            .map((figure) => (
+              <span data-tone={figure.tone} key={figure.label}>
+                <small>{figure.label}</small>
+                <b>{new Intl.NumberFormat("zh-CN").format(figure.value ?? 0)}</b>
+              </span>
+            ))}
+        </span>
+      ) : null}
       {anomaly ? (
         <span className="topbar-anomaly" role="status" title={anomaly}>
           <TriangleAlert aria-hidden />

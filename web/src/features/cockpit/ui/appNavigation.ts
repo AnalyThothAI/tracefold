@@ -34,7 +34,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
       {
         icon: Activity,
         isActive: (pathname) => pathname === "/news/status",
-        label: "状态",
+        label: "流水线状态",
         to: "/news/status",
       },
     ],

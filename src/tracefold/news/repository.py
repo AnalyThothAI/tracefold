@@ -1183,6 +1183,30 @@ class NewsRepository:
             "control": control,
         }
 
+    def asset_usage_24h(self, *, now_ms: int) -> dict[str, list[str]]:
+        """event_id -> the coin tags the Gate grounded it on, for the last 24 h (#87).
+
+        The console's «符号落表» funnel segment and the «符号未落标的表» reason group both need to know which
+        Events named something that exists on a venue. That answer spans two owners — this table and the #75
+        instrument universe — so this half returns only its own rows and `grounding_rollup` folds them against
+        `InstrumentsRepository.asset_refs`. Neither repository reaches into the other's tables.
+
+        Only Events that carry at least one tag come back; an Event absent from the map grounded on nothing.
+        At ~1.5 k Events / day and about one tag each that is a low four-figure row count beside the
+        percentile aggregates `status_snapshot` already runs over the same window.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT event_id, array_agg(symbol ORDER BY symbol) AS symbols
+              FROM news_event_assets
+             WHERE opened_at_ms >= %s
+             GROUP BY event_id
+            """,
+            (int(now_ms) - 24 * 3600_000,),
+        ).fetchall()
+        return {str(row["event_id"]): [str(s) for s in (row["symbols"] or [])] for row in rows}
+
     def _funnel_24h(self, *, day_ago: int) -> dict[str, Any]:
         """Where the last 24 h of Events went, by named reason: Gate admissions, decide() rules, storyline keys."""
 

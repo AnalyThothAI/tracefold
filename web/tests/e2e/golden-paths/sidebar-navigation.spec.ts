@@ -121,29 +121,35 @@ test.describe("desktop sidebar navigation", () => {
   });
 });
 
-test.describe("mobile sidebar navigation", () => {
+test.describe("mobile bottom navigation", () => {
   test.beforeEach(({}, testInfo) => {
-    test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only sidebar contract");
+    test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile-only navigation contract");
   });
 
-  test("opens the route drawer and closes it after navigation", async ({ page }) => {
+  test("keeps every destination under the thumb and switches routes without a drawer", async ({
+    page,
+  }) => {
     await installMockApi(page);
     await page.goto("/");
 
-    const sidebarTrigger = page.getByRole("button", { name: "Toggle Sidebar" });
-    await expect(sidebarTrigger).toBeVisible();
-    await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeHidden();
-
-    await sidebarTrigger.click();
+    // #87: no drawer to open on a phone. The bar is there from the first paint and stays there.
+    await expect(page.getByRole("button", { name: "Toggle Sidebar" })).toHaveCount(0);
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
     await expect(primaryNavigation).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "状态" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "流水线状态" })).toBeVisible();
+
+    await primaryNavigation.getByRole("link", { name: "流水线状态" }).click();
+    await expect(page).toHaveURL(/\/news\/status$/);
+    await expect(primaryNavigation).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "流水线状态" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
 
     await primaryNavigation.getByRole("link", { name: "事件流" }).click();
     await expect(page).toHaveURL(/\/news(?:\?|$)/);
-    await expect(primaryNavigation).toBeHidden();
 
     await expectNoDocumentHorizontalOverflow(page);
     await expectNoUnhandledApiRequests(page);
