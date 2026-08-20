@@ -116,7 +116,12 @@ only, so importing it does not pull the route components into the eager shell ch
   pill (`流水线正常/注意/异常` from `health.overall`, the failing item's
   `summary_zh`, linking to `/news/status`) and a 24 h funnel card
   (`收到 / 送审 / 符号落表 / 决定推送 / 已送达` from `funnel_24h`, a four-segment
-  proportion bar, and one conversion sentence). Every figure on it is a
+  proportion bar, and one conversion sentence). The bar's segments are
+  differences between adjacent layers and each clamps at zero, so they do not
+  always sum to `received`: `candidates` counts Events by `opened_at_ms` while
+  `triaged` counts verdicts by `created_at_ms`, and at the window edge the
+  second can exceed the first. The bar then reads a few percent light rather
+  than drawing a band backwards. Every figure on it is a
   `funnel_24h` field or the difference between two of them. `符号落表` is
   `funnel_24h.grounded` — how many of the same Events named an asset that
   exists on a venue (#87). It is a tile and deliberately not a bar segment: an
@@ -208,12 +213,18 @@ only, so importing it does not pull the route components into the eager shell ch
   write labels: the News API is read-only and the learning plane is the CLI.
 
   `/news/status` reads `/api/news/status` and renders four thresholded
-  health cards plus a `标的表快照` card. That card is the #75 universe as
-  `instruments` reports it (trading contracts, base symbols, venues, last
-  snapshot time, per-venue counts) and is deliberately *not* a fifth health
-  card: the snapshot loop's per-venue failures live in the worker process and
-  are never persisted, so the browser has no thresholded signal to render and
-  would have to invent one. The health cards are
+  health cards plus a `标的表快照` card. That card renders the whole
+  `instruments` summary — trading contracts, base symbols, venues, last
+  snapshot time, per-venue and per-class counts, and `dangling_aliases` — and
+  is not a fifth health card because the snapshot loop's *per-venue* failures
+  live in the worker process and are never persisted, so there is no venue
+  health to show. `dangling_aliases` is the one figure the server states a
+  target for (it should be 0: a seed alias pointing at a symbol no venue lists
+  resolves to nothing, silently, which is how `1810.HK -> XIAOMI` went
+  unnoticed for a week), so it takes the caution tone the moment it is not
+  zero. The card renders every field the summary carries, so a field the
+  server adds cannot go unnoticed the way `by_class` and `dangling_aliases`
+  did. The health cards are
   (`Ingest / Broker / Model / Delivery` as the eyebrow, from
   `health.*`: level colour, a per-level bar, `summary_zh`, `detail_zh`, and two
   server numbers each), an overall pill (`总体正常/注意/异常`), the 24 h funnel

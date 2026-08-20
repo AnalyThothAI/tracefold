@@ -140,8 +140,18 @@ function funnelTiles(funnel: NewsFunnel): Tile[] {
 }
 
 /**
- * The bar reads left to right as "gated / not triaged / judged-but-held / delivered". The four shares are
- * differences between adjacent layers, so they sum to `received` and the bar is always full.
+ * The bar reads left to right as "gated / not triaged / judged-but-held / delivered", each share the
+ * difference between two adjacent layers.
+ *
+ * Those layers are *not* one population, so the shares do not always sum to `received` and the bar is not
+ * always full. `candidates` counts Events by `opened_at_ms`; `triaged` counts Triage verdicts by
+ * `created_at_ms` — an Event opened just before the window and judged just inside it lands in the second and
+ * not the first, so at the window edge `triaged` can exceed `candidates` (observed live: 1567 vs 1531). The
+ * `untriaged` share then clamps to zero and the bar comes up short by that much.
+ *
+ * The clamp is left in place deliberately: a band drawn backwards would be worse than a bar that reads a few
+ * percent light, and reconciling the two windows is a server-side change to what `funnel_24h` means, not a
+ * presentation fix. Documented rather than hidden, so the next reader does not take the total on faith.
  */
 function proportionSegments(funnel: NewsFunnel) {
   const total = Math.max(1, funnel.received);
