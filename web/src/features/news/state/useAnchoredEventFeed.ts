@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useRef, useState } from "react";
 
-import type { NewsFeedEvent } from "./useNewsPage";
+import type { NewsFeedEvent } from "../api/newsQueries";
 
 /**
  * Keeps the reader's place: while they are scrolled away from the top, new first-page Events are held back

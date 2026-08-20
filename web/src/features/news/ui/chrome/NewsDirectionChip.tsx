@@ -1,6 +1,6 @@
 import "./newsDirection.css";
-import { directionGlyph, directionTone } from "./newsLabels";
-import type { NewsTriageSummary } from "./useNewsPage";
+import type { NewsTriageSummary } from "../../api/newsQueries";
+import { directionGlyph, directionTone } from "../../model/newsLabels";
 
 /**
  * The model's market direction for one Event, paired with its magnitude. `direction_zh` and `magnitude_zh` are

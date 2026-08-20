@@ -2,7 +2,7 @@ import {
   useNewsEventWithToken,
   useNewsFeedWithToken,
   useNewsStatusWithToken,
-} from "@features/news/useNewsPage";
+} from "@features/news/api/newsQueries";
 import { queryKeys } from "@shared/query/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";

@@ -1,0 +1,50 @@
+@layer app.features {
+  /*
+   * Confirmation for an action that changed nothing on the page — a copy. It sits above the route content and
+   * clears itself; it is never a place to put an error the reader has to act on.
+   */
+  .news-toast {
+    position: fixed;
+    z-index: 70;
+    bottom: calc(1.4rem + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    max-width: calc(100vw - 2rem);
+    padding: 0.5rem 0.9rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: var(--surface-panel);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-elevated);
+    font-size: 0.76rem;
+    font-weight: 560;
+    transform: translateX(-50%);
+  }
+
+  .news-toast svg {
+    width: 0.8rem;
+    height: 0.8rem;
+    flex: 0 0 auto;
+    color: var(--signal-done);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .news-toast {
+      animation: news-toast-in 140ms ease-out;
+    }
+
+    @keyframes news-toast-in {
+      from {
+        opacity: 0;
+        transform: translate(-50%, 0.4rem);
+      }
+
+      to {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+    }
+  }
+}

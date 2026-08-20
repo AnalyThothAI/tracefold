@@ -10,12 +10,14 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@shared/ui/sidebar";
-import { NavLink, useMatch } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 
 import { APP_NAVIGATION_GROUPS, type AppNavigationItem } from "./appNavigation";
 import "./AppSidebar.css";
 
-export function AppSidebar() {
+export type AppNavigationCounts = { events?: number };
+
+export function AppSidebar({ counts }: { counts?: AppNavigationCounts }) {
   return (
     <Sidebar
       aria-label="Application sidebar"
@@ -26,7 +28,7 @@ export function AppSidebar() {
       <SidebarHeader className="cockpit-app-sidebar-header">
         <div className="cockpit-app-sidebar-brand">
           <span className="cockpit-app-sidebar-mark" aria-hidden>
-            P
+            T
           </span>
           <span>
             <b>Tracefold</b>
@@ -44,7 +46,7 @@ export function AppSidebar() {
               <SidebarGroupContent>
                 <SidebarMenu>
                   {group.items.map((item) => (
-                    <AppSidebarItem item={item} key={item.to} />
+                    <AppSidebarItem counts={counts} item={item} key={item.to} />
                   ))}
                 </SidebarMenu>
               </SidebarGroupContent>
@@ -56,28 +58,40 @@ export function AppSidebar() {
   );
 }
 
-function AppSidebarItem({ item }: { item: AppNavigationItem }) {
-  const active = Boolean(
-    useMatch({
-      end: item.end ?? false,
-      path: item.matchPath ?? item.to,
-    }),
-  );
+function AppSidebarItem({
+  counts,
+  item,
+}: {
+  counts?: AppNavigationCounts;
+  item: AppNavigationItem;
+}) {
+  const { pathname } = useLocation();
+  const active = item.isActive(pathname);
   const { isMobile, setOpenMobile } = useSidebar();
   const Icon = item.icon;
+  const count = item.count ? counts?.[item.count] : undefined;
 
   return (
     <SidebarMenuItem>
       <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
         <NavLink
-          end={item.end}
           onClick={() => {
             if (isMobile) setOpenMobile(false);
           }}
           to={item.to}
         >
           <Icon aria-hidden />
-          <span>{item.label}</span>
+          <span className="cockpit-app-sidebar-label">{item.label}</span>
+          {/*
+           * The count is decoration on the link, not part of what it is: folding it into the accessible name
+           * would make the destination announce itself differently every three seconds. The same number is
+           * announced properly by the feed's labelled 24 h funnel.
+           */}
+          {count == null ? null : (
+            <span aria-hidden className="cockpit-app-sidebar-count" title="过去 24 小时收到">
+              {new Intl.NumberFormat("zh-CN").format(count)}
+            </span>
+          )}
         </NavLink>
       </SidebarMenuButton>
     </SidebarMenuItem>

@@ -1,0 +1,260 @@
+@layer app.features {
+  /*
+   * The band between the funnel and the first Event: which outcomes to show, over what window, in what order.
+   * It sticks under the topbar so the reader can re-aim without scrolling back up a thousand-row feed.
+   */
+  .news-feed-toolbar {
+    position: sticky;
+    z-index: 20;
+    top: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem 0.9rem;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0;
+    background: color-mix(in srgb, var(--surface-canvas) 92%, transparent);
+    backdrop-filter: blur(10px);
+  }
+
+  .news-feed-toolbar-left {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    align-items: center;
+  }
+
+  /* ------------------------------------------------------------------ task tabs */
+  .news-segmented {
+    display: inline-flex;
+    gap: 0.15rem;
+    padding: 0.14rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-panel);
+  }
+
+  .news-segmented-option {
+    display: inline-flex;
+    gap: 0.4rem;
+    align-items: center;
+    min-height: 1.85rem;
+    padding: 0 0.7rem;
+    border: 0;
+    border-radius: calc(var(--radius-md) - 0.15rem);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    font-weight: 500;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .news-segmented-option:hover {
+    color: var(--text-primary);
+  }
+
+  .news-segmented-option[aria-selected="true"] {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+    font-weight: 620;
+  }
+
+  /* The tab's own tone rings the selected chip, so the eye lands on which lane it is reading. */
+  .news-segmented-option[aria-selected="true"][data-outcome-group="pushed"] {
+    box-shadow: inset 0 0 0 1px var(--signal-done-border);
+  }
+
+  .news-segmented-option[aria-selected="true"][data-outcome-group="held"] {
+    box-shadow: inset 0 0 0 1px var(--signal-neutral-border);
+  }
+
+  .news-segmented-option[aria-selected="true"][data-outcome-group="pending"] {
+    box-shadow: inset 0 0 0 1px var(--signal-info-border);
+  }
+
+  .news-segmented-count {
+    color: var(--text-subtle);
+    font: 500 0.68rem/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-segmented-option[aria-selected="true"] .news-segmented-count {
+    color: var(--text-secondary);
+  }
+
+  .news-segmented-key {
+    padding: 0 0.2rem;
+    border: 1px solid var(--border-faint);
+    border-radius: 3px;
+    color: var(--text-subtle);
+    font: 500 0.6rem/1.5 var(--font-mono);
+  }
+
+  .news-segmented-option[aria-selected="true"] .news-segmented-key {
+    border-color: var(--border-strong);
+  }
+
+  /* ------------------------------------------------------------------ window, sort, advanced filters */
+  .news-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .news-filter-total {
+    color: var(--text-subtle);
+    font: 500 0.68rem/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-select select,
+  .news-filter-bar select,
+  .news-filter-bar input {
+    min-width: 0;
+    height: 2rem;
+    padding: 0 1.7rem 0 0.6rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-root);
+    color: var(--text-primary);
+    font-size: 0.74rem;
+  }
+
+  .news-filter-bar input {
+    padding-right: 0.6rem;
+  }
+
+  .news-filter-disclosure {
+    position: relative;
+    z-index: 3;
+  }
+
+  .news-filter-disclosure > summary {
+    display: inline-flex;
+    gap: 0.35rem;
+    align-items: center;
+    justify-content: center;
+    min-height: 2rem;
+    padding: 0 0.7rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-root);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 0.74rem;
+    list-style: none;
+  }
+
+  .news-filter-disclosure > summary[data-active] {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+  }
+
+  .news-filter-disclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .news-filter-disclosure svg {
+    width: 0.85rem;
+    height: 0.85rem;
+  }
+
+  .news-filter-disclosure > div {
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    right: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(9rem, 1fr));
+    width: min(24rem, calc(100vw - 3rem));
+    gap: 0.6rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-elevated);
+  }
+
+  .news-filter-disclosure label {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+  }
+
+  .news-filter-disclosure label > span {
+    color: var(--text-muted);
+    font-size: 0.64rem;
+  }
+
+  .news-active-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .news-active-filters button {
+    display: inline-flex;
+    gap: 0.35rem;
+    align-items: center;
+    min-height: 1.7rem;
+    padding: 0 0.6rem;
+    border: 1px solid var(--accent-border);
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--text-primary);
+    font-size: 0.68rem;
+  }
+
+  .news-active-filters button svg {
+    width: 0.7rem;
+    height: 0.7rem;
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 767px) {
+    .news-feed-toolbar,
+    .news-feed-toolbar-left {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .news-segmented {
+      width: 100%;
+    }
+
+    .news-segmented-option {
+      flex: 1;
+      justify-content: center;
+      padding: 0 0.4rem;
+    }
+
+    /* A thumb cannot aim at a 10px hint; the keyboard hint is desktop-only anyway. */
+    .news-segmented-key {
+      display: none;
+    }
+
+    .news-filter-bar {
+      justify-content: stretch;
+    }
+
+    .news-filter-bar .news-select {
+      flex: 1;
+    }
+
+    .news-filter-bar select {
+      width: 100%;
+    }
+
+    .news-filter-total {
+      display: none;
+    }
+
+    .news-filter-disclosure > div {
+      grid-template-columns: 1fr;
+    }
+  }
+}

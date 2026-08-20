@@ -1,0 +1,84 @@
+@layer app.primitives {
+  /*
+   * The keyboard map. It is a reference the reader opens, reads and dismisses, so it stays a plain centred
+   * card: no scroll region, no tabs, nothing to operate.
+   */
+  .ui-shortcuts-overlay {
+    position: fixed;
+    z-index: 60;
+    inset: 0;
+    display: grid;
+    padding: 1.5rem;
+    place-items: center;
+    background: rgb(16 20 24 / 34%);
+    backdrop-filter: blur(3px);
+  }
+
+  .ui-shortcuts-panel {
+    width: min(28.75rem, 100%);
+    padding: 1.25rem 1.35rem 1.35rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+    box-shadow: var(--shadow-elevated);
+  }
+
+  .ui-shortcuts-head {
+    display: flex;
+    gap: 0.75rem;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 0.85rem;
+  }
+
+  .ui-shortcuts-head h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-weight: 660;
+  }
+
+  .ui-shortcuts-head small {
+    color: var(--text-subtle);
+    font: 500 0.62rem/1 var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .ui-shortcuts-list {
+    display: grid;
+    gap: 0.1rem;
+    margin: 0;
+  }
+
+  .ui-shortcuts-row {
+    display: flex;
+    gap: 0.9rem;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.1rem;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .ui-shortcuts-row:last-child {
+    border-bottom: 0;
+  }
+
+  .ui-shortcuts-row dt {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+  }
+
+  .ui-shortcuts-row dd {
+    margin: 0;
+  }
+
+  .ui-shortcuts-row kbd {
+    padding: 0.1rem 0.4rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    font: 600 0.68rem/1.5 var(--font-mono);
+  }
+}

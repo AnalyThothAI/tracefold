@@ -10,7 +10,7 @@ import type {
   NewsTimelineStep,
   NewsVerdict,
   NewsTriageSummary,
-} from "@features/news/useNewsPage";
+} from "@features/news/api/newsQueries";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
 

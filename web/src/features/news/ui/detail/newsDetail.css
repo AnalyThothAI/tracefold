@@ -16,6 +16,50 @@
     justify-content: space-between;
   }
 
+  /* ------------------------------------------------------------------ pager */
+  .news-detail-pager {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .news-detail-pager-position {
+    color: var(--text-subtle);
+    font: 500 0.7rem/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-detail-pager-button {
+    display: inline-flex;
+    gap: 0.35rem;
+    align-items: center;
+    min-height: 1.9rem;
+    padding: 0 0.6rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-root);
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+  }
+
+  .news-detail-pager-button:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+  }
+
+  .news-detail-pager-button svg {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+
+  .news-detail-pager-button kbd {
+    padding: 0 0.2rem;
+    border: 1px solid var(--border-faint);
+    border-radius: 3px;
+    color: var(--text-subtle);
+    font: 500 0.6rem/1.5 var(--font-mono);
+  }
+
   /* ------------------------------------------------------------------ hero */
   /*
    * The hero carries the market judgment. A left rail in the direction colour makes 利多 / 利空 readable before
@@ -139,111 +183,25 @@
     font: 600 0.68rem/1.5 var(--font-mono);
   }
 
-  /* ------------------------------------------------------------------ timeline */
-  .news-timeline {
-    display: grid;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .news-timeline-step {
-    position: relative;
-    display: grid;
-    grid-template-columns: 1.1rem minmax(0, 1fr);
-    gap: 0 0.8rem;
-    padding-bottom: 0.9rem;
-  }
-
-  .news-timeline-step[data-last] {
-    padding-bottom: 0;
-  }
-
-  .news-timeline-step::before {
-    position: absolute;
-    top: 1.05rem;
-    bottom: 0;
-    left: 0.5rem;
-    width: 1px;
-    background: var(--border-subtle);
-    content: "";
-  }
-
-  .news-timeline-step[data-last]::before {
-    display: none;
-  }
-
-  .news-timeline-marker {
-    width: 0.65rem;
-    height: 0.65rem;
-    margin: 0.35rem 0 0 0.2rem;
-    border-radius: 999px;
-    background: var(--news-tone);
-    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--news-tone) 16%, transparent);
-  }
-
-  .news-timeline-body {
-    display: grid;
-    gap: 0.2rem;
-    min-width: 0;
-  }
-
-  .news-timeline-head {
-    display: flex;
-    gap: 0.6rem;
-    align-items: baseline;
-  }
-
-  .news-timeline-head b {
-    font-size: 0.8rem;
-    font-weight: 640;
-  }
-
-  .news-timeline-head time {
-    color: var(--text-muted);
-    font: 500 0.7rem/1.4 var(--font-mono);
-  }
-
-  .news-timeline-summary {
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: 0.82rem;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-  }
-
-  .news-timeline-toggle {
-    width: fit-content;
-    padding: 0.1rem 0;
-    border: 0;
-    background: none;
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    text-decoration: underline dotted;
-    text-underline-offset: 0.2em;
-  }
-
-  .news-timeline-toggle:hover {
-    color: var(--accent-primary);
-  }
-
-  /* The timeline's own container for a shared KeyValue; the primitive owns the pair layout, this owns the box. */
-  .news-timeline-fields {
-    margin-top: 0.3rem;
-    padding: 0.55rem 0.7rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
-  }
-
-  /* ------------------------------------------------------------------ members + labels */
+  /* ------------------------------------------------------------------ timeline + side column */
+  /*
+   * What happened, beside what to do about it. The timeline is the wider half because its sentences run long;
+   * labelling and the merged reports are short and stack.
+   */
   .news-detail-grid {
     display: grid;
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    grid-template-columns: minmax(0, 1.42fr) minmax(0, 1fr);
     gap: 0.9rem;
+    align-items: start;
   }
 
   .news-detail-grid > * {
+    min-width: 0;
+  }
+
+  .news-detail-side {
+    display: grid;
+    gap: 0.9rem;
     min-width: 0;
   }
 
@@ -312,53 +270,88 @@
     font-size: 0.66rem;
   }
 
-  .news-label-command {
+  /*
+   * Three verdicts on the verdict. They copy the `tracefold news label` command rather than writing it — the
+   * News API is read-only by design, and the learning plane is the CLI. Only 判错了 and 判得对 take a colour,
+   * and they take the market-direction pair on purpose: this is a judgment about the judgment, not a pipeline
+   * state, so the pipeline's blue/amber would read as a delivery outcome.
+   */
+  .news-label-actions {
     display: flex;
-    gap: 0.5rem;
-    align-items: center;
-    justify-content: space-between;
-    min-width: 0;
+    gap: 0.4rem;
   }
 
-  .news-label-command code {
+  .news-label-action {
+    display: inline-flex;
     flex: 1;
-    min-width: 0;
-    padding: 0.4rem 0.6rem;
-    overflow: hidden;
-    border: 1px solid var(--border-faint);
+    gap: 0.3rem;
+    align-items: center;
+    justify-content: center;
+    min-height: 2.1rem;
+    padding: 0 0.5rem;
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     background: var(--surface-root);
     color: var(--text-secondary);
-    font: 0.68rem/1.4 var(--font-mono);
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: 0.76rem;
+    font-weight: 600;
   }
 
-  .news-label-command .news-button {
-    display: inline-flex;
-    gap: 0.3rem;
-    align-items: center;
-    flex: 0 0 auto;
-  }
-
-  .news-label-command svg {
+  .news-label-action svg {
     width: 0.75rem;
     height: 0.75rem;
   }
 
-  .news-detail-empty {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.76rem;
+  .news-label-action[data-label="good"] {
+    border-color: var(--dir-bearish-border);
+    background: var(--dir-bearish-soft);
+    color: var(--dir-bearish);
   }
 
-  @media (max-width: 767px) {
+  .news-label-action[data-label="bad"] {
+    border-color: var(--dir-bullish-border);
+    background: var(--dir-bullish-soft);
+    color: var(--dir-bullish);
+  }
+
+  .news-label-action:hover {
+    border-color: var(--border-strong);
+  }
+
+  .news-label-hint {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 0.7rem;
+    line-height: 1.5;
+  }
+
+  .news-label-hint kbd {
+    padding: 0 0.25rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    font: 600 0.66rem/1.5 var(--font-mono);
+  }
+
+  @media (max-width: 1279px) {
     .news-detail-grid {
       grid-template-columns: 1fr;
     }
+  }
 
+  @media (max-width: 767px) {
     .news-detail-hero {
       padding: 0.9rem 0.95rem 1rem;
+    }
+
+    .news-detail-toolbar {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .news-detail-pager {
+      justify-content: space-between;
     }
   }
 
@@ -377,6 +370,28 @@
     gap: 0.5rem 0.9rem;
     align-items: center;
     margin: 0.15rem 0 0;
+  }
+
+  .news-detail-verdict-rule {
+    width: 1px;
+    height: 0.9rem;
+    background: var(--border-subtle);
+  }
+
+  .news-detail-confidence {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+
+  .news-detail-confidence b {
+    color: var(--text-primary);
+    font-weight: 640;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The verdict grid sits inside the hero, so it uses the hero's own raised ground rather than a second card. */
+  .news-detail-fact-grid {
+    margin-top: 0.25rem;
   }
 
   /* The model asked for one thing and the policy did another — the single most useful line for an operator. */
