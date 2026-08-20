@@ -112,9 +112,10 @@ def render_first_card(
         direction = str(verdict.get("direction") or "unclear")
         magnitude = int(verdict.get("magnitude") or 0)
         headline = sanitize_ai_text(verdict.get("headline_zh"), limit=60)
-        title_zh = sanitize_ai_text(verdict.get("title_zh"), limit=120)
         why = sanitize_ai_text(verdict.get("why_zh"), limit=140)
-        header_text = headline or title_zh or original_title
+        # An empty title_zh means "same as headline_zh" (#101), so it is a fallback only when headline_zh
+        # sanitised away — a URL in it, say. Then the wire title is the honest last resort, as before.
+        header_text = headline or sanitize_ai_text(verdict.get("title_zh"), limit=120) or original_title
     header_title = f"{'⚡ ' if decision == 'escalate' else ''}{header_text}"
     lines: list[str] = []
     if why:

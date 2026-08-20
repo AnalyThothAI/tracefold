@@ -11,6 +11,8 @@ from __future__ import annotations
 from tracefold.news.agents.prompts import (
     TRIAGE_PROMPT_SHA256,
     TRIAGE_PROMPT_SHA256_BY_VERSION,
+    TRIAGE_SCHEMA_SHA256,
+    TRIAGE_SCHEMA_SHA256_BY_VERSION,
     TRIAGE_SYSTEM_PROMPT,
     prompt_sha256,
 )
@@ -41,3 +43,20 @@ def test_pinned_shas_are_hex_digests_and_unique() -> None:
 
 def test_prompt_sha256_is_the_digest_of_the_frozen_text() -> None:
     assert prompt_sha256(TRIAGE_SYSTEM_PROMPT) == TRIAGE_PROMPT_SHA256
+
+
+def test_current_prompt_version_names_the_current_tool_schema() -> None:
+    """The tool schema is instruction too (#101): its `description` strings are prose the model acts on, so
+    rewording one changes behaviour. Pinning only the prompt text left that change invisible — same version on
+    every stored trace, `make test` still green, and a frozen corpus grouping two contracts under one name."""
+
+    pinned = TRIAGE_SCHEMA_SHA256_BY_VERSION.get(TRIAGE_PROMPT_VERSION)
+    assert pinned is not None, (
+        f"{TRIAGE_PROMPT_VERSION} is missing from TRIAGE_SCHEMA_SHA256_BY_VERSION; add it with sha "
+        f"{TRIAGE_SCHEMA_SHA256}"
+    )
+    assert pinned == TRIAGE_SCHEMA_SHA256, (
+        f"the tool schema changed (a field, a bound, or a description) but {TRIAGE_PROMPT_VERSION} still points "
+        f"at {pinned}; bump TRIAGE_PROMPT_VERSION and record sha {TRIAGE_SCHEMA_SHA256}"
+    )
+    assert TRIAGE_SCHEMA_SHA256 != TRIAGE_PROMPT_SHA256, "the two halves are digested separately on purpose"
