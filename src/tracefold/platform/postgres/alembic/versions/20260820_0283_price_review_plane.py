@@ -9,6 +9,9 @@ source is at most 207 k and in practice ~52-86 k (#88 §14). The row is rewritte
 carries a low fillfactor and its own autovacuum thresholds — a five-row table that accumulates 17 k dead
 tuples per source per day is not "small enough to ignore".
 
+The same revision drops the old `hl.spot` catalogue rows so the corrected adapter can rebuild that venue from
+actual markets instead of the token registry.
+
 `news_event_reactions` is the deterministic return between an Event's anchor and a fixed horizon, keyed by
 `(event_id, symbol, metric_version)`. The version freezes the whole metric contract, so a later revision
 publishes a new version beside v1 rather than changing what a stored row means. Rows cascade with the Event
@@ -104,6 +107,12 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX ix_news_reactions_state ON news_event_reactions (metric_version, anchor_at_ms DESC, state)"
     )
+    # `hl.spot` rows were token names from `spotMeta.tokens` — 491 of them, of which only 326 are markets and
+    # one is `USDC` itself, none of them a key any quote or candle request accepts (#88 §3). They are dropped
+    # rather than left to age into `delisted`: they were never market identities, and a snapshot that reported
+    # ~500 delistings would read as the mass-delisting failure the venue adapters exist to prevent. The
+    # snapshot loop runs a turn at startup and repopulates the venue with `@N` / `PURR/USDC` pairs.
+    op.execute("DELETE FROM news_market_instruments WHERE venue = 'hl.spot'")
     # The due planner walks Event-assets by anchor age; `ix_news_event_assets_symbol` leads with the symbol and
     # cannot serve that. Feed attachment and the per-Event detail read the primary key's leading column.
     op.execute("CREATE INDEX ix_news_event_assets_opened ON news_event_assets (opened_at_ms)")
