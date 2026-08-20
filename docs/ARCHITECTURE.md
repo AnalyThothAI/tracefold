@@ -350,9 +350,14 @@ throttle already stopped: the count rule is per-storyline, so a fresh key
 (`pushed_2h = 0`) skipped it entirely and a provider batch fanning out across
 many keys — 19 tokenised-equity listings in 7 minutes, one `asset:` key each —
 was never compared with the ledger at all, and ate the hourly cap eight real
-cards needed. `escalate` stays on the v5 path: character bigrams over a fixed
-topic vocabulary confuse one geopolitical headline with another, and a
-magnitude-3 card cannot afford that. `trace.seen_scope` (`throttled` / `all`)
+cards needed. Two guards keep a metric that can now withhold on its own from
+suppressing the cards that matter most: `escalate` stays on the v5 path
+(character bigrams over a fixed topic vocabulary confuse one geopolitical
+headline with another, and a magnitude-3 card cannot afford that), and a card
+whose direction contradicts the ledger entry it matched is never withheld —
+bigrams are blind to negation, so "SEC 批准…" and "SEC 拒绝…" score 0.60, and a
+reversal of a fact the reader already has is the highest-value card in the
+system. `trace.seen_scope` (`throttled` / `all`)
 and `status.pipeline.duplicates_withheld_24h` keep the two paths apart. Counts
 survive only as a flood ceiling (`distinct_asset_cap_2h` 6 pushes
 in the last 2 h, `distinct_hard_cap_4h` 18 in the last 4 h; `throttled_by =
