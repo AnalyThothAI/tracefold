@@ -109,6 +109,11 @@ class StorylineStatus:
     # the whole window, and the wider set measurably catches more repeats (#81).
     seen_headlines: tuple[str, ...] = ()
     seen_event_ids: tuple[str, ...] = ()
+    # The direction of each ``seen_headlines`` entry, same order. A reversal of a fact the reader just received
+    # shares almost every character bigram with it ("SEC 批准…" vs "SEC 拒绝…" scores 0.60), so the duplicate
+    # defence has to be able to tell the two apart — and the storyline windows cannot help: on a fresh key
+    # ``directions_2h/4h`` are empty while the card it resembles lives in the *global* ledger.
+    seen_directions: tuple[str, ...] = ()
 
     @property
     def told_count(self) -> int:
@@ -157,6 +162,17 @@ def rule_baseline(facts: GateFacts, *, fail_open_high_priority: bool = True) -> 
     if fail_open_high_priority and (facts.priority == "high" or facts.admission == "listing_deterministic"):
         return "push"
     return "drop"
+
+
+def _seen_flip(direction: str, seen_directions: Sequence[str], index: int) -> bool:
+    """True when the card resembles a ledger entry it *contradicts* — the reader was told bullish and this is
+    bearish, or the other way round. Only a directional pair counts: neutral/unclear on either side is not a
+    reversal, and a ledger without directions (a pure caller, an old replay) never exempts anything."""
+
+    if direction not in _DIRECTIONAL or not 0 <= index < len(seen_directions):
+        return False
+    told = seen_directions[index]
+    return told in _DIRECTIONAL and told != direction
 
 
 def _direction_flip(direction: str, seen: Sequence[str]) -> bool:
@@ -266,8 +282,16 @@ def decide(
             seen_scope = "throttled" if throttled_by is not None else "all"
             seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
             # Nothing comparable in the window (an empty ledger, or a headline too short to bigram) is not
-            # evidence of a repeat: the reader received nothing, so nothing can be a repeat of it.
-            if seen_against >= 0 and seen_similarity >= policy.similarity_max:
+            # evidence of a repeat: the reader received nothing, so nothing can be a repeat of it. Neither is a
+            # reversal: character bigrams are blind to negation, and the card that flips a fact the reader
+            # already has is the most valuable one in the system. `_storyline_throttle` has always exempted a
+            # direction flip; once similarity can withhold a card on its own it needs the same exemption, against
+            # the ledger entry it actually matched.
+            if (
+                seen_against >= 0
+                and seen_similarity >= policy.similarity_max
+                and not _seen_flip(verdict.direction, status.seen_directions, seen_against)
+            ):
                 # The reader has this. This is the whole duplicate defence: everything else is a ceiling.
                 # The key keeps the `storyline:<key>:seen` shape on both paths so `outcome.throttled_by_zh`
                 # (which short-circuits on the `:seen` suffix) needs no new vocabulary.
@@ -378,12 +402,16 @@ def storyline_status_from_row(
     rows = list(told if seen is None else seen)
     seen_headlines = tuple(str(r.get("headline_zh") or "") for r in rows)
     seen_event_ids = tuple(str(r.get("event_id") or "") for r in rows)
+    # `told` rows spell the direction `dir`, ledger rows spell it `direction`; a row that carries neither leaves
+    # an empty string, which `_seen_flip` reads as "no opinion" and never exempts on.
+    seen_directions = tuple(str(r.get("direction") or r.get("dir") or "") for r in rows)
     if not row:
         return StorylineStatus(
             key=key,
             told_directions=told_directions,
             seen_headlines=seen_headlines,
             seen_event_ids=seen_event_ids,
+            seen_directions=seen_directions,
         )
     return StorylineStatus(
         key=key,
@@ -397,6 +425,7 @@ def storyline_status_from_row(
         told_directions=told_directions,
         seen_headlines=seen_headlines,
         seen_event_ids=seen_event_ids,
+        seen_directions=seen_directions,
     )
 
 

@@ -9,8 +9,14 @@ says anything new (#81: 74% of everything the throttle stopped was a fact the re
 This module gives `decide()` the one piece of evidence that cap was missing: how much of this card's Chinese
 headline the reader has already read. Character bigrams because the text is Chinese (no whitespace tokens) and
 short (<= 60 chars); Jaccard because it is symmetric and scale-free. It is deliberately crude — a paraphrase with
-no shared characters scores 0 — so it is used only in the direction where a mistake is cheap: a card that looks
-new is *released* from the count cap, never dropped for it.
+no shared characters scores 0.
+
+Through policy v5 it was used only in the direction where a mistake is cheap: a card that looked new was
+*released* from the count cap, never dropped for it. Policy v6 (#100) changed that — it is now the primary reason
+a card is withheld, including on storylines no count rule ever touched — so `decide()` carries two guards the
+metric itself cannot provide: it never withholds an `escalate`, and it never withholds a card whose direction
+contradicts the ledger entry it matched (character bigrams are blind to negation: "SEC 批准…" and "SEC 拒绝…"
+score 0.60). Anyone raising `similarity_max` should read those guards first.
 """
 
 from __future__ import annotations

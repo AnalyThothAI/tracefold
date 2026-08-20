@@ -53,12 +53,25 @@ THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
 _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 
 
+# A model primary is free text (`TriageAsset.symbol` is any 1-16 characters) and this fallback is reached
+# precisely when nothing grounded it, so it is the least validated string in the pipeline — and it becomes a
+# throttle bucket, an advisory-lock key and a console label. Accept only something shaped like a symbol; an
+# exchange-qualified identifier we have no bucket for (`0001.HK`) falls through to the next step instead.
+_SYMBOL_SHAPE: Final = re.compile(r"^[A-Z0-9]{1,10}$")
+
+
 def _symbol_in_text(symbol: str, text: str) -> bool:
-    """True when the base symbol appears in the text as its own token (a `$TICKER` cashtag counts: `$` is not a
-    word character). Deliberately strict — `ETH` does not match `ETHEREUM`, and neither does `MU` match `MUSK`."""
+    """True when the base symbol appears in the text as its own uppercase token (a `$TICKER` cashtag counts: `$`
+    is not a word character).
+
+    Case-sensitive on purpose. Provider tags collide with ordinary English words — `NOT`, `ME`, `ID`, `IO`, `ON`,
+    `AI` are all real symbols — and a case-insensitive match turned "he will not sell his stake" into evidence for
+    `asset:NOT`, which is the exact mis-bucketing this fallback exists to prevent. A Chinese headline carrying the
+    ticker still matches, because it carries it in caps. Strict on token boundaries too: `ETH` does not match
+    `ETHEREUM`, `MU` does not match `MUSK`."""
 
     base = re.escape(symbol.replace("XYZ-", "").upper())
-    return re.search(rf"(?<![A-Za-z0-9]){base}(?![A-Za-z0-9])", text, re.IGNORECASE) is not None
+    return re.search(rf"(?<![A-Za-z0-9]){base}(?![A-Za-z0-9])", text) is not None
 
 
 def storyline_key(
@@ -145,9 +158,13 @@ def final_storyline_key(
         return themed
     # No theme matched. The model named the subject even when the provider did not tag it, and its own primary is
     # a better bucket than an arbitrary grounded tag: OKX's listing notices all carry an `OKB` tag, so "Johnson &
-    # Johnson appears on OKX" was keyed `asset:OKB`; VeChain's upgrade vote was keyed `asset:SKHY`. 20% of the
+    # Johnson appears on OKX" was keyed `asset:OKB`; VeChain's upgrade vote was keyed `asset:SKHY`. 16% of the
     # asset-keyed cards of a live day sat in a bucket that was not about them (#100).
-    named = sorted(a for a in verdict_primaries if a.upper() not in _CL_SYMBOLS)
+    named = sorted(
+        a
+        for a in verdict_primaries
+        if a.upper() not in _CL_SYMBOLS and _SYMBOL_SHAPE.match(a.upper().replace("XYZ-", ""))
+    )
     if named:
         return storyline_key(
             title=title,

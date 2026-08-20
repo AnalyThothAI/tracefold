@@ -1246,9 +1246,12 @@ class NewsRepository:
                 dropped[str(row["rule"])] = dropped.get(str(row["rule"]), 0) + n
             elif final == "throttled":
                 throttled[str(row["key"])] = throttled.get(str(row["key"]), 0) + n
-                scope = str(row["seen_scope"] or "")
-                if str(row["key"]).endswith(":seen") and scope in duplicates:
-                    duplicates[scope] += n
+                if str(row["key"]).endswith(":seen"):
+                    # Rows written before v6 — and by a worker the rolling restart has not reached — carry no
+                    # `seen_scope`. They are all v5 withholds by construction, so credit them to `throttled`
+                    # rather than to neither: otherwise the metric reads near-zero for a day after every deploy.
+                    scope = str(row["seen_scope"] or "") or "throttled"
+                    duplicates[scope] = duplicates.get(scope, 0) + n
             elif final in {"push", "escalate"}:
                 pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
             if row["degraded"]:

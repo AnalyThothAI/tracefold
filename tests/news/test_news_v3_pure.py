@@ -15,7 +15,13 @@ from tracefold.news.eval.replay import replay_hits
 from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
 from tracefold.news.models import TriageAsset, TriageVerdict
-from tracefold.news.storyline import final_storyline_key, preliminary_storyline_key, storyline_key
+from tracefold.news.similarity import similarity
+from tracefold.news.storyline import (
+    _symbol_in_text,
+    final_storyline_key,
+    preliminary_storyline_key,
+    storyline_key,
+)
 from tracefold.news.titles import extract_title
 from tracefold.news.tokens import comparison_tokens, jaccard
 from tracefold.news.triage_rules import (
@@ -863,8 +869,8 @@ def test_gate_expectations_over_the_recall_corpus() -> None:
 
 def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -> None:
     """#100: the fallback used to take *any* grounded tag, so OKX's listing notices (every one of them tagged
-    OKB) all landed in `asset:OKB`, and a VeChain upgrade vote landed in `asset:SKHY`. 20% of a live day's
-    asset-keyed cards sat in a bucket that was not about them."""
+    OKB) all landed in `asset:OKB`, and a VeChain upgrade vote landed in `asset:SKHY`. 16% of a live day's
+    asset-keyed cards sat in a bucket that was not about them (alias-resolved; 20% counting raw symbols)."""
 
     # The model named the subject; the provider only tagged the venue's own token.
     assert (
@@ -1021,3 +1027,76 @@ def test_decide_v6_leaves_the_degraded_and_switched_off_paths_alone() -> None:
 
     off = decide(duplicate, _FACTS, window, policy=DecidePolicy(similarity_max=0.0))
     assert off.final == "push" and off.seen_similarity is None and off.seen_scope == ""
+
+
+def test_decide_v6_never_withholds_a_reversal_as_a_duplicate() -> None:
+    """Character bigrams are blind to negation: "SEC 批准…" and "SEC 拒绝…" score 0.60, well over
+    `similarity_max`. `_storyline_throttle` has always exempted a direction flip; once similarity can withhold a
+    card on its own (#100) it needs the same exemption — and the storyline windows cannot supply it, because on a
+    fresh key `directions_2h/4h` are empty while the card it resembles lives in the *global* ledger."""
+
+    approved = "SEC 批准以太坊现货 ETF"
+    window = _fresh(seen_headlines=(approved,), seen_event_ids=("evt-a",), seen_directions=("bullish",))
+    reversal = _verdict(headline_zh="SEC 拒绝以太坊现货 ETF", direction="bearish")
+    assert similarity(reversal.headline_zh, approved) >= DEFAULT_POLICY.similarity_max  # it does look alike
+
+    flipped = decide(reversal, _FACTS, window)
+    assert flipped.final == "push" and flipped.throttled_by is None
+    assert flipped.seen_similarity is not None  # measured, and then exempted — not skipped
+
+    # Same wording, same direction: still a duplicate.
+    repeat = decide(_verdict(headline_zh="SEC 批准以太坊现货 ETF 上市", direction="bullish"), _FACTS, window)
+    assert repeat.final == "throttled" and repeat.throttled_by == "storyline:asset:KLAC:seen"
+
+    # Neutral on either side is not a reversal; a ledger with no directions never exempts.
+    neutral = decide(_verdict(headline_zh="SEC 拒绝以太坊现货 ETF", direction="neutral"), _FACTS, window)
+    assert neutral.final == "throttled"
+    blind = _fresh(seen_headlines=(approved,), seen_event_ids=("evt-a",))
+    assert decide(reversal, _FACTS, blind).final == "throttled"
+
+    # The same guard on the v5 path: the count throttle stopped it, but it contradicts what it resembles.
+    hot = _busy(seen_headlines=(approved,), seen_event_ids=("evt-a",), seen_directions=("bullish",))
+    assert decide(reversal, _FACTS, hot).final == "push"
+
+
+def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
+    """`TriageAsset.symbol` is free text and this fallback is reached when nothing grounded it, so it is the least
+    validated string in the pipeline — and it becomes a throttle bucket, an advisory-lock key and a console
+    label."""
+
+    def key(primaries: list[str], **over: object) -> str:
+        return final_storyline_key(
+            title=str(over.get("title", "Some exchange notice")),
+            headline_zh="",
+            scope="single_name",
+            verdict_primaries=primaries,
+            grounded_assets=["OKB"],
+            family="general",
+        )
+
+    assert key(["TSLA"]) == "asset:TSLA"
+    # An exchange-qualified identifier we have no bucket for falls through instead of minting one.
+    assert key(["0001.HK"]) == "macro:general"
+    assert key(["a" * 11]) == "macro:general"
+
+
+def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
+    """`NOT`, `ME`, `ID`, `IO`, `ON` and `AI` are all real provider tags. A case-insensitive match turned "he will
+    not sell his stake" into evidence for `asset:NOT` — the exact mis-bucketing this fallback exists to prevent."""
+
+    assert not _symbol_in_text("NOT", "Trump says he will not raise tariffs on Canada")
+    assert not _symbol_in_text("ME", "show me the money")
+    assert not _symbol_in_text("ID", "no id required")
+    assert _symbol_in_text("NOT", "NOT holders vote on the treasury")
+    assert _symbol_in_text("OKB", "强生（$OKB）出现在 OKX")
+    assert (
+        final_storyline_key(
+            title="Musk says he will not sell his stake",
+            headline_zh="马斯克称不会减持",
+            scope="macro",
+            verdict_primaries=[],
+            grounded_assets=["NOT"],
+            family="general",
+        )
+        == "macro:general"
+    )

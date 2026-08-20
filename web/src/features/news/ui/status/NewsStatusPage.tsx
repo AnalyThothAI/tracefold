@@ -443,6 +443,15 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="triage_24h" v={String(status.pipeline.triage_24h)} />
           <KeyValueRow k="triage_degraded_24h" v={String(status.pipeline.triage_degraded_24h)} />
           <KeyValueRow k="throttled_24h" v={String(status.pipeline.throttled_24h)} />
+          {/* #100: of the throttled cards, the ones withheld because the reader already had the content —
+              `throttled` is the count-throttle path, `all` the every-push measurement policy v6 added. The
+              per-key bars above cannot show this: v6 spreads one reason across one key per asset. */}
+          <KeyValueRow
+            k="duplicates_withheld_24h"
+            v={`${status.pipeline.duplicates_withheld_24h?.throttled ?? 0} 计数拦下 · ${
+              status.pipeline.duplicates_withheld_24h?.all ?? 0
+            } 全量比对`}
+          />
           <KeyValueRow k="labeled_missed_24h" v={String(status.pipeline.labeled_missed_24h)} />
           <KeyValueRow
             k="labeled_missed_without_event_24h"
