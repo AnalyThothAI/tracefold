@@ -238,6 +238,7 @@ usage: tracefold news replay-decisions [-h] [--hours HOURS]
                                        [--theme-hard-cap-4h THEME_HARD_CAP_4H]
                                        [--asset-hard-cap-2h ASSET_HARD_CAP_2H]
                                        [--novel-min-magnitude NOVEL_MIN_MAGNITUDE]
+                                       [--high-priority-escalates]
                                        [--no-restatement-drop]
                                        [--no-storyline-throttle]
                                        [--no-unclear-push]
@@ -262,6 +263,9 @@ options:
   --novel-min-magnitude NOVEL_MIN_MAGNITUDE
                         minimum magnitude for the novelty bypass; default:
                         news.policy
+  --high-priority-escalates
+                        replay with the pre-v4 behaviour: a high-priority push
+                        becomes an escalate (#77)
   --no-restatement-drop
                         replay without dropping grounded restatements
   --no-storyline-throttle

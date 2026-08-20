@@ -46,6 +46,12 @@ class DecidePolicy:
     novel_min_magnitude: int = 2
     theme_hard_cap_4h: int = 6
     asset_hard_cap_2h: int = 3
+    # Policy v4 (issue #77): the Gate's `priority` is an AMQP transport hint (score >= 90, watchlist, listing
+    # frames, rate/yield macro), not a reader-facing importance judgment — it decides queue order, not the ⚡
+    # header. It used to promote every high-priority push to `escalate`, which made every exchange listing notice
+    # as loud as a missile strike. `escalate` is now magnitude-driven only; the rule still exists so the same
+    # Events keep pushing, it just no longer shouts.
+    high_priority_escalates: bool = False
 
 
 DEFAULT_POLICY = DecidePolicy()
@@ -168,7 +174,10 @@ def decide(
     ):
         final, rule = "escalate", "magnitude3"
     elif facts.priority == "high" and verdict.decision == "push":
-        final, rule = "escalate", "high_priority_push"
+        # Recall-preserving on purpose: this branch pushes without requiring `actionable` or min_push_magnitude,
+        # so it must stay a branch. Only its loudness changes (#77).
+        final = "escalate" if policy.high_priority_escalates else "push"
+        rule = "high_priority_push"
     elif (
         verdict.decision in _MODEL_WANTS_PUSH
         and verdict.actionable

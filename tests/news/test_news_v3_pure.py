@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from tracefold.news.storyline import final_storyline_key, preliminary_storyline_
 from tracefold.news.titles import extract_title
 from tracefold.news.tokens import comparison_tokens, jaccard
 from tracefold.news.triage_rules import (
+    DEFAULT_POLICY,
     DecidePolicy,
     GateFacts,
     StorylineStatus,
@@ -324,6 +326,31 @@ _FACTS = GateFacts(
 )
 
 
+def test_high_priority_pushes_without_shouting() -> None:
+    """#77: the Gate's `priority` is an AMQP transport hint, not a reader-facing importance judgment.
+
+    The branch must stay a branch — it pushes without requiring `actionable` or min_push_magnitude, so deleting
+    it would turn those Events into `below_threshold` drops rather than quieter pushes. Only loudness changes.
+    """
+
+    high = replace(_FACTS, priority="high")
+    quiet = decide(_verdict(), high, None)
+    assert quiet.final == "push" and quiet.override_rule == "high_priority_push"
+
+    loud = decide(_verdict(), high, None, policy=replace(DEFAULT_POLICY, high_priority_escalates=True))
+    assert loud.final == "escalate" and loud.override_rule == "high_priority_push"
+
+    # Recall is preserved for the Events this branch exists to carry: not actionable, magnitude below the push
+    # floor. Without the branch these fall through to `below_threshold`.
+    weak = _verdict(actionable=False, magnitude=0)
+    assert decide(weak, high, None).final == "push"
+    assert decide(weak, _FACTS, None).final == "drop"
+
+    # magnitude 3 still escalates on its own merit, independent of priority.
+    assert decide(_verdict(magnitude=3), high, None).override_rule == "magnitude3"
+    assert decide(_verdict(magnitude=3), _FACTS, None).final == "escalate"
+
+
 def test_decide_rules_and_throttle() -> None:
     assert decide(_verdict(), _FACTS, None).final == "push"
     assert decide(_verdict(event_type="noise"), _FACTS, None).final == "drop"
@@ -351,7 +378,8 @@ def test_decide_rules_and_throttle() -> None:
         priority="high",
         admission="candidate",
     )
-    assert decide(_verdict(), high, None).final == "escalate"
+    # #77: a high-priority push still pushes, it just no longer earns the ⚡ header.
+    assert decide(_verdict(), high, None).final == "push"
     # Asset storylines: window-max plus direction flip. (SOFT keeps the v3 novelty bypass out of the way: at
     # novel_min_magnitude=3 an m2 new_fact cannot pass the soft throttle.)
     SOFT = DecidePolicy(novel_min_magnitude=3)
