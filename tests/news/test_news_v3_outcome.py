@@ -163,7 +163,7 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
         "below_threshold",
         "fail_closed_fallback",
         "restatement",
-        "novel_bypass",
+        "distinct_bypass",
     }
     missing = sorted(rule for rule in emitted if rule not in OVERRIDE_RULE_ZH)
     assert missing == []
@@ -177,15 +177,18 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
     assert throttled_by_zh("hourly_cap") == "已达每小时推送上限"
     assert throttled_by_zh("storyline:asset:XYZ-HD") == "XYZ-HD 同一话题在节流窗口内已推过同等或更重要的消息"
     assert throttled_by_zh("storyline:macro:general:cap3") == "「综合」类 4 小时内已推 3 条"
-    # Policy v3 (issue #61): the novelty vocabulary and the hard caps.
+    # Policy v3 (issue #61): the novelty vocabulary, still on historical rows.
     assert override_rule_zh("restatement") == "重复：读者已收到同一事实"
-    assert override_rule_zh("novel_bypass").startswith("新进展放行")
-    assert throttled_by_zh("storyline:asset:BTC:hard3") == "BTC 2 小时内已推 3 条（含新进展放行），达到硬上限"
-    hard_theme = throttled_by_zh("storyline:theme:rates:hard6")
-    assert hard_theme == "「利率与央行」话题 4 小时内已推 6 条（含新进展放行），达到硬上限"
-    assert (
-        throttled_by_zh("storyline:macro:general:hard6") == "「综合」类 4 小时内已推 6 条（含新进展放行），达到硬上限"
-    )
+    assert override_rule_zh("novel_bypass").endswith("（旧规则）")
+    # Policy v5 (issue #81): the content judgment and the flood ceiling it is bounded by.
+    assert override_rule_zh("distinct_bypass") == "与读者刚收到的卡片都不同，放行"
+    assert throttled_by_zh("storyline:asset:BTC:hard6") == "BTC 2 小时内已推 6 条，达到防洪上限"
+    assert throttled_by_zh("storyline:theme:rates:hard18") == "「利率与央行」话题 4 小时内已推 18 条，达到防洪上限"
+    assert throttled_by_zh("storyline:asset:BTC:seen") == "重复：读者刚收到过内容高度相近的卡片"
+    assert throttled_by_zh("storyline:macro:general:cap3:seen") == "重复：读者刚收到过内容高度相近的卡片"
+    # Historical keys (the pre-v5 hard caps) still read as sentences.
+    assert throttled_by_zh("storyline:theme:rates:hard6") == "「利率与央行」话题 4 小时内已推 6 条，达到防洪上限"
+    assert throttled_by_zh("storyline:macro:general:hard6") == "「综合」类 4 小时内已推 6 条，达到防洪上限"
     assert storyline_key_zh("theme:mideast_energy") == "中东与能源" and storyline_key_zh("asset:BTC") == "BTC"
 
 

@@ -430,6 +430,10 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="throttled_24h" v={String(status.pipeline.throttled_24h)} />
           <KeyValueRow k="labeled_missed_24h" v={String(status.pipeline.labeled_missed_24h)} />
           <KeyValueRow
+            k="labeled_missed_without_event_24h"
+            v={String(status.pipeline.labeled_missed_without_event_24h)}
+          />
+          <KeyValueRow
             k="candidate_share_24h"
             v={String(status.pipeline.candidate_share_24h ?? "—")}
           />

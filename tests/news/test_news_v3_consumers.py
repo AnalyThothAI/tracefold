@@ -327,7 +327,7 @@ def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degrad
         _card(
             event_id="ev-weak", priority="normal", provider_score_max=75.0, grounded_assets=["AMD"], watchlist_hits=[]
         ),
-        _card(event_id="ev-macro", priority="high", provider_score_max=85.0, grounded_assets=[], watchlist_hits=[]),
+        _card(event_id="ev-quiet", priority="normal", provider_score_max=95.0, grounded_assets=[], watchlist_hits=[]),
     ],
 )
 def test_triage_without_model_drops_when_rule_baseline_drops(card: dict[str, Any]) -> None:
@@ -341,6 +341,36 @@ def test_triage_without_model_drops_when_rule_baseline_drops(card: dict[str, Any
     assert inserted["rule_baseline_decision"] == "drop" and inserted["final_decision"] == "drop"
     assert bus.published == []
     assert "mark_verdict_published" not in news.names()
+
+
+@pytest.mark.parametrize(
+    "card",
+    [
+        _card(event_id="ev-macro", priority="high", provider_score_max=85.0, grounded_assets=[], watchlist_hits=[]),
+        _card(
+            event_id="ev-listing",
+            priority="normal",
+            admission="listing_deterministic",
+            provider_score_max=10.0,
+            grounded_assets=[],
+            watchlist_hits=[],
+        ),
+    ],
+)
+def test_triage_without_model_fails_open_on_high_priority_and_listing(card: dict[str, Any]) -> None:
+    """#81: a model outage used to drop every high-priority Event that had no grounded asset — which is what a
+    missile strike, a rate decision or a delisting notice looks like. It now sends the wire headline."""
+
+    news = RecordingNews(get_verdict=None, event_card=card, event_status={}, sent_count_since=0, insert_verdict=True)
+    bus = FakeBus()
+
+    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["degraded"] is True
+    assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "push"
+    assert inserted["verdict"]["headline_zh"]  # the wire headline, which delivery renders verbatim
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
 def test_triage_without_model_pushes_a_grounded_score_80_event() -> None:
@@ -891,8 +921,10 @@ def test_triage_degraded_fallback_never_earns_the_novelty_bypass() -> None:
     assert bus.published == []
 
 
-def test_triage_novel_event_passes_the_soft_throttle_and_publishes() -> None:
-    news = RecordingNews(
+def _throttling_news(*, ledger_headline: str) -> RecordingNews:
+    """A storyline the soft throttle stops (one m2 push already in the window) with one card in the ledger."""
+
+    return RecordingNews(
         get_verdict=None,
         event_card=_card(priority="normal", provider_score_max=75.0),
         event_status={
@@ -905,16 +937,42 @@ def test_triage_novel_event_passes_the_soft_throttle_and_publishes() -> None:
         },
         sent_count_since=0,
         insert_verdict=True,
-        told_ledger=[_ledger_row("ev-earlier", NOW_MS - 300_000, headline="英伟达发布新芯片")],
+        told_ledger=[_ledger_row("ev-earlier", NOW_MS - 300_000, headline=ledger_headline)],
     )
+
+
+def test_triage_releases_a_card_the_reader_has_not_seen_and_traces_the_measurement() -> None:
+    """#81: the soft throttle releases on measured distinctness, and the trace records what it measured."""
+
+    news = _throttling_news(ledger_headline="美联储纪要显示官员对通胀存在分歧")
     bus = FakeBus()
-    model = _ScriptedTriageModel([_model_verdict(novelty="progression")])
-    triage = _triage_with_model(news, bus, model)
+    triage = _triage_with_model(news, bus, _ScriptedTriageModel([_model_verdict()]))
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "novel_bypass"
+    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "distinct_bypass"
     assert inserted["throttled_by"] is None
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
+    assert inserted["trace"]["seen_similarity"] < 0.25 and inserted["trace"]["seen_count"] == 1
     assert "restates_event_id" not in inserted["trace"]
+
+
+def test_triage_withholds_a_card_the_reader_already_received() -> None:
+    """The model calling its own event new buys nothing: the measurement against the reader's window decides."""
+
+    news = _throttling_news(ledger_headline="英伟达投资 OpenAI 数据中心")
+    bus = FakeBus()
+    triage = _triage_with_model(news, bus, _ScriptedTriageModel([_model_verdict(novelty="progression")]))
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "throttled"
+    assert inserted["throttled_by"] == "storyline:asset:NVDA:seen"
+    assert bus.published == []
+    assert inserted["trace"]["seen_similarity"] >= 0.25
+    seen_against = inserted["trace"]["seen_against"]
+    assert seen_against["event_id"] == "ev-earlier"
+    assert seen_against["headline_zh"] == "英伟达投资 OpenAI 数据中心"
+    assert seen_against["at_ms"] == NOW_MS - 300_000  # `news why` can say how long ago the reader got it

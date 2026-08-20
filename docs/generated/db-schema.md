@@ -54,11 +54,14 @@
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | True | `None` |
 | `label_version` | `TEXT` | False | `None` |
 | `source` | `TEXT` | False | `None` |
 | `label` | `JSONB` | False | `'{}'::jsonb` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `labeled_by` | `TEXT` | False | `'operator'::text` |
+| `subject` | `TEXT` | False | `''::text` |
+| `label_id` | `TEXT` | False | `None` |
 
 ## `news_event_members`
 

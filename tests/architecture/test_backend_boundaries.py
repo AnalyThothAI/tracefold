@@ -16,6 +16,7 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/app/cli/commands/news.py": {
         "tracefold.news.bus",
+        "tracefold.news.eval.harness",
         "tracefold.news.eval.offline",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",

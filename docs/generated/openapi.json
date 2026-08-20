@@ -1434,8 +1434,18 @@
             "title": "Label Version",
             "type": "string"
           },
+          "labeled_by": {
+            "default": "operator",
+            "title": "Labeled By",
+            "type": "string"
+          },
           "source": {
             "title": "Source",
+            "type": "string"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
             "type": "string"
           }
         },
@@ -1538,6 +1548,11 @@
           "labeled_missed_24h": {
             "default": 0,
             "title": "Labeled Missed 24H",
+            "type": "integer"
+          },
+          "labeled_missed_without_event_24h": {
+            "default": 0,
+            "title": "Labeled Missed Without Event 24H",
             "type": "integer"
           },
           "novelty_defaulted_24h": {

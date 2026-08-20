@@ -311,17 +311,24 @@ Diagnose News in this order:
 5. `tracefold news eval --hours 168`: precision@push, the guardrail
    `missed_rate`/`false_push_rate`, and suppressed/missed/throttled movers from
    operator labels (`tracefold news label <event_id>
-   <good|noise|late|wrong_direction|dup|missed>` on any Event;
-   `good`/`wrong_direction`/`late`/`missed` count as moved, `noise`/`dup` as
-   flat), with per-admission/`override_rule`/`throttled_by`/asset-class/
-   audience/event-type confusion tables. `tracefold news replay-decisions
-   --hours 168 --min-push-magnitude 2 --no-storyline-throttle ...` re-runs
-   `decide()` with a candidate policy over the same stored verdicts; change
-   `news.policy` only after the replay and the labels agree. The novelty knobs
-   (`--theme-hard-cap-4h`, `--asset-hard-cap-2h`, `--novel-min-magnitude`,
-   `--no-restatement-drop`) trade reader volume for coverage: on the
-   2026-08-18 replay (issue #61) hard caps 4/2 gave 80 pushes, 5/3 88, 6/3 92
-   against 68 without novelty, with 14 restatements dropped in every setting.
+   <good|noise|late|wrong_direction|dup|missed|must_push>` on any Event, and
+   `tracefold news label --subject "…" missed` for a miss the pipeline never
+   created an Event for; `good`/`wrong_direction`/`late`/`missed` count as
+   moved, `noise`/`dup` as flat), with per-admission/`override_rule`/
+   `throttled_by`/asset-class/audience/event-type confusion tables.
+   `tracefold news replay-decisions --hours 168 --min-push-magnitude 2
+   --no-storyline-throttle ...` re-runs `decide()` with a candidate policy over
+   the same stored verdicts. **Do not change `news.policy` on a
+   `replay-decisions` reading alone**: it reuses each verdict's stored window
+   snapshot, so it cannot see what a flipped card does to every later card's
+   window. Run `tracefold news validate-candidate` (docs/DEVELOPMENT.md) and
+   ship only on its PASS plus the evidence document.
+   The throttle knobs (`--similarity-max`, `--distinct-hard-cap-4h`,
+   `--distinct-asset-cap-2h`, `--no-restatement-drop`) trade reader volume for
+   coverage: on the 2026-08-18/20 corpus (issue #81) the shipped 0.25 / 18 / 6
+   delivered 639 cards at a peak of 29/h, and 24/8 delivered 663 with 24 fewer
+   facts lost and 3 more near-duplicate pairs — a candidate the gate accepts,
+   left for the operator to promote after a week of watching.
    `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
    duplicates the reader was spared; `pipeline.reasked_24h` counts Events the
    model was asked twice because a card landed while it was thinking (expect
@@ -399,6 +406,16 @@ archive, or quarantine action. Failed News messages retry through the broker's
 30 s lane three times and then dead-letter to `news.dead`, which
 `tracefold news dlq inspect|replay|purge` owns. Current models retain one
 stable row per identity.
+
+News retention has two tiers (`news.retention`, issue #81). The Janitor deletes
+`news_items` older than `raw_days` (30), which cascades to `news_events` and
+from there to every verdict, delivery, member, asset, band **and operator
+label** — so a single number used to decide the lifetime of the whole learning
+plane. An Item behind an Event that carries a verdict or a label is evidence,
+not storage, and survives to `judged_days` (365): it is what
+`news corpus freeze` and the release gate replay against. Widening the judged
+tier costs disk and nothing else; narrowing it silently destroys the only
+ground truth the system has.
 
 Destructive migrations use bounded timeouts, transform data before constraints,
 drop children before parents, avoid `CASCADE`/`IF EXISTS`, and preserve material

@@ -651,8 +651,18 @@ export interface components {
             };
             /** Label Version */
             label_version: string;
+            /**
+             * Labeled By
+             * @default operator
+             */
+            labeled_by: string;
             /** Source */
             source: string;
+            /**
+             * Subject
+             * @default
+             */
+            subject: string;
         };
         /**
          * NewsOutcomeData
@@ -710,6 +720,11 @@ export interface components {
              * @default 0
              */
             labeled_missed_24h: number;
+            /**
+             * Labeled Missed Without Event 24H
+             * @default 0
+             */
+            labeled_missed_without_event_24h: number;
             /**
              * Novelty Defaulted 24H
              * @default 0

@@ -80,8 +80,9 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "high_priority_push": "高优先级来源，模型建议推送",
     "fail_closed_fallback": "模型不可用，按规则兜底",
     "restatement": "重复：读者已收到同一事实",
-    "novel_bypass": "新进展放行：同话题已推过，但这是新事实",
-    # Retired rules (policy v1 / Analyst lane) still present on historical verdicts.
+    "distinct_bypass": "与读者刚收到的卡片都不同，放行",
+    # Retired rules (policy v1-v4 / Analyst lane) still present on historical verdicts.
+    "novel_bypass": "新进展放行：模型自报是新事实（旧规则）",
     "magnitude2_actionable": "影响明显且可操作（旧规则）",
     "verify_failed": "分析结果未通过校验（已退役）",
 }
@@ -176,6 +177,9 @@ DECISION_ZH: Final[dict[str, str]] = {
 
 # Asset windows are 2 h for a push and 4 h for an escalate (triage_rules._storyline_throttle) and the key does not
 # say which applied, so the copy names the window generically instead of guessing.
+# `:seen` (policy v5, #81) is appended when the card was measured against the reader's window and found to be
+# something they already have — the only reason v5 withholds a card for being a duplicate.
+_SEEN_SUFFIX: Final = ":seen"
 _THROTTLE_ASSET_RE = re.compile(r"^storyline:asset:(?P<symbol>[^:]+)(?::hard(?P<hard>\d+))?$")
 _THROTTLE_THEME_RE = re.compile(r"^storyline:theme:(?P<theme>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
 _THROTTLE_FAMILY_RE = re.compile(r"^storyline:macro:(?P<family>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
@@ -236,9 +240,11 @@ def throttled_by_zh(key: str | None) -> str:
         return ""
     if text == "hourly_cap":
         return "已达每小时推送上限"
+    if text.endswith(_SEEN_SUFFIX):
+        return "重复：读者刚收到过内容高度相近的卡片"
     if (m := _THROTTLE_ASSET_RE.match(text)) is not None:
         if m.group("hard"):
-            return f"{m.group('symbol')} 2 小时内已推 {m.group('hard')} 条（含新进展放行），达到硬上限"
+            return f"{m.group('symbol')} 2 小时内已推 {m.group('hard')} 条，达到防洪上限"
         return f"{m.group('symbol')} 同一话题在节流窗口内已推过同等或更重要的消息"
     if (m := _THROTTLE_THEME_RE.match(text)) is not None:
         theme = THEME_ZH.get(m.group("theme"), m.group("theme"))
@@ -251,7 +257,7 @@ def throttled_by_zh(key: str | None) -> str:
 
 def _window_cap_zh(subject: str, *, cap: str | None, hard: str | None) -> str:
     if hard:
-        return f"{subject} 4 小时内已推 {hard} 条（含新进展放行），达到硬上限"
+        return f"{subject} 4 小时内已推 {hard} 条，达到防洪上限"
     if cap:
         return f"{subject} 4 小时内已推 {cap} 条"
     return f"{subject} 4 小时内已推过更重要的消息"

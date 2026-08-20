@@ -326,12 +326,22 @@ regulation, hack, exploit, partnership, filing) at magnitude >= 2 -> push
 magnitude >= 1 -> push; else drop (`below_threshold`). Storyline throttling
 (switch `storyline_throttle`) keeps the window-max + direction-flip rule for
 `asset:` keys and caps `theme:`/`macro:` keys at `theme_cap_4h` (3) pushes
-per 4 h unless magnitude exceeds the window max or the direction flips; a
-novel event (`new_fact`/`progression` at magnitude >= `novel_min_magnitude`,
-2; never a degraded rule-baseline verdict) passes that soft throttle as
-`novel_bypass` until the hard cap (`asset_hard_cap_2h` 3 pushes in the last
-2 h, `theme_hard_cap_4h` 6 in the last 4 h; `throttled_by =
-storyline:<key>:hard<N>` beyond it); the hourly cap (switch
+per 4 h unless magnitude exceeds the window max or the direction flips. What
+gets past that soft throttle is *measured*, not claimed (policy v5, issue #81):
+the card's `headline_zh` is compared with every card the reader received in the
+window, and it is released as `distinct_bypass` when the closest resemblance
+(character-bigram Jaccard, `tracefold.news.similarity`) stays under
+`similarity_max` (0.25). At or above it the reader already has this and the key
+gains a `:seen` suffix; a degraded rule-baseline verdict carries a placeholder
+headline and is never released; `similarity_max = 0` restores the pre-v5 count
+cap. Counts survive only as a flood ceiling (`distinct_asset_cap_2h` 6 pushes
+in the last 2 h, `distinct_hard_cap_4h` 18 in the last 4 h; `throttled_by =
+storyline:<key>:hard<N>` beyond it) — one storyline cannot spend an unbounded
+stream on the reader however distinct each card is. This retired
+`novel_bypass`, which released a card on the model's own unverified claim that
+its event was new and was the last path where a self-report opened a gate;
+`novelty` is still read, but only to *withhold* a grounded restatement. The
+hourly cap (switch
 `hourly_cap_enabled`, `news.push.hourly_cap`, default 30) throttles pushes
 only. Every path names its rule; nothing drops silently. A fast retryable
 model failure (timeout, rate limit, connection) or an unusable answer that is
@@ -340,8 +350,11 @@ attempt inside the deadline, and once that budget is spent a verdict that is
 complete except for `novelty` is accepted as `new_fact` (`novelty_defaulted`,
 prompt-v5 quality) rather than dropped on rules; model failure is degraded,
 not silent:
-`rule_baseline` (watchlist primary, or score >= 80 with a grounded asset)
-still pushes, everything else drops with `degraded=true`, and three
+`rule_baseline` (watchlist primary, score >= 80 with a grounded asset, or —
+since #81 — a high-priority Event or a deterministic exchange notice, which is
+what a missile strike, a rate decision or a delisting looks like without a
+ticker) still pushes on the wire headline, everything else drops with
+`degraded=true`, and three
 consecutive transport failures open a 60-second circuit that also opens a
 `triage_circuit_open` incident (closed by the next success); an output failure
 (`news_triage_output_truncated` when the tool call hit `max_tokens`,

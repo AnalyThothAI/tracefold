@@ -49,11 +49,13 @@ def _rows(repos: Any, *, since_ms: int, policy_version: str | None) -> list[dict
 
 
 def _outcome(row: Mapping[str, Any]) -> str | None:
-    """Operator label as truth: good/wrong_direction/late/missed = the event mattered ("moved"), noise/dup = it did
-    not. ``missed`` is the operator saying "this should have been pushed" about anything the pipeline held."""
+    """Operator label as truth: good/wrong_direction/late/missed/must_push = the event mattered ("moved"),
+    noise/dup = it did not. ``missed`` and ``must_push`` are both the operator saying "this should have been
+    pushed" about something the pipeline held — ``must_push`` additionally enters the release gate's boundary
+    set, but it has to count here too or marking one would move no metric at all."""
 
     label = row.get("label")
-    if label in {"good", "wrong_direction", "late", "missed"}:
+    if label in {"good", "wrong_direction", "late", "missed", "must_push"}:
         return "moved"
     if label in {"noise", "dup"}:
         return "flat"
@@ -147,7 +149,7 @@ def replay_decisions(
     replayed: list[dict[str, Any]] = []
     skipped = 0
     restatement_drops = 0
-    novel_bypass = 0
+    distinct_bypass = 0
     changed: collections.Counter[str] = collections.Counter()
     for r in rows:
         if not r.get("verdict"):
@@ -177,31 +179,18 @@ def replay_decisions(
             changed[f"{r['final_decision']}->{outcome.final}"] += 1
         if outcome.override_rule == "restatement":
             restatement_drops += 1
-        elif outcome.override_rule == "novel_bypass":
-            novel_bypass += 1
+        elif outcome.override_rule == "distinct_bypass":
+            distinct_bypass += 1
     return {
         "window_hours": int(hours),
-        "policy": {
-            "escalate_magnitude": policy.escalate_magnitude,
-            "min_push_magnitude": policy.min_push_magnitude,
-            "min_watchlist_magnitude": policy.min_watchlist_magnitude,
-            "unclear_push_min_magnitude": policy.unclear_push_min_magnitude,
-            "unclear_push_event_types": list(policy.unclear_push_event_types),
-            "theme_cap_4h": policy.theme_cap_4h,
-            "storyline_throttle": policy.storyline_throttle,
-            "hourly_cap_enabled": policy.hourly_cap_enabled,
-            "restatement_drop": policy.restatement_drop,
-            "novel_min_magnitude": policy.novel_min_magnitude,
-            "theme_hard_cap_4h": policy.theme_hard_cap_4h,
-            "asset_hard_cap_2h": policy.asset_hard_cap_2h,
-        },
+        "policy": policy.as_dict(),
         "events": len(rows),
         "verdicts": sum(1 for r in rows if r.get("verdict")),
         "replayed": len(replayed),
         "skipped_invalid_verdicts": skipped,
         "changed": dict(changed),
         "restatement_drops": restatement_drops,
-        "novel_bypass": novel_bypass,
+        "distinct_bypass": distinct_bypass,
         "stored": _rates(rows),
         "candidate": _rates(replayed),
         "candidate_by_override_rule": _confusion(replayed, "override_rule"),

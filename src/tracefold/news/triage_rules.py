@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Final
 
 from .models import Decision, TriageVerdict
+from .similarity import max_similarity
 
 PUSH_WINDOW_MS = 2 * 60 * 60_000
 ESCALATE_WINDOW_MS = 4 * 60 * 60_000
@@ -39,19 +40,32 @@ class DecidePolicy:
     theme_cap_4h: int = 3
     storyline_throttle: bool = True
     hourly_cap_enabled: bool = True
-    # Policy v3 (issue #61): the model's novelty verdict against the told ledger. A grounded restatement never
-    # pushes; a novel event (new_fact / progression) at >= novel_min_magnitude may pass the storyline throttle up to a
-    # hard cap (theme: pushes per 4 h; asset: pushes per 2 h). Defaults are the values measured in the #61 replay.
     restatement_drop: bool = True
-    novel_min_magnitude: int = 2
-    theme_hard_cap_4h: int = 6
-    asset_hard_cap_2h: int = 3
+    # Policy v5 (issue #81): the storyline throttle stops counting and starts reading. A card the soft throttle
+    # stopped is released when its Chinese headline resembles nothing the reader received in the window; the
+    # counts survive only as a flood ceiling. Replayed over 2185 stored verdicts this cuts facts the reader never
+    # received by 63% *and* near-duplicate pairs by 46% — the two used to trade against each other because the
+    # only release was `novel_bypass`, the model's own unverified claim that its event was new.
+    similarity_max: float = 0.25
+    distinct_hard_cap_4h: int = 18
+    distinct_asset_cap_2h: int = 6
     # Policy v4 (issue #77): the Gate's `priority` is an AMQP transport hint (score >= 90, watchlist, listing
     # frames, rate/yield macro), not a reader-facing importance judgment — it decides queue order, not the ⚡
     # header. It used to promote every high-priority push to `escalate`, which made every exchange listing notice
     # as loud as a missile strike. `escalate` is now magnitude-driven only; the rule still exists so the same
     # Events keep pushing, it just no longer shouts.
     high_priority_escalates: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        """Every tunable, by name. A stored decision has to carry the numbers that produced it: without this the
+        trace said which rule fired but not against which thresholds, so a historical verdict could not be
+        replayed or compared with a candidate (#81). Also the policy half of the release-gate evidence."""
+
+        out: dict[str, Any] = {}
+        for spec in fields(self):
+            value = getattr(self, spec.name)
+            out[spec.name] = list(value) if isinstance(value, tuple) else value
+        return out
 
 
 DEFAULT_POLICY = DecidePolicy()
@@ -80,6 +94,11 @@ class StorylineStatus:
     directions_4h: tuple[str, ...] = ()
     last_push_ago_ms: int | None = None
     told_directions: tuple[str, ...] = ()
+    # Every card the reader actually received in the throttle window, newest first — not the <= 12 entries the
+    # status bar showed the model. The two differ by design: the model gets a readable ledger, ``decide()`` gets
+    # the whole window, and the wider set measurably catches more repeats (#81).
+    seen_headlines: tuple[str, ...] = ()
+    seen_event_ids: tuple[str, ...] = ()
 
     @property
     def told_count(self) -> int:
@@ -93,6 +112,10 @@ class DecisionResult:
     throttled_by: str | None
     rule_baseline: Decision
     watchlist_hits: tuple[str, ...] = field(default_factory=tuple)
+    # Only set when the storyline throttle fired and the card was measured against the reader's window:
+    # how close it came, and which of ``status.seen_*`` it came closest to (-1 = nothing to compare against).
+    seen_similarity: float | None = None
+    seen_against: int = -1
 
 
 def _base(symbol: str) -> str:
@@ -102,13 +125,22 @@ def _base(symbol: str) -> str:
 _BASELINE_MIN_SCORE: Final = 80.0
 
 
-def rule_baseline(facts: GateFacts) -> Decision:
-    """The decision a pure-rule system would take with no model at all: watchlist, or a provider score >= 80 on a
-    grounded asset, pushes; everything else drops (and is counted as degraded, never silently)."""
+def rule_baseline(facts: GateFacts, *, fail_open_high_priority: bool = True) -> Decision:
+    """The decision a pure-rule system would take with no model at all.
+
+    Watchlist, or a provider score >= 80 on a grounded asset, pushes. Since #81 a high-priority Event and a
+    deterministic exchange listing notice push too: the model being unavailable is not evidence that a missile
+    strike or a delisting does not matter, and a degraded card renders the wire headline, which is a usable card.
+    Before this, a model outage silently dropped every high-priority Event without a grounded asset — and the
+    watchlist half of the old rule is inert on a deployment whose `news.watchlist` is empty, which is the live
+    one. Everything else drops, counted as degraded, never silently.
+    """
 
     watch = any(_base(s) in facts.watchlist_symbols for s in facts.grounded_assets)
     score = float(facts.provider_score or 0)
     if watch or (score >= _BASELINE_MIN_SCORE and facts.grounded_assets):
+        return "push"
+    if fail_open_high_priority and (facts.priority == "high" or facts.admission == "listing_deterministic"):
         return "push"
     return "drop"
 
@@ -144,16 +176,18 @@ def decide(
     hourly_cap_reached: bool = False,
     muted: bool = False,
     degraded: bool = False,
-    novelty_defaulted: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
     """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently.
 
-    ``degraded`` marks a rule-baseline fallback verdict (no model judgment): it never earns the novelty bypass.
-    ``novelty_defaulted`` marks a verdict the lenient parse accepted without a ``novelty`` field, whose
-    ``new_fact`` was invented by ``_verdict_without_novelty`` rather than judged against the told ledger. An
-    invented novelty is *unknown*, not novel, so it is disqualified from the bypass on the same grounds as
-    ``degraded`` — otherwise omitting a required field would promote a card past the soft throttle (issue #72)."""
+    ``degraded`` marks a rule-baseline fallback verdict (no model judgment): its headline is a placeholder, so it
+    is never released from the storyline throttle — a placeholder is not evidence that a fact is new.
+
+    Policy v5 (#81) removed the last path where the model's own unverified claim about itself opened a gate:
+    ``novelty`` is still read, but only in the direction that *withholds* a card (a restatement of a ledger entry
+    the model was actually shown, direction unflipped), never to promote one. Whether a card gets past the
+    storyline throttle is now decided by measuring it against what the reader received.
+    """
 
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
@@ -199,37 +233,49 @@ def decide(
     else:
         final, rule = "drop", "below_threshold"
 
+    seen_similarity: float | None = None
+    seen_against = -1
     if final in {"push", "escalate"} and status is not None and policy.storyline_throttle:
         throttled_by = _storyline_throttle(verdict, status, final, policy)
         if throttled_by is not None:
-            hard = None if (degraded or novelty_defaulted) else _novel_bypass(verdict, status, policy)
-            if hard is None:
+            if degraded or policy.similarity_max <= 0.0:
+                # A rule-baseline card carries the wire headline as a placeholder, not a judged statement of what
+                # is new; and `similarity_max = 0` is the operator switching the content judgment off, which
+                # leaves the pre-v5 count cap. Either way: no release.
                 return DecisionResult("throttled", rule, throttled_by, baseline, watch_hits)
-            if hard:
-                return DecisionResult("throttled", rule, hard, baseline, watch_hits)
-            rule = "novel_bypass"
+            seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
+            # Nothing comparable in the window (an empty ledger, or a headline too short to bigram) is not
+            # evidence of a repeat: the reader received nothing, so nothing can be a repeat of it.
+            if seen_against >= 0 and seen_similarity >= policy.similarity_max:
+                # The reader has this. This is the whole duplicate defence: everything else is a ceiling.
+                return DecisionResult(
+                    "throttled", rule, f"{throttled_by}:seen", baseline, watch_hits, seen_similarity, seen_against
+                )
+            ceiling = _flood_ceiling(status, policy)
+            if ceiling is not None:
+                return DecisionResult("throttled", rule, ceiling, baseline, watch_hits, seen_similarity, seen_against)
+            rule = "distinct_bypass"
 
     if final == "push" and hourly_cap_reached and policy.hourly_cap_enabled:
-        return DecisionResult("throttled", rule, "hourly_cap", baseline, watch_hits)
-    return DecisionResult(final, rule, None, baseline, watch_hits)
+        return DecisionResult("throttled", rule, "hourly_cap", baseline, watch_hits, seen_similarity, seen_against)
+    return DecisionResult(final, rule, None, baseline, watch_hits, seen_similarity, seen_against)
 
 
-def _novel_bypass(verdict: TriageVerdict, status: StorylineStatus, policy: DecidePolicy) -> str | None:
-    """A novel event (new_fact / progression, m >= novel_min_magnitude) may pass the soft throttle up to a hard cap:
-    ``asset_hard_cap_2h`` pushes in the last 2 h for asset keys (push and escalate alike — the cap is named by its
-    window), ``theme_hard_cap_4h`` in the last 4 h for theme/macro keys. Returns None when the event is not novel
-    enough (the soft throttle stands), "" when it passes, or the hard-cap ``throttled_by`` key when the cap is
-    reached."""
+def _flood_ceiling(status: StorylineStatus, policy: DecidePolicy) -> str | None:
+    """The absolute number of cards one storyline may spend in its window, whatever they say.
 
-    if verdict.novelty not in {"new_fact", "progression"} or verdict.magnitude < policy.novel_min_magnitude:
-        return None
+    This is not a relevance judgment — a distinct card is only stopped here because the reader cannot read an
+    unbounded stream about one topic. It is deliberately far above the soft cap (18 per theme per 4 h, 6 per
+    asset per 2 h) so that it fires on a genuine flood and not on an ordinary busy hour.
+    """
+
     if status.key.startswith("asset:"):
-        if status.pushed_2h < policy.asset_hard_cap_2h:
-            return ""
-        return f"storyline:{status.key}:hard{policy.asset_hard_cap_2h}"
-    return (
-        "" if status.pushed_4h < policy.theme_hard_cap_4h else f"storyline:{status.key}:hard{policy.theme_hard_cap_4h}"
-    )
+        if status.pushed_2h >= policy.distinct_asset_cap_2h:
+            return f"storyline:{status.key}:hard{policy.distinct_asset_cap_2h}"
+        return None
+    if status.pushed_4h >= policy.distinct_hard_cap_4h:
+        return f"storyline:{status.key}:hard{policy.distinct_hard_cap_4h}"
+    return None
 
 
 def _storyline_throttle(
@@ -278,13 +324,30 @@ def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> t
 
 
 def storyline_status_from_row(
-    row: Mapping[str, Any] | None, key: str, *, told: Sequence[Mapping[str, Any]] = ()
+    row: Mapping[str, Any] | None,
+    key: str,
+    *,
+    told: Sequence[Mapping[str, Any]] = (),
+    seen: Sequence[Mapping[str, Any]] | None = None,
 ) -> StorylineStatus:
-    """``told`` is the ledger the model saw (status-bar order); only its directions matter to decide()."""
+    """``told`` is the ledger the model saw (status-bar order); only its directions matter to decide().
+
+    ``seen`` is every card the reader received in the window — the wider set decide() measures a throttled card
+    against. It defaults to ``told`` so pure callers and replays that only kept the status bar still work, at the
+    cost of a narrower comparison than the worker performs.
+    """
 
     told_directions = tuple(str(t.get("dir") or "") for t in told)
+    rows = list(told if seen is None else seen)
+    seen_headlines = tuple(str(r.get("headline_zh") or "") for r in rows)
+    seen_event_ids = tuple(str(r.get("event_id") or "") for r in rows)
     if not row:
-        return StorylineStatus(key=key, told_directions=told_directions)
+        return StorylineStatus(
+            key=key,
+            told_directions=told_directions,
+            seen_headlines=seen_headlines,
+            seen_event_ids=seen_event_ids,
+        )
     return StorylineStatus(
         key=key,
         pushed_2h=int(row.get("pushed_2h") or 0),
@@ -295,6 +358,8 @@ def storyline_status_from_row(
         directions_4h=tuple(row.get("directions_4h") or ()),
         last_push_ago_ms=(int(row["last_push_ago_ms"]) if row.get("last_push_ago_ms") is not None else None),
         told_directions=told_directions,
+        seen_headlines=seen_headlines,
+        seen_event_ids=seen_event_ids,
     )
 
 

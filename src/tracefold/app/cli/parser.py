@@ -59,9 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
     news_instruments.add_argument("--hours", type=_positive_int, default=168, help="look-back (action=listings)")
     news_instruments.add_argument("--limit", type=_positive_int, default=50, help="max rows (action=listings)")
     news_label = news_subcommands.add_parser("label", help="record an operator label for one Event (learning plane)")
-    news_label.add_argument("event_id")
-    news_label.add_argument("label", choices=("good", "noise", "late", "wrong_direction", "dup", "missed"))
+    news_label.add_argument(
+        "event_id",
+        nargs="?",
+        default="",
+        help="Event to label; omit together with --subject to record a miss the pipeline never created an Event for",
+    )
+    news_label.add_argument("label", choices=("good", "noise", "late", "wrong_direction", "dup", "missed", "must_push"))
     news_label.add_argument("--note", default="", help="free-text note (<=200 chars)")
+    news_label.add_argument(
+        "--subject",
+        default="",
+        help="what was labelled, in words; required when no event_id, and denormalised so the label outlives the Event",
+    )
+    news_label.add_argument("--by", default="operator", help="who is labelling (labels are correctable per person)")
     news_eval = news_subcommands.add_parser("eval", help="offline evaluation of Triage decisions against labels")
     news_eval.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
     news_eval.add_argument("--policy-version", default="", help="restrict to one triage policy version")
@@ -74,22 +85,22 @@ def build_parser() -> argparse.ArgumentParser:
     news_replay_decisions.add_argument("--min-watchlist-magnitude", type=int, default=None, help="default: news.policy")
     news_replay_decisions.add_argument("--theme-cap-4h", type=_positive_int, default=None, help="default: news.policy")
     news_replay_decisions.add_argument(
-        "--theme-hard-cap-4h",
+        "--distinct-hard-cap-4h",
         type=_positive_int,
         default=None,
-        help="novel-event hard cap per theme / 4 h; default: news.policy",
+        help="flood ceiling per theme / 4 h; default: news.policy",
     )
     news_replay_decisions.add_argument(
-        "--asset-hard-cap-2h",
+        "--distinct-asset-cap-2h",
         type=_positive_int,
         default=None,
-        help="novel-event hard cap per asset / 2 h; default: news.policy",
+        help="flood ceiling per asset / 2 h; default: news.policy",
     )
     news_replay_decisions.add_argument(
-        "--novel-min-magnitude",
-        type=int,
+        "--similarity-max",
+        type=float,
         default=None,
-        help="minimum magnitude for the novelty bypass; default: news.policy",
+        help="release a throttled card below this resemblance to the reader's window (0 = pre-v5 count cap)",
     )
     news_replay_decisions.add_argument(
         "--high-priority-escalates",
@@ -105,6 +116,34 @@ def build_parser() -> argparse.ArgumentParser:
     news_replay_decisions.add_argument(
         "--no-unclear-push", action="store_true", help="replay without the unclear-but-clear-event push rule"
     )
+    news_corpus = news_subcommands.add_parser(
+        "corpus", help="freeze the stored Triage decisions into a replayable, self-hashing corpus"
+    )
+    news_corpus.add_argument("action", choices=("freeze",), nargs="?", default="freeze")
+    news_corpus.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
+    news_corpus.add_argument("--out", default="", help="file to write (default: stdout)")
+    news_validate = news_subcommands.add_parser(
+        "validate-candidate",
+        help="replay a candidate policy against a frozen corpus and decide whether it may ship (exit 1 = FAIL)",
+    )
+    news_validate.add_argument("--corpus", required=True, help="corpus file from `news corpus freeze`")
+    news_validate.add_argument(
+        "--candidate", default="", help="YAML/JSON file with a `policy` mapping of overrides; --set wins over it"
+    )
+    news_validate.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        dest="overrides",
+        help="policy override, repeatable (e.g. --set similarity_max=0.3)",
+    )
+    news_validate.add_argument(
+        "--expectations",
+        default="",
+        help="JSON file of {event_id: must_push|may_push|may_drop} — the reviewed boundary/retention judgments",
+    )
+    news_validate.add_argument("--evidence", default="", help="file to write the immutable evidence document to")
     news_replay = news_subcommands.add_parser(
         "replay", help="replay a JSON file of provider hits through Deduper+Gate (no model, no broker)"
     )

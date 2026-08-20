@@ -219,12 +219,13 @@ class NewsPolicySettings(BaseModel):
     theme_cap_4h: int = 3
     storyline_throttle: bool = True
     hourly_cap_enabled: bool = True
-    # Policy v3 (issue #61): novelty against the told ledger — restatements never push; novel events (m >= the
-    # minimum) may pass the storyline throttle up to a hard cap.
     restatement_drop: bool = True
-    novel_min_magnitude: int = 2
-    theme_hard_cap_4h: int = 6
-    asset_hard_cap_2h: int = 3
+    # Policy v5 (issue #81): the storyline throttle releases a card whose headline resembles nothing the reader
+    # received in the window, and the counts survive only as a flood ceiling. `similarity_max = 0` switches the
+    # content judgment off and restores the pre-v5 count cap; towards 1 it releases all but exact repeats.
+    similarity_max: float = 0.25
+    distinct_hard_cap_4h: int = 18
+    distinct_asset_cap_2h: int = 6
     # #77: the Gate's AMQP priority no longer decides the ⚡ header. Set true to restore the pre-v4 behaviour.
     high_priority_escalates: bool = False
 
@@ -245,15 +246,38 @@ class NewsPolicySettings(BaseModel):
                 raise ValueError(f"news_policy_{name}_invalid")
         if not 1 <= self.theme_cap_4h <= 100:
             raise ValueError("news_policy_theme_cap_invalid")
-        if not 0 <= int(self.novel_min_magnitude) <= 3:
-            raise ValueError("news_policy_novel_min_magnitude_invalid")
-        if "theme_hard_cap_4h" not in self.model_fields_set:
-            # An operator who only raised the soft cap keeps a valid config: the hard cap follows it.
-            self.theme_hard_cap_4h = max(self.theme_hard_cap_4h, self.theme_cap_4h)
-        if not self.theme_cap_4h <= self.theme_hard_cap_4h <= 100:
-            raise ValueError("news_policy_theme_hard_cap_invalid")
-        if not 1 <= self.asset_hard_cap_2h <= 100:
-            raise ValueError("news_policy_asset_hard_cap_invalid")
+        if not 0.0 <= float(self.similarity_max) <= 1.0:
+            raise ValueError("news_policy_similarity_max_invalid")
+        if "distinct_hard_cap_4h" not in self.model_fields_set:
+            # An operator who only raised the soft cap keeps a valid config: the ceiling follows it.
+            self.distinct_hard_cap_4h = max(self.distinct_hard_cap_4h, self.theme_cap_4h)
+        if not self.theme_cap_4h <= self.distinct_hard_cap_4h <= 100:
+            raise ValueError("news_policy_distinct_hard_cap_invalid")
+        if not 1 <= self.distinct_asset_cap_2h <= 100:
+            raise ValueError("news_policy_distinct_asset_cap_invalid")
+        return self
+
+
+class NewsRetentionSettings(BaseModel):
+    """How long News keeps material facts. Two tiers, because the corpus and the audit trail have different
+    lifetimes (#81): a raw Item nobody judged is storage, an Item behind a judged or labelled Event is evidence.
+
+    The 30-day purge deletes `news_items`, and the FK chain cascades to `news_events` and from there to every
+    verdict, delivery, member, asset, band **and operator label** — so the whole learning plane had a 30-day
+    lifetime and any release gate built on it would go blind after a month.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw_days: int = 30
+    judged_days: int = 365
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> NewsRetentionSettings:
+        if not 1 <= self.raw_days <= 3650:
+            raise ValueError("news_retention_raw_days_invalid")
+        if not self.raw_days <= self.judged_days <= 3650:
+            raise ValueError("news_retention_judged_days_invalid")
         return self
 
 
@@ -308,6 +332,7 @@ class NewsSettings(BaseModel):
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
     policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
+    retention: NewsRetentionSettings = Field(default_factory=NewsRetentionSettings)
     gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
     venues: NewsVenuesSettings = Field(default_factory=NewsVenuesSettings)
     watchlist: tuple[NewsWatchlistEntry, ...] = ()
@@ -579,10 +604,13 @@ news:
     storyline_throttle: true
     hourly_cap_enabled: true
     restatement_drop: true
-    novel_min_magnitude: 2
-    theme_hard_cap_4h: 6
-    asset_hard_cap_2h: 3
+    similarity_max: 0.25
+    distinct_hard_cap_4h: 18
+    distinct_asset_cap_2h: 6
     high_priority_escalates: false
+  retention:
+    raw_days: 30
+    judged_days: 365
   gate:
     suppress_low_signal: false
     require_tradeable_assets: false

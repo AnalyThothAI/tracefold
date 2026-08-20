@@ -126,10 +126,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,control,instruments,label,eval,replay-decisions,replay,why,dlq} ...
+                      {bus-check,control,instruments,label,eval,replay-decisions,corpus,validate-candidate,replay,why,dlq} ...
 
 positional arguments:
-  {bus-check,control,instruments,label,eval,replay-decisions,replay,why,dlq}
+  {bus-check,control,instruments,label,eval,replay-decisions,corpus,validate-candidate,replay,why,dlq}
     bus-check           connect to RabbitMQ, declare the News topology, and
                         print queue depths
     control             write a delivery control command to news_control_state
@@ -140,6 +140,10 @@ positional arguments:
     eval                offline evaluation of Triage decisions against labels
     replay-decisions    re-run decide() over stored verdicts with a candidate
                         policy (no model)
+    corpus              freeze the stored Triage decisions into a replayable,
+                        self-hashing corpus
+    validate-candidate  replay a candidate policy against a frozen corpus and
+                        decide whether it may ship (exit 1 = FAIL)
     replay              replay a JSON file of provider hits through
                         Deduper+Gate (no model, no broker)
     why                 print one Event's chain: item, gate, triage, decide,
@@ -199,17 +203,22 @@ options:
 ## `news label`
 
 ```
-usage: tracefold news label [-h] [--note NOTE]
-                            event_id
-                            {good,noise,late,wrong_direction,dup,missed}
+usage: tracefold news label [-h] [--note NOTE] [--subject SUBJECT] [--by BY]
+                            [event_id]
+                            {good,noise,late,wrong_direction,dup,missed,must_push}
 
 positional arguments:
-  event_id
-  {good,noise,late,wrong_direction,dup,missed}
+  event_id              Event to label; omit together with --subject to record
+                        a miss the pipeline never created an Event for
+  {good,noise,late,wrong_direction,dup,missed,must_push}
 
 options:
   -h, --help            show this help message and exit
   --note NOTE           free-text note (<=200 chars)
+  --subject SUBJECT     what was labelled, in words; required when no
+                        event_id, and denormalised so the label outlives the
+                        Event
+  --by BY               who is labelling (labels are correctable per person)
 
 ```
 
@@ -235,9 +244,9 @@ usage: tracefold news replay-decisions [-h] [--hours HOURS]
                                        [--min-push-magnitude MIN_PUSH_MAGNITUDE]
                                        [--min-watchlist-magnitude MIN_WATCHLIST_MAGNITUDE]
                                        [--theme-cap-4h THEME_CAP_4H]
-                                       [--theme-hard-cap-4h THEME_HARD_CAP_4H]
-                                       [--asset-hard-cap-2h ASSET_HARD_CAP_2H]
-                                       [--novel-min-magnitude NOVEL_MIN_MAGNITUDE]
+                                       [--distinct-hard-cap-4h DISTINCT_HARD_CAP_4H]
+                                       [--distinct-asset-cap-2h DISTINCT_ASSET_CAP_2H]
+                                       [--similarity-max SIMILARITY_MAX]
                                        [--high-priority-escalates]
                                        [--no-restatement-drop]
                                        [--no-storyline-throttle]
@@ -254,15 +263,13 @@ options:
                         default: news.policy
   --theme-cap-4h THEME_CAP_4H
                         default: news.policy
-  --theme-hard-cap-4h THEME_HARD_CAP_4H
-                        novel-event hard cap per theme / 4 h; default:
-                        news.policy
-  --asset-hard-cap-2h ASSET_HARD_CAP_2H
-                        novel-event hard cap per asset / 2 h; default:
-                        news.policy
-  --novel-min-magnitude NOVEL_MIN_MAGNITUDE
-                        minimum magnitude for the novelty bypass; default:
-                        news.policy
+  --distinct-hard-cap-4h DISTINCT_HARD_CAP_4H
+                        flood ceiling per theme / 4 h; default: news.policy
+  --distinct-asset-cap-2h DISTINCT_ASSET_CAP_2H
+                        flood ceiling per asset / 2 h; default: news.policy
+  --similarity-max SIMILARITY_MAX
+                        release a throttled card below this resemblance to the
+                        reader's window (0 = pre-v5 count cap)
   --high-priority-escalates
                         replay with the pre-v4 behaviour: a high-priority push
                         becomes an escalate (#77)
@@ -271,6 +278,45 @@ options:
   --no-storyline-throttle
                         replay with storyline throttling switched off
   --no-unclear-push     replay without the unclear-but-clear-event push rule
+
+```
+
+## `news corpus`
+
+```
+usage: tracefold news corpus [-h] [--hours HOURS] [--out OUT] [{freeze}]
+
+positional arguments:
+  {freeze}
+
+options:
+  -h, --help     show this help message and exit
+  --hours HOURS  look-back window
+  --out OUT      file to write (default: stdout)
+
+```
+
+## `news validate-candidate`
+
+```
+usage: tracefold news validate-candidate [-h] --corpus CORPUS
+                                         [--candidate CANDIDATE]
+                                         [--set KEY=VALUE]
+                                         [--expectations EXPECTATIONS]
+                                         [--evidence EVIDENCE]
+
+options:
+  -h, --help            show this help message and exit
+  --corpus CORPUS       corpus file from `news corpus freeze`
+  --candidate CANDIDATE
+                        YAML/JSON file with a `policy` mapping of overrides;
+                        --set wins over it
+  --set KEY=VALUE       policy override, repeatable (e.g. --set
+                        similarity_max=0.3)
+  --expectations EXPECTATIONS
+                        JSON file of {event_id: must_push|may_push|may_drop} —
+                        the reviewed boundary/retention judgments
+  --evidence EVIDENCE   file to write the immutable evidence document to
 
 ```
 

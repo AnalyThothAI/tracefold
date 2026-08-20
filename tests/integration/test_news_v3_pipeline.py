@@ -189,12 +189,19 @@ def test_storyline_status_and_verdict_idempotency(conn) -> None:
         repos.news.event_status(storyline_key=row["storyline_key"], now_ms=now_ms + 1000), row["storyline_key"]
     )
     assert status1.pushed_2h == 1 and status1.max_magnitude_2h == 2
-    # The soft throttle (window max) stands for a non-novel event; a novel m2 passes it under policy v3.
-    soft = DecidePolicy(novel_min_magnitude=3)
-    second = decide(verdict, facts, status1, policy=soft)
+    # Policy v5: the soft throttle stands for a card the reader already has, and releases one they do not. The
+    # status built here carries no ledger, so the first check switches the content judgment off explicitly.
+    second = decide(verdict, facts, status1, policy=DecidePolicy(similarity_max=0.0))
     assert second.final == "throttled" and second.throttled_by == f"storyline:{row['storyline_key']}"
-    novel = decide(verdict, facts, status1)
-    assert novel.final == "push" and novel.override_rule == "novel_bypass"
+    seen = storyline_status_from_row(
+        repos.news.event_status(storyline_key=row["storyline_key"], now_ms=now_ms + 1000),
+        row["storyline_key"],
+        seen=[{"event_id": row["event_id"], "headline_zh": verdict.headline_zh}],
+    )
+    repeated = decide(verdict, facts, seen)
+    assert repeated.final == "throttled" and repeated.throttled_by.endswith(":seen")
+    distinct = decide(verdict.model_copy(update={"headline_zh": "另一件完全不同的事情"}), facts, seen)
+    assert distinct.final == "push" and distinct.override_rule == "distinct_bypass"
     # The told ledger is what the reader received: the push above, newest first, with what decide()/the console need.
     told = repos.news.told_ledger(now_ms=now_ms + 1000, window_ms=4 * 3600_000, limit=12)
     assert [t["event_id"] for t in told] == [row["event_id"]]

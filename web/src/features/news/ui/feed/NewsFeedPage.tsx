@@ -90,7 +90,7 @@ export function NewsFeedPage({ token }: { token: string }) {
     eventIds: events.map((event) => event.event_id),
     listRef: eventListRef,
     onActivate: (eventId) => navigate(newsEventPath(eventId), { state: { feedSearch } }),
-    onLabel: (eventId) => toast.copy(labelCommand(eventId, "bad"), "已复制「判错了」标注命令"),
+    onLabel: (eventId) => toast.copy(labelCommand(eventId, "noise"), "已复制「不该推」标注命令"),
   });
 
   // Digits pick a task tab from anywhere on the route; the feed cursor owns the rest of the keyboard.

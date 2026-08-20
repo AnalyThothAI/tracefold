@@ -157,4 +157,20 @@ def prompt_sha256(text: str) -> str:
 
 TRIAGE_PROMPT_SHA256: Final = prompt_sha256(TRIAGE_SYSTEM_PROMPT)
 
-__all__ = ["TRIAGE_PROMPT_SHA256", "TRIAGE_SYSTEM_PROMPT", "prompt_sha256"]
+# Every shipped prompt version and the sha256 of the text it shipped with (#81). The prompt is the
+# highest-leverage artefact in the repository — eight versions burned in 32 hours — and until now nothing
+# tied its bytes to `TRIAGE_PROMPT_VERSION` (models.py), a hand-written constant: rewriting the whole prompt
+# left `make test` green and every stored `trace.prompt_sha256` silently ambiguous. Editing the text without
+# bumping the version now leaves the current version pointing at a stale sha, which
+# tests/news/test_news_v3_prompt_pin.py turns red. Historical rows keep their entry so a frozen corpus can be
+# grouped by the prompt that actually produced it.
+TRIAGE_PROMPT_SHA256_BY_VERSION: Final[dict[str, str]] = {
+    "news_triage_prompt_v8": "25778e5caf669319818e8e16685f3f5b64cc9fe05f27cd007fe4ae40b6051c7f",
+}
+
+__all__ = [
+    "TRIAGE_PROMPT_SHA256",
+    "TRIAGE_PROMPT_SHA256_BY_VERSION",
+    "TRIAGE_SYSTEM_PROMPT",
+    "prompt_sha256",
+]

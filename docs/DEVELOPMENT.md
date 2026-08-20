@@ -130,6 +130,38 @@ optional `DecidePolicy`, golden-tested in `tests/news/test_news_v3_pure.py`),
 and `tracefold.news.eval.offline` (`tracefold news eval` scores stored verdicts
 against `news_event_labels` only; `tracefold news replay-decisions` re-runs
 `decide()` with a candidate policy and no model).
+
+**Changing `decide()` or `news.policy` goes through the release gate** (issue
+#81). `replay-decisions` reuses each verdict's stored window snapshot, so it
+answers "which cards flip", not "what does flipping them do to every later
+card". `tracefold.news.eval.harness` answers the second question: freeze a
+corpus once, then replay the deployed policy and the candidate over it
+sequentially, rebuilding the storyline windows and the reader's ledger as
+decisions change.
+
+```bash
+uv run tracefold news corpus freeze --hours 168 --out /tmp/corpus.json
+uv run tracefold news validate-candidate --corpus /tmp/corpus.json \
+  --expectations tests/fixtures/news_recall_boundary_v1.json \
+  --set distinct_hard_cap_4h=24 --set distinct_asset_cap_2h=8 \
+  --evidence /tmp/evidence.json          # exit 1 = reject, and it names the check
+```
+
+The gate is recall-first and deliberately asymmetric: a case marked `must_push`
+that the deployed policy delivers can never be lost, misses can never grow, and
+near-duplicate pairs may only grow against at least three times as many facts
+the candidate stops losing. Duplicates are scored with a metric `decide()`
+never reads — scoring a rule with the rule is a tautology, not evidence. The
+reviewed expectations overlay is part of the trusted root: it, `tests/golden/`,
+`tests/fixtures/news_v3_expectations.json`, `decide()` itself, the gate, and
+`~/.tracefold/config.yaml` are human-owned and no automated proposal path may
+write them.
+
+The `must_push` set is filled from the console or the CLI (`tracefold news
+label <event_id> must_push`, or `--subject "…"` with no Event for a miss the
+pipeline never saw). Only mark a case the pipeline *decided to send* and a rule
+withheld: a card the model itself called noise is unrecoverable by any policy,
+so marking it would only deadlock the gate.
 Broker behavior is covered by `tests/integration/test_news_bus_rabbitmq.py`
 against the compose RabbitMQ (`TRACEFOLD_TEST_AMQP_URL`, default
 `amqp://tracefold:tracefold@127.0.0.1:5672/`; skipped when unreachable); every

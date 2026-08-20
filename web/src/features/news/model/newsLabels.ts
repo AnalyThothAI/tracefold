@@ -241,9 +241,25 @@ export function displayAssets(grounded: readonly string[]): string[] {
   ).slice(0, MAX_ASSET_CHIPS);
 }
 
-/** The CLI the operator would type to label this Event; the console copies it rather than writing it. */
-export function labelCommand(eventId: string, label: "good" | "bad" | "missed"): string {
-  return `tracefold news label ${eventId} --label ${label}`;
+/** The six values `tracefold news label` accepts as its positional argument (cli/parser.py), plus `must_push`. */
+export type NewsLabelAction =
+  | "good"
+  | "noise"
+  | "late"
+  | "wrong_direction"
+  | "dup"
+  | "missed"
+  | "must_push";
+
+/**
+ * The CLI the operator would type to label this Event; the console copies it rather than writing it.
+ *
+ * This used to emit `--label good|bad|missed`: a flag the CLI does not have, and `bad` is not one of its
+ * choices — so every copied command failed and `news_event_labels` stayed empty (#81). The label is a
+ * positional argument.
+ */
+export function labelCommand(eventId: string, label: NewsLabelAction): string {
+  return `tracefold news label ${eventId} ${label}`;
 }
 
 export function percent(numerator: number, denominator: number): string {

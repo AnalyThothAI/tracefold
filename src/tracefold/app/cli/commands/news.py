@@ -25,6 +25,10 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_eval(args)
     if args.news_command == "replay-decisions":
         return _handle_replay_decisions(args)
+    if args.news_command == "corpus":
+        return _handle_corpus(args)
+    if args.news_command == "validate-candidate":
+        return _handle_validate_candidate(args)
     if args.news_command == "replay":
         return _handle_replay(args)
     if args.news_command == "dlq":
@@ -161,18 +165,38 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def _handle_label(args: Namespace) -> tuple[int, dict[str, Any]]:
+    """Record one operator label. Labels are the only ground truth this system has (#81), so a label must be
+    correctable, attributable, and able to say "the reader should have got this and no Event exists for it"."""
+
     from tracefold.app.repositories import repositories
 
+    event_id = str(args.event_id or "").strip() or None
+    subject = " ".join(str(args.subject or "").split())[:200]
+    if event_id is None and not subject:
+        return 2, {"ok": False, "error": "news_label_subject_required"}
     settings = load_settings(require_ws_token=False)
     stamp = int(time.time() * 1000)
+    labelled_by = " ".join(str(args.by or "operator").split())[:64] or "operator"
     label = {"label": args.label, "note": str(args.note or "")[:200]}
     with repositories(settings) as repos, repos.transaction():
-        if repos.news.event_card(args.event_id) is None:
-            return 1, {"ok": False, "error": "news_event_not_found"}
-        inserted = repos.news.insert_label(
-            event_id=args.event_id, label_version=LABEL_VERSION, source="human", label=label, now_ms=stamp
+        if event_id is not None:
+            card = repos.news.event_card(event_id)
+            if card is None:
+                return 1, {"ok": False, "error": "news_event_not_found"}
+            subject = subject or " ".join(str(card.get("leader_title") or "").split())[:200]
+        repos.news.insert_label(
+            event_id=event_id,
+            label_version=LABEL_VERSION,
+            source="human",
+            label=label,
+            now_ms=stamp,
+            labeled_by=labelled_by,
+            subject=subject,
         )
-    return 0, {"ok": True, "data": {"event_id": args.event_id, "inserted": bool(inserted), "label": label}}
+    return 0, {
+        "ok": True,
+        "data": {"event_id": event_id, "subject": subject, "labeled_by": labelled_by, "label": label},
+    }
 
 
 def _handle_eval(args: Namespace) -> tuple[int, dict[str, Any]]:
@@ -203,34 +227,34 @@ def _handle_why(args: Namespace) -> tuple[int, dict[str, Any]]:
 def _handle_replay_decisions(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repositories import repositories
     from tracefold.news import DecidePolicy
+    from tracefold.news.eval.harness import candidate_policy
     from tracefold.news.eval.offline import replay_decisions
 
     settings = load_settings(require_ws_token=False)
     now_ms = int(time.time() * 1000)
-    live = settings.news.policy
-    policy = DecidePolicy(
-        escalate_magnitude=int(
-            args.escalate_magnitude if args.escalate_magnitude is not None else live.escalate_magnitude
-        ),
-        min_push_magnitude=int(
-            args.min_push_magnitude if args.min_push_magnitude is not None else live.min_push_magnitude
-        ),
-        min_watchlist_magnitude=int(
-            args.min_watchlist_magnitude if args.min_watchlist_magnitude is not None else live.min_watchlist_magnitude
-        ),
-        unclear_push_min_magnitude=live.unclear_push_min_magnitude,
-        unclear_push_event_types=() if args.no_unclear_push else tuple(live.unclear_push_event_types),
-        theme_cap_4h=int(args.theme_cap_4h if args.theme_cap_4h is not None else live.theme_cap_4h),
-        storyline_throttle=not args.no_storyline_throttle and live.storyline_throttle,
-        hourly_cap_enabled=live.hourly_cap_enabled,
-        restatement_drop=not args.no_restatement_drop and live.restatement_drop,
-        novel_min_magnitude=int(
-            args.novel_min_magnitude if args.novel_min_magnitude is not None else live.novel_min_magnitude
-        ),
-        theme_hard_cap_4h=int(args.theme_hard_cap_4h if args.theme_hard_cap_4h is not None else live.theme_hard_cap_4h),
-        asset_hard_cap_2h=int(args.asset_hard_cap_2h if args.asset_hard_cap_2h is not None else live.asset_hard_cap_2h),
-        high_priority_escalates=bool(args.high_priority_escalates) or live.high_priority_escalates,
-    )
+    live = DecidePolicy(**settings.news.policy.model_dump())
+    overrides: dict[str, Any] = {
+        name: getattr(args, name)
+        for name in (
+            "escalate_magnitude",
+            "min_push_magnitude",
+            "min_watchlist_magnitude",
+            "theme_cap_4h",
+            "distinct_hard_cap_4h",
+            "distinct_asset_cap_2h",
+            "similarity_max",
+        )
+        if getattr(args, name, None) is not None
+    }
+    if args.no_unclear_push:
+        overrides["unclear_push_event_types"] = ()
+    if args.no_storyline_throttle:
+        overrides["storyline_throttle"] = False
+    if args.no_restatement_drop:
+        overrides["restatement_drop"] = False
+    if args.high_priority_escalates:
+        overrides["high_priority_escalates"] = True
+    policy = candidate_policy(live, overrides)
     with repositories(settings) as repos:
         report = replay_decisions(
             repos,
@@ -240,6 +264,103 @@ def _handle_replay_decisions(args: Namespace) -> tuple[int, dict[str, Any]]:
             policy=policy,
         )
     return 0, {"ok": True, "data": report}
+
+
+def _handle_corpus(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repositories import repositories
+    from tracefold.news.eval.harness import freeze_corpus
+
+    settings = load_settings(require_ws_token=False)
+    with repositories(settings) as repos:
+        payload = freeze_corpus(
+            repos,
+            now_ms=int(time.time() * 1000),
+            hours=int(args.hours),
+            watchlist_symbols=settings.news.watchlist_symbols,
+        )
+    if args.out:
+        _write_json(args.out, payload)
+    return 0, {
+        "ok": True,
+        "data": {
+            "path": args.out or None,
+            "corpus_version": payload["corpus_version"],
+            "sha256": payload["sha256"],
+            "cases": len(payload["cases"]),
+            "skipped_unreplayable_verdicts": payload["skipped_unreplayable_verdicts"],
+            "prompt_versions": payload["prompt_versions"],
+            **({} if args.out else {"corpus": payload}),
+        },
+    }
+
+
+def _handle_validate_candidate(args: Namespace) -> tuple[int, dict[str, Any]]:
+    """The release gate. Exit code 1 means "do not ship this"; the evidence says exactly which check said so."""
+
+    from tracefold.news import DecidePolicy
+    from tracefold.news.eval.harness import candidate_policy, load_corpus, validate_candidate
+
+    settings = load_settings(require_ws_token=False)
+    payload = _read_json_or_yaml(args.corpus)
+    expectations = _read_json_or_yaml(args.expectations) if args.expectations else {}
+    overrides: dict[str, Any] = {}
+    if args.candidate:
+        document = _read_json_or_yaml(args.candidate)
+        overrides.update(dict(document.get("policy") or {}))
+    for pair in args.overrides:
+        name, _, value = str(pair).partition("=")
+        if not name or not _:
+            return 2, {"ok": False, "error": f"news_policy_override_invalid:{pair}"}
+        overrides[name.strip()] = value.strip()
+    try:
+        corpus = load_corpus(payload, expectations=expectations)
+        stable = DecidePolicy(**settings.news.policy.model_dump())
+        decision = validate_candidate(
+            corpus,
+            stable=stable,
+            candidate=candidate_policy(stable, overrides),
+            hourly_cap=settings.news.push.hourly_cap,
+        )
+    except ValueError as exc:
+        return 2, {"ok": False, "error": str(exc)}
+    if args.evidence:
+        _write_json(args.evidence, dict(decision.evidence))
+    return (0 if decision.accepted else 1), {
+        "ok": decision.accepted,
+        "data": {
+            "decision": "release_to_canary" if decision.accepted else "reject_candidate",
+            "failed_checks": list(decision.failed_checks),
+            "evidence_path": args.evidence or None,
+            "evidence": dict(decision.evidence),
+        },
+    }
+
+
+def _read_json_or_yaml(path: str) -> dict[str, Any]:
+    """JSON first, YAML second.
+
+    A frozen corpus is one line of JSON and can be megabytes; PyYAML is orders of magnitude slower on it, and
+    YAML 1.1 does not resolve exponent-form floats without a decimal point — `1e-05` comes back as the *string*
+    `"1e-05"`, which then fails the corpus hash check for no visible reason. A hand-written candidate file is
+    still allowed to be YAML.
+    """
+
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    try:
+        document = json.loads(text)
+    except ValueError:
+        import yaml
+
+        document = yaml.safe_load(text)
+    if not isinstance(document, dict):
+        raise ValueError(f"news_document_not_a_mapping:{path}")
+    return document
+
+
+def _write_json(path: str, payload: Mapping[str, Any]) -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _handle_replay(args: Namespace) -> tuple[int, dict[str, Any]]:

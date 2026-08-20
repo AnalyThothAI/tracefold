@@ -48,6 +48,7 @@ from .delivery import render_first_card
 from .events import admit_item
 from .models import (
     ADMITTED_ADMISSIONS,
+    GATE_POLICY_VERSION,
     OUTBOX_MAX_AGE_MS,
     TRIAGE_POLICY_VERSION,
     TRIAGE_PROMPT_VERSION,
@@ -80,7 +81,12 @@ _RECOVERY_OVERLAP_MS = 30_000
 _WS_RECONNECT_SECONDS = 3.0
 _OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
-_RETENTION_MS = 30 * 24 * 3600_000
+_DAY_MS = 24 * 3600_000
+# The prompt's status bar shows the reader's last TOLD_MAX cards; decide() measures a throttled card against the
+# *whole* window, which at the live cap (30 cards/h over 4 h) is ~120 rows. Replaying the stored corpus, widening
+# the comparison set from the 12-entry status bar to the full window caught 14 more duplicate pairs and 11 more
+# facts the reader never received (#81). One indexed query, same round trip.
+_SEEN_LEDGER_MAX = 128
 # #75 instrument universe: the Gate's cached copy, and how often the snapshot loop asks the venues.
 _TRADEABLE_TTL_MS = 10 * 60_000
 _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS = 6 * 3600.0
@@ -575,11 +581,11 @@ class _TriageSettle:
     facts: GateFacts
     final_key: str
     told: Sequence[Mapping[str, Any]]
+    seen: Sequence[Mapping[str, Any]]
     told_seen: frozenset[str]
     control: Mapping[str, Any]
     cap_reached: bool
     degraded: bool
-    novelty_defaulted: bool
     error_code: str | None
     model_name: str | None
     trace: dict[str, Any]
@@ -699,13 +705,16 @@ class TriageConsumer:
         # — ids, not clocks, because verdict rows carry their handler's start stamp, not commit time.
         told = told_ledger_for_prompt(ledger_rows, now_ms=stamp, prefer_key=prelim_key)
         told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
-        status = storyline_status_from_row(status_row, prelim_key, told=told)
         cap_reached = sent_last_hour >= self.hourly_cap
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         trace: dict[str, Any] = {
             "queue_lag_ms": queue_lag_ms,
             "attempt": message.attempt,
             "prompt_sha256": TRIAGE_PROMPT_SHA256,
+            # The policy numbers and the Gate version that produced this decision, not just the rule name: a
+            # verdict has to be replayable against the thresholds it actually ran under (#81).
+            "policy": self.policy.as_dict(),
+            "gate_policy_version": GATE_POLICY_VERSION,
             "storyline_key_preliminary": prelim_key,
             "status": json_ready(dict(status_row or {})),
             "told": _told_trace(told),
@@ -730,7 +739,7 @@ class TriageConsumer:
             else:
                 status_payload = {
                     **dict(status_row or {}),
-                    "storyline_key": status.key,
+                    "storyline_key": prelim_key,
                     "preliminary": True,
                     "queue_lag_ms": queue_lag_ms,
                 }
@@ -833,11 +842,11 @@ class TriageConsumer:
                 facts=facts,
                 final_key=final_key,
                 told=told,
+                seen=ledger_rows,
                 told_seen=told_seen,
                 control=control,
                 cap_reached=cap_reached,
                 degraded=degraded,
-                novelty_defaulted=bool(trace.get("novelty_defaulted")),
                 error_code=error_code,
                 model_name=model_name,
                 trace=trace,
@@ -870,7 +879,6 @@ class TriageConsumer:
                 card, status_row, control, sent_last_hour, ledger_rows = bundle
                 told = told_ledger_for_prompt(ledger_rows, now_ms=stamp, prefer_key=prelim_key)
                 told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
-                status = storyline_status_from_row(status_row, prelim_key, told=told)
                 cap_reached = sent_last_hour >= self.hourly_cap
                 trace["status"] = json_ready(dict(status_row or {}))
                 trace["told"] = _told_trace(told)
@@ -893,7 +901,7 @@ class TriageConsumer:
             if any(str(r.get("event_id") or "") not in s.told_seen for r in fresh):
                 return _TriageOutcome(stale=True, final="drop", decision=None)
         final_row = repos.news.event_status(storyline_key=s.final_key, now_ms=s.stamp)
-        status = storyline_status_from_row(final_row, s.final_key, told=s.told)
+        status = storyline_status_from_row(final_row, s.final_key, told=s.told, seen=s.seen)
         muted = bool(s.control.get("paused")) or is_muted(
             s.control, storyline_key=s.final_key, grounded_assets=s.facts.grounded_assets, now_ms=s.stamp
         )
@@ -904,7 +912,6 @@ class TriageConsumer:
             hourly_cap_reached=s.cap_reached,
             muted=muted,
             degraded=s.degraded,
-            novelty_defaulted=s.novelty_defaulted,
             policy=self.policy,
         )
         if s.degraded and decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
@@ -914,6 +921,19 @@ class TriageConsumer:
         trace = s.trace
         trace["status_final"] = json_ready(dict(final_row or {}))
         trace["storyline_key"] = s.final_key
+        trace["seen_count"] = len(status.seen_headlines)
+        if decision.seen_similarity is not None:
+            # What the throttle actually measured, so `news why` can name the card this one resembled instead of
+            # reporting a bare rule (#81).
+            trace["seen_similarity"] = round(float(decision.seen_similarity), 4)
+            if 0 <= decision.seen_against < len(s.seen):
+                # `seen_headlines` was built from `s.seen` in order, so the index names that ledger row.
+                row = s.seen[decision.seen_against]
+                trace["seen_against"] = {
+                    "event_id": str(row.get("event_id") or ""),
+                    "headline_zh": str(row.get("headline_zh") or ""),
+                    "at_ms": int(row.get("at_ms") or 0),
+                }
         if grounded_restatement(s.verdict, status):
             trace["restates_event_id"] = s.told[s.verdict.restates]["event_id"]
         final = decision.final
@@ -966,7 +986,7 @@ class TriageConsumer:
         ledger = repos.news.told_ledger(
             now_ms=stamp,
             window_ms=TOLD_WINDOW_MS,
-            limit=TOLD_MAX * 2,
+            limit=_SEEN_LEDGER_MAX,
             prefer_key=str(card.get("storyline_key") or "") or None,
         )
         return card, status_row, control, sent, ledger
@@ -1219,10 +1239,22 @@ class InstrumentSnapshotLoop:
 class JanitorLoop:
     """Outbox catch-up, band expiry, retention, broker snapshot — one bounded turn per period."""
 
-    def __init__(self, *, db: Any, bus: Any | None = None, period_seconds: float = _JANITOR_PERIOD_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        db: Any,
+        bus: Any | None = None,
+        period_seconds: float = _JANITOR_PERIOD_SECONDS,
+        retention_raw_days: int = 30,
+        retention_judged_days: int = 365,
+    ) -> None:
         self.db = _Db(db)
         self.bus = bus
         self.period = float(period_seconds)
+        # Two tiers (#81): a raw Item nobody judged is storage, an Item behind a judged or labelled Event is the
+        # corpus every later comparison replays against.
+        self.retention_raw_ms = int(retention_raw_days) * _DAY_MS
+        self.retention_judged_ms = int(retention_judged_days) * _DAY_MS
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -1238,7 +1270,9 @@ class JanitorLoop:
 
             def _janitor(repos: Any, s: int = stamp) -> None:
                 repos.news.expire_bands(now_ms=s)
-                repos.news.purge_before(cutoff_ms=s - _RETENTION_MS)
+                repos.news.purge_before(
+                    cutoff_ms=s - self.retention_raw_ms, judged_cutoff_ms=s - self.retention_judged_ms
+                )
 
             await self.db.tx("news_janitor", _janitor, timeout_seconds=10.0)
         if self.bus is not None:
