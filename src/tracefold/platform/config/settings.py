@@ -225,6 +225,8 @@ class NewsPolicySettings(BaseModel):
     novel_min_magnitude: int = 2
     theme_hard_cap_4h: int = 6
     asset_hard_cap_2h: int = 3
+    # #77: the Gate's AMQP priority no longer decides the ⚡ header. Set true to restore the pre-v4 behaviour.
+    high_priority_escalates: bool = False
 
     @field_validator("unclear_push_event_types", mode="before")
     @classmethod
@@ -580,6 +582,7 @@ news:
     novel_min_magnitude: 2
     theme_hard_cap_4h: 6
     asset_hard_cap_2h: 3
+    high_priority_escalates: false
   gate:
     suppress_low_signal: false
     require_tradeable_assets: false

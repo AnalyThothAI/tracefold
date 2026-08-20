@@ -11,7 +11,7 @@ EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v4"
 STORYLINE_POLICY_VERSION = "news_storyline_v2"
 TRIAGE_PROMPT_VERSION = "news_triage_prompt_v8"
-TRIAGE_POLICY_VERSION = "news_triage_policy_v3"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v4"
 DELIVERY_CARD_VERSION = "news_delivery_card_v9"
 
 Admission = Literal[

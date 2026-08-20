@@ -315,21 +315,22 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
     strong_row = verdicts[strong["event_id"]]
     weak_row = verdicts[weak["event_id"]]
     assert strong_row["rule_baseline_decision"] == "push"
-    assert strong_row["final_decision"] == "escalate"
+    # #77: a degraded card carries no model judgment, so it pushes but never wears the ⚡ header.
+    assert strong_row["final_decision"] == "push"
     assert strong_row["published_at_ms"] is not None
     assert weak_row["rule_baseline_decision"] == "drop"
     assert weak_row["final_decision"] == "drop"
     assert weak_row["published_at_ms"] is None
 
     routing = [(m.routing_key, m.payload["event_id"]) for m in bus.published]
-    assert routing == [(RK_VERDICT_PUSH, strong["event_id"])]  # escalate = high-importance push, no second lane
+    assert routing == [(RK_VERDICT_PUSH, strong["event_id"])]  # one push lane; escalate is loudness, not a second lane
     assert bus.published[0].message_id == f"push:{strong['event_id']}"
     assert bus.published[0].payload["kind"] == "first"
     context = conn.execute(
         "SELECT context_line, storyline_key FROM news_events WHERE event_id = %s", (strong["event_id"],)
     ).fetchone()
     assert " ".join(strong["leader_title"].split())[:60] in context["context_line"]  # the wire headline, not an apology
-    assert "→ escalate·high_priority_push" in context["context_line"]  # the feed shows the reason, not just the verdict
+    assert "→ push·high_priority_push" in context["context_line"]  # the feed shows the reason, not just the verdict
     # Triage wrote the final storyline key back and recorded it in the replayable trace.
     assert context["storyline_key"] == strong_row["trace"]["storyline_key"]
     assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 2
@@ -339,7 +340,9 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) ->
     bus = FakeBus()
     deliverer = _deliverer(conn, bus)
     row = conn.execute(
-        "SELECT event_id FROM news_verdicts WHERE stage = 'triage' AND final_decision = 'escalate' LIMIT 1"
+        # Any delivering decision: #77 made the fixture's high-priority verdict a `push` rather than an
+        # `escalate`, and the Deliverer treats both identically — escalate is loudness, not a second lane.
+        "SELECT event_id FROM news_verdicts WHERE stage = 'triage' AND final_decision IN ('push', 'escalate') LIMIT 1"
     ).fetchone()
     dropped = conn.execute(
         "SELECT event_id FROM news_verdicts WHERE stage = 'triage' AND final_decision = 'drop' LIMIT 1"

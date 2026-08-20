@@ -92,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="minimum magnitude for the novelty bypass; default: news.policy",
     )
     news_replay_decisions.add_argument(
+        "--high-priority-escalates",
+        action="store_true",
+        help="replay with the pre-v4 behaviour: a high-priority push becomes an escalate (#77)",
+    )
+    news_replay_decisions.add_argument(
         "--no-restatement-drop", action="store_true", help="replay without dropping grounded restatements"
     )
     news_replay_decisions.add_argument(

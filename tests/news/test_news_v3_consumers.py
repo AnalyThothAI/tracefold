@@ -284,7 +284,9 @@ def _triage(news: RecordingNews, bus: FakeBus, *, hourly_cap: int = 20) -> Triag
     )
 
 
-def test_triage_without_model_escalates_watchlist_or_high_score_and_persists_degraded_verdict() -> None:
+def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degraded_verdict() -> None:
+    """A degraded card carries no model judgment, so it pushes but never wears the ⚡ header (#77)."""
+
     status_row = {"pushed_2h": 0, "pushed_4h": 0, "max_magnitude_2h": 0, "max_magnitude_4h": 0}
     news = RecordingNews(
         get_verdict=None, event_card=_card(), event_status=status_row, sent_count_since=0, insert_verdict=True
@@ -301,7 +303,7 @@ def test_triage_without_model_escalates_watchlist_or_high_score_and_persists_deg
     assert inserted["degraded"] is True and inserted["error_code"] == "news_triage_model_unconfigured"
     assert inserted["model"] is None and inserted["model_decision"] is None
     assert inserted["prompt_version"] == TRIAGE_PROMPT_VERSION
-    assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "escalate"
+    assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "push"
     assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
     trace = inserted["trace"]
     assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0

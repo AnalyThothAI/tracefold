@@ -229,6 +229,7 @@ def _handle_replay_decisions(args: Namespace) -> tuple[int, dict[str, Any]]:
         ),
         theme_hard_cap_4h=int(args.theme_hard_cap_4h if args.theme_hard_cap_4h is not None else live.theme_hard_cap_4h),
         asset_hard_cap_2h=int(args.asset_hard_cap_2h if args.asset_hard_cap_2h is not None else live.asset_hard_cap_2h),
+        high_priority_escalates=bool(args.high_priority_escalates) or live.high_priority_escalates,
     )
     with repositories(settings) as repos:
         report = replay_decisions(
