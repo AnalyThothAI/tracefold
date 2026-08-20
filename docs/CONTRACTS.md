@@ -179,6 +179,12 @@ surface is exactly three read-only routes:
   `priority`/`outcome`/`hours` return 422. Recovery Events are visible with
   `admission=recovery`. `filters` echoes every parameter incl. `outcome` and
   `hours` (never the wall-clock bound, so unchanged pages keep their ETag).
+  `counts` (`total`, `pushed`, `held`, `pending`) reports how the request's
+  filters and window split across the three outcome groups — the same
+  predicates the `outcome` filter uses, so the three sum to `total` — and is
+  therefore unchanged by `outcome` itself. It is present on the first page
+  only; a request carrying a `cursor` reports `counts: null` and the caller
+  reuses what the first page returned.
 - `GET /api/news/events/{event_id}` returns one Event, its `outcome`, a
   `timeline` (ordered steps `received` → `gate` → `triage` → `decide` →
   `delivery`, each with `title_zh`, `at_ms`, `summary_zh`, and the raw

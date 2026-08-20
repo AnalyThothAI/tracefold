@@ -782,9 +782,49 @@
         "title": "NewsEventMemberData",
         "type": "object"
       },
+      "NewsFeedCountsData": {
+        "additionalProperties": false,
+        "description": "How the request's filter and window split across the three outcome groups, for the feed's task tabs.\n\n``total`` is the sum of the other three: the groups partition the feed exactly.",
+        "properties": {
+          "held": {
+            "title": "Held",
+            "type": "integer"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "pushed": {
+            "title": "Pushed",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "pushed",
+          "held",
+          "pending"
+        ],
+        "title": "NewsFeedCountsData",
+        "type": "object"
+      },
       "NewsFeedData": {
         "additionalProperties": false,
         "properties": {
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsFeedCountsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "events": {
             "items": {
               "$ref": "#/components/schemas/NewsFeedEventData"

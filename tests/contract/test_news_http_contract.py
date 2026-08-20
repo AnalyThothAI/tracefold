@@ -57,6 +57,7 @@ class _FakeNewsRepository:
         return {
             "events": [{**_event(), "title_zh": "铜价冲击纪录", "outcome": _OUTCOME}],
             "next_cursor": None,
+            "counts": None if kwargs.get("cursor") else {"total": 1, "pushed": 0, "held": 0, "pending": 1},
             "filters": {
                 "family": kwargs["family"],
                 "admission": kwargs["admission"],
@@ -180,7 +181,8 @@ def test_news_exposes_exactly_three_read_only_routes() -> None:
 
 
 def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> None:
-    assert set(schemas_news.NewsFeedData.model_fields) == {"events", "next_cursor", "filters"}
+    assert set(schemas_news.NewsFeedData.model_fields) == {"events", "next_cursor", "counts", "filters"}
+    assert set(schemas_news.NewsFeedCountsData.model_fields) == {"total", "pushed", "held", "pending"}
     assert set(schemas_news.NewsFeedFiltersData.model_fields) == {
         "family",
         "admission",
@@ -291,6 +293,16 @@ def test_feed_forwards_outcome_group_and_hours_window(client) -> None:
     # Pattern/bound violations are rejected by the FastAPI query validators (422), like the existing `priority` filter.
     assert http.get("/api/news/feed", params={"token": TOKEN, "outcome": "bogus"}).status_code == 422
     assert http.get("/api/news/feed", params={"token": TOKEN, "hours": 999}).status_code == 422
+
+
+def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
+    http, _ = client
+
+    first = http.get("/api/news/feed", params={"token": TOKEN}).json()["data"]
+    paged = http.get("/api/news/feed", params={"token": TOKEN, "cursor": "abc"}).json()["data"]
+
+    assert first["counts"] == {"total": 1, "pushed": 0, "held": 0, "pending": 1}
+    assert paged["counts"] is None
 
 
 @pytest.mark.parametrize(
