@@ -142,6 +142,7 @@ news:
     restatement_drop: true      # a restatement of a card the reader already received never pushes
     similarity_max: 0.25        # a throttled card is released when it resembles the reader's window less than this
     distinct_hard_cap_4h: 18    # flood ceiling: pushes per theme / 4 h whatever they say (>= theme_cap_4h)
+    similarity_all_pushes: true # measure every push candidate against the reader's window, not only throttled ones
     distinct_asset_cap_2h: 6    # flood ceiling: pushes per asset / 2 h
     high_priority_escalates: false  # true = the Gate's AMQP priority also earns the ⚡ header (pre-v4, #77)
   retention:

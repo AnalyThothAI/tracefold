@@ -236,7 +236,10 @@ surface is exactly three read-only routes:
   degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
   throttled, Triage p50/p95, queue lag p95, the Triage model name, and the
   named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
-  `throttled_by_key`, `pushed_by_rule`, plus `tagged_24h`, `grounded_24h` and
+  `throttled_by_key`, `pushed_by_rule`, `duplicates_withheld_24h`
+  (`{throttled, all}` — duplicates the reader was spared, by the path that
+  measured the card; `all` only exists under policy v6), plus `tagged_24h`,
+  `grounded_24h` and
   the top-ten `ungrounded_by_symbol_24h`), and `delivery` (sent/terminal
   counts, last error, end-to-end p95, availability, hourly cap), plus
   `control` (paused, mutes), the watchlist symbols, and `instruments` (the
@@ -306,8 +309,8 @@ headline_zh}]`, `told_count`, `seen_count`, `seen_similarity`, `seen_against
 model telemetry). `triage` is the only
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
-(lexicon `news_gate_lexicon_v2`), `news_storyline_v2`,
-`news_triage_prompt_v8`, `news_triage_policy_v5`, and `news_delivery_card_v9`.
+(lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
+`news_triage_prompt_v8`, `news_triage_policy_v6`, and `news_delivery_card_v9`.
 Every shipped prompt version and the sha256 of the text it shipped with are
 pinned in `TRIAGE_PROMPT_SHA256_BY_VERSION`; editing the prompt without bumping
 `TRIAGE_PROMPT_VERSION` fails `tests/news/test_news_v3_prompt_pin.py`.
@@ -316,7 +319,9 @@ pinned in `TRIAGE_PROMPT_SHA256_BY_VERSION`; editing the prompt without bumping
 `unclear_push_event_types`, `theme_cap_4h`, `storyline_throttle`,
 `hourly_cap_enabled`, `restatement_drop`, `similarity_max`,
 `distinct_hard_cap_4h` (>= `theme_cap_4h`), `distinct_asset_cap_2h`,
-`high_priority_escalates`. `news.retention` keys are `raw_days` (30) and
+`similarity_all_pushes` (policy v6: measure every push candidate against the
+reader's window, not only the ones the count throttle stopped; false restores
+v5), `high_priority_escalates`. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
 verdict or a label is evidence and outlives the raw tier.
 
