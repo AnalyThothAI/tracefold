@@ -21,7 +21,15 @@ describe("InstrumentUniverse", () => {
     // `by_class` and `dangling_aliases` were served for a whole release without appearing anywhere (#89 →
     // #87 review); the card now renders every field the summary carries.
     const figures = screen.getAllByRole("term").map((dt) => dt.textContent);
-    expect(figures).toEqual(["在交易合约", "已下架", "base 符号", "场所", "参考目录", "最近快照", "悬空别名"]);
+    expect(figures).toEqual([
+      "在交易合约",
+      "已下架",
+      "base 符号",
+      "场所",
+      "参考目录",
+      "最近快照",
+      "悬空别名",
+    ]);
     expect(screen.getByText("2,344")).toBeInTheDocument();
     // The reference tier is counted apart from the traded one on purpose: 13k US tickers folded into
     // `在交易合约` would make that figure mean something it does not (#91).
