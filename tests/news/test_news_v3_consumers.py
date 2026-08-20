@@ -23,7 +23,7 @@ from tracefold.news.consumers import (
     JanitorLoop,
     TriageConsumer,
 )
-from tracefold.news.models import TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
+from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
@@ -66,6 +66,9 @@ class RecordingNews:
                 return None
             if name == "told_ledger" and name not in self.responses:
                 return []  # nothing pushed yet: an empty told ledger
+            if name == "outbox_scan" and name not in self.responses:
+                # #76: the Janitor turn is one read — rows to rescue plus how many the ceiling gave up on.
+                return (self.responses.get("unpublished_candidates") or [], self.responses.get("expired_count", 0))
             value = self.responses.get(name)
             return value(*args, **kwargs) if callable(value) else value
 
@@ -652,6 +655,26 @@ def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
     assert bus.routing_keys() == ["event.general.normal"]
     assert bus.published[0].payload == {"event_id": "ev-lost"} and bus.published[0].trace_id == "trace-1"
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-lost"
+    # #76: the catch-up scan is bounded on both sides — a floor so it skips Events still mid-publish, and a
+    # ceiling so it never delivers something the reader can no longer use.
+    scan = news.kwargs_of("outbox_scan")
+    assert scan["older_than_ms"] > scan["newer_than_ms"]
+    assert scan["older_than_ms"] - scan["newer_than_ms"] == OUTBOX_MAX_AGE_MS - 15_000
+
+
+def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog) -> None:
+    """The ceiling drops work on the floor; that has to be visible or it is just a quieter version of #72."""
+
+    news = RecordingNews(unpublished_candidates=[], expired_count=3)
+    with caplog.at_level("WARNING", logger="tracefold.news"):
+        asyncio.run(JanitorLoop(db=FakeWorkerDatabase(news), bus=FakeBus()).republish_unpublished())
+    assert any("gave up on 3 stranded event" in r.getMessage() for r in caplog.records)
+
+    quiet = RecordingNews(unpublished_candidates=[])
+    with caplog.at_level("WARNING", logger="tracefold.news"):
+        caplog.clear()
+        asyncio.run(JanitorLoop(db=FakeWorkerDatabase(quiet), bus=FakeBus()).republish_unpublished())
+    assert not [r for r in caplog.records if "gave up" in r.getMessage()]
 
 
 class _ScriptedTriageModel:

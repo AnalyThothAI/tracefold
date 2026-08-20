@@ -416,17 +416,56 @@ class NewsRepository:
             (int(now_ms), int(now_ms), event_id),
         )
 
-    def unpublished_candidates(self, *, older_than_ms: int, limit: int = 50) -> list[dict[str, Any]]:
+    def unpublished_candidates(
+        self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Admitted Events that never left the process, inside the rescue window.
+
+        Bounded on both sides (#76). The lower bound skips Events still mid-publish; the upper bound stops the
+        catch-up from delivering something the reader can no longer use — an unbounded scan once sent a 30.6 h old
+        exchange notice. Events past the ceiling stay in the table, unpublished and un-judged; they keep reading as
+        pending in the feed, which is what `_OUTCOME_GROUP_SQL` and `event_outcome()` both already say. Teaching
+        those two the ceiling would mean encoding one rule twice — once in SQL, once in Python — so the give-up is
+        surfaced by `expired_unpublished_count()` and a Janitor warning instead.
+        """
+
         rows = self.conn.execute(
             """
             SELECT event_id FROM news_events
              WHERE published_at_ms IS NULL AND admission IN ('candidate', 'listing_deterministic')
-               AND opened_at_ms <= %s
+               AND opened_at_ms <= %s AND opened_at_ms >= %s
              ORDER BY opened_at_ms LIMIT %s
             """,
-            (int(older_than_ms), int(limit)),
+            (int(older_than_ms), int(newer_than_ms), int(limit)),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def outbox_scan(
+        self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
+    ) -> tuple[list[dict[str, Any]], int]:
+        """One round trip for the Janitor turn: the Events to rescue, and how many the ceiling gave up on.
+
+        Kept to a single read on purpose — the Janitor runs every 60 s against the same pool the worker probes
+        use, and a second query per turn is pure contention for a number that is almost always zero.
+        """
+
+        return (
+            self.unpublished_candidates(older_than_ms=older_than_ms, newer_than_ms=newer_than_ms, limit=limit),
+            self._expired_unpublished_count(older_than_ms=newer_than_ms),
+        )
+
+    def _expired_unpublished_count(self, *, older_than_ms: int) -> int:
+        """Admitted Events the catch-up has given up on — surfaced so the ceiling is never silent (#76)."""
+
+        row = self.conn.execute(
+            """
+            SELECT count(*) AS n FROM news_events
+             WHERE published_at_ms IS NULL AND admission IN ('candidate', 'listing_deterministic')
+               AND opened_at_ms < %s
+            """,
+            (int(older_than_ms),),
+        ).fetchone()
+        return int(row["n"]) if row else 0
 
     def upgrade_event_admission(
         self,
