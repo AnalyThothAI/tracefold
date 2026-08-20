@@ -59,28 +59,47 @@ class InstrumentsRepository:
             "SELECT base_symbol, instrument_class, venue FROM news_market_instruments WHERE status = 'trading'"
         ).fetchall()
         rank = {"unknown": 0, "crypto": 1, "fx": 2, "index": 3, "commodity": 4, "equity": 5, "pre_ipo": 6}
-        out: dict[str, str] = {}
+        traded: dict[str, str] = {}
         reference: dict[str, str] = {}
         for row in rows:
             symbol = str(row["base_symbol"]).upper()
             cls = str(row["instrument_class"])
-            tier = reference if str(row["venue"]) in REFERENCE_VENUES else out
+            tier = reference if str(row["venue"]) in REFERENCE_VENUES else traded
             if rank.get(cls, 0) > rank.get(tier.get(symbol, "unknown"), 0):
                 tier[symbol] = cls
-        for symbol, cls in reference.items():
-            out.setdefault(symbol, cls)
-        # Aliases carry the class of what they resolve to, so the caller needs one lookup and no alias table:
-        # `SKHYNIX` and `XYZ-SKHX` are the forms the provider actually sends. Resolution reads `bases`, never the
-        # dict being written — otherwise a two-hop chain would resolve or not depending on the row order the
-        # unordered SELECT happened to return, and the Gate's asset class would differ between restarts.
-        bases = dict(out)
-        alias_rows = self.conn.execute("SELECT alias, base_symbol FROM news_symbol_aliases").fetchall()
-        for row in alias_rows:
-            alias = str(row["alias"]).upper()
-            resolved = bases.get(str(row["base_symbol"]).upper())
-            if resolved and alias not in bases:
-                out[alias] = resolved
+        alias_rows = [
+            (str(row["alias"]).upper(), str(row["base_symbol"]).upper())
+            for row in self.conn.execute("SELECT alias, base_symbol FROM news_symbol_aliases").fetchall()
+        ]
+        # One tier at a time, symbols before their aliases, never overwriting: that ordering *is* the precedence.
+        # Aliases have to resolve inside their own tier — `BTT` is a US ticker and also the seed alias of `BTTC`,
+        # a Binance token, so folding the directory in first would hand a BitTorrent headline to the stock branch.
+        # Resolution reads the tier, never the dictionary being written, so a two-hop chain cannot resolve or not
+        # depending on the row order this unordered SELECT happened to return.
+        out: dict[str, str] = {}
+        for tier in (traded, reference):
+            for symbol, cls in tier.items():
+                out.setdefault(symbol, cls)
+            for alias, base in alias_rows:
+                resolved = tier.get(base)
+                if resolved:
+                    out.setdefault(alias, resolved)
         return out
+
+    def is_tradeable(self, base_symbol: str) -> bool:
+        """Does a venue we poll list this symbol? `us.listed` says a ticker exists, not that anyone can trade it.
+
+        `venues_for()` keeps returning the reference row because an operator asking what a symbol *is* wants to
+        see it; this is the separate question, so `news instruments resolve` can answer both instead of printing
+        `us.listed` under a field called `venues` and letting the reader guess (#91).
+        """
+
+        row = self.conn.execute(
+            "SELECT 1 FROM news_market_instruments WHERE base_symbol = %s AND status = 'trading'"
+            " AND NOT (venue = ANY(%s)) LIMIT 1",
+            (str(base_symbol).upper(), sorted(REFERENCE_VENUES)),
+        ).fetchone()
+        return row is not None
 
     def venues_for(self, base_symbol: str) -> tuple[str, ...]:
         rows = self.conn.execute(
@@ -198,20 +217,27 @@ class InstrumentsRepository:
 
         One hop only: a seed is written by hand, and no seed chains today. An empty universe (no snapshot yet)
         reports nothing rather than flagging every seed at first boot.
+
+        Reference venues do not count as resolved (#91). Every seed exists to collapse contracts into one
+        storyline bucket, so a target that only the US directory knows is the same dead end this report was
+        written for: `XAU -> GOLD` would keep reporting healthy on Barrick Gold's NYSE ticker the day Binance and
+        Hyperliquid drop the gold perp, while the console strikes the chip through.
         """
 
+        reference = sorted(REFERENCE_VENUES)
         rows = self.conn.execute(
             """
             SELECT a.alias, a.base_symbol
             FROM news_symbol_aliases a
             WHERE a.source = 'seed'
-              AND EXISTS (SELECT 1 FROM news_market_instruments WHERE status = 'trading')
+              AND EXISTS (SELECT 1 FROM news_market_instruments WHERE status = 'trading' AND NOT (venue = ANY(%s)))
               AND NOT EXISTS (
                 SELECT 1 FROM news_market_instruments m
-                WHERE m.base_symbol = a.base_symbol AND m.status = 'trading'
+                WHERE m.base_symbol = a.base_symbol AND m.status = 'trading' AND NOT (m.venue = ANY(%s))
               )
             ORDER BY a.alias
-            """
+            """,
+            (reference, reference),
         ).fetchall()
         return tuple({"alias": str(r["alias"]), "base_symbol": str(r["base_symbol"])} for r in rows)
 

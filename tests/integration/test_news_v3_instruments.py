@@ -328,6 +328,10 @@ def test_a_traded_venue_always_beats_the_reference_directory(conn) -> None:
     assert classes["ATOM"] == "crypto"  # the venue that lists it describes it
     assert classes["UWMC"] == "equity"  # nothing lists it, so the directory answers
     assert repos.instruments.venues_for("ATOM") == ("binance.perp", "us.listed")
+    # `venues_for` still shows the reference row — an operator asking what a symbol *is* wants to see it — so the
+    # tradeable question is answered separately rather than left to be guessed from a venue string.
+    assert repos.instruments.is_tradeable("ATOM") is True
+    assert repos.instruments.is_tradeable("UWMC") is False
 
 
 def test_asset_refs_never_claim_a_reference_only_symbol_is_listed(conn) -> None:
@@ -339,6 +343,41 @@ def test_asset_refs_never_claim_a_reference_only_symbol_is_listed(conn) -> None:
     refs = repos.instruments.asset_refs(["ATOM", "UWMC"])
     assert refs["ATOM"] == {"symbol": "ATOM", "base_symbol": "ATOM", "venue": "binance.perp", "listed": True}
     assert refs["UWMC"] == {"symbol": "UWMC", "base_symbol": "UWMC", "venue": None, "listed": False}
+
+
+def test_an_alias_of_a_traded_symbol_beats_a_us_ticker_of_the_same_name(conn) -> None:
+    """`BTT` is a NYSE ticker *and* the seed alias of `BTTC`, a Binance token. Folding the directory in before
+    aliases resolve handed a BitTorrent headline to the stock branch (#91 review)."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [
+                _inst("binance.spot", "BTTCUSDT", "BTTC", "USDT"),
+                _inst("us.listed", "BTT", "BTT", cls="equity"),
+            ],
+            now_ms=NOW,
+        )
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"BTT": "BTTC"})
+
+    classes = repos.instruments.instrument_classes()
+    assert classes["BTTC"] == "crypto"
+    assert classes["BTT"] == "crypto"  # the alias resolves inside the traded tier, before the directory speaks
+
+
+def test_a_seed_alias_that_only_the_directory_resolves_is_still_dangling(conn) -> None:
+    """Every seed exists to collapse contracts into one storyline bucket. `XAU -> GOLD` landing on Barrick Gold's
+    NYSE ticker is the same silent dead end the report was written for (#91 review)."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "BTCUSDT", "BTC", "USDT"), _inst("us.listed", "GOLD", "GOLD", cls="equity")],
+            now_ms=NOW,
+        )
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"XAU": "GOLD"})
+
+    assert repos.instruments.dangling_seed_aliases() == ({"alias": "XAU", "base_symbol": "GOLD"},)
 
 
 def test_universe_summary_keeps_the_reference_tier_out_of_the_traded_counts(conn) -> None:

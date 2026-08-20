@@ -164,6 +164,9 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "symbol": symbol,
                 "base_symbol": base,
                 "venues": list(repos.instruments.venues_for(base)),
+                # `us.listed` is a reference row, not a venue: without this an operator reads
+                # `{"venues": ["us.listed"]}` as "tradeable" (#91).
+                "tradeable": repos.instruments.is_tradeable(base),
                 "instrument_class": repos.instruments.instrument_classes().get(base),
             },
         }

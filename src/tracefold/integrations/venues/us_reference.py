@@ -30,6 +30,11 @@ US_REFERENCE_VENUE: Final = "us.listed"
 _TIMEOUT_SECONDS: Final = 20.0
 # The two files are ~350 KB and ~520 KB; the cap is for a pathological response, not for these.
 _MAX_BYTES: Final = 16 * 1024 * 1024
+# Each file carries thousands of rows. A header-and-trailer answer is a broken file, not a delisting of everything
+# it used to hold — and without this floor `apply_snapshot` would mark ~6.5k reference rows delisted in one turn,
+# switching the whole tier off until a good snapshot lands. Same reflex as "a venue that did not answer is not a
+# mass delisting", one level down.
+_MIN_ROWS_PER_FILE: Final = 100
 # (path, symbol column). The rest of the header is identical enough to read by name.
 _FILES: Final[tuple[tuple[str, str], ...]] = (
     ("/dynamic/SymDir/nasdaqlisted.txt", "Symbol"),
@@ -51,6 +56,7 @@ async def fetch_us_reference_instruments(
     ) as client:
         for path, symbol_column in _FILES:
             text = await _get(client, f"{base_url.rstrip('/')}{path}")
+            kept = 0
             for row in _rows(text):
                 symbol = str(row.get(symbol_column) or "").strip().upper()
                 if not symbol or symbol in seen or not is_valid_symbol(symbol):
@@ -58,6 +64,7 @@ async def fetch_us_reference_instruments(
                 if str(row.get("Test Issue") or "").strip().upper() == "Y":
                     continue
                 seen.add(symbol)
+                kept += 1
                 out.append(
                     Instrument(
                         venue=US_REFERENCE_VENUE,
@@ -69,8 +76,8 @@ async def fetch_us_reference_instruments(
                         instrument_class="index" if str(row.get("ETF") or "").strip().upper() == "Y" else "equity",
                     )
                 )
-    if not out:
-        raise VenueExpectedError("venue_payload_empty", venue=US_REFERENCE_VENUE)
+            if kept < _MIN_ROWS_PER_FILE:
+                raise VenueExpectedError("venue_payload_empty", venue=US_REFERENCE_VENUE)
     return tuple(out)
 
 
@@ -107,7 +114,9 @@ async def _get(client: httpx.AsyncClient, url: str) -> str:
         raise VenueExpectedError("venue_blocked", venue=US_REFERENCE_VENUE, status_code=response.status_code)
     if response.status_code == 429:
         raise VenueExpectedError("venue_rate_limited", venue=US_REFERENCE_VENUE, status_code=response.status_code)
-    if response.status_code >= 400:
+    # Redirects are not followed, so a 3xx would otherwise arrive as a short HTML body and be reported as a
+    # corrupt directory. The status code is the diagnostic that matters on a host that moves its paths around.
+    if response.status_code >= 300:
         raise VenueExpectedError("venue_http_error", venue=US_REFERENCE_VENUE, status_code=response.status_code)
     if len(response.content) > _MAX_BYTES:
         raise VenueExpectedError("venue_payload_too_large", venue=US_REFERENCE_VENUE)

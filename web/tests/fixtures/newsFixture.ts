@@ -311,6 +311,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       dangling_aliases: 0,
       delisted: 0,
       last_snapshot_ms: NEWS_NOW_MS - 3_600_000,
+      reference_symbols: 13_134,
       trading: 2344,
       venues: 9,
     },
