@@ -195,9 +195,6 @@ function DirectionTable({ directions }: { directions: NewsReviewDirection[] }) {
               命中
             </th>
             <th className="news-review-n" scope="col">
-              中位涨跌
-            </th>
-            <th className="news-review-n" scope="col">
               覆盖率
             </th>
           </tr>
@@ -217,9 +214,6 @@ function DirectionTable({ directions }: { directions: NewsReviewDirection[] }) {
                 ) : (
                   <span className="news-review-muted">{row.scored ? "样本不足" : "不计入"}</span>
                 )}
-              </td>
-              <td className="news-review-n" data-tone={priceTone(row.median_bps)}>
-                {formatBps(row.median_bps)}
               </td>
               <td className="news-review-n">
                 {row.coverage_pct == null ? "—" : `${row.coverage_pct}%`}

@@ -28,10 +28,7 @@ from tracefold.news.pricing import (
     Candle,
     PriceInstrument,
     coverage_pct,
-    direction_hit,
-    floor_to_interval,
     hit_pct,
-    horizon_targets,
     median_bps,
     parse_change_pct,
     parse_price,
@@ -39,7 +36,6 @@ from tracefold.news.pricing import (
     quote_asset_rank,
     quote_asset_rank_sql,
     quote_state,
-    rank_instruments,
     return_bps,
     select_candle,
     source_rank,
@@ -47,6 +43,12 @@ from tracefold.news.pricing import (
 )
 
 ANCHOR = 1_787_000_123_456  # deliberately not on a 5-minute boundary
+
+
+def _floor(timestamp_ms: int) -> int:
+    """The grid every target is measured against; the domain reads it off the candles themselves."""
+
+    return (timestamp_ms // CANDLE_INTERVAL_MS) * CANDLE_INTERVAL_MS
 
 
 def _candles(start_ms: int, closes: list[str]) -> list[Candle]:
@@ -75,27 +77,6 @@ def test_rank_sql_is_generated_from_the_same_order_so_the_two_cannot_drift() -> 
     assert "WHEN 'binance.perp' THEN 0" in sql and "WHEN 'hl.xyz' THEN 4" in sql
     assert sql.endswith("ELSE 5 END")
     assert "upper(i.quote_asset)" in quote_asset_rank_sql()
-
-
-def test_exact_symbol_outranks_an_issuer_alias() -> None:
-    """SKHX and SKHY are both real SK Hynix contracts: the throttle collapses them, pricing must not."""
-
-    candidates = [
-        PriceInstrument(venue="hl.xyz", venue_symbol="xyz:SKHY", base_symbol="SKHY"),
-        PriceInstrument(venue="hl.xyz", venue_symbol="xyz:SKHX", base_symbol="SKHX"),
-    ]
-    assert rank_instruments(candidates, exact_symbol="SKHX")[0].venue_symbol == "xyz:SKHX"
-    assert rank_instruments(candidates, exact_symbol="SKHY")[0].venue_symbol == "xyz:SKHY"
-
-
-def test_reference_venues_are_never_price_candidates() -> None:
-    candidates = [
-        PriceInstrument(venue="us.listed", venue_symbol="UWMC", base_symbol="UWMC"),
-        PriceInstrument(venue="binance.perp", venue_symbol="UWMCUSDT", base_symbol="UWMC"),
-    ]
-    ranked = rank_instruments(candidates, exact_symbol="UWMC")
-    assert [instrument.venue for instrument in ranked] == ["binance.perp"]
-    assert rank_instruments([candidates[0]], exact_symbol="UWMC") == []
 
 
 def test_price_kind_declares_what_the_number_actually_is() -> None:
@@ -130,7 +111,7 @@ def test_quote_freshness_is_derived_at_read_time() -> None:
 
 # ---------------------------------------------------------------------------- candle alignment
 def test_p0_is_the_last_closed_candle_at_or_before_the_anchor() -> None:
-    floor = floor_to_interval(ANCHOR)
+    floor = _floor(ANCHOR)
     bars = _candles(floor - 4 * CANDLE_INTERVAL_MS, ["10", "11", "12", "13"])
     picked = select_candle(bars, target_ms=ANCHOR)
     assert picked is not None
@@ -139,19 +120,18 @@ def test_p0_is_the_last_closed_candle_at_or_before_the_anchor() -> None:
 
 
 def test_selected_endpoints_stay_exactly_one_horizon_apart() -> None:
-    targets = horizon_targets(ANCHOR)
     span = 5 * 3_600_000
-    bars = _candles(floor_to_interval(ANCHOR) - CANDLE_INTERVAL_MS, ["1"] * (span // CANDLE_INTERVAL_MS))
-    p0 = select_candle(bars, target_ms=targets["0"])
-    p1 = select_candle(bars, target_ms=targets["1h"])
-    p4 = select_candle(bars, target_ms=targets["4h"])
+    bars = _candles(_floor(ANCHOR) - CANDLE_INTERVAL_MS, ["1"] * (span // CANDLE_INTERVAL_MS))
+    p0 = select_candle(bars, target_ms=ANCHOR)
+    p1 = select_candle(bars, target_ms=ANCHOR + HORIZON_MS["1h"])
+    p4 = select_candle(bars, target_ms=ANCHOR + HORIZON_MS["4h"])
     assert p0 and p1 and p4
     assert p1.close_at_ms - p0.close_at_ms == HORIZON_MS["1h"]
     assert p4.close_at_ms - p0.close_at_ms == HORIZON_MS["4h"]
 
 
 def test_an_anchor_exactly_on_a_boundary_takes_the_candle_that_closed_on_it() -> None:
-    anchor = floor_to_interval(ANCHOR)
+    anchor = _floor(ANCHOR)
     bars = _candles(anchor - 2 * CANDLE_INTERVAL_MS, ["9", "10"])
     picked = select_candle(bars, target_ms=anchor)
     assert picked is not None and picked.close == Decimal("10")
@@ -160,14 +140,14 @@ def test_an_anchor_exactly_on_a_boundary_takes_the_candle_that_closed_on_it() ->
 def test_a_gap_is_missing_data_and_never_forward_filled() -> None:
     """A halt, a closed session or an illiquid hole must read as missing, not as an unchanged price."""
 
-    target = floor_to_interval(ANCHOR) + HORIZON_MS["1h"]
+    target = _floor(ANCHOR) + HORIZON_MS["1h"]
     stale = _candles(target - 20 * CANDLE_INTERVAL_MS, ["10"])
     assert select_candle(stale, target_ms=target) is None
     assert select_candle([], target_ms=target) is None
 
 
 def test_a_candle_inside_the_tolerance_still_counts() -> None:
-    target = floor_to_interval(ANCHOR)
+    target = _floor(ANCHOR)
     bars = _candles(target - 2 * CANDLE_INTERVAL_MS, ["10"])  # closes exactly one interval early
     assert select_candle(bars, target_ms=target) is not None
 
@@ -190,15 +170,6 @@ def test_event_level_aggregate_is_the_discrete_median_of_its_primaries() -> None
     # PostgreSQL's percentile_disc(0.5), so the feed and the review page agree.
     assert median_bps([100, 200]) == 100
     assert median_bps([-300, 100, 200]) == 100
-
-
-def test_direction_hit_needs_a_direction_and_a_nonzero_return() -> None:
-    assert direction_hit("bullish", 5) is True
-    assert direction_hit("bullish", -5) is False
-    assert direction_hit("bearish", -5) is True
-    assert direction_hit("bullish", 0) is False  # exactly zero is not a hit
-    assert direction_hit("neutral", 5) is None  # not scored at all
-    assert direction_hit("bullish", None) is None
 
 
 def test_a_percentage_without_a_denominator_is_not_reported() -> None:

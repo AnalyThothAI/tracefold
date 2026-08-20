@@ -179,7 +179,15 @@ class QuoteSnapshotLoop:
                 errors.append(f"{source}:{code}")
                 log.warning("news quote source failed source=%s code=%s", source, code)
                 continue
-            writes.append((source, _quotes_for(members, result), len(members)))
+            quotes = _quotes_for(members, result)
+            if not quotes:
+                # A 200 carrying an error object parses to nothing. Replacing the row with an empty map would
+                # flip every symbol on the source from `fresh` to `unavailable` — the exact failure this
+                # plane exists to avoid. Leave the previous row to age instead.
+                errors.append(f"{source}:venue_payload_empty")
+                log.warning("news quote source answered with no usable quote source=%s", source)
+                continue
+            writes.append((source, quotes, len(members)))
         self.last_error = ",".join(errors) or None
         if not writes:
             return {**_plan_stats(plan), "sources": len(groups), "written": 0, "quotes": 0}
@@ -423,12 +431,20 @@ def _pinned_instrument(row: Mapping[str, Any]) -> PriceInstrument | None:
 
 
 def _needed_window(row: Mapping[str, Any], *, now_ms: int) -> tuple[int, int] | None:
-    """Only the neighbourhood this row still needs: a persisted price point is never refetched."""
+    """Only the neighbourhood this row still needs: a persisted price point is never refetched.
+
+    A row measured for the first time *after* its 4H horizon has matured — every Event in the initial
+    backfill, and everything behind a worker outage longer than three hours — needs one window covering both
+    horizons. Fetching only the 1H neighbourhood there would find no bar at anchor+4H and write the row off
+    as `no_candle_within_gap`, which the due scan treats as terminal: the 4H return would be lost for good.
+    """
 
     anchor = int(row["anchor_at_ms"])
     has_early = row.get("p0") is not None and row.get("p1") is not None
     if not has_early:
-        return (anchor - 2 * CANDLE_INTERVAL_MS, anchor + HORIZON_MS["1h"] + CANDLE_INTERVAL_MS)
+        matured = anchor + HORIZON_MS["4h"] <= int(now_ms)
+        horizon = HORIZON_MS["4h"] if matured else HORIZON_MS["1h"]
+        return (anchor - 2 * CANDLE_INTERVAL_MS, anchor + horizon + CANDLE_INTERVAL_MS)
     if anchor + HORIZON_MS["4h"] <= now_ms:
         target = anchor + HORIZON_MS["4h"]
         return (target - 2 * CANDLE_INTERVAL_MS, target + CANDLE_INTERVAL_MS)

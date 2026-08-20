@@ -16,13 +16,13 @@ collector by editing YAML.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal, DivisionByZero, InvalidOperation
 from typing import Any, Final, Literal
 
-from .instruments import REFERENCE_VENUES
-
+# Reference tiers (`us.listed`) are excluded where candidates are selected — in the repository's SQL,
+# which is the one place resolution happens. There is deliberately no second Python copy of that rule.
 PriceKind = Literal["last", "mark", "mid"]
 QuoteState = Literal["fresh", "stale", "unavailable", "unlisted"]
 ReactionState = Literal["pending", "partial", "complete", "unavailable"]
@@ -108,12 +108,6 @@ def price_kind_for(venue: str) -> PriceKind:
     return "last" if str(venue).startswith("binance.") else "mid"
 
 
-def is_price_venue(venue: str) -> bool:
-    """A reference directory says a ticker exists; it is never a price source (#91)."""
-
-    return str(venue) not in REFERENCE_VENUES
-
-
 @dataclass(frozen=True, slots=True)
 class PriceInstrument:
     """One provider-queryable contract. `(venue, venue_symbol)` is the identity — `base_symbol` is a join hint."""
@@ -140,22 +134,6 @@ class PriceInstrument:
 
     def sort_key(self) -> tuple[int, int, str, str]:
         return (source_rank(self.venue), quote_asset_rank(self.quote_asset), self.venue, self.venue_symbol)
-
-
-def rank_instruments(
-    candidates: Iterable[PriceInstrument], *, exact_symbol: str | None = None
-) -> list[PriceInstrument]:
-    """Ordered candidates: an exact tradeable symbol always outranks one reached through an issuer alias.
-
-    `SKHX` and `SKHY` are both real SK Hynix contracts on `hl.xyz`; the storyline throttle collapses them on
-    purpose, and pricing must not, or a card about one contract shows the other's price (#88 §3).
-    """
-
-    wanted = str(exact_symbol or "").upper()
-    return sorted(
-        (candidate for candidate in candidates if is_price_venue(candidate.venue)),
-        key=lambda candidate: (0 if candidate.base_symbol.upper() == wanted else 1, *candidate.sort_key()),
-    )
 
 
 # ---------------------------------------------------------------------------- quotes
@@ -251,16 +229,6 @@ class Candle:
     close: Decimal
 
 
-def floor_to_interval(timestamp_ms: int, *, interval_ms: int = CANDLE_INTERVAL_MS) -> int:
-    return (int(timestamp_ms) // int(interval_ms)) * int(interval_ms)
-
-
-def horizon_targets(anchor_ms: int) -> dict[str, int]:
-    """The instants each price point is measured *as of*: the anchor itself, then anchor+1H and anchor+4H."""
-
-    return {"0": int(anchor_ms), **{name: int(anchor_ms) + HORIZON_MS[name] for name in HORIZONS}}
-
-
 def select_candle(candles: Sequence[Candle], *, target_ms: int) -> Candle | None:
     """The last candle closed at or before `target_ms`, or None when the nearest one is too far back.
 
@@ -302,14 +270,6 @@ def median_bps(values: Sequence[int]) -> int | None:
     if not ordered:
         return None
     return ordered[(len(ordered) - 1) // 2]
-
-
-def direction_hit(direction: str | None, bps: int | None) -> bool | None:
-    """Bullish hits above zero, bearish below. Exactly zero is not a hit, and neither is a missing return."""
-
-    if bps is None or direction not in {"bullish", "bearish"}:
-        return None
-    return bps > 0 if direction == "bullish" else bps < 0
 
 
 def coverage_pct(priced: int, eligible: int) -> float | None:
@@ -413,12 +373,8 @@ __all__ = [
     "ReactionState",
     "change_basis_zh",
     "coverage_pct",
-    "direction_hit",
-    "floor_to_interval",
     "hit_pct",
-    "horizon_targets",
     "horizon_zh",
-    "is_price_venue",
     "median_bps",
     "parse_change_pct",
     "parse_price",
@@ -428,7 +384,6 @@ __all__ = [
     "quote_asset_rank_sql",
     "quote_state",
     "quote_state_zh",
-    "rank_instruments",
     "reaction_reason_zh",
     "reaction_state_zh",
     "return_bps",

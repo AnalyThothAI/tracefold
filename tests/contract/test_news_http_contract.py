@@ -241,6 +241,7 @@ class _FakePriceRepository:
         self.calls.append(("price_status", kwargs))
         return {
             "metric_version": "reaction_v1",
+            "oldest_due_age_ms": 0,
             "sources": [],
             "fresh_sources": 0,
             "quotes": 0,

@@ -335,7 +335,7 @@ class PriceRepository:
                    -- the review's event-level sample is the median over primaries, and re-deriving it from
                    -- verdict JSONB per request does not fit the 720 h budget (#88 §14).
                    COALESCE((
-                     SELECT bool_or(upper(replace(x ->> 'symbol', 'XYZ-', '')) = a.symbol)
+                     SELECT bool_or(replace(upper(x ->> 'symbol'), 'XYZ-', '') = a.symbol)
                        FROM (
                          SELECT v.verdict FROM news_verdicts v
                           WHERE v.event_id = a.event_id AND v.stage = 'triage'
@@ -472,7 +472,10 @@ class PriceRepository:
             """
             WITH wanted AS (SELECT unnest(%s::text[]) AS event_id),
             prim AS (
-              SELECT w.event_id, upper(replace(x ->> 'symbol', 'XYZ-', '')) AS symbol
+              -- Upper-case *then* strip, exactly like the Deduper writes `news_event_assets.symbol`
+              -- (`repository.insert_event`). Doing it the other way leaves a model-authored `xyz-btc` as
+              -- `XYZ-BTC` here and `BTC` there, and the join silently finds nothing.
+              SELECT w.event_id, replace(upper(x ->> 'symbol'), 'XYZ-', '') AS symbol
                 FROM wanted w
                 JOIN LATERAL (
                   SELECT v.verdict FROM news_verdicts v
@@ -807,8 +810,6 @@ def _direction_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                     "hits": hits if scored else None,
                     "hit_pct": hit_pct(hits, priced) if scored else None,
                     "coverage_pct": coverage_pct(priced, int(data.get("eligible_n") or 0)),
-                    "median_bps": None,
-                    "median_abs_bps": None,
                 }
             )
     out.extend(
@@ -823,8 +824,6 @@ def _direction_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             "hits": hits,
             "hit_pct": hit_pct(hits, priced),
             "coverage_pct": None,
-            "median_bps": None,
-            "median_abs_bps": None,
         }
         for horizon, (hits, priced) in totals.items()
     )
@@ -950,21 +949,29 @@ def _aggregate_public(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
 
     anchor = int(row["anchor_at_ms"])
     primary_n = int(row.get("primary_n") or 0)
+    row_n = int(row.get("row_n") or 0)
     unavailable_n = int(row.get("unavailable_n") or 0)
+    matured = int(now_ms) >= anchor + 3_600_000
     bps_1h = [int(value) for value in (row.get("bps_1h") or [])]
     bps_4h = [int(value) for value in (row.get("bps_4h") or [])]
+    reason = row.get("unavailable_reason")
     if bps_1h and bps_4h and len(bps_4h) >= len(bps_1h):
         state = "complete"
     elif bps_1h:
         state = "partial"
-    elif primary_n > 0 and unavailable_n >= primary_n:
+    elif primary_n > 0 and row_n > 0 and unavailable_n >= row_n:
         state = "unavailable"
+    elif matured and row_n == 0:
+        # The model named primaries the Gate never grounded, so nothing was ever measured for them. That is
+        # a permanent answer once the horizon has passed, and calling it "pending" would leave the card
+        # saying 未到期 for the rest of retention.
+        state, reason = "unavailable", reason or "instrument_unresolved"
     else:
         # Either the horizon has not matured or the cold loop has not reached it yet; both are "not yet",
         # and neither may render as a zero return.
         state = "pending"
-    del anchor, now_ms
-    reason = row.get("unavailable_reason") if state == "unavailable" else None
+    if state != "unavailable":
+        reason = None
     return {
         "state": state,
         "state_zh": reaction_state_zh(state),

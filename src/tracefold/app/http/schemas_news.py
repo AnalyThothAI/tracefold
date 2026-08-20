@@ -331,7 +331,11 @@ class NewsReviewCoverageData(ExactApiSchema):
 
 
 class NewsReviewDirectionData(ExactApiSchema):
-    """`scored` marks the rows that carry hit-rate: neutral and unclear report N and returns, never accuracy."""
+    """`scored` marks the rows that carry hit-rate: neutral and unclear report their N, never accuracy.
+
+    Direction rows are counts by design (#88 §8). Return distributions belong to the magnitude and
+    event-type sections, which is where the median columns live.
+    """
 
     direction: str
     direction_zh: str = ""
@@ -343,8 +347,6 @@ class NewsReviewDirectionData(ExactApiSchema):
     hits: int | None = None
     hit_pct: float | None = None
     coverage_pct: float | None = None
-    median_bps: int | None = None
-    median_abs_bps: int | None = None
 
 
 class NewsReviewMagnitudeData(ExactApiSchema):
@@ -443,6 +445,8 @@ class NewsPriceStatusData(ExactApiSchema):
     """#88 §11: per-source freshness and Reaction backlog, so congestion is visible before the UI shows it."""
 
     metric_version: str = ""
+    # The backlog SLO (#88 §14): how far behind the oldest Event-asset still waiting for a horizon is.
+    oldest_due_age_ms: int = 0
     sources: list[NewsQuoteVenueData] = Field(default_factory=list)
     fresh_sources: int = 0
     quotes: int = 0

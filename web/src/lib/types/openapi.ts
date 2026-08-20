@@ -993,6 +993,11 @@ export interface components {
              */
             metric_version: string;
             /**
+             * Oldest Due Age Ms
+             * @default 0
+             */
+            oldest_due_age_ms: number;
+            /**
              * Quotes
              * @default 0
              */
@@ -1204,7 +1209,10 @@ export interface components {
         };
         /**
          * NewsReviewDirectionData
-         * @description `scored` marks the rows that carry hit-rate: neutral and unclear report N and returns, never accuracy.
+         * @description `scored` marks the rows that carry hit-rate: neutral and unclear report their N, never accuracy.
+         *
+         *     Direction rows are counts by design (#88 §8). Return distributions belong to the magnitude and
+         *     event-type sections, which is where the median columns live.
          */
         NewsReviewDirectionData: {
             /** Coverage Pct */
@@ -1232,10 +1240,6 @@ export interface components {
              * @default
              */
             horizon_zh: string;
-            /** Median Abs Bps */
-            median_abs_bps?: number | null;
-            /** Median Bps */
-            median_bps?: number | null;
             /** Priced N */
             priced_n: number;
             /** Scored */

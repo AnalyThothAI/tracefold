@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from tracefold.news.bus import now_ms
 from tracefold.news.price_loops import EventReactionLoop, QuoteSnapshotLoop
 from tracefold.news.pricing import (
     CANDLE_INTERVAL_MS,
@@ -201,6 +202,26 @@ def test_no_provider_call_happens_inside_a_database_transaction() -> None:
     assert observed == [False]  # network latency never occupies a database slot
 
 
+def test_a_source_that_answers_with_nothing_usable_keeps_its_previous_row() -> None:
+    """A 200 carrying an error object parses to zero quotes; replacing the row would blank every symbol."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    db = _FakeColdDatabase(price)
+
+    def fetcher_for(_source: str):
+        async def fetch(_symbols):
+            return []
+
+        return fetch
+
+    loop = QuoteSnapshotLoop(db=db, fetcher_for=fetcher_for)
+    result = asyncio.run(loop.turn())
+
+    assert price.snapshots == {}  # the stale row ages instead of becoming unavailable
+    assert result["written"] == 0
+    assert loop.last_error is not None and "venue_payload_empty" in loop.last_error
+
+
 def test_a_source_with_no_adapter_is_skipped_rather_than_crashing_the_turn() -> None:
     price = _FakePrice(targets=[_instrument("hl.unknowndex", "x:AAPL", "AAPL")])
     db = _FakeColdDatabase(price)
@@ -232,11 +253,18 @@ def _due_row(event_id: str, symbol: str = "BTC", **overrides: Any) -> dict[str, 
 
 
 def _reaction_loop(price: _FakePrice, bars: list[Candle], *, record: list[Any] | None = None) -> EventReactionLoop:
+    """A fake that honours the requested range, exactly like the real adapters.
+
+    A fetcher that ignores `start_ms`/`end_ms` hides planner bugs: the first version of `_needed_window`
+    asked only for the 1H neighbourhood on a matured backfill row and would have written every backfilled
+    Event off as `no_candle_within_gap`, while a range-blind fake reported it complete.
+    """
+
     def fetcher_for(_venue: str):
         async def fetch(venue_symbol: str, start_ms: int, end_ms: int):
             if record is not None:
                 record.append((venue_symbol, start_ms, end_ms))
-            return bars
+            return [bar for bar in bars if start_ms <= bar.open_at_ms <= end_ms]
 
         return fetch
 
@@ -310,6 +338,38 @@ def test_a_transient_provider_failure_writes_nothing_and_leaves_the_work_due() -
     assert price.reactions == []  # a timeout is loop health, never a semantic reason
     assert result["written"] == 0
     assert loop.last_error is not None
+
+
+def test_a_backfilled_event_gets_both_horizons_from_one_window() -> None:
+    """An Event first measured after anchor+4H must not lose its 4H leg to a too-narrow request.
+
+    This is the whole initial backfill, and everything behind an outage longer than three hours.
+    """
+
+    price = _FakePrice(due=[_due_row("e1")])
+    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
+    requests: list[Any] = []
+    asyncio.run(_reaction_loop(price, _bars(ANCHOR - 2 * CANDLE_INTERVAL_MS, 60), record=requests).turn())
+
+    _, _start_ms, end_ms = requests[0]
+    assert end_ms >= ANCHOR + HORIZON_MS["4h"]  # one window covering both horizons
+    written = price.reactions[0]
+    assert written["state"] == "complete"
+    assert written["return_1h_bps"] is not None and written["return_4h_bps"] is not None
+    assert written.get("unavailable_reason") is None
+
+
+def test_an_immature_event_asks_only_for_the_first_horizon() -> None:
+    fresh_anchor = now_ms() - 2 * HORIZON_MS["1h"]
+    price = _FakePrice(due=[_due_row("e1", anchor_at_ms=fresh_anchor)])
+    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
+    requests: list[Any] = []
+    asyncio.run(_reaction_loop(price, _bars(fresh_anchor - 2 * CANDLE_INTERVAL_MS, 30), record=requests).turn())
+
+    _, _, end_ms = requests[0]
+    assert end_ms < fresh_anchor + HORIZON_MS["4h"]  # 4H has not matured; nothing asks for it yet
+    assert price.reactions[0]["state"] == "partial"
+    assert price.reactions[0].get("unavailable_reason") is None  # still due for its 4H leg
 
 
 def test_a_hole_at_the_horizon_is_named_rather_than_forward_filled() -> None:
