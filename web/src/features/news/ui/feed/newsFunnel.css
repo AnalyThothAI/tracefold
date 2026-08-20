@@ -43,6 +43,11 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* The one figure in the line that is a warning rather than a count. Amber, not red: red is 利多 here. */
+  .news-funnel-summary b[data-tone="caution"] {
+    color: var(--signal-caution);
+  }
+
   .news-funnel-proportion {
     display: flex;
     gap: 2px;
@@ -61,9 +66,10 @@
     background: var(--signal-done);
   }
 
+  /* Five stages since #87: 收到 / 送审 / 符号落表 / 决定推送 / 已送达. */
   .news-funnel-tiles {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     margin: 0;
     padding: 0;
     list-style: none;

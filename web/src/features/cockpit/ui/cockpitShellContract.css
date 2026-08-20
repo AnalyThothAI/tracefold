@@ -29,9 +29,13 @@
       padding-bottom: 0;
     }
 
-    /* The home indicator and the WeChat bottom bar both sit over the last rows without this. */
+    /*
+     * The bottom nav is a flex sibling of the scroller, so it already reserves its own height and the safe
+     * area it pads itself with — the scroller only needs to stop short of it, which flex does. What is left
+     * is the last row's own breathing space above the bar.
+     */
     .center-column {
-      padding-bottom: env(safe-area-inset-bottom, 0px);
+      padding-bottom: 0;
     }
 
     .cockpit-main {
@@ -39,29 +43,21 @@
     }
 
     .topbar {
-      grid-template-columns: 32px minmax(0, 1fr) 32px;
+      grid-template-columns: minmax(0, 1fr) 32px;
       gap: 8px;
       height: var(--shell-mobile-topbar-height);
       min-height: var(--shell-mobile-topbar-height);
       padding: 8px;
     }
 
+    /* No sidebar trigger and no brand on a phone (#87): navigation is the bottom bar. */
     .brand {
-      display: flex;
-      grid-column: 1;
-      grid-row: 1;
-      height: 32px;
-      border-right: 0;
-      padding: 0;
+      display: none;
     }
 
     .searchbar {
-      grid-column: 2;
+      grid-column: 1;
       grid-row: 1;
-    }
-
-    .topbar-refresh-button {
-      display: none;
     }
   }
 }

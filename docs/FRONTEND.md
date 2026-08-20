@@ -79,9 +79,11 @@ only, so importing it does not pull the route components into the eager shell ch
 - **News routes.** `/news` is a decision-first scan surface over the flat
   Event feed from `/api/news/feed`; the browser never clusters, scores,
   triages, throttles, or reorders. The public News navigation contains
-  exactly `事件流` and `状态`, backed by `/news` and `/news/status`, and it
-  lives in the sidebar — no route renders a second section switcher. Event
-  detail lives at `/news/events/:eventId`, highlights `事件流` in the sidebar
+  exactly `事件流` and `流水线状态`, backed by `/news` and `/news/status`. It
+  lives in the sidebar at tablet width and above and in the bottom tab bar
+  below it (#87) — one `APP_NAVIGATION_GROUPS` model, two presentations, and no
+  route renders a second section switcher. Event
+  detail lives at `/news/events/:eventId`, highlights `事件流` in the navigation
   rather than being a destination of its own, and carries a `RouteBackLink`
   to the feed it came from. The retired `/news/brief`, `/news/sources`,
   and `/news/stories/:storyId` routes, hooks, fixtures, and CSS are deleted;
@@ -113,9 +115,13 @@ only, so importing it does not pull the route components into the eager shell ch
   The Feed header renders the shared status query as one thresholded health
   pill (`流水线正常/注意/异常` from `health.overall`, the failing item's
   `summary_zh`, linking to `/news/status`) and a 24 h funnel card
-  (`收到 / 送审 / 决定推送 / 已送达` from `funnel_24h`, a four-segment
+  (`收到 / 送审 / 符号落表 / 决定推送 / 已送达` from `funnel_24h`, a four-segment
   proportion bar, and one conversion sentence). Every figure on it is a
-  `funnel_24h` field or the difference between two of them.
+  `funnel_24h` field or the difference between two of them. `符号落表` is
+  `funnel_24h.grounded` — how many of the same Events named an asset that
+  exists on a venue (#87). It is a tile and deliberately not a bar segment: an
+  Event whose symbols never landed can still have been pushed, so it is a
+  property of the Events in the other bands rather than a band of its own.
 
   The task tabs carry the server's `counts` for the current filter and window
   (`total / pushed / held / pending`), so an empty tab is visible without
@@ -129,7 +135,18 @@ only, so importing it does not pull the route components into the eager shell ch
   `/news/events/:eventId`, the original wire line clamped to one line when it
   differs, and a meta line (reporting origin, `N 条报道` when merged, the
   server-labelled Triage facts `direction_zh · magnitude_zh · event_type_zh`,
-  and up to four ticker chips from `grounded_assets`).
+  and up to four asset chips). A chip renders `assets[]` — the same provider
+  tags resolved against the #75 instrument universe — as `venue:SYMBOL` when
+  `listed`, and outlined with the ticker struck through when it is not (#87).
+  Whether a tag names something real is the server's answer; the browser owns
+  no symbol table. `grounded_assets` stays on the payload as the raw tags, and
+  a tag with no matching `assets[]` entry falls back to unlisted, never to a
+  confirmed listing.
+
+  Rows carry no controls of their own (#87). Copy-title, copy-label and
+  open-original all lived in the row and all lead somewhere better one tap
+  away, while costing every row a hover-only target that means nothing under a
+  thumb; the keyboard keeps `X`.
 
   Roughly three quarters of a day's Events stop short of a card, so the badge
   is reserved for rows that got somewhere: a `pushed` / `pending` /
@@ -160,10 +177,13 @@ only, so importing it does not pull the route components into the eager shell ch
   in fixed order: a toolbar (`RouteBackLink` to the feed the reader came from
   plus `上一条 K` / `下一条 J` and `i / n`); the hero (the `outcome` badge with
   its `reason_zh`, the Triage `headline_zh` as `h1`, `title_zh` when it
-  differs, the direction chip with its magnitude and `把握 n%`, `why_zh` as a
-  callout, the `TYPE / SCOPE / NOVELTY / ACTIONABLE / AUDIENCE / MEMBERS`
+  differs, the direction chip with its magnitude, `why_zh` as a
+  callout, the `类型 / 范围 / 把握 / 新颖度 / 可操作 / 受众`
   verdict grid, the original wire line with its link, origin, merged-report
-  count, and ticker chips); then a two-column band — the timeline
+  count, and asset chips); the `符号归一` block when the server sends a
+  `normalization[]` group that actually collapses several names into one
+  `base_symbol` (#87), which is what makes the storyline throttle legible;
+  then a two-column band — the timeline
   (`这条新闻经历了什么`) over the server `timeline[]`, one `summary_zh`
   sentence per step with `+Δ` from the previous step, an end-to-end figure on
   the card, and the raw `facts` behind an `展开字段` toggle — beside
@@ -183,12 +203,21 @@ only, so importing it does not pull the route components into the eager shell ch
   write labels: the News API is read-only and the learning plane is the CLI.
 
   `/news/status` reads `/api/news/status` and renders four thresholded
-  health cards (`Ingest / Broker / Model / Delivery` as the eyebrow, from
+  health cards plus a `标的表快照` card. That card is the #75 universe as
+  `instruments` reports it (trading contracts, base symbols, venues, last
+  snapshot time, per-venue counts) and is deliberately *not* a fifth health
+  card: the snapshot loop's per-venue failures live in the worker process and
+  are never persisted, so the browser has no thresholded signal to render and
+  would have to invent one. The health cards are
+  (`Ingest / Broker / Model / Delivery` as the eyebrow, from
   `health.*`: level colour, a per-level bar, `summary_zh`, `detail_zh`, and two
   server numbers each), an overall pill (`总体正常/注意/异常`), the 24 h funnel
   (`funnel_24h`, each layer linking to the matching feed tab, with one sentence
   naming the layer that loses the most), the reason ranking (`reasons_24h`
-  grouped by stage with `label_zh` bars — never raw keys), read-only `control`
+  grouped by stage with `label_zh` bars — never raw keys; the `ungrounded`
+  stage lists provider tags that name nothing, where the tag *is* the label
+  because inventing the English word it collided with would be a guess),
+  read-only `control`
   (paused state and a mute table), the watchlist chips, configured/provider-enabled
   Strategy *counts* (never the IDs) as a usage bar with `strategy_warnings`, and a
   collapsed `技术指标` disclosure with the raw pipeline/ingest/broker facts (latency
@@ -212,9 +241,9 @@ only, so importing it does not pull the route components into the eager shell ch
 - **CSS ownership.** `main.tsx` imports only Tailwind, tokens, and base styles. Feature and shared UI selectors are imported by the component or route that owns them. Shared primitives such as `IconButton`, `PageState`, and `RouteBackLink` own their CSS under `shared/ui/`; feature CSS may lay out the containing toolbar or deck but must not redefine primitive internals. Do not use `.module.css` files as global selector buckets; CSS Modules must bind local classes from TypeScript.
 - **CSS architecture harness.** `web/tests/architecture/cssArchitectureHarness.test.ts` is the future-proof gate for CSS ownership. It rejects retired global buckets (`cockpit.css`, `macro.css`, `macroResponsive.css`, `shared.css`, `signalLab.css`), side-effect CSS imported from non-local owners, feature CSS that redefines shared UI classes, feature selectors outside their namespace, naked modifier classes such as `.active` or `.gap`, and side-effect class names reused across feature roots. When a new feature needs side-effect CSS, add an explicit namespace policy there rather than borrowing another feature's selectors.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
-- **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, and the shadcn sidebar composition (`SidebarProvider`, `AppSidebar`, `SidebarInset`, and `SidebarTrigger`) split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Mobile and tablet route navigation uses the shadcn `Sheet` drawer opened from the topbar trigger.
+- **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, and the shadcn sidebar composition (`SidebarProvider`, `AppSidebar`, `SidebarInset`, and `SidebarTrigger`) split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Tablet route navigation uses the shadcn `Sheet` drawer opened from the topbar trigger; below `768px` there is no drawer at all and `AppBottomNav` carries every destination (#87).
 - **Route controls.** Shells do not render route-specific filter controls. News controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, the main route scroll container, and the `/` search hotkey.
-- **Shell navigation.** The `AppSidebar` is `collapsible="offcanvas"` and 212px wide. `CockpitShell` controls its open state from `(min-width: 1280px)`: at desktop width it is part of the frame, below that it is the drawer the topbar `SidebarTrigger` opens, and it re-syncs when the viewport crosses the breakpoint so a rotated tablet lands in the right frame. There is no rail: it duplicated the trigger and claimed the same accessible name. `shared/ui/sidebar.tsx` writes the `sidebar_state` cookie but never reads it, so a manual toggle is per-page and not remembered. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries both News destinations (`事件流` `/news`, `状态` `/news/status`); `/news/events/:eventId` highlights `事件流`. The feed entry shows the 24 h `funnel_24h.received` count, `aria-hidden` so it decorates the link without renaming it, and the shell reads it through `@features/news/shell` — the same query key the feed header and status route use, so React Query serves all three from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** The `AppSidebar` is `collapsible="offcanvas"` and 212px wide. `CockpitShell` controls its open state from `(min-width: 1280px)`: at desktop width it is part of the frame, from `768px` to `1279px` it is the drawer the topbar `SidebarTrigger` opens, and it re-syncs when the viewport crosses the breakpoint so a rotated tablet lands in the right frame. Below `768px` neither the sidebar nor the trigger is rendered and `AppBottomNav` takes over: a sticky 3-item-max bar of 48px targets reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses, so the two presentations cannot disagree about where the reader is (#87). There is no rail: it duplicated the trigger and claimed the same accessible name. `shared/ui/sidebar.tsx` writes the `sidebar_state` cookie but never reads it, so a manual toggle is per-page and not remembered. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries both News destinations (`事件流` `/news`, `流水线状态` `/news/status`); `/news/events/:eventId` highlights `事件流`. The feed entry shows the 24 h `funnel_24h.received` count, `aria-hidden` so it decorates the link without renaming it, and the shell reads it through `@features/news/shell` — the same query key the feed header and status route use, so React Query serves all three from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
@@ -289,7 +318,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
 4. Confirm no failing `/api/*` requests and no WebSocket connection attempt in the browser session.
 5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
    true and shows the first runtime reason when it is not.
-6. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, `/` lands on the News list, and no filter/Tape/task bar exists.
+6. At `390px`, confirm there is no `SidebarTrigger`, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards, `/` lands on the News list, and no filter/Tape/task bar exists.
 7. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
    At `1280px` and above, confirm the sidebar is part of the frame, both
    destinations are present, `/news/events/:eventId` keeps `事件流` current,

@@ -58,7 +58,7 @@ describe("responsive CSS contract", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the shadcn sidebar trigger in the shell contract", () => {
+  it("keeps navigation reachable at every width", () => {
     const matches = cockpitShellCssUnits().flatMap((path) => {
       const css = readFileSync(path, "utf8");
 
@@ -70,8 +70,26 @@ describe("responsive CSS contract", () => {
 
     expect(
       matches,
-      ".topbar-sidebar-trigger must be visible so mobile and collapsed desktop users can open navigation",
+      ".topbar-sidebar-trigger must be visible so tablet and collapsed desktop users can open the drawer",
     ).not.toEqual([]);
+
+    /*
+     * Below the tablet breakpoint there is no drawer to open (#87): the shell renders `AppBottomNav`
+     * instead and the trigger is not rendered at all. Something must still carry navigation there, so the
+     * bottom bar's own CSS has to turn it on inside a phone media query — without that rule the phone would
+     * have no navigation whatsoever, which is exactly the regression this test exists to catch.
+     */
+    const bottomNavCss = readFileSync(join(cockpitUiRoot, "AppBottomNav.css"), "utf8");
+    expect(bottomNavCss).toMatch(/@media \(max-width: 767px\)/);
+    expect(
+      findRules(bottomNavCss)
+        .filter((rule) => selectorContains(rule.selector, ".cockpit-bottom-nav"))
+        .some((rule) => declarationValue(rule.body, "display") === "grid"),
+      "AppBottomNav.css must make .cockpit-bottom-nav visible at phone width",
+    ).toBe(true);
+    const shell = readFileSync(join(cockpitUiRoot, "CockpitShell.tsx"), "utf8");
+    expect(shell).toContain("<AppBottomNav />");
+    expect(shell).toContain("(max-width: 767px)");
   });
 
   it("prevents non-cockpit feature CSS from owning cockpit shell selectors", () => {

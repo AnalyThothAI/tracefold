@@ -4,7 +4,7 @@ import { FactGrid } from "@shared/ui/FactGrid";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
-import { ExternalLink, Tag } from "lucide-react";
+import { ArrowRight, ExternalLink, Tag } from "lucide-react";
 import { useLocation } from "react-router-dom";
 
 import {
@@ -12,6 +12,7 @@ import {
   type NewsEventDetail,
   type NewsEventMember,
   type NewsLabel,
+  type NewsSymbolNormalization,
   type NewsTriageSummary,
   type NewsVerdict,
   useNewsEventWithToken,
@@ -19,7 +20,7 @@ import {
 import {
   absoluteTime,
   clockTime,
-  displayAssets,
+  displayAssetRefs,
   displayTime,
   labelCommand,
   optionalTime,
@@ -27,6 +28,7 @@ import {
   validExternalUrl,
 } from "../../model/newsLabels";
 import { useNewsToast } from "../../state/useNewsToast";
+import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsEmptyNote, NewsPageShell, NewsTechnical } from "../chrome/NewsChrome";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
@@ -77,7 +79,7 @@ function EventDocument({
   const headline = triage?.headline_zh?.trim() || triage?.title_zh?.trim() || event.leader_title;
   const translated = triage?.title_zh?.trim();
   const url = validExternalUrl(event.leader_url);
-  const assets = displayAssets(event.grounded_assets ?? []);
+  const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
   const steps = detail.timeline ?? [];
   return (
     <>
@@ -104,18 +106,10 @@ function EventDocument({
         {triage ? (
           <div aria-label="模型判定" className="news-detail-verdict">
             <NewsDirectionChip size="lg" triage={triage} />
-            {triage.confidence == null ? null : (
-              <>
-                <span aria-hidden className="news-detail-verdict-rule" />
-                <span className="news-detail-confidence">
-                  把握 <b>{Math.round(triage.confidence * 100)}%</b>
-                </span>
-              </>
-            )}
           </div>
         ) : null}
         {triage?.why_zh ? <p className="news-detail-why">{triage.why_zh}</p> : null}
-        {triage ? <VerdictFacts memberCount={event.member_count} triage={triage} /> : null}
+        {triage ? <VerdictFacts triage={triage} /> : null}
         {triage ? <ModelIntent triage={triage} /> : null}
         <p className="news-detail-original">
           <span className="news-detail-original-label">原文</span>
@@ -130,15 +124,11 @@ function EventDocument({
         <p className="news-detail-facts">
           <span>{event.reporting_origin || "未知来源"}</span>
           {event.member_count > 1 ? <span>{event.member_count} 条同类报道</span> : null}
-          {assets.length ? (
-            <span aria-label="关联资产" className="news-detail-assets">
-              {assets.map((symbol) => (
-                <code key={symbol}>{symbol}</code>
-              ))}
-            </span>
-          ) : null}
+          <NewsAssetChips assets={assets} />
         </p>
       </article>
+
+      <SymbolNormalization groups={detail.normalization ?? []} />
 
       <div className="news-detail-grid">
         <Card
@@ -173,20 +163,25 @@ function EventDocument({
  * The rest of the model's judgment, in the server's own words. A cell is omitted rather than rendered as a dash
  * when the server has nothing for it, so a macro Event with no assets does not show an empty row.
  */
-function VerdictFacts({ memberCount, triage }: { memberCount: number; triage: NewsTriageSummary }) {
+function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
   const assets = triage.assets ?? [];
   const primary = assets.filter((asset) => asset.role === "primary").map((a) => a.symbol);
   const mentioned = assets.filter((asset) => asset.role !== "primary").map((a) => a.symbol);
   const facts = [
-    { label: "TYPE", value: triage.event_type_zh },
-    { label: "SCOPE", value: triage.scope_zh },
-    { label: "NOVELTY", value: triage.novelty_zh },
+    { label: "类型", value: triage.event_type_zh },
+    { label: "范围", value: triage.scope_zh },
+    // Confidence used to sit beside the direction chip, where it competed with the one number that matters
+    // there. It is a judgment detail like the rest, so it reads as one (#87).
     {
-      label: "ACTIONABLE",
+      label: "把握",
+      value: triage.confidence == null ? "" : `${Math.round(triage.confidence * 100)}%`,
+    },
+    { label: "新颖度", value: triage.novelty_zh },
+    {
+      label: "可操作",
       value: triage.actionable == null ? "" : triage.actionable ? "是" : "否",
     },
-    { label: "AUDIENCE", value: triage.audience_zh },
-    { label: "MEMBERS", value: String(Math.max(1, memberCount)) },
+    { label: "受众", value: triage.audience_zh },
   ];
   return (
     <>
@@ -212,6 +207,40 @@ function VerdictFacts({ memberCount, triage }: { memberCount: number; triage: Ne
         </p>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Why several contracts share one storyline bucket (#87). The server only sends a group when it actually
+ * collapses more than one name, so this renders nothing for the ordinary Event whose ticker answers to
+ * itself — the block exists to explain a surprise, not to restate the obvious.
+ *
+ * The 2026-08-19 failure it makes visible: one SK Hynix buyback shipped nine cards because the provider
+ * alternated between SKHY, SKHX and SKHYNIX.
+ */
+function SymbolNormalization({ groups }: { groups: NewsSymbolNormalization[] }) {
+  if (!groups.length) return null;
+  return (
+    <Card
+      title="符号归一"
+      hint="节流键按 base_symbol 分桶，不按合约"
+      aria-label="符号归一"
+      className="news-detail-normalization"
+    >
+      <ul>
+        {groups.map((group) => (
+          <li key={group.base_symbol}>
+            <span className="news-normalization-aliases">
+              {(group.aliases ?? []).map((alias) => (
+                <code key={alias}>{alias}</code>
+              ))}
+            </span>
+            <ArrowRight aria-hidden />
+            <code className="news-normalization-base">{group.base_symbol}</code>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 

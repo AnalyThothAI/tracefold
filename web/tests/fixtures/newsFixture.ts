@@ -28,6 +28,12 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
   return {
     admission: "candidate",
     asset_class: "crypto",
+    // #87: the same two tags the Gate grounded on, resolved against the instrument universe. A test that
+    // needs the other case — a tag that names nothing — overrides one entry with `listed: false`.
+    assets: [
+      { base_symbol: "BTC", listed: true, symbol: "BTC", venue: "binance.perp" },
+      { base_symbol: "ETH", listed: true, symbol: "ETH", venue: "binance.perp" },
+    ],
     context_line: "BTC · 首次出现 · 同 storyline 24h 内 1 条",
     delivery: { error_code: null, settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
     engine_type: "news",
@@ -118,6 +124,7 @@ export function newsEventFixture(overrides: Partial<NewsEvent> = {}): NewsEvent 
   return {
     admission: feedEvent.admission,
     asset_class: feedEvent.asset_class,
+    assets: feedEvent.assets,
     context_line: feedEvent.context_line,
     engine_type: feedEvent.engine_type,
     event_id: feedEvent.event_id,
@@ -260,6 +267,9 @@ export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {})
   return {
     deliveries: [newsDeliveryFixture()],
     event: newsEventFixture(),
+    // #87: only bases that actually collapse several names get a group, so the block explains a surprise
+    // rather than restating a ticker that answers to itself.
+    normalization: [{ aliases: ["BTC", "XBT"], base_symbol: "BTC", sources: ["operator"] }],
     outcome: newsOutcomeFixture(),
     triage: newsTriageFixture(),
     timeline: newsTimelineFixture(),
@@ -307,6 +317,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       decided_push: 40,
       delivered: 41,
       delivered_1h: 2,
+      grounded: 168,
       received: 320,
       received_1h: 12,
       triaged: 175,
@@ -366,12 +377,14 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       dropped_by_rule: { noise: 60, below_threshold: 20 },
       events_1h: 12,
       events_24h: 320,
+      grounded_24h: 168,
       labeled_missed_24h: 1,
       labeled_missed_without_event_24h: 0,
       pushed_by_rule: { model_push_actionable: 30, magnitude3: 10 },
       reasked_24h: 1,
       novelty_defaulted_24h: 0,
       suppressed_by_reason: { suppressed_pr_template: 8 },
+      ungrounded_by_symbol_24h: { SPOT: 7, NEAR: 2 },
       throttled_24h: 9,
       throttled_by_key: { "storyline:theme:mideast_energy:cap3": 9 },
       triage_24h: 175,

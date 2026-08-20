@@ -204,6 +204,27 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * NewsAssetRefData
+         * @description #87: one grounded coin tag, resolved against the #75 instrument universe.
+         *
+         *     ``listed`` is the whole point: the provider tags `SPOT` on a Spot Gold headline and `NEAR` on the words
+         *     "near-instant", and until now the console showed those exactly like a real token. ``venue`` is the preferred
+         *     venue when the base trades on several, and is ``None`` when the tag names nothing.
+         */
+        NewsAssetRefData: {
+            /** Base Symbol */
+            base_symbol: string;
+            /**
+             * Listed
+             * @default false
+             */
+            listed: boolean;
+            /** Symbol */
+            symbol: string;
+            /** Venue */
+            venue?: string | null;
+        };
         /** NewsBrokerQueueData */
         NewsBrokerQueueData: {
             /** Consumers */
@@ -296,6 +317,8 @@ export interface components {
             admission: string;
             /** Asset Class */
             asset_class: string;
+            /** Assets */
+            assets?: components["schemas"]["NewsAssetRefData"][];
             /**
              * Context Line
              * @default
@@ -361,6 +384,8 @@ export interface components {
             labels?: components["schemas"]["NewsLabelData"][];
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
+            /** Normalization */
+            normalization?: components["schemas"]["NewsSymbolNormalizationData"][];
             outcome: components["schemas"]["NewsOutcomeData"];
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
@@ -425,6 +450,8 @@ export interface components {
             admission: string;
             /** Asset Class */
             asset_class: string;
+            /** Assets */
+            assets?: components["schemas"]["NewsAssetRefData"][];
             /**
              * Context Line
              * @default
@@ -534,6 +561,11 @@ export interface components {
              * @default 0
              */
             delivered_1h: number;
+            /**
+             * Grounded
+             * @default 0
+             */
+            grounded: number;
             /**
              * Received
              * @default 0
@@ -716,6 +748,11 @@ export interface components {
              */
             events_24h: number;
             /**
+             * Grounded 24H
+             * @default 0
+             */
+            grounded_24h: number;
+            /**
              * Labeled Missed 24H
              * @default 0
              */
@@ -776,6 +813,10 @@ export interface components {
             triage_p50_ms?: number | null;
             /** Triage P95 Ms */
             triage_p95_ms?: number | null;
+            /** Ungrounded By Symbol 24H */
+            ungrounded_by_symbol_24h?: {
+                [key: string]: number;
+            };
         };
         /** NewsReasonCountData */
         NewsReasonCountData: {
@@ -789,7 +830,7 @@ export interface components {
              * Stage
              * @enum {string}
              */
-            stage: "gate" | "drop" | "throttle" | "push" | "degraded";
+            stage: "gate" | "drop" | "throttle" | "push" | "degraded" | "ungrounded";
         };
         /** NewsStatusData */
         NewsStatusData: {
@@ -814,6 +855,18 @@ export interface components {
             watchlist?: string[];
             /** Workers State */
             workers_state?: string | null;
+        };
+        /**
+         * NewsSymbolNormalizationData
+         * @description #87: the several names one issuer trades under, collapsed to the base the storyline throttle buckets by.
+         */
+        NewsSymbolNormalizationData: {
+            /** Aliases */
+            aliases?: string[];
+            /** Base Symbol */
+            base_symbol: string;
+            /** Sources */
+            sources?: string[];
         };
         /** NewsTimelineStepData */
         NewsTimelineStepData: {

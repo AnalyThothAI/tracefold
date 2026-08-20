@@ -24,6 +24,10 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
   if (!funnel) return null;
   const tiles = funnelTiles(funnel);
   const failed = status.delivery.terminal_24h;
+  // #87: how many Events named an asset the venue catalogues do not have. It displaces the delivery-failure
+  // note when it is non-zero because it is the larger recall problem — a card that never existed cannot fail
+  // to send.
+  const ungrounded = Math.max(0, funnel.triaged - funnel.grounded);
   return (
     <section aria-label="过去 24 小时漏斗" className="news-funnel-card">
       <div className="news-funnel-card-head">
@@ -31,7 +35,11 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
         <span className="news-funnel-summary">
           转化 <b>{percent(funnel.delivered, funnel.received)}</b> · 拦下{" "}
           <b>{formatCount(Math.max(0, funnel.received - funnel.delivered))}</b> 条 ·{" "}
-          {failed ? (
+          {ungrounded ? (
+            <>
+              符号未落表 <b data-tone="caution">{formatCount(ungrounded)}</b> 条
+            </>
+          ) : failed ? (
             <>
               投递失败 <b>{formatCount(failed)}</b> 条
             </>
@@ -88,6 +96,7 @@ function FunnelTile({ tile }: { tile: Tile }) {
 function funnelTiles(funnel: NewsFunnel): Tile[] {
   const gated = Math.max(0, funnel.received - funnel.candidates);
   const notPushed = Math.max(0, funnel.triaged - funnel.decided_push);
+  const ungroundedCount = Math.max(0, funnel.triaged - funnel.grounded);
   return [
     {
       hint: `最近 1 小时 ${formatCount(funnel.received_1h)}`,
@@ -102,6 +111,13 @@ function funnelTiles(funnel: NewsFunnel): Tile[] {
       pct: percent(funnel.candidates, funnel.received),
       to: null,
       value: funnel.candidates,
+    },
+    {
+      hint: ungroundedCount ? `未落标的表 ${formatCount(ungroundedCount)}` : "符号全部落表",
+      label: "符号落表",
+      pct: percent(funnel.grounded, funnel.received),
+      to: null,
+      value: funnel.grounded,
     },
     {
       hint: notPushed ? `模型判不推 ${formatCount(notPushed)}` : "模型全部放行",
@@ -133,6 +149,8 @@ function proportionSegments(funnel: NewsFunnel) {
     { layer: "held", value: funnel.triaged - funnel.delivered },
     { layer: "delivered", value: funnel.delivered },
   ];
+  // Grounding is a property of the Events in the `held`/`delivered` bands, not a band of its own: an Event
+  // whose symbols never landed can still have been pushed. It gets a tile, deliberately not a segment.
   return layers.map((layer) => ({
     layer: layer.layer,
     share: (Math.max(0, layer.value) / total) * 100,

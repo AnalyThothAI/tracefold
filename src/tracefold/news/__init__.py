@@ -2,6 +2,7 @@
 
 from .control import apply_control, parse_control
 from .health import status_health
+from .instruments import grounding_rollup
 from .models import (
     GATE_POLICY_VERSION,
     TRIAGE_POLICY_VERSION,
@@ -36,6 +37,7 @@ __all__ = [
     "TriageVerdict",
     "apply_control",
     "event_outcome",
+    "grounding_rollup",
     "parse_control",
     "parse_opennews_message",
     "status_health",

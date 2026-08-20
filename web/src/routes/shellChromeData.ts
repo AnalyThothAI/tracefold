@@ -112,6 +112,16 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
         open: shortcutsOpen,
       },
       topbar: {
+        // #87: the two numbers the operator checks without opening a page. Both are already-served fields —
+        // no derived rate, and nothing that would need a market-data lane the pipeline does not have.
+        figures: [
+          { label: "PUSHED 24H", value: newsStatusQuery.data?.delivery?.sent_24h },
+          {
+            label: "MISSED",
+            tone: "caution" as const,
+            value: newsStatusQuery.data?.pipeline?.labeled_missed_24h,
+          },
+        ],
         search: {
           inputRef: searchInputRef,
           onSubmitQuery: submitTopbarSearch,

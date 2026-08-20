@@ -9,6 +9,7 @@ from tracefold.news.instruments import (
     Instrument,
     classify,
     diff_universe,
+    grounding_rollup,
     normalize_symbol,
     resolve_base_symbol,
     strip_quote_suffix,
@@ -169,3 +170,47 @@ def test_crude_still_needs_energy_context_under_a_universe(symbol: str) -> None:
     universe = frozenset({"CL"})
     assert grounded_assets("Fed holds rates", _coins(symbol), tradeable_symbols=universe) == ()
     assert grounded_assets("Hormuz tanker seized", _coins(symbol), tradeable_symbols=universe) == (symbol,)
+
+
+def _refs(**listed: str | None) -> dict[str, dict[str, object]]:
+    return {
+        symbol: {"symbol": symbol, "base_symbol": symbol, "venue": venue, "listed": venue is not None}
+        for symbol, venue in listed.items()
+    }
+
+
+def test_grounding_counts_an_event_once_however_many_tags_land() -> None:
+    """An Event is grounded when *any* tag names something — the same condition the Gate admits on (#87)."""
+
+    rollup = grounding_rollup(
+        {"ev-1": ["BTC", "ETH"], "ev-2": ["BTC"], "ev-3": ["SPOT"]},
+        _refs(BTC="binance.perp", ETH="binance.perp", SPOT=None),
+    )
+
+    assert rollup["grounded_24h"] == 2
+    assert rollup["ungrounded_by_symbol_24h"] == {"SPOT": 1}
+
+
+def test_grounding_counts_a_failing_tag_on_every_event_it_cost() -> None:
+    """One bad provider tag is one row for the operator, carrying how many Events it took down."""
+
+    rollup = grounding_rollup(
+        {f"ev-{i}": ["SPOT"] for i in range(38)} | {"ev-x": ["NEAR", "BTC"]},
+        _refs(BTC="binance.perp", SPOT=None, NEAR=None),
+    )
+
+    assert rollup["ungrounded_by_symbol_24h"] == {"SPOT": 38, "NEAR": 1}
+    # `ev-x` still grounds on BTC even though NEAR failed beside it.
+    assert rollup["grounded_24h"] == 1
+
+
+def test_grounding_reports_a_tag_the_universe_has_never_heard_of() -> None:
+    """A tag missing from `refs` entirely is ungrounded, not skipped — a lookup gap must not read as success."""
+
+    rollup = grounding_rollup({"ev-1": ["WHOKNOWS"]}, _refs(BTC="binance.perp"))
+
+    assert rollup == {"grounded_24h": 0, "ungrounded_by_symbol_24h": {"WHOKNOWS": 1}}
+
+
+def test_grounding_is_empty_without_any_tagged_event() -> None:
+    assert grounding_rollup({}, {}) == {"grounded_24h": 0, "ungrounded_by_symbol_24h": {}}

@@ -199,6 +199,9 @@ def status_health(
         "received": int(pipeline.get("events_24h") or 0),
         "candidates": int(pipeline.get("candidates_24h") or 0),
         "triaged": int(pipeline.get("triage_24h") or 0),
+        # #87: between "sent to the model" and "decided", the reader wants to know how many Events named an
+        # asset that actually exists on a venue. It is a property of the same Events, not a separate stage.
+        "grounded": int(pipeline.get("grounded_24h") or 0),
         "decided_push": int(pipeline.get("decided_push_24h") or 0),
         "delivered": int(delivery.get("sent_24h") or 0),
         "received_1h": int(pipeline.get("events_1h") or 0),
@@ -215,6 +218,10 @@ def status_health(
         reasons.append({"stage": "push", "key": key, "label_zh": override_rule_zh(key), "count": int(count)})
     for key, count in (pipeline.get("triage_degraded_by_code_24h") or {}).items():
         reasons.append({"stage": "degraded", "key": key, "label_zh": error_code_zh(key), "count": int(count)})
+    # The provider tag is its own label here: "SPOT" and "NEAR" say more to an operator than any sentence we
+    # could wrap around them, and inventing the English word they came from would be a guess.
+    for key, count in (pipeline.get("ungrounded_by_symbol_24h") or {}).items():
+        reasons.append({"stage": "ungrounded", "key": key, "label_zh": str(key), "count": int(count)})
     reasons.sort(key=lambda r: (-int(r["count"]), str(r["stage"]), str(r["key"])))
     return {
         "health": {**{name: item.as_dict() for name, item in items.items()}, "overall": overall},

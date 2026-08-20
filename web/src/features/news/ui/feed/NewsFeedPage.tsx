@@ -180,7 +180,6 @@ export function NewsFeedPage({ token }: { token: string }) {
                   cursor={event.event_id === cursor}
                   event={event}
                   key={event.event_id}
-                  onCopy={toast.copy}
                   searchState={feedSearch}
                 />
               ))}

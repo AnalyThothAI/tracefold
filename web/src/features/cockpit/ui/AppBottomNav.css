@@ -1,0 +1,55 @@
+@layer app.shell {
+  /*
+   * Phone navigation (#87). Hidden at tablet width and above, where the drawer and the in-frame sidebar
+   * already carry the same destinations — rendering both would give one page two navigations.
+   */
+  .cockpit-bottom-nav {
+    display: none;
+  }
+
+  @media (max-width: 767px) {
+    .cockpit-bottom-nav {
+      position: sticky;
+      bottom: 0;
+      z-index: 30;
+      display: grid;
+      grid-auto-columns: minmax(0, 1fr);
+      grid-auto-flow: column;
+      gap: 2px;
+      flex: 0 0 auto;
+      /* The home indicator and the WeChat bottom bar both sit over the last row without this. */
+      padding: 6px 8px calc(10px + env(safe-area-inset-bottom, 0px));
+      border-top: 1px solid var(--border-subtle);
+      background: color-mix(in srgb, var(--surface-root) 95%, transparent);
+      backdrop-filter: blur(14px);
+    }
+
+    .cockpit-bottom-nav a {
+      display: grid;
+      /* 48px, not the 44px minimum: this is the control a thumb reaches for most, and it is at the very
+         bottom of the screen where aim is worst. */
+      min-height: 48px;
+      justify-items: center;
+      align-content: center;
+      gap: 3px;
+      padding: 6px 0 4px;
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      font-size: 10.5px;
+      font-weight: 500;
+      text-decoration: none;
+    }
+
+    .cockpit-bottom-nav a[data-active] {
+      color: var(--accent-primary);
+      background: var(--accent-soft);
+      font-weight: 640;
+    }
+
+    /* Bigger than the console's 14px default: this is a thumb target read at arm's length. */
+    .cockpit-bottom-nav svg {
+      width: 18px;
+      height: 18px;
+    }
+  }
+}

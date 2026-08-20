@@ -55,7 +55,7 @@ describe("news route", () => {
     renderAppRoute("/news");
     await screen.findByRole("heading", { name: "新闻事件流" });
 
-    fireEvent.click(screen.getByRole("link", { name: "状态" }));
+    fireEvent.click(screen.getByRole("link", { name: "流水线状态" }));
     expect(await screen.findByRole("heading", { name: "流水线状态" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "事件流" }));

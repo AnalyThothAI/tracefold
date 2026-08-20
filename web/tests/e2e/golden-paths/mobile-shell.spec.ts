@@ -16,13 +16,18 @@ test("mobile shell exposes News navigation around the News landing", async ({ pa
   await expect(page).toHaveURL(/\/news(?:\?|$)/);
   await expectMobileTopbarContract(page);
 
-  const sidebarTrigger = page.getByRole("button", { name: "Toggle Sidebar" });
-  await sidebarTrigger.click();
+  /*
+   * #87: navigation on a phone is a fixed bottom bar, not a drawer. Every destination is visible without a
+   * tap, and there is no sidebar trigger left to press.
+   */
+  await expect(page.getByRole("button", { name: "Toggle Sidebar" })).toHaveCount(0);
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
-  await expect(navigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
+  await expect(navigation).toBeVisible();
   await expect(navigation.getByRole("link", { name: "事件流" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "流水线状态" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
   await expect(navigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
-  await page.keyboard.press("Escape");
+  await expectBottomNavAboveTheFold(page);
 
   await expect(page.getByRole("heading", { name: "新闻事件流" })).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
@@ -54,11 +59,31 @@ async function expectMobileTopbarContract(page: Page) {
   expect(topbarRect.bottom).toBeLessThanOrEqual(centerColumnRect.top + 0.5);
 
   for (const [name, locator] of [
-    ["sidebar trigger", page.getByRole("button", { name: "Toggle Sidebar" })],
     ["search input", page.getByLabel("news search")],
+    ["refresh button", page.getByRole("button", { name: "刷新" })],
   ] satisfies Array<[string, Locator]>) {
     await expect(locator, `${name} should render in the mobile topbar`).toBeVisible();
     expectRectContained(await locatorRect(locator, name), topbarRect, name);
+  }
+}
+
+/**
+ * The bar has to sit inside the viewport with the scroller stopping above it — a bar that overlaps the last
+ * Event, or one pushed below the fold, both read as "the list just ends" (#87).
+ */
+async function expectBottomNavAboveTheFold(page: Page) {
+  const nav = page.locator(".cockpit-bottom-nav");
+  const [navRect, columnRect, viewport] = await Promise.all([
+    locatorRect(nav, ".cockpit-bottom-nav"),
+    locatorRect(page.locator(".center-column"), ".center-column"),
+    page.viewportSize(),
+  ]);
+  expect(navRect.bottom).toBeLessThanOrEqual((viewport?.height ?? 0) + 0.5);
+  expect(columnRect.bottom).toBeLessThanOrEqual(navRect.top + 0.5);
+  // Every tab is a thumb target, and the bottom edge of a screen is where aim is worst.
+  for (const link of await nav.getByRole("link").all()) {
+    const rect = await locatorRect(link, "bottom nav link");
+    expect(rect.height).toBeGreaterThanOrEqual(44);
   }
 }
 

@@ -69,6 +69,14 @@ export function NewsStatusPage({ token }: { token: string }) {
               ))}
             </div>
 
+            <Card
+              title="标的表快照"
+              hint="Binance / Hyperliquid 公开目录，用于符号归一与落表判断"
+              aria-label="标的表快照"
+            >
+              <InstrumentUniverse status={status} />
+            </Card>
+
             <div className="news-status-grid">
               <Card
                 title="过去 24 小时去向"
@@ -96,6 +104,50 @@ export function NewsStatusPage({ token }: { token: string }) {
         </PageState.Stale>
       ) : null}
     </NewsPageShell>
+  );
+}
+
+/**
+ * What the venue catalogues hold (#75, surfaced by #87). Deliberately not a fifth health card: the snapshot
+ * loop's per-venue failures live in the worker process and are never persisted, so the browser has no
+ * thresholded signal to render and would have to invent one. Counts and a timestamp are what we actually
+ * know, and a stale timestamp is legible on its own.
+ */
+function InstrumentUniverse({ status }: { status: NewsStatus }) {
+  const universe = status.instruments;
+  if (!universe || !universe.last_snapshot_ms) {
+    return <NewsEmptyNote>还没有快照落地，符号归一暂时只走别名种子。</NewsEmptyNote>;
+  }
+  const byVenue = Object.entries(universe.by_venue ?? {});
+  return (
+    <div className="news-universe">
+      <dl className="news-universe-figures">
+        <div>
+          <dt>在交易合约</dt>
+          <dd>{formatCount(universe.trading ?? 0)}</dd>
+        </div>
+        <div>
+          <dt>base 符号</dt>
+          <dd>{formatCount(universe.base_symbols ?? 0)}</dd>
+        </div>
+        <div>
+          <dt>场所</dt>
+          <dd>{formatCount(universe.venues ?? 0)}</dd>
+        </div>
+        <div>
+          <dt>最近快照</dt>
+          <dd>{optionalTime(universe.last_snapshot_ms)}</dd>
+        </div>
+      </dl>
+      <ul className="news-universe-venues">
+        {byVenue.map(([venue, count]) => (
+          <li key={venue}>
+            <code>{venue}</code>
+            <b>{formatCount(count)}</b>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
