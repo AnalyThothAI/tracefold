@@ -79,7 +79,7 @@ def admit_item(
     now_ms: int,
     text_override: str | None = None,
     suppress_low_signal: bool = False,
-    tradeable_symbols: frozenset[str] | None = None,
+    instrument_classes: Mapping[str, str] | None = None,
 ) -> AdmitResult:
     """Idempotent by Item identity. Returns the Event assignment for the (possibly pre-existing) Item.
 
@@ -151,7 +151,7 @@ def admit_item(
             watchlist_symbols=watchlist_symbols,
             raw_first_line=extracted.first_line,
             suppress_low_signal=suppress_low_signal,
-            tradeable_symbols=tradeable_symbols,
+            instrument_classes=instrument_classes,
         )
     )
     tokens = comparison_tokens(comparison)

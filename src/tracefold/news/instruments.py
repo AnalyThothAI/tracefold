@@ -1,11 +1,18 @@
-"""Tradeable instrument universe (#75): pure normalization, aliasing and diff over venue listings.
+"""Instrument universe (#75, consolidated in #89): pure normalization, aliasing and classification.
 
 The provider already tags Items with venue symbols — OpenNews emits a bare symbol *and* an ``XYZ-`` prefixed one
 (``XYZ-CL``, ``XYZ-MU``, ``XYZ-HOOD``, ``XYZ-UNITREE``), where ``xyz`` is a Hyperliquid builder perp DEX carrying
-equity/commodity/index perps. 96% of a full day's coin-tag volume lands on a Binance or Hyperliquid listing, so the
-venue universe is the natural reference table for News: it normalizes symbols for the storyline throttle, tells the
-Gate which tags name something real, and — by diffing two snapshots — yields listing/delisting facts that do not
-depend on a news frame arriving at all.
+equity/commodity/index perps. ~95% of a full day's coin-tag volume lands on a Binance or Hyperliquid listing, so
+the venue universe is the natural reference table for News, and it does exactly two jobs:
+
+* **symbol normalization** — the several names one issuer trades under collapse to one storyline throttle key
+* **asset class** — whether a headline is about a coin or a stock, which the Gate used to guess from the ``XYZ-``
+  prefix alone
+
+It is deliberately *not* a filter: existence on a venue is not evidence that a headline matters (#75), and it is
+not a source of listing events either — OpenNews pushes those as frames and the pipeline admits them
+(``listing_deterministic``, #72), so the snapshot diff that used to live here was a second, worse source covering
+41% of the frames and was removed in #89.
 
 Everything here is pure: fetching lives in ``tracefold.integrations.venues``, persistence in
 ``InstrumentsRepository``.
@@ -16,22 +23,37 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal
-
-INSTRUMENT_UNIVERSE_VERSION: Final = "news_instrument_universe_v1"
+from typing import Final, Literal, cast
 
 InstrumentClass = Literal["crypto", "equity", "commodity", "index", "fx", "pre_ipo", "unknown"]
 InstrumentStatus = Literal["trading", "delisted"]
+# Runtime view of the Literal above: what a stored row or a venue declaration is allowed to say.
+INSTRUMENT_CLASSES: Final[frozenset[str]] = frozenset(
+    {"crypto", "equity", "commodity", "index", "fx", "pre_ipo", "unknown"}
+)
+# Classes that are not crypto. The Gate collapses them into one `equity_or_commodity` asset class (#89).
+NON_CRYPTO_CLASSES: Final[frozenset[str]] = frozenset({"equity", "commodity", "index", "fx", "pre_ipo"})
 
 # Quote assets stripped from a venue symbol to recover the base (Binance ships `UNITREEUSDT`, not `UNITREE`).
 # Longest first so `BTCUSDT` -> `BTC` rather than `BTCUSD` + `T`.
 _QUOTE_SUFFIXES: Final = ("USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USD")
-_SYMBOL_OK = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,31}$")
+# Venue catalogues are authoritative, so the only thing worth rejecting is a symbol that cannot be a symbol:
+# empty, whitespace-bearing, control characters, or absurdly long. Restricting this to ASCII silently dropped five
+# real Binance contracts (`币安人生USDT`, `我踏马来了USDT`, `龙虾USDT`) — and the provider tags those too (`牛来`).
+_SYMBOL_OK = re.compile(r"^[^\s\x00-\x1f]{1,32}$")
 
-# Operator-owned aliases: different names for one issuer/underlying. Venue-derived aliases (the `XYZ-` prefix, the
-# `dex:SYMBOL` form) are computed, not listed here. `SKHY` and `SKHX` are *both* real hl.xyz contracts for SK Hynix
-# — keeping them apart at the venue level is correct, but the storyline throttle must treat them as one issuer or
-# the same buyback ships nine cards (observed 2026-08-19).
+# Code-owned seed aliases: different names for one issuer/underlying, reconciled into `news_symbol_aliases` on
+# every snapshot (this file is the source of truth — see `InstrumentsRepository.reconcile_seed_aliases`). Venue-
+# derived aliases (the `XYZ-` prefix, the `dex:SYMBOL` form) are computed, not listed here. `SKHY` and `SKHX` are
+# *both* real hl.xyz contracts for SK Hynix — keeping them apart at the venue level is correct, but the storyline
+# throttle must treat them as one issuer or the same buyback ships nine cards (observed 2026-08-19).
+#
+# Every value must be a symbol a venue actually lists, or the alias resolves to nothing: `1810.HK -> XIAOMI` was
+# such a dead end (Binance lists Xiaomi as `HK1810`), which cost 13 tags and 3 pushed cards in one week.
+# `dangling_seed_aliases()` reports any that stop resolving.
+#
+# `XAUT` is Tether Gold: a token, but one whose underlying *is* gold, so it belongs in gold's storyline. There is
+# deliberately no `NATGAS -> GAS` seed — `GAS` is Neo's gas token on three crypto venues, a different asset.
 ALIAS_SEEDS: Final[Mapping[str, str]] = {
     "XAU": "GOLD",
     "XAUT": "GOLD",
@@ -40,12 +62,16 @@ ALIAS_SEEDS: Final[Mapping[str, str]] = {
     "OIL": "CL",
     "USOIL": "CL",
     "BRENTOIL": "CL",
-    "NATGAS": "GAS",
     "SKHX": "SKHY",
     "SKHYNIX": "SKHY",
     "SMSN": "SAMSUNG",
-    "1810.HK": "XIAOMI",
+    "XIAOMI": "HK1810",
+    "1810.HK": "HK1810",
     "HK0700": "TENCENT",
+    "NOKIA": "NOK",
+    "GIGADEVICE": "GIGADEV",
+    "RAYDIUM": "RAY",
+    "BTT": "BTTC",
     "OAI": "OPENAI",
     "ANTH": "ANTHROPIC",
     "SPCX": "SPACEX",
@@ -58,9 +84,31 @@ ALIAS_SEEDS: Final[Mapping[str, str]] = {
 
 # Instrument-class hints for venues whose symbols are not crypto. Anything not matched stays `crypto` on a crypto
 # venue and `unknown` elsewhere — the class is a hint for policy, never an identity.
+#
+# These names are checked *before* the venue default, so a symbol listed here must not also be a real crypto
+# listing. `GAS` was exactly that mistake: Neo's gas token trades on binance.spot, binance.perp and hl.perp, while
+# natural gas trades as `NATGAS`. Since #89 the class reaches the Gate, so a collision here mislabels live cards.
 _COMMODITY: Final = frozenset(
-    {"GOLD", "SILVER", "CL", "GAS", "COPPER", "PALLADIUM", "PLATINUM", "ALUMINIUM", "WHEAT", "CORN", "SOY", "URANIUM"}
+    {
+        "GOLD",
+        "SILVER",
+        "CL",
+        "NATGAS",
+        "BRENTOIL",
+        "COPPER",
+        "PALLADIUM",
+        "PLATINUM",
+        "ALUMINIUM",
+        "WHEAT",
+        "CORN",
+        "SOY",
+        "URANIUM",
+    }
 )
+# Crypto-market gauges that live on venues whose default is not crypto (`hl.para` is a HIP-3 builder DEX, so its
+# default is equity). They are indices, but of the crypto market — calling them `index` would make the Gate read a
+# "total2 breaks out" headline as an equity headline.
+_CRYPTO_GAUGES: Final = frozenset({"BTCD", "BTCDOM", "TOTAL2", "OTHERS", "VOL", "ALL"})
 _INDEX: Final = frozenset(
     {
         "SP500",
@@ -88,11 +136,7 @@ _INDEX: Final = frozenset(
         "GLDMINE",
         "GOLDJM",
         "SILVERJM",
-        "TOTAL2",
-        "OTHERS",
-        "BTCD",
         "10Y",
-        "VOL",
     }
 )
 _FX: Final = frozenset({"EUR", "GBP", "JPY", "KRW"})
@@ -143,9 +187,16 @@ def is_valid_symbol(symbol: str) -> bool:
 
 
 def classify(base_symbol: str, *, venue: str) -> InstrumentClass:
-    """Instrument class from the symbol and its venue. A hint for policy, never identity."""
+    """Instrument class from the symbol and its venue — the fallback for venues that declare nothing.
+
+    Binance declares the class itself (``underlyingType`` on its ``TRADIFI_PERPETUAL`` contracts) and its adapter
+    passes that through; Hyperliquid declares nothing, so its HIP-3 builder DEXs are classified by the
+    ``EQUITY_DEXS`` allowlist plus the symbol sets above. A hint for the Gate, never identity.
+    """
 
     symbol = base_symbol.upper()
+    if symbol in _CRYPTO_GAUGES:
+        return "crypto"
     if symbol in _PRE_IPO:
         return "pre_ipo"
     if symbol in _COMMODITY:
@@ -175,7 +226,12 @@ def resolve_base_symbol(symbol: str, aliases: Mapping[str, str] | None = None) -
 
 
 def instruments_from_rows(rows: Iterable[Mapping[str, object]]) -> tuple[Instrument, ...]:
-    """Build Instruments from repository rows (or any mapping with the same keys)."""
+    """Build Instruments from repository rows (or any mapping with the same keys).
+
+    The stored ``instrument_class`` wins: it may carry what the venue itself declared (Binance ships
+    ``underlyingType`` for its TradFi perps), which ``classify()`` cannot re-derive from the symbol. Recomputing it
+    here silently reset every declared class to the venue default on read — the bug this docstring replaces.
+    """
 
     out: list[Instrument] = []
     for row in rows:
@@ -186,44 +242,21 @@ def instruments_from_rows(rows: Iterable[Mapping[str, object]]) -> tuple[Instrum
             continue
         quote = row.get("quote_asset")
         status = str(row.get("status") or "trading")
+        stored = str(row.get("instrument_class") or "")
+        instrument_class = (
+            cast("InstrumentClass", stored) if stored in INSTRUMENT_CLASSES else classify(base, venue=venue)
+        )
         out.append(
             Instrument(
                 venue=venue,
                 venue_symbol=venue_symbol,
                 base_symbol=base,
-                instrument_class=classify(base, venue=venue),
+                instrument_class=instrument_class,
                 quote_asset=str(quote) if quote else None,
                 status="delisted" if status == "delisted" else "trading",
             )
         )
     return tuple(out)
-
-
-@dataclass(frozen=True, slots=True)
-class UniverseDiff:
-    """What changed between two snapshots. `listed`/`delisted` are the material facts a listing card is built from."""
-
-    listed: tuple[Instrument, ...]
-    delisted: tuple[Instrument, ...]
-    unchanged: int
-
-    @property
-    def empty(self) -> bool:
-        return not self.listed and not self.delisted
-
-
-def diff_universe(previous: Sequence[Instrument], current: Sequence[Instrument]) -> UniverseDiff:
-    """Compare two snapshots by ``(venue, venue_symbol)``.
-
-    A first-ever snapshot has no previous rows, and every instrument would read as "listed" — the caller must treat
-    an empty ``previous`` as a seed, not as thousands of listings. ``seed_only`` in the repository does that.
-    """
-
-    prev = {(i.venue, i.venue_symbol): i for i in previous if i.status == "trading"}
-    curr = {(i.venue, i.venue_symbol): i for i in current if i.status == "trading"}
-    listed = tuple(curr[k] for k in sorted(curr.keys() - prev.keys()))
-    delisted = tuple(prev[k] for k in sorted(prev.keys() - curr.keys()))
-    return UniverseDiff(listed=listed, delisted=delisted, unchanged=len(curr.keys() & prev.keys()))
 
 
 def grounding_rollup(
@@ -274,13 +307,12 @@ def grounding_rollup(
 __all__ = [
     "ALIAS_SEEDS",
     "EQUITY_DEXS",
-    "INSTRUMENT_UNIVERSE_VERSION",
+    "INSTRUMENT_CLASSES",
+    "NON_CRYPTO_CLASSES",
     "Instrument",
     "InstrumentClass",
     "InstrumentStatus",
-    "UniverseDiff",
     "classify",
-    "diff_universe",
     "grounding_rollup",
     "instruments_from_rows",
     "is_valid_symbol",

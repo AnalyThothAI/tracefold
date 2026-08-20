@@ -615,7 +615,6 @@ async def _wire_news_pipeline(
             strategy_ids=strategy_ids,
             watchlist_symbols=watchlist_symbols,
             suppress_low_signal=settings.news.gate.suppress_low_signal,
-            require_tradeable_assets=settings.news.gate.require_tradeable_assets,
         ),
         triage=TriageConsumer(
             bus=bus,

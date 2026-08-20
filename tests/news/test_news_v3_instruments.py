@@ -1,29 +1,26 @@
-"""Pure tests for the tradeable instrument universe (#75): normalization, aliasing, classification, diff."""
+"""Pure tests for the instrument universe (#75/#89): normalization, aliasing, classification, asset class."""
 
 from __future__ import annotations
 
+import asyncio
+import json
+
+import httpx
 import pytest
 
-from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
+from tracefold.integrations.venues.binance import fetch_binance_instruments
+from tracefold.news.gate import GateInput, asset_class_of, evaluate_gate, grounded_assets
 from tracefold.news.instruments import (
-    Instrument,
+    ALIAS_SEEDS,
     classify,
-    diff_universe,
     grounding_rollup,
+    instruments_from_rows,
+    is_valid_symbol,
     normalize_symbol,
     resolve_base_symbol,
     strip_quote_suffix,
 )
 from tracefold.news.storyline import final_storyline_key, storyline_key
-
-
-def _inst(venue: str, venue_symbol: str, base: str) -> Instrument:
-    return Instrument(
-        venue=venue,
-        venue_symbol=venue_symbol,
-        base_symbol=base,
-        instrument_class=classify(base, venue=venue),
-    )
 
 
 def test_normalize_strips_provider_prefix_and_dex_namespace() -> None:
@@ -43,6 +40,16 @@ def test_strip_quote_suffix_prefers_the_declared_quote() -> None:
     assert strip_quote_suffix("USDT") == "USDT"
 
 
+def test_symbol_validation_accepts_non_ascii_listings() -> None:
+    """Binance really does list `币安人生USDT`, and the provider tags names like `牛来` (#89)."""
+
+    assert is_valid_symbol("币安人生")
+    assert is_valid_symbol("BRK.B") and is_valid_symbol("BTC")
+    assert not is_valid_symbol("A B")
+    assert not is_valid_symbol("")
+    assert not is_valid_symbol("X" * 33)
+
+
 def test_classify_prefers_the_symbol_over_the_venue_default() -> None:
     assert classify("BTC", venue="binance.perp") == "crypto"
     assert classify("MSTR", venue="hl.xyz") == "equity"
@@ -51,8 +58,40 @@ def test_classify_prefers_the_symbol_over_the_venue_default() -> None:
     assert classify("EUR", venue="hl.km") == "fx"
     # Pre-IPO names are equities on their venue but priced off a private mark: policy wants them distinguishable.
     assert classify("SPACEX", venue="hl.vntl") == "pre_ipo"
-    assert classify("UNITREE", venue="binance.perp") == "pre_ipo"
     assert classify("WHATEVER", venue="unknown.venue") == "unknown"
+
+
+def test_crypto_gauges_are_not_equities_even_on_an_equity_dex() -> None:
+    """`hl.para` lists equities *and* crypto-market gauges; classifying TOTAL2 as an index would make the Gate
+    read "total2 breaks out" as a stock headline."""
+
+    assert classify("TOTAL2", venue="hl.para") == "crypto"
+    assert classify("BTCD", venue="hl.para") == "crypto"
+    assert classify("AVGO", venue="hl.para") == "equity"
+
+
+def test_commodity_names_never_collide_with_a_listed_coin() -> None:
+    """`GAS` is Neo's gas token on three crypto venues; natural gas trades as `NATGAS`. Since the class now
+    reaches the Gate, calling the token a commodity would label its headlines as stock news."""
+
+    assert classify("GAS", venue="binance.spot") == "crypto"
+    assert classify("GAS", venue="hl.perp") == "crypto"
+    assert classify("NATGAS", venue="hl.xyz") == "commodity"
+    assert resolve_base_symbol("NATGAS") == "NATGAS"  # never merged into the token's storyline
+
+
+def test_stored_class_survives_the_round_trip_through_rows() -> None:
+    """`classify()` cannot re-derive what the venue declared, so a read must not recompute it (#89)."""
+
+    rows = [
+        {"venue": "binance.perp", "venue_symbol": "JPMUSDT", "base_symbol": "JPM", "instrument_class": "equity"},
+        {"venue": "binance.perp", "venue_symbol": "BTCUSDT", "base_symbol": "BTC", "instrument_class": ""},
+        {"venue": "binance.perp", "venue_symbol": "XUSDT", "base_symbol": "X", "instrument_class": "nonsense"},
+    ]
+    built = {i.base_symbol: i.instrument_class for i in instruments_from_rows(rows)}
+    assert built["JPM"] == "equity"  # declared by the venue, preserved
+    assert built["BTC"] == "crypto"  # nothing stored: fall back to the classifier
+    assert built["X"] == "crypto"  # stored garbage is not a class
 
 
 def test_alias_seeds_collapse_one_issuer_and_are_cycle_safe() -> None:
@@ -63,6 +102,18 @@ def test_alias_seeds_collapse_one_issuer_and_are_cycle_safe() -> None:
     assert resolve_base_symbol("XAU") == "GOLD"
     assert resolve_base_symbol("UNKNOWNTHING") == "UNKNOWNTHING"
     assert resolve_base_symbol("A", {"A": "B", "B": "A"}) in {"A", "B"}  # terminates
+
+
+def test_alias_seeds_point_at_symbols_a_venue_actually_lists() -> None:
+    """The `1810.HK -> XIAOMI` bug: Binance lists Xiaomi as `HK1810`, so the old seed resolved to nothing (#89)."""
+
+    assert resolve_base_symbol("XIAOMI") == "HK1810"
+    assert resolve_base_symbol("1810.HK") == "HK1810"
+    assert resolve_base_symbol("NOKIA") == "NOK"
+    assert resolve_base_symbol("RAYDIUM") == "RAY"
+    assert resolve_base_symbol("BTT") == "BTTC"
+    # A seed must never point at another seed's alias, or one hop is not enough to resolve it.
+    assert not set(ALIAS_SEEDS.values()) & set(ALIAS_SEEDS)
 
 
 def test_storyline_key_buckets_one_issuer_together() -> None:
@@ -95,81 +146,161 @@ def test_final_storyline_key_resolves_aliases_on_both_sides() -> None:
     )
 
 
-def test_diff_reports_listings_and_delistings_by_venue_symbol() -> None:
-    previous = [_inst("binance.perp", "BTCUSDT", "BTC"), _inst("hl.xyz", "xyz:MSTR", "MSTR")]
-    current = [_inst("binance.perp", "BTCUSDT", "BTC"), _inst("binance.perp", "UNITREEUSDT", "UNITREE")]
-    diff = diff_universe(previous, current)
-    assert [i.venue_symbol for i in diff.listed] == ["UNITREEUSDT"]
-    assert [i.venue_symbol for i in diff.delisted] == ["xyz:MSTR"]
-    assert diff.unchanged == 1
-    assert not diff.empty
-    assert diff_universe(current, current).empty
+# --------------------------------------------------------- venue-declared classes
 
 
-def test_diff_ignores_already_delisted_rows() -> None:
-    gone = Instrument("binance.perp", "OLDUSDT", "OLD", "crypto", status="delisted")
-    diff = diff_universe([gone], [])
-    assert diff.empty  # a row already marked delisted is not a fresh delisting
+def _binance_transport(spot: dict[str, object], futures: dict[str, object]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = futures if "fapi" in str(request.url) else spot
+        return httpx.Response(200, content=json.dumps(payload))
+
+    return httpx.MockTransport(handler)
 
 
-# --------------------------------------------------------------- gate integration
+def test_binance_declared_class_beats_the_venue_default() -> None:
+    """Binance labels its TradFi perps itself; ignoring that put 81 of 169 in the universe as crypto (#89)."""
+
+    futures = {
+        "symbols": [
+            {
+                "symbol": "TENCENTUSDT",
+                "status": "TRADING",
+                "baseAsset": "TENCENT",
+                "quoteAsset": "USDT",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "HK_EQUITY",
+            },
+            {
+                "symbol": "CLUSDT",
+                "status": "TRADING",
+                "baseAsset": "CL",
+                "quoteAsset": "USDT",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "COMMODITY",
+            },
+            {
+                "symbol": "OPENAIUSDT",
+                "status": "TRADING",
+                "baseAsset": "OPENAI",
+                "quoteAsset": "USDT",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "PREMARKET",
+            },
+            {
+                "symbol": "BTCUSDT",
+                "status": "TRADING",
+                "baseAsset": "BTC",
+                "quoteAsset": "USDT",
+                "contractType": "PERPETUAL",
+                "underlyingType": "COIN",
+            },
+            {
+                "symbol": "BTCDOMUSDT",
+                "status": "TRADING",
+                "baseAsset": "BTCDOM",
+                "quoteAsset": "USDT",
+                "contractType": "PERPETUAL",
+                "underlyingType": "INDEX",
+            },
+            {"symbol": "DEADUSDT", "status": "BREAK", "baseAsset": "DEAD", "quoteAsset": "USDT"},
+        ]
+    }
+    spot = {"symbols": [{"symbol": "BTCUSDT", "status": "TRADING", "baseAsset": "BTC", "quoteAsset": "USDT"}]}
+    fetched = asyncio.run(fetch_binance_instruments(transport=_binance_transport(spot, futures)))
+    classes = {i.venue_symbol: i.instrument_class for i in fetched if i.venue == "binance.perp"}
+    assert classes == {
+        "TENCENTUSDT": "equity",
+        "CLUSDT": "commodity",
+        "OPENAIUSDT": "pre_ipo",
+        "BTCUSDT": "crypto",
+        # Binance's only two INDEX perps are crypto gauges, so INDEX is deliberately not mapped.
+        "BTCDOMUSDT": "crypto",
+    }
+
+
+def test_an_unmapped_tradfi_underlying_does_not_read_as_crypto() -> None:
+    """Binance adding `JP_EQUITY` must not put the new listings back in the universe as coins (#89)."""
+
+    futures = {
+        "symbols": [
+            {
+                "symbol": "SONYUSDT",
+                "status": "TRADING",
+                "baseAsset": "SONY",
+                "quoteAsset": "USDT",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "JP_EQUITY",
+            }
+        ]
+    }
+    spot = {"symbols": [{"symbol": "BTCUSDT", "status": "TRADING", "baseAsset": "BTC", "quoteAsset": "USDT"}]}
+    fetched = asyncio.run(fetch_binance_instruments(transport=_binance_transport(spot, futures)))
+    assert [i.instrument_class for i in fetched if i.venue == "binance.perp"] == ["equity"]
+
+
+# ------------------------------------------------------------------ asset class
 
 
 def _coins(*symbols: str) -> tuple[dict[str, str], ...]:
     return tuple({"symbol": s, "grade": "A"} for s in symbols)
 
 
-def test_tradeable_filter_removes_symbols_that_exist_nowhere() -> None:
-    coins = _coins("MSTR", "CCXI")
-    assert grounded_assets("MicroStrategy files", coins) == ("CCXI", "MSTR")
-    filtered = grounded_assets("MicroStrategy files", coins, tradeable_symbols=frozenset({"MSTR"}))
-    assert filtered == ("MSTR",)
+def test_asset_class_reads_the_universe_when_the_provider_gives_no_xyz_twin() -> None:
+    """A week of live traffic had 47 events tagged only `MRNA` / `CIEN` / `PANW`, all read as crypto (#89)."""
+
+    classes = {"MRNA": "equity", "BTC": "crypto"}
+    assert asset_class_of(("MRNA",), False, instrument_classes=classes) == "equity_or_commodity"
+    assert asset_class_of(("BTC",), False, instrument_classes=classes) == "crypto"
+    # A mixed headline is a stock headline: the equity is the specific fact.
+    assert asset_class_of(("BTC", "MRNA"), False, instrument_classes=classes) == "equity_or_commodity"
 
 
-def test_tradeable_filter_does_not_replace_the_word_collision_stop_list() -> None:
-    """`NEAR`/`BILL`/`FLOCK` are real listed tokens *and* ordinary English words.
-
-    The venue universe cannot tell those apart, so the collision stop-list still applies and both conditions are
-    independent — this is the assumption the whole whitelist rests on.
-    """
-
-    universe = frozenset({"NEAR", "BILL", "FLOCK", "MSTR"})
-    grounded = grounded_assets(
-        "SEC chair backs the Clarity bill as talks near zero",
-        _coins("NEAR", "BILL", "FLOCK", "MSTR"),
-        tradeable_symbols=universe,
-    )
-    assert grounded == ("MSTR",)
+def test_asset_class_falls_back_to_the_provider_prefix_without_a_universe() -> None:
+    assert asset_class_of(("XYZ-MU",), False) == "equity_or_commodity"
+    assert asset_class_of(("BTC",), False) == "crypto"
+    assert asset_class_of((), True) == "macro"
+    assert asset_class_of((), False) == "none"
 
 
-def test_tradeable_filter_accepts_the_provider_prefixed_form() -> None:
-    grounded = grounded_assets(
-        "Unitree lists in Shanghai", _coins("XYZ-UNITREE"), tradeable_symbols=frozenset({"UNITREE"})
-    )
-    assert grounded == ("XYZ-UNITREE",)
+def test_asset_class_keeps_the_old_reading_for_a_symbol_the_universe_does_not_know() -> None:
+    """`UWMC` is a real NYSE listing with no crypto perp — no venue we poll can say so, and the Gate must not
+    invent an answer. Closing this gap is #91."""
+
+    assert asset_class_of(("UWMC",), False, instrument_classes={"BTC": "crypto"}) == "crypto"
+    # ...but a known equity in the same tag set still decides it.
+    assert asset_class_of(("UWMC", "MU"), False, instrument_classes={"MU": "equity"}) == "equity_or_commodity"
 
 
-def test_gate_without_a_universe_is_unchanged() -> None:
+def test_gate_labels_the_event_from_the_universe() -> None:
     base = {
         "engine_type": "news",
         "strategy_ids": ("1018",),
         "provider_score": 80.0,
         "ingest_mode": "live",
     }
-    coins = _coins("MSTR", "CCXI")
-    with_none = evaluate_gate(GateInput(title="MicroStrategy buys", coins=coins, **base))  # type: ignore[arg-type]
-    assert with_none.grounded_assets == ("CCXI", "MSTR")
-    with_universe = evaluate_gate(
-        GateInput(title="MicroStrategy buys", coins=coins, tradeable_symbols=frozenset({"MSTR"}), **base)  # type: ignore[arg-type]
+    verdict = evaluate_gate(
+        GateInput(  # type: ignore[arg-type]
+            title="Moderna upgraded to Neutral at BofA",
+            coins=_coins("MRNA"),
+            instrument_classes={"MRNA": "equity"},
+            **base,
+        )
     )
-    assert with_universe.grounded_assets == ("MSTR",)
+    assert verdict.asset_class == "equity_or_commodity"
+    assert verdict.grounded_assets == ("MRNA",)
+
+
+def test_the_universe_never_removes_a_grounded_tag() -> None:
+    """#75 shipped an existence filter behind a flag; the dry-run showed it only ever removed real equities."""
+
+    grounded = grounded_assets("Telix reports half-year results", _coins("TLX", "MSTR"))
+    assert grounded == ("MSTR", "TLX")
 
 
 @pytest.mark.parametrize("symbol", ["CL", "XYZ-CL"])
-def test_crude_still_needs_energy_context_under_a_universe(symbol: str) -> None:
-    universe = frozenset({"CL"})
-    assert grounded_assets("Fed holds rates", _coins(symbol), tradeable_symbols=universe) == ()
-    assert grounded_assets("Hormuz tanker seized", _coins(symbol), tradeable_symbols=universe) == (symbol,)
+def test_crude_still_needs_energy_context(symbol: str) -> None:
+    assert grounded_assets("Fed holds rates", _coins(symbol)) == ()
+    assert grounded_assets("Hormuz tanker seized", _coins(symbol)) == (symbol,)
 
 
 def _refs(**listed: str | None) -> dict[str, dict[str, object]]:

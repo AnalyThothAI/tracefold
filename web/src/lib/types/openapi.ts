@@ -649,6 +649,9 @@ export interface components {
         /**
          * NewsInstrumentUniverse
          * @description #75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.
+         *
+         *     `dangling_aliases` counts seed aliases pointing at a symbol no venue lists — each one is a provider tag that
+         *     silently resolves to nothing, which is how `1810.HK -> XIAOMI` went unnoticed for a week (#89). It should be 0.
          */
         NewsInstrumentUniverse: {
             /**
@@ -656,10 +659,19 @@ export interface components {
              * @default 0
              */
             base_symbols: number;
+            /** By Class */
+            by_class?: {
+                [key: string]: number;
+            };
             /** By Venue */
             by_venue?: {
                 [key: string]: number;
             };
+            /**
+             * Dangling Aliases
+             * @default 0
+             */
+            dangling_aliases: number;
             /**
              * Delisted
              * @default 0

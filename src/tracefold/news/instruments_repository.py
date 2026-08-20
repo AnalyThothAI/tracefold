@@ -1,7 +1,9 @@
-"""Persistence for the tradeable instrument universe (#75). Callers own the transaction, like NewsRepository.
+"""Persistence for the instrument universe (#75, consolidated in #89). Callers own the transaction, like NewsRepository.
 
-The snapshot write is idempotent by ``(venue, venue_symbol)``: re-running it on an unchanged universe touches only
-``last_seen_ms``. ``first_seen_ms`` is never moved once set — it is the listing time the diff reports.
+The snapshot write is idempotent by ``(venue, venue_symbol)``: re-running it on an unchanged catalogue only moves
+``last_seen_ms``. The universe answers two questions and no others — what is this issuer's canonical symbol, and is
+this a coin or a stock — so there is no listing-time column and no diff here: OpenNews pushes listing frames and the
+pipeline admits them (#72), which is a first source, not a second one.
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from typing import Any
 from .instruments import (
     ALIAS_SEEDS,
     Instrument,
-    UniverseDiff,
     instruments_from_rows,
     normalize_symbol,
     resolve_base_symbol,
@@ -22,25 +23,12 @@ from .instruments import (
 
 @dataclass(frozen=True, slots=True)
 class SnapshotResult:
-    """What one snapshot changed. ``seeded`` marks the first snapshot for a venue, whose "new" rows are not
-    listings — there was simply nothing to compare against."""
+    """What one snapshot wrote. ``delisted`` counts contracts an answering venue no longer lists — an operational
+    signal, not a card: a delisting the reader should hear about arrives as a provider frame."""
 
-    diff: UniverseDiff
-    seeded_venues: tuple[str, ...]
     total: int
-
-    @property
-    def reportable(self) -> UniverseDiff:
-        """The diff with seed venues removed: what a listing card may be built from."""
-
-        if not self.seeded_venues:
-            return self.diff
-        seeded = frozenset(self.seeded_venues)
-        return UniverseDiff(
-            listed=tuple(i for i in self.diff.listed if i.venue not in seeded),
-            delisted=tuple(i for i in self.diff.delisted if i.venue not in seeded),
-            unchanged=self.diff.unchanged,
-        )
+    venues: tuple[str, ...]
+    delisted: int
 
 
 class InstrumentsRepository:
@@ -48,24 +36,6 @@ class InstrumentsRepository:
         self.conn = conn
 
     # ---------------------------------------------------------------- reads
-
-    def tradeable_base_symbols(self) -> frozenset[str]:
-        """Every base symbol currently trading somewhere, plus every alias that resolves into one.
-
-        The Gate uses this as an existence check. It is deliberately *not* a false-positive filter: `NEAR`, `ACT`,
-        `W`, `BILL` and `FLOCK` are real listed tokens that are also ordinary English words, so the word-collision
-        stop-list in `gate.py` stays and both conditions apply.
-        """
-
-        rows = self.conn.execute(
-            "SELECT DISTINCT base_symbol FROM news_market_instruments WHERE status = 'trading'"
-        ).fetchall()
-        symbols = {str(row["base_symbol"]).upper() for row in rows}
-        alias_rows = self.conn.execute("SELECT alias, base_symbol FROM news_symbol_aliases").fetchall()
-        for row in alias_rows:
-            if str(row["base_symbol"]).upper() in symbols:
-                symbols.add(str(row["alias"]).upper())
-        return frozenset(symbols)
 
     def alias_map(self) -> dict[str, str]:
         rows = self.conn.execute("SELECT alias, base_symbol FROM news_symbol_aliases").fetchall()
@@ -75,7 +45,8 @@ class InstrumentsRepository:
         """base_symbol -> instrument_class, preferring the most specific class when venues disagree.
 
         A symbol on both `binance.perp` (crypto by venue default) and `hl.xyz` (equity) is an equity: the specific
-        classification wins over the venue default.
+        classification wins over the venue default. This is what the Gate reads to decide whether a headline is
+        about a coin or a stock (#89), replacing a guess based on the provider's `XYZ-` prefix.
         """
 
         rows = self.conn.execute(
@@ -88,6 +59,17 @@ class InstrumentsRepository:
             cls = str(row["instrument_class"])
             if rank.get(cls, 0) > rank.get(out.get(symbol, "unknown"), 0):
                 out[symbol] = cls
+        # Aliases carry the class of what they resolve to, so the caller needs one lookup and no alias table:
+        # `SKHYNIX` and `XYZ-SKHX` are the forms the provider actually sends. Resolution reads `bases`, never the
+        # dict being written — otherwise a two-hop chain would resolve or not depending on the row order the
+        # unordered SELECT happened to return, and the Gate's asset class would differ between restarts.
+        bases = dict(out)
+        alias_rows = self.conn.execute("SELECT alias, base_symbol FROM news_symbol_aliases").fetchall()
+        for row in alias_rows:
+            alias = str(row["alias"]).upper()
+            resolved = bases.get(str(row["base_symbol"]).upper())
+            if resolved and alias not in bases:
+                out[alias] = resolved
         return out
 
     def venues_for(self, base_symbol: str) -> tuple[str, ...]:
@@ -166,7 +148,7 @@ class InstrumentsRepository:
         one card. Only bases that actually collapse something are worth a row, so the caller drops singletons.
 
         ``sources`` narrows to particular ``news_symbol_aliases.source`` values. The console passes
-        ``("operator",)``: venue-derived rows are mechanical (`XYZ-{base}` exists for every builder-DEX base),
+        ``("seed",)``: venue-derived rows are mechanical (`XYZ-{base}` exists for every builder-DEX base),
         so including them would fire the block on Events where nothing surprising happened.
         """
 
@@ -195,6 +177,28 @@ class InstrumentsRepository:
                 entry["sources"].append(source)
         return out
 
+    def dangling_seed_aliases(self) -> tuple[dict[str, str], ...]:
+        """Seed aliases whose target is not listed anywhere — the shape of the `1810.HK -> XIAOMI` bug (#89).
+
+        One hop only: a seed is written by hand, and no seed chains today. An empty universe (no snapshot yet)
+        reports nothing rather than flagging every seed at first boot.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT a.alias, a.base_symbol
+            FROM news_symbol_aliases a
+            WHERE a.source = 'seed'
+              AND EXISTS (SELECT 1 FROM news_market_instruments WHERE status = 'trading')
+              AND NOT EXISTS (
+                SELECT 1 FROM news_market_instruments m
+                WHERE m.base_symbol = a.base_symbol AND m.status = 'trading'
+              )
+            ORDER BY a.alias
+            """
+        ).fetchall()
+        return tuple({"alias": str(r["alias"]), "base_symbol": str(r["base_symbol"])} for r in rows)
+
     def universe_summary(self) -> dict[str, Any]:
         row = self.conn.execute(
             """
@@ -212,20 +216,53 @@ class InstrumentsRepository:
             " WHERE status = 'trading' GROUP BY venue ORDER BY n DESC"
         ).fetchall()
         summary["by_venue"] = {str(r["venue"]): int(r["n"]) for r in by_venue}
+        by_class = self.conn.execute(
+            "SELECT instrument_class, count(DISTINCT base_symbol) AS n FROM news_market_instruments"
+            " WHERE status = 'trading' GROUP BY instrument_class ORDER BY n DESC"
+        ).fetchall()
+        summary["by_class"] = {str(r["instrument_class"]): int(r["n"]) for r in by_class}
+        summary["dangling_aliases"] = len(self.dangling_seed_aliases())
         return summary
 
-    def recent_listings(self, *, since_ms: int, limit: int = 50) -> list[dict[str, Any]]:
+    def unmatched_provider_tags(self, *, since_ms: int, limit: int = 50) -> list[dict[str, Any]]:
+        """Provider coin tags that resolve to nothing in the universe, by volume — the evidence an alias is missing.
+
+        Reads `news_items` because that is where the tags are; both tables live in the News store and this is a
+        read-only operator report, never part of the message path. The residue is three things and the report does
+        not try to tell them apart: word collisions (`PRIME`, `GPU`), coins on venues we do not snapshot (`OKB`,
+        `HTX`), and equities with no crypto perp (`UWMC`, `HUBG`) — the last of which is #91's subject.
+        """
+
         rows = self.conn.execute(
             """
-            SELECT venue, venue_symbol, base_symbol, instrument_class, first_seen_ms
-            FROM news_market_instruments
-            WHERE status = 'trading' AND first_seen_ms >= %s
-            ORDER BY first_seen_ms DESC, venue, venue_symbol
+            WITH tags AS (
+              SELECT upper(regexp_replace(c ->> 'symbol', '^XYZ-', '')) AS symbol,
+                     CASE WHEN c ->> 'score' ~ '^[0-9]+(\\.[0-9]+)?$' THEN (c ->> 'score')::numeric END AS score
+              FROM news_items i, jsonb_array_elements(i.provider_metadata -> 'coins') c
+              WHERE i.published_at_ms >= %s AND c ->> 'symbol' <> ''
+            ), resolved AS (
+              SELECT t.symbol, t.score, coalesce(a.base_symbol, t.symbol) AS base
+              FROM tags t LEFT JOIN news_symbol_aliases a ON a.alias = t.symbol
+            )
+            SELECT symbol, count(*) AS tags, max(score) AS max_score
+            FROM resolved r
+            WHERE NOT EXISTS (
+              SELECT 1 FROM news_market_instruments m WHERE m.base_symbol = r.base AND m.status = 'trading'
+            )
+            GROUP BY symbol
+            ORDER BY count(*) DESC, symbol
             LIMIT %s
             """,
             (int(since_ms), int(limit)),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [
+            {
+                "symbol": str(r["symbol"]),
+                "tags": int(r["tags"]),
+                "max_score": float(r["max_score"]) if r["max_score"] is not None else None,
+            }
+            for r in rows
+        ]
 
     def all_instruments(self) -> tuple[Instrument, ...]:
         rows = self.conn.execute(
@@ -236,45 +273,51 @@ class InstrumentsRepository:
 
     # --------------------------------------------------------------- writes
 
-    def seed_aliases(self, *, now_ms: int, seeds: Mapping[str, str] = ALIAS_SEEDS) -> int:
-        """Insert the operator seed aliases. Never overwrites an alias an operator already changed."""
+    def reconcile_seed_aliases(self, *, now_ms: int, seeds: Mapping[str, str] = ALIAS_SEEDS) -> dict[str, int]:
+        """Make the `source = 'seed'` rows equal to `ALIAS_SEEDS`: upsert what the code carries, delete what it
+        dropped. Venue-derived rows are untouched.
+
+        The previous `ON CONFLICT DO NOTHING` made the code seeds write-once: correcting `1810.HK -> XIAOMI` in the
+        source would never have reached a deployed database (#89). Seeds are code-owned and rebuildable, so the
+        code wins; a future operator-owned alias would carry its own `source` and survive this.
+        """
 
         written = 0
         for alias, base in seeds.items():
             cursor = self.conn.execute(
                 """
                 INSERT INTO news_symbol_aliases (alias, base_symbol, source, updated_at_ms)
-                VALUES (%s, %s, 'operator', %s)
-                ON CONFLICT (alias) DO NOTHING
+                VALUES (%s, %s, 'seed', %s)
+                ON CONFLICT (alias) DO UPDATE
+                   SET base_symbol = EXCLUDED.base_symbol, updated_at_ms = EXCLUDED.updated_at_ms
+                 WHERE news_symbol_aliases.source = 'seed'
+                   AND news_symbol_aliases.base_symbol IS DISTINCT FROM EXCLUDED.base_symbol
                 """,
                 (alias.upper(), str(base).upper(), int(now_ms)),
             )
             written += int(getattr(cursor, "rowcount", 0) or 0)
-        return written
+        cursor = self.conn.execute(
+            "DELETE FROM news_symbol_aliases WHERE source = 'seed' AND NOT (alias = ANY(%s))",
+            ([alias.upper() for alias in seeds],),
+        )
+        return {"written": written, "removed": int(getattr(cursor, "rowcount", 0) or 0)}
 
     def apply_snapshot(self, instruments: Sequence[Instrument], *, now_ms: int) -> SnapshotResult:
-        """Upsert one snapshot and report what changed.
+        """Upsert one snapshot and reconcile the venues that answered.
 
         Venues absent from ``instruments`` are left untouched — a venue that failed to answer must not read as a
         mass delisting. Only symbols missing from a venue that *did* answer are marked delisted.
-
-        The diff compares against the rows that were *trading*, so an already-delisted contract is not re-reported
-        as a fresh delisting on every snapshot, and one that comes back reads as a listing again. `seeded` still
-        looks at every stored row, so a venue whose symbols have all been delisted is not mistaken for a new one.
         """
 
         answered = {i.venue for i in instruments}
-        stored = tuple(i for i in self.all_instruments() if i.venue in answered)
-        previous = tuple(i for i in stored if i.status == "trading")
-        seeded = tuple(sorted(answered - {i.venue for i in stored}))
+        previous = tuple(i for i in self.all_instruments() if i.venue in answered and i.status == "trading")
 
         for item in instruments:
             self.conn.execute(
                 """
                 INSERT INTO news_market_instruments (
-                  venue, venue_symbol, base_symbol, instrument_class, quote_asset, status,
-                  first_seen_ms, last_seen_ms
-                ) VALUES (%s, %s, %s, %s, %s, 'trading', %s, %s)
+                  venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
+                ) VALUES (%s, %s, %s, %s, %s, 'trading', %s)
                 ON CONFLICT (venue, venue_symbol) DO UPDATE SET
                   base_symbol      = EXCLUDED.base_symbol,
                   instrument_class = EXCLUDED.instrument_class,
@@ -289,7 +332,6 @@ class InstrumentsRepository:
                     item.instrument_class,
                     item.quote_asset,
                     int(now_ms),
-                    int(now_ms),
                 ),
             )
 
@@ -301,17 +343,7 @@ class InstrumentsRepository:
                 " WHERE venue = %s AND venue_symbol = %s",
                 (int(now_ms), item.venue, item.venue_symbol),
             )
-
-        prev_keys = {(i.venue, i.venue_symbol) for i in previous}
-        listed = tuple(
-            sorted(
-                (i for i in instruments if (i.venue, i.venue_symbol) not in prev_keys),
-                key=lambda i: (i.venue, i.venue_symbol),
-            )
-        )
-        delisted = tuple(sorted(gone, key=lambda i: (i.venue, i.venue_symbol)))
-        diff = UniverseDiff(listed=listed, delisted=delisted, unchanged=len(current_keys & prev_keys))
-        return SnapshotResult(diff=diff, seeded_venues=seeded, total=len(instruments))
+        return SnapshotResult(total=len(instruments), venues=tuple(sorted(answered)), delisted=len(gone))
 
     def learn_aliases_from_universe(self, *, now_ms: int) -> int:
         """Record the venue-derived aliases the pipeline will meet: the provider's ``XYZ-`` form and each
@@ -345,8 +377,4 @@ class InstrumentsRepository:
         return resolve_base_symbol(symbol, aliases if aliases is not None else self.alias_map())
 
 
-def instruments_from_iterable(rows: Iterable[Mapping[str, object]]) -> tuple[Instrument, ...]:
-    return instruments_from_rows(rows)
-
-
-__all__ = ["InstrumentsRepository", "SnapshotResult", "instruments_from_iterable"]
+__all__ = ["InstrumentsRepository", "SnapshotResult"]

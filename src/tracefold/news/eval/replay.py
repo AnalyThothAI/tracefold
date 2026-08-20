@@ -27,7 +27,12 @@ def replay_hits(
     strategy_ids: Sequence[str],
     watchlist_symbols: frozenset[str],
     suppress_low_signal: bool = False,
+    instrument_classes: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    """``instrument_classes`` is what the live Gate reads to tell a stock headline from a coin one (#89). Leave it
+    out and the replay silently exercises the fallback instead of the deployed behaviour — which is why the CLI
+    loads it from the universe when a database is reachable."""
+
     ids = frozenset(str(s) for s in strategy_ids)
     seen: set[str] = set()
     events: list[dict[str, Any]] = []
@@ -64,6 +69,7 @@ def replay_hits(
                 watchlist_symbols=watchlist_symbols,
                 raw_first_line=extracted.first_line,
                 suppress_low_signal=suppress_low_signal,
+                instrument_classes=instrument_classes,
             )
         )
         tokens = comparison_tokens(extracted.comparison)
@@ -119,7 +125,10 @@ def replay_hits(
         counts[f"admission:{gate.admission}"] += 1
     candidates = [e for e in events if e["admission"] == "candidate"]
     return {
-        "gate": {"suppress_low_signal": bool(suppress_low_signal)},
+        "gate": {
+            "suppress_low_signal": bool(suppress_low_signal),
+            "instrument_classes": len(instrument_classes or {}),
+        },
         "counts": dict(counts),
         "candidate_share_of_items": round(len(candidates) / counts["items"], 4) if counts["items"] else None,
         "candidate_asset_class": dict(collections.Counter(e["asset_class"] for e in candidates)),

@@ -152,7 +152,7 @@ class _FakeInstrumentsRepository:
         # #87 review: the console asks for operator aliases only. Venue-derived rows are mechanical
         # (`XYZ-{base}` exists for every builder-DEX base) and would fire the block on routine Events.
         groups = {"COPPER": ["COPPER", "HG"]}
-        if sources is not None and "operator" not in tuple(sources):
+        if sources is not None and "seed" not in tuple(sources):
             return {
                 str(base): {"base_symbol": str(base), "aliases": [str(base)], "sources": []} for base in base_symbols
             }
@@ -160,7 +160,7 @@ class _FakeInstrumentsRepository:
             str(base): {
                 "base_symbol": str(base),
                 "aliases": groups.get(str(base), [str(base)]),
-                "sources": ["operator"],
+                "sources": ["seed"],
             }
             for base in base_symbols
         }
@@ -173,6 +173,8 @@ class _FakeInstrumentsRepository:
             "venues": 0,
             "last_snapshot_ms": None,
             "by_venue": {},
+            "by_class": {},
+            "dangling_aliases": 0,
         }
 
 

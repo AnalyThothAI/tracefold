@@ -82,15 +82,15 @@ class RecordingNews:
 
 
 class RecordingInstruments:
-    """The #75 universe as the consumers see it: empty by default, so the Gate filter and the alias table both
-    stay disabled and every pre-existing expectation holds unchanged."""
+    """The #75 universe as the consumers see it: empty by default, so the Gate falls back to the `XYZ-` prefix and
+    the alias table stays inert — every pre-existing expectation holds unchanged."""
 
-    def __init__(self, *, tradeable: frozenset[str] = frozenset(), aliases: dict[str, str] | None = None) -> None:
-        self.tradeable = tradeable
+    def __init__(self, *, classes: dict[str, str] | None = None, aliases: dict[str, str] | None = None) -> None:
+        self.classes = classes or {}
         self.aliases = aliases or {}
 
-    def tradeable_base_symbols(self) -> frozenset[str]:
-        return self.tradeable
+    def instrument_classes(self) -> dict[str, str]:
+        return dict(self.classes)
 
     def alias_map(self) -> dict[str, str]:
         return dict(self.aliases)

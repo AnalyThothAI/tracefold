@@ -1,4 +1,4 @@
-"""Instrument universe against real PostgreSQL (#75): snapshot idempotence, diff, seeding, alias learning."""
+"""Instrument universe against real PostgreSQL (#75/#89): snapshot reconciliation, seeds, alias learning."""
 
 from __future__ import annotations
 
@@ -26,41 +26,55 @@ def conn():
 def _clean(conn):
     conn.execute("DELETE FROM news_market_instruments")
     conn.execute("DELETE FROM news_symbol_aliases")
+    conn.execute("DELETE FROM news_items")
     conn.commit()
 
 
-def _inst(venue: str, venue_symbol: str, base: str, quote: str | None = None) -> Instrument:
+def _inst(venue: str, venue_symbol: str, base: str, quote: str | None = None, cls: str | None = None) -> Instrument:
     return Instrument(
         venue=venue,
         venue_symbol=venue_symbol,
         base_symbol=base,
-        instrument_class=classify(base, venue=venue),
+        instrument_class=cls or classify(base, venue=venue),  # type: ignore[arg-type]
         quote_asset=quote,
     )
 
 
-def test_first_snapshot_seeds_and_does_not_report_listings(conn) -> None:
+def _item(conn, item_id: str, *, coins: str, published_at_ms: int = NOW) -> None:
+    conn.execute(
+        """
+        INSERT INTO news_items (
+          item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,
+          provider_metadata, first_ingest_mode, created_at_ms, updated_at_ms
+        ) VALUES (%s, 'opennews', %s, 'headline', %s, %s, %s::jsonb, 'live', %s, %s)
+        """,
+        (item_id, item_id, published_at_ms, published_at_ms, coins, published_at_ms, published_at_ms),
+    )
+
+
+def test_snapshot_writes_the_universe_and_summarizes_it(conn) -> None:
     repos = repositories_for_connection(conn)
     universe = [
         _inst("binance.perp", "BTCUSDT", "BTC", "USDT"),
-        _inst("binance.perp", "UNITREEUSDT", "UNITREE", "USDT"),
+        _inst("binance.perp", "TENCENTUSDT", "TENCENT", "USDT", cls="equity"),
         _inst("hl.xyz", "xyz:MSTR", "MSTR"),
     ]
     with repos.transaction():
         result = repos.instruments.apply_snapshot(universe, now_ms=NOW)
 
     assert result.total == 3
-    assert sorted(result.seeded_venues) == ["binance.perp", "hl.xyz"]
-    # Every row is new, but a first snapshot is a seed — reporting 3 "listings" would be a lie.
-    assert len(result.diff.listed) == 3
-    assert result.reportable.empty
+    assert result.venues == ("binance.perp", "hl.xyz")
+    assert result.delisted == 0
 
     summary = repos.instruments.universe_summary()
     assert summary["trading"] == 3 and summary["base_symbols"] == 3
     assert summary["by_venue"] == {"binance.perp": 2, "hl.xyz": 1}
+    assert summary["by_class"] == {"crypto": 1, "equity": 2}
+    # The class Binance declared must survive being written and read back, not fall to the venue default (#89).
+    assert repos.instruments.instrument_classes()["TENCENT"] == "equity"
 
 
-def test_second_snapshot_reports_only_real_changes_and_is_idempotent(conn) -> None:
+def test_second_snapshot_reconciles_and_is_idempotent(conn) -> None:
     repos = repositories_for_connection(conn)
     first = [_inst("binance.perp", "BTCUSDT", "BTC", "USDT"), _inst("binance.perp", "OLDUSDT", "OLD", "USDT")]
     with repos.transaction():
@@ -70,19 +84,21 @@ def test_second_snapshot_reports_only_real_changes_and_is_idempotent(conn) -> No
     with repos.transaction():
         result = repos.instruments.apply_snapshot(second, now_ms=NOW + 3600_000)
 
-    assert result.seeded_venues == ()
-    reportable = result.reportable
-    assert [i.venue_symbol for i in reportable.listed] == ["ADIUSDT"]
-    assert [i.venue_symbol for i in reportable.delisted] == ["OLDUSDT"]
-    assert reportable.unchanged == 1
+    assert result.delisted == 1  # OLDUSDT is gone from a venue that answered
+    summary = repos.instruments.universe_summary()
+    assert summary["trading"] == 2 and summary["delisted"] == 1
+    assert summary["last_snapshot_ms"] == NOW + 3600_000
 
-    # first_seen_ms is the listing time and never moves; re-running the same snapshot changes nothing.
+    # Re-running an unchanged catalogue delists nothing and only moves last_seen_ms.
     with repos.transaction():
         repeat = repos.instruments.apply_snapshot(second, now_ms=NOW + 7200_000)
-    assert repeat.reportable.empty
-    listings = repos.instruments.recent_listings(since_ms=NOW + 1, limit=10)
-    assert [row["venue_symbol"] for row in listings] == ["ADIUSDT"]
-    assert listings[0]["first_seen_ms"] == NOW + 3600_000
+    assert repeat.delisted == 0
+    assert repos.instruments.universe_summary()["last_snapshot_ms"] == NOW + 7200_000
+
+    # A contract that comes back reads as trading again rather than staying delisted forever.
+    with repos.transaction():
+        repos.instruments.apply_snapshot(first, now_ms=NOW + 10800_000)
+    assert repos.instruments.venues_for("OLD") == ("binance.perp",)
 
 
 def test_a_venue_that_did_not_answer_is_never_read_as_a_mass_delisting(conn) -> None:
@@ -97,47 +113,65 @@ def test_a_venue_that_did_not_answer_is_never_read_as_a_mass_delisting(conn) -> 
     with repos.transaction():
         result = repos.instruments.apply_snapshot([_inst("hl.perp", "ETH", "ETH")], now_ms=NOW + 3600_000)
 
-    assert result.reportable.empty
+    assert result.delisted == 0 and result.venues == ("hl.perp",)
     assert repos.instruments.universe_summary()["trading"] == 2
-    assert "BTC" in repos.instruments.tradeable_base_symbols()
+    assert repos.instruments.venues_for("BTC") == ("binance.perp",)
 
 
-def test_aliases_seed_and_are_learned_from_the_universe(conn) -> None:
+def test_seed_aliases_are_code_owned_and_reconciled(conn) -> None:
+    """The old `ON CONFLICT DO NOTHING` made seeds write-once: a corrected seed never reached a deployed DB (#89)."""
+
     repos = repositories_for_connection(conn)
     with repos.transaction():
-        seeded = repos.instruments.seed_aliases(now_ms=NOW)
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"SKHX": "WRONG", "GONE": "SKHY"})
+    assert repos.instruments.alias_map()["SKHX"] == "WRONG"
+
+    with repos.transaction():
+        counts = repos.instruments.reconcile_seed_aliases(now_ms=NOW + 1, seeds={"SKHX": "SKHY", "NOKIA": "NOK"})
+
+    aliases = repos.instruments.alias_map()
+    assert aliases["SKHX"] == "SKHY"  # corrected in place
+    assert aliases["NOKIA"] == "NOK"  # added
+    assert "GONE" not in aliases  # dropped from the code, dropped from the table
+    assert counts == {"written": 2, "removed": 1}
+
+
+def test_venue_learned_aliases_survive_seed_reconciliation(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
         repos.instruments.apply_snapshot(
             [_inst("hl.xyz", "xyz:SKHY", "SKHY"), _inst("hl.xyz", "xyz:SKHX", "SKHX")], now_ms=NOW
         )
         learned = repos.instruments.learn_aliases_from_universe(now_ms=NOW)
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW + 1)
 
-    assert seeded > 0 and learned > 0
+    assert learned > 0
     aliases = repos.instruments.alias_map()
-    # Operator seed: two real contracts, one issuer.
-    assert aliases["SKHX"] == "SKHY"
-    # Venue-derived: the provider's XYZ- form and the dex-qualified form both resolve.
-    assert aliases["XYZ-SKHY"] == "SKHY"
-    assert aliases["XYZ:SKHY"] == "SKHY"
-    assert repos.instruments.resolve("XYZ-SKHX") == "SKHY"
-
-    # Seeding twice never overwrites: an operator edit survives the next snapshot.
-    with repos.transaction():
-        conn.execute("UPDATE news_symbol_aliases SET base_symbol = 'CUSTOM' WHERE alias = 'XAU'")
-        repos.instruments.seed_aliases(now_ms=NOW + 1)
-    assert repos.instruments.alias_map()["XAU"] == "CUSTOM"
+    assert aliases["XYZ-SKHY"] == "SKHY"  # the provider's prefixed form
+    assert aliases["XYZ:SKHX"] == "SKHX"  # the dex-qualified venue symbol
+    assert repos.instruments.resolve("XYZ-SKHX") == "SKHY"  # venue hop, then the seed
+    assert repos.instruments.dangling_seed_aliases() == () or all(
+        row["base_symbol"] != "SKHY" for row in repos.instruments.dangling_seed_aliases()
+    )
 
 
-def test_tradeable_symbols_include_aliases_only_when_they_resolve(conn) -> None:
+def test_dangling_seed_aliases_are_reported(conn) -> None:
+    """`1810.HK -> XIAOMI` pointed at a symbol no venue lists, and nothing said so for a week (#89)."""
+
     repos = repositories_for_connection(conn)
     with repos.transaction():
-        repos.instruments.apply_snapshot([_inst("hl.xyz", "xyz:SKHY", "SKHY")], now_ms=NOW)
-        repos.instruments.seed_aliases(now_ms=NOW)
+        repos.instruments.apply_snapshot([_inst("binance.perp", "HK1810USDT", "HK1810", "USDT")], now_ms=NOW)
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"XIAOMI": "HK1810", "1810.HK": "NOWHERE"})
 
-    symbols = repos.instruments.tradeable_base_symbols()
-    assert "SKHY" in symbols
-    assert "SKHX" in symbols and "SKHYNIX" in symbols  # aliases of a listed issuer
-    assert "GOLD" not in symbols  # XAU->GOLD is seeded, but GOLD is not in this universe
-    assert "XAU" not in symbols
+    assert repos.instruments.dangling_seed_aliases() == ({"alias": "1810.HK", "base_symbol": "NOWHERE"},)
+    assert repos.instruments.universe_summary()["dangling_aliases"] == 1
+
+
+def test_dangling_report_is_silent_before_the_first_snapshot(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW)
+    assert repos.instruments.dangling_seed_aliases() == ()
 
 
 def test_asset_refs_resolve_the_providers_prefixed_form_to_the_listed_contract(conn) -> None:
@@ -174,33 +208,75 @@ def test_asset_refs_resolve_the_providers_prefixed_form_to_the_listed_contract(c
 
 
 def test_normalization_block_only_reports_the_operator_owned_collapse(conn) -> None:
-    """Venue-derived aliases are mechanical; surfacing them would fire the block on routine Events."""
+    """Venue-derived aliases are mechanical; surfacing them would fire the block on routine Events.
+
+    The code-owned rows are `source = 'seed'` since #89 — the console asks for those, not for every alias.
+    """
 
     repos = repositories_for_connection(conn)
     with repos.transaction():
         repos.instruments.apply_snapshot([_inst("hl.xyz", "xyz:SKHY", "SKHY")], now_ms=NOW)
-        repos.instruments.seed_aliases(now_ms=NOW)
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW)
         repos.instruments.learn_aliases_from_universe(now_ms=NOW)
 
     everything = repos.instruments.aliases_by_base(["SKHY"])["SKHY"]["aliases"]
-    operator_only = repos.instruments.aliases_by_base(["SKHY"], sources=("operator",))["SKHY"]["aliases"]
+    seeded_only = repos.instruments.aliases_by_base(["SKHY"], sources=("seed",))["SKHY"]["aliases"]
 
     # The venue rows exist and would pad the group with forms the reader already assumes.
     assert "XYZ-SKHY" in everything
-    assert "XYZ-SKHY" not in operator_only
+    assert "XYZ-SKHY" not in seeded_only
     # What survives is the collapse the storyline throttle actually depends on.
-    assert set(operator_only) == {"SKHY", "SKHX", "SKHYNIX"}
+    assert set(seeded_only) == {"SKHY", "SKHX", "SKHYNIX"}
 
 
-def test_instrument_class_prefers_the_specific_venue(conn) -> None:
+def test_instrument_classes_cover_the_alias_forms_the_provider_sends(conn) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():
         repos.instruments.apply_snapshot(
             [_inst("binance.perp", "MSTRUSDT", "MSTR", "USDT"), _inst("hl.xyz", "xyz:MSTR", "MSTR")], now_ms=NOW
         )
+        repos.instruments.learn_aliases_from_universe(now_ms=NOW)
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"MICROSTRATEGY": "MSTR"})
+
+    classes = repos.instruments.instrument_classes()
     # binance.perp defaults to crypto, hl.xyz says equity: the specific classification must win.
-    assert repos.instruments.instrument_classes()["MSTR"] == "equity"
+    assert classes["MSTR"] == "equity"
+    assert classes["XYZ-MSTR"] == "equity"  # the provider's prefixed form resolves without a second lookup
+    assert classes["MICROSTRATEGY"] == "equity"
     assert repos.instruments.venues_for("MSTR") == ("binance.perp", "hl.xyz")
+
+
+def test_alias_classes_resolve_in_one_hop_regardless_of_row_order(conn) -> None:
+    """`SELECT alias, base_symbol` has no ORDER BY, so a two-hop chain must not resolve on some snapshots and not
+    on others — one hop, deterministically, or the Gate's asset class flickers between restarts."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot([_inst("hl.xyz", "xyz:MU", "MU")], now_ms=NOW)
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"MICRON": "MU", "MICRONTECH": "MICRON"})
+
+    classes = repos.instruments.instrument_classes()
+    assert classes["MICRON"] == "equity"
+    assert "MICRONTECH" not in classes  # second hop, never resolved either way
+
+
+def test_unmatched_provider_tags_rank_the_missing_symbols(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot([_inst("hl.xyz", "xyz:MU", "MU")], now_ms=NOW)
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"MICRON": "MU"})
+        repos.instruments.learn_aliases_from_universe(now_ms=NOW)
+
+    _item(conn, "a", coins='{"coins": [{"symbol": "MU", "score": 80}, {"symbol": "UWMC", "score": 85}]}')
+    _item(conn, "b", coins='{"coins": [{"symbol": "XYZ-MU"}, {"symbol": "UWMC", "score": 70}]}')
+    _item(conn, "c", coins='{"coins": [{"symbol": "MICRON"}, {"symbol": "OKB", "score": "n/a"}]}')
+    _item(conn, "old", coins='{"coins": [{"symbol": "ANCIENT"}]}', published_at_ms=NOW - 86_400_000)
+    conn.commit()
+
+    rows = repos.instruments.unmatched_provider_tags(since_ms=NOW - 1, limit=10)
+    assert [r["symbol"] for r in rows] == ["UWMC", "OKB"]  # MU resolves three ways; ANCIENT is out of the window
+    assert rows[0] == {"symbol": "UWMC", "tags": 2, "max_score": 85.0}
+    assert rows[1]["max_score"] is None  # a non-numeric provider score is not a crash
 
 
 def test_both_runtime_roles_have_the_expected_privileges(conn) -> None:

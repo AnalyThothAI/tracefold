@@ -87,8 +87,8 @@ _DAY_MS = 24 * 3600_000
 # the comparison set from the 12-entry status bar to the full window caught 14 more duplicate pairs and 11 more
 # facts the reader never received (#81). One indexed query, same round trip.
 _SEEN_LEDGER_MAX = 128
-# #75 instrument universe: the Gate's cached copy, and how often the snapshot loop asks the venues.
-_TRADEABLE_TTL_MS = 10 * 60_000
+# Instrument universe (#75): the Gate's cached copy, and how often the snapshot loop asks the venues.
+_INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
 _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS = 6 * 3600.0
 _INSTRUMENT_RETRY_SECONDS = 15 * 60.0
 
@@ -482,31 +482,27 @@ class DeduperConsumer:
         strategy_ids: Sequence[str],
         watchlist_symbols: frozenset[str],
         suppress_low_signal: bool = False,
-        require_tradeable_assets: bool = False,
     ) -> None:
         self.bus = bus
         self.db = _Db(db)
         self.strategy_ids = frozenset(strategy_ids)
         self.watchlist_symbols = watchlist_symbols
         self.suppress_low_signal = bool(suppress_low_signal)
-        # #75: when enabled, a provider coin tag must also name a listed instrument. The universe changes once a
-        # day, so it is cached; `None` (no snapshot yet, or the feature off) leaves the Gate's behaviour unchanged.
-        self.require_tradeable_assets = bool(require_tradeable_assets)
-        self._tradeable: frozenset[str] | None = None
-        self._tradeable_at_ms = 0
+        # #89: symbol -> instrument_class, which is how the Gate tells a stock headline from a coin headline. The
+        # universe changes about once a day, so it is cached per consumer.
+        self._classes: Mapping[str, str] | None = None
+        self._classes_at_ms = 0
 
-    def _current_tradeable(self, repos: Any, *, now: int) -> frozenset[str] | None:
-        """Cached instrument universe for the Gate, refreshed at most once per `_TRADEABLE_TTL_MS`."""
+    def _current_instrument_classes(self, repos: Any, *, now: int) -> Mapping[str, str] | None:
+        """Cached instrument classes for the Gate, refreshed at most once per `_INSTRUMENT_CACHE_TTL_MS`."""
 
-        if not self.require_tradeable_assets:
-            return None
-        if self._tradeable is not None and now - self._tradeable_at_ms < _TRADEABLE_TTL_MS:
-            return self._tradeable
-        symbols = repos.instruments.tradeable_base_symbols()
-        self._tradeable_at_ms = now
-        # An empty universe means no snapshot has landed: fall back to no filtering rather than grounding nothing.
-        self._tradeable = symbols or None
-        return self._tradeable
+        if self._classes is not None and now - self._classes_at_ms < _INSTRUMENT_CACHE_TTL_MS:
+            return self._classes
+        classes = repos.instruments.instrument_classes()
+        self._classes_at_ms = now
+        # An empty universe means no snapshot has landed: fall back to the prefix heuristic, not to "no assets".
+        self._classes = classes or None
+        return self._classes
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         await self.bus.consume(Q_RAW, self.handle, prefetch=1, stop_event=stop_event)
@@ -534,7 +530,7 @@ class DeduperConsumer:
                 watchlist_symbols=self.watchlist_symbols,
                 now_ms=stamp,
                 suppress_low_signal=self.suppress_low_signal,
-                tradeable_symbols=self._current_tradeable(repos, now=stamp),
+                instrument_classes=self._current_instrument_classes(repos, now=stamp),
             ),
             timeout_seconds=5.0,
         )
@@ -656,7 +652,7 @@ class TriageConsumer:
         self._aliases_at_ms = 0
 
     def _refresh_aliases(self, repos: Any, *, now: int) -> None:
-        if self._aliases is not None and now - self._aliases_at_ms < _TRADEABLE_TTL_MS:
+        if self._aliases is not None and now - self._aliases_at_ms < _INSTRUMENT_CACHE_TTL_MS:
             return
         self._aliases_at_ms = now
         table = repos.instruments.alias_map()
@@ -1152,15 +1148,14 @@ class DelivererConsumer:
 # ---------------------------------------------------------------------------- Janitor
 # ---------------------------------------------------------------------------- Instrument universe
 class InstrumentSnapshotLoop:
-    """Venue listing catalogues -> `market_instruments`, one bounded snapshot per period (#75).
+    """Venue listing catalogues -> `news_market_instruments`, one bounded snapshot per period (#75).
 
     The universe is a provider fact, so the snapshot is idempotent and rebuildable: re-running it on an unchanged
-    catalogue only moves `last_seen_ms`. Diffing consecutive snapshots yields listing/delisting facts that do not
-    depend on a news frame arriving — the lane #72 showed can fail silently.
+    catalogue only moves `last_seen_ms`. It feeds symbol normalization and the Gate's asset class — not listing
+    cards, which arrive as provider frames (#89).
 
     A venue that fails is skipped, never fatal: `apply_snapshot` only reconciles venues that actually answered, so
-    an unreachable Binance cannot read as a mass delisting. The first snapshot for a venue is a seed, not thousands
-    of listings, and `SnapshotResult.reportable` is what a listing card may be built from.
+    an unreachable Binance cannot read as a mass delisting.
     """
 
     def __init__(
@@ -1204,35 +1199,28 @@ class InstrumentSnapshotLoop:
         stamp = now_ms()
 
         def _apply(repos: Any, items: list[Any] = instruments, s: int = stamp) -> Any:
-            repos.instruments.seed_aliases(now_ms=s)
+            repos.instruments.reconcile_seed_aliases(now_ms=s)
             result = repos.instruments.apply_snapshot(items, now_ms=s)
             repos.instruments.learn_aliases_from_universe(now_ms=s)
-            return result
+            return result, repos.instruments.dangling_seed_aliases()
 
         try:
-            result = await self.db.tx("news_instrument_snapshot", _apply, timeout_seconds=30.0)
+            result, dangling = await self.db.tx("news_instrument_snapshot", _apply, timeout_seconds=30.0)
         except (TransientError, DeferError) as exc:
             self.last_error = f"db:{type(exc).__name__}"
             return False
         self.last_result = result
-        reportable = result.reportable
-        if result.seeded_venues:
-            log.info(
-                "news instrument universe seeded venues=%s total=%d",
-                ",".join(result.seeded_venues),
-                result.total,
+        log.info(
+            "news instrument snapshot venues=%s total=%d delisted=%d",
+            ",".join(result.venues),
+            result.total,
+            result.delisted,
+        )
+        # A seed alias pointing at a symbol no venue lists resolves to nothing, silently, forever (#89).
+        for row in dangling:
+            log.warning(
+                "news instrument seed alias resolves to nothing alias=%s base=%s", row["alias"], row["base_symbol"]
             )
-        if not reportable.empty:
-            log.info(
-                "news instrument universe changed listed=%d delisted=%d unchanged=%d",
-                len(reportable.listed),
-                len(reportable.delisted),
-                reportable.unchanged,
-            )
-            for item in reportable.listed[:20]:
-                log.info("news instrument listed venue=%s symbol=%s", item.venue, item.venue_symbol)
-            for item in reportable.delisted[:20]:
-                log.info("news instrument delisted venue=%s symbol=%s", item.venue, item.venue_symbol)
         return True
 
 

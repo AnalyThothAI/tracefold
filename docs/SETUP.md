@@ -149,7 +149,6 @@ news:
     judged_days: 365            # an Item behind a judged or labelled Event is the corpus every replay reads
   gate:
     suppress_low_signal: false  # true = drop ungrounded, non-macro social posts under score 70 without a model call
-    require_tradeable_assets: false  # true = a provider coin tag must also name a listed instrument (#75)
   venues:                       # instrument-universe snapshot; public catalogues, no credentials
     enabled: true
     binance: true

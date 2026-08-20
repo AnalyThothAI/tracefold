@@ -266,10 +266,15 @@ functions and keep no name table of their own: grounded assets are the
 provider's grade B+/A/A+ coin tags plus any literal `$TICKER` cashtag (the
 provider already resolved Bitcoin -> BTC, Home Depot -> HD); `CL`/`XYZ-CL` is
 grounded only in energy context and a short stop-list drops English-word tags.
-Behind `news.gate.require_tradeable_assets` (default off) a tag must also name
-an instrument in the venue universe (#75); that existence check removes symbols
-that trade nowhere (`CCXI`, `CARDS`) but is independent of the stop-list, since
-`NEAR`/`ACT`/`W`/`BILL`/`FLOCK` are real listings *and* ordinary English words.
+Existence on a venue is deliberately not a condition: #75 shipped that filter
+behind a flag and the dry-run killed it — every tag the provider had itself
+mapped to a venue was already listed, and the ones it would have removed were
+real equities with no crypto perp (#89). The instrument universe labels a tag
+instead: `asset_class` is `equity_or_commodity` when a grounded symbol resolves
+to an `equity`/`commodity`/`index`/`fx`/`pre_ipo` instrument, `crypto` when it
+resolves to a coin, and falls back to the provider's `XYZ-` prefix when the
+universe is empty or does not know the symbol. Equities with no crypto perp
+(`UWMC`, `TLX`) therefore still read as `crypto`; closing that is #91.
 The Gate does not decide relevance: every Item is a `candidate` unless it is a
 recovery replay, a law-firm template notice (strong template phrases always;
 weak ones only without a grounded asset), an under-80 market-telemetry frame,

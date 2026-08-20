@@ -133,8 +133,8 @@ positional arguments:
     bus-check           connect to RabbitMQ, declare the News topology, and
                         print queue depths
     control             write a delivery control command to news_control_state
-    instruments         tradeable instrument universe: snapshot the venues, or
-                        inspect what is stored
+    instruments         instrument universe: snapshot the venues, or inspect
+                        what is stored
     label               record an operator label for one Event (learning
                         plane)
     eval                offline evaluation of Triage decisions against labels
@@ -185,18 +185,18 @@ options:
 ## `news instruments`
 
 ```
-usage: tracefold news instruments [-h] [--symbol SYMBOL] [--hours HOURS]
+usage: tracefold news instruments [-h] [--symbol SYMBOL] [--days DAYS]
                                   [--limit LIMIT]
-                                  [{snapshot,summary,listings,resolve}]
+                                  [{snapshot,summary,resolve,unmatched}]
 
 positional arguments:
-  {snapshot,summary,listings,resolve}
+  {snapshot,summary,resolve,unmatched}
 
 options:
   -h, --help            show this help message and exit
   --symbol SYMBOL       symbol to resolve (action=resolve)
-  --hours HOURS         look-back (action=listings)
-  --limit LIMIT         max rows (action=listings)
+  --days DAYS           look-back (action=unmatched)
+  --limit LIMIT         max rows (action=unmatched)
 
 ```
 
@@ -323,7 +323,9 @@ options:
 ## `news replay`
 
 ```
-usage: tracefold news replay [-h] [--gate-policy {config,open,strict}] path
+usage: tracefold news replay [-h] [--gate-policy {config,open,strict}]
+                             [--no-instruments]
+                             path
 
 positional arguments:
   path                  JSON file: {strategy_id: [hit, ...]} or [hit, ...]
@@ -333,6 +335,8 @@ options:
   --gate-policy {config,open,strict}
                         Gate low-signal switch: config =
                         news.gate.suppress_low_signal, open = off, strict = on
+  --no-instruments      replay without the instrument universe (offline); the
+                        Gate then guesses asset_class from XYZ- tags
 
 ```
 
