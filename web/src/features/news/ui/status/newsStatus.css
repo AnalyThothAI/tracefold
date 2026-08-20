@@ -126,7 +126,7 @@
 
   .news-funnel-row {
     display: grid;
-    grid-template-columns: 5.5rem minmax(0, 1fr) 3.5rem 4.5rem;
+    grid-template-columns: 5.5rem minmax(0, 1fr) 3.5rem max-content;
     gap: 0 0.7rem;
     align-items: center;
     padding: 0.28rem 0.4rem;
@@ -178,6 +178,7 @@
     color: var(--text-subtle);
     font: 500 0.66rem/1 var(--font-mono);
     text-align: right;
+    white-space: nowrap;
   }
 
   .news-funnel-note {

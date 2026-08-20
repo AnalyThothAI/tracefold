@@ -61,16 +61,21 @@ describe("NewsPage", () => {
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
     // Section navigation lives in the shell sidebar now (#82); this renders the surface on its own.
     expect(screen.queryByRole("link", { name: "状态" })).not.toBeInTheDocument();
+    // The counts arrive with the first page, so wait for it before reading the tabs.
+    await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
     const tabs = screen.getByRole("tablist", { name: "按结局筛选" });
     expect(
       within(tabs)
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
-    ).toEqual(["全部1", "已推送2", "被拦截3", "处理中4"]);
+      // Label, the server's count for that group under the current filter, and the digit that selects it. The
+      // count and the digit are `aria-hidden`, so the tab's accessible name stays the label alone.
+    ).toEqual(["全部3201", "已推送412", "被拦截2713", "处理中84"]);
     expect(within(tabs).getByRole("tab", { name: "全部" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
+    expect(screen.getByText("1 / 320")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "时间范围" })).toHaveValue("24");
     await waitFor(() => expect(observed.hours).toBe("24"));
     expect(observed.sort).toBe("latest");

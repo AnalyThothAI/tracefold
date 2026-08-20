@@ -94,6 +94,8 @@ export function newsTriageFixture(overrides: Partial<NewsTriageSummary> = {}): N
 export function newsFeedFixture(overrides: Partial<NewsFeed> = {}): NewsFeed {
   return {
     events: [newsFeedEventFixture()],
+    // The server's split of the current filter across the three outcome groups; `total` is their sum.
+    counts: { total: 320, pushed: 41, held: 271, pending: 8 },
     filters: {
       admission: null,
       decision: null,
