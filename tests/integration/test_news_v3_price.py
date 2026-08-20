@@ -501,6 +501,7 @@ def test_price_status_reports_source_freshness_and_backlog(conn) -> None:
         )
 
     status = repos.price.price_status(now_ms=NOW + 1_000)
+    assert "oldest_due_age_ms" in status  # the backlog SLO, reported rather than merely computable
     assert status["sources"][0]["source_key"] == "hl.perp"
     assert status["sources"][0]["state"] == "fresh"
     assert status["quotes"] == 1
