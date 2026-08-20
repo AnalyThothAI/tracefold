@@ -32,9 +32,9 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
         "provider_score_max": 75.0,
         "engine_type": "news",
         "asset_class": "macro",
-        # One tag that names a listed contract and one that names an English word — the pair the console
-        # has to tell apart (#87).
-        "grounded_assets": ["COPPER", "SPOT"],
+        # One tag that names a listed contract, the provider's prefixed form of the *same* contract, and one
+        # that names an English word — the three cases the console has to tell apart (#87).
+        "grounded_assets": ["COPPER", "XYZ-COPPER", "SPOT"],
         "watchlist_hits": [],
         "macro_lexicon": True,
         "storyline_key": "copper",
@@ -319,7 +319,9 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
     assert body["data"]["events"][0]["title_zh"] == "铜价冲击纪录"
     # #87: the raw provider tags stay, and beside them the same tags resolved against the instrument
     # universe — so the browser can strike through a tag that names nothing without owning a symbol table.
-    assert body["data"]["events"][0]["grounded_assets"] == ["COPPER", "SPOT"]
+    assert body["data"]["events"][0]["grounded_assets"] == ["COPPER", "XYZ-COPPER", "SPOT"]
+    # One entry per instrument named, not per tag: `COPPER` and `XYZ-COPPER` are the same contract, and once
+    # resolved they are byte-identical (#87 review).
     assert body["data"]["events"][0]["assets"] == [
         {"symbol": "COPPER", "base_symbol": "COPPER", "venue": "hl.xyz", "listed": True},
         {"symbol": "SPOT", "base_symbol": "SPOT", "venue": None, "listed": False},

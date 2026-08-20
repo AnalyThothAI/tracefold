@@ -194,13 +194,25 @@ def _attach_asset_refs(events: list[dict[str, Any]], instruments: Any) -> None:
 
     refs = instruments.asset_refs({symbol for event in events for symbol in (event.get("grounded_assets") or [])})
     for event in events:
-        event["assets"] = [
-            refs.get(
-                str(symbol).upper(),
-                {"symbol": str(symbol).upper(), "base_symbol": str(symbol).upper(), "venue": None, "listed": False},
-            )
-            for symbol in (event.get("grounded_assets") or [])
-        ]
+        # One entry per instrument named, not per tag: the provider ships both `CL` and `XYZ-CL` for the same
+        # contract, and once those resolve they are byte-identical. The browser happens to dedupe before
+        # rendering, but a payload that hands out the same chip twice is the API's fault, not the client's.
+        seen: set[str] = set()
+        assets: list[dict[str, Any]] = []
+        for symbol in event.get("grounded_assets") or []:
+            # Keyed by the raw tag, exactly as `asset_refs` returns it — upper-casing here would miss a
+            # lower-case tag and silently render it as naming nothing.
+            ref = refs.get(str(symbol)) or {
+                "symbol": str(symbol).upper(),
+                "base_symbol": str(symbol).upper(),
+                "venue": None,
+                "listed": False,
+            }
+            if str(ref["symbol"]) in seen:
+                continue
+            seen.add(str(ref["symbol"]))
+            assets.append(ref)
+        event["assets"] = assets
 
 
 def _normalization(event: dict[str, Any], instruments: Any) -> list[dict[str, Any]]:
