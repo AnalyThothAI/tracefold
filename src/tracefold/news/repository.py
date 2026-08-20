@@ -12,6 +12,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
+from .models import display_title
 from .outcome import (
     audience_zh,
     decision_zh,
@@ -1387,7 +1388,7 @@ def _triage_summary(
         "magnitude": magnitude,
         "event_type": event_type,
         "headline_zh": v.get("headline_zh"),
-        "title_zh": v.get("title_zh") or v.get("headline_zh"),  # empty = same as headline_zh (#101)
+        "title_zh": display_title(v),
         "direction_zh": direction_zh(direction),
         "magnitude_zh": magnitude_zh(magnitude),
         "event_type_zh": event_type_zh(event_type),
@@ -1469,7 +1470,7 @@ def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
     )
     return {
         **_event_public(row),
-        "title_zh": (row.get("title_zh") or row.get("headline_zh") or None),  # empty = same (#101)
+        "title_zh": display_title(row) or None,
         "outcome": outcome.as_dict(),
         "triage": triage,
         "delivery": delivery,

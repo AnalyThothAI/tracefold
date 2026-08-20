@@ -19,7 +19,7 @@ from typing import Any
 
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
-from .agents.prompts import TRIAGE_PROMPT_SHA256
+from .agents.prompts import TRIAGE_PROMPT_SHA256, TRIAGE_SCHEMA_SHA256
 from .agents.triage_model import (
     TOLD_MAX,
     TOLD_WINDOW_MS,
@@ -707,6 +707,9 @@ class TriageConsumer:
             "queue_lag_ms": queue_lag_ms,
             "attempt": message.attempt,
             "prompt_sha256": TRIAGE_PROMPT_SHA256,
+            # The other half of the contract the model read (#101): a reworded field description changes
+            # behaviour without touching the prompt text.
+            "schema_sha256": TRIAGE_SCHEMA_SHA256,
             # The policy numbers and the Gate version that produced this decision, not just the rule name: a
             # verdict has to be replayable against the thresholds it actually ran under (#81).
             "policy": self.policy.as_dict(),

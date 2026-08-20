@@ -425,3 +425,55 @@ def test_timeline_fills_the_empty_title_sentinel() -> None:
     condensed = {**verdict, "title_zh": "币安公告将于本周上线 XYZ 现货交易对"}
     _, steps = event_timeline(event=_event(), members=[], verdicts=[_triage("push", verdict=condensed)], deliveries=[])
     assert steps[2]["facts"]["title_zh"] == "币安公告将于本周上线 XYZ 现货交易对"
+
+
+def test_console_read_sites_fill_the_empty_title_sentinel() -> None:
+    """#101 AC#2: the two surfaces the operator actually reads — the detail hero's translated line and the feed
+    row — both resolve the sentinel. Neither had an assertion; the timeline test above covers only the collapsed
+    technical panel, and the HTTP contract test uses a fake repository."""
+
+    from tracefold.news.repository import _feed_row, _triage_summary
+
+    sentinel = {"headline_zh": "币安上线 XYZ", "title_zh": "", "direction": "bullish", "magnitude": 2}
+    summary = _triage_summary(final_decision="push", verdict=sentinel)
+    assert summary is not None and summary["title_zh"] == "币安上线 XYZ"
+
+    condensed = {**sentinel, "title_zh": "币安公告将于本周上线 XYZ 现货交易对"}
+    filled = _triage_summary(final_decision="push", verdict=condensed)
+    assert filled is not None and filled["title_zh"] == "币安公告将于本周上线 XYZ 现货交易对"
+
+    # The feed row reads the flattened SQL columns, not the verdict blob — a separate path with the same rule.
+    row = {
+        "event_id": "ev-1",
+        "family": "general",
+        "last_member_at_ms": NOW,
+        "expires_at_ms": NOW + 3600_000,
+        "comparison_title": "binance will list xyz",
+        "engine_type": "listing",
+        "macro_lexicon": False,
+        "provider_score_max": 80.0,
+        "context_line": "",
+        "published_at_ms": NOW,
+        "trace_id": "t-1",
+        "opened_at_ms": NOW,
+        "leader_title": "Binance will list XYZ",
+        "reporting_origin": "binance",
+        "admission": "candidate",
+        "priority": "normal",
+        "asset_class": "crypto",
+        "grounded_assets": ["XYZ"],
+        "watchlist_hits": [],
+        "storyline_key": "asset:XYZ",
+        "member_count": 1,
+        "ingest_mode": "live",
+        "provenance": [],
+        "final_decision": "push",
+        "headline_zh": "币安上线 XYZ",
+        "title_zh": "",
+    }
+    assert _feed_row(row)["title_zh"] == "币安上线 XYZ"
+    assert _feed_row({**row, "title_zh": "币安公告将于本周上线 XYZ 现货交易对"})["title_zh"] == (
+        "币安公告将于本周上线 XYZ 现货交易对"
+    )
+    # Nothing to show at all stays None rather than becoming an empty string in the API payload.
+    assert _feed_row({**row, "headline_zh": None, "title_zh": ""})["title_zh"] is None

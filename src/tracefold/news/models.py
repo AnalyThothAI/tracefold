@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -121,6 +122,18 @@ class TriageVerdict(BaseModel):
     why_zh: str = Field(default="", max_length=140)
 
 
+def display_title(verdict: Mapping[str, Any]) -> str:
+    """The Chinese title an operator surface should show for a verdict.
+
+    ``title_zh`` empty means "same as ``headline_zh``" (#101): the prompt asks for the sentinel because 85% of a
+    live day's verdicts repeated the headline verbatim, ~13% of all output tokens. Every console/API read site
+    calls this so the rule lives in one place — the one deliberate exception is the Feishu card, where an empty
+    ``title_zh`` must stay empty so the header can fall through to the wire title (see ``delivery``).
+    """
+
+    return str(verdict.get("title_zh") or verdict.get("headline_zh") or "")
+
+
 def json_ready(value: Any) -> Any:
     """Return a JSON-serializable copy of pydantic/dataclass-free structures."""
 
@@ -153,5 +166,6 @@ __all__ = [
     "Novelty",
     "TriageAsset",
     "TriageVerdict",
+    "display_title",
     "json_ready",
 ]
