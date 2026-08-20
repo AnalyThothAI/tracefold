@@ -50,13 +50,25 @@ product update".
    product or notice that changes what its users can trade, or a clear risk-asset direction. False when nothing
    named is tradable (a private company's deal, a startup's round with no token). Push only what is actionable.
 7. audience: crypto / us_equity (any listed equity) / macro / none.
+8. price moves — scope: a headline whose whole content is that something moved (a quote, an intraday %, a new
+   high, a liquidation tally). Push it only when one of these holds, and say which in why_zh:
+   a. it breaks a round number or a level the text itself names (站上 / 跌破 / 创 X 以来新高);
+   b. it is the largest move over a named period (创 3 月以来最大涨幅);
+   c. it triggered or was triggered by scale liquidations / ETF flows the text quantifies;
+   d. it is the first confirmation of a fact already on the tape (a policy, a filing, an earnings number).
+   Otherwise it is noise, whatever the provider score says: a bare quote, a routine intraday update, a
+   percentage without a level. Same rule for every asset — a coin, a metal, an index and a single stock are not
+   judged differently.
+   Right: 比特币突破 70000 美元，四小时内超 10 亿美元空头被清算 -> whale/liquidation, magnitude 2, push.
+   Right: 韩国 KOSPI 日内涨 6.00% 至 6861.17 点 -> a named level and a rare size, magnitude 2, push.
+   Wrong: Spot Palladium Rises Nearly 3% to $1,328.68/Oz -> a bare quote, noise, drop.
+   Wrong: Shares of Samsung Electronics Rise Over 3% -> a bare quote, noise, drop.
 
 ## Text fields — the card shows exactly two of them, written for someone watching the tape. ALL text is Chinese.
-- title_zh: faithful Chinese translation of the original headline, <= 60 characters (return Chinese headlines
-  unchanged). No commentary, no emoji, no URL. Console only.
-- headline_zh: the card header. Build it from title_zh, never from scratch:
-  1. Start from title_zh; drop only a source prefix (BREAKING / 快讯 / outlet name), tickers in parentheses,
-     "点击查看" tails and emoji.
+- headline_zh: the card header. Build it from a faithful Chinese reading of the original headline, never from
+  scratch:
+  1. Start from that faithful reading; drop only a source prefix (BREAKING / 快讯 / outlet name), tickers in
+     parentheses, "点击查看" tails and emoji.
   2. If what remains is <= 45 characters, that IS headline_zh — do not shorten it any further.
   3. Only if it is longer than 45 characters, condense to 25–45 characters, keeping in this priority: every
      number (amount, %, price level, deadline, count), the clause that states the consequence or new stance, then
@@ -64,14 +76,22 @@ product update".
   A headline under 15 characters, or one that drops a number or a clause the original had, is wrong — the reader
   must not have to open the source to learn what happened.
   Wrong: 特朗普叫停与伊朗谈判 (drops the strategy shift).
-  Right: 特朗普下令特使暂停与伊朗谈判，转向长期经济军事施压以扼制德黑兰 (title_zh, 33 characters, reused).
+  Right: 特朗普下令特使暂停与伊朗谈判，转向长期经济军事施压以扼制德黑兰 (33 characters: nothing to condense).
   Wrong: Santos 发布 2026 年产量指引 (drops every number).
   Right: Santos 2026 年产量指引 99-105 MMBOE，单位成本 6.95-7.45 美元.
+- title_zh: LEAVE IT EMPTY unless step 3 above actually condensed something. It is the console's full Chinese
+  title, and when headline_zh already is the whole headline (the common case) an empty title_zh means "same as
+  headline_zh" — code fills it in. Fill it only when headline_zh dropped a clause or a number the original had:
+  then title_zh carries the complete Chinese title (<= 60 characters), headline_zh the condensed card header.
+  No commentary, no emoji, no URL.
 - why_zh: one plain sentence, <= 70 characters, that adds what the headline does not say: the mechanism, who is
   exposed, and what it changes for them now. Facts and causal links only — never restate the headline, never
   close with a verdict about the news itself, and never write "反映…" / "显示…" / "是…的信号/读数/风向标" sentences:
   name the concrete chain instead (who holds what, what happens next, which price it feeds into).
   Example: 美国最大的证券结算机构把链上美债纳入正式结算，机构买方不必自建托管.
+  why_zh must agree with `direction`: the mechanism it names decides the sign. If the sentence explains why a
+  price falls (承压 / 回落 / 抑制 / 成本抬升 / 利润受压), `direction` is bearish — fix the field, never soften the
+  sentence. A crude-oil build is bearish for oil; a beat with weak guidance is bearish for the stock.
 - Banned in all text fields (meta-language and evaluative filler): 值得关注、值得警惕、有明确信息价值、重大进展、
   具有重要意义、利好、利空、或将、有望、市场普遍认为、对…板块有影响、机构采用趋势、RWA 叙事、信息疲劳、单一来源、
   风险提示、直接读数、关键读数、直接信号、风向标、反映、显示出.
@@ -123,8 +143,8 @@ product update".
   NOT: 日债利率飙升让寿险业持仓浮亏创纪录，是日本金融体系承压的直接读数
 - "TRUMP HAS ORDERED HIS TOP ENVOYS TO HALT TALKS WITH IRAN, SIGNALING A MAJOR SHIFT IN STRATEGY, WITH THE
   ADMINISTRATION MOVING AWAY FROM TRYING TO REACH A DEAL AND TOWARD LONG-TERM ECONOMIC AND MILITARY PRESSURE"
-  title_zh: 特朗普下令特使暂停与伊朗谈判，转向长期经济军事施压以扼制德黑兰
-  headline_zh: 特朗普下令特使暂停与伊朗谈判，转向长期经济军事施压以扼制德黑兰 (title_zh is 33 characters: reuse it)
+  headline_zh: 特朗普下令特使暂停与伊朗谈判，转向长期经济军事施压以扼制德黑兰 (33 characters: nothing was condensed)
+  title_zh: (empty — headline_zh already carries the whole headline)
   why_zh: 美伊外交窗口关闭，中东供应中断风险重新计入油价，原油和避险资产的溢价需要重估
   NOT (too short): 特朗普叫停与伊朗谈判
 - "Japan's Nikkei Average Futures Down 2.0% in Early Trade"
@@ -166,6 +186,7 @@ TRIAGE_PROMPT_SHA256: Final = prompt_sha256(TRIAGE_SYSTEM_PROMPT)
 # grouped by the prompt that actually produced it.
 TRIAGE_PROMPT_SHA256_BY_VERSION: Final[dict[str, str]] = {
     "news_triage_prompt_v8": "25778e5caf669319818e8e16685f3f5b64cc9fe05f27cd007fe4ae40b6051c7f",
+    "news_triage_prompt_v9": "aeb9b93a16d8f6c80fdc6d9f3c08f4693f1d02498deabf2497132efbe3f7b45e",
 }
 
 __all__ = [

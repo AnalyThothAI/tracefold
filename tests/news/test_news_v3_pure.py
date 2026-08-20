@@ -1100,3 +1100,39 @@ def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
         )
         == "macro:general"
     )
+
+
+def test_empty_title_zh_means_same_as_headline() -> None:
+    """#101: `title_zh` repeated `headline_zh` verbatim in 85% of a live day's verdicts — ~13% of all output
+    tokens — because the prompt only asks for a condensed header when the wire headline is long. Prompt v9 asks
+    for the sentinel instead; every reader fills it in, so nothing downstream sees an empty title."""
+
+    def _card(**verdict_over: object) -> dict:
+        return render_first_card(
+            event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "reporting_origin": "ft"},
+            verdict={
+                "direction": "bullish",
+                "magnitude": 2,
+                "headline_zh": "英伟达千亿美元投资 OpenAI 数据中心",
+                "why_zh": "算力供给链再加码",
+                "assets": [],
+                **verdict_over,
+            },
+            decision="push",
+            grounded_assets=[],
+        )
+
+    # The sentinel never reaches the card: the header is headline_zh, exactly as when title_zh repeated it.
+    assert _card(title_zh="")["header"]["title"]["content"] == "英伟达千亿美元投资 OpenAI 数据中心"
+    assert (
+        _card(title_zh="英伟达将投资 1000 亿美元")["header"]["title"]["content"] == "英伟达千亿美元投资 OpenAI 数据中心"
+    )
+    # title_zh is still the fallback for a headline that sanitises away (a URL in it), and the wire title after it.
+    assert (
+        _card(headline_zh="看 https://evil.example", title_zh="英伟达将投资 1000 亿美元")["header"]["title"]["content"]
+        == "英伟达将投资 1000 亿美元"
+    )
+    assert (
+        _card(headline_zh="看 https://evil.example", title_zh="")["header"]["title"]["content"]
+        == "Nvidia to invest $100bn"
+    )

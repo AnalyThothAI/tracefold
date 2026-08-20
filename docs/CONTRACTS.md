@@ -291,8 +291,10 @@ otherwise), `event_type`, `assets[{symbol, market_type?, role}]`, `direction`,
 `scope`, `magnitude 0..3`, `actionable`, `confidence`, `decision` (model
 intent), `audience`, `headline_zh` (the card header: a complete headline that
 keeps the decisive number / condition / consequence clause, prompt target 15–45
-characters, at most 60), `title_zh` (faithful Chinese title, console only, at
-most 160 characters), `why_zh` (one plain sentence adding mechanism and who is
+characters, at most 60), `title_zh` (the console's full Chinese title, at most
+160 characters; empty means "same as `headline_zh`" — prompt v9 asks for the
+sentinel and every reader fills it in, so the model only spends tokens on it
+when `headline_zh` actually condensed something), `why_zh` (one plain sentence adding mechanism and who is
 exposed, prompt target <= 70 characters, at most 140); the stored row adds
 `model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`
 (policy v3 added `restatement`; policy v5 replaces `novel_bypass` with
@@ -310,7 +312,7 @@ model telemetry). `triage` is the only
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_triage_prompt_v8`, `news_triage_policy_v6`, and `news_delivery_card_v9`.
+`news_triage_prompt_v9`, `news_triage_policy_v6`, and `news_delivery_card_v9`.
 Every shipped prompt version and the sha256 of the text it shipped with are
 pinned in `TRIAGE_PROMPT_SHA256_BY_VERSION`; editing the prompt without bumping
 `TRIAGE_PROMPT_VERSION` fails `tests/news/test_news_v3_prompt_pin.py`.

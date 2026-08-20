@@ -167,7 +167,8 @@ def event_timeline(
                     "confidence": verdict.get("confidence"),
                     "assets": verdict.get("assets"),
                     "headline_zh": verdict.get("headline_zh"),
-                    "title_zh": verdict.get("title_zh"),
+                    # An empty title_zh means "same as headline_zh" (#101); the console never renders the sentinel.
+                    "title_zh": verdict.get("title_zh") or verdict.get("headline_zh"),
                     "why_zh": verdict.get("why_zh"),
                     "audience": verdict.get("audience"),
                     "prompt_version": latest.get("prompt_version"),

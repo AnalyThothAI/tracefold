@@ -412,3 +412,16 @@ def test_status_health_thresholds_turn_amber_and_red() -> None:
     off = status_health(**_status_inputs(delivery={"delivery_available": False}, model_configured=False))  # type: ignore[arg-type]
     assert off["health"]["delivery"]["level"] == "off" and off["health"]["model"]["level"] == "bad"
     assert off["health"]["overall"] == "bad"
+
+
+def test_timeline_fills_the_empty_title_sentinel() -> None:
+    """#101: an empty `title_zh` means "same as headline_zh". The console shows a title either way — the sentinel
+    saves output tokens, it does not take the field away from the operator."""
+
+    verdict = {"headline_zh": "币安上线 XYZ", "title_zh": "", "direction": "bullish", "magnitude": 2}
+    _, steps = event_timeline(event=_event(), members=[], verdicts=[_triage("push", verdict=verdict)], deliveries=[])
+    assert steps[2]["facts"]["title_zh"] == "币安上线 XYZ"
+
+    condensed = {**verdict, "title_zh": "币安公告将于本周上线 XYZ 现货交易对"}
+    _, steps = event_timeline(event=_event(), members=[], verdicts=[_triage("push", verdict=condensed)], deliveries=[])
+    assert steps[2]["facts"]["title_zh"] == "币安公告将于本周上线 XYZ 现货交易对"

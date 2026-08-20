@@ -10,7 +10,7 @@ NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v4"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
-TRIAGE_PROMPT_VERSION = "news_triage_prompt_v8"
+TRIAGE_PROMPT_VERSION = "news_triage_prompt_v9"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v6"
 DELIVERY_CARD_VERSION = "news_delivery_card_v9"
 
@@ -110,7 +110,14 @@ class TriageVerdict(BaseModel):
     decision: Literal["push", "drop", "escalate"]
     audience: Audience = "none"
     headline_zh: str = Field(min_length=1, max_length=60)
-    title_zh: str = Field(default="", max_length=160)
+    # Empty means "same as headline_zh" (#101). 85% of a live day's verdicts repeated the headline verbatim here,
+    # ~13% of all output tokens, because the prompt only ever asks for a condensed header when the wire headline
+    # is long. Every reader of this field fills the sentinel in; nothing downstream sees an empty title.
+    title_zh: str = Field(
+        default="",
+        max_length=160,
+        description="leave empty when headline_zh already carries the whole headline; fill only when it condensed",
+    )
     why_zh: str = Field(default="", max_length=140)
 
 
