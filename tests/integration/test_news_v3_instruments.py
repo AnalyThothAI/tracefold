@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+from typing import Any
+
 import pytest
 
+import tracefold
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
@@ -296,3 +301,50 @@ def test_both_runtime_roles_have_the_expected_privileges(conn) -> None:
     assert row["serve_insert"] is False
     assert row["workers_dml"] is True
     assert row["workers_alias"] is True
+
+
+def _migration_0282() -> Any:
+    """Load the 0282 revision by path: `alembic/versions` is not a package."""
+
+    path = (
+        Path(tracefold.__file__).resolve().parent
+        / "platform/postgres/alembic/versions/20260820_0282_instruments_consolidation.py"
+    )
+    spec = importlib.util.spec_from_file_location("migration_0282", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_0282_rewrites_alias_rows_that_already_exist(conn) -> None:
+    """The first deploy of 0282 failed right here, and a from-scratch test database could not see it.
+
+    `UPDATE ... SET source = 'seed'` ran while the deployed CHECK still allowed only `operator`, so every
+    database that already held alias rows aborted the migration — which on this stack means serve and workers do
+    not start. An empty table made the same statement a no-op in every test. Replay the statements against the
+    pre-0282 shape instead, with a row in the table.
+    """
+
+    conn.execute("ALTER TABLE news_symbol_aliases DROP CONSTRAINT news_symbol_aliases_source_check")
+    conn.execute(
+        "ALTER TABLE news_symbol_aliases ADD CONSTRAINT news_symbol_aliases_source_check"
+        " CHECK (source IN ('venue', 'opennews_prefix', 'operator'))"
+    )
+    conn.execute("ALTER TABLE news_market_instruments ADD COLUMN first_seen_ms bigint")
+    conn.execute(
+        "INSERT INTO news_symbol_aliases (alias, base_symbol, source, updated_at_ms)"
+        " VALUES ('XAU', 'GOLD', 'operator', %s)",
+        (NOW,),
+    )
+    conn.commit()
+
+    for statement in _migration_0282().UPGRADE_SQL:
+        conn.execute(statement)
+    conn.commit()
+
+    assert conn.execute("SELECT source FROM news_symbol_aliases WHERE alias = 'XAU'").fetchone()["source"] == "seed"
+    columns = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'news_market_instruments'"
+    ).fetchall()
+    assert "first_seen_ms" not in {str(row["column_name"]) for row in columns}
