@@ -622,3 +622,6 @@ def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     data = api.get("/api/news/status", params={"token": TOKEN}).json()["data"]
     assert data["price"]["metric_version"] == "reaction_v1"
     assert data["price"]["sources"] == []
+    # The backlog SLO has to be *served*, not merely declared: the envelope drops unset fields, so a schema
+    # default with no repository value disappears from the response entirely.
+    assert data["price"]["oldest_due_age_ms"] == 0

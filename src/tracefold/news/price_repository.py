@@ -19,6 +19,7 @@ from .outcome import decision_zh, direction_zh, event_type_zh, magnitude_zh, ove
 from .pricing import (
     QUOTE_SOURCE_GROUP_MAX,
     QUOTE_TARGET_MAX,
+    REACTION_HISTORY_MAX_AGE_MS,
     REACTION_METRIC_VERSION,
     REVIEW_POTENTIAL_MISS_LIMIT,
     PriceInstrument,
@@ -746,6 +747,9 @@ class PriceRepository:
         counts = dict(row or {})
         return {
             "metric_version": REACTION_METRIC_VERSION,
+            # The backlog SLO (#88 §14) is oldest-due age, not loop frequency: a turn can run on time and
+            # still fall behind. Reporting it is what makes "healthy under 5 minutes" observable at all.
+            "oldest_due_age_ms": self.oldest_due_age_ms(now_ms=now_ms, history_max_age_ms=REACTION_HISTORY_MAX_AGE_MS),
             "sources": sources,
             "fresh_sources": sum(1 for source in sources if source["state"] == "fresh"),
             "quotes": sum(source["quote_count"] for source in sources),
