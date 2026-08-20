@@ -280,6 +280,7 @@ export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {})
         created_at_ms: NEWS_NOW_MS - 5_000,
         label: { label: "good", note: "" },
         label_version: "news_label_v1",
+        labeled_by: "operator",
         source: "human",
       },
     ],

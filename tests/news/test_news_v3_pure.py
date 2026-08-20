@@ -380,9 +380,9 @@ def test_decide_rules_and_throttle() -> None:
     )
     # #77: a high-priority push still pushes, it just no longer earns the ⚡ header.
     assert decide(_verdict(), high, None).final == "push"
-    # Asset storylines: window-max plus direction flip. (SOFT keeps the v3 novelty bypass out of the way: at
-    # novel_min_magnitude=3 an m2 new_fact cannot pass the soft throttle.)
-    SOFT = DecidePolicy(novel_min_magnitude=3)
+    # Asset storylines: window-max plus direction flip. (COUNT_ONLY switches the v5 content judgment off, so the
+    # soft throttle is the thing under test rather than the distinctness release.)
+    SOFT = DecidePolicy(similarity_max=0.0)
     status = StorylineStatus(key="asset:NVDA", pushed_2h=1, max_magnitude_2h=2, directions_2h=("bullish",))
     throttled = decide(_verdict(), _FACTS, status, policy=SOFT)
     assert throttled.final == "throttled" and throttled.throttled_by == "storyline:asset:NVDA"
@@ -437,9 +437,8 @@ def test_decide_rules_and_throttle() -> None:
     )
 
 
-def test_decide_v3_novelty_restatement_and_bypass() -> None:
-    """Policy v3 (issue #61): a grounded restatement never pushes; a novel event at m>=2 may pass the soft throttle
-    up to the hard cap; an ungrounded restatement is neither dropped nor let through."""
+def test_decide_restatement_drop_is_grounded() -> None:
+    """A grounded restatement never pushes (issue #61); an ungrounded one is neither dropped nor let through."""
 
     quiet = StorylineStatus(key="asset:NVDA", told_directions=("bullish", "bearish"))
     # Grounded restatement of entry 0 (same direction) -> drop, named.
@@ -447,7 +446,7 @@ def test_decide_v3_novelty_restatement_and_bypass() -> None:
     assert dropped.final == "drop" and dropped.override_rule == "restatement"
     # Restatement of entry 1 whose direction was bearish while this one is bullish: a flip is never a restatement.
     assert decide(_verdict(novelty="restatement", restates=1), _FACTS, quiet).final == "push"
-    # Out-of-range index or an empty ledger: the claim is ignored (never drops a card), and it does not bypass.
+    # Out-of-range index or an empty ledger: the claim is ignored, so a hallucinated restatement cannot drop a card.
     assert decide(_verdict(novelty="restatement", restates=7), _FACTS, quiet).final == "push"
     assert (
         decide(_verdict(novelty="restatement", restates=0), _FACTS, StorylineStatus(key="asset:NVDA")).final == "push"
@@ -467,8 +466,11 @@ def test_decide_v3_novelty_restatement_and_bypass() -> None:
         == "push"
     )
 
-    # Novel bypass on an asset storyline: the window-max rule would throttle an m2 after an m2 push...
-    busy = StorylineStatus(
+
+def _busy(**seen: object) -> StorylineStatus:
+    """An asset storyline the soft throttle would stop: one m2 push already in the 2 h window."""
+
+    return StorylineStatus(
         key="asset:NVDA",
         pushed_2h=1,
         pushed_4h=1,
@@ -476,75 +478,92 @@ def test_decide_v3_novelty_restatement_and_bypass() -> None:
         max_magnitude_4h=2,
         directions_2h=("bullish",),
         directions_4h=("bullish",),
+        **seen,  # type: ignore[arg-type]
     )
-    novel = decide(_verdict(novelty="new_fact"), _FACTS, busy)
-    assert novel.final == "push" and novel.override_rule == "novel_bypass" and novel.throttled_by is None
-    assert decide(_verdict(novelty="progression"), _FACTS, busy).override_rule == "novel_bypass"
-    # ...but an invented novelty is unknown, not novel: the lenient parse (`novelty_defaulted`) is disqualified
-    # from the bypass exactly like a degraded verdict, so omitting a required field cannot promote a card (#72).
-    defaulted = decide(_verdict(novelty="new_fact"), _FACTS, busy, novelty_defaulted=True)
-    assert defaulted.final == "throttled" and defaulted.throttled_by == "storyline:asset:NVDA"
-    assert decide(_verdict(novelty="new_fact"), _FACTS, busy, degraded=True).final == "throttled"
-    # ...but not below the novelty magnitude floor, and not once the hard cap is reached.
-    assert decide(_verdict(novelty="new_fact", magnitude=1), _FACTS, busy).final == "throttled"
-    full = StorylineStatus(
+
+
+def test_decide_v5_releases_a_card_the_reader_has_not_seen() -> None:
+    """Policy v5 (issue #81): what gets a card past the soft throttle is measured distinctness from the cards the
+    reader actually received — not the model's own claim that its event is new, which nothing verified."""
+
+    # Nothing in the window to compare against: the reader received nothing, so nothing can be a repeat.
+    empty = decide(_verdict(), _FACTS, _busy())
+    assert empty.final == "push" and empty.override_rule == "distinct_bypass" and empty.throttled_by is None
+    assert empty.seen_similarity == 0.0 and empty.seen_against == -1
+
+    seen = _busy(seen_headlines=("英伟达发布 Blackwell Ultra，单卡算力翻倍",), seen_event_ids=("evt-a",))
+    # A card about something else goes out even though the count cap would have stopped it.
+    released = decide(_verdict(headline_zh="美联储会议纪要显示多数官员倾向 9 月降息"), _FACTS, seen)
+    assert released.final == "push" and released.override_rule == "distinct_bypass"
+    assert released.seen_similarity is not None and released.seen_similarity < 0.25
+
+    # A near-repeat of that card does not, whatever the model called its novelty.
+    repeat = decide(_verdict(headline_zh="英伟达发布 Blackwell Ultra 芯片，单卡算力翻倍"), _FACTS, seen)
+    assert repeat.final == "throttled" and repeat.throttled_by == "storyline:asset:NVDA:seen"
+    assert repeat.seen_similarity is not None and repeat.seen_similarity >= 0.25
+    assert repeat.seen_against == 0
+    for novelty in ("new_fact", "progression"):
+        claimed = decide(
+            _verdict(novelty=novelty, headline_zh="英伟达发布 Blackwell Ultra 芯片，单卡算力翻倍"), _FACTS, seen
+        )
+        assert claimed.final == "throttled", novelty
+
+    # A degraded verdict carries a placeholder headline, so it is never released on distinctness.
+    assert decide(_verdict(), _FACTS, seen, degraded=True).final == "throttled"
+    # similarity_max = 0 is the operator switching the content judgment off: the pre-v5 count cap comes back.
+    count_only = decide(
+        _verdict(headline_zh="完全无关的另一件事"), _FACTS, seen, policy=DecidePolicy(similarity_max=0.0)
+    )
+    assert count_only.final == "throttled" and count_only.throttled_by == "storyline:asset:NVDA"
+
+
+def test_decide_v5_flood_ceiling_bounds_the_release() -> None:
+    """The counts survive as a ceiling: one storyline cannot spend an unbounded number of cards on the reader,
+    however distinct each one is."""
+
+    full_asset = StorylineStatus(
         key="asset:NVDA",
-        pushed_2h=3,
-        pushed_4h=3,
+        pushed_2h=6,
+        pushed_4h=6,
         max_magnitude_2h=2,
         max_magnitude_4h=2,
         directions_2h=("bullish",),
         directions_4h=("bullish",),
+        seen_headlines=("完全无关的另一件事",),
+        seen_event_ids=("evt-a",),
     )
-    hard = decide(_verdict(novelty="new_fact"), _FACTS, full)
-    assert hard.final == "throttled" and hard.throttled_by == "storyline:asset:NVDA:hard3"
-    assert decide(_verdict(novelty="new_fact"), _FACTS, full, policy=DecidePolicy(asset_hard_cap_2h=4)).final == "push"
-    # An ungrounded restatement never bypasses the soft throttle either.
-    assert decide(_verdict(novelty="restatement", restates=-1), _FACTS, busy).final == "throttled"
-    # Theme storyline: soft cap 3 / 4 h, novel events pass up to the hard cap 6.
-    capped = StorylineStatus(
-        key="theme:rates",
-        pushed_2h=3,
-        pushed_4h=3,
+    capped = decide(_verdict(), _FACTS, full_asset)
+    assert capped.final == "throttled" and capped.throttled_by == "storyline:asset:NVDA:hard6"
+    assert capped.seen_similarity is not None  # the measurement still happened, and is still traced
+
+    full_theme = StorylineStatus(
+        key="theme:mideast_energy",
+        pushed_2h=18,
+        pushed_4h=18,
         max_magnitude_2h=3,
         max_magnitude_4h=3,
-        directions_2h=("bearish",),
-        directions_4h=("bearish",),
-    )
-    passed = decide(_verdict(novelty="progression", scope="macro", direction="bearish"), _FACTS, capped)
-    assert passed.final == "push" and passed.override_rule == "novel_bypass"
-    at_hard = StorylineStatus(
-        key="theme:rates",
-        pushed_2h=6,
-        pushed_4h=6,
-        max_magnitude_2h=3,
-        max_magnitude_4h=3,
-        directions_2h=("bearish",),
-        directions_4h=("bearish",),
+        directions_2h=("bullish",),
+        directions_4h=("bullish",),
+        seen_headlines=("完全无关的另一件事",),
+        seen_event_ids=("evt-a",),
     )
     assert (
-        decide(_verdict(novelty="progression", scope="macro", direction="bearish"), _FACTS, at_hard).throttled_by
-        == "storyline:theme:rates:hard6"
+        decide(_verdict(magnitude=2, scope="sector"), _FACTS, full_theme).throttled_by
+        == "storyline:theme:mideast_energy:hard18"
     )
-    # An escalate that passes via the bypass keeps its escalate final.
-    esc = decide(_verdict(novelty="progression", scope="macro", direction="bearish", magnitude=3), _FACTS, capped)
-    assert esc.final == "escalate" and esc.override_rule == "novel_bypass"
-    # Hourly cap still applies after a bypass.
-    assert decide(_verdict(novelty="new_fact"), _FACTS, busy, hourly_cap_reached=True).throttled_by == "hourly_cap"
-    # A degraded (rule-baseline) verdict never earns the bypass; the asset hard cap counts the 2 h window even for
-    # an escalate (the config key and the console copy both say 2 h).
-    assert decide(_verdict(novelty="new_fact"), _FACTS, busy, degraded=True).final == "throttled"
-    old_pushes = StorylineStatus(
-        key="asset:NVDA",
-        pushed_2h=0,
-        pushed_4h=3,
-        max_magnitude_2h=0,
+    # One below the ceiling still goes out.
+    almost = StorylineStatus(
+        key="theme:mideast_energy",
+        pushed_2h=17,
+        pushed_4h=17,
+        max_magnitude_2h=3,
         max_magnitude_4h=3,
-        directions_2h=(),
+        directions_2h=("bullish",),
         directions_4h=("bullish",),
+        seen_headlines=("完全无关的另一件事",),
+        seen_event_ids=("evt-a",),
     )
-    esc_asset = decide(_verdict(novelty="new_fact", magnitude=3), _FACTS, old_pushes)
-    assert esc_asset.final == "escalate" and esc_asset.override_rule == "novel_bypass"
+    assert decide(_verdict(magnitude=2, scope="sector"), _FACTS, almost).override_rule == "distinct_bypass"
 
 
 def test_told_ledger_for_prompt_reserves_same_key_slots_and_keeps_cross_key_cards() -> None:
@@ -611,14 +630,34 @@ def test_fallback_is_not_silent() -> None:
         admission="candidate",
     )
     assert rule_baseline(grounded_80) == "push"
-    ungrounded_90 = GateFacts(
+    # #81: a high-priority Event without a grounded asset used to drop silently whenever the model was down —
+    # a missile strike or a rate decision has no ticker. It now fails open onto the wire headline, and so does a
+    # deterministic exchange notice.
+    ungrounded_high = GateFacts(
         grounded_assets=(),
         watchlist_symbols=frozenset(),
         provider_score=95.0,
         priority="high",
         admission="candidate",
     )
-    assert rule_baseline(ungrounded_90) == "drop"
+    assert rule_baseline(ungrounded_high) == "push"
+    assert rule_baseline(ungrounded_high, fail_open_high_priority=False) == "drop"
+    listing = GateFacts(
+        grounded_assets=(),
+        watchlist_symbols=frozenset(),
+        provider_score=10.0,
+        priority="normal",
+        admission="listing_deterministic",
+    )
+    assert rule_baseline(listing) == "push"
+    ungrounded_normal = GateFacts(
+        grounded_assets=(),
+        watchlist_symbols=frozenset(),
+        provider_score=95.0,
+        priority="normal",
+        admission="candidate",
+    )
+    assert rule_baseline(ungrounded_normal) == "drop"
     strong = GateFacts(
         grounded_assets=("BTC",),
         watchlist_symbols=frozenset(),

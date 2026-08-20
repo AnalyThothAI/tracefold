@@ -227,6 +227,7 @@ class CliTests(unittest.TestCase):
                 "triage",
                 "watchlist",
                 "policy",
+                "retention",
                 "gate",
                 "push",
             },
@@ -234,9 +235,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(set(news["broker"]), {"url_configured", "name_prefix"})
         self.assertEqual(news["policy"]["min_push_magnitude"], 1)
         self.assertEqual(news["policy"]["theme_cap_4h"], 3)
-        self.assertEqual(news["policy"]["theme_hard_cap_4h"], 6)
-        self.assertEqual(news["policy"]["asset_hard_cap_2h"], 3)
+        self.assertEqual(news["policy"]["similarity_max"], 0.25)
+        self.assertEqual(news["policy"]["distinct_hard_cap_4h"], 18)
+        self.assertEqual(news["policy"]["distinct_asset_cap_2h"], 6)
         self.assertIs(news["policy"]["restatement_drop"], True)
+        self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
         self.assertIs(news["gate"]["suppress_low_signal"], False)
         self.assertFalse(news["broker"]["url_configured"])
         self.assertTrue(news["models"]["triage_configured"])

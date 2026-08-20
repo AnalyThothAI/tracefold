@@ -247,23 +247,33 @@ characters, at most 60), `title_zh` (faithful Chinese title, console only, at
 most 160 characters), `why_zh` (one plain sentence adding mechanism and who is
 exposed, prompt target <= 70 characters, at most 140); the stored row adds
 `model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`
-(policy v3 adds `restatement` and `novel_bypass`), `throttled_by`
-(`storyline:<key>`, `storyline:<key>:cap<N>`, `storyline:<key>:hard<N>`,
-`hourly_cap`), `degraded`, `error_code`, `trace` (`prompt_sha256`,
-`input_sha256`, `storyline_key_preliminary`, `status`, `status_final`,
-`storyline_key`, `told[{i, event_id, at_ms, m, dir, headline_zh}]`,
-`told_count`, `restates_event_id`, `reasked_after_told_change`,
+(policy v3 added `restatement`; policy v5 replaces `novel_bypass` with
+`distinct_bypass`), `throttled_by` (`storyline:<key>`,
+`storyline:<key>:cap<N>`, `storyline:<key>:hard<N>`, any of those with a
+`:seen` suffix when the card was withheld as something the reader already
+received, `hourly_cap`), `degraded`, `error_code`, `trace` (`prompt_sha256`,
+`policy` — every `DecidePolicy` value that produced the decision —
+`gate_policy_version`, `input_sha256`, `storyline_key_preliminary`, `status`,
+`status_final`, `storyline_key`, `told[{i, event_id, at_ms, m, dir,
+headline_zh}]`, `told_count`, `seen_count`, `seen_similarity`, `seen_against
+{event_id, headline_zh}`, `restates_event_id`, `reasked_after_told_change`,
 `first_verdict`, `first_input_sha256`, `reask_failed`, `novelty_defaulted`,
 model telemetry). `triage` is the only
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v2`,
-`news_triage_prompt_v8`, `news_triage_policy_v4`, and `news_delivery_card_v9`.
+`news_triage_prompt_v8`, `news_triage_policy_v5`, and `news_delivery_card_v9`.
+Every shipped prompt version and the sha256 of the text it shipped with are
+pinned in `TRIAGE_PROMPT_SHA256_BY_VERSION`; editing the prompt without bumping
+`TRIAGE_PROMPT_VERSION` fails `tests/news/test_news_v3_prompt_pin.py`.
 `news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
 `min_watchlist_magnitude`, `unclear_push_min_magnitude`,
 `unclear_push_event_types`, `theme_cap_4h`, `storyline_throttle`,
-`hourly_cap_enabled`, `restatement_drop`, `novel_min_magnitude`,
-`theme_hard_cap_4h` (>= `theme_cap_4h`), `asset_hard_cap_2h`.
+`hourly_cap_enabled`, `restatement_drop`, `similarity_max`,
+`distinct_hard_cap_4h` (>= `theme_cap_4h`), `distinct_asset_cap_2h`,
+`high_priority_escalates`. `news.retention` keys are `raw_days` (30) and
+`judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
+verdict or a label is evidence and outlives the raw tier.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
@@ -316,7 +326,7 @@ observed after deployment.
 
 - service/config: `serve`, `workers`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
-- News: `news bus-check|control|label|eval|replay-decisions|replay|dlq|why`;
+- News: `news bus-check|control|instruments|label|eval|replay-decisions|corpus|validate-candidate|replay|dlq|why`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -348,12 +358,32 @@ count as moved, `noise`/`dup` as flat; an Event without a verdict counts as
 per-admission, `override_rule`, `throttled_by`, asset-class, audience, and
 event-type confusion tables, and storyline statistics. `news
 replay-decisions --hours [--escalate-magnitude --min-push-magnitude
---min-watchlist-magnitude --theme-cap-4h --theme-hard-cap-4h
---asset-hard-cap-2h --novel-min-magnitude --no-restatement-drop
---no-storyline-throttle --no-unclear-push]` re-runs `decide()` over stored
-verdicts with a candidate `DecidePolicy` (unspecified values come from
-`news.policy`) and no model call, reporting `restatement_drops` and
-`novel_bypass` alongside the changed decisions. `news replay <hits.json> [--gate-policy config|open|strict]` runs
+--min-watchlist-magnitude --theme-cap-4h --distinct-hard-cap-4h
+--distinct-asset-cap-2h --similarity-max --high-priority-escalates
+--no-restatement-drop --no-storyline-throttle --no-unclear-push]` re-runs
+`decide()` over stored verdicts with a candidate `DecidePolicy` (unspecified
+values come from `news.policy`) and no model call, reporting the changed
+decisions. It is a *first-order* replay: it reuses each verdict's stored window
+snapshot, so it shows which cards flip but not what a flip does to every later
+card — `validate-candidate` is the second-order instrument.
+
+`news corpus freeze --hours [--out]` exports every replayable Triage decision
+of the window as a self-hashing corpus (verdict, gate facts, told ledger,
+operator label). `news validate-candidate --corpus <path> [--candidate <path>
+--set KEY=VALUE --expectations <path> --evidence <path>]` replays the deployed
+policy and the candidate over that corpus *sequentially* — rebuilding each
+storyline window and the reader's ledger as decisions change — and returns a
+release decision plus a self-hashing evidence document. Exit code 1 means
+reject. The blocking checks are `no_critical_miss`, `no_retention_regression`,
+`no_marked_noise_regression`, `missed_facts_not_worse`,
+`strong_duplicates_not_worse`, `duplicates_within_recall_trade` (a candidate
+may add near-duplicate pairs only against at least three times as many facts it
+stops losing), `peak_within_reader_budget` (<= `news.push.hourly_cap`) and
+`trusted_root_unchanged`. Duplicates are scored with a metric the policy never
+reads, because scoring a rule with the rule is not evidence. The reviewed
+expectations overlay (`tests/fixtures/news_recall_boundary_v1.json`) is part of
+the trusted root: it is the human judgment about what should have happened, and
+no automated proposal path may write it. `news replay <hits.json> [--gate-policy config|open|strict]` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
 Event with admission, grounded assets, and preliminary storyline. `news why
 <event_id>` prints the Event's chain (item, gate, triage, decide, delivery)

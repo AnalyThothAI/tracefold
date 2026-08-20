@@ -131,13 +131,13 @@ export function NewsEventRow({
             <button
               aria-label="复制标注命令"
               onClick={() =>
-                onCopy?.(labelCommand(event.event_id, "bad"), "已复制「判错了」标注命令")
+                onCopy?.(labelCommand(event.event_id, "noise"), "已复制「不该推」标注命令")
               }
-              title="复制「判错了」的 tracefold news label 命令"
+              title="复制「不该推」的 tracefold news label 命令"
               type="button"
             >
               <Tag aria-hidden />
-              判错了
+              不该推
             </button>
           </span>
           {held ? null : (

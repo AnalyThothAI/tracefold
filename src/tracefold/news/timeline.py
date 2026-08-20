@@ -179,8 +179,13 @@ def event_timeline(
         final = str(latest.get("final_decision") or "")
         trace = dict(latest.get("trace") or {})
         restated = restated_card(trace, verdict, at_ms=int(latest["created_at_ms"]))
+        seen_against = trace.get("seen_against") if isinstance(trace.get("seen_against"), Mapping) else None
         if final == "throttled":
             decide_summary = "限流 · " + throttled_by_zh(latest.get("throttled_by"))
+            if str(latest.get("throttled_by") or "").endswith(":seen") and seen_against:
+                # Name the card the reader already has, the way a restatement drop names the entry it repeats.
+                ago = max(0, int(latest["created_at_ms"]) - int(seen_against.get("at_ms") or 0)) // 60_000
+                decide_summary = f"限流 · 重复：{ago} 分钟前已推「{seen_against.get('headline_zh')}」"
         else:
             reason = override_rule_zh(latest.get("override_rule"))
             if latest.get("override_rule") == "restatement" and restated is not None:
@@ -206,6 +211,10 @@ def event_timeline(
                     "restates_event_id": trace.get("restates_event_id"),
                     "restated_headline_zh": restated["headline_zh"] if restated else None,
                     "told_count": trace.get("told_count"),
+                    "seen_count": trace.get("seen_count"),
+                    "seen_similarity": trace.get("seen_similarity"),
+                    "seen_against_event_id": (seen_against or {}).get("event_id"),
+                    "seen_against_headline_zh": (seen_against or {}).get("headline_zh"),
                     "reasked_after_told_change": bool(trace.get("reasked_after_told_change")),
                     "queue_lag_ms": trace.get("queue_lag_ms"),
                     "latency_ms": trace.get("latency_ms"),

@@ -10,6 +10,12 @@
   redacted config-path and configured-status diagnostics. Do not paste or copy
   provider keys from `~/.tracefold/config.yaml` into chat, docs, tests,
   shell history, or source files.
+- A frozen corpus (`news corpus freeze`) and a release-gate evidence document
+  (`news validate-candidate --evidence`) carry no credentials, but they do
+  carry provider news content and reader-facing card text. Treat them as
+  business data: write them outside the repository and do not commit them. The
+  reviewed expectations overlay is the one artefact of this lane that belongs
+  in git, and it holds Event ids and one-line judgments, not provider payloads.
 
 ## Single config source boundary
 

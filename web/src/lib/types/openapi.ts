@@ -651,6 +651,11 @@ export interface components {
             };
             /** Label Version */
             label_version: string;
+            /**
+             * Labeled By
+             * @default operator
+             */
+            labeled_by: string;
             /** Source */
             source: string;
         };

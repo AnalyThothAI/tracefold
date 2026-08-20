@@ -6,6 +6,7 @@ Every write is idempotent by key. Callers own the transaction (worker_session / 
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import time
 from collections.abc import Mapping, Sequence
@@ -770,25 +771,92 @@ class NewsRepository:
         cursor = self.conn.execute("DELETE FROM news_event_bands WHERE expires_at_ms < %s", (int(now_ms),))
         return int(cursor.rowcount or 0)
 
-    def purge_before(self, *, cutoff_ms: int) -> int:
-        cursor = self.conn.execute("DELETE FROM news_items WHERE observed_at_ms < %s", (int(cutoff_ms),))
+    def purge_before(self, *, cutoff_ms: int, judged_cutoff_ms: int | None = None) -> int:
+        """Delete raw Items older than ``cutoff_ms``, keeping any Item that is evidence for a judged or labelled
+        Event newer than ``judged_cutoff_ms`` (#81).
+
+        Deleting `news_items` cascades to `news_events` (leader FK) and from there to verdicts, deliveries,
+        members, assets, bands and operator labels, so a single retention number decided the lifetime of the
+        whole learning plane. An Item is evidence when *any* Event it belongs to — as leader or as a later
+        member, which is what a rebuild of the Triage input needs — carries a verdict or a label. Passing no
+        ``judged_cutoff_ms`` keeps the old one-tier behaviour for callers that do not care.
+        """
+
+        if judged_cutoff_ms is None:
+            cursor = self.conn.execute("DELETE FROM news_items WHERE observed_at_ms < %s", (int(cutoff_ms),))
+            return int(cursor.rowcount or 0)
+        cursor = self.conn.execute(
+            """
+            DELETE FROM news_items i
+             WHERE i.observed_at_ms < %s
+               AND NOT EXISTS (
+                     SELECT 1
+                       FROM news_event_members m
+                       JOIN news_events e ON e.event_id = m.event_id
+                      WHERE m.item_id = i.item_id
+                        AND e.opened_at_ms >= %s
+                        AND (EXISTS (SELECT 1 FROM news_verdicts v WHERE v.event_id = e.event_id)
+                          OR EXISTS (SELECT 1 FROM news_event_labels l WHERE l.event_id = e.event_id))
+                   )
+               AND NOT EXISTS (
+                     SELECT 1
+                       FROM news_events e2
+                      WHERE e2.leader_item_id = i.item_id
+                        AND e2.opened_at_ms >= %s
+                        AND (EXISTS (SELECT 1 FROM news_verdicts v WHERE v.event_id = e2.event_id)
+                          OR EXISTS (SELECT 1 FROM news_event_labels l WHERE l.event_id = e2.event_id))
+                   )
+            """,
+            (int(cutoff_ms), int(judged_cutoff_ms), int(judged_cutoff_ms)),
+        )
         return int(cursor.rowcount or 0)
 
     def insert_label(
-        self, *, event_id: str, label_version: str, source: str, label: Mapping[str, Any], now_ms: int
+        self,
+        *,
+        event_id: str | None,
+        label_version: str,
+        source: str,
+        label: Mapping[str, Any],
+        now_ms: int,
+        labeled_by: str = "operator",
+        subject: str = "",
     ) -> bool:
+        """Record one label, idempotent by ``label_id`` and *correctable* (#81).
+
+        ``event_id`` may be None: a miss the pipeline never created an Event for is the one label that measures
+        recall, and it has nothing to hang on. ``subject`` denormalises what was labelled so the row stays
+        readable after the Event is purged.
+        """
+
+        # Identity: the Event when there is one, the subject text when there is not. Re-labelling the same Event
+        # updates that row instead of failing silently, which is what the old ON CONFLICT DO NOTHING did.
+        key = f"{event_id}:{label_version}:{labeled_by}" if event_id else f":{subject}:{label_version}:{labeled_by}"
+        label_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
         cursor = self.conn.execute(
             """
-            INSERT INTO news_event_labels (event_id, label_version, source, label, created_at_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s) ON CONFLICT DO NOTHING
+            INSERT INTO news_event_labels
+                   (label_id, event_id, label_version, source, label, created_at_ms, labeled_by, subject)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+            ON CONFLICT (label_id) DO UPDATE
+               SET label = EXCLUDED.label, source = EXCLUDED.source, created_at_ms = EXCLUDED.created_at_ms
             """,
-            (event_id, label_version, source, _dumps(dict(label)), int(now_ms)),
+            (
+                label_id,
+                event_id,
+                label_version,
+                source,
+                _dumps(dict(label)),
+                int(now_ms),
+                labeled_by,
+                subject,
+            ),
         )
         return bool(cursor.rowcount)
 
     def labels_for_event(self, event_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT label_version, source, label, created_at_ms FROM news_event_labels"
+            "SELECT label_version, source, label, created_at_ms, labeled_by, subject FROM news_event_labels"
             " WHERE event_id = %s ORDER BY created_at_ms",
             (event_id,),
         ).fetchall()
@@ -798,6 +866,7 @@ class NewsRepository:
                 "source": r["source"],
                 "label": dict(r["label"] or {}),
                 "created_at_ms": int(r["created_at_ms"]),
+                "labeled_by": r["labeled_by"],
             }
             for r in rows
         ]

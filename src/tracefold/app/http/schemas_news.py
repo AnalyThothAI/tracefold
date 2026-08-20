@@ -182,6 +182,7 @@ class NewsLabelData(ExactApiSchema):
     source: str
     label: dict[str, Any] = Field(default_factory=dict)
     created_at_ms: int
+    labeled_by: str = "operator"
 
 
 class NewsTimelineStepData(ExactApiSchema):

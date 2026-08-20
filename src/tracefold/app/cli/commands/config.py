@@ -85,6 +85,7 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                     "triage": settings.news.triage.model_dump(),
                     "watchlist": sorted(settings.news.watchlist_symbols),
                     "policy": settings.news.policy.model_dump(),
+                    "retention": settings.news.retention.model_dump(),
                     "gate": settings.news.gate.model_dump(),
                     "push": {
                         "requested": push_availability.requested,

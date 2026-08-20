@@ -262,10 +262,13 @@ function MemberList({ members }: { members: NewsEventMember[] }) {
   );
 }
 
+// Every key here is a value `tracefold news label` accepts as its positional argument; `must_push` is the one
+// that fills the release gate's boundary set (#81).
 const LABEL_ACTIONS = [
   { key: "good", label: "判得对", note: "已复制「判得对」标注命令" },
-  { key: "bad", label: "判错了", note: "已复制「判错了」标注命令" },
+  { key: "noise", label: "不该推", note: "已复制「不该推」标注命令" },
   { key: "missed", label: "漏推", note: "已复制「漏推」标注命令" },
+  { key: "must_push", label: "必须推", note: "已复制「必须推」标注命令（发布门边界集）" },
 ] as const;
 
 /**
@@ -298,7 +301,7 @@ function LabelBlock({
         ))}
       </div>
       <p className="news-label-hint">
-        点一下复制命令，在终端里执行即可写入标注。快捷键 <kbd>X</kbd> 复制「判错了」。
+        点一下复制命令，在终端里执行即可写入标注。快捷键 <kbd>X</kbd> 复制「不该推」。
       </p>
       {labels.length ? (
         <ul className="news-label-list">

@@ -181,20 +181,7 @@ def replay_decisions(
             novel_bypass += 1
     return {
         "window_hours": int(hours),
-        "policy": {
-            "escalate_magnitude": policy.escalate_magnitude,
-            "min_push_magnitude": policy.min_push_magnitude,
-            "min_watchlist_magnitude": policy.min_watchlist_magnitude,
-            "unclear_push_min_magnitude": policy.unclear_push_min_magnitude,
-            "unclear_push_event_types": list(policy.unclear_push_event_types),
-            "theme_cap_4h": policy.theme_cap_4h,
-            "storyline_throttle": policy.storyline_throttle,
-            "hourly_cap_enabled": policy.hourly_cap_enabled,
-            "restatement_drop": policy.restatement_drop,
-            "novel_min_magnitude": policy.novel_min_magnitude,
-            "theme_hard_cap_4h": policy.theme_hard_cap_4h,
-            "asset_hard_cap_2h": policy.asset_hard_cap_2h,
-        },
+        "policy": policy.as_dict(),
         "events": len(rows),
         "verdicts": sum(1 for r in rows if r.get("verdict")),
         "replayed": len(replayed),

@@ -637,7 +637,12 @@ async def _wire_news_pipeline(
             min_interval_seconds=settings.news.push.min_interval_seconds,
             hourly_cap=settings.news.push.hourly_cap,
         ),
-        janitor=JanitorLoop(db=db, bus=bus),
+        janitor=JanitorLoop(
+            db=db,
+            bus=bus,
+            retention_raw_days=settings.news.retention.raw_days,
+            retention_judged_days=settings.news.retention.judged_days,
+        ),
         instruments=_instrument_snapshot_loop(settings, db=db),
     )
     return bus, pipeline
