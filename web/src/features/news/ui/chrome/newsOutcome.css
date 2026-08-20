@@ -1,0 +1,63 @@
+@layer app.features {
+  /*
+   * One Event's conclusion. Outlined pill on a soft tone ground, with the status light on the left.
+   *
+   * `data-emphasis="solid"` is the high-priority push (⚡): it fills instead of tinting, because it is the one
+   * row in a screenful that the reader must not scroll past. The v1 design tried a tinted fill with the tone
+   * colour as the text and cleared only 2.70:1; white on the solid tone clears the bar with room to spare.
+   */
+  .news-outcome {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+    max-width: 100%;
+    min-height: 1.6rem;
+    padding: 0.15rem 0.6rem 0.15rem 0.5rem;
+    border: 1px solid var(--news-tone-border);
+    border-radius: 999px;
+    background: var(--news-tone-soft);
+    color: var(--text-primary);
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .news-outcome[data-size="lg"] {
+    min-height: 2rem;
+    padding: 0.3rem 0.85rem 0.3rem 0.65rem;
+    font-size: 0.86rem;
+  }
+
+  .news-outcome[data-emphasis="solid"] {
+    border-color: var(--news-tone);
+    background: var(--news-tone);
+    color: #ffffff;
+  }
+
+  .news-outcome[data-emphasis="solid"] .news-tone-dot {
+    background: #ffffff;
+    box-shadow: 0 0 0 0.18rem rgb(255 255 255 / 34%);
+  }
+
+  .news-outcome-reason {
+    color: var(--text-secondary);
+    font-weight: 500;
+    white-space: normal;
+  }
+
+  .news-outcome[data-emphasis="solid"] .news-outcome-reason {
+    color: rgb(255 255 255 / 82%);
+  }
+
+  .news-outcome-reason::before {
+    content: "·";
+    margin-right: 0.4rem;
+    color: var(--text-subtle);
+  }
+
+  .news-outcome[data-emphasis="solid"] .news-outcome-reason::before {
+    color: rgb(255 255 255 / 60%);
+  }
+}

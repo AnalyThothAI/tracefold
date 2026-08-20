@@ -1,0 +1,165 @@
+@layer app.features {
+  /*
+   * Chrome every News route wears: the panel the route content sits in, its heading block, the ordinary
+   * button, the folded technical-evidence disclosure, and the one-line "nothing here" note. Surface-specific
+   * layout lives beside its own route (`ui/feed`, `ui/detail`, `ui/status`).
+   */
+  .news-panel {
+    min-height: 100%;
+    padding: 1rem 1.15rem 1.5rem;
+    color: var(--foreground);
+  }
+
+  .news-feed-shell,
+  .news-detail-shell,
+  .news-status-shell {
+    display: grid;
+    align-content: start;
+  }
+
+  /* Grid items default to `min-width: auto`, so a wide child (the funnel's scrolling tile row on a phone)
+     would push the whole panel past the viewport instead of scrolling inside itself. */
+  .news-feed-shell > *,
+  .news-detail-shell > *,
+  .news-status-shell > * {
+    min-width: 0;
+  }
+
+  .news-feed-shell {
+    gap: 0.55rem;
+  }
+
+  .news-detail-shell,
+  .news-status-shell {
+    gap: 0.9rem;
+  }
+
+  .news-page-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .news-heading-copy {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .news-heading-copy h1 {
+    margin: 0;
+    font-size: clamp(1.15rem, 1.6vw, 1.4rem);
+    font-weight: 680;
+    letter-spacing: -0.03em;
+    line-height: 1.25;
+  }
+
+  .news-heading-copy p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+  }
+
+  /* ------------------------------------------------------------------ shared buttons */
+  .news-button {
+    min-height: 1.9rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+    color: var(--text-primary);
+    font-size: 0.72rem;
+    font-weight: 500;
+  }
+
+  .news-button:hover {
+    border-color: var(--border-strong);
+  }
+
+  /* ------------------------------------------------------------------ technical details disclosure */
+  .news-technical {
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--radius-lg);
+  }
+
+  .news-technical > summary {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.6rem 0.9rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.74rem;
+    font-weight: 500;
+    list-style: none;
+  }
+
+  .news-technical > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .news-technical > summary::before {
+    content: "▸";
+    font-size: 0.7rem;
+  }
+
+  .news-technical[open] > summary::before {
+    content: "▾";
+  }
+
+  .news-technical > div {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0 0.9rem 0.9rem;
+  }
+
+  .news-technical h4 {
+    margin: 0 0 0.35rem;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .news-json {
+    max-height: 22rem;
+    margin: 0;
+    padding: 0.6rem 0.75rem;
+    overflow: auto;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+    background: var(--surface-root);
+    color: var(--text-secondary);
+    font: 0.68rem/1.5 var(--font-mono);
+  }
+
+  /* One sentence where a section has nothing to show — never an empty grid or a row of dashes. */
+  .news-empty-note {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.76rem;
+  }
+
+  @media (max-width: 767px) {
+    .news-panel {
+      padding: 0.75rem 0.75rem 1.25rem;
+    }
+
+    /* The subtitle is context, not the reason the page was opened; dropping it lifts the first Event up. */
+    .news-heading-copy p {
+      display: none;
+    }
+
+    .news-heading-copy h1 {
+      font-size: 1.15rem;
+    }
+
+    .news-page-header {
+      align-items: stretch;
+      flex-direction: column;
+    }
+  }
+}

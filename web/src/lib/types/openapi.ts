@@ -394,8 +394,25 @@ export interface components {
             /** Url */
             url?: string | null;
         };
+        /**
+         * NewsFeedCountsData
+         * @description How the request's filter and window split across the three outcome groups, for the feed's task tabs.
+         *
+         *     ``total`` is the sum of the other three: the groups partition the feed exactly.
+         */
+        NewsFeedCountsData: {
+            /** Held */
+            held: number;
+            /** Pending */
+            pending: number;
+            /** Pushed */
+            pushed: number;
+            /** Total */
+            total: number;
+        };
         /** NewsFeedData */
         NewsFeedData: {
+            counts?: components["schemas"]["NewsFeedCountsData"] | null;
             /** Events */
             events: components["schemas"]["NewsFeedEventData"][];
             filters: components["schemas"]["NewsFeedFiltersData"];

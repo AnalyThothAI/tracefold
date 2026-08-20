@@ -29,11 +29,8 @@ const routeCases: RouteCase[] = [
       await expect(page.getByRole("region", { name: "新闻事件流" })).toBeVisible();
     },
     specific: async (page) => {
-      await expect(page.getByRole("navigation", { name: "新闻视图" })).toBeVisible();
-      await expect(page.getByRole("link", { name: "事件流" })).toHaveAttribute(
-        "aria-current",
-        "page",
-      );
+      // Section navigation is in the shell drawer on mobile (#82), not on the route.
+      await expect(page.getByRole("navigation", { name: "新闻视图" })).toHaveCount(0);
       await expect(page.getByLabel("news search")).toBeVisible();
       await expect(page.getByRole("combobox", { name: "事件排序" })).toBeVisible();
       await expect(
@@ -41,8 +38,13 @@ const routeCases: RouteCase[] = [
       ).toBeVisible();
       const rows = page.locator(".news-event-row");
       await expect(rows).toHaveCount(5);
-      await expect(page.locator(".news-event-row .news-outcome")).toHaveCount(5);
+      // Only the rows that got somewhere carry a badge; held rows carry their reason instead (#82).
+      const badged = page.locator('.news-event-row:not([data-outcome-group="held"])');
+      await expect(page.locator(".news-event-row .news-outcome")).toHaveCount(await badged.count());
       await expect(page.locator(".news-event-row .news-outcome").first()).toContainText("已推送");
+      await expect(
+        page.locator('.news-event-row[data-outcome-group="held"] .news-outcome'),
+      ).toHaveCount(0);
       await expect(page.getByRole("tablist", { name: "按结局筛选" })).toBeVisible();
       const fullyVisibleRows = await rows.evaluateAll(
         (elements) =>
@@ -73,7 +75,7 @@ const routeCases: RouteCase[] = [
       await expect(page.locator(".news-detail-hero .news-outcome")).toContainText("已推送");
       await expect(page.getByRole("heading", { name: "这条新闻经历了什么" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "同类报道" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "运营标注" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "这条判得对吗" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "市场标记" })).toHaveCount(0);
     },
     nestedOverflowSelectors: [

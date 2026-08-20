@@ -311,6 +311,27 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     assert held_ids.isdisjoint(pending_ids) and pushed_ids | held_ids | pending_ids == all_ids
     for group, ids in (("pushed", pushed_ids), ("held", held_ids), ("pending", pending_ids)):
         assert all(e["outcome"]["group"] == group for e in everything if e["event_id"] in ids)
+    # The tab counts describe the whole filtered set, so they must agree with the per-group listings and stay
+    # unchanged when the reader picks one tab.
+    counts = _feed()["counts"]
+    assert counts == {
+        "total": len(all_ids),
+        "pushed": len(pushed_ids),
+        "held": len(held_ids),
+        "pending": len(pending_ids),
+    }
+    assert counts["total"] == counts["pushed"] + counts["held"] + counts["pending"]
+    assert _feed(outcome="held")["counts"] == counts
+    # A window the reader narrows narrows the counts with it; a paged request reuses the first page's.
+    assert _feed(hours=1, now_ms=10_000_000_000_000)["counts"] == {
+        "total": 0,
+        "pushed": 0,
+        "held": 0,
+        "pending": 0,
+    }
+    first = _feed(limit=1)
+    assert first["counts"] == counts and first["next_cursor"]
+    assert _feed(limit=1, cursor=first["next_cursor"])["counts"] is None
     assert _feed(hours=1, now_ms=10_000_000_000_000)["events"] == []
     status = repos.news.status_snapshot(now_ms=10_000_000_000_000)
     assert status["delivery"]["sent_24h"] >= 0 and "pipeline" in status

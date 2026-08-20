@@ -1,2 +1,6 @@
-export { NewsPage } from "./NewsPage";
-export { useNewsEventWithToken, useNewsFeedWithToken, useNewsStatusWithToken } from "./useNewsPage";
+export {
+  useNewsEventWithToken,
+  useNewsFeedWithToken,
+  useNewsStatusWithToken,
+} from "./api/newsQueries";
+export { NewsPage } from "./ui/NewsPage";

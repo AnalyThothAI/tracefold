@@ -155,10 +155,12 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsHealthData",
         "NewsFunnelData",
         "NewsReasonCountData",
+        "NewsFeedCountsData",
     ):
         assert components[name]["additionalProperties"] is False
 
-    assert set(components["NewsFeedData"]["properties"]) == {"events", "next_cursor", "filters"}
+    assert set(components["NewsFeedData"]["properties"]) == {"events", "next_cursor", "counts", "filters"}
+    assert set(components["NewsFeedCountsData"]["properties"]) == {"total", "pushed", "held", "pending"}
     assert set(components["NewsEventDetailData"]["properties"]) == {
         "event",
         "outcome",

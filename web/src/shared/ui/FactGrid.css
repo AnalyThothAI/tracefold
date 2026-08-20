@@ -21,11 +21,16 @@
     background: var(--surface-raised);
   }
 
+  /*
+   * The label is chrome and the value is content, so they use different registers: a small uppercase Latin
+   * monospace key against the Chinese value. At this size a Chinese label would compete with its own value.
+   */
   .ui-fact dt {
     margin: 0;
     color: var(--text-subtle);
-    font-size: 0.7rem;
-    letter-spacing: 0.01em;
+    font: 700 0.56rem/1.4 var(--font-mono);
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
   }
 
   .ui-fact dd {

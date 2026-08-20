@@ -138,4 +138,21 @@
     svg {
     color: var(--accent-primary);
   }
+
+  .cockpit-app-sidebar-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* How much is behind the destination, in the same 24 h window the feed's funnel reports. */
+  .cockpit-app-sidebar-count {
+    flex: 0 0 auto;
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
 }

@@ -10,7 +10,7 @@ import type {
   NewsTimelineStep,
   NewsVerdict,
   NewsTriageSummary,
-} from "@features/news/useNewsPage";
+} from "@features/news/api/newsQueries";
 
 export const NEWS_NOW_MS = 1_779_000_000_000;
 
@@ -94,6 +94,8 @@ export function newsTriageFixture(overrides: Partial<NewsTriageSummary> = {}): N
 export function newsFeedFixture(overrides: Partial<NewsFeed> = {}): NewsFeed {
   return {
     events: [newsFeedEventFixture()],
+    // The server's split of the current filter across the three outcome groups; `total` is their sum.
+    counts: { total: 320, pushed: 41, held: 271, pending: 8 },
     filters: {
       admission: null,
       decision: null,

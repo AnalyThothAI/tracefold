@@ -6,6 +6,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 type NewsSchemas = components["schemas"];
 
 export type NewsFeed = NewsSchemas["NewsFeedData"];
+export type NewsFeedCounts = NewsSchemas["NewsFeedCountsData"];
 export type NewsFeedEvent = NewsSchemas["NewsFeedEventData"];
 export type NewsFeedSort = NewsSchemas["NewsFeedFiltersData"]["sort"];
 export type NewsEvent = NewsSchemas["NewsEventData"];

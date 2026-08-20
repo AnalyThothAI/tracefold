@@ -17,22 +17,34 @@ describe("AppSidebar", () => {
     expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Research"]);
   });
 
-  it("renders exactly the one supported primary destination", () => {
-    renderSidebar();
+  it("renders the two supported primary destinations", () => {
+    renderSidebar({ counts: { events: 1463 } });
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
-    expect(links.map((link) => [link.textContent?.trim(), link.getAttribute("href")])).toEqual([
-      ["News", "/news"],
-    ]);
+    expect(links.map((link) => link.getAttribute("href"))).toEqual(["/news", "/news/status"]);
+    // The feed carries the 24 h intake behind it; the status route has no count of its own.
+    expect(links[0].textContent).toContain("事件流");
+    expect(links[0].textContent).toContain("1,463");
+    expect(links[1].textContent?.trim()).toBe("状态");
   });
 
-  it("marks News current for the feed route and keeps it current on a drilldown", () => {
+  it("marks the feed current on a drilldown, and only the feed", () => {
     renderSidebar({ route: "/news/events/evt-1" });
 
-    const newsLink = screen.getByRole("link", { name: "News" });
+    const newsLink = screen.getByRole("link", { name: "事件流" });
     expect(newsLink).toHaveAttribute("href", "/news");
     expect(newsLink).toHaveAttribute("aria-current", "page");
+    expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
+  });
+
+  it("marks only the status route current on the status route", () => {
+    // `/news` is a prefix of `/news/status`, so a link that decides for itself by prefix would leave two
+    // destinations announcing themselves as the current page.
+    renderSidebar({ route: "/news/status" });
+
+    expect(screen.getByRole("link", { name: "状态" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "事件流" })).not.toHaveAttribute("aria-current");
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 
@@ -50,20 +62,22 @@ describe("AppSidebar", () => {
 
     expect(screen.queryByRole("link", { name: "Radar" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Stocks" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "News" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "事件流" })).toBeInTheDocument();
     expect(document.querySelectorAll('[data-sidebar="menu-badge"]')).toHaveLength(0);
   });
 });
 
 function renderSidebar({
+  counts,
   route = "/",
 }: {
+  counts?: { events?: number };
   route?: string;
 } = {}) {
   return render(
     <MemoryRouter initialEntries={[route]}>
       <SidebarProvider>
-        <AppSidebar />
+        <AppSidebar counts={counts} />
       </SidebarProvider>
     </MemoryRouter>,
   );

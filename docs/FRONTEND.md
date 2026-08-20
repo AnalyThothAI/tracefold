@@ -24,6 +24,14 @@ The React operator console is a News workbench. It reads exactly `/api/bootstrap
 
 Do not add new code under old `api/`, `store/`, or `components/` roots. Public feature imports should come from `@features/<name>`; sanctioned route-shell entrypoints may use `@features/<name>/shell`. Deep imports across feature internals are blocked by lint and grep gates; the relative-import boundary gate derives feature roots from `web/src/features`.
 
+`features/news` follows that map: `api/newsQueries.ts` (query hooks and contract
+types), `model/` (`newsLabels.ts`, `newsTime.ts`, `feedFilters.ts` — the URL-owned
+feed state), `state/` (`useAnchoredEventFeed`, `useFeedCursor`, `useNewsToast`), and
+`ui/` split into `chrome/` (the frame, tone grammar, outcome badge, direction chip,
+health pill, toast — anything more than one surface renders), `feed/`, `detail/`, and
+`status/`. `features/news/shell.ts` is the shell entrypoint and exports hooks and types
+only, so importing it does not pull the route components into the eager shell chunk.
+
 ## Test Map (`web/tests/`)
 
 `web/src/` contains production frontend code only. Frontend Vitest, React Testing Library, MSW, fixtures, architecture gates, and Playwright specs live under `web/tests/`. Repository-root `tests/` remains the Python/FastAPI pytest tree.
@@ -71,9 +79,11 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **News routes.** `/news` is a decision-first scan surface over the flat
   Event feed from `/api/news/feed`; the browser never clusters, scores,
   triages, throttles, or reorders. The public News navigation contains
-  exactly `事件流` and `状态`, backed by `/news` and `/news/status`. Event
-  detail lives at `/news/events/:eventId` and carries the same navigation plus
-  a `RouteBackLink` to `/news`. The retired `/news/brief`, `/news/sources`,
+  exactly `事件流` and `状态`, backed by `/news` and `/news/status`, and it
+  lives in the sidebar — no route renders a second section switcher. Event
+  detail lives at `/news/events/:eventId`, highlights `事件流` in the sidebar
+  rather than being a destination of its own, and carries a `RouteBackLink`
+  to the feed it came from. The retired `/news/brief`, `/news/sources`,
   and `/news/stories/:storyId` routes, hooks, fixtures, and CSS are deleted;
   they resolve through the standard not-found route with no redirect. There is
   one operator-bound product and no reader-personalized or user-adjustable
@@ -102,54 +112,91 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 
   The Feed header renders the shared status query as one thresholded health
   pill (`流水线正常/注意/异常` from `health.overall`, the failing item's
-  `summary_zh`, linking to `/news/status`) and a four-cell 24 h funnel strip
-  (`收到 / 送审 / 决定推送 / 已送达` from `funnel_24h`).
+  `summary_zh`, linking to `/news/status`) and a 24 h funnel card
+  (`收到 / 送审 / 决定推送 / 已送达` from `funnel_24h`, a four-segment
+  proportion bar, and one conversion sentence). Every figure on it is a
+  `funnel_24h` field or the difference between two of them.
 
-  Feed rows (`NewsEventRow`) are `when · what · one outcome`: the local
-  `HH:MM` of `opened_at_ms` (full timestamp and relative time in the title),
-  the Triage `headline_zh` (falling back to `title_zh`, then `leader_title`)
-  as the two-line primary headline linking to `/news/events/:eventId`, the
-  original wire line clamped to one line when it differs, a meta line
-  (reporting origin, `N 条报道` when merged, the server-labelled Triage facts
-  `direction_zh · magnitude_zh · event_type_zh`, up to four ticker chips from
-  `grounded_assets`, and an original link when a valid URL exists), and
-  exactly one `NewsOutcomeBadge` rendered from `outcome` (`text_zh` as the
-  badge, `reason_zh` as the title, and shown inline for held rows; the
-  delivered time for sent rows). Rows never render admission, family, asset
-  class, decision, rule, throttle, or score keys; `data-outcome`,
-  `data-outcome-group`, and `data-priority` are styling hooks only. Missing
-  values are omitted, never rendered as placeholder copy. At 1366×720 the
-  target is at least four rows, at 390×844 about two, with no horizontal
-  overflow.
+  The task tabs carry the server's `counts` for the current filter and window
+  (`total / pushed / held / pending`), so an empty tab is visible without
+  visiting it. Counts come only from the API — the browser never derives them
+  from the loaded page — and a paged request reuses the first page's.
+
+  Feed rows (`NewsEventRow`) are `when · what · one outcome`, tiered by that
+  outcome: the local `HH:MM` of `opened_at_ms` (full timestamp and relative
+  time in the title), the Triage `headline_zh` (falling back to `title_zh`,
+  then `leader_title`) as the two-line primary headline linking to
+  `/news/events/:eventId`, the original wire line clamped to one line when it
+  differs, and a meta line (reporting origin, `N 条报道` when merged, the
+  server-labelled Triage facts `direction_zh · magnitude_zh · event_type_zh`,
+  and up to four ticker chips from `grounded_assets`).
+
+  Roughly three quarters of a day's Events stop short of a card, so the badge
+  is reserved for rows that got somewhere: a `pushed` / `pending` /
+  `delivery_failed` row renders exactly one `NewsOutcomeBadge` from `outcome`
+  plus a coloured left rail (solid fill when `priority` is `high`, which is
+  the only place a filled badge appears), and a `held` row renders none —
+  smaller headline, secondary ink, and the same `outcome.reason_zh` the badge
+  would have carried as its tooltip, in grey. `reason_zh` is shown on every
+  row that has one; sent rows also show the delivered time. Rows never render
+  admission, family, asset class, decision, rule, throttle, or score keys;
+  `data-outcome`, `data-outcome-group`, and `data-priority` are styling hooks
+  only. Missing values are omitted, never rendered as placeholder copy. The
+  whole row opens the Event through a stretched headline link — one accessible
+  name, no click handler on a non-interactive element. At 1366×720 the target
+  is at least four rows, at 390×844 about two, with no horizontal overflow.
+
+  Keyboard: `J`/`K` (and `↑`/`↓`) move a real focus cursor down the rows,
+  `Enter` opens the cursor row, `1`–`4` pick a task tab, `X` copies that
+  Event's `tracefold news label` command, `Esc` leaves an Event, `/` focuses
+  the topbar search, `G` then `F`/`S` jumps between the two routes, and `?`
+  opens the shortcut panel. `features/cockpit/ui/appShortcuts.ts` is the list
+  the panel shows and the contract the shell and feed implement between them.
+  No binding fires while a text field has focus, and none uses a modifier.
+  Counts and key hints are `aria-hidden`: a number that changes every three
+  seconds must never rename a tab or a link.
 
   `/news/events/:eventId` reads `/api/news/events/{event_id}` and renders,
-  in fixed order: the hero (the `outcome` badge with its `reason_zh`, the
-  Triage `headline_zh` as `h1`, `title_zh` when it differs, `why_zh` as a
-  callout, the original wire line with its link, origin, merged-report count,
-  and ticker chips); the timeline (`这条新闻经历了什么`) over the server
-  `timeline[]` — one `summary_zh` sentence per step with the raw `facts`
-  behind an `展开字段` toggle; `同类报道` (members: time, title, origin,
-  首条/归并, original link); `运营标注` (labels plus a copyable
-  `tracefold news label` command); and a collapsed `技术详情` disclosure that
-  holds `event_id`, `storyline_key`, family, admission, engine/ingest mode,
-  grounded assets, provenance, every verdict record (versions, model, rule
-  keys, `verdict` and `trace` JSON), delivery records with receipts, and member
-  ids with match kind/Jaccard. Internal identifiers do not appear above the
-  fold. The browser does not recompute any verdict, decision, or delivery
-  state.
+  in fixed order: a toolbar (`RouteBackLink` to the feed the reader came from
+  plus `上一条 K` / `下一条 J` and `i / n`); the hero (the `outcome` badge with
+  its `reason_zh`, the Triage `headline_zh` as `h1`, `title_zh` when it
+  differs, the direction chip with its magnitude and `把握 n%`, `why_zh` as a
+  callout, the `TYPE / SCOPE / NOVELTY / ACTIONABLE / AUDIENCE / MEMBERS`
+  verdict grid, the original wire line with its link, origin, merged-report
+  count, and ticker chips); then a two-column band — the timeline
+  (`这条新闻经历了什么`) over the server `timeline[]`, one `summary_zh`
+  sentence per step with `+Δ` from the previous step, an end-to-end figure on
+  the card, and the raw `facts` behind an `展开字段` toggle — beside
+  `这条判得对吗` (three buttons that copy the `tracefold news label` command
+  for `good` / `bad` / `missed`, plus any existing labels) and `同类报道`
+  (members: time, title, origin, 首条/归并, original link); and a collapsed
+  `技术详情` disclosure that holds `event_id`, `storyline_key`, family,
+  admission, engine/ingest mode, grounded assets, provenance, every verdict
+  record (versions, model, rule keys, `verdict` and `trace` JSON), delivery
+  records with receipts, and member ids with match kind/Jaccard.
+
+  The pager walks the cached feed for the search string the row travelled with;
+  a cold URL has no such list and the pager renders nothing rather than
+  inventing an order. Every duration on the page is two server timestamps
+  subtracted. Internal identifiers do not appear above the fold. The browser
+  does not recompute any verdict, decision, or delivery state, and it does not
+  write labels: the News API is read-only and the learning plane is the CLI.
 
   `/news/status` reads `/api/news/status` and renders four thresholded
-  health cards (`接入 / 队列 / 模型 / 推送` from `health.*`: level colour,
-  `summary_zh`, `detail_zh`, and two server numbers each), an overall pill
-  (`总体正常/注意/异常`), the 24 h funnel (`funnel_24h`, each layer linking to
-  the matching feed tab), the reason ranking (`reasons_24h` grouped by stage
-  with `label_zh` bars — never raw keys), read-only `control` (paused state
-  and a mute table), the watchlist chips, configured/provider-enabled Strategy *counts* (never
-  the IDs) with `strategy_warnings`, and a collapsed `技术指标` disclosure with the raw
-  pipeline/ingest/broker facts (latency percentiles, queue depths, incidents,
-  counters). No layer computes a second health state; thresholds are the
-  server's. There are no pause/resume/mute controls, no source inventory, and
-  no Brief.
+  health cards (`Ingest / Broker / Model / Delivery` as the eyebrow, from
+  `health.*`: level colour, a per-level bar, `summary_zh`, `detail_zh`, and two
+  server numbers each), an overall pill (`总体正常/注意/异常`), the 24 h funnel
+  (`funnel_24h`, each layer linking to the matching feed tab, with one sentence
+  naming the layer that loses the most), the reason ranking (`reasons_24h`
+  grouped by stage with `label_zh` bars — never raw keys), read-only `control`
+  (paused state and a mute table), the watchlist chips, configured/provider-enabled
+  Strategy *counts* (never the IDs) as a usage bar with `strategy_warnings`, and a
+  collapsed `技术指标` disclosure with the raw pipeline/ingest/broker facts (latency
+  percentiles, queue depths, incidents, counters). No layer computes a second health
+  state; thresholds are the server's. There are no pause/resume/mute controls — control
+  state is written by `tracefold news control` and read by the pipeline on every
+  message, so a browser button would be a second writer — and no source inventory
+  and no Brief.
 
   Polling: Feed every 3 seconds; Event detail and Status every 15 seconds
   (one shared status query feeds both the Feed header and `/news/status`).
@@ -167,7 +214,7 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
 - **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, and the shadcn sidebar composition (`SidebarProvider`, `AppSidebar`, `SidebarInset`, and `SidebarTrigger`) split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Mobile and tablet route navigation uses the shadcn `Sheet` drawer opened from the topbar trigger.
 - **Route controls.** Shells do not render route-specific filter controls. News controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, the main route scroll container, and the `/` search hotkey.
-- **Shell navigation.** The `AppSidebar` is `collapsible="offcanvas"` and starts collapsed on every width (#70), so the topbar `SidebarTrigger` is the single entry to the route tree — desktop, tablet, and mobile alike. There is no rail: it duplicated the trigger and claimed the same accessible name. `defaultOpen={false}` means every load starts collapsed; `shared/ui/sidebar.tsx` writes the `sidebar_state` cookie but never reads it, so a toggle is per-page and not remembered. Route surfaces get the full column width, and `.news-detail-shell` centres its reading measure rather than hugging the left edge. The primary route tree contains exactly News; `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** The `AppSidebar` is `collapsible="offcanvas"` and 212px wide. `CockpitShell` controls its open state from `(min-width: 1280px)`: at desktop width it is part of the frame, below that it is the drawer the topbar `SidebarTrigger` opens, and it re-syncs when the viewport crosses the breakpoint so a rotated tablet lands in the right frame. There is no rail: it duplicated the trigger and claimed the same accessible name. `shared/ui/sidebar.tsx` writes the `sidebar_state` cookie but never reads it, so a manual toggle is per-page and not remembered. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries both News destinations (`事件流` `/news`, `状态` `/news/status`); `/news/events/:eventId` highlights `事件流`. The feed entry shows the 24 h `funnel_24h.received` count, `aria-hidden` so it decorates the link without renaming it, and the shell reads it through `@features/news/shell` — the same query key the feed header and status route use, so React Query serves all three from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
@@ -181,10 +228,13 @@ Do not add new code under old `api/`, `store/`, or `components/` roots. Public f
   contradicting 利空. Every foreground token clears 4.5:1 on white. The direction red
   and green sit at near-equal luminance by necessity, so the arrow glyph and the
   Chinese word carry the meaning and colour only reinforces it.
-- **Shared primitives.** `Card`, `FactGrid` and `KeyValue` in `shared/ui` own the
-  console's panel, labelled-fact and key/value shapes. A feature may frame a
-  primitive with its own class but must not restyle one; `cssArchitectureHarness`
-  enforces this.
+- **Shared primitives.** `Card`, `FactGrid`, `KeyValue` and `ShortcutsDialog` in
+  `shared/ui` own the console's panel, labelled-fact, key/value and keyboard-map
+  shapes. A feature may frame a primitive with its own class but must not restyle
+  one; `cssArchitectureHarness` enforces this. Use the component — hand-writing its
+  class names leaves the primitive's stylesheet out of the bundle entirely, which
+  is exactly how the verdict grid and every key/value table lost their layout
+  before #82.
 - **Phone reading.** The console has to be comfortable to read on a phone. The shell
   sets `viewport-fit=cover`, a `theme-color` matching the canvas, `format-detection`
   off, `text-size-adjust: 100%` so a reader's larger font scales coherently, `100dvh`
@@ -241,23 +291,41 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    true and shows the first runtime reason when it is not.
 6. At `390px`, confirm the topbar `SidebarTrigger` opens the shadcn drawer, drawer route links are reachable, `.topbar` and `.center-column` do not overlap, `/` lands on the News list, and no filter/Tape/task bar exists.
 7. At tablet width around `834px`, confirm the desktop sidebar is hidden, the topbar trigger opens the shadcn drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
-8. At `1920px`, `1366px`, `834px`, and `390px`, verify the default News Feed
-   requests latest 25-row pages for the last 24 h with no outcome tab and no
-   advanced filter; `q`, family, admission, priority, decision, symbol, sort,
-   `outcome`, and `hours` survive reload and alter server results; the header
-   shows the health pill and the 24 h funnel strip; every row shows time,
-   headline, meta line, and exactly one outcome badge with Chinese copy — no
-   rule, admission, decision, or score keys — and held rows show their
-   `reason_zh`, and every row with a verdict shows the direction chip (利多 filled
-   green / 利空 filled red / 中性 quiet text, each with its own arrow). On
-   `/news/events/:eventId`, verify hero (outcome + reason, headline, direction +
-   magnitude, why, the 判定 grid of 类型/范围/把握/新颖度/可操作/受众, 主要标的 vs 提及),
-   timeline, 同类报道 / 运营标注, and a collapsed 技术详情 appear in that order with
-   no market-mark table; the hero's left rail carries the direction colour and a
-   neutral verdict leaves it uncoloured; an Event with no Triage verdict renders
-   the hero without the 判定 block instead of empty cells; and the back link
-   returns to `/news`. Verify `/news/status` shows four coloured health cards, the overall
-   pill, the funnel, Chinese reason bars, read-only control (mute table),
-   Strategy counts (never IDs), a collapsed 技术指标, and no operator controls.
-   Confirm about two News rows remain scannable at 390px and at least four at
-   desktop height without horizontal overflow.
+   At `1280px` and above, confirm the sidebar is part of the frame, both
+   destinations are present, `/news/events/:eventId` keeps `事件流` current,
+   and the feed count matches the funnel's `收到`.
+8. Exercise the keyboard on `/news`: `J`/`K` move the cursor and scroll it into
+   view, `Enter` opens, `Esc` returns, `1`–`4` switch tabs and survive reload,
+   `/` focuses search, `G`→`F`/`S` navigates, `X` copies the label command with
+   a toast, and `?` opens and closes the panel. Confirm no binding fires while
+   the search box has focus.
+9. On `/news/events/:eventId` reached from a row, confirm `上一条`/`下一条` and
+   `i / n` walk the same filtered list; then paste the URL into a fresh tab and
+   confirm the pager is absent rather than broken.
+10. At `1920px`, `1366px`, `834px`, and `390px`, verify the default News Feed
+    requests latest 25-row pages for the last 24 h with no outcome tab and no
+    advanced filter; `q`, family, admission, priority, decision, symbol, sort,
+    `outcome`, and `hours` survive reload and alter server results; the header
+    shows the health pill and the 24 h funnel card; the four task tabs show
+    counts that match the rows each tab lists and follow a changed window or
+    filter; every row shows time, headline and meta line; a pushed / pending /
+    failed row shows exactly one outcome badge with Chinese copy and a coloured
+    rail while a held row shows only its grey `reason_zh` — no rule, admission,
+    decision, or score keys anywhere; and every row with a verdict shows the
+    direction chip (利多 filled red / 利空 filled green / 中性 quiet text, each
+    with its own arrow). On `/news/events/:eventId`, verify hero (outcome +
+    reason, headline, direction + magnitude + 把握, why, the
+    `TYPE/SCOPE/NOVELTY/ACTIONABLE/AUDIENCE/MEMBERS` grid with framed cells,
+    主要标的 vs 提及), the timeline with `+Δ` and an end-to-end figure,
+    这条判得对吗 / 同类报道, and a collapsed 技术详情 appear in that order
+    with no market-mark table; the hero's left rail carries the direction colour and a
+    neutral verdict leaves it uncoloured; an Event with no Triage verdict renders
+    the hero without the 判定 block instead of empty cells; and the back link
+    returns to the feed the reader came from. Verify `/news/status` shows four
+    coloured health cards with bars, the overall pill, the funnel with its
+    biggest-drop sentence, Chinese reason bars, read-only control (mute table,
+    no buttons), the Strategy usage bar with counts only (never IDs), a
+    collapsed 技术指标, and no operator controls. Confirm the technical key/value
+    tables render as two-column grids rather than stacked `dl`s. Confirm about
+    two News rows remain scannable at 390px and at least four at desktop height
+    without horizontal overflow.

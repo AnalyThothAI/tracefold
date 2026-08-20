@@ -1,0 +1,108 @@
+@layer app.features {
+  /*
+   * What happened to this Event, one step per sentence. Each marker takes the stage's pipeline tone, and the
+   * `+Δ` beside a step's clock is the gap from the step before it — subtraction of two server timestamps, not
+   * a measurement the browser makes.
+   */
+  .news-timeline {
+    display: grid;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-timeline-step {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    gap: 0 0.8rem;
+    padding-bottom: 0.9rem;
+  }
+
+  .news-timeline-step[data-last] {
+    padding-bottom: 0;
+  }
+
+  .news-timeline-step::before {
+    position: absolute;
+    top: 1.05rem;
+    bottom: 0;
+    left: 0.5rem;
+    width: 1px;
+    background: var(--border-subtle);
+    content: "";
+  }
+
+  .news-timeline-step[data-last]::before {
+    display: none;
+  }
+
+  .news-timeline-marker {
+    width: 0.65rem;
+    height: 0.65rem;
+    margin: 0.35rem 0 0 0.2rem;
+    border-radius: 999px;
+    background: var(--news-tone);
+    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--news-tone) 16%, transparent);
+  }
+
+  .news-timeline-body {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+
+  .news-timeline-head {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+
+  .news-timeline-head b {
+    font-size: 0.8rem;
+    font-weight: 640;
+  }
+
+  .news-timeline-head time {
+    color: var(--text-muted);
+    font: 500 0.7rem/1.4 var(--font-mono);
+  }
+
+  .news-timeline-summary {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .news-timeline-toggle {
+    width: fit-content;
+    padding: 0.1rem 0;
+    border: 0;
+    background: none;
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    text-decoration: underline dotted;
+    text-underline-offset: 0.2em;
+  }
+
+  .news-timeline-toggle:hover {
+    color: var(--accent-primary);
+  }
+
+  /* The timeline's own container for a shared KeyValue; the primitive owns the pair layout, this owns the box. */
+  .news-timeline-fields {
+    margin-top: 0.3rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+  }
+
+  .news-timeline-delta {
+    color: var(--text-subtle);
+    font: 500 0.66rem/1.4 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}

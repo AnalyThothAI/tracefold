@@ -820,6 +820,9 @@ class NewsRepository:
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
+        # `where` / `params` accumulate the predicates every outcome group shares — the window and the reader's
+        # filters. The outcome group itself and the cursor are appended after `_feed_counts` has taken a copy,
+        # so the tab counts describe the whole filtered set rather than the page being served.
         params: list[Any] = []
         where = ["e.ingest_mode IN ('live', 'recovery')"]
         window_hours = int(hours) if hours else None
@@ -828,8 +831,6 @@ class NewsRepository:
             since_ms = int(now_ms if now_ms is not None else time.time() * 1000) - window_hours * 3600_000
             where.append("e.opened_at_ms >= %s")
             params.append(since_ms)
-        if outcome in _OUTCOME_GROUP_SQL:
-            where.append(_OUTCOME_GROUP_SQL[outcome])
         if family:
             where.append("e.family = %s")
             params.append(family)
@@ -848,6 +849,11 @@ class NewsRepository:
         if decision:
             where.append("t.final_decision = %s")
             params.append(decision)
+        # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
+        # Snapshot the clauses so the outcome group and cursor appended below cannot reach the count query.
+        counts = self._feed_counts(where=list(where), params=list(params)) if cursor_opened is None else None
+        if outcome in _OUTCOME_GROUP_SQL:
+            where.append(_OUTCOME_GROUP_SQL[outcome])
         if cursor_opened is not None:
             where.append("(e.opened_at_ms, e.event_id) < (%s, %s)")
             params.extend([cursor_opened, cursor_id])
@@ -890,6 +896,7 @@ class NewsRepository:
         return {
             "events": items,
             "next_cursor": next_cursor,
+            "counts": counts,
             "filters": {
                 "family": family,
                 "admission": admission,
@@ -903,6 +910,39 @@ class NewsRepository:
                 "hours": window_hours,
             },
         }
+
+    def _feed_counts(self, *, where: list[str], params: list[Any]) -> dict[str, int]:
+        """How the reader's current filter splits across the three outcome groups.
+
+        The three predicates partition the feed exactly (see `_OUTCOME_GROUP_SQL`), so one pass with FILTER
+        aggregates answers all four tabs. The joins mirror the feed query so a row counts here if and only if
+        it would be served there, but the lateral takes only the column the predicates read rather than the
+        whole verdict row.
+
+        This is an unbounded aggregate on a three-second poll: it costs one pass over the filtered set, which
+        is the last 24 h by default but the whole retention when the reader picks `hours=all`. Measured at
+        19 ms over the entire table at ~2k Events / 1.3 days of retention; re-measure before letting either
+        grow much, and cap the window here if it stops being free.
+        """
+        row = self.conn.execute(
+            f"""
+            SELECT count(*) AS total,
+                   count(*) FILTER (WHERE {_OUTCOME_GROUP_SQL["pushed"]}) AS pushed,
+                   count(*) FILTER (WHERE {_OUTCOME_GROUP_SQL["held"]}) AS held,
+                   count(*) FILTER (WHERE {_OUTCOME_GROUP_SQL["pending"]}) AS pending
+              FROM news_events e
+              JOIN news_items i ON i.item_id = e.leader_item_id
+              LEFT JOIN LATERAL (
+                SELECT v.final_decision FROM news_verdicts v
+                 WHERE v.event_id = e.event_id AND v.stage = 'triage'
+                 ORDER BY v.created_at_ms DESC LIMIT 1
+              ) t ON true
+              LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
+             WHERE {" AND ".join(where)}
+            """,
+            tuple(params),
+        ).fetchone()
+        return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
         card = self.event_card(event_id)

@@ -117,9 +117,23 @@ class NewsFeedFiltersData(ExactApiSchema):
     hours: int | None = None
 
 
+class NewsFeedCountsData(ExactApiSchema):
+    """How the request's filter and window split across the three outcome groups, for the feed's task tabs.
+
+    ``total`` is the sum of the other three: the groups partition the feed exactly.
+    """
+
+    total: int
+    pushed: int
+    held: int
+    pending: int
+
+
 class NewsFeedData(ExactApiSchema):
     events: list[NewsFeedEventData]
     next_cursor: str | None = None
+    # First page only — a paged request reuses the counts the first page already reported.
+    counts: NewsFeedCountsData | None = None
     filters: NewsFeedFiltersData
 
 
@@ -328,6 +342,7 @@ __all__ = [
     "NewsEventData",
     "NewsEventDetailData",
     "NewsEventMemberData",
+    "NewsFeedCountsData",
     "NewsFeedData",
     "NewsFeedEventData",
     "NewsFeedFiltersData",

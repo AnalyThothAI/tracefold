@@ -1,10 +1,11 @@
-import { formatNewsLocalTimestamp } from "./newsTime";
 import type {
   NewsFeedOutcome,
   NewsHealthLevel,
   NewsOutcomeKind,
   NewsTimelineStep,
-} from "./useNewsPage";
+} from "../api/newsQueries";
+
+import { formatNewsLocalTimestamp } from "./newsTime";
 
 /**
  * UI-only copy. Every business word (rules, admissions, error codes, event types, directions) arrives from the
@@ -108,11 +109,36 @@ const HEALTH_ITEM_TITLES = {
   delivery: "推送",
 } as const;
 
+/**
+ * The card's eyebrow names the pipeline stage in the vocabulary the workers, queues and logs already use, so a
+ * card lines up with the thing an operator would grep. The Chinese title beside it is the server's sentence.
+ */
+const HEALTH_ITEM_EYEBROWS = {
+  ingest: "Ingest",
+  broker: "Broker",
+  model: "Model",
+  delivery: "Delivery",
+} as const;
+
 export type HealthItemKey = keyof typeof HEALTH_ITEM_TITLES;
 export const HEALTH_ITEM_KEYS: readonly HealthItemKey[] = ["ingest", "broker", "model", "delivery"];
 
 export function healthItemTitle(key: HealthItemKey): string {
   return HEALTH_ITEM_TITLES[key];
+}
+
+export function healthItemEyebrow(key: HealthItemKey): string {
+  return HEALTH_ITEM_EYEBROWS[key];
+}
+
+/**
+ * How full the card's bar reads. The level is the server's; this only turns four ordered states into four
+ * comparable lengths so a screenful of cards can be scanned rather than read.
+ */
+const HEALTH_BAR_SHARE: Record<NewsHealthLevel, number> = { ok: 100, warn: 62, bad: 28, off: 0 };
+
+export function healthBarShare(level: NewsHealthLevel): number {
+  return HEALTH_BAR_SHARE[level] ?? 0;
 }
 
 const REASON_STAGE_TITLES: Record<string, string> = {
@@ -127,6 +153,19 @@ export function reasonStageLabel(stage: string): string {
   return REASON_STAGE_TITLES[stage] ?? stage;
 }
 
+/** Why an Event went where it went, in the pipeline's tone vocabulary — never red or green. */
+const REASON_STAGE_TONE: Record<string, Tone> = {
+  gate: "neutral",
+  drop: "neutral",
+  throttle: "caution",
+  push: "done",
+  degraded: "alert",
+};
+
+export function reasonStageTone(stage: string): Tone {
+  return REASON_STAGE_TONE[stage] ?? "neutral";
+}
+
 const TIMELINE_STAGE_TONE: Record<NewsTimelineStep["stage"], Tone> = {
   received: "neutral",
   gate: "neutral",
@@ -137,6 +176,15 @@ const TIMELINE_STAGE_TONE: Record<NewsTimelineStep["stage"], Tone> = {
 
 export function timelineStageTone(stage: NewsTimelineStep["stage"]): Tone {
   return TIMELINE_STAGE_TONE[stage] ?? "neutral";
+}
+
+/**
+ * End to end, from the first recorded step to the last. Two server timestamps subtracted — the console reports
+ * how long the pipeline took, it does not measure it.
+ */
+export function timelineEndToEnd(steps: NewsTimelineStep[]): string {
+  if (steps.length < 2) return "每一步一句话；展开可看原始字段";
+  return `端到端 ${optionalDuration(steps[steps.length - 1].at_ms - steps[0].at_ms)}`;
 }
 
 export function hoursLabel(hours: number | null): string {
@@ -191,6 +239,11 @@ export function displayAssets(grounded: readonly string[]): string[] {
   return Array.from(
     new Set(grounded.map((symbol) => symbol.replace(/^XYZ-/, "").toUpperCase())),
   ).slice(0, MAX_ASSET_CHIPS);
+}
+
+/** The CLI the operator would type to label this Event; the console copies it rather than writing it. */
+export function labelCommand(eventId: string, label: "good" | "bad" | "missed"): string {
+  return `tracefold news label ${eventId} --label ${label}`;
 }
 
 export function percent(numerator: number, denominator: number): string {

@@ -95,7 +95,7 @@ describe("frontend documentation contract", () => {
       expect(frontendDoc).toContain(term);
       expect(navigationTargets).toContain(to);
     }
-    expect(navigationTargets).toEqual(["/news"]);
+    expect(navigationTargets).toEqual(["/news", "/news/status"]);
     expect(navigationTargets).not.toContain("/");
     expect(frontendDoc).not.toMatch(/Token Radar|RadarPage|live-radar|features\/live/);
 

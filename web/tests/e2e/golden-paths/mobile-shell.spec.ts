@@ -20,7 +20,7 @@ test("mobile shell exposes News navigation around the News landing", async ({ pa
   await sidebarTrigger.click();
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(navigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
-  await expect(navigation.getByRole("link", { name: "News" })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "事件流" })).toBeVisible();
   await expect(navigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
   await page.keyboard.press("Escape");
 

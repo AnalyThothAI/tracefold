@@ -1,0 +1,49 @@
+@layer app.features {
+  /*
+   * One thresholded sentence about the pipeline, in the corner of a page the reader opened for something else.
+   * The server owns both the level and the words; this only picks the tone and, on the feed, makes it the door
+   * to the status route.
+   */
+  .news-health-pill {
+    display: inline-flex;
+    gap: 0.5rem;
+    align-items: center;
+    max-width: min(100%, 26rem);
+    min-height: 2rem;
+    padding: 0.3rem 0.8rem 0.3rem 0.65rem;
+    border: 1px solid var(--news-tone-border);
+    border-radius: 999px;
+    background: var(--news-tone-soft);
+    color: var(--text-primary);
+    text-decoration: none;
+  }
+
+  .news-health-pill b {
+    font-size: 0.76rem;
+    font-weight: 620;
+    white-space: nowrap;
+  }
+
+  .news-health-pill small {
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .news-health-pill-time {
+    color: var(--text-secondary);
+    font: 500 0.7rem/1 var(--font-mono);
+  }
+
+  a.news-health-pill:hover {
+    border-color: var(--news-tone);
+  }
+
+  .news-health-pill-chevron {
+    width: 0.75rem;
+    height: 0.75rem;
+    color: var(--text-subtle);
+  }
+}

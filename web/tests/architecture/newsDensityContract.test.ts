@@ -7,17 +7,24 @@ import { describe, expect, it } from "vitest";
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 /**
- * News console information model (issue #60): every Event shows one server-owned outcome, every reason is
- * Chinese copy that arrives from the API, and internal identifiers live behind a technical-details fold.
+ * News console information model (issues #60, #82): every Event shows one server-owned outcome, every reason
+ * is Chinese copy that arrives from the API, and internal identifiers live behind a technical-details fold.
  */
 describe("News console contract", () => {
-  it("renders exactly one outcome badge per Event row and clamps the headline", () => {
-    const row = readSource("src/features/news/NewsEventRow.tsx");
-    const rowCss = readSource("src/features/news/newsEventRow.css");
-    const chip = readSource("src/features/news/NewsDirectionChip.tsx");
+  it("tiers the row by outcome and clamps the headline", () => {
+    const row = readSource("src/features/news/ui/feed/NewsEventRow.tsx");
+    const rowCss = readSource("src/features/news/ui/feed/newsEventRow.css");
+    const chip = readSource("src/features/news/ui/chrome/NewsDirectionChip.tsx");
 
-    expect(row.match(/<NewsOutcomeBadge /g)).toHaveLength(1);
-    expect(row).toContain("event.outcome");
+    /*
+     * Roughly three quarters of a day's Events stop short of a card. A badge on each made a screenful of
+     * equals, so a held row steps back to its reason alone and only a row with an outcome keeps the badge
+     * (#82). `outcome` is still what decides, and it is still exactly one badge where there is one.
+     */
+    expect(row.match(/<NewsOutcomeBadge/g)).toHaveLength(1);
+    expect(row).toContain('const held = event.outcome.group === "held"');
+    expect(row).toMatch(/\{held \? null : \(\s*<NewsOutcomeBadge/);
+    expect(row).toContain("event.outcome.reason_zh");
     // Direction is a toned chip of its own so a scan separates 利多 from 利空; it still renders the
     // server's word, never a frontend translation.
     expect(row.match(/<NewsDirectionChip /g)).toHaveLength(1);
@@ -38,12 +45,17 @@ describe("News console contract", () => {
     expect(headlineRule).toContain("display: -webkit-box");
     expect(headlineRule).toContain("-webkit-line-clamp: 2");
     expect(cssRule(rowCss, ".news-event-original")).toContain("-webkit-line-clamp: 1");
+    // The row opens the Event through the headline link, not through a click handler on a non-interactive
+    // element, so the keyboard reaches it and the row keeps one accessible name.
+    expect(cssRule(rowCss, ".news-event-headline a::after")).toContain("position: absolute");
+    expect(row).not.toContain("onClick={(clickEvent)");
   });
 
   it("gets its business vocabulary from the server, not from a frontend enum table", () => {
-    const labels = readSource("src/features/news/newsLabels.ts");
-    const detail = readSource("src/features/news/NewsEventDetailPage.tsx");
-    const status = readSource("src/features/news/NewsStatusPage.tsx");
+    const labels = readSource("src/features/news/model/newsLabels.ts");
+    const detail = readSource("src/features/news/ui/detail/NewsEventDetailPage.tsx");
+    const timeline = readSource("src/features/news/ui/detail/NewsTimeline.tsx");
+    const status = readSource("src/features/news/ui/status/NewsStatusPage.tsx");
 
     // The only enum→copy maps left in the frontend are UI affordances (tabs, health levels, stage titles).
     for (const retired of [
@@ -57,7 +69,7 @@ describe("News console contract", () => {
     }
     expect(labels).toContain("outcomeTone");
     expect(labels).toContain("healthTone");
-    expect(detail).toContain("step.summary_zh");
+    expect(timeline).toContain("step.summary_zh");
     expect(detail).toContain("outcome");
     expect(status).toContain("reason.label_zh");
     expect(status).toContain("summary_zh");
@@ -65,20 +77,25 @@ describe("News console contract", () => {
   });
 
   it("keeps the case detail as conclusion → timeline → members/labels → folded technical details", () => {
-    const detail = readSource("src/features/news/NewsEventDetailPage.tsx");
-    const detailCss = readSource("src/features/news/newsDetail.css");
-    const feed = readSource("src/features/news/NewsPage.tsx");
+    const detail = readSource("src/features/news/ui/detail/NewsEventDetailPage.tsx");
+    const detailCss = readSource("src/features/news/ui/detail/newsDetail.css");
+    const feed = readSource("src/features/news/ui/feed/NewsFeedPage.tsx");
     const shellRule = cssRule(detailCss, ".news-panel.news-detail-shell");
 
-    expect(detail.match(/className="news-panel news-detail-shell"/g)).toHaveLength(1);
-    expect(detail).toContain('data-page-archetype="case"');
+    expect(detail.match(/className="news-detail-shell"/g)).toHaveLength(1);
+    expect(detail).toContain('archetype="case"');
     expect(detail).toContain("RouteBackLink");
-    expect(detail.indexOf("news-detail-hero")).toBeLessThan(detail.indexOf("news-timeline"));
-    expect(detail.indexOf("news-timeline")).toBeLessThan(detail.indexOf("news-technical"));
-    expect(detail).toMatch(/<details className="news-technical">/);
+    // Reading order in the rendered document, not import order at the top of the file.
+    expect(detail.indexOf("news-detail-hero")).toBeLessThan(detail.indexOf("<NewsTimeline "));
+    expect(detail.indexOf("<NewsTimeline ")).toBeLessThan(detail.indexOf("<TechnicalDetails "));
+    expect(detail).toMatch(/<NewsTechnical summary="技术详情/);
     expect(feed).not.toContain("news-detail-shell");
     expect(shellRule).toContain("grid-template-rows: none");
     expect(shellRule).toContain("grid-auto-rows: max-content");
+
+    // Labelling is the learning plane and the News API is read-only: the console hands over the CLI command.
+    expect(detail).toContain("labelCommand(eventId, action.key)");
+    expect(detail).not.toMatch(/useMutation|postApi/);
     for (const retired of [
       "src/features/news/NewsVerdictPanel.tsx",
       "src/features/news/newsVerdict.css",
@@ -86,35 +103,41 @@ describe("News console contract", () => {
       "src/features/news/newsAudit.css",
       "src/features/news/newsOperations.css",
       "src/features/news/NewsOperationsPage.tsx",
+      "src/features/news/NewsSectionTabs.tsx",
     ]) {
       expect(existsSync(join(webRoot, retired)), `${retired} must stay deleted`).toBe(false);
     }
   });
 
-  it("gives the feed task tabs, a time window, and a compact scan surface", () => {
-    const page = readSource("src/features/news/NewsPage.tsx");
-    const chromeCss = readSource("src/features/news/news.css");
+  it("gives the feed task tabs with server counts, a time window, and a compact scan surface", () => {
+    const page = readSource("src/features/news/ui/feed/NewsFeedPage.tsx");
+    const toolbar = readSource("src/features/news/ui/feed/NewsFeedToolbar.tsx");
+    const toolbarCss = readSource("src/features/news/ui/feed/newsFeedToolbar.css");
 
-    expect(page).toContain('data-feed-density="compact"');
-    expect(page).toContain('data-page-archetype="scan"');
-    expect(page).toMatch(/role="tablist"/);
-    expect(page).toContain("NEWS_FEED_OUTCOMES");
-    expect(page).toContain("NEWS_FEED_HOURS");
-    expect(page).toMatch(
-      /className="news-feed-toolbar"[\s\S]*?<NewsSectionTabs[\s\S]*?<OutcomeTabs[\s\S]*?<NewsFeedControls/,
-    );
-    expect(cssRule(chromeCss, ".news-feed-toolbar")).toContain("justify-content: space-between");
-    expect(readSource("src/features/news/newsFeed.css").split(/\r?\n/).length).toBeLessThanOrEqual(
-      300,
-    );
-    expect(
-      readSource("src/features/news/newsEventRow.css").split(/\r?\n/).length,
-    ).toBeLessThanOrEqual(400);
+    expect(page).toContain('archetype="scan"');
+    expect(page).toMatch(/<NewsFunnelCard[\s\S]*?<NewsFeedToolbar[\s\S]*?<NewsActiveFilterChips/);
+    expect(toolbar).toMatch(/role="tablist"/);
+    expect(toolbar).toContain("NEWS_FEED_OUTCOMES");
+    expect(toolbar).toContain("NEWS_FEED_HOURS");
+    // The counts are the server's split of the current filter — never derived in the browser.
+    expect(toolbar).toContain("counts[value]");
+    expect(page).toContain("firstPage?.counts");
+    expect(cssRule(toolbarCss, ".news-feed-toolbar")).toContain("justify-content: space-between");
+    expect(cssRule(toolbarCss, ".news-feed-toolbar")).toContain("position: sticky");
+    for (const [path, budget] of [
+      ["src/features/news/ui/feed/newsFeed.css", 300],
+      ["src/features/news/ui/feed/newsEventRow.css", 400],
+      ["src/features/news/ui/feed/newsFeedToolbar.css", 300],
+    ] as const) {
+      expect(readSource(path).split(/\r?\n/).length, `${path} is over budget`).toBeLessThanOrEqual(
+        budget,
+      );
+    }
   });
 
   it("stacks the status page's health cards and grids without a mobile horizontal scroller", () => {
-    const statusCss = readSource("src/features/news/newsStatus.css");
-    const statusPage = readSource("src/features/news/NewsStatusPage.tsx");
+    const statusCss = readSource("src/features/news/ui/status/newsStatus.css");
+    const statusPage = readSource("src/features/news/ui/status/NewsStatusPage.tsx");
 
     expect(cssRule(statusCss, ".news-health-grid")).toContain(
       "grid-template-columns: repeat(4, minmax(0, 1fr))",
@@ -127,6 +150,11 @@ describe("News console contract", () => {
     expect(statusPage).toContain("funnel_24h");
     expect(statusPage).toContain("reasons_24h");
     expect(statusPage).not.toMatch(/news-source-|newsSources|Brief/);
+    // Pause and mute are written by `tracefold news control`; the browser is not a second writer.
+    expect(statusPage).not.toMatch(/暂停推送|解除|useMutation|postApi/);
+    // Strategy IDs are private account configuration: counts only, never the values.
+    expect(statusPage).toContain("configured_strategy_ids ?? []).length");
+    expect(statusPage).toMatch(/Counts only/);
   });
 });
 

@@ -15,8 +15,17 @@ export type MockApiOptions = {
   failNonBootstrap?: boolean;
 };
 
-export async function installMockApi(page: Page, options: MockApiOptions = {}) {
+export type MockFeedControl = {
+  /** Put a newer Event at the top of the next poll, the way a live feed does. */
+  prependEvent: (eventId: string) => void;
+};
+
+export async function installMockApi(
+  page: Page,
+  options: MockApiOptions = {},
+): Promise<MockFeedControl> {
   unhandledApiRequests.set(page, []);
+  const prepended: string[] = [];
 
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -33,7 +42,7 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
 
     if (path === "/api/bootstrap") return fulfill(route, { ws_token: "secret" });
     if (path === "/api/status") return fulfill(route, statusData());
-    if (path === "/api/news/feed") return fulfill(route, newsFeedData());
+    if (path === "/api/news/feed") return fulfill(route, newsFeedData(prepended));
     if (path === "/api/news/status") return fulfill(route, newsStatusFixture());
     if (path.startsWith("/api/news/events/")) return fulfill(route, newsEventDetailData(path));
     recordUnhandledApiRequest(page, url);
@@ -43,6 +52,8 @@ export async function installMockApi(page: Page, options: MockApiOptions = {}) {
       body: JSON.stringify({ ok: false, error: `unhandled ${path}` }),
     });
   });
+
+  return { prependEvent: (eventId: string) => prepended.push(eventId) };
 }
 
 export function getUnhandledApiRequests(page: Page): string[] {
@@ -55,23 +66,31 @@ function recordUnhandledApiRequest(page: Page, url: URL) {
   unhandledApiRequests.set(page, requests);
 }
 
-function newsFeedData() {
+function newsFeedData(prepended: string[] = []) {
   const event = newsFeedEventFixture({
     event_id: "evt-global-policy",
     leader_description:
       "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
     leader_title: "Macro desk flags liquidity rotation",
   });
+  const row = (eventId: string, title: string) => ({
+    ...event,
+    title_zh: null,
+    // No Chinese headline on the mock rows, so the wire line is the row headline (distinct per row).
+    triage: event.triage ? { ...event.triage, headline_zh: null, title_zh: null } : null,
+    event_id: eventId,
+    leader_title: title,
+  });
   return {
     ...newsFeedFixture(),
-    events: Array.from({ length: 5 }, (_, index) => ({
-      ...event,
-      title_zh: null,
-      // No Chinese headline on the mock rows, so the wire line is the row headline (distinct per row).
-      triage: event.triage ? { ...event.triage, headline_zh: null, title_zh: null } : null,
-      event_id: index === 0 ? event.event_id : `evt-global-policy-${index + 1}`,
-      leader_title: index === 0 ? event.leader_title : `Global policy update ${index + 1}`,
-    })),
+    events: [
+      ...prepended.map((eventId) => row(eventId, `Breaking ${eventId}`)),
+      ...Array.from({ length: 5 }, (_, index) =>
+        index === 0
+          ? row(event.event_id, event.leader_title)
+          : row(`evt-global-policy-${index + 1}`, `Global policy update ${index + 1}`),
+      ),
+    ],
   };
 }
 

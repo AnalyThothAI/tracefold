@@ -82,9 +82,13 @@ describe("Tracefold design-system hard cut", () => {
     expect(sharedUiCss).not.toMatch(/\.research-|\.token-case|\.case-file/);
   });
 
-  it("exposes the single primary research destination with no nested tree", () => {
+  it("exposes the two News destinations with no nested tree", () => {
     const items = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
-    expect(items.map((item) => item.to)).toEqual(["/news"]);
+    // News is the whole product (#68), so its feed and its pipeline status are the navigation (#82). Event
+    // detail is not a destination of its own — it highlights the feed it came from.
+    expect(items.map((item) => item.to)).toEqual(["/news", "/news/status"]);
+    expect(items.find((item) => item.to === "/news")?.isActive("/news/events/ev-1")).toBe(true);
+    expect(items.find((item) => item.to === "/news")?.isActive("/news/status")).toBe(false);
     expect(items.flatMap((item) => item.children ?? [])).toEqual([]);
 
     const sidebar = readSource("features/cockpit/ui/AppSidebar.tsx");
@@ -107,17 +111,25 @@ describe("Tracefold design-system hard cut", () => {
   });
 
   it("assigns every supported route family to a page archetype", () => {
+    // The archetype is declared where the surface is composed and applied by the shared shell, which is the
+    // only place `data-page-archetype` is written.
     const owners = {
-      case: ["features/news/NewsEventDetailPage.tsx"],
-      scan: ["features/news/NewsPage.tsx", "features/news/NewsStatusPage.tsx"],
+      case: ["features/news/ui/detail/NewsEventDetailPage.tsx"],
+      scan: [
+        "features/news/ui/feed/NewsFeedPage.tsx",
+        "features/news/ui/status/NewsStatusPage.tsx",
+      ],
     } as const;
 
     for (const [archetype, paths] of Object.entries(owners)) {
       for (const path of paths) {
-        expect(readSource(path)).toContain(`data-page-archetype="${archetype}"`);
+        expect(readSource(path)).toContain(`archetype="${archetype}"`);
       }
     }
-    expect(readSource("features/news/NewsPage.tsx")).not.toContain('data-page-archetype="case"');
+    expect(readSource("features/news/ui/feed/NewsFeedPage.tsx")).not.toContain('archetype="case"');
+    expect(readSource("features/news/ui/chrome/NewsChrome.tsx")).toContain(
+      "data-page-archetype={archetype}",
+    );
   });
 
   it("keeps shell geometry centralized and route content scrollable", () => {
