@@ -229,7 +229,7 @@ def _normalization(event: dict[str, Any], instruments: Any) -> list[dict[str, An
     """
 
     bases = {str(asset["base_symbol"]) for asset in event.get("assets") or []}
-    groups = instruments.aliases_by_base(bases, sources=("operator",))
+    groups = instruments.aliases_by_base(bases, sources=("seed",))
     return [group for _, group in sorted(groups.items()) if len(group.get("aliases") or []) > 1]
 
 

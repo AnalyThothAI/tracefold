@@ -1441,12 +1441,19 @@
       },
       "NewsInstrumentUniverse": {
         "additionalProperties": false,
-        "description": "#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.",
+        "description": "#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.\n\n`dangling_aliases` counts seed aliases pointing at a symbol no venue lists \u2014 each one is a provider tag that\nsilently resolves to nothing, which is how `1810.HK -> XIAOMI` went unnoticed for a week (#89). It should be 0.",
         "properties": {
           "base_symbols": {
             "default": 0,
             "title": "Base Symbols",
             "type": "integer"
+          },
+          "by_class": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Class",
+            "type": "object"
           },
           "by_venue": {
             "additionalProperties": {
@@ -1454,6 +1461,11 @@
             },
             "title": "By Venue",
             "type": "object"
+          },
+          "dangling_aliases": {
+            "default": 0,
+            "title": "Dangling Aliases",
+            "type": "integer"
           },
           "delisted": {
             "default": 0,

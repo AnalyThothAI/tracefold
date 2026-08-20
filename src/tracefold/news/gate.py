@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from .instruments import NON_CRYPTO_CLASSES
 from .models import Admission, AssetClass, EngineType
 
 GATE_LEXICON_VERSION: Final = "news_gate_lexicon_v2"
@@ -72,8 +73,9 @@ class GateInput:
     watchlist_symbols: frozenset[str] = frozenset()
     raw_first_line: str = ""
     suppress_low_signal: bool = False
-    # #75: the instrument universe, when a snapshot has landed. None disables the existence check entirely.
-    tradeable_symbols: frozenset[str] | None = None
+    # #89: symbol -> instrument_class from the venue snapshot (aliases included). None falls back to the `XYZ-`
+    # prefix heuristic, which is what every pure caller and a worker whose first snapshot has not landed gets.
+    instrument_classes: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +110,6 @@ def grounded_assets(
     *,
     raw_first_line: str = "",
     strong_only: bool = False,
-    tradeable_symbols: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     """Provider coins the pipeline treats as grounded: grade B+/A/A+ tags and any literal ``$TICKER`` cashtag.
 
@@ -118,10 +119,10 @@ def grounded_assets(
     primary; ``decide()`` only trusts primaries that are also grounded. ``strong_only`` keeps A/A+ tags and
     cashtags — the ones allowed to open a preliminary storyline before Triage has spoken.
 
-    ``tradeable_symbols`` (#75) is the instrument universe: when supplied, a tag must also name something listed on
-    a venue. It removes tags that exist nowhere (``CCXI``, ``CHL``, ``CARDS``, ``MAYA``) but deliberately does not
-    replace the collision stop-list above — most of those symbols *are* listed. ``None`` disables the check, which
-    is how every pure caller and a worker whose first snapshot has not landed yet behaves.
+    Existence on a venue is deliberately *not* a condition. #75 shipped that filter behind a flag and a dry-run
+    killed it: of a full week's grounding tags, every one the provider had mapped to a venue itself (the ``XYZ-``
+    form) was already listed, and the tags it would have removed were real equities with no crypto perp — Telix's
+    half-year results, UWM's class action. The universe labels a tag (#89); it does not judge it.
     """
 
     text = f"{title} {raw_first_line}".strip()
@@ -133,8 +134,6 @@ def grounded_assets(
         if not symbol:
             continue
         base = _base_symbol(symbol)
-        if tradeable_symbols is not None and base not in tradeable_symbols and symbol.upper() not in tradeable_symbols:
-            continue
         if base == "CL":
             if energy:
                 out.append(symbol)
@@ -147,7 +146,24 @@ def grounded_assets(
     return tuple(sorted(set(out)))
 
 
-def asset_class_of(grounded: Sequence[str], macro: bool) -> AssetClass:
+def asset_class_of(
+    grounded: Sequence[str], macro: bool, *, instrument_classes: Mapping[str, str] | None = None
+) -> AssetClass:
+    """Coin, stock, macro, or nothing — read from the instrument universe when it is available.
+
+    The provider emits an ``XYZ-`` twin whenever it has mapped a tag to Hyperliquid's equity DEX itself, and that
+    twin is a perfect signal when it comes. It just does not always come: a week of live traffic had 47 events
+    whose only tag was a bare ``MRNA`` / ``CIEN`` / ``PANW``, read as crypto while the universe held them as
+    equities all along (#89). A symbol the universe does not know at all keeps the old reading — the equities with
+    no crypto perp are #91's subject, not something this function can invent.
+    """
+
+    if instrument_classes:
+        seen = {instrument_classes.get(_base_symbol(s)) for s in grounded}
+        if seen & NON_CRYPTO_CLASSES:
+            return "equity_or_commodity"
+        if "crypto" in seen:
+            return "crypto"
     if any(s.startswith("XYZ-") for s in grounded):
         return "equity_or_commodity"
     if grounded:
@@ -164,16 +180,8 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     energy = bool(ENERGY_LEXICON.search(text))
     pr_strong = bool(PR_TEMPLATE_STRONG_LEXICON.search(text))
     pr_template = pr_strong or bool(PR_TEMPLATE_LEXICON.search(text))
-    grounded = grounded_assets(
-        title, inp.coins, raw_first_line=inp.raw_first_line, tradeable_symbols=inp.tradeable_symbols
-    )
-    strong = grounded_assets(
-        title,
-        inp.coins,
-        raw_first_line=inp.raw_first_line,
-        strong_only=True,
-        tradeable_symbols=inp.tradeable_symbols,
-    )
+    grounded = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line)
+    strong = grounded_assets(title, inp.coins, raw_first_line=inp.raw_first_line, strong_only=True)
     score = float(inp.provider_score) if inp.provider_score is not None else 0.0
     watch_hits = tuple(sorted(s for s in grounded if _base_symbol(s) in inp.watchlist_symbols))
     reasons: list[str] = []
@@ -206,7 +214,7 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     return GateVerdict(
         admission=admission,
         priority="high" if high else "normal",
-        asset_class=asset_class_of(grounded, macro),
+        asset_class=asset_class_of(grounded, macro, instrument_classes=inp.instrument_classes),
         grounded_assets=grounded,
         macro_lexicon=macro,
         energy_lexicon=energy,

@@ -4,6 +4,12 @@ The USD-M futures catalogue is the interesting half — besides crypto it carrie
 (``UNITREEUSDT``, ``OPENAIUSDT``, ``TENCENTUSDT``, ``CLUSDT``, ``MRVLUSDT``). Querying spot alone understates
 coverage by roughly a factor of three, which is exactly the mistake that made an earlier review conclude Binance
 could price only a third of our symbols.
+
+Binance labels those contracts itself: ``contractType: TRADIFI_PERPETUAL`` plus an ``underlyingType`` of
+``EQUITY`` / ``CN_EQUITY`` / ``HK_EQUITY`` / ``KR_EQUITY`` / ``COMMODITY`` / ``PREMARKET``. Dropping that field and
+letting the venue default decide put 81 of the 169 TradFi contracts (JPM, GS, KO, SPY, TENCENT, HK1810, XAU…) into
+the universe as ``crypto`` (#89). Translating the venue's vocabulary into ours is the adapter's job — the domain
+side (``classify()``) never learns Binance's field names.
 """
 
 from __future__ import annotations
@@ -13,7 +19,7 @@ from typing import Any, Final
 
 import httpx
 
-from tracefold.news.instruments import Instrument, classify, is_valid_symbol, strip_quote_suffix
+from tracefold.news.instruments import Instrument, InstrumentClass, classify, is_valid_symbol, strip_quote_suffix
 
 from .errors import VenueExpectedError
 
@@ -23,6 +29,16 @@ _TIMEOUT_SECONDS: Final = 20.0
 # exchangeInfo is a large document (spot is ~17 MB); cap it so a pathological response cannot exhaust memory.
 _MAX_BYTES: Final = 48 * 1024 * 1024
 _SPOT_QUOTES: Final = frozenset({"USDT", "USDC", "FDUSD"})
+# `underlyingType` values that are unambiguously not crypto. `COIN` and `INDEX` are deliberately absent: Binance's
+# only two INDEX perps are crypto gauges (`BTCDOMUSDT`, `ALLUSDT`), so both fall through to `classify()`.
+_DECLARED_CLASS: Final[Mapping[str, InstrumentClass]] = {
+    "EQUITY": "equity",
+    "CN_EQUITY": "equity",
+    "HK_EQUITY": "equity",
+    "KR_EQUITY": "equity",
+    "COMMODITY": "commodity",
+    "PREMARKET": "pre_ipo",
+}
 
 
 async def fetch_binance_instruments(
@@ -63,18 +79,27 @@ def _parse(payload: Mapping[str, Any], *, venue: str, quote_filter: frozenset[st
         if not venue_symbol or not is_valid_symbol(base) or venue_symbol in seen:
             continue
         seen.add(venue_symbol)
+        declared = _declared_class(entry)
         out.append(
             Instrument(
                 venue=venue,
                 venue_symbol=venue_symbol,
                 base_symbol=base,
-                instrument_class=classify(base, venue=venue),
+                instrument_class=declared or classify(base, venue=venue),
                 quote_asset=quote or None,
             )
         )
     if not out:
         raise VenueExpectedError("venue_payload_empty", venue=venue)
     return tuple(out)
+
+
+def _declared_class(entry: Mapping[str, Any]) -> InstrumentClass | None:
+    """What Binance says this contract is, when it says anything we understand."""
+
+    if str(entry.get("contractType") or "").upper() != "TRADIFI_PERPETUAL":
+        return None
+    return _DECLARED_CLASS.get(str(entry.get("underlyingType") or "").upper())
 
 
 async def _get(client: httpx.AsyncClient, url: str, *, venue: str) -> Mapping[str, Any]:

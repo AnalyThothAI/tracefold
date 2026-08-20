@@ -285,9 +285,6 @@ class NewsGateSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     suppress_low_signal: bool = False
-    # #75: require a provider coin tag to also name a listed instrument before it counts as grounded. Defaults off
-    # so the first deploy only collects the universe; turn on after a snapshot has landed and been eyeballed.
-    require_tradeable_assets: bool = False
 
 
 class NewsVenuesSettings(BaseModel):
@@ -613,7 +610,6 @@ news:
     judged_days: 365
   gate:
     suppress_low_signal: false
-    require_tradeable_assets: false
   venues:
     enabled: true
     binance: true

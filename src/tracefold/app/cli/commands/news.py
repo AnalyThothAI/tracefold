@@ -121,21 +121,19 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
         if not instruments:
             return 1, {"ok": False, "error": "news_venue_snapshot_empty", "venues": errors}
         with repositories(settings) as repos, repos.transaction():
-            repos.instruments.seed_aliases(now_ms=stamp)
+            seeds = repos.instruments.reconcile_seed_aliases(now_ms=stamp)
             result = repos.instruments.apply_snapshot(instruments, now_ms=stamp)
-            aliases = repos.instruments.learn_aliases_from_universe(now_ms=stamp)
-        reportable = result.reportable
+            learned = repos.instruments.learn_aliases_from_universe(now_ms=stamp)
+            dangling = repos.instruments.dangling_seed_aliases()
         return 0, {
             "ok": True,
             "data": {
                 "total": result.total,
-                "seeded_venues": list(result.seeded_venues),
-                "listed": [f"{i.venue}:{i.venue_symbol}" for i in reportable.listed[:100]],
-                "delisted": [f"{i.venue}:{i.venue_symbol}" for i in reportable.delisted[:100]],
-                "listed_count": len(reportable.listed),
-                "delisted_count": len(reportable.delisted),
-                "unchanged": reportable.unchanged,
-                "aliases_learned": aliases,
+                "venues": list(result.venues),
+                "delisted": result.delisted,
+                "aliases_seeded": seeds,
+                "aliases_learned": learned,
+                "dangling_aliases": [f"{r['alias']}->{r['base_symbol']}" for r in dangling],
                 "venue_errors": errors,
             },
         }
@@ -145,10 +143,11 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
     with repositories(settings) as repos:
         if action == "summary":
             return 0, {"ok": True, "data": repos.instruments.universe_summary()}
-        if action == "listings":
-            since = stamp - int(args.hours) * 3600_000
-            rows = repos.instruments.recent_listings(since_ms=since, limit=int(args.limit))
-            return 0, {"ok": True, "data": {"hours": int(args.hours), "listings": rows}}
+        if action == "unmatched":
+            days = int(args.days)
+            rows = repos.instruments.unmatched_provider_tags(since_ms=stamp - days * 86_400_000, limit=int(args.limit))
+            dangling = list(repos.instruments.dangling_seed_aliases())
+            return 0, {"ok": True, "data": {"days": days, "tags": rows, "dangling_aliases": dangling}}
         symbol = str(getattr(args, "symbol", "") or "").strip()
         if not symbol:
             return 1, {"ok": False, "error": "news_instruments_symbol_required"}
@@ -364,9 +363,21 @@ def _write_json(path: str, payload: Mapping[str, Any]) -> None:
 
 
 def _handle_replay(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repositories import repositories
     from tracefold.news.eval.replay import replay_hits
 
     settings = load_settings(require_ws_token=False)
+    # The Gate reads the instrument universe (#89), so a replay without it measures the fallback, not the deployed
+    # behaviour. The database stays optional — this command is also the offline tuning tool — but never silently:
+    # `instruments_error` says why the map is missing.
+    classes: Mapping[str, str] | None = None
+    instruments_error: str | None = None
+    if not args.no_instruments:
+        try:
+            with repositories(settings) as repos:
+                classes = repos.instruments.instrument_classes() or None
+        except Exception as exc:  # a replay must not need a database to run
+            instruments_error = type(exc).__name__
     with open(args.path, encoding="utf-8") as fh:
         raw = json.load(fh)
     hits: list[Mapping[str, Any]] = []
@@ -382,7 +393,10 @@ def _handle_replay(args: Namespace) -> tuple[int, dict[str, Any]]:
         suppress_low_signal=(
             settings.news.gate.suppress_low_signal if args.gate_policy == "config" else args.gate_policy == "strict"
         ),
+        instrument_classes=classes,
     )
+    if instruments_error:
+        report["instruments_error"] = instruments_error
     return 0, {"ok": True, "data": report}
 
 

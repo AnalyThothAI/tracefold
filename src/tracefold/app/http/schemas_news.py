@@ -340,7 +340,11 @@ class NewsReasonCountData(ExactApiSchema):
 
 
 class NewsInstrumentUniverse(ExactApiSchema):
-    """#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands."""
+    """#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.
+
+    `dangling_aliases` counts seed aliases pointing at a symbol no venue lists — each one is a provider tag that
+    silently resolves to nothing, which is how `1810.HK -> XIAOMI` went unnoticed for a week (#89). It should be 0.
+    """
 
     trading: int = 0
     delisted: int = 0
@@ -348,6 +352,8 @@ class NewsInstrumentUniverse(ExactApiSchema):
     venues: int = 0
     last_snapshot_ms: int | None = None
     by_venue: dict[str, int] = Field(default_factory=dict)
+    by_class: dict[str, int] = Field(default_factory=dict)
+    dangling_aliases: int = 0
 
 
 class NewsStatusData(ExactApiSchema):

@@ -50,14 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
     news_control.add_argument("--key", default="", help="theme name or symbol for mute/unmute")
     news_control.add_argument("--ttl-minutes", type=_positive_int, default=360, help="mute duration")
     news_instruments = news_subcommands.add_parser(
-        "instruments", help="tradeable instrument universe: snapshot the venues, or inspect what is stored"
+        "instruments", help="instrument universe: snapshot the venues, or inspect what is stored"
     )
     news_instruments.add_argument(
-        "action", choices=("snapshot", "summary", "listings", "resolve"), nargs="?", default="summary"
+        "action", choices=("snapshot", "summary", "resolve", "unmatched"), nargs="?", default="summary"
     )
     news_instruments.add_argument("--symbol", default="", help="symbol to resolve (action=resolve)")
-    news_instruments.add_argument("--hours", type=_positive_int, default=168, help="look-back (action=listings)")
-    news_instruments.add_argument("--limit", type=_positive_int, default=50, help="max rows (action=listings)")
+    news_instruments.add_argument("--days", type=_positive_int, default=7, help="look-back (action=unmatched)")
+    news_instruments.add_argument("--limit", type=_positive_int, default=50, help="max rows (action=unmatched)")
     news_label = news_subcommands.add_parser("label", help="record an operator label for one Event (learning plane)")
     news_label.add_argument(
         "event_id",
@@ -153,6 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("config", "open", "strict"),
         default="config",
         help="Gate low-signal switch: config = news.gate.suppress_low_signal, open = off, strict = on",
+    )
+    news_replay.add_argument(
+        "--no-instruments",
+        action="store_true",
+        help="replay without the instrument universe (offline); the Gate then guesses asset_class from XYZ- tags",
     )
     news_why = news_subcommands.add_parser("why", help="print one Event's chain: item, gate, triage, decide, delivery")
     news_why.add_argument("event_id")

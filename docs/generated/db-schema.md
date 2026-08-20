@@ -151,7 +151,6 @@
 | `instrument_class` | `TEXT` | False | `'unknown'::text` |
 | `quote_asset` | `TEXT` | True | `None` |
 | `status` | `TEXT` | False | `'trading'::text` |
-| `first_seen_ms` | `BIGINT` | False | `None` |
 | `last_seen_ms` | `BIGINT` | False | `None` |
 
 ## `news_opennews_incidents`

@@ -213,7 +213,8 @@ surface is exactly three read-only routes:
   `source`, label payload, created time), and `normalization[]` — the alias
   groups this Event's assets fall into (`base_symbol`, every `alias` that
   resolves into it including the base itself, and the alias `sources`). Only
-  operator-owned aliases count: the venue-derived rows (`XYZ-{base}`,
+  the code-owned seed aliases count (`source = 'seed'`, reconciled from
+  `ALIAS_SEEDS` on every snapshot): the venue-derived rows (`XYZ-{base}`,
   `dex:SYMBOL`) are mechanical and would fire the block on every commodity
   Event. Only groups that actually collapse more than one name are sent, so the surface
   explains a surprise (SKHY / SKHX / SKHYNIX share one storyline bucket)
