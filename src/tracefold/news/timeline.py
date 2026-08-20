@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .models import display_title
 from .outcome import (
     Outcome,
     admission_zh,
@@ -167,7 +168,7 @@ def event_timeline(
                     "confidence": verdict.get("confidence"),
                     "assets": verdict.get("assets"),
                     "headline_zh": verdict.get("headline_zh"),
-                    "title_zh": verdict.get("title_zh"),
+                    "title_zh": display_title(verdict),
                     "why_zh": verdict.get("why_zh"),
                     "audience": verdict.get("audience"),
                     "prompt_version": latest.get("prompt_version"),

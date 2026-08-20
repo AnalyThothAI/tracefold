@@ -380,7 +380,12 @@ prompt is English (instructions) and every text field the verdict returns is
 Chinese: `headline_zh` (the card header — a complete headline that keeps the
 decisive fact, not a stub), `why_zh` (the one card sentence adding what the
 headline does not say), a
-console-only `title_zh` (the faithful Chinese title), and an `audience`
+console-only `title_zh` (the full Chinese title; empty means "same as
+`headline_zh`" — prompt v9 asks for the sentinel because 85% of a live day's
+verdicts repeated the headline verbatim there, ~13% of all output tokens, and
+`models.display_title` fills it in for every console and API surface; the
+Feishu card is the one deliberate exception, where an empty value has to stay
+empty so the header can fall through to the wire title), and an `audience`
 (crypto / us_equity / macro / none). The verdict also carries `novelty`
 (`new_fact` / `progression` / `restatement`, judged against the told ledger)
 and `restates` (the ledger index a restatement points at; -1 otherwise) —
@@ -388,7 +393,7 @@ the reader-facing memory Triage has (issue #61): dedup is byte/word-level,
 novelty is the semantic last line against the same fact told again from
 another outlet or under another storyline key. Magnitude and `actionable`
 are calibrated in the prompt (its magnitude scale, the `actionable` definition
-and the classification examples), never in code; prompt v8 files a listed
+and the classification examples), never in code; prompt v9 files a listed
 company's or token issuer's own product update at magnitude 2 and defines
 `actionable` because the `model_push_actionable` branch of `decide()` requires
 it (the other push paths do not check it). `decide()` owns the final
