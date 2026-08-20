@@ -861,6 +861,86 @@ def test_gate_expectations_over_the_recall_corpus() -> None:
     assert report["counts"].get("admission:suppressed_pr_template", 0) >= 8
 
 
+def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -> None:
+    """#100: the fallback used to take *any* grounded tag, so OKX's listing notices (every one of them tagged
+    OKB) all landed in `asset:OKB`, and a VeChain upgrade vote landed in `asset:SKHY`. 20% of a live day's
+    asset-keyed cards sat in a bucket that was not about them."""
+
+    # The model named the subject; the provider only tagged the venue's own token.
+    assert (
+        final_storyline_key(
+            title="Johnson & Johnson ($JNJx) Found in OKX",
+            headline_zh="强生（$JNJx）出现在 OKX",
+            scope="single_name",
+            verdict_primaries=["JNJ"],
+            grounded_assets=["OKB"],
+            family="general",
+        )
+        == "asset:JNJ"
+    )
+    # The model named nothing and the tag is not what the text is about: the family bucket, not `asset:BTC`.
+    assert (
+        final_storyline_key(
+            title="Poland scrambles jets in response to Russian strikes on Ukraine",
+            headline_zh="波兰启动预防性军机行动",
+            scope="macro",
+            verdict_primaries=[],
+            grounded_assets=["BTC"],
+            family="general",
+        )
+        == "macro:general"
+    )
+    # The model named nothing but the text names the tag as its own token: still that asset's storyline.
+    assert (
+        final_storyline_key(
+            title="OKB burn completed",
+            headline_zh="OKB 完成销毁",
+            scope="macro",
+            verdict_primaries=[],
+            grounded_assets=["OKB"],
+            family="general",
+        )
+        == "asset:OKB"
+    )
+    # A full-token match only: a tag that merely prefixes a longer word is not evidence.
+    assert (
+        final_storyline_key(
+            title="Elon Musk sells another stake",
+            headline_zh="马斯克再度减持",
+            scope="macro",
+            verdict_primaries=[],
+            grounded_assets=["MU"],
+            family="general",
+        )
+        == "macro:general"
+    )
+    # A degraded verdict has no `assets` by construction, so "named nothing" says nothing: keep the old fallback.
+    assert (
+        final_storyline_key(
+            title="NVIDIA to invest $100bn in OpenAI data centre",
+            headline_zh="NVIDIA 投资 OpenAI",
+            scope="macro",
+            verdict_primaries=[],
+            grounded_assets=["NVDA"],
+            family="general",
+            degraded=True,
+        )
+        == "asset:NVDA"
+    )
+    # A grounded primary still wins outright, and a theme still beats both fallbacks.
+    assert (
+        final_storyline_key(
+            title="Iran halts oil exports",
+            headline_zh="伊朗停止石油出口",
+            scope="macro",
+            verdict_primaries=["XOM"],
+            grounded_assets=["XOM"],
+            family="general",
+        )
+        == "theme:mideast_energy"
+    )
+
+
 def _fresh(**seen: object) -> StorylineStatus:
     """A storyline nobody has pushed on yet — exactly what a provider batch fanning out across N keys looks like,
     and exactly what the v5 count throttle could never see."""

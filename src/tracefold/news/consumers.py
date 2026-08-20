@@ -831,6 +831,7 @@ class TriageConsumer:
                 grounded_assets=facts.grounded_assets,
                 family=str(card.get("family") or "general"),
                 aliases=self._aliases,
+                degraded=degraded,
             )
             settle = _TriageSettle(
                 event_id=event_id,
