@@ -51,6 +51,9 @@ _SYMBOL_OK = re.compile(r"^[^\s\x00-\x1f]{1,32}$")
 # Every value must be a symbol a venue actually lists, or the alias resolves to nothing: `1810.HK -> XIAOMI` was
 # such a dead end (Binance lists Xiaomi as `HK1810`), which cost 13 tags and 3 pushed cards in one week.
 # `dangling_seed_aliases()` reports any that stop resolving.
+#
+# `XAUT` is Tether Gold: a token, but one whose underlying *is* gold, so it belongs in gold's storyline. There is
+# deliberately no `NATGAS -> GAS` seed — `GAS` is Neo's gas token on three crypto venues, a different asset.
 ALIAS_SEEDS: Final[Mapping[str, str]] = {
     "XAU": "GOLD",
     "XAUT": "GOLD",
@@ -59,7 +62,6 @@ ALIAS_SEEDS: Final[Mapping[str, str]] = {
     "OIL": "CL",
     "USOIL": "CL",
     "BRENTOIL": "CL",
-    "NATGAS": "GAS",
     "SKHX": "SKHY",
     "SKHYNIX": "SKHY",
     "SMSN": "SAMSUNG",
@@ -82,8 +84,26 @@ ALIAS_SEEDS: Final[Mapping[str, str]] = {
 
 # Instrument-class hints for venues whose symbols are not crypto. Anything not matched stays `crypto` on a crypto
 # venue and `unknown` elsewhere — the class is a hint for policy, never an identity.
+#
+# These names are checked *before* the venue default, so a symbol listed here must not also be a real crypto
+# listing. `GAS` was exactly that mistake: Neo's gas token trades on binance.spot, binance.perp and hl.perp, while
+# natural gas trades as `NATGAS`. Since #89 the class reaches the Gate, so a collision here mislabels live cards.
 _COMMODITY: Final = frozenset(
-    {"GOLD", "SILVER", "CL", "GAS", "COPPER", "PALLADIUM", "PLATINUM", "ALUMINIUM", "WHEAT", "CORN", "SOY", "URANIUM"}
+    {
+        "GOLD",
+        "SILVER",
+        "CL",
+        "NATGAS",
+        "BRENTOIL",
+        "COPPER",
+        "PALLADIUM",
+        "PLATINUM",
+        "ALUMINIUM",
+        "WHEAT",
+        "CORN",
+        "SOY",
+        "URANIUM",
+    }
 )
 # Crypto-market gauges that live on venues whose default is not crypto (`hl.para` is a HIP-3 builder DEX, so its
 # default is equity). They are indices, but of the crypto market — calling them `index` would make the Gate read a

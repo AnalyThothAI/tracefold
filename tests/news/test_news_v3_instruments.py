@@ -70,6 +70,16 @@ def test_crypto_gauges_are_not_equities_even_on_an_equity_dex() -> None:
     assert classify("AVGO", venue="hl.para") == "equity"
 
 
+def test_commodity_names_never_collide_with_a_listed_coin() -> None:
+    """`GAS` is Neo's gas token on three crypto venues; natural gas trades as `NATGAS`. Since the class now
+    reaches the Gate, calling the token a commodity would label its headlines as stock news."""
+
+    assert classify("GAS", venue="binance.spot") == "crypto"
+    assert classify("GAS", venue="hl.perp") == "crypto"
+    assert classify("NATGAS", venue="hl.xyz") == "commodity"
+    assert resolve_base_symbol("NATGAS") == "NATGAS"  # never merged into the token's storyline
+
+
 def test_stored_class_survives_the_round_trip_through_rows() -> None:
     """`classify()` cannot re-derive what the venue declared, so a read must not recompute it (#89)."""
 
@@ -206,6 +216,26 @@ def test_binance_declared_class_beats_the_venue_default() -> None:
         # Binance's only two INDEX perps are crypto gauges, so INDEX is deliberately not mapped.
         "BTCDOMUSDT": "crypto",
     }
+
+
+def test_an_unmapped_tradfi_underlying_does_not_read_as_crypto() -> None:
+    """Binance adding `JP_EQUITY` must not put the new listings back in the universe as coins (#89)."""
+
+    futures = {
+        "symbols": [
+            {
+                "symbol": "SONYUSDT",
+                "status": "TRADING",
+                "baseAsset": "SONY",
+                "quoteAsset": "USDT",
+                "contractType": "TRADIFI_PERPETUAL",
+                "underlyingType": "JP_EQUITY",
+            }
+        ]
+    }
+    spot = {"symbols": [{"symbol": "BTCUSDT", "status": "TRADING", "baseAsset": "BTC", "quoteAsset": "USDT"}]}
+    fetched = asyncio.run(fetch_binance_instruments(transport=_binance_transport(spot, futures)))
+    assert [i.instrument_class for i in fetched if i.venue == "binance.perp"] == ["equity"]
 
 
 # ------------------------------------------------------------------ asset class

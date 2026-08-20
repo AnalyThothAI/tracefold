@@ -14,6 +14,7 @@ side (``classify()``) never learns Binance's field names.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
@@ -22,6 +23,8 @@ import httpx
 from tracefold.news.instruments import Instrument, InstrumentClass, classify, is_valid_symbol, strip_quote_suffix
 
 from .errors import VenueExpectedError
+
+log = logging.getLogger("tracefold.news.venues")
 
 BINANCE_SPOT_BASE_URL: Final = "https://api.binance.com"
 BINANCE_FUTURES_BASE_URL: Final = "https://fapi.binance.com"
@@ -95,11 +98,26 @@ def _parse(payload: Mapping[str, Any], *, venue: str, quote_filter: frozenset[st
 
 
 def _declared_class(entry: Mapping[str, Any]) -> InstrumentClass | None:
-    """What Binance says this contract is, when it says anything we understand."""
+    """What Binance says this contract is, when it says anything we understand.
+
+    A TradFi contract whose `underlyingType` we do not have a mapping for (Binance adds `JP_EQUITY`, say) must not
+    fall through to `classify()`, whose default for `binance.*` is `crypto` — that would silently recreate #89 for
+    exactly the new listings nobody is watching. The venue calling it TradFi is the reliable half, so an unmapped
+    TradFi underlying reads as `equity` and says so in the log.
+    """
 
     if str(entry.get("contractType") or "").upper() != "TRADIFI_PERPETUAL":
         return None
-    return _DECLARED_CLASS.get(str(entry.get("underlyingType") or "").upper())
+    underlying = str(entry.get("underlyingType") or "").upper()
+    declared = _DECLARED_CLASS.get(underlying)
+    if declared is None:
+        log.warning(
+            "binance tradfi contract with an unmapped underlyingType symbol=%s underlying=%s",
+            entry.get("symbol"),
+            underlying or "-",
+        )
+        return "equity"
+    return declared
 
 
 async def _get(client: httpx.AsyncClient, url: str, *, venue: str) -> Mapping[str, Any]:

@@ -60,12 +60,15 @@ class InstrumentsRepository:
             if rank.get(cls, 0) > rank.get(out.get(symbol, "unknown"), 0):
                 out[symbol] = cls
         # Aliases carry the class of what they resolve to, so the caller needs one lookup and no alias table:
-        # `SKHYNIX` and `XYZ-SKHX` are the forms the provider actually sends. One hop, like every other resolution.
+        # `SKHYNIX` and `XYZ-SKHX` are the forms the provider actually sends. Resolution reads `bases`, never the
+        # dict being written — otherwise a two-hop chain would resolve or not depending on the row order the
+        # unordered SELECT happened to return, and the Gate's asset class would differ between restarts.
+        bases = dict(out)
         alias_rows = self.conn.execute("SELECT alias, base_symbol FROM news_symbol_aliases").fetchall()
         for row in alias_rows:
             alias = str(row["alias"]).upper()
-            resolved = out.get(str(row["base_symbol"]).upper())
-            if resolved and alias not in out:
+            resolved = bases.get(str(row["base_symbol"]).upper())
+            if resolved and alias not in bases:
                 out[alias] = resolved
         return out
 

@@ -246,6 +246,20 @@ def test_instrument_classes_cover_the_alias_forms_the_provider_sends(conn) -> No
     assert repos.instruments.venues_for("MSTR") == ("binance.perp", "hl.xyz")
 
 
+def test_alias_classes_resolve_in_one_hop_regardless_of_row_order(conn) -> None:
+    """`SELECT alias, base_symbol` has no ORDER BY, so a two-hop chain must not resolve on some snapshots and not
+    on others — one hop, deterministically, or the Gate's asset class flickers between restarts."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot([_inst("hl.xyz", "xyz:MU", "MU")], now_ms=NOW)
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"MICRON": "MU", "MICRONTECH": "MICRON"})
+
+    classes = repos.instruments.instrument_classes()
+    assert classes["MICRON"] == "equity"
+    assert "MICRONTECH" not in classes  # second hop, never resolved either way
+
+
 def test_unmatched_provider_tags_rank_the_missing_symbols(conn) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():
