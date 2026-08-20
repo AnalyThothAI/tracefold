@@ -127,6 +127,9 @@ class NewsFeedEventData(NewsEventData):
     outcome: NewsOutcomeData
     triage: NewsTriageSummaryData | None = None
     delivery: NewsDeliverySummaryData | None = None
+    # #88: the fixed 1H/4H return after this Event. Current quotes are deliberately *not* here — they change
+    # every few seconds and would make the feed's ETag useless; the browser reads them from /api/news/quotes.
+    reaction: NewsReactionSummaryData | None = None
 
 
 class NewsFeedFiltersData(ExactApiSchema):
@@ -229,6 +232,227 @@ class NewsEventDetailData(ExactApiSchema):
     deliveries: list[NewsDeliveryData]
     labels: list[NewsLabelData] = Field(default_factory=list)
     normalization: list[NewsSymbolNormalizationData] = Field(default_factory=list)
+    reaction: NewsReactionSummaryData | None = None
+    reactions: list[NewsEventReactionData] = Field(default_factory=list)
+
+
+class NewsQuoteData(ExactApiSchema):
+    """One current quote (#88). `state` is derived when read, never maintained by a timer write.
+
+    `unlisted` and `unavailable` answer different questions — "no venue we poll lists this tag" versus "we have
+    not managed to quote it yet" — and neither ever renders as a price of zero. `price_kind` and `change_basis`
+    are explicit because a derivative mid must never be presented as a cash-equity last price.
+    """
+
+    requested_symbol: str
+    symbol: str
+    base_symbol: str
+    venue: str | None = None
+    venue_symbol: str | None = None
+    instrument_class: str | None = None
+    quote_asset: str | None = None
+    price: str | None = None
+    price_kind: str | None = None
+    price_kind_zh: str = ""
+    change_pct: float | None = None
+    change_basis: str | None = None
+    change_basis_zh: str = ""
+    source_at_ms: int | None = None
+    received_at_ms: int | None = None
+    age_ms: int | None = None
+    state: Literal["fresh", "stale", "unavailable", "unlisted"]
+    state_zh: str = ""
+
+
+class NewsQuotesData(ExactApiSchema):
+    quotes: list[NewsQuoteData] = Field(default_factory=list)
+    measured_at_ms: int
+
+
+class NewsReactionSummaryData(ExactApiSchema):
+    """The compact event-level Event Reaction: one sample per Event, median over its priceable primaries.
+
+    This is a fixed historical measurement anchored at the Event, not a current rolling window. A pending
+    horizon says pending; it is never zero.
+    """
+
+    state: Literal["pending", "partial", "complete", "unavailable"]
+    state_zh: str = ""
+    return_1h_bps: int | None = None
+    return_4h_bps: int | None = None
+    asset_n: int = 0
+    priced_n: int = 0
+    unavailable_reason: str | None = None
+    unavailable_reason_zh: str = ""
+    metric_version: str
+
+
+class NewsEventReactionData(ExactApiSchema):
+    """One per-asset Reaction with the raw closes it was computed from, for audit on the detail page."""
+
+    symbol: str
+    metric_version: str
+    venue: str | None = None
+    venue_symbol: str | None = None
+    instrument_class: str = "unknown"
+    anchor_at_ms: int
+    p0: str | None = None
+    p0_at_ms: int | None = None
+    p1: str | None = None
+    p1_at_ms: int | None = None
+    p4: str | None = None
+    p4_at_ms: int | None = None
+    return_1h_bps: int | None = None
+    return_4h_bps: int | None = None
+    state: Literal["pending", "partial", "complete", "unavailable"]
+    state_zh: str = ""
+    unavailable_reason: str | None = None
+    unavailable_reason_zh: str = ""
+    updated_at_ms: int | None = None
+
+
+class NewsReviewUnavailableData(ExactApiSchema):
+    reason: str
+    reason_zh: str = ""
+    n: int
+
+
+class NewsReviewCoverageData(ExactApiSchema):
+    """Coverage before accuracy: every percentage on the page is paired with the N it came from."""
+
+    horizon: Literal["1h", "4h"]
+    horizon_zh: str = ""
+    eligible_n: int
+    priced_n: int
+    coverage_pct: float | None = None
+    no_primary_n: int = 0
+    degraded_n: int = 0
+    unavailable: list[NewsReviewUnavailableData] = Field(default_factory=list)
+
+
+class NewsReviewDirectionData(ExactApiSchema):
+    """`scored` marks the rows that carry hit-rate: neutral and unclear report their N, never accuracy.
+
+    Direction rows are counts by design (#88 §8). Return distributions belong to the magnitude and
+    event-type sections, which is where the median columns live.
+    """
+
+    direction: str
+    direction_zh: str = ""
+    horizon: Literal["1h", "4h"]
+    horizon_zh: str = ""
+    scored: bool
+    eligible_n: int
+    priced_n: int
+    hits: int | None = None
+    hit_pct: float | None = None
+    coverage_pct: float | None = None
+
+
+class NewsReviewMagnitudeData(ExactApiSchema):
+    magnitude: int
+    magnitude_zh: str = ""
+    eligible_n: int
+    share_pct: float | None = None
+    priced_1h_n: int
+    priced_4h_n: int
+    coverage_1h_pct: float | None = None
+    mean_abs_1h_bps: int | None = None
+    mean_abs_4h_bps: int | None = None
+    median_abs_1h_bps: int | None = None
+    median_abs_4h_bps: int | None = None
+
+
+class NewsReviewEventTypeData(ExactApiSchema):
+    event_type: str
+    event_type_zh: str = ""
+    eligible_n: int
+    pushed_n: int
+    escalated_n: int
+    pushed_pct: float | None = None
+    held_n: int
+    priced_1h_n: int
+    coverage_1h_pct: float | None = None
+    median_1h_bps: int | None = None
+    median_abs_1h_bps: int | None = None
+    median_4h_bps: int | None = None
+    median_abs_4h_bps: int | None = None
+
+
+class NewsReviewMissData(ExactApiSchema):
+    """A review queue, not a verdict: movement never proves the Event caused it or should have been pushed."""
+
+    event_id: str
+    opened_at_ms: int
+    headline_zh: str | None = None
+    leader_title: str = ""
+    storyline_key: str = ""
+    final_decision: str
+    decision_zh: str = ""
+    override_rule: str | None = None
+    override_rule_zh: str = ""
+    throttled_by: str | None = None
+    throttled_by_zh: str = ""
+    direction: str | None = None
+    direction_zh: str = ""
+    magnitude: int | None = None
+    magnitude_zh: str = ""
+    event_type: str | None = None
+    event_type_zh: str = ""
+    return_1h_bps: int | None = None
+    return_4h_bps: int | None = None
+    asset_n: int = 0
+    assets: list[NewsEventReactionData] = Field(default_factory=list)
+
+
+class NewsReviewMetaData(ExactApiSchema):
+    hours: int
+    window_start_ms: int
+    window_end_ms: int
+    metric_version: str
+    measured_at_ms: int
+
+
+class NewsReviewSummaryData(ExactApiSchema):
+    """The topbar figure. A percentage without a priced denominator is not shown at all."""
+
+    hit_1h_pct: float | None = None
+    hit_1h_n: int = 0
+    coverage_1h_pct: float | None = None
+
+
+class NewsReviewData(ExactApiSchema):
+    meta: NewsReviewMetaData
+    coverage: list[NewsReviewCoverageData] = Field(default_factory=list)
+    directions: list[NewsReviewDirectionData] = Field(default_factory=list)
+    magnitudes: list[NewsReviewMagnitudeData] = Field(default_factory=list)
+    event_types: list[NewsReviewEventTypeData] = Field(default_factory=list)
+    potential_misses: list[NewsReviewMissData] = Field(default_factory=list)
+    summary: NewsReviewSummaryData
+
+
+class NewsQuoteVenueData(ExactApiSchema):
+    source_key: str
+    target_count: int
+    quote_count: int
+    age_ms: int
+    state: str
+    source_at_ms: int | None = None
+    received_at_ms: int
+
+
+class NewsPriceStatusData(ExactApiSchema):
+    """#88 §11: per-source freshness and Reaction backlog, so congestion is visible before the UI shows it."""
+
+    metric_version: str = ""
+    # The backlog SLO (#88 §14): how far behind the oldest Event-asset still waiting for a horizon is.
+    oldest_due_age_ms: int = 0
+    sources: list[NewsQuoteVenueData] = Field(default_factory=list)
+    fresh_sources: int = 0
+    quotes: int = 0
+    reaction_partial_7d: int = 0
+    reaction_complete_7d: int = 0
+    reaction_unavailable_7d: int = 0
 
 
 class NewsIncidentData(ExactApiSchema):
@@ -376,6 +600,7 @@ class NewsStatusData(ExactApiSchema):
     control: NewsControlStateData
     watchlist: list[str] = Field(default_factory=list)
     instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
+    price: NewsPriceStatusData = Field(default_factory=NewsPriceStatusData)
     measured_at_ms: int
 
 
@@ -390,6 +615,7 @@ __all__ = [
     "NewsEventData",
     "NewsEventDetailData",
     "NewsEventMemberData",
+    "NewsEventReactionData",
     "NewsFeedCountsData",
     "NewsFeedData",
     "NewsFeedEventData",
@@ -402,7 +628,21 @@ __all__ = [
     "NewsLabelData",
     "NewsOutcomeData",
     "NewsPipelineStatusData",
+    "NewsPriceStatusData",
+    "NewsQuoteData",
+    "NewsQuoteVenueData",
+    "NewsQuotesData",
+    "NewsReactionSummaryData",
     "NewsReasonCountData",
+    "NewsReviewCoverageData",
+    "NewsReviewData",
+    "NewsReviewDirectionData",
+    "NewsReviewEventTypeData",
+    "NewsReviewMagnitudeData",
+    "NewsReviewMetaData",
+    "NewsReviewMissData",
+    "NewsReviewSummaryData",
+    "NewsReviewUnavailableData",
     "NewsStatusData",
     "NewsSymbolNormalizationData",
     "NewsTimelineStepData",

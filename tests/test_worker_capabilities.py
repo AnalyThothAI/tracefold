@@ -528,3 +528,52 @@ def test_late_wrapped_failure_after_caller_cancellation_is_retrieved() -> None:
         return unhandled
 
     assert asyncio.run(scenario()) == []
+
+
+# ---------------------------------------------------------------------------- #88 price loop composition
+def _settings(**venues: Any):
+    from tracefold.platform.config.settings import Settings
+
+    return Settings(ws_token="wiring-token", news={"enabled": True, "venues": venues or {}})
+
+
+def test_price_loops_are_wired_per_source_and_follow_the_existing_venue_switches() -> None:
+    """The composition root is the only place these adapters are chosen; nothing here calls a venue."""
+
+    from tracefold.app.workers import _event_reaction_loop, _quote_snapshot_loop
+
+    settings = _settings()
+    quotes = _quote_snapshot_loop(settings, db=_FakeHeavyDb(), watchlist=["BTC"])
+    reactions = _event_reaction_loop(settings, db=_FakeHeavyDb())
+    assert quotes is not None and reactions is not None
+
+    # One adapter per provider source, including a HIP-3 dex nobody wired by hand.
+    assert quotes.fetcher_for("binance.spot") is not None
+    assert quotes.fetcher_for("binance.perp") is not None
+    assert quotes.fetcher_for("hl.perp") is not None
+    assert quotes.fetcher_for("hl.brandnewdex") is not None
+    assert quotes.fetcher_for("us.listed") is None  # a reference tier is never a price source
+    assert reactions.fetcher_for("binance.perp") is not None
+    assert reactions.fetcher_for("hl.spot") is not None
+    assert reactions.fetcher_for("us.listed") is None
+
+
+def test_a_disabled_venue_removes_its_adapter_rather_than_failing_the_turn() -> None:
+    from tracefold.app.workers import _event_reaction_loop, _quote_snapshot_loop
+
+    binance_only = _settings(binance=True, hyperliquid=False)
+    quotes = _quote_snapshot_loop(binance_only, db=_FakeHeavyDb(), watchlist=[])
+    assert quotes is not None
+    assert quotes.fetcher_for("binance.perp") is not None
+    assert quotes.fetcher_for("hl.perp") is None
+
+    off = _settings(enabled=False)
+    assert _quote_snapshot_loop(off, db=_FakeHeavyDb(), watchlist=[]) is None
+    assert _event_reaction_loop(off, db=_FakeHeavyDb()) is None
+
+
+class _FakeHeavyDb:
+    """Only the cold lane: a price loop that reaches for the News lane would fail to construct here."""
+
+    def heavy_business(self) -> Any:
+        return self

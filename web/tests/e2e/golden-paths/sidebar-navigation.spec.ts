@@ -30,7 +30,7 @@ test.describe("desktop sidebar navigation", () => {
     test.skip(!testInfo.project.name.startsWith("desktop-"), "desktop-only sidebar contract");
   });
 
-  test("keeps both News destinations in the desktop frame and folds away on demand", async ({
+  test("keeps all three News destinations in the desktop frame and folds away on demand", async ({
     page,
   }) => {
     await installMockApi(page);
@@ -51,7 +51,9 @@ test.describe("desktop sidebar navigation", () => {
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "状态" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link")).toHaveCount(2);
+    // #88 added 命中复盘 as the third destination; the tree stays flat.
+    await expect(primaryNavigation.getByRole("link", { name: "命中复盘" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 

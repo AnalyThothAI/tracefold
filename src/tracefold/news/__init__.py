@@ -19,12 +19,20 @@ from .opennews import (
     parse_opennews_message,
 )
 from .outcome import Outcome, event_outcome
+
+# #88: the public bounds of the price surfaces. The HTTP layer validates `/api/news/quotes` and
+# `/api/news/review` against them and must not restate the numbers.
+from .pricing import QUOTE_REQUEST_SYMBOL_MAX, REACTION_METRIC_VERSION, REVIEW_DEFAULT_HOURS, REVIEW_MAX_HOURS
 from .triage_rules import DEFAULT_POLICY, DecidePolicy
 
 __all__ = [
     "DEFAULT_POLICY",
     "GATE_POLICY_VERSION",
     "OPENNEWS_SOURCE_ID",
+    "QUOTE_REQUEST_SYMBOL_MAX",
+    "REACTION_METRIC_VERSION",
+    "REVIEW_DEFAULT_HOURS",
+    "REVIEW_MAX_HOURS",
     "TRIAGE_POLICY_VERSION",
     "TRIAGE_PROMPT_VERSION",
     "DecidePolicy",

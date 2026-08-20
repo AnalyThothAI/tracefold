@@ -1,4 +1,4 @@
-"""News V3 HTTP contract: three read-only routes, exact schemas, bounded 400/404 behaviour."""
+"""News V3 HTTP contract: five read-only routes, exact schemas, bounded 400/404 behaviour."""
 
 from __future__ import annotations
 
@@ -179,10 +179,83 @@ class _FakeInstrumentsRepository:
         }
 
 
+class _FakePriceRepository:
+    """#88 price plane before any quote or Reaction has landed: everything says so, nothing invents a zero."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def event_reaction_aggregates(self, event_ids: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("event_reaction_aggregates", {"event_ids": list(event_ids), **kwargs}))
+        return {}
+
+    def event_reactions(self, event_id: str) -> list[dict[str, Any]]:
+        self.calls.append(("event_reactions", {"event_id": event_id}))
+        return []
+
+    def quotes_for_symbols(self, symbols: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        self.calls.append(("quotes_for_symbols", {"symbols": list(symbols), **kwargs}))
+        return [
+            {
+                "requested_symbol": symbol,
+                "symbol": str(symbol).upper(),
+                "base_symbol": str(symbol).upper(),
+                "venue": None,
+                "venue_symbol": None,
+                "instrument_class": None,
+                "quote_asset": None,
+                "price": None,
+                "price_kind": None,
+                "price_kind_zh": "",
+                "change_pct": None,
+                "change_basis": None,
+                "change_basis_zh": "",
+                "source_at_ms": None,
+                "received_at_ms": None,
+                "age_ms": None,
+                "state": "unlisted",
+                "state_zh": "无可交易合约",
+            }
+            for symbol in symbols
+        ]
+
+    def review(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("review", kwargs))
+        return {
+            "meta": {
+                "hours": int(kwargs.get("hours") or 168),
+                "window_start_ms": 0,
+                "window_end_ms": 1,
+                "metric_version": "reaction_v1",
+                "measured_at_ms": 1,
+            },
+            "coverage": [],
+            "directions": [],
+            "magnitudes": [],
+            "event_types": [],
+            "potential_misses": [],
+            "summary": {"hit_1h_pct": None, "hit_1h_n": 0, "coverage_1h_pct": None},
+        }
+
+    def price_status(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("price_status", kwargs))
+        return {
+            "metric_version": "reaction_v1",
+            "oldest_due_age_ms": 0,
+            "sources": [],
+            "fresh_sources": 0,
+            "quotes": 0,
+            "reaction_partial_7d": 0,
+            "reaction_complete_7d": 0,
+            "reaction_unavailable_7d": 0,
+        }
+
+
 class _FakeRepositories:
     def __init__(self, news: _FakeNewsRepository) -> None:
         self.news = news
         self.instruments = _FakeInstrumentsRepository()
+        self.price = _FakePriceRepository()
         self.conn = _FakeConnection()
 
 
@@ -205,7 +278,7 @@ def client() -> tuple[TestClient, _FakeNewsRepository]:
     return TestClient(app), news
 
 
-def test_news_exposes_exactly_three_read_only_routes() -> None:
+def test_news_exposes_exactly_five_read_only_routes() -> None:
     routes = {
         (method, route.path)
         for route in routes_news.router.routes
@@ -217,6 +290,10 @@ def test_news_exposes_exactly_three_read_only_routes() -> None:
         ("GET", "/news/feed"),
         ("GET", "/news/events/{event_id}"),
         ("GET", "/news/status"),
+        # #88: current quotes and 命中复盘. Both are read-only and bounded; quotes stay off the feed so a
+        # price tick cannot invalidate the feed's ETag every three seconds.
+        ("GET", "/news/quotes"),
+        ("GET", "/news/review"),
     }
 
 
@@ -240,6 +317,8 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "outcome",
         "triage",
         "delivery",
+        # #88: the fixed post-Event return. The *current* quote is deliberately not a feed field.
+        "reaction",
     }
     assert set(schemas_news.NewsEventDetailData.model_fields) == {
         "event",
@@ -251,6 +330,9 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "deliveries",
         "labels",
         "normalization",
+        # #88: the event-level aggregate plus every per-asset Reaction, with the closes they came from.
+        "reaction",
+        "reactions",
     }
     assert set(schemas_news.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
     assert set(schemas_news.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
@@ -268,6 +350,8 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "control",
         "watchlist",
         "instruments",
+        # #88 §11: per-source quote freshness and Reaction backlog, beside the pipeline's own health.
+        "price",
         "measured_at_ms",
     }
     assert set(schemas_news.NewsIngestStatusData.model_fields) == {
@@ -455,3 +539,86 @@ def test_news_routes_require_the_operator_token(client) -> None:
     for path in ("/api/news/feed", "/api/news/events/ev-1", "/api/news/status"):
         assert http.get(path).status_code == 401
         assert http.get(path, params={"token": "wrong"}).status_code == 401
+
+
+# ---------------------------------------------------------------------------- #88 price surfaces
+def test_quotes_returns_one_result_per_requested_symbol(client) -> None:
+    api, _ = client
+    response = api.get("/api/news/quotes", params={"symbols": "BTC,ETH,BTC", "token": TOKEN})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    # Deduplicated by the server as well as the hook: a repeated symbol cannot multiply work.
+    assert [quote["requested_symbol"] for quote in payload["data"]["quotes"]] == ["BTC", "ETH"]
+    assert {quote["state"] for quote in payload["data"]["quotes"]} == {"unlisted"}
+    assert payload["data"]["quotes"][0]["price"] is None  # never a fabricated zero
+
+
+def test_quotes_rejects_an_oversized_or_malformed_symbol_batch(client) -> None:
+    api, _ = client
+    too_many = ",".join(f"S{index}" for index in range(101))
+    response = api.get("/api/news/quotes", params={"symbols": too_many, "token": TOKEN})
+    assert response.status_code == 400
+    assert response.json()["error"] == "news_quotes_symbols_too_many"
+
+    long_symbol = api.get("/api/news/quotes", params={"symbols": "X" * 33, "token": TOKEN})
+    assert long_symbol.status_code == 400
+    assert long_symbol.json()["error"] == "news_quotes_symbol_invalid"
+
+    unknown = api.get("/api/news/quotes", params={"symbols": "BTC", "unknown": "1", "token": TOKEN})
+    assert unknown.status_code == 400
+    assert unknown.json()["error"] == "unsupported_query_param"
+
+
+def test_review_is_bounded_by_hours_and_publishes_its_metric_version(client) -> None:
+    api, _ = client
+    response = api.get("/api/news/review", params={"hours": 168, "token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["meta"]["hours"] == 168
+    assert data["meta"]["metric_version"] == "reaction_v1"
+    # A hit rate with no priced denominator is absent, never rendered as zero.
+    assert data["summary"]["hit_1h_pct"] is None and data["summary"]["hit_1h_n"] == 0
+
+    assert api.get("/api/news/review", params={"hours": 721, "token": TOKEN}).status_code == 422
+    assert api.get("/api/news/review", params={"hours": 0, "token": TOKEN}).status_code == 422
+
+
+def test_the_feed_attaches_reactions_in_one_bounded_batch(client) -> None:
+    api, news = client
+    response = api.get("/api/news/feed", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    events = response.json()["data"]["events"]
+    assert "reaction" in events[0]
+    del news
+
+
+def test_current_quotes_never_travel_in_the_feed_body(client) -> None:
+    """#88 §5: a price that changed must not invalidate the feed's ETag or re-run its count query."""
+
+    api, _ = client
+    body = api.get("/api/news/feed", params={"token": TOKEN}).json()["data"]
+    serialized = repr(body)
+    assert "price_kind" not in serialized and "change_basis" not in serialized
+    assert set(schemas_news.NewsFeedEventData.model_fields).isdisjoint({"quote", "quotes", "price"})
+
+
+def test_event_detail_keeps_the_two_market_meanings_in_separate_fields(client) -> None:
+    api, _ = client
+    detail = api.get("/api/news/events/ev-1", params={"token": TOKEN}).json()["data"]
+
+    assert "reaction" in detail and "reactions" in detail
+    # Nothing in either contract is called simply `change`, which could mean either meaning.
+    assert "change" not in schemas_news.NewsReactionSummaryData.model_fields
+    assert "change_pct" in schemas_news.NewsQuoteData.model_fields
+    assert "change_basis" in schemas_news.NewsQuoteData.model_fields
+
+
+def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
+    api, _ = client
+    data = api.get("/api/news/status", params={"token": TOKEN}).json()["data"]
+    assert data["price"]["metric_version"] == "reaction_v1"
+    assert data["price"]["sources"] == []

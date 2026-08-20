@@ -11,11 +11,15 @@ import {
   type NewsDelivery,
   type NewsEventDetail,
   type NewsEventMember,
+  type NewsEventReaction,
   type NewsLabel,
+  type NewsQuote,
+  type NewsReaction,
   type NewsSymbolNormalization,
   type NewsTriageSummary,
   type NewsVerdict,
   useNewsEventWithToken,
+  useNewsQuotesWithToken,
 } from "../../api/newsQueries";
 import {
   absoluteTime,
@@ -27,17 +31,20 @@ import {
   timelineEndToEnd,
   validExternalUrl,
 } from "../../model/newsLabels";
+import { quoteAgeLabel } from "../../model/newsPrice";
 import { useNewsToast } from "../../state/useNewsToast";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsEmptyNote, NewsPageShell, NewsTechnical } from "../chrome/NewsChrome";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
+import { NewsQuoteValue, NewsReactionValue } from "../chrome/NewsQuoteValue";
 import { NewsToast } from "../chrome/NewsToast";
 
 import { NewsEventPager } from "./NewsEventPager";
 import { NewsTimeline } from "./NewsTimeline";
 
 import "./newsDetail.css";
+import "./newsDetailMarket.css";
 
 export function NewsEventDetailPage({ eventId, token }: { eventId: string; token: string }) {
   const query = useNewsEventWithToken(token, eventId);
@@ -46,6 +53,15 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
   // The feed the reader came from, so 上一条/下一条 walk the list they were actually looking at. A cold URL
   // has no such list; the pager hides itself rather than inventing one.
   const feedSearch = (useLocation().state as { feedSearch?: string } | null)?.feedSearch ?? null;
+  // The same batched quote query the feed uses (#88); on this route the batch is one Event's assets, and
+  // React Query serves both from one cache entry when the symbols happen to match.
+  const quotesQuery = useNewsQuotesWithToken(
+    token,
+    (detail?.event.assets ?? []).filter((asset) => asset.listed).map((asset) => asset.symbol),
+  );
+  const quotes = Object.fromEntries(
+    (quotesQuery.data?.quotes ?? []).map((quote) => [quote.requested_symbol, quote]),
+  );
   return (
     <NewsPageShell archetype="case" className="news-detail-shell" label="新闻事件详情">
       <header className="news-detail-toolbar">
@@ -62,7 +78,7 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
       {query.isError && !detail ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
-      {detail ? <EventDocument detail={detail} onCopy={toast.copy} /> : null}
+      {detail ? <EventDocument detail={detail} onCopy={toast.copy} quotes={quotes} /> : null}
       <NewsToast message={toast.message} />
     </NewsPageShell>
   );
@@ -71,15 +87,18 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
 function EventDocument({
   detail,
   onCopy,
+  quotes,
 }: {
   detail: NewsEventDetail;
   onCopy: (text: string, note: string) => void;
+  quotes: Record<string, NewsQuote>;
 }) {
   const { event, outcome, triage } = detail;
   const headline = triage?.headline_zh?.trim() || triage?.title_zh?.trim() || event.leader_title;
   const translated = triage?.title_zh?.trim();
   const url = validExternalUrl(event.leader_url);
   const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
+  const quoteList = assets.map((asset) => quotes[asset.symbol]).filter(Boolean);
   const steps = detail.timeline ?? [];
   return (
     <>
@@ -124,11 +143,29 @@ function EventDocument({
         <p className="news-detail-facts">
           <span>{event.reporting_origin || "未知来源"}</span>
           {event.member_count > 1 ? <span>{event.member_count} 条同类报道</span> : null}
-          <NewsAssetChips assets={assets} />
+          <NewsAssetChips assets={assets} quotes={quotes} />
         </p>
       </article>
 
       <SymbolNormalization groups={detail.normalization ?? []} />
+
+      {/* Two market blocks, deliberately apart: "now" and "after this Event" are different time semantics. */}
+      <div className="news-detail-grid">
+        <Card
+          title="当前报价"
+          hint="来自 Binance / Hyperliquid 公共接口，标注了场所与新鲜度"
+          aria-label="当前报价"
+        >
+          <CurrentQuotes quotes={quoteList} />
+        </Card>
+        <Card
+          title="事件后反应"
+          hint="以新闻发布时间为锚点的固定收益，不是当前滚动涨跌"
+          aria-label="事件后反应"
+        >
+          <EventReactions aggregate={detail.reaction} reactions={detail.reactions ?? []} />
+        </Card>
+      </div>
 
       <div className="news-detail-grid">
         <Card
@@ -156,6 +193,97 @@ function EventDocument({
 
       <TechnicalDetails detail={detail} />
     </>
+  );
+}
+
+/**
+ * 当前报价 (#88): what these contracts are worth *now*, on named venues, with the age of each number.
+ *
+ * Deliberately a separate block from 事件后反应 below. One is a moving current value and the other is a
+ * fixed historical measurement anchored at this Event; putting them in one table would invite reading a
+ * rolling 24 h change as the market's answer to this headline.
+ */
+function CurrentQuotes({ quotes }: { quotes: NewsQuote[] }) {
+  if (!quotes.length) return <NewsEmptyNote>这条事件没有可以定价的标的。</NewsEmptyNote>;
+  return (
+    <ul className="news-detail-quotes">
+      {quotes.map((quote) => (
+        <li key={quote.requested_symbol}>
+          <span className="news-detail-quote-symbol">
+            <code>{quote.symbol}</code>
+            {quote.venue ? (
+              <small>
+                {quote.venue}:{quote.venue_symbol}
+              </small>
+            ) : null}
+          </span>
+          <NewsQuoteValue quote={quote} />
+          <small className="news-detail-quote-kind">
+            {quote.price_kind_zh}
+            {quote.state === "unlisted" || quote.state === "unavailable"
+              ? ""
+              : ` · ${quoteAgeLabel(quote)}`}
+          </small>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * 事件后反应 (#88): the deterministic return between this Event's anchor and each horizon, per asset.
+ *
+ * The raw closes and their timestamps ship beside the returns so the number is auditable rather than
+ * asserted. A horizon that has not matured says so; a gap the provider has no bar for says that instead of
+ * forward-filling a price across it.
+ */
+function EventReactions({
+  aggregate,
+  reactions,
+}: {
+  aggregate: NewsReaction | null | undefined;
+  reactions: NewsEventReaction[];
+}) {
+  if (!reactions.length && !aggregate) {
+    return <NewsEmptyNote>还没有可用的事件后反应。</NewsEmptyNote>;
+  }
+  return (
+    <div className="news-detail-reactions">
+      {aggregate ? (
+        <p className="news-detail-reaction-aggregate">
+          <span>事件级（主标的中位）</span>
+          <NewsReactionValue horizon="1h" reaction={aggregate} />
+          <NewsReactionValue horizon="4h" reaction={aggregate} />
+          <small>
+            {aggregate.priced_n}/{aggregate.asset_n} 个主标的已定价 · {aggregate.metric_version}
+          </small>
+        </p>
+      ) : null}
+      {reactions.length ? (
+        <ul className="news-detail-reaction-list">
+          {reactions.map((reaction) => (
+            <li key={reaction.symbol}>
+              <span className="news-detail-quote-symbol">
+                <code>{reaction.symbol}</code>
+                {reaction.venue ? (
+                  <small>
+                    {reaction.venue}:{reaction.venue_symbol}
+                  </small>
+                ) : null}
+              </span>
+              <NewsReactionValue horizon="1h" reaction={reaction} />
+              <NewsReactionValue horizon="4h" reaction={reaction} />
+              <small className="news-detail-reaction-closes">
+                {reaction.p0 ? `p0 ${reaction.p0}` : reaction.state_zh}
+                {reaction.p1 ? ` · p1 ${reaction.p1}` : ""}
+                {reaction.p4 ? ` · p4 ${reaction.p4}` : ""}
+                {reaction.unavailable_reason_zh ? ` · ${reaction.unavailable_reason_zh}` : ""}
+              </small>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 

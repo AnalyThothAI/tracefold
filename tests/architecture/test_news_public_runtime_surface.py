@@ -15,6 +15,12 @@ PUBLIC_NEWS_INTERFACE = {
     "DEFAULT_POLICY",
     "GATE_POLICY_VERSION",
     "OPENNEWS_SOURCE_ID",
+    # #88: the public bounds of `/api/news/quotes` and `/api/news/review`, read by the HTTP layer from the
+    # package root exactly like `status_health` rather than reaching into the pricing module.
+    "QUOTE_REQUEST_SYMBOL_MAX",
+    "REACTION_METRIC_VERSION",
+    "REVIEW_DEFAULT_HOURS",
+    "REVIEW_MAX_HOURS",
     "TRIAGE_POLICY_VERSION",
     "TRIAGE_PROMPT_VERSION",
     "DecidePolicy",
@@ -39,6 +45,7 @@ PUBLIC_NEWS_INTERFACE = {
 IO_MODULE_ROOTS = {"aio_pika", "psycopg", "httpx", "aiohttp", "websockets", "requests"}
 PURE_NEWS_MODULES = (
     "gate.py",
+    "pricing.py",
     "health.py",
     "outcome.py",
     "storyline.py",
@@ -68,6 +75,8 @@ RETIRED_NEWS_MODULES = (
     "translation.py",
 )
 WRITE_REPOSITORY_METHODS = (
+    "replace_source_snapshot",
+    "upsert_reaction",
     "insert_event",
     "insert_verdict",
     "insert_label",

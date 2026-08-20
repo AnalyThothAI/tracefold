@@ -139,6 +139,98 @@
         "title": "ApiEnvelope[NewsFeedData]",
         "type": "object"
       },
+      "ApiEnvelope_NewsQuotesData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsQuotesData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsQuotesData]",
+        "type": "object"
+      },
+      "ApiEnvelope_NewsReviewData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsReviewData]",
+        "type": "object"
+      },
       "ApiEnvelope_NewsStatusData_": {
         "additionalProperties": false,
         "properties": {
@@ -724,6 +816,23 @@
           "outcome": {
             "$ref": "#/components/schemas/NewsOutcomeData"
           },
+          "reaction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReactionSummaryData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reactions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsEventReactionData"
+            },
+            "title": "Reactions",
+            "type": "array"
+          },
           "timeline": {
             "items": {
               "$ref": "#/components/schemas/NewsTimelineStepData"
@@ -830,6 +939,189 @@
           "match_kind"
         ],
         "title": "NewsEventMemberData",
+        "type": "object"
+      },
+      "NewsEventReactionData": {
+        "additionalProperties": false,
+        "description": "One per-asset Reaction with the raw closes it was computed from, for audit on the detail page.",
+        "properties": {
+          "anchor_at_ms": {
+            "title": "Anchor At Ms",
+            "type": "integer"
+          },
+          "instrument_class": {
+            "default": "unknown",
+            "title": "Instrument Class",
+            "type": "string"
+          },
+          "metric_version": {
+            "title": "Metric Version",
+            "type": "string"
+          },
+          "p0": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P0"
+          },
+          "p0_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P0 At Ms"
+          },
+          "p1": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P1"
+          },
+          "p1_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P1 At Ms"
+          },
+          "p4": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P4"
+          },
+          "p4_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P4 At Ms"
+          },
+          "return_1h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 1H Bps"
+          },
+          "return_4h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 4H Bps"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "partial",
+              "complete",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "state_zh": {
+            "default": "",
+            "title": "State Zh",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          },
+          "unavailable_reason_zh": {
+            "default": "",
+            "title": "Unavailable Reason Zh",
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At Ms"
+          },
+          "venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue"
+          },
+          "venue_symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Symbol"
+          }
+        },
+        "required": [
+          "symbol",
+          "metric_version",
+          "anchor_at_ms",
+          "state"
+        ],
+        "title": "NewsEventReactionData",
         "type": "object"
       },
       "NewsFeedCountsData": {
@@ -1032,6 +1324,16 @@
               }
             ],
             "title": "Published At Ms"
+          },
+          "reaction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReactionSummaryData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reporting_origin": {
             "default": "",
@@ -1775,6 +2077,378 @@
         "title": "NewsPipelineStatusData",
         "type": "object"
       },
+      "NewsPriceStatusData": {
+        "additionalProperties": false,
+        "description": "#88 \u00a711: per-source freshness and Reaction backlog, so congestion is visible before the UI shows it.",
+        "properties": {
+          "fresh_sources": {
+            "default": 0,
+            "title": "Fresh Sources",
+            "type": "integer"
+          },
+          "metric_version": {
+            "default": "",
+            "title": "Metric Version",
+            "type": "string"
+          },
+          "oldest_due_age_ms": {
+            "default": 0,
+            "title": "Oldest Due Age Ms",
+            "type": "integer"
+          },
+          "quotes": {
+            "default": 0,
+            "title": "Quotes",
+            "type": "integer"
+          },
+          "reaction_complete_7d": {
+            "default": 0,
+            "title": "Reaction Complete 7D",
+            "type": "integer"
+          },
+          "reaction_partial_7d": {
+            "default": 0,
+            "title": "Reaction Partial 7D",
+            "type": "integer"
+          },
+          "reaction_unavailable_7d": {
+            "default": 0,
+            "title": "Reaction Unavailable 7D",
+            "type": "integer"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/NewsQuoteVenueData"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "title": "NewsPriceStatusData",
+        "type": "object"
+      },
+      "NewsQuoteData": {
+        "additionalProperties": false,
+        "description": "One current quote (#88). `state` is derived when read, never maintained by a timer write.\n\n`unlisted` and `unavailable` answer different questions \u2014 \"no venue we poll lists this tag\" versus \"we have\nnot managed to quote it yet\" \u2014 and neither ever renders as a price of zero. `price_kind` and `change_basis`\nare explicit because a derivative mid must never be presented as a cash-equity last price.",
+        "properties": {
+          "age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Ms"
+          },
+          "base_symbol": {
+            "title": "Base Symbol",
+            "type": "string"
+          },
+          "change_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Basis"
+          },
+          "change_basis_zh": {
+            "default": "",
+            "title": "Change Basis Zh",
+            "type": "string"
+          },
+          "change_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Pct"
+          },
+          "instrument_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument Class"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "price_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Kind"
+          },
+          "price_kind_zh": {
+            "default": "",
+            "title": "Price Kind Zh",
+            "type": "string"
+          },
+          "quote_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Asset"
+          },
+          "received_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At Ms"
+          },
+          "requested_symbol": {
+            "title": "Requested Symbol",
+            "type": "string"
+          },
+          "source_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source At Ms"
+          },
+          "state": {
+            "enum": [
+              "fresh",
+              "stale",
+              "unavailable",
+              "unlisted"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "state_zh": {
+            "default": "",
+            "title": "State Zh",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "venue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue"
+          },
+          "venue_symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Symbol"
+          }
+        },
+        "required": [
+          "requested_symbol",
+          "symbol",
+          "base_symbol",
+          "state"
+        ],
+        "title": "NewsQuoteData",
+        "type": "object"
+      },
+      "NewsQuoteVenueData": {
+        "additionalProperties": false,
+        "properties": {
+          "age_ms": {
+            "title": "Age Ms",
+            "type": "integer"
+          },
+          "quote_count": {
+            "title": "Quote Count",
+            "type": "integer"
+          },
+          "received_at_ms": {
+            "title": "Received At Ms",
+            "type": "integer"
+          },
+          "source_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source At Ms"
+          },
+          "source_key": {
+            "title": "Source Key",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "target_count": {
+            "title": "Target Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source_key",
+          "target_count",
+          "quote_count",
+          "age_ms",
+          "state",
+          "received_at_ms"
+        ],
+        "title": "NewsQuoteVenueData",
+        "type": "object"
+      },
+      "NewsQuotesData": {
+        "additionalProperties": false,
+        "properties": {
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "quotes": {
+            "items": {
+              "$ref": "#/components/schemas/NewsQuoteData"
+            },
+            "title": "Quotes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "measured_at_ms"
+        ],
+        "title": "NewsQuotesData",
+        "type": "object"
+      },
+      "NewsReactionSummaryData": {
+        "additionalProperties": false,
+        "description": "The compact event-level Event Reaction: one sample per Event, median over its priceable primaries.\n\nThis is a fixed historical measurement anchored at the Event, not a current rolling window. A pending\nhorizon says pending; it is never zero.",
+        "properties": {
+          "asset_n": {
+            "default": 0,
+            "title": "Asset N",
+            "type": "integer"
+          },
+          "metric_version": {
+            "title": "Metric Version",
+            "type": "string"
+          },
+          "priced_n": {
+            "default": 0,
+            "title": "Priced N",
+            "type": "integer"
+          },
+          "return_1h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 1H Bps"
+          },
+          "return_4h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 4H Bps"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "partial",
+              "complete",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "state_zh": {
+            "default": "",
+            "title": "State Zh",
+            "type": "string"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          },
+          "unavailable_reason_zh": {
+            "default": "",
+            "title": "Unavailable Reason Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "metric_version"
+        ],
+        "title": "NewsReactionSummaryData",
+        "type": "object"
+      },
       "NewsReasonCountData": {
         "additionalProperties": false,
         "properties": {
@@ -1812,6 +2486,670 @@
         "title": "NewsReasonCountData",
         "type": "object"
       },
+      "NewsReviewCoverageData": {
+        "additionalProperties": false,
+        "description": "Coverage before accuracy: every percentage on the page is paired with the N it came from.",
+        "properties": {
+          "coverage_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Pct"
+          },
+          "degraded_n": {
+            "default": 0,
+            "title": "Degraded N",
+            "type": "integer"
+          },
+          "eligible_n": {
+            "title": "Eligible N",
+            "type": "integer"
+          },
+          "horizon": {
+            "enum": [
+              "1h",
+              "4h"
+            ],
+            "title": "Horizon",
+            "type": "string"
+          },
+          "horizon_zh": {
+            "default": "",
+            "title": "Horizon Zh",
+            "type": "string"
+          },
+          "no_primary_n": {
+            "default": 0,
+            "title": "No Primary N",
+            "type": "integer"
+          },
+          "priced_n": {
+            "title": "Priced N",
+            "type": "integer"
+          },
+          "unavailable": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewUnavailableData"
+            },
+            "title": "Unavailable",
+            "type": "array"
+          }
+        },
+        "required": [
+          "horizon",
+          "eligible_n",
+          "priced_n"
+        ],
+        "title": "NewsReviewCoverageData",
+        "type": "object"
+      },
+      "NewsReviewData": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewCoverageData"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
+          "directions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewDirectionData"
+            },
+            "title": "Directions",
+            "type": "array"
+          },
+          "event_types": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewEventTypeData"
+            },
+            "title": "Event Types",
+            "type": "array"
+          },
+          "magnitudes": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewMagnitudeData"
+            },
+            "title": "Magnitudes",
+            "type": "array"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/NewsReviewMetaData"
+          },
+          "potential_misses": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewMissData"
+            },
+            "title": "Potential Misses",
+            "type": "array"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/NewsReviewSummaryData"
+          }
+        },
+        "required": [
+          "meta",
+          "summary"
+        ],
+        "title": "NewsReviewData",
+        "type": "object"
+      },
+      "NewsReviewDirectionData": {
+        "additionalProperties": false,
+        "description": "`scored` marks the rows that carry hit-rate: neutral and unclear report their N, never accuracy.\n\nDirection rows are counts by design (#88 \u00a78). Return distributions belong to the magnitude and\nevent-type sections, which is where the median columns live.",
+        "properties": {
+          "coverage_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Pct"
+          },
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "direction_zh": {
+            "default": "",
+            "title": "Direction Zh",
+            "type": "string"
+          },
+          "eligible_n": {
+            "title": "Eligible N",
+            "type": "integer"
+          },
+          "hit_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hit Pct"
+          },
+          "hits": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hits"
+          },
+          "horizon": {
+            "enum": [
+              "1h",
+              "4h"
+            ],
+            "title": "Horizon",
+            "type": "string"
+          },
+          "horizon_zh": {
+            "default": "",
+            "title": "Horizon Zh",
+            "type": "string"
+          },
+          "priced_n": {
+            "title": "Priced N",
+            "type": "integer"
+          },
+          "scored": {
+            "title": "Scored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "direction",
+          "horizon",
+          "scored",
+          "eligible_n",
+          "priced_n"
+        ],
+        "title": "NewsReviewDirectionData",
+        "type": "object"
+      },
+      "NewsReviewEventTypeData": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage_1h_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage 1H Pct"
+          },
+          "eligible_n": {
+            "title": "Eligible N",
+            "type": "integer"
+          },
+          "escalated_n": {
+            "title": "Escalated N",
+            "type": "integer"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "event_type_zh": {
+            "default": "",
+            "title": "Event Type Zh",
+            "type": "string"
+          },
+          "held_n": {
+            "title": "Held N",
+            "type": "integer"
+          },
+          "median_1h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median 1H Bps"
+          },
+          "median_4h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median 4H Bps"
+          },
+          "median_abs_1h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Abs 1H Bps"
+          },
+          "median_abs_4h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Abs 4H Bps"
+          },
+          "priced_1h_n": {
+            "title": "Priced 1H N",
+            "type": "integer"
+          },
+          "pushed_n": {
+            "title": "Pushed N",
+            "type": "integer"
+          },
+          "pushed_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pushed Pct"
+          }
+        },
+        "required": [
+          "event_type",
+          "eligible_n",
+          "pushed_n",
+          "escalated_n",
+          "held_n",
+          "priced_1h_n"
+        ],
+        "title": "NewsReviewEventTypeData",
+        "type": "object"
+      },
+      "NewsReviewMagnitudeData": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage_1h_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage 1H Pct"
+          },
+          "eligible_n": {
+            "title": "Eligible N",
+            "type": "integer"
+          },
+          "magnitude": {
+            "title": "Magnitude",
+            "type": "integer"
+          },
+          "magnitude_zh": {
+            "default": "",
+            "title": "Magnitude Zh",
+            "type": "string"
+          },
+          "mean_abs_1h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Abs 1H Bps"
+          },
+          "mean_abs_4h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Abs 4H Bps"
+          },
+          "median_abs_1h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Abs 1H Bps"
+          },
+          "median_abs_4h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Abs 4H Bps"
+          },
+          "priced_1h_n": {
+            "title": "Priced 1H N",
+            "type": "integer"
+          },
+          "priced_4h_n": {
+            "title": "Priced 4H N",
+            "type": "integer"
+          },
+          "share_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share Pct"
+          }
+        },
+        "required": [
+          "magnitude",
+          "eligible_n",
+          "priced_1h_n",
+          "priced_4h_n"
+        ],
+        "title": "NewsReviewMagnitudeData",
+        "type": "object"
+      },
+      "NewsReviewMetaData": {
+        "additionalProperties": false,
+        "properties": {
+          "hours": {
+            "title": "Hours",
+            "type": "integer"
+          },
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "metric_version": {
+            "title": "Metric Version",
+            "type": "string"
+          },
+          "window_end_ms": {
+            "title": "Window End Ms",
+            "type": "integer"
+          },
+          "window_start_ms": {
+            "title": "Window Start Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hours",
+          "window_start_ms",
+          "window_end_ms",
+          "metric_version",
+          "measured_at_ms"
+        ],
+        "title": "NewsReviewMetaData",
+        "type": "object"
+      },
+      "NewsReviewMissData": {
+        "additionalProperties": false,
+        "description": "A review queue, not a verdict: movement never proves the Event caused it or should have been pushed.",
+        "properties": {
+          "asset_n": {
+            "default": 0,
+            "title": "Asset N",
+            "type": "integer"
+          },
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/NewsEventReactionData"
+            },
+            "title": "Assets",
+            "type": "array"
+          },
+          "decision_zh": {
+            "default": "",
+            "title": "Decision Zh",
+            "type": "string"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "direction_zh": {
+            "default": "",
+            "title": "Direction Zh",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
+          },
+          "event_type_zh": {
+            "default": "",
+            "title": "Event Type Zh",
+            "type": "string"
+          },
+          "final_decision": {
+            "title": "Final Decision",
+            "type": "string"
+          },
+          "headline_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline Zh"
+          },
+          "leader_title": {
+            "default": "",
+            "title": "Leader Title",
+            "type": "string"
+          },
+          "magnitude": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Magnitude"
+          },
+          "magnitude_zh": {
+            "default": "",
+            "title": "Magnitude Zh",
+            "type": "string"
+          },
+          "opened_at_ms": {
+            "title": "Opened At Ms",
+            "type": "integer"
+          },
+          "override_rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Rule"
+          },
+          "override_rule_zh": {
+            "default": "",
+            "title": "Override Rule Zh",
+            "type": "string"
+          },
+          "return_1h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 1H Bps"
+          },
+          "return_4h_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 4H Bps"
+          },
+          "storyline_key": {
+            "default": "",
+            "title": "Storyline Key",
+            "type": "string"
+          },
+          "throttled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Throttled By"
+          },
+          "throttled_by_zh": {
+            "default": "",
+            "title": "Throttled By Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "opened_at_ms",
+          "final_decision"
+        ],
+        "title": "NewsReviewMissData",
+        "type": "object"
+      },
+      "NewsReviewSummaryData": {
+        "additionalProperties": false,
+        "description": "The topbar figure. A percentage without a priced denominator is not shown at all.",
+        "properties": {
+          "coverage_1h_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage 1H Pct"
+          },
+          "hit_1h_n": {
+            "default": 0,
+            "title": "Hit 1H N",
+            "type": "integer"
+          },
+          "hit_1h_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hit 1H Pct"
+          }
+        },
+        "title": "NewsReviewSummaryData",
+        "type": "object"
+      },
+      "NewsReviewUnavailableData": {
+        "additionalProperties": false,
+        "properties": {
+          "n": {
+            "title": "N",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "reason_zh": {
+            "default": "",
+            "title": "Reason Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "n"
+        ],
+        "title": "NewsReviewUnavailableData",
+        "type": "object"
+      },
       "NewsStatusData": {
         "additionalProperties": false,
         "properties": {
@@ -1842,6 +3180,9 @@
           },
           "pipeline": {
             "$ref": "#/components/schemas/NewsPipelineStatusData"
+          },
+          "price": {
+            "$ref": "#/components/schemas/NewsPriceStatusData"
           },
           "reasons_24h": {
             "items": {
@@ -2873,6 +4214,97 @@
           }
         },
         "summary": "Get News Feed",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/quotes": {
+      "get": {
+        "description": "Current quotes for a bounded symbol batch (#88).\n\nDeliberately not part of `/api/news/feed`: a price that changes every few seconds would invalidate the\nfeed's ETag on every poll and drag the feed and count queries along with it. The browser derives this\nbatch from the `assets[]` the feed already returned, so one query serves every row on screen.",
+        "operationId": "get_news_quotes_api_news_quotes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "symbols",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 2000,
+              "title": "Symbols",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsQuotesData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Quotes",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/review": {
+      "get": {
+        "description": "\u547d\u4e2d\u590d\u76d8: coverage, direction accuracy, magnitude calibration, event types, and potential misses.",
+        "operationId": "get_news_review_api_news_review_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 168,
+              "maximum": 720,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsReviewData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Review",
         "tags": [
           "api"
         ]

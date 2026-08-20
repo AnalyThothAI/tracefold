@@ -9,5 +9,6 @@ export function Component() {
   const location = useLocation();
   if (eventId) return <NewsPage eventId={eventId} token={token} view="event" />;
   if (location.pathname === "/news/status") return <NewsPage token={token} view="status" />;
+  if (location.pathname === "/news/review") return <NewsPage token={token} view="review" />;
   return <NewsPage token={token} view="feed" />;
 }

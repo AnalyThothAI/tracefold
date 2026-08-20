@@ -30,6 +30,19 @@ export type NewsHealthItem = NewsSchemas["NewsHealthItemData"];
 export type NewsHealthLevel = NewsHealthItem["level"];
 export type NewsFunnel = NewsSchemas["NewsFunnelData"];
 export type NewsReasonCount = NewsSchemas["NewsReasonCountData"];
+export type NewsQuote = NewsSchemas["NewsQuoteData"];
+export type NewsQuoteState = NewsQuote["state"];
+export type NewsQuotes = NewsSchemas["NewsQuotesData"];
+export type NewsReaction = NewsSchemas["NewsReactionSummaryData"];
+export type NewsReactionState = NewsReaction["state"];
+export type NewsEventReaction = NewsSchemas["NewsEventReactionData"];
+export type NewsReview = NewsSchemas["NewsReviewData"];
+export type NewsReviewCoverage = NewsSchemas["NewsReviewCoverageData"];
+export type NewsReviewDirection = NewsSchemas["NewsReviewDirectionData"];
+export type NewsReviewMagnitude = NewsSchemas["NewsReviewMagnitudeData"];
+export type NewsReviewEventType = NewsSchemas["NewsReviewEventTypeData"];
+export type NewsReviewMiss = NewsSchemas["NewsReviewMissData"];
+export type NewsPriceStatus = NewsSchemas["NewsPriceStatusData"];
 
 export type NewsFeedPriority = "high" | "normal";
 export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
@@ -51,6 +64,17 @@ export const NEWS_FEED_PAGE_SIZE = 25;
 export const NEWS_FEED_REFETCH_MS = 3_000;
 export const NEWS_STATUS_REFETCH_MS = 15_000;
 export const NEWS_EVENT_REFETCH_MS = 15_000;
+/**
+ * Quotes poll on the feed's own rhythm but from a separate query key (#88): a price that changed must not
+ * make the feed and its counts query return a new body every three seconds.
+ */
+export const NEWS_QUOTES_REFETCH_MS = 3_000;
+/** The review window is a stable aggregate; a minute is plenty and keeps a 720 h query off the hot path. */
+export const NEWS_REVIEW_REFETCH_MS = 60_000;
+/** `/api/news/quotes` accepts at most this many symbols; the hook batches the visible rows into one call. */
+export const NEWS_QUOTES_SYMBOL_MAX = 100;
+export const NEWS_REVIEW_HOURS: readonly number[] = [24, 72, 168, 720];
+export const NEWS_REVIEW_DEFAULT_HOURS = 168;
 
 export type NewsFeedFilters = {
   admission: string | null;
@@ -148,4 +172,47 @@ export const useNewsStatusWithToken = (token: string) =>
       ).data,
     refetchInterval: NEWS_STATUS_REFETCH_MS,
     staleTime: 5_000,
+  });
+
+/**
+ * Current quotes for one deduplicated symbol batch (#88).
+ *
+ * The batch is sorted and deduplicated before it becomes a query key, so two surfaces asking for the same
+ * symbols share one cache entry and one request. The server deduplicates again — a client cannot multiply
+ * repository or provider work by repeating a symbol.
+ */
+export const useNewsQuotesWithToken = (token: string, symbols: readonly string[]) => {
+  const batch = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))]
+    .sort()
+    .slice(0, NEWS_QUOTES_SYMBOL_MAX);
+  return useQuery({
+    enabled: Boolean(token && batch.length),
+    queryKey: queryKeys.newsQuotes(batch),
+    queryFn: async () =>
+      (
+        await getApi<NewsQuotes>("/api/news/quotes", {
+          etagKey: `news-quotes:${batch.join(",")}`,
+          params: { symbols: batch.join(",") },
+          token,
+        })
+      ).data,
+    refetchInterval: NEWS_QUOTES_REFETCH_MS,
+    staleTime: 2_000,
+  });
+};
+
+export const useNewsReviewWithToken = (token: string, hours: number) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.newsReview(hours),
+    queryFn: async () =>
+      (
+        await getApi<NewsReview>("/api/news/review", {
+          etagKey: `news-review:${hours}`,
+          params: { hours },
+          token,
+        })
+      ).data,
+    refetchInterval: NEWS_REVIEW_REFETCH_MS,
+    staleTime: 30_000,
   });

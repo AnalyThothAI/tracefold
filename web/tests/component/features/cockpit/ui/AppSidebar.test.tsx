@@ -17,16 +17,21 @@ describe("AppSidebar", () => {
     expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Research"]);
   });
 
-  it("renders the two supported primary destinations", () => {
+  it("renders the three supported primary destinations", () => {
     renderSidebar({ counts: { events: 1463 } });
 
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const links = within(navigation).getAllByRole("link");
-    expect(links.map((link) => link.getAttribute("href"))).toEqual(["/news", "/news/status"]);
-    // The feed carries the 24 h intake behind it; the status route has no count of its own.
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/news",
+      "/news/review",
+      "/news/status",
+    ]);
+    // The feed carries the 24 h intake behind it; review and status have no count of their own.
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1,463");
-    expect(links[1].textContent?.trim()).toBe("流水线状态");
+    expect(links[1].textContent?.trim()).toBe("命中复盘");
+    expect(links[2].textContent?.trim()).toBe("流水线状态");
   });
 
   it("marks the feed current on a drilldown, and only the feed", () => {

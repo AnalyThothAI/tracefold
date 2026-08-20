@@ -82,28 +82,55 @@ def _parse_universe(payload: Mapping[str, Any], *, venue: str) -> tuple[Instrume
 
 
 def _parse_spot(payload: Mapping[str, Any]) -> tuple[Instrument, ...]:
+    """`universe` is the tradeable half of `spotMeta`; `tokens` is a registry whose names nothing can price.
+
+    Hyperliquid quotes and candles take the *market* key — `@107`, or `PURR/USDC` for the one canonical
+    pair — never the token name. Ingesting `tokens` therefore produced 491 rows of which 326 were markets
+    (and one was `USDC` itself), each carrying a `venue_symbol` no provider request accepts (#88 §3).
+
+    The base is the market's first token and the quote asset its second, both resolved through the token
+    registry, so a pair keeps naming the asset News joins on while the venue symbol stays queryable.
+    """
+
     tokens = payload.get("tokens")
-    if not isinstance(tokens, Sequence):
+    universe = payload.get("universe")
+    if not isinstance(tokens, Sequence) or not isinstance(universe, Sequence):
         raise VenueExpectedError("venue_payload_invalid", venue="hl.spot")
-    out: list[Instrument] = []
-    seen: set[str] = set()
+    names: dict[int, str] = {}
     for entry in tokens:
         if not isinstance(entry, Mapping):
             continue
-        name = str(entry.get("name") or "").strip()
-        base = normalize_symbol(name)
-        if not name or not is_valid_symbol(base) or name in seen:
+        index, name = entry.get("index"), str(entry.get("name") or "").strip()
+        if isinstance(index, int) and not isinstance(index, bool) and name:
+            names[index] = name
+    out: list[Instrument] = []
+    seen: set[str] = set()
+    for entry in universe:
+        if not isinstance(entry, Mapping):
             continue
-        seen.add(name)
+        venue_symbol = str(entry.get("name") or "").strip()
+        pair = entry.get("tokens")
+        if not venue_symbol or venue_symbol in seen or not isinstance(pair, Sequence) or len(pair) < 2:
+            continue
+        base = normalize_symbol(_token_name(names, pair[0]))
+        quote = _token_name(names, pair[1]).upper()
+        if not is_valid_symbol(base):
+            continue
+        seen.add(venue_symbol)
         out.append(
             Instrument(
                 venue="hl.spot",
-                venue_symbol=name,
+                venue_symbol=venue_symbol,
                 base_symbol=base,
                 instrument_class=classify(base, venue="hl.spot"),
+                quote_asset=quote or None,
             )
         )
     return tuple(out)
+
+
+def _token_name(names: Mapping[int, str], index: Any) -> str:
+    return names.get(index, "") if isinstance(index, int) and not isinstance(index, bool) else ""
 
 
 async def _post(client: httpx.AsyncClient, url: str, body: Mapping[str, Any], *, venue: str) -> Mapping[str, Any]:

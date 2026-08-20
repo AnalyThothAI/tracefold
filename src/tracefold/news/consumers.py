@@ -61,6 +61,7 @@ from .opennews import (
     parse_opennews_message,
     parse_opennews_strategy_hits,
 )
+from .price_loops import EventReactionLoop, QuoteSnapshotLoop
 from .storyline import final_storyline_key
 from .triage_rules import (
     DEFAULT_POLICY,
@@ -1359,6 +1360,10 @@ class NewsPipeline:
     deliverer: DelivererConsumer
     janitor: JanitorLoop
     instruments: InstrumentSnapshotLoop | None = None
+    # #88: two cold Price Review loops. They are not consumers — no queue, no delivery, no hot-path lane —
+    # and every one of them may be absent without the pipeline changing shape.
+    quotes: QuoteSnapshotLoop | None = None
+    reactions: EventReactionLoop | None = None
     tasks: list[tuple[str, Callable[..., Any]]] = field(default_factory=list)
 
     def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Any]]]:
@@ -1377,6 +1382,10 @@ class NewsPipeline:
         )
         if self.instruments is not None:
             out.append(("news-instruments", lambda stop: self.instruments.run(stop_event=stop)))  # type: ignore[union-attr]
+        if self.quotes is not None:
+            out.append(("news-quotes", lambda stop: self.quotes.run(stop_event=stop)))  # type: ignore[union-attr]
+        if self.reactions is not None:
+            out.append(("news-reactions", lambda stop: self.reactions.run(stop_event=stop)))  # type: ignore[union-attr]
         return out
 
     async def close(self) -> None:
@@ -1386,10 +1395,12 @@ class NewsPipeline:
 __all__ = [
     "DeduperConsumer",
     "DelivererConsumer",
+    "EventReactionLoop",
     "InstrumentSnapshotLoop",
     "JanitorLoop",
     "NewsPipeline",
     "OpenNewsReceiver",
+    "QuoteSnapshotLoop",
     "RecoveryRunner",
     "TriageConsumer",
     "publish_event",

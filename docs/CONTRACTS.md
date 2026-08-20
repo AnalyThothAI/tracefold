@@ -145,7 +145,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Family | Routes | Source of data |
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status` | broker-driven Event feed, one Event with members/verdicts/deliveries/labels, and four-layer News status |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/review` | broker-driven Event feed, one Event with members/verdicts/deliveries/labels, four-layer News status, bounded current quotes, and the 命中复盘 aggregates |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -158,7 +158,7 @@ feature flag.
 ### News
 
 News is an operator-bound, Strategy-qualified Event surface. The public
-surface is exactly three read-only routes:
+surface is exactly five read-only routes:
 
 - `GET /api/news/feed?family={family}&admission={admission}&priority={high|normal}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&sort={latest|priority}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}`
   returns Events newest first (or high priority first) with the leader title,
@@ -370,9 +370,48 @@ News owns exactly eleven:
 `news_ingest_state`, `news_opennews_incidents`, `news_items`, `news_events`,
 `news_event_members`, `news_event_bands`, `news_event_assets`,
 `news_verdicts`, `news_deliveries`, `news_control_state`,
-`news_event_labels`. Migrations perform no provider, broker, or outbound call
+`news_event_labels`, plus the instrument universe (`news_market_instruments`,
+`news_symbol_aliases`, #75/#89) and the Price Review plane
+(`news_quote_snapshots`, `news_event_reactions`, #88) — fifteen in all, and the
+resulting schema is exactly 17 tables. Migrations perform no provider, broker, or outbound call
 and have no compatibility reader/writer; the Feed starts from the first frames
 observed after deployment.
+
+- `GET /api/news/quotes?symbols={comma-separated}` returns one result per
+  requested symbol, in request order, for at most 100 deduplicated symbols
+  (`news_quotes_symbols_too_many` / `news_quotes_symbol_invalid` otherwise).
+  Each result carries the requested symbol, the exact resolved symbol/base, the
+  venue and venue symbol, instrument class, quote asset, price, `price_kind`
+  (`last|mark|mid`), optional `change_pct` with the `change_basis` it came from
+  (`rolling_24h|provider_day`), provider and receipt timestamps, `age_ms`, and
+  one `state`: `fresh` (age <= 15 s), `stale`, `unavailable` (nothing quoted
+  yet) or `unlisted` (no venue we poll lists it). A price is a positive decimal
+  string or `null`; it is never `0`, and a failed venue leaves the previous row
+  in place rather than blanking it. Current quotes are deliberately **not** feed
+  fields — a price that changed must not invalidate the Feed ETag or re-run its
+  count query every three seconds.
+- `GET /api/news/review?hours={1..720}` (default 168) returns the 命中复盘
+  aggregates for one bounded window: `meta` (window, `metric_version`),
+  `coverage` per horizon (`eligible_n`, `priced_n`, `coverage_pct`, no-primary
+  and degraded counts, and the named unavailable reasons), `directions`
+  (bullish/bearish hit rate with its own `priced_n`; neutral and unclear carry
+  `scored: false` and no rate), `magnitudes`, `event_types`,
+  `potential_misses` (live Events that never reached the reader whose 1H is
+  complete, ranked by absolute 1H return, each with its decision, named
+  rule/throttle key and per-asset sources), and a compact `summary`
+  (`hit_1h_pct`, `hit_1h_n`, `coverage_1h_pct`) for the topbar. A percentage is
+  `null` when its denominator is zero — never `0`.
+- `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
+  Event Reaction: the feed the compact event-level aggregate (median signed
+  return of the Triage primaries that price, with `state`
+  `pending|partial|complete|unavailable`), the detail every per-asset row with
+  its pinned venue, raw closes, close timestamps, returns, metric version and
+  unavailable reason. A current quote and an Event Reaction are different
+  response types with different words; no field named simply `change` carries
+  either meaning.
+- `/api/news/status.price` reports per-source quote freshness (source key,
+  target and quote counts, age, state) and the Reaction backlog
+  (partial/complete/unavailable over 7 days) beside the pipeline's own health.
 
 ## CLI
 

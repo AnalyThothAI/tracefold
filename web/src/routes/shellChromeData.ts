@@ -1,7 +1,12 @@
 import type { AppSession } from "@app/useAppSession";
 import { APP_SHORTCUTS, useCockpitStatusQuery, type CockpitShellProps } from "@features/cockpit";
-import { useNewsStatusWithToken } from "@features/news/shell";
-import { newsPath, newsStatusPath } from "@shared/routing/paths";
+import {
+  NEWS_REVIEW_DEFAULT_HOURS,
+  hitFigure,
+  useNewsReviewWithToken,
+  useNewsStatusWithToken,
+} from "@features/news/shell";
+import { newsPath, newsReviewPath, newsStatusPath } from "@shared/routing/paths";
 import { searchWithOptionalPrefix } from "@shared/routing/searchParams";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
@@ -29,6 +34,9 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   // The same query key the feed header and the status route use, so React Query serves all three from one
   // poll. The sidebar shows the 24 h intake behind the Event feed.
   const newsStatusQuery = useNewsStatusWithToken(session.token);
+  // #88: the review summary behind the topbar figure. Same 60 s query key the 命中复盘 route uses, so the
+  // page and the chrome share one poll instead of each asking for a 168 h aggregate.
+  const newsReviewQuery = useNewsReviewWithToken(session.token, NEWS_REVIEW_DEFAULT_HOURS);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const awaitingGoto = useRef<number | null>(null);
@@ -67,6 +75,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
     if (awaitingGoto.current != null && Date.now() - awaitingGoto.current < GOTO_PREFIX_MS) {
       awaitingGoto.current = null;
       if (event.key === "f") navigate(newsPath());
+      if (event.key === "r") navigate(newsReviewPath());
       if (event.key === "s") navigate(newsStatusPath());
       return;
     }
@@ -120,6 +129,17 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
             label: "MISSED",
             tone: "caution" as const,
             value: newsStatusQuery.data?.pipeline?.labeled_missed_24h,
+          },
+          // #88: a hit rate arrives with its denominator or not at all — never a bare `0%`.
+          {
+            label: "HIT 1H",
+            text: newsReviewQuery.data
+              ? hitFigure(
+                  newsReviewQuery.data.summary.hit_1h_pct,
+                  newsReviewQuery.data.summary.hit_1h_n,
+                )
+              : undefined,
+            title: "最近 7 天，方向判断在事件后 1H 的命中率与样本量",
           },
         ],
         search: {

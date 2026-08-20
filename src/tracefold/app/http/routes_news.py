@@ -13,13 +13,21 @@ from tracefold.app.http.dependencies import _authenticated_runtime
 from tracefold.app.http.exceptions import ApiBadRequest
 from tracefold.app.http.responses import _json, _validated_etag_json
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
-from tracefold.news import grounding_rollup, status_health
+from tracefold.news import (
+    QUOTE_REQUEST_SYMBOL_MAX,
+    REVIEW_DEFAULT_HOURS,
+    REVIEW_MAX_HOURS,
+    grounding_rollup,
+    status_health,
+)
 from tracefold.platform.config.settings import news_model_availability, news_push_availability
 
 router = APIRouter()
 _FeedEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsFeedData]
 _EventEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsEventDetailData]
 _StatusEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsStatusData]
+_QuotesEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsQuotesData]
+_ReviewEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsReviewData]
 
 _ADMISSIONS = {
     "candidate",
@@ -88,6 +96,7 @@ def get_news_feed(
             # server fault and must not come back as a 400 naming a field the caller got right (#87 review).
             raise ApiBadRequest(str(exc), field="cursor") from exc
         _attach_asset_refs(data["events"], repos.instruments)
+        _attach_reactions(data["events"], repos.price, now_ms=int(time.time() * 1000))
     return _etagged(data, request, envelope=_FeedEnvelope)
 
 
@@ -102,9 +111,54 @@ def get_news_event(request: Request, event_id: str) -> Response:
         if data is not None:
             _attach_asset_refs([data["event"]], repos.instruments)
             data["normalization"] = _normalization(data["event"], repos.instruments)
+            now_ms = int(time.time() * 1000)
+            data["reactions"] = repos.price.event_reactions(event_id)
+            data["reaction"] = repos.price.event_reaction_aggregates([event_id], now_ms=now_ms).get(event_id)
     if data is None:
         return _json({"ok": False, "error": "news_event_not_found"}, status_code=404)
     return _etagged(data, request, envelope=_EventEnvelope)
+
+
+@router.get("/news/quotes", response_model=_QuotesEnvelope)
+def get_news_quotes(
+    request: Request,
+    symbols: Annotated[str, Query(max_length=2000)] = "",
+) -> Response:
+    """Current quotes for a bounded symbol batch (#88).
+
+    Deliberately not part of `/api/news/feed`: a price that changes every few seconds would invalidate the
+    feed's ETag on every poll and drag the feed and count queries along with it. The browser derives this
+    batch from the `assets[]` the feed already returned, so one query serves every row on screen.
+    """
+
+    _validate_query_params(request, supported={"symbols", "token"})
+    requested = _requested_symbols(symbols)
+    runtime = _authenticated_runtime(request)
+    now_ms = int(time.time() * 1000)
+    with runtime.repositories() as repos:
+        quotes = repos.price.quotes_for_symbols(requested, now_ms=now_ms)
+    return _etagged({"quotes": quotes, "measured_at_ms": now_ms}, request, envelope=_QuotesEnvelope)
+
+
+@router.get("/news/review", response_model=_ReviewEnvelope)
+def get_news_review(
+    request: Request,
+    hours: Annotated[int, Query(ge=1, le=REVIEW_MAX_HOURS)] = REVIEW_DEFAULT_HOURS,
+) -> Response:
+    """命中复盘: coverage, direction accuracy, magnitude calibration, event types, and potential misses."""
+
+    _validate_query_params(request, supported={"hours", "token"})
+    runtime = _authenticated_runtime(request)
+    with runtime.repositories() as repos:
+        data = repos.price.review(hours=int(hours), now_ms=int(time.time() * 1000))
+    return _validated_etag_json(
+        _ReviewEnvelope,
+        {"ok": True, "data": data},
+        data=data,
+        etag_data=_review_etag_basis(data),
+        request=request,
+        weak=True,
+    )
 
 
 @router.get("/news/status", response_model=_StatusEnvelope)
@@ -120,6 +174,7 @@ def get_news_status(request: Request) -> Response:
         # #87: each repository answers only over its own tables and the fold happens here — News knows which
         # tags an Event carried, the instrument universe knows which of them name something listed.
         usage = repos.news.asset_usage_24h(now_ms=now_ms)
+        price = repos.price.price_status(now_ms=now_ms)
         grounding = grounding_rollup(
             usage,
             repos.instruments.asset_refs({symbol for symbols in usage.values() for symbol in symbols}),
@@ -173,6 +228,7 @@ def get_news_status(request: Request) -> Response:
         "control": control,
         "watchlist": sorted(settings.news.watchlist_symbols),
         "instruments": instruments,
+        "price": price,
         "measured_at_ms": now_ms,
     }
     return _validated_etag_json(
@@ -213,6 +269,38 @@ def _attach_asset_refs(events: list[dict[str, Any]], instruments: Any) -> None:
             seen.add(str(ref["symbol"]))
             assets.append(ref)
         event["assets"] = assets
+
+
+def _requested_symbols(raw: str) -> list[str]:
+    """A deduplicated, bounded symbol list. The server deduplicates again so a noisy client cannot amplify work."""
+
+    out: list[str] = []
+    for part in str(raw or "").split(","):
+        symbol = part.strip()
+        if not symbol:
+            continue
+        if len(symbol) > 32:
+            raise ApiBadRequest("news_quotes_symbol_invalid", field="symbols")
+        if symbol not in out:
+            out.append(symbol)
+    if len(out) > QUOTE_REQUEST_SYMBOL_MAX:
+        raise ApiBadRequest("news_quotes_symbols_too_many", field="symbols")
+    return out
+
+
+def _review_etag_basis(data: dict[str, Any]) -> dict[str, Any]:
+    """The window's measurement, without the clock that measured it, so a 60 s poll can revalidate."""
+
+    meta = {key: value for key, value in (data.get("meta") or {}).items() if key not in {"measured_at_ms"}}
+    return {**data, "meta": meta}
+
+
+def _attach_reactions(events: list[dict[str, Any]], price: Any, *, now_ms: int) -> None:
+    """One bounded batch for the whole page: at most `limit` Event ids, never one query per row."""
+
+    aggregates = price.event_reaction_aggregates([event["event_id"] for event in events], now_ms=now_ms)
+    for event in events:
+        event["reaction"] = aggregates.get(str(event["event_id"]))
 
 
 def _normalization(event: dict[str, Any], instruments: Any) -> list[dict[str, Any]]:

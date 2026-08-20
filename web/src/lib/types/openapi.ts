@@ -55,6 +55,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/news/quotes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get News Quotes
+         * @description Current quotes for a bounded symbol batch (#88).
+         *
+         *     Deliberately not part of `/api/news/feed`: a price that changes every few seconds would invalidate the
+         *     feed's ETag on every poll and drag the feed and count queries along with it. The browser derives this
+         *     batch from the `assets[]` the feed already returned, so one query serves every row on screen.
+         */
+        get: operations["get_news_quotes_api_news_quotes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/news/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get News Review
+         * @description 命中复盘: coverage, direction accuracy, magnitude calibration, event types, and potential misses.
+         */
+        get: operations["get_news_review_api_news_review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/news/status": {
         parameters: {
             query?: never;
@@ -167,6 +211,26 @@ export interface components {
         /** ApiEnvelope[NewsFeedData] */
         ApiEnvelope_NewsFeedData_: {
             data?: components["schemas"]["NewsFeedData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsQuotesData] */
+        ApiEnvelope_NewsQuotesData_: {
+            data?: components["schemas"]["NewsQuotesData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsReviewData] */
+        ApiEnvelope_NewsReviewData_: {
+            data?: components["schemas"]["NewsReviewData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -387,6 +451,9 @@ export interface components {
             /** Normalization */
             normalization?: components["schemas"]["NewsSymbolNormalizationData"][];
             outcome: components["schemas"]["NewsOutcomeData"];
+            reaction?: components["schemas"]["NewsReactionSummaryData"] | null;
+            /** Reactions */
+            reactions?: components["schemas"]["NewsEventReactionData"][];
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
             triage?: components["schemas"]["NewsTriageSummaryData"] | null;
@@ -418,6 +485,62 @@ export interface components {
             title: string;
             /** Url */
             url?: string | null;
+        };
+        /**
+         * NewsEventReactionData
+         * @description One per-asset Reaction with the raw closes it was computed from, for audit on the detail page.
+         */
+        NewsEventReactionData: {
+            /** Anchor At Ms */
+            anchor_at_ms: number;
+            /**
+             * Instrument Class
+             * @default unknown
+             */
+            instrument_class: string;
+            /** Metric Version */
+            metric_version: string;
+            /** P0 */
+            p0?: string | null;
+            /** P0 At Ms */
+            p0_at_ms?: number | null;
+            /** P1 */
+            p1?: string | null;
+            /** P1 At Ms */
+            p1_at_ms?: number | null;
+            /** P4 */
+            p4?: string | null;
+            /** P4 At Ms */
+            p4_at_ms?: number | null;
+            /** Return 1H Bps */
+            return_1h_bps?: number | null;
+            /** Return 4H Bps */
+            return_4h_bps?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "partial" | "complete" | "unavailable";
+            /**
+             * State Zh
+             * @default
+             */
+            state_zh: string;
+            /** Symbol */
+            symbol: string;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+            /**
+             * Unavailable Reason Zh
+             * @default
+             */
+            unavailable_reason_zh: string;
+            /** Updated At Ms */
+            updated_at_ms?: number | null;
+            /** Venue */
+            venue?: string | null;
+            /** Venue Symbol */
+            venue_symbol?: string | null;
         };
         /**
          * NewsFeedCountsData
@@ -497,6 +620,7 @@ export interface components {
             provider_score_max?: number | null;
             /** Published At Ms */
             published_at_ms?: number | null;
+            reaction?: components["schemas"]["NewsReactionSummaryData"] | null;
             /**
              * Reporting Origin
              * @default
@@ -853,6 +977,173 @@ export interface components {
                 [key: string]: number;
             };
         };
+        /**
+         * NewsPriceStatusData
+         * @description #88 §11: per-source freshness and Reaction backlog, so congestion is visible before the UI shows it.
+         */
+        NewsPriceStatusData: {
+            /**
+             * Fresh Sources
+             * @default 0
+             */
+            fresh_sources: number;
+            /**
+             * Metric Version
+             * @default
+             */
+            metric_version: string;
+            /**
+             * Oldest Due Age Ms
+             * @default 0
+             */
+            oldest_due_age_ms: number;
+            /**
+             * Quotes
+             * @default 0
+             */
+            quotes: number;
+            /**
+             * Reaction Complete 7D
+             * @default 0
+             */
+            reaction_complete_7d: number;
+            /**
+             * Reaction Partial 7D
+             * @default 0
+             */
+            reaction_partial_7d: number;
+            /**
+             * Reaction Unavailable 7D
+             * @default 0
+             */
+            reaction_unavailable_7d: number;
+            /** Sources */
+            sources?: components["schemas"]["NewsQuoteVenueData"][];
+        };
+        /**
+         * NewsQuoteData
+         * @description One current quote (#88). `state` is derived when read, never maintained by a timer write.
+         *
+         *     `unlisted` and `unavailable` answer different questions — "no venue we poll lists this tag" versus "we have
+         *     not managed to quote it yet" — and neither ever renders as a price of zero. `price_kind` and `change_basis`
+         *     are explicit because a derivative mid must never be presented as a cash-equity last price.
+         */
+        NewsQuoteData: {
+            /** Age Ms */
+            age_ms?: number | null;
+            /** Base Symbol */
+            base_symbol: string;
+            /** Change Basis */
+            change_basis?: string | null;
+            /**
+             * Change Basis Zh
+             * @default
+             */
+            change_basis_zh: string;
+            /** Change Pct */
+            change_pct?: number | null;
+            /** Instrument Class */
+            instrument_class?: string | null;
+            /** Price */
+            price?: string | null;
+            /** Price Kind */
+            price_kind?: string | null;
+            /**
+             * Price Kind Zh
+             * @default
+             */
+            price_kind_zh: string;
+            /** Quote Asset */
+            quote_asset?: string | null;
+            /** Received At Ms */
+            received_at_ms?: number | null;
+            /** Requested Symbol */
+            requested_symbol: string;
+            /** Source At Ms */
+            source_at_ms?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "fresh" | "stale" | "unavailable" | "unlisted";
+            /**
+             * State Zh
+             * @default
+             */
+            state_zh: string;
+            /** Symbol */
+            symbol: string;
+            /** Venue */
+            venue?: string | null;
+            /** Venue Symbol */
+            venue_symbol?: string | null;
+        };
+        /** NewsQuoteVenueData */
+        NewsQuoteVenueData: {
+            /** Age Ms */
+            age_ms: number;
+            /** Quote Count */
+            quote_count: number;
+            /** Received At Ms */
+            received_at_ms: number;
+            /** Source At Ms */
+            source_at_ms?: number | null;
+            /** Source Key */
+            source_key: string;
+            /** State */
+            state: string;
+            /** Target Count */
+            target_count: number;
+        };
+        /** NewsQuotesData */
+        NewsQuotesData: {
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Quotes */
+            quotes?: components["schemas"]["NewsQuoteData"][];
+        };
+        /**
+         * NewsReactionSummaryData
+         * @description The compact event-level Event Reaction: one sample per Event, median over its priceable primaries.
+         *
+         *     This is a fixed historical measurement anchored at the Event, not a current rolling window. A pending
+         *     horizon says pending; it is never zero.
+         */
+        NewsReactionSummaryData: {
+            /**
+             * Asset N
+             * @default 0
+             */
+            asset_n: number;
+            /** Metric Version */
+            metric_version: string;
+            /**
+             * Priced N
+             * @default 0
+             */
+            priced_n: number;
+            /** Return 1H Bps */
+            return_1h_bps?: number | null;
+            /** Return 4H Bps */
+            return_4h_bps?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "partial" | "complete" | "unavailable";
+            /**
+             * State Zh
+             * @default
+             */
+            state_zh: string;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+            /**
+             * Unavailable Reason Zh
+             * @default
+             */
+            unavailable_reason_zh: string;
+        };
         /** NewsReasonCountData */
         NewsReasonCountData: {
             /** Count */
@@ -867,6 +1158,268 @@ export interface components {
              */
             stage: "gate" | "drop" | "throttle" | "push" | "degraded" | "ungrounded";
         };
+        /**
+         * NewsReviewCoverageData
+         * @description Coverage before accuracy: every percentage on the page is paired with the N it came from.
+         */
+        NewsReviewCoverageData: {
+            /** Coverage Pct */
+            coverage_pct?: number | null;
+            /**
+             * Degraded N
+             * @default 0
+             */
+            degraded_n: number;
+            /** Eligible N */
+            eligible_n: number;
+            /**
+             * Horizon
+             * @enum {string}
+             */
+            horizon: "1h" | "4h";
+            /**
+             * Horizon Zh
+             * @default
+             */
+            horizon_zh: string;
+            /**
+             * No Primary N
+             * @default 0
+             */
+            no_primary_n: number;
+            /** Priced N */
+            priced_n: number;
+            /** Unavailable */
+            unavailable?: components["schemas"]["NewsReviewUnavailableData"][];
+        };
+        /** NewsReviewData */
+        NewsReviewData: {
+            /** Coverage */
+            coverage?: components["schemas"]["NewsReviewCoverageData"][];
+            /** Directions */
+            directions?: components["schemas"]["NewsReviewDirectionData"][];
+            /** Event Types */
+            event_types?: components["schemas"]["NewsReviewEventTypeData"][];
+            /** Magnitudes */
+            magnitudes?: components["schemas"]["NewsReviewMagnitudeData"][];
+            meta: components["schemas"]["NewsReviewMetaData"];
+            /** Potential Misses */
+            potential_misses?: components["schemas"]["NewsReviewMissData"][];
+            summary: components["schemas"]["NewsReviewSummaryData"];
+        };
+        /**
+         * NewsReviewDirectionData
+         * @description `scored` marks the rows that carry hit-rate: neutral and unclear report their N, never accuracy.
+         *
+         *     Direction rows are counts by design (#88 §8). Return distributions belong to the magnitude and
+         *     event-type sections, which is where the median columns live.
+         */
+        NewsReviewDirectionData: {
+            /** Coverage Pct */
+            coverage_pct?: number | null;
+            /** Direction */
+            direction: string;
+            /**
+             * Direction Zh
+             * @default
+             */
+            direction_zh: string;
+            /** Eligible N */
+            eligible_n: number;
+            /** Hit Pct */
+            hit_pct?: number | null;
+            /** Hits */
+            hits?: number | null;
+            /**
+             * Horizon
+             * @enum {string}
+             */
+            horizon: "1h" | "4h";
+            /**
+             * Horizon Zh
+             * @default
+             */
+            horizon_zh: string;
+            /** Priced N */
+            priced_n: number;
+            /** Scored */
+            scored: boolean;
+        };
+        /** NewsReviewEventTypeData */
+        NewsReviewEventTypeData: {
+            /** Coverage 1H Pct */
+            coverage_1h_pct?: number | null;
+            /** Eligible N */
+            eligible_n: number;
+            /** Escalated N */
+            escalated_n: number;
+            /** Event Type */
+            event_type: string;
+            /**
+             * Event Type Zh
+             * @default
+             */
+            event_type_zh: string;
+            /** Held N */
+            held_n: number;
+            /** Median 1H Bps */
+            median_1h_bps?: number | null;
+            /** Median 4H Bps */
+            median_4h_bps?: number | null;
+            /** Median Abs 1H Bps */
+            median_abs_1h_bps?: number | null;
+            /** Median Abs 4H Bps */
+            median_abs_4h_bps?: number | null;
+            /** Priced 1H N */
+            priced_1h_n: number;
+            /** Pushed N */
+            pushed_n: number;
+            /** Pushed Pct */
+            pushed_pct?: number | null;
+        };
+        /** NewsReviewMagnitudeData */
+        NewsReviewMagnitudeData: {
+            /** Coverage 1H Pct */
+            coverage_1h_pct?: number | null;
+            /** Eligible N */
+            eligible_n: number;
+            /** Magnitude */
+            magnitude: number;
+            /**
+             * Magnitude Zh
+             * @default
+             */
+            magnitude_zh: string;
+            /** Mean Abs 1H Bps */
+            mean_abs_1h_bps?: number | null;
+            /** Mean Abs 4H Bps */
+            mean_abs_4h_bps?: number | null;
+            /** Median Abs 1H Bps */
+            median_abs_1h_bps?: number | null;
+            /** Median Abs 4H Bps */
+            median_abs_4h_bps?: number | null;
+            /** Priced 1H N */
+            priced_1h_n: number;
+            /** Priced 4H N */
+            priced_4h_n: number;
+            /** Share Pct */
+            share_pct?: number | null;
+        };
+        /** NewsReviewMetaData */
+        NewsReviewMetaData: {
+            /** Hours */
+            hours: number;
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Metric Version */
+            metric_version: string;
+            /** Window End Ms */
+            window_end_ms: number;
+            /** Window Start Ms */
+            window_start_ms: number;
+        };
+        /**
+         * NewsReviewMissData
+         * @description A review queue, not a verdict: movement never proves the Event caused it or should have been pushed.
+         */
+        NewsReviewMissData: {
+            /**
+             * Asset N
+             * @default 0
+             */
+            asset_n: number;
+            /** Assets */
+            assets?: components["schemas"]["NewsEventReactionData"][];
+            /**
+             * Decision Zh
+             * @default
+             */
+            decision_zh: string;
+            /** Direction */
+            direction?: string | null;
+            /**
+             * Direction Zh
+             * @default
+             */
+            direction_zh: string;
+            /** Event Id */
+            event_id: string;
+            /** Event Type */
+            event_type?: string | null;
+            /**
+             * Event Type Zh
+             * @default
+             */
+            event_type_zh: string;
+            /** Final Decision */
+            final_decision: string;
+            /** Headline Zh */
+            headline_zh?: string | null;
+            /**
+             * Leader Title
+             * @default
+             */
+            leader_title: string;
+            /** Magnitude */
+            magnitude?: number | null;
+            /**
+             * Magnitude Zh
+             * @default
+             */
+            magnitude_zh: string;
+            /** Opened At Ms */
+            opened_at_ms: number;
+            /** Override Rule */
+            override_rule?: string | null;
+            /**
+             * Override Rule Zh
+             * @default
+             */
+            override_rule_zh: string;
+            /** Return 1H Bps */
+            return_1h_bps?: number | null;
+            /** Return 4H Bps */
+            return_4h_bps?: number | null;
+            /**
+             * Storyline Key
+             * @default
+             */
+            storyline_key: string;
+            /** Throttled By */
+            throttled_by?: string | null;
+            /**
+             * Throttled By Zh
+             * @default
+             */
+            throttled_by_zh: string;
+        };
+        /**
+         * NewsReviewSummaryData
+         * @description The topbar figure. A percentage without a priced denominator is not shown at all.
+         */
+        NewsReviewSummaryData: {
+            /** Coverage 1H Pct */
+            coverage_1h_pct?: number | null;
+            /**
+             * Hit 1H N
+             * @default 0
+             */
+            hit_1h_n: number;
+            /** Hit 1H Pct */
+            hit_1h_pct?: number | null;
+        };
+        /** NewsReviewUnavailableData */
+        NewsReviewUnavailableData: {
+            /** N */
+            n: number;
+            /** Reason */
+            reason: string;
+            /**
+             * Reason Zh
+             * @default
+             */
+            reason_zh: string;
+        };
         /** NewsStatusData */
         NewsStatusData: {
             broker: components["schemas"]["NewsBrokerStatusData"];
@@ -879,6 +1432,7 @@ export interface components {
             /** Measured At Ms */
             measured_at_ms: number;
             pipeline: components["schemas"]["NewsPipelineStatusData"];
+            price?: components["schemas"]["NewsPriceStatusData"];
             /** Reasons 24H */
             reasons_24h?: components["schemas"]["NewsReasonCountData"][];
             /**
@@ -1228,6 +1782,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_NewsFeedData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_news_quotes_api_news_quotes_get: {
+        parameters: {
+            query?: {
+                symbols?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsQuotesData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_news_review_api_news_review_get: {
+        parameters: {
+            query?: {
+                hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsReviewData_"];
                 };
             };
             /** @description Validation Error */
