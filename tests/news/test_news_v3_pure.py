@@ -859,3 +859,85 @@ def test_gate_expectations_over_the_recall_corpus() -> None:
     # Head-line numbers the hard cut is accountable for: most items reach Triage, templates never do.
     assert report["candidate_share_of_items"] >= 0.7
     assert report["counts"].get("admission:suppressed_pr_template", 0) >= 8
+
+
+def _fresh(**seen: object) -> StorylineStatus:
+    """A storyline nobody has pushed on yet — exactly what a provider batch fanning out across N keys looks like,
+    and exactly what the v5 count throttle could never see."""
+
+    return StorylineStatus(key="asset:KLAC", **seen)  # type: ignore[arg-type]
+
+
+_OKX_LEDGER = (
+    "Ciena Corporation（$CIENx）出现在 OKX",
+    "Salesforce（$CRMx）出现在 OKX",
+    "康宁（$GLWx）出现在 OKX",
+)
+
+
+def test_decide_v6_measures_every_push_not_only_the_throttled_ones() -> None:
+    """#100: v5 read the reader's ledger only on a storyline the count throttle had already stopped. A fresh key
+    has `pushed_2h = 0`, so `max_similarity` never ran — 55% of a live day's pushes were never compared with the
+    78-row ledger sitting in memory, and one batch shipped 19 near-identical cards in 7 minutes."""
+
+    duplicate = _verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")
+    window = _fresh(seen_headlines=_OKX_LEDGER, seen_event_ids=("a", "b", "c"))
+
+    stopped = decide(duplicate, _FACTS, window)
+    assert stopped.final == "throttled" and stopped.throttled_by == "storyline:asset:KLAC:seen"
+    assert stopped.seen_scope == "all" and stopped.seen_similarity is not None
+    assert stopped.seen_similarity >= DEFAULT_POLICY.similarity_max
+
+    # A card about something else on the same fresh key still goes out, and is traced as measured.
+    fresh_fact = decide(_verdict(headline_zh="美联储会议纪要显示多数官员倾向 9 月降息"), _FACTS, window)
+    assert fresh_fact.final == "push" and fresh_fact.throttled_by is None
+    assert fresh_fact.seen_scope == "all" and fresh_fact.seen_similarity is not None
+
+    # The v5 path is unchanged and still says which path measured it.
+    busy = _busy(seen_headlines=("英伟达发布 Blackwell Ultra，单卡算力翻倍",), seen_event_ids=("evt-a",))
+    v5_repeat = decide(_verdict(headline_zh="英伟达发布 Blackwell Ultra 芯片，单卡算力翻倍"), _FACTS, busy)
+    assert v5_repeat.throttled_by == "storyline:asset:NVDA:seen" and v5_repeat.seen_scope == "throttled"
+
+    # The switch restores v5 exactly: a fresh key is never measured, so the duplicate ships.
+    v5 = DecidePolicy(similarity_all_pushes=False)
+    assert decide(duplicate, _FACTS, window, policy=v5).final == "push"
+    assert decide(duplicate, _FACTS, window, policy=v5).seen_scope == ""
+
+
+def test_decide_v6_never_withholds_an_escalate_on_the_new_path() -> None:
+    """Character bigrams over a fixed topic vocabulary mistake one Trump headline for another. On a magnitude-3
+    card that mistake is not affordable, so `escalate` stays on the v5 path: only its own hot storyline can
+    withhold it."""
+
+    told = ("特朗普称其政府已结束对加密的战争",)
+    big = _verdict(magnitude=3, headline_zh="特朗普称美国正考虑购买大量比特币及其他加密资产")
+    on_fresh = decide(big, _FACTS, _fresh(seen_headlines=told, seen_event_ids=("a",)))
+    assert on_fresh.final == "escalate" and on_fresh.throttled_by is None and on_fresh.seen_scope == ""
+
+    # On the new path a distinct escalate is released, exactly as before — the exemption only skips the
+    # measurement, it does not make `escalate` unthrottleable.
+    hot = StorylineStatus(
+        key="asset:NVDA",
+        pushed_4h=1,
+        max_magnitude_4h=3,
+        directions_4h=("bullish",),
+        seen_headlines=("特朗普称美国正考虑购买大量比特币及其他加密资产",),
+        seen_event_ids=("a",),
+    )
+    repeat = decide(big, _FACTS, hot)
+    assert repeat.final == "throttled" and repeat.seen_scope == "throttled"
+    assert repeat.throttled_by == "storyline:asset:NVDA:seen"
+
+
+def test_decide_v6_leaves_the_degraded_and_switched_off_paths_alone() -> None:
+    """A rule-baseline card carries a placeholder headline, and `similarity_max = 0` is the operator switching the
+    content judgment off. Neither is ever measured, on either path."""
+
+    window = _fresh(seen_headlines=_OKX_LEDGER, seen_event_ids=("a", "b", "c"))
+    duplicate = _verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")
+
+    degraded = decide(duplicate, _FACTS, window, degraded=True)
+    assert degraded.final == "push" and degraded.seen_similarity is None and degraded.seen_scope == ""
+
+    off = decide(duplicate, _FACTS, window, policy=DecidePolicy(similarity_max=0.0))
+    assert off.final == "push" and off.seen_similarity is None and off.seen_scope == ""

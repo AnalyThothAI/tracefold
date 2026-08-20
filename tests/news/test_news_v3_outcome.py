@@ -186,6 +186,12 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
     assert throttled_by_zh("storyline:theme:rates:hard18") == "「利率与央行」话题 4 小时内已推 18 条，达到防洪上限"
     assert throttled_by_zh("storyline:asset:BTC:seen") == "重复：读者刚收到过内容高度相近的卡片"
     assert throttled_by_zh("storyline:macro:general:cap3:seen") == "重复：读者刚收到过内容高度相近的卡片"
+    # Policy v6 (issue #100): the every-push path emits `storyline:<key>:seen` on a storyline the count throttle
+    # never touched, so the key carries no `cap`/`hard` segment. `:seen` short-circuits ahead of the shape
+    # regexes, which is why v6 needed no new vocabulary — pin that so a future edit cannot reorder it away.
+    assert throttled_by_zh("storyline:asset:KLAC:seen") == "重复：读者刚收到过内容高度相近的卡片"
+    assert throttled_by_zh("storyline:theme:mideast_energy:seen") == "重复：读者刚收到过内容高度相近的卡片"
+    assert throttled_by_zh("storyline:macro:general:seen") == "重复：读者刚收到过内容高度相近的卡片"
     # Historical keys (the pre-v5 hard caps) still read as sentences.
     assert throttled_by_zh("storyline:theme:rates:hard6") == "「利率与央行」话题 4 小时内已推 6 条，达到防洪上限"
     assert throttled_by_zh("storyline:macro:general:hard6") == "「综合」类 4 小时内已推 6 条，达到防洪上限"

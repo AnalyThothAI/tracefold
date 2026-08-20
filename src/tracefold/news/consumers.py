@@ -920,8 +920,11 @@ class TriageConsumer:
         trace["seen_count"] = len(status.seen_headlines)
         if decision.seen_similarity is not None:
             # What the throttle actually measured, so `news why` can name the card this one resembled instead of
-            # reporting a bare rule (#81).
+            # reporting a bare rule (#81). ``seen_scope`` says which path measured it — the count throttle
+            # (``throttled``, the v5 path) or every-push measurement (``all``, #100) — so the effect of policy v6
+            # is countable without re-parsing `throttled_by`.
             trace["seen_similarity"] = round(float(decision.seen_similarity), 4)
+            trace["seen_scope"] = decision.seen_scope
             if 0 <= decision.seen_against < len(s.seen):
                 # `seen_headlines` was built from `s.seen` in order, so the index names that ledger row.
                 row = s.seen[decision.seen_against]

@@ -226,6 +226,9 @@ class NewsPolicySettings(BaseModel):
     similarity_max: float = 0.25
     distinct_hard_cap_4h: int = 18
     distinct_asset_cap_2h: int = 6
+    # Policy v6 (#100): measure every push candidate against the reader's window, not only the ones the count
+    # throttle already stopped. Set false to restore the v5 behaviour (measure only what the throttle stopped).
+    similarity_all_pushes: bool = True
     # #77: the Gate's AMQP priority no longer decides the ⚡ header. Set true to restore the pre-v4 behaviour.
     high_priority_escalates: bool = False
 
@@ -607,6 +610,7 @@ news:
     similarity_max: 0.25
     distinct_hard_cap_4h: 18
     distinct_asset_cap_2h: 6
+    similarity_all_pushes: true
     high_priority_escalates: false
   retention:
     raw_days: 30
