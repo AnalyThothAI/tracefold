@@ -101,7 +101,11 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
     action = str(getattr(args, "action", "summary") or "summary")
 
     if action == "snapshot":
-        from tracefold.integrations.venues import fetch_binance_instruments, fetch_hyperliquid_instruments
+        from tracefold.integrations.venues import (
+            fetch_binance_instruments,
+            fetch_hyperliquid_instruments,
+            fetch_us_reference_instruments,
+        )
 
         venues = settings.news.venues
         fetchers = []
@@ -109,6 +113,8 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
             fetchers.append(("binance", fetch_binance_instruments))
         if venues.hyperliquid:
             fetchers.append(("hyperliquid", fetch_hyperliquid_instruments))
+        if venues.us_reference:
+            fetchers.append(("us_reference", fetch_us_reference_instruments))
         if not fetchers:
             return 1, {"ok": False, "error": "news_venues_all_disabled"}
         instruments: list[Any] = []
@@ -158,6 +164,9 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "symbol": symbol,
                 "base_symbol": base,
                 "venues": list(repos.instruments.venues_for(base)),
+                # `us.listed` is a reference row, not a venue: without this an operator reads
+                # `{"venues": ["us.listed"]}` as "tradeable" (#91).
+                "tradeable": repos.instruments.is_tradeable(base),
                 "instrument_class": repos.instruments.instrument_classes().get(base),
             },
         }

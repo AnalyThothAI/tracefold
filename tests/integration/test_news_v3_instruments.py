@@ -303,6 +303,97 @@ def test_both_runtime_roles_have_the_expected_privileges(conn) -> None:
     assert row["workers_alias"] is True
 
 
+def _with_reference_tier(repos) -> None:
+    """One symbol on a real venue that is also a US ticker, and one that only the directory knows."""
+
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [
+                _inst("binance.perp", "ATOMUSDT", "ATOM", "USDT"),
+                _inst("us.listed", "ATOM", "ATOM", cls="equity"),
+                _inst("us.listed", "UWMC", "UWMC", cls="equity"),
+            ],
+            now_ms=NOW,
+        )
+
+
+def test_a_traded_venue_always_beats_the_reference_directory(conn) -> None:
+    """`ATOM` is Atomera on the NYSE and the Cosmos token on three exchanges. Ranking alone gets this wrong —
+    `equity` outranks `crypto` — so the tiers have to be separate (#91)."""
+
+    repos = repositories_for_connection(conn)
+    _with_reference_tier(repos)
+
+    classes = repos.instruments.instrument_classes()
+    assert classes["ATOM"] == "crypto"  # the venue that lists it describes it
+    assert classes["UWMC"] == "equity"  # nothing lists it, so the directory answers
+    assert repos.instruments.venues_for("ATOM") == ("binance.perp", "us.listed")
+    # `venues_for` still shows the reference row — an operator asking what a symbol *is* wants to see it — so the
+    # tradeable question is answered separately rather than left to be guessed from a venue string.
+    assert repos.instruments.is_tradeable("ATOM") is True
+    assert repos.instruments.is_tradeable("UWMC") is False
+
+
+def test_asset_refs_never_claim_a_reference_only_symbol_is_listed(conn) -> None:
+    """The chip and the funnel it feeds mean "on a venue we poll" — a US ticker with no perp is not that."""
+
+    repos = repositories_for_connection(conn)
+    _with_reference_tier(repos)
+
+    refs = repos.instruments.asset_refs(["ATOM", "UWMC"])
+    assert refs["ATOM"] == {"symbol": "ATOM", "base_symbol": "ATOM", "venue": "binance.perp", "listed": True}
+    assert refs["UWMC"] == {"symbol": "UWMC", "base_symbol": "UWMC", "venue": None, "listed": False}
+
+
+def test_an_alias_of_a_traded_symbol_beats_a_us_ticker_of_the_same_name(conn) -> None:
+    """`BTT` is a NYSE ticker *and* the seed alias of `BTTC`, a Binance token. Folding the directory in before
+    aliases resolve handed a BitTorrent headline to the stock branch (#91 review)."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [
+                _inst("binance.spot", "BTTCUSDT", "BTTC", "USDT"),
+                _inst("us.listed", "BTT", "BTT", cls="equity"),
+            ],
+            now_ms=NOW,
+        )
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"BTT": "BTTC"})
+
+    classes = repos.instruments.instrument_classes()
+    assert classes["BTTC"] == "crypto"
+    assert classes["BTT"] == "crypto"  # the alias resolves inside the traded tier, before the directory speaks
+
+
+def test_a_seed_alias_that_only_the_directory_resolves_is_still_dangling(conn) -> None:
+    """Every seed exists to collapse contracts into one storyline bucket. `XAU -> GOLD` landing on Barrick Gold's
+    NYSE ticker is the same silent dead end the report was written for (#91 review)."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "BTCUSDT", "BTC", "USDT"), _inst("us.listed", "GOLD", "GOLD", cls="equity")],
+            now_ms=NOW,
+        )
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"XAU": "GOLD"})
+
+    assert repos.instruments.dangling_seed_aliases() == ({"alias": "XAU", "base_symbol": "GOLD"},)
+
+
+def test_universe_summary_keeps_the_reference_tier_out_of_the_traded_counts(conn) -> None:
+    """`在交易合约` has to keep meaning contracts: 13k directory rows would turn that figure into a different one."""
+
+    repos = repositories_for_connection(conn)
+    _with_reference_tier(repos)
+
+    summary = repos.instruments.universe_summary()
+    assert summary["trading"] == 1 and summary["base_symbols"] == 1 and summary["venues"] == 1
+    assert summary["by_venue"] == {"binance.perp": 1}
+    assert summary["by_class"] == {"crypto": 1}
+    assert summary["reference_symbols"] == 2
+    assert summary["last_snapshot_ms"] == NOW  # the timestamp still spans every tier
+
+
 def _migration_0282() -> Any:
     """Load the 0282 revision by path: `alembic/versions` is not a package."""
 

@@ -8,6 +8,9 @@ import "./newsInstrumentUniverse.css";
  * What the venue catalogues hold (#75, surfaced by #87). Not a fifth health card: the per-venue snapshot
  * failures live in the worker process and are never persisted, so there is no *venue* health to render.
  *
+ * `参考目录` counts the US listed-symbol tier (#91) — tickers that tell the Gate a headline is about a stock and
+ * that nobody can trade here, which is why every other figure and both breakdowns exclude them.
+ *
  * `dangling_aliases` is the one number here the server does state a target for — a seed alias pointing at a
  * symbol no venue lists resolves to nothing, silently, which is how `1810.HK -> XIAOMI` went unnoticed for a
  * week (#89). It should be 0, so it is toned the moment it is not; the rest are inventory. Rendering the
@@ -39,6 +42,12 @@ export function InstrumentUniverse({ status }: { status: NewsStatus }) {
         <div>
           <dt>场所</dt>
           <dd>{formatCount(universe.venues ?? 0)}</dd>
+        </div>
+        <div>
+          <dt>参考目录</dt>
+          <dd title="美股上市代码，只用来判断标的是不是股票，在这里不可交易">
+            {formatCount(universe.reference_symbols ?? 0)}
+          </dd>
         </div>
         <div>
           <dt>最近快照</dt>

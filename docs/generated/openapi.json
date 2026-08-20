@@ -1441,7 +1441,7 @@
       },
       "NewsInstrumentUniverse": {
         "additionalProperties": false,
-        "description": "#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.\n\n`dangling_aliases` counts seed aliases pointing at a symbol no venue lists \u2014 each one is a provider tag that\nsilently resolves to nothing, which is how `1810.HK -> XIAOMI` went unnoticed for a week (#89). It should be 0.",
+        "description": "#75: what the last venue snapshot holds. `last_snapshot_ms` is None until the first snapshot lands.\n\n`dangling_aliases` counts seed aliases pointing at a symbol no venue lists \u2014 each one is a provider tag that\nsilently resolves to nothing, which is how `1810.HK -> XIAOMI` went unnoticed for a week (#89). It should be 0.\n\nEvery other figure counts contracts on venues we poll. `reference_symbols` is the separate US listed-symbol\ndirectory (#91): those tickers tell the Gate a headline is about a stock, but nobody can trade them here, so\nfolding them into `trading` would make that number mean something else.",
         "properties": {
           "base_symbols": {
             "default": 0,
@@ -1482,6 +1482,11 @@
               }
             ],
             "title": "Last Snapshot Ms"
+          },
+          "reference_symbols": {
+            "default": 0,
+            "title": "Reference Symbols",
+            "type": "integer"
           },
           "trading": {
             "default": 0,

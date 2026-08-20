@@ -153,6 +153,7 @@ news:
     enabled: true
     binance: true
     hyperliquid: true
+    us_reference: true          # US listed-symbol directory (#91): tells the Gate a ticker is a stock, not tradeable here
     snapshot_period_hours: 6.0
   watchlist:
     - {symbol: BTC}

@@ -9,6 +9,8 @@ import httpx
 import pytest
 
 from tracefold.integrations.venues.binance import fetch_binance_instruments
+from tracefold.integrations.venues.errors import VenueExpectedError
+from tracefold.integrations.venues.us_reference import fetch_us_reference_instruments
 from tracefold.news.gate import GateInput, asset_class_of, evaluate_gate, grounded_assets
 from tracefold.news.instruments import (
     ALIAS_SEEDS,
@@ -367,3 +369,124 @@ def test_grounding_counts_only_events_that_offered_a_tag() -> None:
     assert rollup["tagged_24h"] == 4
     assert rollup["grounded_24h"] == 1
     assert rollup["ungrounded_by_symbol_24h"] == {"SPOT": 1}
+
+
+# ------------------------------------------------------- US reference directory
+
+_NASDAQ_HEADER = "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares"
+_OTHER_HEADER = "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol"
+_TRAILER = "File Creation Time: 0820202603:02|||||||"
+
+
+def _padding(prefix: str, count: int, *, other: bool = False) -> list[str]:
+    """Filler so the fixtures clear the per-file floor that stops a truncated answer mass-delisting the tier."""
+
+    if other:
+        return [f"{prefix}{i}|Filler Corp|N|{prefix}{i}|N|100|N|{prefix}{i}" for i in range(count)]
+    return [f"{prefix}{i}|Filler Inc. - Common Stock|Q|N|N|100|N|N" for i in range(count)]
+
+
+_NASDAQ_LISTED = "\n".join(
+    [
+        _NASDAQ_HEADER,
+        "AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N",
+        "QQQ|Invesco QQQ Trust, Series 1|Q|N|N|100|Y|N",
+        "ZZZT|Nasdaq Test Stock|G|Y|N|100|N|N",
+        *_padding("NDQ", 120),
+        _TRAILER,
+    ]
+)
+
+_OTHER_LISTED = "\n".join(
+    [
+        _OTHER_HEADER,
+        "UWMC|UWM Holdings Corporation Class A Common Stock|N|UWMC|N|100|N|UWMC",
+        "BRK.A|Berkshire Hathaway Inc.|N|BRK A|N|10|N|BRK/A",
+        "AAPL|Duplicate across both files|N|AAPL|N|100|N|AAPL",
+        "truncated row",
+        *_padding("NYS", 120, other=True),
+        _TRAILER,
+    ]
+)
+
+
+def _us_reference_transport() -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _OTHER_LISTED if "otherlisted" in str(request.url) else _NASDAQ_LISTED
+        return httpx.Response(200, content=body.encode())
+
+    return httpx.MockTransport(handler)
+
+
+def test_us_reference_reads_the_directory_the_way_the_file_declares_it() -> None:
+    """Every ticker is a stock, the file's own ETF flag says which are funds, and nothing else gets through."""
+
+    fetched = asyncio.run(fetch_us_reference_instruments(transport=_us_reference_transport()))
+
+    assert {i.venue for i in fetched} == {"us.listed"}
+    named = {i.base_symbol: i.instrument_class for i in fetched if not i.base_symbol.startswith(("NDQ", "NYS"))}
+    assert named == {
+        "AAPL": "equity",  # the first file wins; the duplicate row in the second is dropped
+        "QQQ": "index",  # ETF = Y
+        "UWMC": "equity",
+        "BRK.A": "equity",  # dots are part of a US ticker
+    }
+    # A test issue, a truncated line, and a trailer padded to the full field count all have to be dropped.
+    assert "ZZZT" not in {i.base_symbol for i in fetched}
+    assert not any(" " in i.base_symbol for i in fetched)
+
+
+def test_a_word_collision_never_reaches_the_class_map() -> None:
+    """`SPOT` is Spotify in the US directory and "spot gold" in a headline — 84 tags in one week, all noise.
+
+    The order saves it: the collision stop-list runs inside `grounded_assets`, so a stop-listed tag is gone
+    before `asset_class_of` can ask the directory what it is. Adding thousands of three-letter tickers (#91)
+    does not widen that hole, and this pins the ordering that keeps it shut.
+    """
+
+    verdict = evaluate_gate(
+        GateInput(  # type: ignore[arg-type]
+            title="SPOT GOLD climbs to a record",
+            coins=_coins("SPOT"),
+            instrument_classes={"SPOT": "equity"},
+            engine_type="news",
+            strategy_ids=("1018",),
+            provider_score=85.0,
+            ingest_mode="live",
+        )
+    )
+    assert verdict.grounded_assets == ()
+    assert verdict.asset_class != "equity_or_commodity"
+
+
+def test_us_reference_refuses_a_file_that_came_back_almost_empty() -> None:
+    """A header-and-trailer answer is a broken file. Accepting it would mark ~6.5k reference rows delisted in one
+    turn and switch the whole tier off until a good snapshot lands."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _NASDAQ_LISTED if "nasdaqlisted" in str(request.url) else f"{_OTHER_HEADER}\n{_TRAILER}\n"
+        return httpx.Response(200, content=body.encode())
+
+    with pytest.raises(VenueExpectedError) as caught:
+        asyncio.run(fetch_us_reference_instruments(transport=httpx.MockTransport(handler)))
+    assert caught.value.code == "venue_payload_empty"
+
+
+def test_us_reference_reports_a_redirect_as_a_redirect() -> None:
+    """Redirects are not followed, so without this the short HTML body reads as a corrupt directory."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(301, headers={"location": "/moved"}, content=b"<html>moved</html>")
+
+    with pytest.raises(VenueExpectedError) as caught:
+        asyncio.run(fetch_us_reference_instruments(transport=httpx.MockTransport(handler)))
+    assert caught.value.code == "venue_http_error" and caught.value.status_code == 301
+
+
+def test_us_reference_refuses_a_payload_that_is_not_the_directory() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>maintenance</html>")
+
+    with pytest.raises(VenueExpectedError) as caught:
+        asyncio.run(fetch_us_reference_instruments(transport=httpx.MockTransport(handler)))
+    assert caught.value.code == "venue_payload_invalid"

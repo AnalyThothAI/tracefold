@@ -37,6 +37,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     # pure `Instrument` shape the News package owns.
     "src/tracefold/integrations/venues/binance.py": {"tracefold.news.instruments"},
     "src/tracefold/integrations/venues/hyperliquid.py": {"tracefold.news.instruments"},
+    "src/tracefold/integrations/venues/us_reference.py": {"tracefold.news.instruments"},
     "src/tracefold/integrations/rabbitmq.py": {"tracefold.news.bus"},
 }
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge

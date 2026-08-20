@@ -175,6 +175,7 @@ class _FakeInstrumentsRepository:
             "by_venue": {},
             "by_class": {},
             "dangling_aliases": 0,
+            "reference_symbols": 0,
         }
 
 

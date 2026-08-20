@@ -274,7 +274,12 @@ instead: `asset_class` is `equity_or_commodity` when a grounded symbol resolves
 to an `equity`/`commodity`/`index`/`fx`/`pre_ipo` instrument, `crypto` when it
 resolves to a coin, and falls back to the provider's `XYZ-` prefix when the
 universe is empty or does not know the symbol. Equities with no crypto perp
-(`UWMC`, `TLX`) therefore still read as `crypto`; closing that is #91.
+(`UWMC`, `TLX`) are answered by the `us.listed` reference tier (#91), which is
+consulted only for symbols no traded venue lists — `ATOM` is the Cosmos token
+on three exchanges *and* Atomera on the NYSE, and the venue that lists a symbol
+always describes it. The tier is excluded from `asset_refs`, from the console's
+`符号落表` funnel segment, and from the `trading` / `by_venue` figures; only
+`instrument_classes()` reads it.
 The Gate does not decide relevance: every Item is a `candidate` unless it is a
 recovery replay, a law-firm template notice (strong template phrases always;
 weak ones only without a grounded asset), an under-80 market-telemetry frame,
