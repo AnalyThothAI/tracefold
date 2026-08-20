@@ -27,6 +27,12 @@ Admission = Literal[
 # the Gate and the queue (#72: 19 events, 0 verdicts, 0 deliveries since launch). One constant, so it cannot
 # drift again.
 ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset({"candidate", "listing_deterministic"})
+# How long the Janitor keeps trying to rescue an Event that was created but never reached the Triage queue
+# (commit-then-crash, or a publish failure). Measured event -> delivery latency is p50 4.2 s / p95 16.8 s, so this
+# is ~100x the p95: it can only fire on a genuinely stranded Event, never on a slow one. Past it the Event is not
+# republished — a card the reader would receive half an hour late is worse than no card (#76: one catch-up sent a
+# 30.6 h old exchange notice). Code-owned, not policy: it is a relevance floor, not a tuning knob.
+OUTBOX_MAX_AGE_MS: Final[int] = 30 * 60_000
 Audience = Literal["crypto", "us_equity", "macro", "none"]
 AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
@@ -126,6 +132,7 @@ __all__ = [
     "EVENT_IDENTITY_VERSION",
     "GATE_POLICY_VERSION",
     "NEWS_BUS_SCHEMA_VERSION",
+    "OUTBOX_MAX_AGE_MS",
     "STORYLINE_POLICY_VERSION",
     "TRIAGE_POLICY_VERSION",
     "TRIAGE_PROMPT_VERSION",

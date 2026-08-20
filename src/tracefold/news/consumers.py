@@ -48,6 +48,7 @@ from .delivery import render_first_card
 from .events import admit_item
 from .models import (
     ADMITTED_ADMISSIONS,
+    OUTBOX_MAX_AGE_MS,
     TRIAGE_POLICY_VERSION,
     TRIAGE_PROMPT_VERSION,
     TriageVerdict,
@@ -1261,10 +1262,20 @@ class JanitorLoop:
     async def republish_unpublished(self) -> int:
         """Commit-then-crash (or publish failure) before publish: re-publish candidate Events that never left."""
 
-        rows = await self.db.read(
-            "news_outbox_unpublished",
-            lambda repos: repos.news.unpublished_candidates(older_than_ms=now_ms() - _OUTBOX_MIN_AGE_MS),
-        )
+        stamp = now_ms()
+        floor_ms, ceiling_ms = stamp - _OUTBOX_MIN_AGE_MS, stamp - OUTBOX_MAX_AGE_MS
+
+        def _scan(repos: Any) -> Any:
+            return repos.news.outbox_scan(older_than_ms=floor_ms, newer_than_ms=ceiling_ms)
+
+        rows, expired = await self.db.read("news_outbox_unpublished", _scan)
+        if expired:
+            # Never silent: the ceiling gave up on these, and that is a fact an operator should see.
+            log.warning(
+                "news outbox gave up on %d stranded event(s) older than %d min (#76)",
+                expired,
+                OUTBOX_MAX_AGE_MS // 60_000,
+            )
         republished = 0
         for row in rows:
             event_id = str(row["event_id"])
