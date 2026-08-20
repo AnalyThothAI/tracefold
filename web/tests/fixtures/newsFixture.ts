@@ -302,6 +302,18 @@ export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {})
 
 export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStatus {
   return {
+    // #75 universe as the status route reports it. Without this the 标的表快照 card renders its
+    // "no snapshot yet" note and no test exercises the figures at all.
+    instruments: {
+      base_symbols: 1286,
+      by_class: { crypto: 1110, equity: 173, unknown: 18 },
+      by_venue: { "binance.spot": 789, "binance.perp": 744, "hl.xyz": 101 },
+      dangling_aliases: 0,
+      delisted: 0,
+      last_snapshot_ms: NEWS_NOW_MS - 3_600_000,
+      trading: 2344,
+      venues: 9,
+    },
     broker: {
       configured: true,
       connected: true,

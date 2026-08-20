@@ -1,0 +1,66 @@
+@layer app.features {
+  /*
+   * The instrument-universe card on `/news/status` (#75, surfaced by #87). Its own owner file rather than
+   * another twenty lines in the route bucket — `newsStatus.css` was at the 500-line budget the harness
+   * enforces, and this card is one self-contained component.
+   */
+  .news-universe {
+    display: grid;
+    gap: 0.7rem;
+  }
+  .news-universe-figures {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+    gap: 0.6rem;
+    margin: 0;
+  }
+  .news-universe-figures dt {
+    color: var(--text-subtle);
+    font-size: 0.68rem;
+  }
+  .news-universe-figures dd {
+    margin: 0;
+    color: var(--text-primary);
+    font: 640 0.95rem/1.3 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  /*
+   * The one figure in the card with a target: a seed alias pointing at a symbol no venue lists resolves to
+   * nothing, silently. It reads as ordinary inventory at 0 and takes the pipeline's caution tone the moment
+   * it is not — amber, never red, because red is 利多 in this console (`tokens.css`).
+   */
+  .news-universe-figures .news-toned[data-tone] dt {
+    color: var(--news-tone);
+    font-weight: 600;
+  }
+  .news-universe-figures .news-toned[data-tone] dd {
+    color: var(--news-tone);
+  }
+  .news-universe-venues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border-faint);
+    list-style: none;
+  }
+  .news-universe-venues li {
+    display: inline-flex;
+    gap: 0.4rem;
+    align-items: baseline;
+    padding: 0.1rem 0.45rem;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+  }
+  .news-universe-venues code {
+    color: var(--text-muted);
+    font: 500 0.68rem/1.5 var(--font-mono);
+  }
+  .news-universe-venues b {
+    color: var(--text-primary);
+    font: 640 0.7rem/1.5 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}

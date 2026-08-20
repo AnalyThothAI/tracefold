@@ -135,6 +135,28 @@ describe("News console contract", () => {
     }
   });
 
+  it("renders every field the instrument-universe summary carries", () => {
+    /*
+     * `by_class` and `dangling_aliases` were served for a whole release without appearing anywhere — and
+     * `dangling_aliases` is an alarm the server states a target for. A card that silently drops fields is
+     * the same failure as a stage list that silently drops groups, so it gets the same kind of gate.
+     */
+    const page = readSource("src/features/news/ui/status/NewsInstrumentUniverse.tsx");
+    const generated = readSource("src/lib/types/openapi.ts");
+
+    const fields = [
+      ...(generated.match(/NewsInstrumentUniverse:\s*\{([\s\S]*?)\n {8}\}/)?.[1] ?? "").matchAll(
+        /^\s{12}(\w+)\??:/gm,
+      ),
+    ].map((match) => match[1]);
+    expect(fields).toContain("dangling_aliases");
+    expect(fields.length).toBeGreaterThan(4);
+
+    for (const field of fields) {
+      expect(page, `标的表快照 must render instruments.${field}`).toContain(`universe.${field}`);
+    }
+  });
+
   it("renders every reason stage the API contract can send", () => {
     /*
      * `REASON_STAGE_ORDER` is the render filter, not just a sort: a stage missing from it is dropped

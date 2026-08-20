@@ -418,62 +418,6 @@
     }
   }
 
-  /* ------------------------------------------------------------------ instrument universe */
-  .news-universe {
-    display: grid;
-    gap: 0.7rem;
-  }
-
-  .news-universe-figures {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
-    gap: 0.6rem;
-    margin: 0;
-  }
-
-  .news-universe-figures dt {
-    color: var(--text-subtle);
-    font-size: 0.68rem;
-  }
-
-  .news-universe-figures dd {
-    margin: 0;
-    color: var(--text-primary);
-    font: 640 0.95rem/1.3 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .news-universe-venues {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin: 0;
-    padding-top: 0.6rem;
-    border-top: 1px solid var(--border-faint);
-    list-style: none;
-  }
-
-  .news-universe-venues li {
-    display: inline-flex;
-    gap: 0.4rem;
-    align-items: baseline;
-    padding: 0.1rem 0.45rem;
-    border: 1px solid var(--border-faint);
-    border-radius: var(--radius-sm);
-    background: var(--surface-raised);
-  }
-
-  .news-universe-venues code {
-    color: var(--text-muted);
-    font: 500 0.68rem/1.5 var(--font-mono);
-  }
-
-  .news-universe-venues b {
-    color: var(--text-primary);
-    font: 640 0.7rem/1.5 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
   @media (max-width: 767px) {
     .news-health-grid,
     .news-status-grid {
