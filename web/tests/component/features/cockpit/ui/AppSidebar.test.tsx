@@ -38,6 +38,16 @@ describe("AppSidebar", () => {
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 
+  it("marks only the status route current on the status route", () => {
+    // `/news` is a prefix of `/news/status`, so a link that decides for itself by prefix would leave two
+    // destinations announcing themselves as the current page.
+    renderSidebar({ route: "/news/status" });
+
+    expect(screen.getByRole("link", { name: "状态" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "事件流" })).not.toHaveAttribute("aria-current");
+    expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
+  });
+
   it("does not expose a retired Macro destination or persistent health chrome", () => {
     renderSidebar({ route: "/news" });
 

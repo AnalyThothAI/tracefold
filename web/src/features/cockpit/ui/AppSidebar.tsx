@@ -10,7 +10,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@shared/ui/sidebar";
-import { NavLink, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import { APP_NAVIGATION_GROUPS, type AppNavigationItem } from "./appNavigation";
 import "./AppSidebar.css";
@@ -74,7 +74,13 @@ function AppSidebarItem({
   return (
     <SidebarMenuItem>
       <SidebarMenuButton asChild isActive={active} tooltip={item.label}>
-        <NavLink
+        {/*
+         * A plain Link with `aria-current` driven by the same predicate as the visual state. `NavLink` would
+         * decide for itself by prefix, and `/news` is a prefix of `/news/status` — two links would announce
+         * themselves as the current page.
+         */}
+        <Link
+          aria-current={active ? "page" : undefined}
           onClick={() => {
             if (isMobile) setOpenMobile(false);
           }}
@@ -92,7 +98,7 @@ function AppSidebarItem({
               {new Intl.NumberFormat("zh-CN").format(count)}
             </span>
           )}
-        </NavLink>
+        </Link>
       </SidebarMenuButton>
     </SidebarMenuItem>
   );

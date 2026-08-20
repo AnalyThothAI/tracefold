@@ -3,60 +3,67 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from "react"
 /**
  * Keyboard reading position in the feed.
  *
- * The cursor is an index, but the browser focus is the real thing: `J`/`K` move focus onto the row element so
- * the platform scrolls it into view, screen readers announce it, and `Enter` is the row's own activation
- * rather than a synthetic one. Rows are `tabindex="-1"`; the list itself is the tab stop.
+ * The cursor is an Event id, not an index: the feed re-polls every three seconds and prepends new Events
+ * while the reader is at the top, so an index would silently start pointing at a different row than the one
+ * highlighted and focused.
+ *
+ * The browser focus is the real thing — `J`/`K` move focus onto the row element so the platform scrolls it
+ * into view and screen readers announce it. Rows are `tabindex="-1"`; the list itself is the tab stop.
  */
 export function useFeedCursor({
-  count,
   enabled,
+  eventIds,
   listRef,
   onActivate,
   onLabel,
 }: {
-  count: number;
   enabled: boolean;
+  eventIds: string[];
   listRef: RefObject<HTMLElement | null>;
-  onActivate: (index: number) => void;
-  onLabel: (index: number) => void;
+  onActivate: (eventId: string) => void;
+  onLabel: (eventId: string) => void;
 }) {
-  const [cursor, setCursor] = useState(-1);
+  const [cursor, setCursor] = useState<string | null>(null);
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
+  const idsRef = useRef(eventIds);
+  idsRef.current = eventIds;
   // The callbacks close over the caller's current event list, which changes on every poll; behind a ref the
   // key listener below is installed once.
   const handlers = useRef({ onActivate, onLabel });
   handlers.current = { onActivate, onLabel };
 
-  // A shorter list (a filter change, a narrower window) must not leave the cursor past the end.
+  // An Event that left the feed (a filter change, a narrower window) takes the cursor with it.
   useEffect(() => {
-    if (cursorRef.current >= count) setCursor(count ? count - 1 : -1);
-  }, [count]);
+    if (cursorRef.current && !eventIds.includes(cursorRef.current)) setCursor(null);
+  }, [eventIds]);
 
-  const focusRow = useCallback(
-    (index: number) => {
-      setCursor(index);
-      const rows = listRef.current?.querySelectorAll<HTMLElement>("[data-event-id]");
-      rows?.[index]?.focus();
+  const focusEvent = useCallback(
+    (eventId: string) => {
+      setCursor(eventId);
+      listRef.current
+        ?.querySelector<HTMLElement>(`[data-event-id="${CSS.escape(eventId)}"]`)
+        ?.focus();
     },
     [listRef],
   );
 
   const move = useCallback(
     (delta: number) => {
-      if (!count) return;
-      const from = cursorRef.current;
-      const next = from < 0 ? (delta > 0 ? 0 : count - 1) : from + delta;
-      focusRow(Math.min(count - 1, Math.max(0, next)));
+      const ids = idsRef.current;
+      if (!ids.length) return;
+      const from = cursorRef.current ? ids.indexOf(cursorRef.current) : -1;
+      const next = from < 0 ? (delta > 0 ? 0 : ids.length - 1) : from + delta;
+      focusEvent(ids[Math.min(ids.length - 1, Math.max(0, next))]);
     },
-    [count, focusRow],
+    [focusEvent],
   );
 
   useEffect(() => {
     if (!enabled) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return;
-      const index = cursorRef.current;
+      const cursorId = cursorRef.current;
       switch (event.key) {
         case "j":
         case "ArrowDown":
@@ -69,16 +76,17 @@ export function useFeedCursor({
           move(-1);
           return;
         case "Enter":
-          if (index >= 0) {
+          // A focused control owns its own Enter — a task tab, a row action, 加载更多事件.
+          if (cursorId && !isActivatable(event.target)) {
             event.preventDefault();
-            handlers.current.onActivate(index);
+            handlers.current.onActivate(cursorId);
           }
           return;
         case "x":
         case "X":
-          if (index >= 0) {
+          if (cursorId) {
             event.preventDefault();
-            handlers.current.onLabel(index);
+            handlers.current.onLabel(cursorId);
           }
           return;
         default:
@@ -89,7 +97,7 @@ export function useFeedCursor({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [enabled, move]);
 
-  return { cursor, setCursor: focusRow };
+  return { cursor };
 }
 
 function isTyping(target: EventTarget | null): boolean {
@@ -100,4 +108,11 @@ function isTyping(target: EventTarget | null): boolean {
     target.tagName === "SELECT" ||
     target.isContentEditable
   );
+}
+
+/** Something the platform will activate on Enter by itself. The feed row is not one — it is `tabindex="-1"`. */
+function isActivatable(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest("a, button, summary, [role='tab'], [role='button']");
+  return control != null;
 }

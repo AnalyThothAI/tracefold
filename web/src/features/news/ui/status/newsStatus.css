@@ -377,6 +377,12 @@
     background: var(--signal-caution);
   }
 
+  .news-strategy-note {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 0.7rem;
+  }
+
   .news-warning-block {
     display: flex;
     gap: 0.5rem;

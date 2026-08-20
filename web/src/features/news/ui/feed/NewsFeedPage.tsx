@@ -79,30 +79,18 @@ export function NewsFeedPage({ token }: { token: string }) {
     setSearchParams(nextFeedParams(searchParams, filters, changes), { replace: true });
   };
 
-  // What the keyboard reaches for. These close over this render's events and filters, so they live behind a
-  // ref and the listeners register once instead of on every three-second poll.
-  const actions = useRef({
-    labelEvent: (_index: number) => {},
-    openEvent: (_index: number) => {},
-    selectTab: (_index: number) => {},
-  });
+  // What the keyboard reaches for. These close over this render's filters, so they live behind a ref and the
+  // listeners register once instead of on every three-second poll.
+  const actions = useRef({ selectTab: (_index: number) => {} });
   actions.current = {
-    labelEvent: (index) => {
-      const event = events[index];
-      if (event) toast.copy(labelCommand(event.event_id, "bad"), "已复制「判错了」标注命令");
-    },
-    openEvent: (index) => {
-      const event = events[index];
-      if (event) navigate(newsEventPath(event.event_id), { state: { feedSearch } });
-    },
     selectTab: (index) => updateFeedParams({ outcome: TAB_ORDER[index] }),
   };
   const { cursor } = useFeedCursor({
-    count: events.length,
     enabled: events.length > 0,
+    eventIds: events.map((event) => event.event_id),
     listRef: eventListRef,
-    onActivate: (index) => actions.current.openEvent(index),
-    onLabel: (index) => actions.current.labelEvent(index),
+    onActivate: (eventId) => navigate(newsEventPath(eventId), { state: { feedSearch } }),
+    onLabel: (eventId) => toast.copy(labelCommand(eventId, "bad"), "已复制「判错了」标注命令"),
   });
 
   // Digits pick a task tab from anywhere on the route; the feed cursor owns the rest of the keyboard.
@@ -187,9 +175,9 @@ export function NewsFeedPage({ token }: { token: string }) {
               </button>
             ) : null}
             <div className="news-event-list" ref={eventListRef}>
-              {events.map((event, index) => (
+              {events.map((event) => (
                 <NewsEventRow
-                  cursor={index === cursor}
+                  cursor={event.event_id === cursor}
                   event={event}
                   key={event.event_id}
                   onCopy={toast.copy}

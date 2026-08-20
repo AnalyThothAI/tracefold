@@ -84,8 +84,12 @@ function TimelineStep({
   );
 }
 
+/**
+ * Absent, not falsy. `degraded: false` is the server answering the question, and an operator reading a
+ * timeline needs to tell that apart from a field the step never carried.
+ */
 function isEmptyFact(value: unknown): boolean {
-  if (value == null || value === "" || value === false) return true;
+  if (value == null || value === "") return true;
   if (Array.isArray(value)) return value.length === 0;
   if (typeof value === "object") return Object.keys(value as object).length === 0;
   return false;

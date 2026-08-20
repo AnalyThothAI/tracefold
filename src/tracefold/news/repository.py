@@ -877,7 +877,13 @@ class NewsRepository:
 
         The three predicates partition the feed exactly (see `_OUTCOME_GROUP_SQL`), so one pass with FILTER
         aggregates answers all four tabs. The joins mirror the feed query so a row counts here if and only if
-        it would be served there.
+        it would be served there, but the lateral takes only the column the predicates read rather than the
+        whole verdict row.
+
+        This is an unbounded aggregate on a three-second poll: it costs one pass over the filtered set, which
+        is the last 24 h by default but the whole retention when the reader picks `hours=all`. Measured at
+        19 ms over the entire table at ~2k Events / 1.3 days of retention; re-measure before letting either
+        grow much, and cap the window here if it stops being free.
         """
         row = self.conn.execute(
             f"""
@@ -888,7 +894,8 @@ class NewsRepository:
               FROM news_events e
               JOIN news_items i ON i.item_id = e.leader_item_id
               LEFT JOIN LATERAL (
-                SELECT * FROM news_verdicts v WHERE v.event_id = e.event_id AND v.stage = 'triage'
+                SELECT v.final_decision FROM news_verdicts v
+                 WHERE v.event_id = e.event_id AND v.stage = 'triage'
                  ORDER BY v.created_at_ms DESC LIMIT 1
               ) t ON true
               LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'

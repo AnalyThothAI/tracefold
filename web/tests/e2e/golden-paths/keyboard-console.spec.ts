@@ -83,6 +83,69 @@ test("routes with the go-to prefix, focuses search, and never hijacks a typed ke
   await expect(page).toHaveURL(/\/news(\?|$)/);
 });
 
+test("leaves a focused control its own Enter", async ({ page }) => {
+  await installMockApi(page);
+  await page.goto("/news");
+  await expect(page.locator(".news-event-row").first()).toBeVisible();
+
+  // Arm the cursor, then hand focus to a control. Enter belongs to the control, not to the cursor.
+  await page.keyboard.press("j");
+  await page.getByRole("tab", { name: "被拦截" }).focus();
+  await page.keyboard.press("Enter");
+
+  await expect(page).toHaveURL(/outcome=held/);
+  await expect(page).not.toHaveURL(/\/news\/events\//);
+});
+
+test("keeps the cursor on its Event when the feed re-polls", async ({ page }) => {
+  const feed = await installMockApi(page);
+  await page.goto("/news");
+  await expect(page.locator(".news-event-row").first()).toBeVisible();
+
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await expect(page.locator(cursorRow)).toHaveAttribute("data-event-id", "evt-global-policy-2");
+
+  // A newer Event arrives at the top, so every index shifts by one. The cursor is an Event, not a position.
+  feed.prependEvent("evt-breaking");
+  await expect(page.locator(".news-event-row").first()).toHaveAttribute(
+    "data-event-id",
+    "evt-breaking",
+  );
+  await expect(page.locator(cursorRow)).toHaveAttribute("data-event-id", "evt-global-policy-2");
+
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/news\/events\/evt-global-policy-2$/);
+});
+
+test("Esc out of an Event returns to the feed the reader left", async ({ page }) => {
+  await installMockApi(page);
+  await page.goto("/news?outcome=pushed&hours=1");
+  await expect(page.locator(".news-event-row").first()).toBeVisible();
+
+  await page.keyboard.press("j");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/news\/events\//);
+
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/outcome=pushed/);
+  await expect(page).toHaveURL(/hours=1/);
+});
+
+test("forgets a stray go-to prefix instead of swallowing the next key", async ({ page }) => {
+  await installMockApi(page);
+  await page.goto("/news");
+  await expect(page.locator(".news-event-row").first()).toBeVisible();
+
+  await page.keyboard.press("g");
+  await page.waitForTimeout(1_500);
+
+  // The prefix has expired: this is an ordinary cursor move, not the second half of a chord.
+  await page.keyboard.press("j");
+  await expect(page.locator(cursorRow)).toHaveAttribute("data-event-id", "evt-global-policy");
+  await expect(page).toHaveURL(/\/news(\?|$)/);
+});
+
 test("opens and closes the shortcut panel", async ({ page }) => {
   await installMockApi(page);
   await page.goto("/news");

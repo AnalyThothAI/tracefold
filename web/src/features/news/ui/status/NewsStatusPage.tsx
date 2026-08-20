@@ -353,10 +353,18 @@ function ControlView({ status }: { status: NewsStatus }) {
 function WatchAndStrategies({ status }: { status: NewsStatus }) {
   const warnings = status.ingest.strategy_warnings ?? [];
   const watchlist = status.watchlist ?? [];
-  const configured = (status.ingest.configured_strategy_ids ?? []).length;
-  const providerEnabled = status.ingest.provider_enabled_strategy_ids?.length ?? null;
-  // Counts only: the Strategy IDs are private account configuration and never reach the browser as values.
-  const matched = providerEnabled == null ? configured : Math.min(configured, providerEnabled);
+  const configuredIds = status.ingest.configured_strategy_ids ?? [];
+  const providerIds = status.ingest.provider_enabled_strategy_ids;
+  const configured = configuredIds.length;
+  /*
+   * Counts only: the Strategy IDs are private account configuration and never reach the browser as rendered
+   * values. The matched figure has to be a real intersection — comparing the two lengths would report a full
+   * match for three configured IDs the provider has never heard of, contradicting `strategy_warnings` right
+   * below it. When the provider list is unavailable there is nothing to match against, so no ratio is shown.
+   */
+  const matched = providerIds
+    ? configuredIds.filter((id) => providerIds.includes(id)).length
+    : null;
   return (
     <div className="news-watch">
       <h3 className="news-control-heading">关注列表 {formatCount(watchlist.length)}</h3>
@@ -369,16 +377,20 @@ function WatchAndStrategies({ status }: { status: NewsStatus }) {
       </div>
       <h3 className="news-control-heading">Strategy</h3>
       <p className="news-strategy-count">
-        {formatCount(matched)}
+        {formatCount(matched ?? configured)}
         <small> / {formatCount(configured)} 已配置</small>
       </p>
-      <div aria-hidden className="news-strategy-bar">
-        <span style={{ width: `${configured ? (matched / configured) * 100 : 0}%` }} />
-        <span
-          data-unmatched
-          style={{ width: `${configured ? ((configured - matched) / configured) * 100 : 0}%` }}
-        />
-      </div>
+      {matched == null ? (
+        <p className="news-strategy-note">provider 列表暂不可用，无法核对</p>
+      ) : (
+        <div aria-hidden className="news-strategy-bar">
+          <span style={{ width: `${configured ? (matched / configured) * 100 : 0}%` }} />
+          <span
+            data-unmatched
+            style={{ width: `${configured ? ((configured - matched) / configured) * 100 : 0}%` }}
+          />
+        </div>
+      )}
       {warnings.length ? (
         <div className="news-warning-block">
           <TriangleAlert aria-hidden />

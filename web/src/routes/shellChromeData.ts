@@ -7,6 +7,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
+/** How long a `g` stays armed. Long enough to be a chord, short enough that a stray `g` is forgotten. */
+const GOTO_PREFIX_MS = 1_200;
+
 export type ShellRouteContext = {
   bootstrapError: boolean;
   bootstrapLoading: boolean;
@@ -28,7 +31,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   const newsStatusQuery = useNewsStatusWithToken(session.token);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const awaitingGoto = useRef(false);
+  const awaitingGoto = useRef<number | null>(null);
   const status = statusQuery.data?.data ?? null;
   const token = session.token;
   const routeContext: ShellRouteContext = {
@@ -59,19 +62,24 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       setShortcutsOpen((open) => !open);
       return;
     }
-    if (awaitingGoto.current) {
-      awaitingGoto.current = false;
+    // The go-to prefix is armed only briefly: a stray `g` must not swallow whatever the reader types next,
+    // and must not still be waiting minutes later.
+    if (awaitingGoto.current != null && Date.now() - awaitingGoto.current < GOTO_PREFIX_MS) {
+      awaitingGoto.current = null;
       if (event.key === "f") navigate(newsPath());
       if (event.key === "s") navigate(newsStatusPath());
       return;
     }
+    awaitingGoto.current = null;
     if (event.key === "g") {
-      awaitingGoto.current = true;
+      awaitingGoto.current = Date.now();
       return;
     }
-    // Radix owns Escape while the panel is open; here it only means "leave this Event".
+    // Radix owns Escape while the panel is open; here it only means "leave this Event" — back to the feed
+    // the reader came from, filters and tab intact, exactly like the 返回事件流 link beside it.
     if (event.key === "Escape" && !shortcutsOpen && location.pathname.startsWith("/news/events/")) {
-      navigate(newsPath());
+      const feedSearch = (location.state as { feedSearch?: string } | null)?.feedSearch;
+      navigate(feedSearch ? `${newsPath()}?${feedSearch}` : newsPath());
     }
   };
   const currentSearchQuery = isNewsRoute(location.pathname)

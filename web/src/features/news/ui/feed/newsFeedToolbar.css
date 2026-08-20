@@ -222,14 +222,27 @@
       flex-direction: column;
     }
 
+    /*
+     * Four labelled tabs with counts sit within a couple of pixels of 390px, so a label would wrap to two
+     * lines and grow the row. They never wrap; if a reader's larger font makes them genuinely too wide, the
+     * control scrolls instead.
+     */
     .news-segmented {
       width: 100%;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .news-segmented::-webkit-scrollbar {
+      display: none;
     }
 
     .news-segmented-option {
-      flex: 1;
+      flex: 1 0 auto;
+      gap: 0.3rem;
       justify-content: center;
-      padding: 0 0.4rem;
+      padding: 0 0.35rem;
+      white-space: nowrap;
     }
 
     /* A thumb cannot aim at a 10px hint; the keyboard hint is desktop-only anyway. */

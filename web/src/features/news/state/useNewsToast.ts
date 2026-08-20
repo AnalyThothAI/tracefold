@@ -21,8 +21,15 @@ export function useNewsToast() {
 
   const copy = useCallback(
     (text: string, note: string) => {
+      // The Clipboard API only exists in a secure context, and the console is also reached over plain HTTP on
+      // the LAN. Optional chaining there would short-circuit the whole chain and leave no clipboard write, no
+      // toast, and no error — so say so instead, since copying is the entire labelling affordance.
+      if (!navigator.clipboard) {
+        notify("此连接不支持自动复制，请手动选择文本");
+        return;
+      }
       void navigator.clipboard
-        ?.writeText(text)
+        .writeText(text)
         .then(() => notify(note))
         .catch(() => notify("复制失败，请手动选择文本"));
     },
