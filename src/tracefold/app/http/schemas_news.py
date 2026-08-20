@@ -284,6 +284,7 @@ class NewsPipelineStatusData(ExactApiSchema):
     pushed_by_rule: dict[str, int] = Field(default_factory=dict)
     labeled_missed_24h: int = 0
     labeled_missed_without_event_24h: int = 0
+    tagged_24h: int = 0
     grounded_24h: int = 0
     ungrounded_by_symbol_24h: dict[str, int] = Field(default_factory=dict)
     candidate_share_24h: float | None = None
@@ -323,6 +324,7 @@ class NewsFunnelData(ExactApiSchema):
     received: int = 0
     candidates: int = 0
     triaged: int = 0
+    tagged: int = 0
     grounded: int = 0
     decided_push: int = 0
     delivered: int = 0

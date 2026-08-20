@@ -235,7 +235,8 @@ def grounding_rollup(
     ``usage`` is ``event_id -> coin tags`` from ``news_event_assets``; ``refs`` is ``tag -> resolution`` from the
     instrument universe. An Event counts as grounded when *any* of its tags resolves to a listed instrument —
     the same "at least one grounded asset" the Gate admits on, so the console's funnel segment and the Gate
-    cannot drift apart. An Event carrying no tags at all never appears in ``usage`` and is not grounded.
+    cannot drift apart. An Event carrying no tags at all never appears in ``usage``, so it is neither tagged
+    nor grounded — it is not a symbol that failed to land, it is a headline that named none.
 
     The count is deliberately not clamped against the window's Event total. If the two ever disagree, the real
     number is the one worth showing: a funnel segment wider than the one above it is a visible bug, and a
@@ -245,6 +246,7 @@ def grounding_rollup(
     keeps failing (SPOT is Spot Gold, NEAR came from "near-instant"), and one bad tag can cost dozens of Events.
     """
 
+    tagged = len(usage)
     grounded = 0
     ungrounded: dict[str, int] = {}
     for symbols in usage.values():
@@ -259,6 +261,11 @@ def grounding_rollup(
         if hit:
             grounded += 1
     return {
+        # `tagged_24h` is the only honest denominator for "how many failed to land": an Event that carried no
+        # coin tag at all — a macro headline, most of a day's geopolitics — never offered a symbol, so
+        # counting it as one that failed to resolve would blame the instrument table for the Gate's own
+        # admission rule (#87 review).
+        "tagged_24h": tagged,
         "grounded_24h": grounded,
         "ungrounded_by_symbol_24h": dict(sorted(ungrounded.items(), key=lambda kv: (-kv[1], kv[0]))[:10]),
     }

@@ -1243,6 +1243,11 @@
             "title": "Received 1H",
             "type": "integer"
           },
+          "tagged": {
+            "default": 0,
+            "title": "Tagged",
+            "type": "integer"
+          },
           "triaged": {
             "default": 0,
             "title": "Triaged",
@@ -1656,6 +1661,11 @@
             },
             "title": "Suppressed By Reason",
             "type": "object"
+          },
+          "tagged_24h": {
+            "default": 0,
+            "title": "Tagged 24H",
+            "type": "integer"
           },
           "throttled_24h": {
             "default": 0,

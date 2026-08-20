@@ -577,6 +577,11 @@ export interface components {
              */
             received_1h: number;
             /**
+             * Tagged
+             * @default 0
+             */
+            tagged: number;
+            /**
              * Triaged
              * @default 0
              */
@@ -782,6 +787,11 @@ export interface components {
             suppressed_by_reason?: {
                 [key: string]: number;
             };
+            /**
+             * Tagged 24H
+             * @default 0
+             */
+            tagged_24h: number;
             /**
              * Throttled 24H
              * @default 0

@@ -135,6 +135,36 @@ describe("News console contract", () => {
     }
   });
 
+  it("renders every reason stage the API contract can send", () => {
+    /*
+     * `REASON_STAGE_ORDER` is the render filter, not just a sort: a stage missing from it is dropped
+     * silently. `ungrounded` shipped computed, labelled and documented but invisible for exactly that
+     * reason (#87 review), so the list is checked against the generated contract rather than by eye.
+     */
+    const page = readSource("src/features/news/ui/status/NewsStatusPage.tsx");
+    const generated = readSource("src/lib/types/openapi.ts");
+    const labels = readSource("src/features/news/model/newsLabels.ts");
+
+    const contractStages = (
+      generated.match(/NewsReasonCountData:[\s\S]*?stage:\s*([^;]+);/)?.[1] ?? ""
+    )
+      .split("|")
+      .map((part) => part.trim().replace(/^"|"$/g, ""))
+      .filter(Boolean);
+    expect(contractStages.length).toBeGreaterThan(0);
+
+    const rendered = (page.match(/const REASON_STAGE_ORDER = \[([^\]]+)\]/)?.[1] ?? "")
+      .split(",")
+      .map((part) => part.trim().replace(/^"|"$/g, ""))
+      .filter(Boolean);
+
+    expect(rendered.slice().sort()).toEqual(contractStages.slice().sort());
+    // Every stage also needs a title and a tone, or it renders as a bare enum key.
+    for (const stage of contractStages) {
+      expect(labels, `${stage} needs a Chinese group title`).toContain(`${stage}:`);
+    }
+  });
+
   it("stacks the status page's health cards and grids without a mobile horizontal scroller", () => {
     const statusCss = readSource("src/features/news/ui/status/newsStatus.css");
     const statusPage = readSource("src/features/news/ui/status/NewsStatusPage.tsx");

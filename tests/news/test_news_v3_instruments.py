@@ -209,8 +209,30 @@ def test_grounding_reports_a_tag_the_universe_has_never_heard_of() -> None:
 
     rollup = grounding_rollup({"ev-1": ["WHOKNOWS"]}, _refs(BTC="binance.perp"))
 
-    assert rollup == {"grounded_24h": 0, "ungrounded_by_symbol_24h": {"WHOKNOWS": 1}}
+    assert rollup == {"tagged_24h": 1, "grounded_24h": 0, "ungrounded_by_symbol_24h": {"WHOKNOWS": 1}}
 
 
 def test_grounding_is_empty_without_any_tagged_event() -> None:
-    assert grounding_rollup({}, {}) == {"grounded_24h": 0, "ungrounded_by_symbol_24h": {}}
+    assert grounding_rollup({}, {}) == {
+        "tagged_24h": 0,
+        "grounded_24h": 0,
+        "ungrounded_by_symbol_24h": {},
+    }
+
+
+def test_grounding_counts_only_events_that_offered_a_tag() -> None:
+    """`tagged` is the honest denominator: an Event with no coin tag never offered a symbol to resolve.
+
+    Subtracting `grounded` from the triaged total instead reported every macro headline as a symbol that
+    failed to land, and permanently displaced the delivery line on the feed header (#87 review).
+    """
+
+    rollup = grounding_rollup(
+        {"ev-macro-1": [], "ev-macro-2": [], "ev-btc": ["BTC"], "ev-spot": ["SPOT"]},
+        _refs(BTC="binance.perp", SPOT=None),
+    )
+
+    # Two Events carried tags; one of them landed. The two tagless macro Events are in neither number.
+    assert rollup["tagged_24h"] == 4
+    assert rollup["grounded_24h"] == 1
+    assert rollup["ungrounded_by_symbol_24h"] == {"SPOT": 1}

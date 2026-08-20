@@ -193,7 +193,9 @@ surface is exactly three read-only routes:
   Every Event carries `grounded_assets` (the raw provider coin tags the Gate
   admitted on) and beside it `assets[]` — the same tags resolved against the
   #75 instrument universe, one entry per tag, each `{symbol, base_symbol,
-  venue, listed}`. `venue` is the preferred venue when a base trades on
+  venue, listed}`. Entries are keyed by the raw provider tag and `symbol` comes
+  back normalized, so `UNITREE` and `XYZ-UNITREE` resolve to the same listed
+  contract. `venue` is the preferred venue when a base trades on
   several (deepest first, HIP-3 builder DEXs last) so a chip is stable across
   polls, and is `null` with `listed: false` when the tag names nothing on any
   venue — which is how a reader tells `SPOT` on a Spot Gold headline from a
@@ -210,7 +212,9 @@ surface is exactly three read-only routes:
   `source`, label payload, created time), and `normalization[]` — the alias
   groups this Event's assets fall into (`base_symbol`, every `alias` that
   resolves into it including the base itself, and the alias `sources`). Only
-  groups that actually collapse more than one name are sent, so the surface
+  operator-owned aliases count: the venue-derived rows (`XYZ-{base}`,
+  `dex:SYMBOL`) are mechanical and would fire the block on every commodity
+  Event. Only groups that actually collapse more than one name are sent, so the surface
   explains a surprise (SKHY / SKHX / SKHYNIX share one storyline bucket)
   rather than restating a ticker that answers to itself. `tracefold news why`
   prints the same `outcome` sentence and timeline. Unknown ids return 404.
@@ -219,7 +223,8 @@ surface is exactly three read-only routes:
   `ingest`/`broker`/`model`/`delivery` with `level` `ok|warn|bad|off`,
   `summary_zh`, `detail_zh`, and `overall`; thresholds are code-owned, see
   `docs/OPERATIONS.md`), `funnel_24h` (`received`, `candidates`, `triaged`,
-  `grounded`, `decided_push`, `delivered`, plus `received_1h`/`delivered_1h`),
+  `tagged`, `grounded`, `decided_push`, `delivered`, plus
+  `received_1h`/`delivered_1h`),
   `reasons_24h` (`stage` `gate|drop|throttle|push|degraded|ungrounded`, raw
   `key`, `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
   connected, last frame/publish, error, configured and provider-enabled
@@ -229,8 +234,8 @@ surface is exactly three read-only routes:
   degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
   throttled, Triage p50/p95, queue lag p95, the Triage model name, and the
   named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
-  `throttled_by_key`, `pushed_by_rule`, plus `grounded_24h` and the top-ten
-  `ungrounded_by_symbol_24h`), and `delivery` (sent/terminal
+  `throttled_by_key`, `pushed_by_rule`, plus `tagged_24h`, `grounded_24h` and
+  the top-ten `ungrounded_by_symbol_24h`), and `delivery` (sent/terminal
   counts, last error, end-to-end p95, availability, hourly cap), plus
   `control` (paused, mutes), the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last
@@ -244,6 +249,9 @@ surface is exactly three read-only routes:
   the console's funnel and the Gate cannot drift apart. The per-symbol tally
   is deliberately per-symbol rather than per-Event: the operator question is
   which provider tag keeps failing, and one bad tag can cost dozens of Events.
+  `tagged_24h` counts the Events that offered at least one tag, and is the only
+  population `grounded_24h` may be compared against — an Event carrying no coin
+  tag never appears in either.
   The count is not clamped against the window's Event total — a funnel segment
   wider than the one above it is a visible bug, and a silently clamped one is
   an invisible one.

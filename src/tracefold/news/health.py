@@ -201,6 +201,9 @@ def status_health(
         "triaged": int(pipeline.get("triage_24h") or 0),
         # #87: between "sent to the model" and "decided", the reader wants to know how many Events named an
         # asset that actually exists on a venue. It is a property of the same Events, not a separate stage.
+        # `tagged` travels with it because it is the only population `grounded` can honestly be compared
+        # against — Events that carried no coin tag at all never offered a symbol to resolve.
+        "tagged": int(pipeline.get("tagged_24h") or 0),
         "grounded": int(pipeline.get("grounded_24h") or 0),
         "decided_push": int(pipeline.get("decided_push_24h") or 0),
         "delivered": int(delivery.get("sent_24h") or 0),

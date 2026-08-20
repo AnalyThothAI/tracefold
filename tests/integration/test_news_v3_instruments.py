@@ -140,6 +140,58 @@ def test_tradeable_symbols_include_aliases_only_when_they_resolve(conn) -> None:
     assert "XAU" not in symbols
 
 
+def test_asset_refs_resolve_the_providers_prefixed_form_to_the_listed_contract(conn) -> None:
+    """The chip must name what the tag actually is, whichever of the provider's two forms arrived (#87 review).
+
+    OpenNews ships both `UNITREE` and `XYZ-UNITREE` for one instrument. Resolving the raw tag printed
+    `hl.xyz:XYZ-UNITREE` on the chip and only worked at all because `learn_aliases_from_universe` happens to
+    write an `XYZ-{base}` row — a builder-DEX base without one would have been struck through while
+    `grounding_rollup`, which reads the stripped symbol, counted the same Event as grounded.
+    """
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("hl.xyz", "xyz:UNITREE", "UNITREE"), _inst("binance.perp", "BTCUSDT", "BTC")], now_ms=NOW
+        )
+
+    refs = repos.instruments.asset_refs(["XYZ-UNITREE", "unitree", "BTC", "SPOT"])
+
+    # Keyed by the raw tag the caller passed, so no caller needs normalization knowledge of its own.
+    assert (
+        refs["XYZ-UNITREE"]
+        == refs["unitree"]
+        == {
+            "symbol": "UNITREE",
+            "base_symbol": "UNITREE",
+            "venue": "hl.xyz",
+            "listed": True,
+        }
+    )
+    assert refs["BTC"]["venue"] == "binance.perp"
+    # A tag that names nothing still gets an entry — a lookup gap must never read as a confirmed listing.
+    assert refs["SPOT"] == {"symbol": "SPOT", "base_symbol": "SPOT", "venue": None, "listed": False}
+
+
+def test_normalization_block_only_reports_the_operator_owned_collapse(conn) -> None:
+    """Venue-derived aliases are mechanical; surfacing them would fire the block on routine Events."""
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot([_inst("hl.xyz", "xyz:SKHY", "SKHY")], now_ms=NOW)
+        repos.instruments.seed_aliases(now_ms=NOW)
+        repos.instruments.learn_aliases_from_universe(now_ms=NOW)
+
+    everything = repos.instruments.aliases_by_base(["SKHY"])["SKHY"]["aliases"]
+    operator_only = repos.instruments.aliases_by_base(["SKHY"], sources=("operator",))["SKHY"]["aliases"]
+
+    # The venue rows exist and would pad the group with forms the reader already assumes.
+    assert "XYZ-SKHY" in everything
+    assert "XYZ-SKHY" not in operator_only
+    # What survives is the collapse the storyline throttle actually depends on.
+    assert set(operator_only) == {"SKHY", "SKHX", "SKHYNIX"}
+
+
 def test_instrument_class_prefers_the_specific_venue(conn) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():

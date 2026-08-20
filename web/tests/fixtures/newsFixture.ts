@@ -320,6 +320,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       grounded: 168,
       received: 320,
       received_1h: 12,
+      tagged: 172,
       triaged: 175,
     },
     health: {
@@ -331,6 +332,9 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     },
     reasons_24h: [
       { count: 60, key: "noise", label_zh: "模型判定为噪音", stage: "drop" },
+      // #87: a provider tag that names nothing. The tag is its own label — inventing the English word it
+      // collided with would be a guess.
+      { count: 7, key: "SPOT", label_zh: "SPOT", stage: "ungrounded" },
       { count: 30, key: "model_push_actionable", label_zh: "模型判断值得推送", stage: "push" },
       { count: 20, key: "below_threshold", label_zh: "影响不够，未达推送标准", stage: "drop" },
       { count: 10, key: "magnitude3", label_zh: "重大事件", stage: "push" },
@@ -378,6 +382,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       events_1h: 12,
       events_24h: 320,
       grounded_24h: 168,
+      tagged_24h: 172,
       labeled_missed_24h: 1,
       labeled_missed_without_event_24h: 0,
       pushed_by_rule: { model_push_actionable: 30, magnitude3: 10 },

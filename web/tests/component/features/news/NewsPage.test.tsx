@@ -454,8 +454,9 @@ describe("NewsPage", () => {
     ).toEqual([
       "收到320最近 1 小时 12",
       "送审56%180门禁挡下 140",
-      // #87: how many of the same Events named an asset that exists on a venue.
-      "符号落表53%168未落标的表 7",
+      // #87: how many of the Events that *carried* a tag had one land. The hint counts only those, never
+      // the tagless macro headlines that never offered a symbol (#87 review).
+      "符号落表98%168未落标的表 4",
       "决定推送13%40模型判不推 135",
       "已送达102%41最近 1 小时 2",
     ]);

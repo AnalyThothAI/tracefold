@@ -19,7 +19,7 @@ import "./newsEventRow.css";
  *
  * The row carries no buttons of its own (#87). Copy-title, copy-label and open-original all lived here and
  * all led somewhere better one tap away, while costing every row a hover target that meant nothing on a
- * phone. The keyboard keeps its `l` shortcut through the feed cursor, so the fast path did not move.
+ * phone. The keyboard keeps its `X` shortcut through the feed cursor, so the fast path did not move.
  *
  * The whole row opens the Event, but the row itself is not a click target: the headline link stretches over
  * it. One link, one accessible name, and `Enter` works from the keyboard without the row pretending to be a

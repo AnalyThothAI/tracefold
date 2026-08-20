@@ -24,10 +24,10 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
   if (!funnel) return null;
   const tiles = funnelTiles(funnel);
   const failed = status.delivery.terminal_24h;
-  // #87: how many Events named an asset the venue catalogues do not have. It displaces the delivery-failure
-  // note when it is non-zero because it is the larger recall problem — a card that never existed cannot fail
-  // to send.
-  const ungrounded = Math.max(0, funnel.triaged - funnel.grounded);
+  // #87: how many Events *offered* a coin tag and had none of them land. Measured against `tagged`, never
+  // against `triaged`: a macro headline that named no asset did not fail to resolve a symbol, and counting
+  // it here would report a fault in the instrument table that does not exist.
+  const ungrounded = Math.max(0, funnel.tagged - funnel.grounded);
   return (
     <section aria-label="过去 24 小时漏斗" className="news-funnel-card">
       <div className="news-funnel-card-head">
@@ -96,7 +96,7 @@ function FunnelTile({ tile }: { tile: Tile }) {
 function funnelTiles(funnel: NewsFunnel): Tile[] {
   const gated = Math.max(0, funnel.received - funnel.candidates);
   const notPushed = Math.max(0, funnel.triaged - funnel.decided_push);
-  const ungroundedCount = Math.max(0, funnel.triaged - funnel.grounded);
+  const ungroundedCount = Math.max(0, funnel.tagged - funnel.grounded);
   return [
     {
       hint: `最近 1 小时 ${formatCount(funnel.received_1h)}`,
@@ -115,7 +115,9 @@ function funnelTiles(funnel: NewsFunnel): Tile[] {
     {
       hint: ungroundedCount ? `未落标的表 ${formatCount(ungroundedCount)}` : "符号全部落表",
       label: "符号落表",
-      pct: percent(funnel.grounded, funnel.received),
+      // Share of the Events that carried a tag, not of everything received: the denominator has to be the
+      // population the number is actually about.
+      pct: percent(funnel.grounded, funnel.tagged),
       to: null,
       value: funnel.grounded,
     },
