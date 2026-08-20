@@ -337,10 +337,22 @@ def _handle_validate_candidate(args: Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def _read_json_or_yaml(path: str) -> dict[str, Any]:
-    import yaml
+    """JSON first, YAML second.
+
+    A frozen corpus is one line of JSON and can be megabytes; PyYAML is orders of magnitude slower on it, and
+    YAML 1.1 does not resolve exponent-form floats without a decimal point — `1e-05` comes back as the *string*
+    `"1e-05"`, which then fails the corpus hash check for no visible reason. A hand-written candidate file is
+    still allowed to be YAML.
+    """
 
     with open(path, encoding="utf-8") as handle:
-        document = yaml.safe_load(handle)
+        text = handle.read()
+    try:
+        document = json.loads(text)
+    except ValueError:
+        import yaml
+
+        document = yaml.safe_load(text)
     if not isinstance(document, dict):
         raise ValueError(f"news_document_not_a_mapping:{path}")
     return document

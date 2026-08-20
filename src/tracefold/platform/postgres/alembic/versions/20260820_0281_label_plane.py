@@ -44,15 +44,17 @@ def upgrade() -> None:
         "ALTER TABLE news_event_labels ADD CONSTRAINT news_event_labels_event_id_fkey "
         "FOREIGN KEY (event_id) REFERENCES news_events(event_id) ON DELETE SET NULL"
     )
-    # One label per (Event, version, labeller); for a miss with no Event, one per (subject, version, labeller).
+    # One label per (Event, version, labeller). There is deliberately no matching unique index on `subject` for
+    # Event-less rows: `ON DELETE SET NULL` can orphan two labelled Events into the same
+    # (subject, version, labeller) — two Events share a leader title often enough, and every backfilled row shares
+    # the empty default — and a unique violation inside the retention purge would abort the whole `news_janitor`
+    # transaction on every 60 s tick from then on. The deterministic `label_id` primary key already makes both
+    # label shapes idempotent by key on the write path, which is what the index was there for.
     op.execute(
         "CREATE UNIQUE INDEX ux_news_event_labels_event ON news_event_labels "
         "(event_id, label_version, labeled_by) WHERE event_id IS NOT NULL"
     )
-    op.execute(
-        "CREATE UNIQUE INDEX ux_news_event_labels_subject ON news_event_labels "
-        "(subject, label_version, labeled_by) WHERE event_id IS NULL"
-    )
+    op.execute("CREATE INDEX ix_news_event_labels_subject ON news_event_labels (subject) WHERE event_id IS NULL")
     op.execute("CREATE INDEX ix_news_event_labels_created ON news_event_labels (created_at_ms DESC)")
     op.execute("CREATE INDEX IF NOT EXISTS ix_news_items_observed ON news_items (observed_at_ms)")
 
@@ -60,7 +62,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS ix_news_items_observed")
     op.execute("DROP INDEX IF EXISTS ix_news_event_labels_created")
-    op.execute("DROP INDEX IF EXISTS ux_news_event_labels_subject")
+    op.execute("DROP INDEX IF EXISTS ix_news_event_labels_subject")
     op.execute("DROP INDEX IF EXISTS ux_news_event_labels_event")
     op.execute("DELETE FROM news_event_labels WHERE event_id IS NULL")
     op.execute("ALTER TABLE news_event_labels DROP CONSTRAINT news_event_labels_event_id_fkey")

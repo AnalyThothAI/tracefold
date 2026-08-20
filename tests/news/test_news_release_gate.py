@@ -247,15 +247,51 @@ def test_freeze_corpus_skips_unreplayable_verdicts_instead_of_shrinking_silently
     assert load_corpus(payload).sha256 == payload["sha256"]
 
 
-def test_reviewed_boundary_fixture_is_a_valid_expectations_overlay() -> None:
-    """The fixture is part of the trusted root: it must stay loadable and must only use known expectations."""
+def test_reviewed_boundary_fixture_loads_through_the_production_path() -> None:
+    """The fixture is part of the trusted root, and `news validate-candidate --expectations` hands it to
+    ``load_corpus`` verbatim. Passing it through a filter the CLI does not have would test nothing: the shipped
+    file leads with a `_comment` block, and rejecting that made the documented command exit 2 with its own prose
+    quoted back as an invalid expectation."""
 
     path = Path(__file__).resolve().parents[1] / "fixtures" / "news_recall_boundary_v1.json"
     document = json.loads(path.read_text(encoding="utf-8"))
-    expectations = {k: v for k, v in document.items() if not k.startswith("_")}
     assert document["_comment"], "the fixture explains what a marking means, to whoever edits it next"
+
+    cases = [_case(i, headline) for i, headline in enumerate(_REPEATS + _DISTINCT)]
+    corpus = load_corpus(_payload(cases), expectations=document)  # verbatim, comment block and all
+    assert corpus.cases  # loading did not raise
+
+    expectations = {k: v for k, v in document.items() if not k.startswith("_")}
     assert expectations, "an empty overlay makes the boundary gate vacuous"
     assert set(expectations.values()) <= EXPECTATIONS
     assert all(len(event_id) == 64 for event_id in expectations), "keys are Event ids"
     assert sum(1 for v in expectations.values() if v == "must_push") >= 10
     assert sum(1 for v in expectations.values() if v == "may_drop") >= 1
+
+
+def test_peak_check_is_a_delta_so_a_strict_improvement_is_never_blocked() -> None:
+    """The deployed arm already sits one card under `hourly_cap`. An absolute peak check would reject every
+    candidate the moment a busy hour touches the budget — the same deadlock `no_critical_miss` avoids."""
+
+    # `escalate` is exempt from the hourly cap in both `decide()` and the Deliverer, so a burst of m3 cards
+    # breaches any budget whatever the policy says — which is exactly why the peak is not the policy's to control.
+    cases = [_case(i, headline, magnitude=3) for i, headline in enumerate(_DISTINCT)]
+    corpus = load_corpus(_payload(cases))
+    live = DecidePolicy(theme_cap_4h=1)
+    decision = validate_candidate(corpus, stable=live, candidate=live, hourly_cap=1)
+    assert decision.evidence["stable"]["per_hour_peak"] > 1  # both arms are over the budget
+    assert decision.checks["peak_within_reader_budget"] is True  # ...and the candidate is still judged on merit
+    assert decision.accepted
+
+
+def test_must_push_counts_as_a_miss_in_the_offline_evaluation_too() -> None:
+    """`must_push` feeds the release gate's boundary set, but it also has to move `news eval`: a label that
+    changes no metric anywhere the operator looks is a label nobody will keep writing."""
+
+    from tracefold.news.eval.offline import _outcome
+
+    for label in ("must_push", "missed", "good", "wrong_direction", "late"):
+        assert _outcome({"label": label}) == "moved", label
+    for label in ("noise", "dup"):
+        assert _outcome({"label": label}) == "flat", label
+    assert _outcome({"label": None}) is None

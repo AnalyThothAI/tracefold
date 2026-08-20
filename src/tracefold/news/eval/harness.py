@@ -214,7 +214,10 @@ def load_corpus(payload: Mapping[str, Any], *, expectations: Mapping[str, str] |
     recomputed = _sha256({k: v for k, v in payload.items() if k != "sha256"})
     if stored and stored != recomputed:
         raise ValueError("news_corpus_sha_mismatch")
-    overlay = {str(k): str(v) for k, v in (expectations or {}).items()}
+    # A reviewed overlay is a document a person edits, so it carries prose: keys starting with `_` are notes for
+    # whoever edits it next, not expectations. Rejecting them made the shipped fixture — and the command in
+    # docs/DEVELOPMENT.md — exit 2 with the comment text quoted back as an invalid expectation.
+    overlay = {str(k): str(v) for k, v in (expectations or {}).items() if not str(k).startswith("_")}
     unknown = sorted({v for v in overlay.values()} - EXPECTATIONS)
     if unknown:
         raise ValueError(f"news_corpus_expectation_invalid:{unknown[0]}")
@@ -481,7 +484,11 @@ def validate_candidate(
         "duplicates_within_recall_trade": (
             duplicate_delta <= 0 or (missed_delta < 0 and -missed_delta >= _DUPLICATE_TRADE_RATIO * duplicate_delta)
         ),
-        "peak_within_reader_budget": candidate_arm.per_hour_peak <= hourly_cap,
+        # Not an absolute ceiling: `decide()` does not fully control the peak (the hourly cap applies to `push`
+        # and not to `escalate`), and the deployed arm already sits one card under the budget. An absolute check
+        # would reject every candidate — including strict improvements — the moment a busy hour touches the cap,
+        # which is the deadlock `no_critical_miss` was deliberately shaped to avoid.
+        "peak_within_reader_budget": candidate_arm.per_hour_peak <= max(stable_arm.per_hour_peak, hourly_cap),
         "trusted_root_unchanged": (trusted_root_sha == trusted_root_expected) if trusted_root_expected else True,
     }
     evidence: dict[str, Any] = {

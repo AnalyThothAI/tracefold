@@ -867,6 +867,7 @@ class NewsRepository:
                 "label": dict(r["label"] or {}),
                 "created_at_ms": int(r["created_at_ms"]),
                 "labeled_by": r["labeled_by"],
+                "subject": r["subject"],
             }
             for r in rows
         ]
@@ -1220,11 +1221,15 @@ class NewsRepository:
                 pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
             if row["degraded"]:
                 degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
+        # Both shapes of "the reader should have got this": a label on an Event, and one on a subject the
+        # pipeline never created an Event for. The second is the only observation of recall's *upper* bound, so
+        # counting only the first (an inner join on news_events) made the more important half invisible.
         missed = self.conn.execute(
             """
-            SELECT count(DISTINCT l.event_id) AS n
-              FROM news_event_labels l JOIN news_events e ON e.event_id = l.event_id
-             WHERE l.created_at_ms >= %s AND l.label ->> 'label' = 'missed'
+            SELECT count(*) AS n,
+                   count(*) FILTER (WHERE event_id IS NULL) AS without_event
+              FROM news_event_labels
+             WHERE created_at_ms >= %s AND label ->> 'label' IN ('missed', 'must_push')
             """,
             (day_ago,),
         ).fetchone()
@@ -1245,6 +1250,7 @@ class NewsRepository:
             "pushed_by_rule": dict(sorted(pushed_by_rule.items(), key=lambda kv: -kv[1])),
             "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
             "labeled_missed_24h": int(missed["n"] or 0) if missed else 0,
+            "labeled_missed_without_event_24h": int(missed["without_event"] or 0) if missed else 0,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
         }
 

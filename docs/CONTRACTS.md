@@ -378,8 +378,9 @@ reject. The blocking checks are `no_critical_miss`, `no_retention_regression`,
 `no_marked_noise_regression`, `missed_facts_not_worse`,
 `strong_duplicates_not_worse`, `duplicates_within_recall_trade` (a candidate
 may add near-duplicate pairs only against at least three times as many facts it
-stops losing), `peak_within_reader_budget` (<= `news.push.hourly_cap`) and
-`trusted_root_unchanged`. Duplicates are scored with a metric the policy never
+stops losing), `peak_within_reader_budget` (<= the larger of
+`news.push.hourly_cap` and the deployed policy's own peak, so a busy hour
+cannot block an unrelated improvement) and `trusted_root_unchanged`. Duplicates are scored with a metric the policy never
 reads, because scoring a rule with the rule is not evidence. The reviewed
 expectations overlay (`tests/fixtures/news_recall_boundary_v1.json`) is part of
 the trusted root: it is the human judgment about what should have happened, and

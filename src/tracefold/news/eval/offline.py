@@ -49,11 +49,13 @@ def _rows(repos: Any, *, since_ms: int, policy_version: str | None) -> list[dict
 
 
 def _outcome(row: Mapping[str, Any]) -> str | None:
-    """Operator label as truth: good/wrong_direction/late/missed = the event mattered ("moved"), noise/dup = it did
-    not. ``missed`` is the operator saying "this should have been pushed" about anything the pipeline held."""
+    """Operator label as truth: good/wrong_direction/late/missed/must_push = the event mattered ("moved"),
+    noise/dup = it did not. ``missed`` and ``must_push`` are both the operator saying "this should have been
+    pushed" about something the pipeline held — ``must_push`` additionally enters the release gate's boundary
+    set, but it has to count here too or marking one would move no metric at all."""
 
     label = row.get("label")
-    if label in {"good", "wrong_direction", "late", "missed"}:
+    if label in {"good", "wrong_direction", "late", "missed", "must_push"}:
         return "moved"
     if label in {"noise", "dup"}:
         return "flat"
@@ -147,7 +149,7 @@ def replay_decisions(
     replayed: list[dict[str, Any]] = []
     skipped = 0
     restatement_drops = 0
-    novel_bypass = 0
+    distinct_bypass = 0
     changed: collections.Counter[str] = collections.Counter()
     for r in rows:
         if not r.get("verdict"):
@@ -177,8 +179,8 @@ def replay_decisions(
             changed[f"{r['final_decision']}->{outcome.final}"] += 1
         if outcome.override_rule == "restatement":
             restatement_drops += 1
-        elif outcome.override_rule == "novel_bypass":
-            novel_bypass += 1
+        elif outcome.override_rule == "distinct_bypass":
+            distinct_bypass += 1
     return {
         "window_hours": int(hours),
         "policy": policy.as_dict(),
@@ -188,7 +190,7 @@ def replay_decisions(
         "skipped_invalid_verdicts": skipped,
         "changed": dict(changed),
         "restatement_drops": restatement_drops,
-        "novel_bypass": novel_bypass,
+        "distinct_bypass": distinct_bypass,
         "stored": _rates(rows),
         "candidate": _rates(replayed),
         "candidate_by_override_rule": _confusion(replayed, "override_rule"),

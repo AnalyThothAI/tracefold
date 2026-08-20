@@ -183,6 +183,7 @@ class NewsLabelData(ExactApiSchema):
     label: dict[str, Any] = Field(default_factory=dict)
     created_at_ms: int
     labeled_by: str = "operator"
+    subject: str = ""
 
 
 class NewsTimelineStepData(ExactApiSchema):
@@ -256,6 +257,7 @@ class NewsPipelineStatusData(ExactApiSchema):
     throttled_by_key: dict[str, int] = Field(default_factory=dict)
     pushed_by_rule: dict[str, int] = Field(default_factory=dict)
     labeled_missed_24h: int = 0
+    labeled_missed_without_event_24h: int = 0
     candidate_share_24h: float | None = None
     triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
 
