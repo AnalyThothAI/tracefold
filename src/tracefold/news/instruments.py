@@ -7,7 +7,8 @@ the venue universe is the natural reference table for News, and it does exactly 
 
 * **symbol normalization** — the several names one issuer trades under collapse to one storyline throttle key
 * **asset class** — whether a headline is about a coin or a stock, which the Gate used to guess from the ``XYZ-``
-  prefix alone
+  prefix alone. Since #91 the table also carries a *reference* tier (``us.listed``) for the thousands of equities
+  no crypto venue lists; it can only answer that second question, never the first.
 
 It is deliberately *not* a filter: existence on a venue is not evidence that a headline matters (#75), and it is
 not a source of listing events either — OpenNews pushes those as frames and the pipeline admits them
@@ -33,6 +34,11 @@ INSTRUMENT_CLASSES: Final[frozenset[str]] = frozenset(
 )
 # Classes that are not crypto. The Gate collapses them into one `equity_or_commodity` asset class (#89).
 NON_CRYPTO_CLASSES: Final[frozenset[str]] = frozenset({"equity", "commodity", "index", "fx", "pre_ipo"})
+# Venues in the table that nobody trades on: they answer "is this symbol a stock?" and nothing else (#91). The
+# distinction is load-bearing because 352 of the 1,244 crypto base symbols are also US tickers — `ATOM` is
+# Atomera, `APT` is Alpha Pro Tech, `BCH` is Banco de Chile, `A` is Agilent. A real venue always wins; the
+# reference tier only speaks for symbols no venue lists.
+REFERENCE_VENUES: Final[frozenset[str]] = frozenset({"us.listed"})
 
 # Quote assets stripped from a venue symbol to recover the base (Binance ships `UNITREEUSDT`, not `UNITREE`).
 # Longest first so `BTCUSDT` -> `BTC` rather than `BTCUSD` + `T`.
@@ -309,6 +315,7 @@ __all__ = [
     "EQUITY_DEXS",
     "INSTRUMENT_CLASSES",
     "NON_CRYPTO_CLASSES",
+    "REFERENCE_VENUES",
     "Instrument",
     "InstrumentClass",
     "InstrumentStatus",

@@ -9,6 +9,8 @@ import httpx
 import pytest
 
 from tracefold.integrations.venues.binance import fetch_binance_instruments
+from tracefold.integrations.venues.errors import VenueExpectedError
+from tracefold.integrations.venues.us_reference import fetch_us_reference_instruments
 from tracefold.news.gate import GateInput, asset_class_of, evaluate_gate, grounded_assets
 from tracefold.news.instruments import (
     ALIAS_SEEDS,
@@ -367,3 +369,78 @@ def test_grounding_counts_only_events_that_offered_a_tag() -> None:
     assert rollup["tagged_24h"] == 4
     assert rollup["grounded_24h"] == 1
     assert rollup["ungrounded_by_symbol_24h"] == {"SPOT": 1}
+
+
+# ------------------------------------------------------- US reference directory
+
+_NASDAQ_LISTED = """Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares
+AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N
+QQQ|Invesco QQQ Trust, Series 1|Q|N|N|100|Y|N
+ZZZT|Nasdaq Test Stock|G|Y|N|100|N|N
+File Creation Time: 0820202603:02|||||||
+"""
+
+_OTHER_LISTED = """ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol
+UWMC|UWM Holdings Corporation Class A Common Stock|N|UWMC|N|100|N|UWMC
+BRK.A|Berkshire Hathaway Inc.|N|BRK A|N|10|N|BRK/A
+AAPL|Duplicate across both files|N|AAPL|N|100|N|AAPL
+truncated row
+File Creation Time: 0820202603:02|||||||
+"""
+
+
+def _us_reference_transport() -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _OTHER_LISTED if "otherlisted" in str(request.url) else _NASDAQ_LISTED
+        return httpx.Response(200, content=body.encode())
+
+    return httpx.MockTransport(handler)
+
+
+def test_us_reference_reads_the_directory_the_way_the_file_declares_it() -> None:
+    """Every ticker is a stock, the file's own ETF flag says which are funds, and nothing else gets through."""
+
+    fetched = asyncio.run(fetch_us_reference_instruments(transport=_us_reference_transport()))
+
+    assert {i.venue for i in fetched} == {"us.listed"}
+    assert {i.base_symbol: i.instrument_class for i in fetched} == {
+        "AAPL": "equity",  # the first file wins; the duplicate row in the second is dropped
+        "QQQ": "index",  # ETF = Y
+        "UWMC": "equity",
+        "BRK.A": "equity",  # dots are part of a US ticker
+    }
+    # A test issue, a truncated line, and a trailer padded to the full field count all have to be dropped.
+    assert "ZZZT" not in {i.base_symbol for i in fetched}
+    assert not any(" " in i.base_symbol for i in fetched)
+
+
+def test_a_word_collision_never_reaches_the_class_map() -> None:
+    """`SPOT` is Spotify in the US directory and "spot gold" in a headline — 84 tags in one week, all noise.
+
+    The order saves it: the collision stop-list runs inside `grounded_assets`, so a stop-listed tag is gone
+    before `asset_class_of` can ask the directory what it is. Adding thousands of three-letter tickers (#91)
+    does not widen that hole, and this pins the ordering that keeps it shut.
+    """
+
+    verdict = evaluate_gate(
+        GateInput(  # type: ignore[arg-type]
+            title="SPOT GOLD climbs to a record",
+            coins=_coins("SPOT"),
+            instrument_classes={"SPOT": "equity"},
+            engine_type="news",
+            strategy_ids=("1018",),
+            provider_score=85.0,
+            ingest_mode="live",
+        )
+    )
+    assert verdict.grounded_assets == ()
+    assert verdict.asset_class != "equity_or_commodity"
+
+
+def test_us_reference_refuses_a_payload_that_is_not_the_directory() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>maintenance</html>")
+
+    with pytest.raises(VenueExpectedError) as caught:
+        asyncio.run(fetch_us_reference_instruments(transport=httpx.MockTransport(handler)))
+    assert caught.value.code == "venue_payload_invalid"

@@ -14,6 +14,7 @@ from typing import Any
 
 from .instruments import (
     ALIAS_SEEDS,
+    REFERENCE_VENUES,
     Instrument,
     instruments_from_rows,
     normalize_symbol,
@@ -42,23 +43,32 @@ class InstrumentsRepository:
         return {str(row["alias"]).upper(): str(row["base_symbol"]).upper() for row in rows}
 
     def instrument_classes(self) -> dict[str, str]:
-        """base_symbol -> instrument_class, preferring the most specific class when venues disagree.
+        """base_symbol -> instrument_class, in two tiers: venues we poll first, reference directories after.
 
-        A symbol on both `binance.perp` (crypto by venue default) and `hl.xyz` (equity) is an equity: the specific
-        classification wins over the venue default. This is what the Gate reads to decide whether a headline is
+        Within the traded tier the most specific class wins — a symbol on both `binance.perp` (crypto by venue
+        default) and `hl.xyz` (equity) is an equity. This is what the Gate reads to decide whether a headline is
         about a coin or a stock (#89), replacing a guess based on the provider's `XYZ-` prefix.
+
+        The reference tier (`us.listed`, #91) never overrides a traded symbol, and the ranking cannot express
+        that: `equity` outranks `crypto`, so one shared dictionary would turn `ATOM` (Atomera on the NYSE, the
+        Cosmos token on three exchanges) into a stock. A symbol anyone can actually trade is described by the
+        venue that lists it; the directory only speaks for the thousands of tickers no venue lists at all.
         """
 
         rows = self.conn.execute(
-            "SELECT base_symbol, instrument_class FROM news_market_instruments WHERE status = 'trading'"
+            "SELECT base_symbol, instrument_class, venue FROM news_market_instruments WHERE status = 'trading'"
         ).fetchall()
         rank = {"unknown": 0, "crypto": 1, "fx": 2, "index": 3, "commodity": 4, "equity": 5, "pre_ipo": 6}
         out: dict[str, str] = {}
+        reference: dict[str, str] = {}
         for row in rows:
             symbol = str(row["base_symbol"]).upper()
             cls = str(row["instrument_class"])
-            if rank.get(cls, 0) > rank.get(out.get(symbol, "unknown"), 0):
-                out[symbol] = cls
+            tier = reference if str(row["venue"]) in REFERENCE_VENUES else out
+            if rank.get(cls, 0) > rank.get(tier.get(symbol, "unknown"), 0):
+                tier[symbol] = cls
+        for symbol, cls in reference.items():
+            out.setdefault(symbol, cls)
         # Aliases carry the class of what they resolve to, so the caller needs one lookup and no alias table:
         # `SKHYNIX` and `XYZ-SKHX` are the forms the provider actually sends. Resolution reads `bases`, never the
         # dict being written — otherwise a two-hop chain would resolve or not depending on the row order the
@@ -98,6 +108,11 @@ class InstrumentsRepository:
         provider ships both `UNITREE` and `XYZ-UNITREE` for one instrument, and `news_event_assets` stores the
         stripped form — so resolving the raw tag would miss every builder-DEX symbol whose `XYZ-` alias row
         happens not to exist, and would print `hl.xyz:XYZ-UNITREE` on the chip (#87 review).
+
+        Reference venues are excluded (#91). The chip and the funnel segment it feeds both mean "names something
+        on a venue we poll"; letting a US-listed-only ticker light them up would quietly widen the console's
+        `符号落表` count by ~95 Events a week and claim a tradeable instrument that does not exist. The reference
+        tier answers a different question, and only `instrument_classes()` asks it.
         """
 
         normalized = {str(symbol): normalize_symbol(symbol) for symbol in symbols if str(symbol).strip()}
@@ -115,6 +130,7 @@ class InstrumentsRepository:
                 SELECT i.venue
                   FROM news_market_instruments i
                  WHERE i.base_symbol = COALESCE(a.base_symbol, s.symbol) AND i.status = 'trading'
+                   AND NOT (i.venue = ANY(%s))
                  ORDER BY CASE i.venue
                             WHEN 'binance.perp' THEN 0
                             WHEN 'binance.spot' THEN 1
@@ -125,7 +141,7 @@ class InstrumentsRepository:
                  LIMIT 1
               ) m ON true
             """,
-            (wanted,),
+            (wanted, sorted(REFERENCE_VENUES)),
         ).fetchall()
         resolved = {
             str(row["symbol"]): {
@@ -200,25 +216,46 @@ class InstrumentsRepository:
         return tuple({"alias": str(r["alias"]), "base_symbol": str(r["base_symbol"])} for r in rows)
 
     def universe_summary(self) -> dict[str, Any]:
+        """Every figure here counts contracts on venues we poll; the reference tier gets its own count.
+
+        Mixing them would make `trading` read 15k and the console's 「在交易合约」 figure a lie — a US ticker in
+        the directory is not a contract anyone can take a position in (#91).
+        """
+
+        reference = sorted(REFERENCE_VENUES)
         row = self.conn.execute(
             """
             SELECT count(*) FILTER (WHERE status = 'trading')  AS trading,
                    count(*) FILTER (WHERE status = 'delisted') AS delisted,
                    count(DISTINCT base_symbol) FILTER (WHERE status = 'trading') AS base_symbols,
-                   count(DISTINCT venue)       FILTER (WHERE status = 'trading') AS venues,
-                   max(last_seen_ms) AS last_snapshot_ms
-            FROM news_market_instruments
-            """
+                   count(DISTINCT venue)       FILTER (WHERE status = 'trading') AS venues
+            FROM news_market_instruments WHERE NOT (venue = ANY(%s))
+            """,
+            (reference,),
         ).fetchone()
         summary = dict(row) if row else {}
+        # The timestamp spans every venue: one stale tier is still a stale snapshot.
+        stamp = self.conn.execute(
+            "SELECT max(last_seen_ms) AS last_snapshot_ms FROM news_market_instruments"
+        ).fetchone()
+        summary["last_snapshot_ms"] = stamp["last_snapshot_ms"] if stamp else None
+        summary["reference_symbols"] = int(
+            self.conn.execute(
+                "SELECT count(DISTINCT base_symbol) AS n FROM news_market_instruments"
+                " WHERE status = 'trading' AND venue = ANY(%s)",
+                (reference,),
+            ).fetchone()["n"]
+        )
         by_venue = self.conn.execute(
             "SELECT venue, count(*) AS n FROM news_market_instruments"
-            " WHERE status = 'trading' GROUP BY venue ORDER BY n DESC"
+            " WHERE status = 'trading' AND NOT (venue = ANY(%s)) GROUP BY venue ORDER BY n DESC",
+            (reference,),
         ).fetchall()
         summary["by_venue"] = {str(r["venue"]): int(r["n"]) for r in by_venue}
         by_class = self.conn.execute(
             "SELECT instrument_class, count(DISTINCT base_symbol) AS n FROM news_market_instruments"
-            " WHERE status = 'trading' GROUP BY instrument_class ORDER BY n DESC"
+            " WHERE status = 'trading' AND NOT (venue = ANY(%s)) GROUP BY instrument_class ORDER BY n DESC",
+            (reference,),
         ).fetchall()
         summary["by_class"] = {str(r["instrument_class"]): int(r["n"]) for r in by_class}
         summary["dangling_aliases"] = len(self.dangling_seed_aliases())
@@ -228,9 +265,10 @@ class InstrumentsRepository:
         """Provider coin tags that resolve to nothing in the universe, by volume — the evidence an alias is missing.
 
         Reads `news_items` because that is where the tags are; both tables live in the News store and this is a
-        read-only operator report, never part of the message path. The residue is three things and the report does
-        not try to tell them apart: word collisions (`PRIME`, `GPU`), coins on venues we do not snapshot (`OKB`,
-        `HTX`), and equities with no crypto perp (`UWMC`, `HUBG`) — the last of which is #91's subject.
+        read-only operator report, never part of the message path. Reference rows count as resolved here — a tag
+        the US directory recognises is not a missing alias — so since #91 the residue is two things the report
+        does not try to tell apart: word collisions (`PRIME`, `GPU`, `SPOT`) and coins on venues we do not
+        snapshot (`OKB`, `HTX`).
         """
 
         rows = self.conn.execute(
@@ -350,7 +388,10 @@ class InstrumentsRepository:
         ``dex:SYMBOL`` venue symbol, both pointing at their base. Cheap, and it keeps `alias_map()` self-contained."""
 
         rows = self.conn.execute(
-            "SELECT DISTINCT venue, venue_symbol, base_symbol FROM news_market_instruments WHERE status = 'trading'"
+            # Only rows that can produce an alias: the `XYZ-` form exists for hl.xyz bases and the `dex:SYMBOL`
+            # form for dex-qualified venue symbols. Without the filter this walked all 13k reference rows too.
+            "SELECT DISTINCT venue, venue_symbol, base_symbol FROM news_market_instruments"
+            " WHERE status = 'trading' AND (venue = 'hl.xyz' OR venue_symbol LIKE '%:%')"
         ).fetchall()
         written = 0
         for row in rows:

@@ -23,7 +23,11 @@ from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
-from tracefold.integrations.venues import fetch_binance_instruments, fetch_hyperliquid_instruments
+from tracefold.integrations.venues import (
+    fetch_binance_instruments,
+    fetch_hyperliquid_instruments,
+    fetch_us_reference_instruments,
+)
 from tracefold.news import DecidePolicy
 from tracefold.news.agents.triage_model import TriageModel
 from tracefold.news.consumers import (
@@ -658,6 +662,8 @@ def _instrument_snapshot_loop(settings: Any, *, db: Any) -> InstrumentSnapshotLo
         fetchers.append(("binance", fetch_binance_instruments))
     if venues.hyperliquid:
         fetchers.append(("hyperliquid", fetch_hyperliquid_instruments))
+    if venues.us_reference:
+        fetchers.append(("us_reference", fetch_us_reference_instruments))
     if not fetchers:
         return None
     return InstrumentSnapshotLoop(

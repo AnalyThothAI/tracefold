@@ -241,7 +241,12 @@ surface is exactly three read-only routes:
   counts, last error, end-to-end p95, availability, hourly cap), plus
   `control` (paused, mutes), the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last
-  snapshot time, per-venue counts).
+  snapshot time, per-venue and per-class counts, `dangling_aliases`, and
+  `reference_symbols`). Every figure but the last two counts contracts on
+  venues we poll; `reference_symbols` is the separate US listed-symbol
+  directory (#91), which tells the Gate a ticker is a stock and is tradeable
+  nowhere, so it is kept out of `trading`, `by_venue`, `by_class` and the
+  `符号落表` funnel.
 
   `funnel_24h.grounded` and `ungrounded_by_symbol_24h` are folded in the route
   from two halves neither repository reaches across for: News reports which

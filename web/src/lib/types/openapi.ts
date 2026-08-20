@@ -652,6 +652,10 @@ export interface components {
          *
          *     `dangling_aliases` counts seed aliases pointing at a symbol no venue lists — each one is a provider tag that
          *     silently resolves to nothing, which is how `1810.HK -> XIAOMI` went unnoticed for a week (#89). It should be 0.
+         *
+         *     Every other figure counts contracts on venues we poll. `reference_symbols` is the separate US listed-symbol
+         *     directory (#91): those tickers tell the Gate a headline is about a stock, but nobody can trade them here, so
+         *     folding them into `trading` would make that number mean something else.
          */
         NewsInstrumentUniverse: {
             /**
@@ -679,6 +683,11 @@ export interface components {
             delisted: number;
             /** Last Snapshot Ms */
             last_snapshot_ms?: number | null;
+            /**
+             * Reference Symbols
+             * @default 0
+             */
+            reference_symbols: number;
             /**
              * Trading
              * @default 0
