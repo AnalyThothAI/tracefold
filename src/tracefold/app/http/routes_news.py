@@ -68,8 +68,8 @@ def get_news_feed(
     if decision and decision not in _DECISIONS:
         raise ApiBadRequest("news_feed_decision_invalid", field="decision")
     runtime = _authenticated_runtime(request)
-    try:
-        with runtime.repositories() as repos:
+    with runtime.repositories() as repos:
+        try:
             data = repos.news.list_feed(
                 family=family or None,
                 admission=admission or None,
@@ -83,9 +83,11 @@ def get_news_feed(
                 outcome=outcome or None,
                 hours=hours or None,
             )
-            _attach_asset_refs(data["events"], repos.instruments)
-    except ValueError as exc:
-        raise ApiBadRequest(str(exc), field="cursor") from exc
+        except ValueError as exc:
+            # Only `list_feed` decodes the cursor. Anything that fails while resolving instruments is a
+            # server fault and must not come back as a 400 naming a field the caller got right (#87 review).
+            raise ApiBadRequest(str(exc), field="cursor") from exc
+        _attach_asset_refs(data["events"], repos.instruments)
     return _etagged(data, request, envelope=_FeedEnvelope)
 
 
@@ -206,10 +208,16 @@ def _normalization(event: dict[str, Any], instruments: Any) -> list[dict[str, An
 
     A base that answers to exactly one name tells the reader nothing; the block exists to explain why several
     contracts share one storyline bucket.
+
+    Venue-derived aliases are excluded (#87 review). `learn_aliases_from_universe` writes an `XYZ-{base}` row
+    for every builder-DEX base and a `dex:SYMBOL` form besides, so counting those would fire the block on
+    routine commodity and index Events — `GOLD XAU XAUT XYZ-GOLD -> GOLD` explains nothing a reader did not
+    already assume. What is worth a row is the operator-owned collapse the throttle depends on:
+    SKHY / SKHX / SKHYNIX.
     """
 
     bases = {str(asset["base_symbol"]) for asset in event.get("assets") or []}
-    groups = instruments.aliases_by_base(bases)
+    groups = instruments.aliases_by_base(bases, sources=("operator",))
     return [group for _, group in sorted(groups.items()) if len(group.get("aliases") or []) > 1]
 
 

@@ -15,6 +15,7 @@ from .instruments import (
     Instrument,
     UniverseDiff,
     instruments_from_rows,
+    normalize_symbol,
     resolve_base_symbol,
 )
 
@@ -109,9 +110,16 @@ class InstrumentsRepository:
 
         `venue` is the *preferred* venue when a base trades on several — deepest first, HIP-3 builder DEXs last —
         so a chip is stable across polls rather than reshuffling with whatever the planner returned.
+
+        Input is the raw provider tag and the result is keyed by it, so a caller needs no normalization
+        knowledge of its own; the returned ``symbol`` is the normalized form. Normalizing matters twice: the
+        provider ships both `UNITREE` and `XYZ-UNITREE` for one instrument, and `news_event_assets` stores the
+        stripped form — so resolving the raw tag would miss every builder-DEX symbol whose `XYZ-` alias row
+        happens not to exist, and would print `hl.xyz:XYZ-UNITREE` on the chip (#87 review).
         """
 
-        wanted = sorted({str(symbol).upper() for symbol in symbols if str(symbol).strip()})
+        normalized = {str(symbol): normalize_symbol(symbol) for symbol in symbols if str(symbol).strip()}
+        wanted = sorted(set(normalized.values()))
         if not wanted:
             return {}
         rows = self.conn.execute(
@@ -137,7 +145,7 @@ class InstrumentsRepository:
             """,
             (wanted,),
         ).fetchall()
-        return {
+        resolved = {
             str(row["symbol"]): {
                 "symbol": str(row["symbol"]),
                 "base_symbol": str(row["base_symbol"]),
@@ -146,22 +154,31 @@ class InstrumentsRepository:
             }
             for row in rows
         }
+        return {raw: resolved[norm] for raw, norm in normalized.items() if norm in resolved}
 
-    def aliases_by_base(self, base_symbols: Iterable[str]) -> dict[str, dict[str, Any]]:
+    def aliases_by_base(
+        self, base_symbols: Iterable[str], *, sources: Sequence[str] | None = None
+    ) -> dict[str, dict[str, Any]]:
         """base_symbol -> every name that resolves into it, for the detail page's normalization block (#87).
 
         This is what makes the storyline throttle legible: SKHY / SKHX / SKHYNIX are three real contracts for one
         issuer, and the reader needs to see that they share a bucket rather than wonder why one buyback shipped
         one card. Only bases that actually collapse something are worth a row, so the caller drops singletons.
+
+        ``sources`` narrows to particular ``news_symbol_aliases.source`` values. The console passes
+        ``("operator",)``: venue-derived rows are mechanical (`XYZ-{base}` exists for every builder-DEX base),
+        so including them would fire the block on Events where nothing surprising happened.
         """
 
         wanted = sorted({str(symbol).upper() for symbol in base_symbols if str(symbol).strip()})
         if not wanted:
             return {}
+        clause = "" if sources is None else " AND source = ANY(%s)"
+        params: tuple[Any, ...] = (wanted,) if sources is None else (wanted, list(sources))
         rows = self.conn.execute(
-            "SELECT alias, base_symbol, source FROM news_symbol_aliases WHERE base_symbol = ANY(%s)"
+            f"SELECT alias, base_symbol, source FROM news_symbol_aliases WHERE base_symbol = ANY(%s){clause}"
             " ORDER BY base_symbol, alias",
-            (wanted,),
+            params,
         ).fetchall()
         # The base is one of the names, not something outside the group: the console renders the row as
         # `SKHY SKHX SKHYNIX -> SKHY`, and dropping the base would make one third of the collapse invisible.

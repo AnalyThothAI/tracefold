@@ -6,7 +6,13 @@ import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import "./CockpitTopbar.css";
 
 const NEWS_SEARCH_ARIA_LABEL = "news search";
-const NEWS_SEARCH_PLACEHOLDER = "搜索事件 / base_symbol / 场所";
+/*
+ * What the box actually searches: the server matches `q` against `search_doc` (context line + leader title)
+ * and `leader_title ILIKE`. It does not index venues and does not resolve aliases, so promising
+ * `base_symbol / 场所` the way the design does would send readers looking for `hl.perp` into an empty feed
+ * (#87 review). Widen the placeholder when the backend widens, not before.
+ */
+const NEWS_SEARCH_PLACEHOLDER = "搜索新闻事件 / 标题 / 资产";
 
 /** One always-visible number from the pipeline. `value` is undefined until the status poll answers. */
 export type CockpitTopbarFigure = {

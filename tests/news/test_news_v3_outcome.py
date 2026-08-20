@@ -296,6 +296,7 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "throttled_by_key": {"storyline:asset:BTC": 12},
             "pushed_by_rule": {"model_push_actionable": 18, "magnitude3": 2},
             "triage_degraded_by_code_24h": {"news_triage_timeout": 3},
+            "tagged_24h": 150,
             "grounded_24h": 144,
             "ungrounded_by_symbol_24h": {"SPOT": 38, "NEAR": 9},
         },
@@ -332,6 +333,8 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
         "triaged": 150,
         # #87: how many of the same Events named an asset that exists on a venue. It sits between "sent to
         # the model" and "decided" because that is where the reader asks it, not because it is a stage.
+        # `tagged` travels with it: it is the only population `grounded` can be compared against.
+        "tagged": 150,
         "grounded": 144,
         "decided_push": 20,
         "delivered": 19,

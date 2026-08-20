@@ -32,7 +32,12 @@ import { NewsToneDot } from "../chrome/NewsTone";
 
 import "./newsStatus.css";
 
-const REASON_STAGE_ORDER = ["push", "throttle", "drop", "gate", "degraded"] as const;
+/**
+ * Which reason groups the page shows, in reading order. This list is the render filter, so a stage the
+ * server sends that is missing here is silently dropped — `ungrounded` shipped computed, labelled and
+ * documented but invisible for exactly that reason (#87 review).
+ */
+const REASON_STAGE_ORDER = ["push", "throttle", "drop", "ungrounded", "gate", "degraded"] as const;
 
 export function NewsStatusPage({ token }: { token: string }) {
   const query = useNewsStatusWithToken(token);

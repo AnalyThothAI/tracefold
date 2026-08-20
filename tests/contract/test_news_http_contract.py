@@ -135,21 +135,33 @@ class _FakeInstrumentsRepository:
     """#75 universe as the status route sees it before any snapshot has landed."""
 
     def asset_refs(self, symbols: Any) -> dict[str, dict[str, Any]]:
+        # Keyed by the raw provider tag; `symbol` comes back normalized (the real one strips `XYZ-`).
         listed = {"COPPER": "hl.xyz"}
-        return {
-            str(symbol): {
-                "symbol": str(symbol),
-                "base_symbol": str(symbol),
-                "venue": listed.get(str(symbol)),
-                "listed": str(symbol) in listed,
+        out: dict[str, dict[str, Any]] = {}
+        for raw in symbols:
+            norm = str(raw).upper().removeprefix("XYZ-")
+            out[str(raw)] = {
+                "symbol": norm,
+                "base_symbol": norm,
+                "venue": listed.get(norm),
+                "listed": norm in listed,
             }
-            for symbol in symbols
-        }
+        return out
 
-    def aliases_by_base(self, base_symbols: Any) -> dict[str, dict[str, Any]]:
+    def aliases_by_base(self, base_symbols: Any, *, sources: Any = None) -> dict[str, dict[str, Any]]:
+        # #87 review: the console asks for operator aliases only. Venue-derived rows are mechanical
+        # (`XYZ-{base}` exists for every builder-DEX base) and would fire the block on routine Events.
         groups = {"COPPER": ["COPPER", "HG"]}
+        if sources is not None and "operator" not in tuple(sources):
+            return {
+                str(base): {"base_symbol": str(base), "aliases": [str(base)], "sources": []} for base in base_symbols
+            }
         return {
-            str(base): {"base_symbol": str(base), "aliases": groups.get(str(base), [str(base)]), "sources": ["venue"]}
+            str(base): {
+                "base_symbol": str(base),
+                "aliases": groups.get(str(base), [str(base)]),
+                "sources": ["operator"],
+            }
             for base in base_symbols
         }
 
