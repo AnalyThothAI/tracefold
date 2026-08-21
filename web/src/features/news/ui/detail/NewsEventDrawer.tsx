@@ -74,6 +74,10 @@ export function NewsEventDrawer({
             <Link className="news-drawer-open" state={{ feedSearch }} to={newsEventPath(eventId)}>
               打开整页
             </Link>
+            {/* A panel that survives a click outside needs a way out that is not a keystroke. */}
+            <ActionButton onClick={onClose} size="sm" variant="quiet">
+              关闭
+            </ActionButton>
           </>
         ) : null
       }

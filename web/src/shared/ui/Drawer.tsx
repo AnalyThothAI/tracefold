@@ -48,6 +48,13 @@ export function Drawer({
           className="ui-drawer"
           data-flush={flush || undefined}
           data-side={side}
+          /*
+           * A non-modal sheet keeps its focus and its dismiss layer out of the page's way. Radix would
+           * otherwise close it the moment focus or a pointer lands outside — which is every keystroke of the
+           * `J`/`K` walk it exists to accompany. It closes on `Esc` or on its own control instead.
+           */
+          onFocusOutside={modal ? undefined : (event) => event.preventDefault()}
+          onInteractOutside={modal ? undefined : (event) => event.preventDefault()}
           onOpenAutoFocus={modal ? undefined : (event) => event.preventDefault()}
           style={width ? { width: `min(${width}px, 100%)` } : undefined}
         >

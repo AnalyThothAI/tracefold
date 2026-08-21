@@ -39,6 +39,19 @@ test("moves a reading cursor down the feed and opens the Event under it", async 
   );
   await expect(page.locator(".news-event-row").first()).toBeVisible();
 
+  /*
+   * The whole point of the drawer: `J` keeps walking the list and the drawer follows. The panel has to keep
+   * its dismiss layer out of the way for that — Radix would otherwise close a non-modal sheet the moment
+   * focus lands back on a row, which is every keystroke of this walk.
+   */
+  await page.keyboard.press("j");
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("link", { name: "打开整页" })).toHaveAttribute(
+    "href",
+    "/news/events/evt-global-policy-2",
+  );
+  await expect(page.locator(cursorRow)).toHaveAttribute("data-event-id", "evt-global-policy-2");
+
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
   await expect(page).toHaveURL(/\/news(\?|$)/);
