@@ -16,7 +16,13 @@ from .binance import BINANCE_FUTURES_BASE_URL, BINANCE_SPOT_BASE_URL, fetch_bina
 from .candles import fetch_binance_candles, fetch_hyperliquid_candles
 from .errors import VenueExpectedError
 from .hyperliquid import HYPERLIQUID_BASE_URL, fetch_hyperliquid_instruments
-from .quotes import fetch_binance_futures_quotes, fetch_binance_spot_quotes, fetch_hyperliquid_quotes
+from .quotes import (
+    fetch_binance_futures_day_quotes,
+    fetch_binance_futures_quotes,
+    fetch_binance_spot_day_quotes,
+    fetch_binance_spot_quotes,
+    fetch_hyperliquid_quotes,
+)
 from .us_reference import US_REFERENCE_BASE_URL, US_REFERENCE_VENUE, fetch_us_reference_instruments
 
 __all__ = [
@@ -27,8 +33,10 @@ __all__ = [
     "US_REFERENCE_VENUE",
     "VenueExpectedError",
     "fetch_binance_candles",
+    "fetch_binance_futures_day_quotes",
     "fetch_binance_futures_quotes",
     "fetch_binance_instruments",
+    "fetch_binance_spot_day_quotes",
     "fetch_binance_spot_quotes",
     "fetch_hyperliquid_candles",
     "fetch_hyperliquid_instruments",

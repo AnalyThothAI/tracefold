@@ -1,12 +1,13 @@
 """Current-quote adapters (#88 §4): one bounded batch request per provider source, normalized on the way in.
 
-Each venue speaks its own dialect and this is where it stops. Binance publishes a traded last price plus a
-rolling 24 h percentage; Hyperliquid publishes a book mid plus yesterday's close, from which the day change
-is derived here. Both arrive as `ProviderQuote`, which declares the price kind's basis rather than letting a
-derivative mid pass for a cash last price downstream.
+Each venue speaks its own dialect and this is where it stops. Both publish a price and a reference the day
+change is measured against — Hyperliquid's `prevDayPx` in the same request, Binance's rolling-window
+`openPrice` only from the wider `ticker/24hr`, which is why a Binance source alternates between two
+endpoints on two cadences (#109). Both arrive as `ProviderQuote`, which declares the price kind's basis
+rather than letting a derivative mid pass for a cash last price downstream.
 
-V1 uses unauthenticated public REST on a five-second cadence, never a market socket. A WSS implementation
-would satisfy this same interface and change nothing in persistence, HTTP or the browser.
+Unauthenticated public REST, never a market socket. That is a recorded decision with a measurement and a
+promotion criterion behind it (#109, `docs/ARCHITECTURE.md`), not an unexamined default.
 """
 
 from __future__ import annotations
@@ -26,10 +27,12 @@ BINANCE_SPOT_BASE_URL: Final = "https://api.binance.com"
 BINANCE_FUTURES_BASE_URL: Final = "https://fapi.binance.com"
 HYPERLIQUID_BASE_URL: Final = "https://api.hyperliquid.xyz"
 
-# Binance charges by response breadth: an explicit `symbols=[...]` list is weight 2-40, the whole market is
-# weight 80 (spot) / 42 (USD-M, measured). Past this many symbols the list form stops being the cheaper one,
-# and the USD-M endpoint has no list form at all — one request for the market, filtered locally.
-_SPOT_SYMBOL_LIST_MAX: Final = 100
+# `ticker/24hr` charges by response breadth: an explicit `symbols=[...]` list is weight 2-40, the whole
+# market is weight 80 (spot) / 42 (USD-M, measured). Past this many symbols the list form stops being the
+# cheaper one. `ticker/price` is a flat weight 4 at any list length (measured at n=20/100/120), so there the
+# list is always worth sending — it is 5 kB against 171 kB. The USD-M endpoints have no list form at all:
+# one request for the market, filtered locally.
+_DAY_SYMBOL_LIST_MAX: Final = 100
 _ROLLING_24H: Final = "rolling_24h"
 _PROVIDER_DAY: Final = "provider_day"
 
@@ -40,17 +43,19 @@ async def fetch_binance_spot_quotes(
     transport: httpx.AsyncBaseTransport | None = None,
     base_url: str = BINANCE_SPOT_BASE_URL,
 ) -> tuple[ProviderQuote, ...]:
+    """Prices only, for the turns between day reads. Weight 4 whatever the list length, so always ask by name."""
+
     wanted = _wanted(symbols)
     if not wanted:
         return ()
-    params: dict[str, Any] = {}
-    if len(wanted) <= _SPOT_SYMBOL_LIST_MAX:
-        params["symbols"] = json.dumps(sorted(wanted), separators=(",", ":"))
     async with price_client(transport) as client:
         payload = await get_json(
-            client, f"{base_url.rstrip('/')}/api/v3/ticker/24hr", venue="binance.spot", params=params
+            client,
+            f"{base_url.rstrip('/')}/api/v3/ticker/price",
+            venue="binance.spot",
+            params=_symbols_param(wanted),
         )
-    return _parse_binance(payload, venue="binance.spot", wanted=wanted)
+    return _parse_binance_price(payload, venue="binance.spot", wanted=wanted)
 
 
 async def fetch_binance_futures_quotes(
@@ -59,14 +64,53 @@ async def fetch_binance_futures_quotes(
     transport: httpx.AsyncBaseTransport | None = None,
     base_url: str = BINANCE_FUTURES_BASE_URL,
 ) -> tuple[ProviderQuote, ...]:
-    """USD-M has no `symbols=` list, so the whole market comes back once and is filtered here."""
+    """USD-M has no `symbols=` list, so the whole market comes back once and is filtered here.
+
+    `ticker/price` rather than `ticker/24hr`: measured 45.5 kB against 270 kB for the same market, because
+    92% of the bigger payload is fields we do not display, for symbols nobody asked about (#109).
+    """
 
     wanted = _wanted(symbols)
     if not wanted:
         return ()
     async with price_client(transport) as client:
+        payload = await get_json(client, f"{base_url.rstrip('/')}/fapi/v1/ticker/price", venue="binance.perp")
+    return _parse_binance_price(payload, venue="binance.perp", wanted=wanted)
+
+
+async def fetch_binance_spot_day_quotes(
+    symbols: Sequence[str],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    base_url: str = BINANCE_SPOT_BASE_URL,
+) -> tuple[ProviderQuote, ...]:
+    """The same prices plus the 24 h window's open, which is what the day change is measured against."""
+
+    wanted = _wanted(symbols)
+    if not wanted:
+        return ()
+    async with price_client(transport) as client:
+        payload = await get_json(
+            client,
+            f"{base_url.rstrip('/')}/api/v3/ticker/24hr",
+            venue="binance.spot",
+            params=_symbols_param(wanted, max_list=_DAY_SYMBOL_LIST_MAX),
+        )
+    return _parse_binance_day(payload, venue="binance.spot", wanted=wanted)
+
+
+async def fetch_binance_futures_day_quotes(
+    symbols: Sequence[str],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    base_url: str = BINANCE_FUTURES_BASE_URL,
+) -> tuple[ProviderQuote, ...]:
+    wanted = _wanted(symbols)
+    if not wanted:
+        return ()
+    async with price_client(transport) as client:
         payload = await get_json(client, f"{base_url.rstrip('/')}/fapi/v1/ticker/24hr", venue="binance.perp")
-    return _parse_binance(payload, venue="binance.perp", wanted=wanted)
+    return _parse_binance_day(payload, venue="binance.perp", wanted=wanted)
 
 
 async def fetch_hyperliquid_quotes(
@@ -107,12 +151,66 @@ def _wanted(symbols: Sequence[str]) -> set[str]:
     return {str(symbol).strip() for symbol in symbols if str(symbol).strip()}
 
 
-def _parse_binance(payload: Any, *, venue: str, wanted: set[str]) -> tuple[ProviderQuote, ...]:
-    rows = [payload] if isinstance(payload, Mapping) else payload
-    if not isinstance(rows, Sequence):
+def _symbols_param(wanted: set[str], *, max_list: int | None = None) -> dict[str, Any]:
+    """Ask for only what we need, unless the list would cost more than the whole market."""
+
+    if max_list is not None and len(wanted) > max_list:
+        return {}
+    return {"symbols": json.dumps(sorted(wanted), separators=(",", ":"))}
+
+
+def _binance_rows(payload: Any, *, venue: str) -> Sequence[Any]:
+    """Every request this module makes answers with a list. A string is a Sequence and is not one of these.
+
+    Without the `str` guard a proxy or CDN answering 200 with a JSON-encoded error body iterates character by
+    character to an empty result, which the loop then reports as the benign `venue_payload_empty` instead of
+    naming the payload as invalid.
+    """
+
+    if isinstance(payload, str | bytes) or not isinstance(payload, Sequence):
         raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    return payload
+
+
+def _parse_binance_price(payload: Any, *, venue: str, wanted: set[str]) -> tuple[ProviderQuote, ...]:
+    """`ticker/price` carries symbol, price, and on USD-M the venue's own timestamp — nothing else.
+
+    No reference price, so no percentage: the loop derives the day change from the reference its last day
+    read cached. A symbol no day read has covered yet shows a price with no percentage, never a borrowed one.
+    """
+
     out: list[ProviderQuote] = []
-    for entry in rows:
+    for entry in _binance_rows(payload, venue=venue):
+        if not isinstance(entry, Mapping):
+            continue
+        venue_symbol = str(entry.get("symbol") or "").upper()
+        if venue_symbol not in wanted:
+            continue
+        price = parse_price(entry.get("price"))
+        if price is None:
+            continue
+        out.append(
+            ProviderQuote(
+                venue_symbol=venue_symbol,
+                price=price,
+                change_basis=_ROLLING_24H,
+                source_at_ms=_optional_int(entry.get("time")),
+            )
+        )
+    return tuple(out)
+
+
+def _parse_binance_day(payload: Any, *, venue: str, wanted: set[str]) -> tuple[ProviderQuote, ...]:
+    """`ticker/24hr` answers both questions at once: the price, and the window open it is measured against.
+
+    `openPrice` is the rolling window's first trade — `priceChangePercent` is exactly `lastPrice/openPrice-1`.
+    Carrying the reference rather than the percentage is what lets the cheap turns in between stay truthful:
+    the percentage is recomputed from each turn's own price, so it can never disagree with the number beside
+    it. Only the reference is allowed to age, and a 24 h window's open moves 0.023% per 20 s turn.
+    """
+
+    out: list[ProviderQuote] = []
+    for entry in _binance_rows(payload, venue=venue):
         if not isinstance(entry, Mapping):
             continue
         venue_symbol = str(entry.get("symbol") or "").upper()
@@ -121,12 +219,14 @@ def _parse_binance(payload: Any, *, venue: str, wanted: set[str]) -> tuple[Provi
         price = parse_price(entry.get("lastPrice"))
         if price is None:
             continue
+        reference = parse_price(entry.get("openPrice"))
         out.append(
             ProviderQuote(
                 venue_symbol=venue_symbol,
                 price=price,
-                change_pct=_optional_float(entry.get("priceChangePercent")),
+                change_pct=parse_change_pct(price, reference),
                 change_basis=_ROLLING_24H,
+                reference_price=reference,
                 source_at_ms=_optional_int(entry.get("closeTime")),
             )
         )
@@ -182,13 +282,6 @@ def _parse_hyperliquid_spot(contexts: Sequence[Any], *, wanted: set[str], venue:
     return tuple(out)
 
 
-def _optional_float(value: Any) -> float | None:
-    try:
-        return float(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
 def _optional_int(value: Any) -> int | None:
     try:
         return int(value)
@@ -200,7 +293,9 @@ __all__ = [
     "BINANCE_FUTURES_BASE_URL",
     "BINANCE_SPOT_BASE_URL",
     "HYPERLIQUID_BASE_URL",
+    "fetch_binance_futures_day_quotes",
     "fetch_binance_futures_quotes",
+    "fetch_binance_spot_day_quotes",
     "fetch_binance_spot_quotes",
     "fetch_hyperliquid_quotes",
 ]

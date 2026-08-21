@@ -48,7 +48,7 @@ export function NewsQuoteValue({ quote }: { quote: NewsQuote | undefined }) {
       data-state={quote.state}
       data-tone={tone}
       title={`${quoteVenueLabel(quote)} · ${quote.price_kind_zh} · ${quoteAgeLabel(quote)}${
-        quote.change_basis_zh ? ` · ${quote.change_basis_zh}变动` : ""
+        quote.change_basis_zh && quote.change_pct != null ? ` · ${quote.change_basis_zh}变动` : ""
       }`}
     >
       <span className="news-quote-price">{formatPrice(quote.price)}</span>

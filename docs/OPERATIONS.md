@@ -96,7 +96,8 @@ tracefold workers
 The three cold loops (#75 instruments, #88 quotes and Event Reactions) admit
 their database work through the one-slot heavy-business lane, never the four
 News hot-path slots, so a price backlog cannot starve a live Event. Their
-provider calls are bounded (quotes: one batch per source, concurrency 4, a 10 s
+provider calls are bounded (quotes: one batch per source per turn — the #109 day
+read replaces that turn's price read rather than adding a call — concurrency 4, a 10 s
 turn deadline, 5 s cadence, never overlapping; reactions: at most 32 merged
 candle requests per 60 s turn, concurrency 4) and none of them holds a database
 connection while calling out.
@@ -361,7 +362,10 @@ first frame after deployment; there is no backfill of pre-V3 history.
   whose state has been `stale` for minutes is either rate-limited or blocked;
   the loop's last error names which (`venue_rate_limited`, `venue_blocked`,
   `venue_timeout`). One failing venue never clears another and never blanks a
-  price: the previous row stays and simply ages.
+  price: the previous row stays and simply ages. A Binance source reads the wider
+  `ticker/24hr` on one turn in fifteen (#109); a failure there fails that whole
+  turn for that source, which is why `state` and `age_ms` remain the one thing to
+  read — there is no separate freshness for the percentage.
 - `reaction_partial_7d` / `reaction_complete_7d` / `reaction_unavailable_7d` —
   the Reaction backlog. A rising `partial` count with a flat `complete` count
   means the 4H leg is not landing; a rising `unavailable` count is a data

@@ -553,6 +553,14 @@ def test_price_loops_are_wired_per_source_and_follow_the_existing_venue_switches
     assert quotes.fetcher_for("hl.perp") is not None
     assert quotes.fetcher_for("hl.brandnewdex") is not None
     assert quotes.fetcher_for("us.listed") is None  # a reference tier is never a price source
+
+    # The wide day endpoint exists for exactly the venues that publish the day change separately (#109).
+    assert quotes.day_fetcher_for("binance.spot") is not None
+    assert quotes.day_fetcher_for("binance.perp") is not None
+    assert quotes.day_fetcher_for("hl.perp") is None  # one Hyperliquid request already carries prevDayPx
+    assert quotes.day_fetcher_for("hl.brandnewdex") is None
+    assert quotes.day_fetcher_for("us.listed") is None
+
     assert reactions.fetcher_for("binance.perp") is not None
     assert reactions.fetcher_for("hl.spot") is not None
     assert reactions.fetcher_for("us.listed") is None
@@ -566,6 +574,11 @@ def test_a_disabled_venue_removes_its_adapter_rather_than_failing_the_turn() -> 
     assert quotes is not None
     assert quotes.fetcher_for("binance.perp") is not None
     assert quotes.fetcher_for("hl.perp") is None
+
+    hyperliquid_only = _settings(binance=False, hyperliquid=True)
+    partial = _quote_snapshot_loop(hyperliquid_only, db=_FakeHeavyDb(), watchlist=[])
+    assert partial is not None
+    assert partial.day_fetcher_for("binance.perp") is None  # the venue switch reaches both factories
 
     off = _settings(enabled=False)
     assert _quote_snapshot_loop(off, db=_FakeHeavyDb(), watchlist=[]) is None

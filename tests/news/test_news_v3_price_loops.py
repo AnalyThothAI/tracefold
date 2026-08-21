@@ -20,12 +20,14 @@ from tracefold.news.price_loops import EventReactionLoop, QuoteSnapshotLoop
 from tracefold.news.pricing import (
     CANDLE_INTERVAL_MS,
     HORIZON_MS,
+    QUOTE_DAY_PERIOD_SECONDS,
     QUOTE_SOURCE_GROUP_MAX,
     QUOTE_TARGET_MAX,
     REACTION_CANDLE_REQUESTS_MAX,
     Candle,
     PriceInstrument,
     ProviderQuote,
+    parse_change_pct,
 )
 
 ANCHOR = 1_787_000_100_000
@@ -281,6 +283,198 @@ def test_a_source_with_no_adapter_is_skipped_rather_than_crashing_the_turn() -> 
 def test_quote_budgets_are_code_owned_constants() -> None:
     assert QUOTE_TARGET_MAX == 256
     assert QUOTE_SOURCE_GROUP_MAX == 12
+    assert QUOTE_DAY_PERIOD_SECONDS == 300.0
+
+
+# ---------------------------------------------------------------------- the alternating day read (#109)
+class _BinanceLike:
+    """One Binance-shaped source: a narrow price endpoint and a wide one that also carries the day open."""
+
+    def __init__(self, *, price: Decimal = Decimal("68000"), reference: Decimal | None = Decimal("67000")):
+        self.price = price
+        self.reference = reference
+        self.calls: list[tuple[str, str, tuple[str, ...]]] = []
+        self.fail: BaseException | None = None
+        self.slow = False
+
+    def fetcher_for(self, source: str):
+        async def fetch(symbols):
+            self.calls.append(("price", source, tuple(symbols)))
+            return [
+                ProviderQuote(venue_symbol=symbol, price=self.price, change_basis="rolling_24h") for symbol in symbols
+            ]
+
+        return fetch
+
+    def day_fetcher_for(self, source: str):
+        if not source.startswith("binance."):
+            return None
+
+        async def fetch(symbols):
+            self.calls.append(("day", source, tuple(symbols)))
+            if self.slow:
+                await asyncio.sleep(30)
+            if self.fail is not None:
+                raise self.fail
+            return [
+                ProviderQuote(
+                    venue_symbol=symbol,
+                    price=self.price,
+                    # Exactly what the real adapter does: derive from lastPrice against the window open.
+                    change_pct=parse_change_pct(self.price, self.reference),
+                    change_basis="rolling_24h",
+                    reference_price=self.reference,
+                )
+                for symbol in symbols
+            ]
+
+        return fetch
+
+    def loop(self, price: _FakePrice, **kwargs: Any) -> QuoteSnapshotLoop:
+        return QuoteSnapshotLoop(
+            db=_FakeColdDatabase(price),
+            fetcher_for=self.fetcher_for,
+            day_fetcher_for=self.day_fetcher_for,
+            **kwargs,
+        )
+
+
+def test_a_turn_is_still_exactly_one_request_per_source_even_on_a_day_read() -> None:
+    """#88 §13 unchanged by #109: the day read replaces that turn's price read, it never joins it."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("hl.perp", "HYPE", "HYPE")])
+    venue = _BinanceLike()
+    loop = venue.loop(price)
+
+    for _ in range(3):
+        asyncio.run(loop.turn())
+
+    per_turn = [call for call in venue.calls if call[1] == "binance.perp"]
+    assert [kind for kind, _, _ in per_turn] == ["day", "price", "price"]  # wide once, then narrow
+    assert len(venue.calls) == 6  # two sources x three turns, never more
+
+
+def test_the_percentage_is_recomputed_from_each_turn_own_price_not_frozen_with_it() -> None:
+    """The reference ages, the ratio does not: the number can never disagree with the price beside it."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    venue = _BinanceLike(price=Decimal("67000"), reference=Decimal("67000"))
+    loop = venue.loop(price)
+
+    asyncio.run(loop.turn())  # day read: 67000 against a 67000 open -> flat
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct == pytest.approx(0.0)
+
+    venue.price = Decimal("70350")  # the market moves 5% on the next 20 s turn
+    asyncio.run(loop.turn())
+
+    quote = price.snapshots["binance.perp"]["quotes"][0]
+    assert quote.price == Decimal("70350")
+    assert quote.change_pct == pytest.approx(5.0)  # not the frozen 0.0 a cached percentage would show
+
+
+def test_a_symbol_joining_the_working_set_gets_its_percentage_without_waiting_for_the_cadence() -> None:
+    """The newest Event is the card being looked at; it must not be the one with no percentage."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    venue = _BinanceLike()
+    loop = venue.loop(price)
+    asyncio.run(loop.turn())
+
+    price._targets = [_instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("binance.perp", "SOLUSDT", "SOL")]
+    asyncio.run(loop.turn())
+
+    assert [kind for kind, _, _ in venue.calls] == ["day", "day"]
+    assert all(quote.change_pct is not None for quote in price.snapshots["binance.perp"]["quotes"])
+
+
+def test_a_symbol_no_venue_answers_for_cannot_pin_the_source_to_the_wide_endpoint() -> None:
+    """`_covered` records what we asked for, not what came back, or an unlisted symbol never stops asking."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "NOSUCHUSDT", "NOSUCH")])
+    venue = _BinanceLike()
+
+    def day_fetcher_for(source: str):
+        async def fetch(symbols):
+            venue.calls.append(("day", source, tuple(symbols)))
+            return [ProviderQuote(venue_symbol="BTCUSDT", price=Decimal("1"), reference_price=Decimal("1"))]
+
+        return fetch
+
+    loop = QuoteSnapshotLoop(
+        db=_FakeColdDatabase(price), fetcher_for=venue.fetcher_for, day_fetcher_for=day_fetcher_for
+    )
+    for _ in range(3):
+        asyncio.run(loop.turn())
+
+    assert [kind for kind, _, _ in venue.calls] == ["day", "price", "price"]
+
+
+def test_a_slow_day_read_cannot_be_scheduled_beside_the_price_read_it_replaces() -> None:
+    """A second, larger optional request sharing the turn deadline would void every price this turn."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("hl.perp", "HYPE", "HYPE")])
+    venue = _BinanceLike()
+    venue.slow = True
+    loop = venue.loop(price, period_seconds=0.01)
+    loop.day_period_ms = 0.0
+
+    async def _bounded() -> Any:
+        return await asyncio.wait_for(loop.turn(), timeout=2.0)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(_bounded())
+
+    # The slow source is the only casualty: Hyperliquid answered and nothing else was cancelled with it.
+    assert [call[1] for call in venue.calls] == ["binance.perp", "hl.perp"]
+
+
+def test_a_failed_day_read_leaves_the_source_due_and_writes_nothing_of_its_own() -> None:
+    """Stale-not-blank: nothing is stamped for a question that was never answered, so it is asked again."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    price.snapshots["binance.perp"] = {"quotes": ["previous"]}
+    venue = _BinanceLike()
+    venue.fail = RuntimeError("venue_rate_limited")
+    loop = venue.loop(price)
+
+    asyncio.run(loop.turn())
+    assert price.snapshots["binance.perp"] == {"quotes": ["previous"]}  # good percentages not nulled
+    assert loop.last_error is not None and "binance.perp" in loop.last_error
+
+    venue.fail = None
+    asyncio.run(loop.turn())
+
+    assert [kind for kind, _, _ in venue.calls] == ["day", "day"]  # still due, retried, then satisfied
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct == pytest.approx(1.4925, abs=1e-3)
+
+
+def test_a_day_read_that_answers_without_any_reference_does_not_stamp_the_cadence() -> None:
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    venue = _BinanceLike(reference=None)
+    loop = venue.loop(price)
+
+    asyncio.run(loop.turn())
+    asyncio.run(loop.turn())
+
+    assert [kind for kind, _, _ in venue.calls] == ["day", "day"]
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct is None  # a price, never a borrowed number
+
+
+def test_a_source_absent_for_one_turn_does_not_re_pay_for_the_wide_endpoint() -> None:
+    """A burst of Events can push a source out of one plan; that is not a reason to refetch 270 kB."""
+
+    binance = _instrument("binance.perp", "BTCUSDT", "BTC")
+    price = _FakePrice(targets=[binance])
+    venue = _BinanceLike()
+    loop = venue.loop(price)
+
+    asyncio.run(loop.turn())
+    price._targets = [_instrument("hl.perp", "HYPE", "HYPE")]
+    asyncio.run(loop.turn())
+    price._targets = [binance]
+    asyncio.run(loop.turn())
+
+    assert [kind for kind, _, _ in venue.calls if kind] == ["day", "price", "price"]
 
 
 # ---------------------------------------------------------------------------- reaction turns

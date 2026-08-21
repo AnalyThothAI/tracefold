@@ -281,8 +281,9 @@ and no state with it:
 recent live Events + watchlist -> exact-symbol-first resolution (alias only as fallback,
   reference tiers never candidates) -> unique Price Instruments deduplicated by
   (venue, venue_symbol, price_kind) -> grouped by provider source
-  -> one batch REST request per source (Binance spot/USD-M ticker, Hyperliquid
-     metaAndAssetCtxs / spotMetaAndAssetCtxs / one per HIP-3 dex)
+  -> one batch REST request per source (Hyperliquid metaAndAssetCtxs /
+     spotMetaAndAssetCtxs / one per HIP-3 dex; Binance ticker/price, or
+     ticker/24hr on the one turn in 15 that refreshes its day reference, #109)
   -> one latest-only row per source in news_quote_snapshots
   -> GET /api/news/quotes (<=100 symbols, resolved server-side, fresh|stale|unavailable|unlisted)
 
@@ -306,6 +307,83 @@ transient provider failure writes no Reaction row at all, which leaves the work
 due; only a stable semantic reason (`instrument_unresolved`, `reference_only`,
 `history_expired`, `no_candle_within_gap`) terminalizes one. Price never enters
 the Gate, Triage, `decide()`, a card, a throttle key or a ranking signal.
+
+The price and the day change are two questions on two cadences (#109). Binance
+answers "what is it worth now" in 45.5 kB (`ticker/price`, whole USD-M market,
+weight 2) and both questions in 270 kB (`ticker/24hr`, weight 42) — 92% of the
+bigger payload is fields we never display, for symbols nobody asked about. So a
+Binance source alternates: `ticker/24hr` every 300 s, `ticker/price` on the
+turns between. The wide read **replaces** that turn's narrow read rather than
+joining it, which is what keeps "one batch request per source per turn" literally
+true and keeps an optional question off the mandatory one's deadline — a second
+request inside the same `asyncio.wait_for` would cancel the whole gather on a
+slow response and discard every price already fetched, on every venue.
+
+What the wide read caches is the rolling window's `openPrice`, **not** the
+percentage. `priceChangePercent` is `lastPrice/openPrice - 1`, and the numerator
+is the number the next turn is about to replace — freezing the ratio for 300 s
+while refreshing the price every 20 s would put a price and a percentage that
+cannot be derived from each other side by side, most visibly in the minutes after
+a push. Caching the denominator instead means the percentage is recomputed from
+each turn's own price, and the only thing ageing is a 24 h window open, which
+moves 0.023% per turn.
+
+Nothing is cached for a read that failed or was cancelled, so a failed day read
+leaves the source due: it writes nothing that turn, its previous row ages, and
+the next turn asks again — the same stale-not-blank rule as any other venue
+failure, and the reason a good percentage can never be overwritten with a blank.
+A symbol that joins the working set triggers a wide read immediately instead of
+waiting out the cadence, since the plan is ordered newest Event first and that
+symbol is the card the operator is looking at; coverage records what the last
+wide read *asked* for, so a symbol no venue lists cannot pin a source to the
+expensive endpoint. `binance.spot` asks by name on both endpoints, with the
+`symbols=` list dropped only on `ticker/24hr` past 100 symbols where the weight
+tiers make the whole market cheaper. Hyperliquid never alternates — its single
+request already carries `midPx` and `prevDayPx`.
+
+### Why the quote source is REST and not a WebSocket
+
+Recorded so the question is answered by measurement rather than re-litigated
+(#109, measured 2026-08-21 from the deployment host):
+
+USD-M REST rows are whole-market payloads — 744 symbols, the endpoint has no
+`symbols=` filter — so their cost does not scale with how many we read. The WSS
+rows do:
+
+| transport | steady state | per day |
+|---|---|---|
+| REST `fapi/v1/ticker/price` @ 20 s (whole market) | 45.5 kB/turn | 0.20 GB |
+| REST `fapi/v1/ticker/24hr` @ 20 s (whole market) | 270.1 kB/turn | 1.19 GB |
+| REST after #109 (price @ 20 s + 24hr @ 300 s) | — | **0.26 GB** |
+| WSS `fstream` `!miniTicker@arr` (whole market) | **0 frames in 22 s** | — |
+| WSS spot `<sym>@miniTicker` x 218 | 185 B/frame, ~1 fps | ~3.5 GB |
+| WSS Hyperliquid `allMids` | 3.0 kB/s | 0.27 GB |
+
+Three facts, each sufficient on its own. A subscription is cheaper than polling
+only when you consume *faster* than the venue pushes; the console polls over
+HTTP every 15 s, so a socket would multiply bandwidth 12–20× to move a number
+nobody reads faster. The real saving is in payload choice, not transport. And
+Binance's futures socket produced no frames at all from this host across all
+three documented URL forms while its REST worked throughout — "connected but
+silent" would be the *normal* state for 218 of 256 targets, which is the one
+failure mode a socket hides and REST cannot (a REST error becomes `stale`
+immediately; a silent socket freezes the last price and says nothing).
+
+A WSS Quote Source becomes right only when all four hold, each verified rather
+than assumed: (1) the browser is no longer an HTTP-polling reader, which is its
+own architecture decision; (2) a product requirement names a freshness SLO
+tighter than the collector cadence, and someone can say what a reader does with
+it; (3) the venue's socket is verified to deliver from the deployment host for a
+sustained window; (4) its steady-state bandwidth measures lower than the
+REST plane it would replace at the accepted cadence — 0.26 GB/day for USD-M
+after #109, not the 1.19 GB/day figure that motivated the question. If it is ever built it
+must meet what the OpenNews receiver already meets — jittered reconnect with
+resubscription, forced reconnect before the venue's connection lifetime,
+ping/pong liveness, **a per-symbol staleness watchdog that degrades a
+silent-but-connected socket to `stale` instead of freezing the last value**,
+subscription diffing inside the venue's subscribe rate limit, one connection per
+venue with isolated failure, no socket in Serve, and REST as the source of truth
+on startup and after any gap.
 
 
 Ownership: `tracefold.integrations.rabbitmq` is the only module that imports
