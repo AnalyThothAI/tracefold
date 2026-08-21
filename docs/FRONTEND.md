@@ -197,7 +197,7 @@ the route components into the eager shell chunk.
   four things — reporting origin `·` `direction_zh` `·` `event_type_zh` `·` up
   to three asset chips with `+N` for the rest. Magnitude and the merged-report
   count are real facts but belong to the Event rather than to a scan; both are
-  one keystroke away in the drawer and on the Event's own page. A chip renders
+  one click away in the drawer and on the Event's own page. A chip renders
   `assets[]` — the same provider tags resolved against the #75 instrument
   universe — as `venue:SYMBOL` plus its current change when `listed`, and
   inside a dashed amber box with the ticker struck through when it is not
@@ -254,9 +254,9 @@ the route components into the eager shell chunk.
   row selection, bulk label action, clipboard command, or `X` shortcut.
 
   From 1024px up, a plain click on a row opens the Event in a *non-modal*
-  drawer beside the list instead of replacing it: the queue stays on screen,
-  `J`/`K` keep walking the rows and the drawer follows the cursor without ever
-  closing. The row's `href` is still real, so a modified click, a middle click
+  drawer beside the list instead of replacing it: the queue stays on screen and
+  clicking the next row swaps what the drawer shows instead of closing it.
+  Opening moves focus into the panel; `Esc` and 关闭 are the ways out. The row's `href` is still real, so a modified click, a middle click
   and every assistive path go to the page; `打开整页` inside the drawer is the
   way there by hand. The drawer carries the three things a reviewer needs —
   the judgment, what the assets are worth, and how the Event got here — and the
@@ -266,7 +266,7 @@ the route components into the eager shell chunk.
 
   `/news/events/:eventId` reads `/api/news/events/{event_id}` and renders,
   in fixed order: a toolbar (`RouteBackLink` to the feed the reader came from
-  plus `上一条 K` / `下一条 J` and `i / n`); the hero, whose 3px left rail is the
+  plus `上一条` / `下一条` and `i / n`); the hero, whose 3px left rail is the
   direction and whose contents are the `outcome` badge beside its `reason_zh`,
   the publication time with the end-to-end figure, the Triage `headline_zh` as
   `h1`, `title_zh` when it differs, the direction chip with its magnitude and

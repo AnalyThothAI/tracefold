@@ -110,8 +110,8 @@ describe("NewsPage", () => {
     expect(inRow.getByText("宏观")).toBeInTheDocument();
     /*
      * The meta line is 来源 · 方向 · 类型 · 资产 and nothing else. Magnitude and the merged-report count are
-     * real facts, but they belong to the Event, not to a scan: both are one keystroke away in the drawer and
-     * on the Event's own page, and a fifth and sixth item here pushed the assets onto a second line.
+     * real facts, but they belong to the Event, not to a scan: both are one click away in the drawer and on
+     * the Event's own page, and a fifth and sixth item here pushed the assets onto a second line.
      */
     expect(inRow.queryByText("4 条报道")).toBeNull();
     expect(inRow.queryByText("影响明显")).toBeNull();

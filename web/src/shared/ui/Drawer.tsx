@@ -9,9 +9,9 @@ import "./Drawer.css";
  * side.
  *
  * `modal` is the important switch. Navigation is modal: it dims the page, traps focus and is the only thing
- * you can touch. The Event drawer is *not* — the whole point is that the list stays where it was and the
- * reader keeps walking it with `J`/`K` while the drawer follows along, which a focus trap would make
- * impossible. A non-modal drawer draws no scrim, because a scrim over something still usable is a lie.
+ * you can touch. The Event drawer is *not* — the whole point is that the list stays on screen and clicking
+ * the next row swaps what the drawer shows, which a focus trap and a dismiss-on-outside-click would each
+ * make impossible. A non-modal drawer draws no scrim, because a scrim over something still usable is a lie.
  *
  * `title` is required and may be replaced on screen by an `eyebrow`: a panel has to say what it is either way.
  */
@@ -49,13 +49,16 @@ export function Drawer({
           data-flush={flush || undefined}
           data-side={side}
           /*
-           * A non-modal sheet keeps its focus and its dismiss layer out of the page's way. Radix would
-           * otherwise close it the moment focus or a pointer lands outside — which is every keystroke of the
-           * `J`/`K` walk it exists to accompany. It closes on `Esc` or on its own control instead.
+           * A non-modal sheet keeps its dismiss layer out of the page's way. Radix would otherwise close it
+           * the moment a pointer or focus lands outside, and clicking the next row — the way the reader moves
+           * through the queue — is exactly that. It closes on `Esc` or on its own control instead.
+           *
+           * Opening still moves focus into the panel. Suppressing that was only ever there to protect the
+           * `J`/`K` walk the console no longer has; without it a keyboard reader would have to tab through
+           * the rest of the feed to reach a panel Radix portals to the end of `body`.
            */
           onFocusOutside={modal ? undefined : (event) => event.preventDefault()}
           onInteractOutside={modal ? undefined : (event) => event.preventDefault()}
-          onOpenAutoFocus={modal ? undefined : (event) => event.preventDefault()}
           style={width ? { width: `min(${width}px, 100%)` } : undefined}
         >
           <header className="ui-drawer-head">
