@@ -1,0 +1,46 @@
+@layer app.primitives {
+  .ui-toast {
+    position: fixed;
+    z-index: 95;
+    bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    left: 50%;
+    display: flex;
+    gap: 9px;
+    align-items: center;
+    max-width: calc(100vw - 32px);
+    padding: 9px 15px;
+    border-radius: 7px;
+    color: #ffffff;
+    background: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 560;
+    transform: translateX(-50%);
+  }
+
+  .ui-toast svg {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+    /* The one green in the console that is not 利空: a tick, on a dark ground, nowhere near a market word. */
+    color: #4ade80;
+    stroke-width: 2.4;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .ui-toast {
+      animation: ui-toast-in 140ms ease-out;
+    }
+
+    @keyframes ui-toast-in {
+      from {
+        opacity: 0;
+        transform: translate(-50%, 6px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+    }
+  }
+}

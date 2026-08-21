@@ -1,5 +1,8 @@
 import { newsEventPath } from "@shared/routing/paths";
-import { Card } from "@shared/ui/Card";
+import { ActionButton } from "@shared/ui/ActionButton";
+import { Bar } from "@shared/ui/Bar";
+import { Card, CardNote } from "@shared/ui/Card";
+import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -12,11 +15,9 @@ import {
   type NewsReviewMiss,
   useNewsReviewWithToken,
 } from "../../api/newsQueries";
-import { absoluteTime, formatCount, labelCommand } from "../../model/newsLabels";
+import { absoluteTime, clockTime, formatCount, labelCommand } from "../../model/newsLabels";
 import { formatBps, priceTone } from "../../model/newsPrice";
-import { useNewsToast } from "../../state/useNewsToast";
 import { NewsEmptyNote, NewsPageHeader, NewsPageShell, NewsTechnical } from "../chrome/NewsChrome";
-import { NewsToast } from "../chrome/NewsToast";
 
 import "./newsReview.css";
 
@@ -27,16 +28,21 @@ import "./newsReview.css";
  * denominator is invisible is the one number an operator must not be given. The browser renders server
  * values: it never computes a return, a rate, a coverage share or what "missing" means.
  *
- * The potential-miss table is a review queue. Price movement after an Event does not prove the Event caused
+ * The potential-miss table is a review *queue*. Price movement after an Event does not prove the Event caused
  * it or that it should have been pushed, so every row names the decision and the rule that produced it, and
- * nothing on this page writes a label.
+ * nothing on this page writes a label — the button copies the same CLI command the feed's `X` does.
  */
-export function NewsReviewPage({ token }: { token: string }) {
+export function NewsReviewPage({
+  copy,
+  token,
+}: {
+  copy: (text: string, note: string) => void;
+  token: string;
+}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const hours = parseHours(searchParams.get("hours"));
   const query = useNewsReviewWithToken(token, hours);
   const review = query.data;
-  const toast = useNewsToast();
   return (
     <NewsPageShell archetype="scan" className="news-review-shell" label="命中复盘">
       <NewsPageHeader
@@ -63,7 +69,7 @@ export function NewsReviewPage({ token }: { token: string }) {
       </NewsPageHeader>
 
       {query.isLoading && !review ? (
-        <PageState.Loading layout="panel" rows={4} label="正在读取复盘数据" />
+        <PageState.Loading label="正在读取复盘数据" layout="panel" rows={4} />
       ) : null}
       {query.isError && !review ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
@@ -71,158 +77,203 @@ export function NewsReviewPage({ token }: { token: string }) {
       {review ? (
         <PageState.Stale updating={query.isFetching && !query.isLoading}>
           <div className="news-review-body">
-            <Card title="覆盖率" hint="有多少事件真的算得出来" aria-label="复盘覆盖率">
-              <CoverageGrid coverage={review.coverage ?? []} />
+            <Card aria-label="复盘覆盖率" flush hint="有多少事件真的算得出来" title="覆盖率">
+              <Coverage coverage={review.coverage ?? []} />
             </Card>
 
-            <Card
-              title="方向命中"
-              hint="只统计非降级、且该 horizon 已完成的判断；中性与方向待定单独列出，不进命中率分母"
-              aria-label="方向命中率"
-            >
-              <DirectionTable directions={review.directions ?? []} />
-            </Card>
-
+            {/* Two short tables side by side; the long one gets the full width below them. */}
             <div className="news-review-grid">
               <Card
-                title="影响程度校准"
-                hint="模型给的量级 vs 实际绝对波动"
+                aria-label="方向命中率"
+                flush
+                hint="中性与方向待定单独列出，不进命中率分母"
+                title="方向命中"
+              >
+                <DirectionTable directions={review.directions ?? []} />
+              </Card>
+              <Card
                 aria-label="影响程度校准"
+                flush
+                hint="模型给的量级 vs 实际绝对波动"
+                title="影响程度校准"
               >
                 <MagnitudeTable review={review} />
-              </Card>
-              <Card title="事件类型表现" hint="推送率、收益分布与覆盖率" aria-label="事件类型表现">
-                <EventTypeTable review={review} />
               </Card>
             </div>
 
             <Card
-              title="潜在漏推"
-              hint="没有送达读者、且 1H 已完成的事件，按绝对涨跌排序。涨跌不能证明因果。"
+              aria-label="事件类型表现"
+              hint="推送率的落差本身已经能指向阈值问题"
+              title="各类事件的推送率"
+            >
+              <EventTypeBars review={review} />
+            </Card>
+
+            <Card
               aria-label="潜在漏推"
+              flush
+              hint="没有送达读者、且 1H 已完成的事件，按绝对涨跌排序"
+              title="待核对的未推送事件"
             >
               <MissTable
                 misses={review.potential_misses ?? []}
                 onCopy={(eventId) =>
-                  toast.copy(labelCommand(eventId, "missed"), "已复制「漏推」标注命令")
+                  copy(labelCommand(eventId, "missed"), "已复制「漏推」标注命令")
                 }
               />
             </Card>
 
             <NewsTechnical summary="度量口径">
-              <dl className="news-review-meta">
-                <div>
-                  <dt>指标版本</dt>
-                  <dd>{review.meta.metric_version}</dd>
-                </div>
-                <div>
-                  <dt>窗口</dt>
-                  <dd>
-                    {absoluteTime(review.meta.window_start_ms)} 起 ·{" "}
-                    {windowLabel(review.meta.hours)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>锚点</dt>
-                  <dd>事件的 provider 发布时间，不是投递时间</dd>
-                </div>
-                <div>
-                  <dt>口径</dt>
-                  <dd>5m 已收盘 K 线，(pH / p0) - 1，不做前向填充</dd>
-                </div>
-              </dl>
+              <section>
+                <h4>口径</h4>
+                <ul className="news-review-meta">
+                  <li>
+                    <span>指标版本</span>
+                    <b>{review.meta.metric_version}</b>
+                  </li>
+                  <li>
+                    <span>窗口</span>
+                    <b>
+                      {absoluteTime(review.meta.window_start_ms)} 起 ·{" "}
+                      {windowLabel(review.meta.hours)}
+                    </b>
+                  </li>
+                  <li>
+                    <span>锚点</span>
+                    <b>事件的 provider 发布时间，不是投递时间</b>
+                  </li>
+                  <li>
+                    <span>算法</span>
+                    <b>5m 已收盘 K 线，(pH / p0) - 1，不做前向填充</b>
+                  </li>
+                </ul>
+              </section>
             </NewsTechnical>
           </div>
         </PageState.Stale>
       ) : null}
-      <NewsToast message={toast.message} />
     </NewsPageShell>
   );
 }
 
-function CoverageGrid({ coverage }: { coverage: NewsReviewCoverage[] }) {
+/** Coverage first: a hit rate over 12% of a window is a rumour, and the reader has to see that before the rate. */
+function Coverage({ coverage }: { coverage: NewsReviewCoverage[] }) {
   if (!coverage.length) return <NewsEmptyNote>这个窗口里还没有可复盘的事件。</NewsEmptyNote>;
   return (
-    <div className="news-review-coverage">
-      {coverage.map((row) => (
-        <article key={row.horizon}>
-          <header>
-            <span className="news-review-coverage-title">{row.horizon_zh}</span>
-            <span className="news-review-coverage-pct">
-              {row.coverage_pct == null ? "—" : `${row.coverage_pct}%`}
-            </span>
-          </header>
-          <div aria-hidden className="news-review-bar">
-            <span style={{ width: `${Math.min(100, row.coverage_pct ?? 0)}%` }} />
-          </div>
-          <p className="news-review-coverage-line">
-            可评估 {formatCount(row.eligible_n)} · 已定价 {formatCount(row.priced_n)}
-            {row.no_primary_n ? ` · 无主标的 ${formatCount(row.no_primary_n)}` : ""}
-            {row.degraded_n ? ` · 降级 ${formatCount(row.degraded_n)}` : ""}
-          </p>
-          {row.unavailable?.length ? (
-            <ul className="news-review-reasons">
-              {row.unavailable.map((reason) => (
-                <li key={reason.reason}>
-                  <span>{reason.reason_zh}</span>
-                  <b>{formatCount(reason.n)}</b>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </article>
-      ))}
-    </div>
+    <>
+      <MetricRow columns={coverage.length} label="按时间窗覆盖率">
+        {coverage.map((row) => (
+          <Metric
+            caption={row.horizon_zh}
+            eyebrow={row.horizon.toUpperCase()}
+            key={row.horizon}
+            note={`已定价 ${formatCount(row.priced_n)} / ${formatCount(row.eligible_n)}`}
+            tone={coverageTone(row.coverage_pct)}
+            value={row.coverage_pct == null ? "—" : `${row.coverage_pct}%`}
+          />
+        ))}
+      </MetricRow>
+      {/* Why a horizon could not be priced, in the server's own words — never folded into the percentage. */}
+      {coverage.some((row) => row.unavailable?.length) ? (
+        <div className="news-review-reasons">
+          {coverage.map((row) =>
+            (row.unavailable ?? []).map((reason) => (
+              <span key={`${row.horizon}-${reason.reason}`}>
+                <small>{row.horizon_zh}</small>
+                <em>{reason.reason_zh}</em>
+                <b>{formatCount(reason.n)}</b>
+              </span>
+            )),
+          )}
+        </div>
+      ) : null}
+    </>
   );
+}
+
+/** Under a third of a window priced is a coverage problem, not a result: it is named, not coloured green. */
+function coverageTone(pct: number | null | undefined) {
+  if (pct == null) return "plain" as const;
+  return pct < 30 ? ("caution" as const) : ("accent" as const);
 }
 
 function DirectionTable({ directions }: { directions: NewsReviewDirection[] }) {
   if (!directions.length) return <NewsEmptyNote>还没有可以打分的方向判断。</NewsEmptyNote>;
   return (
-    <div className="news-review-table-wrap">
-      <table className="news-review-table">
-        <thead>
-          <tr>
-            <th scope="col">方向</th>
-            <th scope="col">窗口</th>
-            <th className="news-review-n" scope="col">
-              可评估
-            </th>
-            <th className="news-review-n" scope="col">
-              已定价
-            </th>
-            <th className="news-review-n" scope="col">
-              命中
-            </th>
-            <th className="news-review-n" scope="col">
-              覆盖率
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {directions.map((row) => (
-            <tr data-scored={row.scored || undefined} key={`${row.direction}-${row.horizon}`}>
-              <th scope="row">{row.direction_zh || row.direction}</th>
-              <td>{row.horizon_zh}</td>
-              <td className="news-review-n">{formatCount(row.eligible_n)}</td>
-              <td className="news-review-n">{formatCount(row.priced_n)}</td>
-              <td className="news-review-n">
-                {row.scored && row.hit_pct != null ? (
-                  <span className="news-review-hit">
-                    {row.hit_pct}% <small>N={row.priced_n}</small>
-                  </span>
-                ) : (
-                  <span className="news-review-muted">{row.scored ? "样本不足" : "不计入"}</span>
-                )}
-              </td>
-              <td className="news-review-n">
-                {row.coverage_pct == null ? "—" : `${row.coverage_pct}%`}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    // CSS grid does the layout and ARIA carries the semantics: a real `<table>` would need
+    // `display: contents` on every row to lay out this way, which drops rows out of the accessibility tree
+    // in some browsers — the opposite of what a table is for.
+    <div className="news-review-table" role="table">
+      <div className="news-review-head news-review-direction-row" role="row">
+        <span role="columnheader">CALL</span>
+        <span role="columnheader">窗口</span>
+        <span role="columnheader">已定价</span>
+        <span role="columnheader">命中</span>
+        <span role="columnheader">覆盖率</span>
+      </div>
+      {directions.map((row) => (
+        <div
+          className="news-review-row news-review-direction-row"
+          key={`${row.direction}-${row.horizon}`}
+          role="row"
+        >
+          <span className="news-review-call" data-dir={row.direction} role="cell">
+            {row.direction_zh || row.direction}
+          </span>
+          <span className="news-review-quiet" role="cell">
+            {row.horizon_zh}
+          </span>
+          <b role="cell">{formatCount(row.priced_n)}</b>
+          {row.scored && row.hit_pct != null ? (
+            <b className="news-review-hit" role="cell">
+              {row.hit_pct}%<small>N={row.priced_n}</small>
+            </b>
+          ) : (
+            <span className="news-review-quiet" role="cell">
+              {row.scored ? "样本不足" : "不计入"}
+            </span>
+          )}
+          <span className="news-review-quiet" role="cell">
+            {row.coverage_pct == null ? "—" : `${row.coverage_pct}%`}
+          </span>
+        </div>
+      ))}
     </div>
+  );
+}
+
+function EventTypeBars({ review }: { review: NewsReview }) {
+  const rows = review.event_types ?? [];
+  if (!rows.length) return <NewsEmptyNote>这个窗口还没有事件类型样本。</NewsEmptyNote>;
+  // The gap between the best and worst push rate is the point; the lowest quartile takes the amber.
+  const rates = rows.map((row) => row.pushed_pct ?? 0);
+  const low = Math.min(...rates) + (Math.max(...rates) - Math.min(...rates)) * 0.25;
+  return (
+    <>
+      <div className="news-review-types">
+        {rows.map((row) => (
+          <div className="news-review-type" key={row.event_type}>
+            <span className="news-review-type-name">
+              {row.event_type_zh || row.event_type}
+              <small>n={formatCount(row.eligible_n)}</small>
+            </span>
+            <span className="news-review-type-bar">
+              <Bar
+                share={row.pushed_pct ?? 0}
+                tone={(row.pushed_pct ?? 0) <= low ? "caution" : "neutral"}
+              />
+            </span>
+            <b>{row.pushed_pct == null ? "—" : `${row.pushed_pct}%`}</b>
+            <span className="news-review-quiet" data-tone={priceTone(row.median_1h_bps)}>
+              {formatBps(row.median_1h_bps)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <CardNote>
+        右列是该类事件 1H 的实际涨跌中位数；推送率低而波动大的类别就是阈值该动的地方。
+      </CardNote>
+    </>
   );
 }
 
@@ -230,95 +281,31 @@ function MagnitudeTable({ review }: { review: NewsReview }) {
   const rows = review.magnitudes ?? [];
   if (!rows.length) return <NewsEmptyNote>这个窗口还没有量级样本。</NewsEmptyNote>;
   return (
-    <div className="news-review-table-wrap">
-      <table className="news-review-table">
-        <thead>
-          <tr>
-            <th scope="col">量级</th>
-            <th className="news-review-n" scope="col">
-              事件
-            </th>
-            <th className="news-review-n" scope="col">
-              占比
-            </th>
-            <th className="news-review-n" scope="col">
-              1H 绝对中位
-            </th>
-            <th className="news-review-n" scope="col">
-              4H 绝对中位
-            </th>
-            <th className="news-review-n" scope="col">
-              覆盖率
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.magnitude}>
-              <th scope="row">
-                {row.magnitude} · {row.magnitude_zh}
-              </th>
-              <td className="news-review-n">{formatCount(row.eligible_n)}</td>
-              <td className="news-review-n">{row.share_pct == null ? "—" : `${row.share_pct}%`}</td>
-              <td className="news-review-n">{formatBps(row.median_abs_1h_bps)}</td>
-              <td className="news-review-n">{formatBps(row.median_abs_4h_bps)}</td>
-              <td className="news-review-n">
-                {row.coverage_1h_pct == null ? "—" : `${row.coverage_1h_pct}%`}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function EventTypeTable({ review }: { review: NewsReview }) {
-  const rows = review.event_types ?? [];
-  if (!rows.length) return <NewsEmptyNote>这个窗口还没有事件类型样本。</NewsEmptyNote>;
-  return (
-    <div className="news-review-table-wrap">
-      <table className="news-review-table">
-        <thead>
-          <tr>
-            <th scope="col">类型</th>
-            <th className="news-review-n" scope="col">
-              事件
-            </th>
-            <th className="news-review-n" scope="col">
-              推送率
-            </th>
-            <th className="news-review-n" scope="col">
-              1H 中位
-            </th>
-            <th className="news-review-n" scope="col">
-              1H 绝对中位
-            </th>
-            <th className="news-review-n" scope="col">
-              覆盖率
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.event_type}>
-              <th scope="row">{row.event_type_zh || row.event_type}</th>
-              <td className="news-review-n">{formatCount(row.eligible_n)}</td>
-              <td className="news-review-n">
-                {row.pushed_pct == null ? "—" : `${row.pushed_pct}%`}
-                <small> ({formatCount(row.pushed_n)})</small>
-              </td>
-              <td className="news-review-n" data-tone={priceTone(row.median_1h_bps)}>
-                {formatBps(row.median_1h_bps)}
-              </td>
-              <td className="news-review-n">{formatBps(row.median_abs_1h_bps)}</td>
-              <td className="news-review-n">
-                {row.coverage_1h_pct == null ? "—" : `${row.coverage_1h_pct}%`}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="news-review-table" role="table">
+      <div className="news-review-head news-review-magnitude-row" role="row">
+        <span role="columnheader">量级</span>
+        <span role="columnheader">事件</span>
+        <span role="columnheader">占比</span>
+        <span role="columnheader">1H 绝对中位</span>
+        <span role="columnheader">4H 绝对中位</span>
+        <span role="columnheader">覆盖率</span>
+      </div>
+      {rows.map((row) => (
+        <div className="news-review-row news-review-magnitude-row" key={row.magnitude} role="row">
+          <span className="news-review-name" role="cell">
+            {row.magnitude_zh || row.magnitude}
+          </span>
+          <b role="cell">{formatCount(row.eligible_n)}</b>
+          <span className="news-review-quiet" role="cell">
+            {row.share_pct == null ? "—" : `${row.share_pct}%`}
+          </span>
+          <b role="cell">{formatBps(row.median_abs_1h_bps)}</b>
+          <b role="cell">{formatBps(row.median_abs_4h_bps)}</b>
+          <span className="news-review-quiet" role="cell">
+            {row.coverage_1h_pct == null ? "—" : `${row.coverage_1h_pct}%`}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -334,51 +321,66 @@ function MissTable({
     return <NewsEmptyNote>这个窗口里，没有送达读者又出现明显波动的事件。</NewsEmptyNote>;
   }
   return (
-    <ul className="news-review-misses">
-      {misses.map((miss) => (
-        <li key={miss.event_id}>
-          <div className="news-review-miss-head">
-            <span className="news-review-miss-move" data-tone={priceTone(miss.return_1h_bps)}>
-              {formatBps(miss.return_1h_bps)}
-            </span>
-            <Link className="news-review-miss-title" to={newsEventPath(miss.event_id)}>
+    <>
+      <div className="news-review-table" role="table">
+        <div className="news-review-head news-review-miss-row" role="row">
+          <span role="columnheader">TIME</span>
+          <span role="columnheader">EVENT</span>
+          <span role="columnheader">1H</span>
+          <span role="columnheader">REASON</span>
+          <span role="columnheader">ASSET</span>
+          <span role="columnheader">LABEL</span>
+        </div>
+        {misses.map((miss) => (
+          <div className="news-review-row news-review-miss-row" key={miss.event_id} role="row">
+            <time
+              dateTime={new Date(miss.opened_at_ms).toISOString()}
+              role="cell"
+              title={absoluteTime(miss.opened_at_ms)}
+            >
+              {clockTime(miss.opened_at_ms)}
+            </time>
+            <Link className="news-review-miss-title" role="cell" to={newsEventPath(miss.event_id)}>
               {miss.headline_zh || miss.leader_title}
             </Link>
+            <b data-tone={priceTone(miss.return_1h_bps)} role="cell">
+              {formatBps(miss.return_1h_bps)}
+            </b>
+            {/* The decision and the rule that produced it, both in words: movement is never the reason. */}
+            <span className="news-review-miss-rule" role="cell">
+              <span>{miss.decision_zh}</span>
+              {miss.throttled_by_zh || miss.override_rule_zh ? (
+                <small>{miss.throttled_by_zh || miss.override_rule_zh}</small>
+              ) : null}
+            </span>
+            <span className="news-review-miss-assets" role="cell">
+              {miss.assets?.length ? (
+                miss.assets.slice(0, 2).map((asset) => (
+                  <code key={asset.symbol}>
+                    {asset.venue
+                      ? `${asset.venue}:${asset.venue_symbol ?? asset.symbol}`
+                      : asset.symbol}
+                    <b data-tone={priceTone(asset.return_1h_bps)}>
+                      {formatBps(asset.return_1h_bps)}
+                    </b>
+                  </code>
+                ))
+              ) : (
+                <code>—</code>
+              )}
+            </span>
+            <span role="cell">
+              <ActionButton onClick={() => onCopy(miss.event_id)} size="sm">
+                标为漏推
+              </ActionButton>
+            </span>
           </div>
-          <p className="news-review-miss-meta">
-            <span className="news-review-miss-decision">{miss.decision_zh}</span>
-            {miss.throttled_by_zh ? <span>{miss.throttled_by_zh}</span> : null}
-            {miss.override_rule_zh ? <span>{miss.override_rule_zh}</span> : null}
-            {miss.direction_zh ? <span>{miss.direction_zh}</span> : null}
-            {miss.magnitude_zh ? <span>{miss.magnitude_zh}</span> : null}
-            {miss.event_type_zh ? <span>{miss.event_type_zh}</span> : null}
-            <span>4H {formatBps(miss.return_4h_bps)}</span>
-            <time dateTime={new Date(miss.opened_at_ms).toISOString()}>
-              {absoluteTime(miss.opened_at_ms)}
-            </time>
-          </p>
-          {miss.assets?.length ? (
-            <p className="news-review-miss-assets">
-              {miss.assets.map((asset) => (
-                <code key={asset.symbol}>
-                  {asset.venue
-                    ? `${asset.venue}:${asset.venue_symbol ?? asset.symbol}`
-                    : asset.symbol}
-                  <b data-tone={priceTone(asset.return_1h_bps)}>{formatBps(asset.return_1h_bps)}</b>
-                </code>
-              ))}
-            </p>
-          ) : null}
-          <button
-            className="news-review-miss-label"
-            onClick={() => onCopy(miss.event_id)}
-            type="button"
-          >
-            复制「漏推」标注命令
-          </button>
-        </li>
-      ))}
-    </ul>
+        ))}
+      </div>
+      <CardNote>
+        标注不走写接口：按钮复制对应的 CLI 命令，语义与详情页一致。涨跌不能证明因果。
+      </CardNote>
+    </>
   );
 }
 

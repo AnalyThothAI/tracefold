@@ -1,0 +1,127 @@
+@layer app.primitives {
+  /*
+   * One button, six intents, three heights. Callers may position `.ui-button` with their own container class
+   * but never restyle it — `cssArchitectureHarness` enforces that, which is what keeps a label action on the
+   * detail page and the same action in the review queue from drifting apart.
+   */
+  .ui-button {
+    display: inline-flex;
+    gap: 7px;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-control);
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    transition:
+      background 120ms ease,
+      color 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .ui-button svg {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+  }
+
+  .ui-button kbd {
+    padding: 1px 5px;
+    border-radius: var(--radius-xs);
+    color: var(--text-subtle);
+    background: var(--border-faint);
+    font: 500 10px/1.5 var(--font-mono);
+  }
+
+  .ui-button[data-size="sm"] {
+    min-height: 26px;
+    padding: 0 10px;
+    font-size: 11.5px;
+  }
+
+  .ui-button[data-size="lg"] {
+    min-height: var(--tap-target);
+    padding: 0 16px;
+    border-radius: var(--radius-lg);
+    font-size: 13px;
+  }
+
+  .ui-button[data-variant="primary"] {
+    color: #ffffff;
+    background: var(--accent-primary);
+    box-shadow: none;
+    font-weight: 600;
+  }
+
+  .ui-button[data-variant="primary"]:hover:not(:disabled) {
+    background: #1e46ad;
+  }
+
+  .ui-button[data-variant="secondary"]:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--surface-raised);
+  }
+
+  .ui-button[data-variant="quiet"] {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .ui-button[data-variant="quiet"]:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--surface-raised);
+  }
+
+  /* The operator-label pair: a 9% wash, never a filled red or green — those two hues mean direction. */
+  .ui-button[data-variant="positive"] {
+    color: var(--dir-bearish);
+    background: var(--dir-bearish-soft);
+    box-shadow: inset 0 0 0 1px var(--dir-bearish-border);
+    font-weight: 600;
+  }
+
+  .ui-button[data-variant="negative"] {
+    color: var(--dir-bullish);
+    background: var(--dir-bullish-soft);
+    box-shadow: inset 0 0 0 1px var(--dir-bullish-border);
+    font-weight: 600;
+  }
+
+  .ui-button[data-variant="caution"] {
+    color: var(--signal-caution);
+    background: var(--signal-caution-soft);
+    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
+    font-weight: 600;
+  }
+
+  .ui-button:disabled {
+    color: var(--text-faint);
+    background: var(--border-faint);
+    box-shadow: none;
+  }
+
+  .ui-button:disabled kbd {
+    color: var(--text-faint);
+    background: transparent;
+  }
+
+  /* A control a thumb has to find gets the full target, whatever size the desktop asked for. */
+  @media (max-width: 767px) {
+    .ui-button {
+      min-height: var(--tap-target);
+      border-radius: var(--radius-md);
+      font-size: 13px;
+    }
+
+    .ui-button[data-size="sm"] {
+      min-height: 36px;
+    }
+  }
+}

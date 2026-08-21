@@ -1,182 +1,20 @@
 @layer app.features {
   /*
-   * Where the last 24 hours went, above the feed it explains. The proportion bar makes the shape obvious
-   * before any number is read: almost everything arrives, almost everything is judged, and a fifth survives.
-   * Every figure is a server number or a subtraction of two — the browser never re-derives the pipeline.
+   * The funnel frames a `Card` and a `MetricRow`; it owns neither. Everything here is the one line of copy
+   * the header carries — the tiles are the primitive's, unchanged, so the same figures read the same way in
+   * the status route's snapshot card.
    */
-  /*
-   * Context, not the reason the page was opened: the feed's density target is at least four rows visible at
-   * 1366x720, so this card is kept deliberately short — one head line, a 6px bar, one row of tiles.
-   */
-  .news-funnel-card {
-    padding: 0.5rem 0.85rem 0.55rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-lg);
-    background: var(--surface-panel);
-    box-shadow: var(--shadow-raised);
-  }
-
-  .news-funnel-card-head {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem 0.7rem;
-    align-items: baseline;
-    justify-content: space-between;
-    margin-bottom: 0.4rem;
-  }
-
-  .news-funnel-eyebrow {
-    color: var(--text-subtle);
-    font: 700 0.56rem/1 var(--font-mono);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .news-funnel-summary {
-    color: var(--text-secondary);
-    font-size: 0.72rem;
-  }
-
-  .news-funnel-summary b {
+  .news-funnel-card b {
     color: var(--text-primary);
-    font-weight: 640;
+    font: 600 11.5px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
-  /* The one figure in the line that is a warning rather than a count. Amber, not red: red is 利多 here. */
-  .news-funnel-summary b[data-tone="caution"] {
+  .news-funnel-card b[data-tone="caution"] {
     color: var(--signal-caution);
   }
 
-  .news-funnel-proportion {
-    display: flex;
-    gap: 2px;
-    height: 5px;
-    margin-bottom: 0.5rem;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--border-faint);
-  }
-
-  .news-funnel-proportion span {
-    background: var(--border-strong);
-  }
-
-  .news-funnel-proportion span[data-layer="delivered"] {
-    background: var(--signal-done);
-  }
-
-  /* Five stages since #87: 收到 / 送审 / 符号落表 / 决定推送 / 已送达. */
-  .news-funnel-tiles {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .news-funnel-tile {
-    display: grid;
-    gap: 0.1rem;
-    padding: 0 0.85rem;
-    border-left: 1px solid var(--border-faint);
-    border-radius: var(--radius-sm);
-  }
-
-  .news-funnel-tile:first-child {
-    padding-left: 0;
-    border-left: 0;
-  }
-
-  .news-funnel-tile:last-child {
-    padding-right: 0;
-  }
-
-  a.news-funnel-tile {
-    color: inherit;
-    text-decoration: none;
-  }
-
-  a.news-funnel-tile:hover {
-    background: var(--surface-raised);
-  }
-
-  .news-funnel-tile-label {
-    display: flex;
-    gap: 0.35rem;
-    align-items: baseline;
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    font-weight: 500;
-    letter-spacing: 0.02em;
-  }
-
-  .news-funnel-tile-label small {
-    color: var(--text-subtle);
-    font: 500 0.62rem/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .news-funnel-tile b {
-    color: var(--text-primary);
-    font-size: 1.05rem;
-    font-weight: 660;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.02em;
-  }
-
-  .news-funnel-tile > small {
-    color: var(--text-subtle);
-    font-size: 0.64rem;
-  }
-
-  /* The end of the pipeline is the number the reader came for; it carries the completed-step tone. */
-  .news-funnel-tile[data-accent] .news-funnel-tile-label,
-  .news-funnel-tile[data-accent] b {
-    color: var(--signal-done);
-  }
-
-  .news-funnel-tile[data-accent] .news-funnel-tile-label small {
-    color: var(--signal-info);
-  }
-
-  @media (max-width: 767px) {
-    .news-funnel-card {
-      padding: 0.65rem 0.75rem 0.7rem;
-    }
-
-    /*
-     * Phone reading: four stacked tiles pushed the first Event roughly a screen and a half down. They are
-     * context, not the reason the page was opened, so they compress to one scannable row.
-     */
-    .news-funnel-tiles {
-      display: flex;
-      gap: 0.4rem;
-      overflow-x: auto;
-      padding-bottom: 0.15rem;
-      scrollbar-width: none;
-    }
-
-    .news-funnel-tiles::-webkit-scrollbar {
-      display: none;
-    }
-
-    .news-funnel-tile {
-      flex: 0 0 auto;
-      min-width: 5.75rem;
-      padding: 0 0.6rem;
-    }
-
-    .news-funnel-tile b {
-      font-size: 1rem;
-    }
-
-    .news-funnel-tile > small {
-      display: none;
-    }
-
-    .news-funnel-summary {
-      font-size: 0.68rem;
-    }
+  .news-funnel-card b[data-tone="alert"] {
+    color: var(--signal-alert);
   }
 }

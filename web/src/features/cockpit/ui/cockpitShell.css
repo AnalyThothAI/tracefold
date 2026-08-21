@@ -4,23 +4,25 @@
     width: 100vw;
     height: 100dvh;
     min-height: 0;
-    margin: 0;
     overflow: hidden;
-    border: 0;
-    border-radius: 0;
     background: var(--surface-root);
-    box-shadow: none;
-    outline: 0;
   }
 
   .cockpit-main {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
     height: 100dvh;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: var(--surface-root);
+    background: var(--surface-canvas);
   }
 
+  /*
+   * The one route scroll container. The canvas colour lives here rather than on the panels: every route is a
+   * stack of white cards on cool grey, and a route that painted its own ground would break that at the seam.
+   */
   .center-column {
     flex: 1 1 auto;
     min-width: 0;
@@ -28,7 +30,6 @@
     overflow: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
-    border-right: 1px solid var(--border-subtle);
-    background: var(--surface-root);
+    background: var(--surface-canvas);
   }
 }

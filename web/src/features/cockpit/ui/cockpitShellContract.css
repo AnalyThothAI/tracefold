@@ -1,68 +1,22 @@
 @layer app.shell {
-  .topbar-sidebar-trigger {
-    display: inline-grid;
-  }
-
-  @media (min-width: 1280px) {
-    .cockpit-shell {
-      height: 100dvh;
-    }
-
-    .cockpit-main {
-      height: 100dvh;
-    }
-  }
-
-  @media (min-width: 768px) and (max-width: 1279px) {
-    .cockpit-shell {
-      height: 100dvh;
-    }
-
-    .cockpit-main {
-      height: 100dvh;
-    }
+  /*
+   * The final word on shell geometry per breakpoint. It is imported last by `CockpitShell.tsx`, so a rule
+   * here wins over the owner files above — which is exactly why the breakpoint decisions live in one place
+   * instead of being spread across four stylesheets that each think they are last.
+   */
+  .cockpit-shell,
+  .cockpit-main {
+    height: 100dvh;
   }
 
   @media (max-width: 767px) {
-    .cockpit-shell {
-      height: 100dvh;
-      padding-bottom: 0;
-    }
-
     /*
      * The bottom nav is a flex sibling of the scroller, so it already reserves its own height and the safe
-     * area it pads itself with — the scroller only needs to stop short of it, which flex does. What is left
-     * is the last row's own breathing space above the bar.
+     * area it pads itself with — the scroller only needs to stop short of it, which flex does. The route
+     * column adds the last row's own breathing space above the bar.
      */
     .center-column {
-      padding-bottom: 0;
-    }
-
-    .cockpit-main {
-      height: 100dvh;
-    }
-
-    /*
-     * Three tracks, matching `CockpitTopbar.css`: search, the anomaly pill when there is one, refresh. This
-     * file is imported last and wins, so a two-track list here left refresh in an implicit track and
-     * reserved 32px of dead space beside the search box on every phone (#87 review).
-     */
-    .topbar {
-      grid-template-columns: minmax(0, 1fr) auto 32px;
-      gap: 8px;
-      height: var(--shell-mobile-topbar-height);
-      min-height: var(--shell-mobile-topbar-height);
-      padding: 8px;
-    }
-
-    /* No sidebar trigger and no brand on a phone (#87): navigation is the bottom bar. */
-    .brand {
-      display: none;
-    }
-
-    .searchbar {
-      grid-column: 1;
-      grid-row: 1;
+      padding-bottom: 4px;
     }
   }
 }

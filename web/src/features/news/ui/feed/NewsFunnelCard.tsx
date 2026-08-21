@@ -1,170 +1,125 @@
 import { newsPath } from "@shared/routing/paths";
-import { Link } from "react-router-dom";
+import { Card } from "@shared/ui/Card";
+import { Metric, MetricRow } from "@shared/ui/Metric";
 
 import type { NewsFunnel, NewsStatus } from "../../api/newsQueries";
 import { formatCount, percent } from "../../model/newsLabels";
 
 import "./newsFunnel.css";
 
-type Tile = {
-  accent?: boolean;
-  hint: string;
-  label: string;
-  pct: string;
-  to: string | null;
-  value: number;
-};
-
 /**
- * The 24 h funnel above the feed. Every figure is either a server field from `funnel_24h` or the difference
+ * Where the last 24 hours went, above the feed. Every figure is either a `funnel_24h` field or the difference
  * between two of them — the browser reports where the Events went, it does not decide it.
+ *
+ * Five tiles and no bar. The bar lived here and drew four segments that were differences between layers
+ * counted in two different ways (`candidates` by `opened_at_ms`, `triaged` by verdict `created_at_ms`), so at
+ * the window edge it read a few percent short and had to be explained. The proportions belong on the status
+ * route, where the same numbers get a full-width bar and a sentence naming the biggest drop; here the five
+ * counts and one conversion line are the whole answer.
  */
 export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
   const funnel = status?.funnel_24h;
   if (!funnel) return null;
-  const tiles = funnelTiles(funnel);
   const failed = status.delivery.terminal_24h;
   // #87: how many Events *offered* a coin tag and had none of them land. Measured against `tagged`, never
   // against `triaged`: a macro headline that named no asset did not fail to resolve a symbol, and counting
   // it here would report a fault in the instrument table that does not exist.
   const ungrounded = Math.max(0, funnel.tagged - funnel.grounded);
   return (
-    <section aria-label="过去 24 小时漏斗" className="news-funnel-card">
-      <div className="news-funnel-card-head">
-        <span className="news-funnel-eyebrow">Last 24h</span>
-        <span className="news-funnel-summary">
-          转化 <b>{percent(funnel.delivered, funnel.received)}</b> · 拦下{" "}
-          <b>{formatCount(Math.max(0, funnel.received - funnel.delivered))}</b> 条 ·{" "}
+    <Card
+      aria-label="过去 24 小时漏斗"
+      className="news-funnel-card"
+      flush
+      hint={
+        <>
+          转化 <b>{percent(funnel.delivered, funnel.received)}</b>
           {ungrounded ? (
             <>
-              符号未落表 <b data-tone="caution">{formatCount(ungrounded)}</b> 条
+              {" · 符号未落表拦下 "}
+              <b data-tone="caution">{formatCount(ungrounded)}</b>
             </>
           ) : failed ? (
             <>
-              投递失败 <b>{formatCount(failed)}</b> 条
+              {" · 投递失败 "}
+              <b data-tone="alert">{formatCount(failed)}</b>
             </>
           ) : (
-            "无投递失败"
+            " · 无投递失败"
           )}
-        </span>
-      </div>
-      <div aria-hidden className="news-funnel-proportion">
-        {proportionSegments(funnel).map((segment) => (
-          <span
-            data-layer={segment.layer}
-            key={segment.layer}
-            style={{ width: `${segment.share}%` }}
+        </>
+      }
+      title="Last 24h"
+      titleStyle="eyebrow"
+    >
+      <MetricRow columns={5} label="24 小时漏斗">
+        {funnelTiles(funnel).map((tile) => (
+          <Metric
+            caption={tile.caption}
+            eyebrow={tile.eyebrow}
+            key={tile.eyebrow}
+            note={tile.note}
+            title={tile.title}
+            to={tile.to}
+            tone={tile.tone}
+            value={formatCount(tile.value)}
           />
         ))}
-      </div>
-      <ol className="news-funnel-tiles">
-        {tiles.map((tile) => (
-          <li key={tile.label}>
-            <FunnelTile tile={tile} />
-          </li>
-        ))}
-      </ol>
-    </section>
+      </MetricRow>
+    </Card>
   );
 }
 
-function FunnelTile({ tile }: { tile: Tile }) {
-  const body = (
-    <>
-      <span className="news-funnel-tile-label">
-        {tile.label}
-        {tile.pct ? <small>{tile.pct}</small> : null}
-      </span>
-      <b>{formatCount(tile.value)}</b>
-      <small>{tile.hint}</small>
-    </>
-  );
-  if (!tile.to) {
-    return (
-      <span className="news-funnel-tile" data-accent={tile.accent || undefined}>
-        {body}
-      </span>
-    );
-  }
-  return (
-    <Link className="news-funnel-tile" data-accent={tile.accent || undefined} to={tile.to}>
-      {body}
-    </Link>
-  );
-}
-
-function funnelTiles(funnel: NewsFunnel): Tile[] {
+function funnelTiles(funnel: NewsFunnel) {
   const gated = Math.max(0, funnel.received - funnel.candidates);
   const notPushed = Math.max(0, funnel.triaged - funnel.decided_push);
-  const ungroundedCount = Math.max(0, funnel.tagged - funnel.grounded);
+  const ungrounded = Math.max(0, funnel.tagged - funnel.grounded);
   return [
     {
-      hint: `最近 1 小时 ${formatCount(funnel.received_1h)}`,
-      label: "收到",
-      pct: "",
+      caption: "收到",
+      eyebrow: "RECEIVED",
+      note: `1h ${formatCount(funnel.received_1h)}`,
+      title: "过去 24 小时从 provider 收到的事件",
       to: newsPath(),
+      tone: "plain" as const,
       value: funnel.received,
     },
     {
-      hint: gated ? `门禁挡下 ${formatCount(gated)}` : "门禁全部放行",
-      label: "送审",
-      pct: percent(funnel.candidates, funnel.received),
+      caption: "送审",
+      eyebrow: "TRIAGED",
+      note: percent(funnel.candidates, funnel.received),
+      title: gated ? `门禁挡下 ${formatCount(gated)}` : "门禁全部放行",
       to: null,
+      tone: "plain" as const,
       value: funnel.candidates,
     },
     {
-      hint: ungroundedCount ? `未落标的表 ${formatCount(ungroundedCount)}` : "符号全部落表",
-      label: "符号落表",
+      caption: "符号落表",
+      eyebrow: "GROUNDED",
       // Share of the Events that carried a tag, not of everything received: the denominator has to be the
       // population the number is actually about.
-      pct: percent(funnel.grounded, funnel.tagged),
+      note: percent(funnel.grounded, funnel.tagged),
+      title: ungrounded ? `未落标的表 ${formatCount(ungrounded)}` : "符号全部落表",
       to: null,
+      tone: ungrounded ? ("caution" as const) : ("plain" as const),
       value: funnel.grounded,
     },
     {
-      hint: notPushed ? `模型判不推 ${formatCount(notPushed)}` : "模型全部放行",
-      label: "决定推送",
-      pct: percent(funnel.decided_push, funnel.received),
+      caption: "决定推送",
+      eyebrow: "DECIDED",
+      note: percent(funnel.decided_push, funnel.received),
+      title: notPushed ? `模型判不推 ${formatCount(notPushed)}` : "模型全部放行",
       to: `${newsPath()}?outcome=pushed`,
+      tone: "plain" as const,
       value: funnel.decided_push,
     },
     {
-      accent: true,
-      hint: `最近 1 小时 ${formatCount(funnel.delivered_1h)}`,
-      label: "已送达",
-      pct: percent(funnel.delivered, funnel.decided_push),
+      caption: "已送达",
+      eyebrow: "DELIVERED",
+      note: percent(funnel.delivered, funnel.decided_push),
+      title: `最近 1 小时 ${formatCount(funnel.delivered_1h)}`,
       to: `${newsPath()}?outcome=pushed`,
+      tone: "accent" as const,
       value: funnel.delivered,
     },
   ];
-}
-
-/**
- * The bar reads left to right as "gated / not triaged / judged-but-held / delivered", each share the
- * difference between two adjacent layers.
- *
- * Those layers are *not* one population, so the shares do not always sum to `received` and the bar is not
- * always full. `candidates` counts Events by `opened_at_ms`; `triaged` counts Triage verdicts by
- * `created_at_ms` — an Event opened just before the window and judged just inside it lands in the second and
- * not the first, so at the window edge `triaged` can exceed `candidates` (observed live: 1567 vs 1531). The
- * `untriaged` share then clamps to zero and the bar comes up short by that much.
- *
- * The clamp is left in place deliberately: a band drawn backwards would be worse than a bar that reads a few
- * percent light, and reconciling the two windows is a server-side change to what `funnel_24h` means, not a
- * presentation fix. Documented rather than hidden, so the next reader does not take the total on faith.
- */
-function proportionSegments(funnel: NewsFunnel) {
-  const total = Math.max(1, funnel.received);
-  const layers = [
-    { layer: "gated", value: funnel.received - funnel.candidates },
-    { layer: "untriaged", value: funnel.candidates - funnel.triaged },
-    { layer: "held", value: funnel.triaged - funnel.delivered },
-    { layer: "delivered", value: funnel.delivered },
-  ];
-  // Grounding is a property of the Events in the `held`/`delivered` bands, not a band of its own: an Event
-  // whose symbols never landed can still have been pushed. It gets a tile, deliberately not a segment.
-  return layers.map((layer) => ({
-    layer: layer.layer,
-    share: (Math.max(0, layer.value) / total) * 100,
-  }));
 }

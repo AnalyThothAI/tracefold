@@ -1,0 +1,110 @@
+@layer app.primitives {
+  /*
+   * The hairlines between metrics are the grid gap over a hairline ground, not a `border-left` on each cell:
+   * with `border-left` a wrapped row draws a rule at the start of every line but the first, and the funnel
+   * row wraps at 767px by design.
+   */
+  .ui-metric-row {
+    display: grid;
+    grid-template-columns: repeat(var(--ui-metric-columns, 3), minmax(0, 1fr));
+    gap: 1px;
+    background: var(--border-faint);
+  }
+
+  .ui-metric {
+    display: grid;
+    gap: 3px;
+    align-content: start;
+    padding: 12px 14px 13px;
+    background: var(--surface-panel);
+    color: inherit;
+    text-decoration: none;
+  }
+
+  a.ui-metric:hover {
+    background: var(--surface-raised);
+  }
+
+  .ui-metric-eyebrow {
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.09em;
+    white-space: nowrap;
+  }
+
+  .ui-metric-value {
+    color: var(--text-primary);
+    font: var(--type-metric);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  .ui-metric[data-tone="accent"] .ui-metric-value {
+    color: var(--accent-primary);
+  }
+
+  .ui-metric[data-tone="caution"] .ui-metric-value {
+    color: var(--signal-caution);
+  }
+
+  .ui-metric-foot {
+    display: flex;
+    gap: 7px;
+    align-items: baseline;
+    min-width: 0;
+  }
+
+  .ui-metric-caption {
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .ui-metric-note {
+    color: var(--text-subtle);
+    font: 500 10px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ui-metric[data-tone="accent"] .ui-metric-note {
+    color: var(--accent-primary);
+  }
+
+  .ui-metric[data-size="sm"] {
+    padding: 10px 12px 11px;
+  }
+
+  .ui-metric[data-size="sm"] .ui-metric-value {
+    font-size: 17px;
+  }
+
+  .ui-metric[data-size="sm"] .ui-metric-caption {
+    font-size: 10px;
+  }
+
+  /*
+   * A phone cannot hold five tiles across, and stacking them costs the first Event its place on the first
+   * screen. They become one scrollable row of readable tiles instead.
+   */
+  @media (max-width: 767px) {
+    .ui-metric-row {
+      grid-template-columns: none;
+      grid-auto-columns: minmax(112px, 1fr);
+      grid-auto-flow: column;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      scrollbar-width: none;
+    }
+
+    .ui-metric-row::-webkit-scrollbar {
+      display: none;
+    }
+
+    .ui-metric {
+      padding: 10px 12px 11px;
+    }
+
+    .ui-metric-value {
+      font-size: 18px;
+    }
+  }
+}

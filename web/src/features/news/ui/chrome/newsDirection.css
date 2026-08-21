@@ -1,63 +1,55 @@
 @layer app.features {
-  /*
-   * Market direction is a different axis from the pipeline outcome, so it gets a different weight in the same
-   * hue family: the outcome badge stays an outlined pill with a dot, direction is a solid fill with an arrow.
-   * The arrow carries the meaning on its own, so the chip never depends on colour alone.
-   *
-   * Red is 利多 and green is 利空 (#74, the mainland convention). `flat` is ~42% of live verdicts; a solid grey
-   * block on half the feed would drown the red/green it exists to highlight, so it drops to quiet text.
-   */
+  .news-direction-pair {
+    display: inline-flex;
+    gap: 7px;
+    align-items: baseline;
+    min-width: 0;
+  }
+
   .news-direction {
     display: inline-flex;
-    gap: 0.3rem;
+    gap: 4px;
     align-items: center;
-    min-height: 1.5rem;
-    padding: 0.1rem 0.5rem;
-    border-radius: var(--radius-sm);
-    background: transparent;
     color: var(--text-subtle);
-    font-size: 0.72rem;
-    font-weight: 600;
-    line-height: 1.2;
+    font-size: 12px;
+    font-weight: 640;
     white-space: nowrap;
   }
 
-  .news-direction[data-size="lg"] {
-    min-height: 1.9rem;
-    padding: 0.2rem 0.7rem;
-    font-size: 0.9rem;
-  }
-
-  .news-direction[data-dir="bullish"],
-  .news-direction[data-dir="bearish"] {
-    background: var(--news-direction-fill);
-    color: #ffffff;
-  }
-
   .news-direction[data-dir="bullish"] {
-    --news-direction-fill: var(--dir-bullish);
+    color: var(--dir-bullish);
   }
 
   .news-direction[data-dir="bearish"] {
-    --news-direction-fill: var(--dir-bearish);
+    color: var(--dir-bearish);
   }
 
-  .news-direction-glyph {
-    font-size: 0.85em;
-    line-height: 1;
-  }
-
-  /* Magnitude rides beside the direction as its qualifier, never as a second coloured badge. */
-  .news-direction-strength {
-    color: var(--text-secondary);
-    font-size: 0.74rem;
+  /* Roughly two in five verdicts are neutral. They stay quiet so the ones that took a side stand out. */
+  .news-direction[data-dir="flat"] {
+    color: var(--text-subtle);
     font-weight: 500;
   }
 
-  .news-direction-pair {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    align-items: center;
+  .news-direction-glyph {
+    font-size: 8px;
+    line-height: 1;
+  }
+
+  .news-direction[data-size="lg"] {
+    font-size: 13.5px;
+  }
+
+  .news-direction[data-size="lg"] .news-direction-glyph {
+    font-size: 10px;
+  }
+
+  .news-direction-strength {
+    color: var(--text-secondary);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .news-direction[data-size="lg"] + .news-direction-strength {
+    font-size: 12.5px;
   }
 }

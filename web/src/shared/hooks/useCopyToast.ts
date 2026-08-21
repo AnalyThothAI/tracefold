@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+/** Long enough to read one line, short enough that it never becomes part of the page. */
 const TOAST_MS = 1_800;
 
 /**
- * A one-line confirmation for actions that leave no trace on the page — copying a headline or a
- * `tracefold news label` command. Nothing here writes to the server; the toast says what landed on the
- * clipboard, and says so out loud for a screen reader via the polite live region that renders it.
+ * A one-line confirmation for actions that leave no trace on the page — copying a `tracefold news label`
+ * command from a row, the detail page, the review queue or the command palette. Nothing here writes to the
+ * server; the toast says what landed on the clipboard, and `Toast` says it out loud through a polite live
+ * region.
+ *
+ * The shell owns the single instance and hands `copy` down through the route context, so a copy started
+ * anywhere is confirmed in exactly one place.
  */
-export function useNewsToast() {
+export function useCopyToast() {
   const [message, setMessage] = useState<string | null>(null);
   const timer = useRef<number | undefined>(undefined);
 

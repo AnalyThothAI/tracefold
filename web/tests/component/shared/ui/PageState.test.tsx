@@ -1,5 +1,5 @@
+import { ActionButton } from "@shared/ui/ActionButton";
 import * as PageState from "@shared/ui/PageState";
-import { Button } from "@shared/ui/button";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { axe } from "jest-axe";
 import { describe, expect, it, vi } from "vitest";
@@ -8,8 +8,8 @@ describe("PageState shared UI", () => {
   it("renders accessible loading and table skeleton states", async () => {
     const { container } = render(
       <section>
-        <PageState.Loading layout="route" rows={2} label="loading route data" />
-        <PageState.TableSkeleton rows={3} compact label="loading compact table" />
+        <PageState.Loading label="loading route data" layout="route" rows={2} />
+        <PageState.TableSkeleton compact label="loading compact table" rows={3} />
       </section>,
     );
 
@@ -21,7 +21,8 @@ describe("PageState shared UI", () => {
       "page-state-table-skeleton",
       "page-state-table-skeleton-compact",
     );
-    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(15);
+    // The skeleton keeps the shape of the rows it stands in for: three blocks per row, five rows in all.
+    expect(container.querySelectorAll(".page-state-table-block")).toHaveLength(15);
     expect(container.querySelectorAll(".page-state-table-row")).toHaveLength(5);
     expect(await axe(container)).toHaveNoViolations();
   });
@@ -29,19 +30,16 @@ describe("PageState shared UI", () => {
   it("renders empty state hints and caller-provided actions", async () => {
     const { container } = render(
       <PageState.Empty
-        title="No rows"
+        action={<ActionButton>Reset filters</ActionButton>}
         hint="Try a wider window."
-        action={<Button type="button">Reset filters</Button>}
+        title="No rows"
       />,
     );
 
     expect(screen.getByText("No rows")).toBeInTheDocument();
     expect(screen.getByText("Try a wider window.")).toBeInTheDocument();
     expect(screen.getByText("No rows").closest(".page-state-empty")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Reset filters" })).toHaveAttribute(
-      "data-slot",
-      "button",
-    );
+    expect(screen.getByRole("button", { name: "Reset filters" })).toHaveClass("ui-button");
     expect(await axe(container)).toHaveNoViolations();
   });
 
@@ -54,8 +52,7 @@ describe("PageState shared UI", () => {
     const alert = screen.getByRole("alert");
     expect(alert).toHaveClass("page-state-error");
     expect(alert).toHaveTextContent("backend unavailable");
-    const retry = within(alert).getByRole("button", { name: "Retry" });
-    expect(retry).toHaveAttribute("data-slot", "button");
+    const retry = within(alert).getByRole("button", { name: "重试" });
 
     fireEvent.click(retry);
 
@@ -72,6 +69,6 @@ describe("PageState shared UI", () => {
 
     expect(screen.getByText("cached rows").parentElement).toHaveClass("page-state-stale");
     expect(screen.getByText("cached rows").parentElement).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByText("Updating")).toHaveClass("sr-only");
+    expect(screen.getByText("正在更新")).toHaveClass("sr-only");
   });
 });

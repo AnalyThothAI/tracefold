@@ -1,4 +1,5 @@
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
+import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 
 import type { NewsTimelineStep } from "../../api/newsQueries";
@@ -14,7 +15,11 @@ import "./newsTimeline.css";
 
 /**
  * The server's ordered steps, rendered as they arrived. Every sentence is `summary_zh`; the raw `facts` the
- * step was built from stay behind a toggle so the reading surface is prose and the evidence is one click away.
+ * step was built from stay behind a toggle, so the reading surface is prose and the evidence is one click
+ * away. Every duration is two server timestamps subtracted — the console reports how long the pipeline took,
+ * it never measures it.
+ *
+ * Node colour is the stage's tone and nothing else: grey happened, indigo decided, amber held back.
  */
 export function NewsTimeline({ steps }: { steps: NewsTimelineStep[] }) {
   if (!steps.length) return <NewsEmptyNote>尚无处理记录。</NewsEmptyNote>;
@@ -32,14 +37,34 @@ export function NewsTimeline({ steps }: { steps: NewsTimelineStep[] }) {
   );
 }
 
+/** The same walk without the field toggles: the drawer is for reading, the page is for auditing. */
+export function NewsEventDrawerTimeline({ steps }: { steps: NewsTimelineStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <ol className="news-timeline" data-compact>
+      {steps.map((step, index) => (
+        <TimelineStep
+          delta={index === 0 ? null : step.at_ms - steps[index - 1].at_ms}
+          key={`${step.stage}-${index}`}
+          last={index === steps.length - 1}
+          step={step}
+          withFields={false}
+        />
+      ))}
+    </ol>
+  );
+}
+
 function TimelineStep({
   delta,
   last,
   step,
+  withFields = true,
 }: {
   delta: number | null;
   last: boolean;
   step: NewsTimelineStep;
+  withFields?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const facts = Object.entries(step.facts ?? {}).filter(([, value]) => !isEmptyFact(value));
@@ -50,6 +75,7 @@ function TimelineStep({
       data-stage={step.stage}
       data-tone={timelineStageTone(step.stage)}
     >
+      <span aria-hidden className="news-timeline-line" />
       <span aria-hidden className="news-timeline-marker" />
       <div className="news-timeline-body">
         <div className="news-timeline-head">
@@ -62,17 +88,19 @@ function TimelineStep({
           )}
         </div>
         <p className="news-timeline-summary">{step.summary_zh}</p>
-        {facts.length ? (
+        {withFields && facts.length ? (
           <button
             aria-expanded={open}
             className="news-timeline-toggle"
+            data-open={open || undefined}
             onClick={() => setOpen((current) => !current)}
             type="button"
           >
+            <ChevronRight aria-hidden />
             {open ? "收起字段" : `展开字段 (${facts.length})`}
           </button>
         ) : null}
-        {open ? (
+        {withFields && open ? (
           <KeyValue className="news-timeline-fields">
             {facts.map(([key, value]) => (
               <KeyValueRow k={key} key={key} v={formatFact(value)} />

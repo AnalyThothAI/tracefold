@@ -1,108 +1,124 @@
 @layer app.features {
-  /*
-   * What happened to this Event, one step per sentence. Each marker takes the stage's pipeline tone, and the
-   * `+Δ` beside a step's clock is the gap from the step before it — subtraction of two server timestamps, not
-   * a measurement the browser makes.
-   */
   .news-timeline {
     display: grid;
     margin: 0;
-    padding: 0;
+    padding: 2px 2px 0;
     list-style: none;
   }
 
   .news-timeline-step {
     position: relative;
     display: grid;
-    grid-template-columns: 1.1rem minmax(0, 1fr);
-    gap: 0 0.8rem;
-    padding-bottom: 0.9rem;
+    grid-template-columns: 20px minmax(0, 1fr);
+    gap: 0 12px;
+    padding-bottom: 15px;
+  }
+
+  .news-timeline[data-compact] .news-timeline-step {
+    padding-bottom: 12px;
   }
 
   .news-timeline-step[data-last] {
     padding-bottom: 0;
   }
 
-  .news-timeline-step::before {
+  /* The rule runs from under this node to the next one; the last step has nothing to connect to. */
+  .news-timeline-line {
     position: absolute;
-    top: 1.05rem;
+    top: 16px;
     bottom: 0;
-    left: 0.5rem;
+    left: 8px;
     width: 1px;
     background: var(--border-subtle);
-    content: "";
   }
 
-  .news-timeline-step[data-last]::before {
-    display: none;
+  .news-timeline-step[data-last] .news-timeline-line {
+    background: transparent;
   }
 
+  /*
+   * The halo is the card's own ground, not a lighter colour: it punches the node out of the rule behind it
+   * without introducing a fourth surface.
+   */
   .news-timeline-marker {
-    width: 0.65rem;
-    height: 0.65rem;
-    margin: 0.35rem 0 0 0.2rem;
+    z-index: 1;
+    width: 9px;
+    height: 9px;
+    margin: 5px 0 0 4px;
     border-radius: 999px;
-    background: var(--news-tone);
-    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--news-tone) 16%, transparent);
+    background: var(--tone);
+    box-shadow: 0 0 0 3px var(--surface-panel);
   }
 
   .news-timeline-body {
     display: grid;
-    gap: 0.2rem;
+    gap: 2px;
     min-width: 0;
   }
 
   .news-timeline-head {
     display: flex;
-    gap: 0.6rem;
+    flex-wrap: wrap;
+    gap: 9px;
     align-items: baseline;
   }
 
   .news-timeline-head b {
-    font-size: 0.8rem;
+    color: var(--text-primary);
+    font-size: 12.5px;
     font-weight: 640;
   }
 
   .news-timeline-head time {
-    color: var(--text-muted);
-    font: 500 0.7rem/1.4 var(--font-mono);
+    color: var(--text-secondary);
+    font: 500 11px/1.4 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-timeline-delta {
+    color: var(--text-subtle);
+    font: 500 10px/1.4 var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
   .news-timeline-summary {
     margin: 0;
     color: var(--text-secondary);
-    font-size: 0.82rem;
+    font-size: 12.5px;
     line-height: 1.5;
-    overflow-wrap: anywhere;
+    text-wrap: pretty;
   }
 
   .news-timeline-toggle {
+    display: inline-flex;
+    gap: 5px;
+    align-items: center;
     width: fit-content;
-    padding: 0.1rem 0;
-    border: 0;
-    background: none;
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    text-decoration: underline dotted;
-    text-underline-offset: 0.2em;
-  }
-
-  .news-timeline-toggle:hover {
-    color: var(--accent-primary);
-  }
-
-  /* The timeline's own container for a shared KeyValue; the primitive owns the pair layout, this owns the box. */
-  .news-timeline-fields {
-    margin-top: 0.3rem;
-    padding: 0.55rem 0.7rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
+    min-height: 22px;
+    margin-top: 3px;
+    padding: 0 7px;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-xs);
+    color: var(--text-secondary);
     background: var(--surface-raised);
+    font-size: 10.5px;
   }
 
-  .news-timeline-delta {
-    color: var(--text-subtle);
-    font: 500 0.66rem/1.4 var(--font-mono);
-    font-variant-numeric: tabular-nums;
+  .news-timeline-toggle svg {
+    width: 10px;
+    height: 10px;
+    color: var(--text-faint);
+    transition: transform 130ms ease;
+  }
+
+  .news-timeline-toggle[data-open] svg {
+    transform: rotate(90deg);
+  }
+
+  .news-timeline-fields {
+    margin-top: 6px;
+    padding: 9px 11px;
+    border-radius: 5px;
+    background: var(--surface-raised);
   }
 }

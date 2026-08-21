@@ -17,13 +17,18 @@ describe("News console contract", () => {
     const chip = readSource("src/features/news/ui/chrome/NewsDirectionChip.tsx");
 
     /*
-     * Roughly three quarters of a day's Events stop short of a card. A badge on each made a screenful of
-     * equals, so a held row steps back to its reason alone and only a row with an outcome keeps the badge
-     * (#82). `outcome` is still what decides, and it is still exactly one badge where there is one.
+     * Roughly three quarters of a day's Events stop short of a card. A capsule on each made a screenful of
+     * equals, so the desktop row states its outcome as a *word* and keeps the filled chip for the one thing
+     * worth shouting: a high-priority push. The phone card drops the held badge entirely (see the media
+     * query below), where a grey capsule on three cards out of four is pure noise. Either way it is exactly
+     * one badge, and `outcome` is still what decides.
      */
     expect(row.match(/<NewsOutcomeBadge/g)).toHaveLength(1);
     expect(row).toContain('const held = event.outcome.group === "held"');
-    expect(row).toMatch(/\{held \? null : \(\s*<NewsOutcomeBadge/);
+    expect(row).toMatch(/variant=\{event\.priority === "high" && !held \? "chip" : "text"\}/);
+    expect(rowCss).toMatch(
+      /@media \(max-width: 767px\)[\s\S]*?\.news-event-row\[data-outcome-group="held"\] \.news-event-badge \{[^}]*display: none;/,
+    );
     expect(row).toContain("event.outcome.reason_zh");
     // Direction is a toned chip of its own so a scan separates 利多 from 利空; it still renders the
     // server's word, never a frontend translation.
@@ -45,10 +50,11 @@ describe("News console contract", () => {
     expect(headlineRule).toContain("display: -webkit-box");
     expect(headlineRule).toContain("-webkit-line-clamp: 2");
     expect(cssRule(rowCss, ".news-event-original")).toContain("-webkit-line-clamp: 1");
-    // The row opens the Event through the headline link, not through a click handler on a non-interactive
-    // element, so the keyboard reaches it and the row keeps one accessible name.
+    // The row opens the Event through the headline link, never through a click handler on the article, so
+    // the keyboard reaches it and the row keeps one accessible name. The two controls inside it (select,
+    // expand) are real buttons with their own labels and their own handlers.
     expect(cssRule(rowCss, ".news-event-headline a::after")).toContain("position: absolute");
-    expect(row).not.toContain("onClick={(clickEvent)");
+    expect(row).not.toMatch(/<article\b[^>]*onClick=/);
   });
 
   it("gets its business vocabulary from the server, not from a frontend enum table", () => {

@@ -54,6 +54,7 @@ test("1366x720 keeps at least four ordinary News cards fully visible", async ({ 
   const rows = page.locator(".news-event-row");
   await expect(rows).toHaveCount(6);
   await expect(page.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
+  // Every row states its outcome as a word; the filled capsule is reserved for the high-priority push.
   await expect(page.locator(".news-event-row .news-outcome")).toHaveCount(6);
   await expect(page.locator(".news-event-row .news-outcome").first()).toContainText("已推送");
   const fullyVisible = await rows.evaluateAll(
@@ -183,20 +184,27 @@ test("a News row is one link and one conclusion, with no competing controls", as
   await expect(rowLink).toBeVisible();
 
   /*
-   * #87: the row used to carry copy-title, copy-label and open-original beside the badge, each of them a
-   * hover-only target that had to be kept clickable above the stretched headline link. They all lead
-   * somewhere better one tap away, so the row is now exactly one link — nothing left to compete with it,
-   * and nothing that means anything different under a thumb.
+   * #87 removed copy-title, copy-label and open-original from the row: three hover-only targets that led
+   * somewhere better one tap away and meant nothing under a thumb. The row is still exactly one *link* — the
+   * stretched headline — and the two controls that came back at pointer widths (select for bulk labelling,
+   * expand for the judgment in place) each carry their own name and neither competes with it. Both are
+   * absent below 768px, where hover does not exist.
    */
   const row = page.locator(".news-event-row").first();
   await expect(row.getByRole("link")).toHaveCount(1);
-  await expect(row.getByRole("button")).toHaveCount(0);
+  await expect(row.getByRole("button")).toHaveCount(2);
+  await expect(row.locator(".news-event-select")).toHaveCount(1);
+  await expect(row.locator(".news-event-expand")).toHaveCount(1);
 
   await expect(page.locator(".news-direction")).toContainText("利空");
-  await expect(page.locator(".news-direction-strength")).toContainText("影响明显");
-  await expect(page.locator(".news-event-facts")).toContainText("宏观");
+  await expect(page.locator(".news-event-kind")).toContainText("宏观");
   await expect(page.locator(".news-event-badge")).toContainText("已推送");
   await expect(page.locator(".news-event-reason")).toContainText("推送于");
+
+  // Space opens the judgment where the reader is standing, instead of costing them the list.
+  await row.locator(".news-event-expand").click();
+  await expect(row.locator(".news-event-verdict")).toBeVisible();
+  await expect(row.locator(".news-event-why")).not.toBeEmpty();
 });
 
 async function routeNewsFeed(page: Page, titles: string[]) {

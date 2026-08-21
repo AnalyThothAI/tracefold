@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const srcRoot = join(webRoot, "src");
-const allowedTabsWrapper = "src/shared/ui/tabs.tsx";
 const sourceExtensions = new Set([".ts", ".tsx"]);
 
 describe("shared primitive imports", () => {
@@ -32,20 +31,21 @@ describe("shared primitive imports", () => {
     ]);
   });
 
-  it("routes Radix Tabs usage through the shared tabs primitive", () => {
+  /*
+   * There is no Tabs wrapper any more: the v6 console's only segmented control is the feed's task tabs, which
+   * are four buttons with `role="tab"` and no panels to switch. Radix Tabs would bring a roving tabindex and a
+   * panel model that surface does not have, so nothing may import it — there is no sanctioned wrapper to
+   * import it through either.
+   */
+  it("keeps Radix Tabs out of the console entirely", () => {
     const offenders = collectFiles(srcRoot)
       .filter((path) => sourceExtensions.has(extname(path)))
-      .flatMap((path) => {
-        const relativePath = relative(webRoot, path);
-
-        if (relativePath === allowedTabsWrapper) {
-          return [];
-        }
-
-        return disallowedTabsImportMessages(relativePath, readFileSync(path, "utf8"));
-      });
+      .flatMap((path) =>
+        disallowedTabsImportMessages(relative(webRoot, path), readFileSync(path, "utf8")),
+      );
 
     expect(offenders).toEqual([]);
+    expect(existsSync(join(srcRoot, "shared/ui/tabs.tsx"))).toBe(false);
   });
 });
 

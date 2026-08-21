@@ -11,17 +11,24 @@ export type Fact = { label: string; value: ReactNode };
  */
 export function FactGrid({
   className,
+  columns,
   facts,
   label,
 }: {
   className?: string;
+  /** Fix the column count when the cell count is known and a ragged last row would read as a gap. */
+  columns?: number;
   facts: Fact[];
   label: string;
 }) {
   const filled = facts.filter((fact) => Boolean(fact.value));
   if (!filled.length) return null;
   return (
-    <dl aria-label={label} className={cn("ui-fact-grid", className)}>
+    <dl
+      aria-label={label}
+      className={cn("ui-fact-grid", className)}
+      style={columns ? ({ "--ui-fact-columns": columns } as React.CSSProperties) : undefined}
+    >
       {filled.map((fact) => (
         <div className="ui-fact" key={fact.label}>
           <dt>{fact.label}</dt>

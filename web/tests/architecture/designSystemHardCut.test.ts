@@ -93,7 +93,7 @@ describe("Tracefold design-system hard cut", () => {
 
     const sidebar = readSource("features/cockpit/ui/AppSidebar.tsx");
     expect(sidebar).toContain("Tracefold");
-    expect(sidebar).toContain("Research Workbench");
+    expect(sidebar).toContain("News V3 Console");
     expect(sidebar).not.toMatch(/Desk status|Live desk|facts online/);
   });
 

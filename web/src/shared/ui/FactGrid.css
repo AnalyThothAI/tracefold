@@ -1,44 +1,62 @@
 @layer app.primitives {
   /*
-   * A labelled fact grid: the shape the Event detail verdict block introduced in #70 and the status page needs
-   * for the same job. Cells wrap on their own, so a caller only supplies the pairs it actually has — an empty
-   * cell is omitted rather than rendered as a dash.
+   * The verdict grid: the model's judgment as a row of framed cells inside a hairline box. Cells are
+   * separated by the grid gap over a hairline ground rather than by borders, so the rules land correctly at
+   * any cell count and on every wrapped line.
    */
   .ui-fact-grid {
+    --ui-fact-columns: auto-fit;
+
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
-    gap: 0.5rem;
+    /* `auto-fit` by default; a caller that knows its cell count fixes the columns so the last row is not
+       ragged — an empty cell in a framed grid reads as a value the server failed to send. */
+    grid-template-columns: repeat(var(--ui-fact-columns), minmax(112px, 1fr));
+    gap: 1px;
     margin: 0;
     padding: 0;
+    overflow: hidden;
+    border-radius: var(--radius-sm);
+    background: var(--border-faint);
+    box-shadow: inset 0 0 0 1px var(--border-faint);
   }
 
   .ui-fact {
     display: grid;
-    gap: 0.15rem;
-    padding: 0.5rem 0.65rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
+    gap: 2px;
+    align-content: start;
+    padding: 9px 12px;
     background: var(--surface-raised);
   }
 
-  /*
-   * The label is chrome and the value is content, so they use different registers: a small uppercase Latin
-   * monospace key against the Chinese value. At this size a Chinese label would compete with its own value.
-   */
+  /* The label is Chinese here, not a Latin key: these six facts are read as prose, not grepped as fields. */
   .ui-fact dt {
     margin: 0;
-    color: var(--text-subtle);
-    font: 700 0.56rem/1.4 var(--font-mono);
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
+    color: var(--text-muted);
+    font-size: 10.5px;
+    line-height: 1.4;
   }
 
   .ui-fact dd {
     margin: 0;
     color: var(--text-primary);
-    font-size: 0.88rem;
-    font-weight: 600;
+    font-size: 13.5px;
+    font-weight: 620;
     font-variant-numeric: tabular-nums;
+    line-height: 1.35;
     overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 767px) {
+    .ui-fact-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .ui-fact {
+      padding: 8px 10px;
+    }
+
+    .ui-fact dd {
+      font-size: 13px;
+    }
   }
 }

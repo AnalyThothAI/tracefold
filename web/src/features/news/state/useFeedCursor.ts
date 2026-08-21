@@ -15,12 +15,15 @@ export function useFeedCursor({
   eventIds,
   listRef,
   onActivate,
+  onExpand,
   onLabel,
 }: {
   enabled: boolean;
   eventIds: string[];
   listRef: RefObject<HTMLElement | null>;
   onActivate: (eventId: string) => void;
+  /** `Space` on the cursor row: the judgment opens in place instead of costing the reader their position. */
+  onExpand?: (eventId: string) => void;
   onLabel: (eventId: string) => void;
 }) {
   const [cursor, setCursor] = useState<string | null>(null);
@@ -30,8 +33,8 @@ export function useFeedCursor({
   idsRef.current = eventIds;
   // The callbacks close over the caller's current event list, which changes on every poll; behind a ref the
   // key listener below is installed once.
-  const handlers = useRef({ onActivate, onLabel });
-  handlers.current = { onActivate, onLabel };
+  const handlers = useRef({ onActivate, onExpand, onLabel });
+  handlers.current = { onActivate, onExpand, onLabel };
 
   // An Event that left the feed (a filter change, a narrower window) takes the cursor with it.
   useEffect(() => {
@@ -82,6 +85,13 @@ export function useFeedCursor({
             handlers.current.onActivate(cursorId);
           }
           return;
+        case " ":
+          // Space scrolls by default, and the reader is asking for the opposite of that here.
+          if (cursorId && handlers.current.onExpand && !isActivatable(event.target)) {
+            event.preventDefault();
+            handlers.current.onExpand(cursorId);
+          }
+          return;
         case "x":
         case "X":
           if (cursorId) {
@@ -97,7 +107,7 @@ export function useFeedCursor({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [enabled, move]);
 
-  return { cursor };
+  return { cursor, focusEvent };
 }
 
 function isTyping(target: EventTarget | null): boolean {

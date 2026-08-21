@@ -1,47 +1,31 @@
-import clsx from "clsx";
+import { cn } from "@lib/utils";
 import type { ReactNode } from "react";
 
-import { Alert, AlertDescription, AlertTitle } from "./alert";
-import { Button } from "./button";
-import { Panel } from "./panel";
-import { Skeleton } from "./skeleton";
+import { ActionButton } from "./ActionButton";
 import "./PageState.css";
 
 type PageStateLayout = "route" | "panel" | "inline";
 
-type PageStateLoadingProps = {
+/**
+ * The four states a surface can be in besides "showing data". Every route uses these rather than inventing
+ * its own, so a reader recognises a loading feed and a loading status page as the same thing.
+ *
+ * Loading keeps the shape of what is coming — rows, not a spinner — because the page it replaces is a list
+ * and a shimmering list says how much is on its way. Stale keeps the previous answer on screen and marks it
+ * busy: a poll-driven console that blanks on every refetch is unreadable.
+ */
+export function Loading({
+  label,
+  layout,
+  rows = 5,
+}: {
+  label: string;
   layout: PageStateLayout;
   rows?: number;
-  label: string;
-};
-
-type PageStateEmptyProps = {
-  title: ReactNode;
-  hint?: ReactNode;
-  action?: ReactNode;
-};
-
-type PageStateErrorProps = {
-  error: unknown;
-  onRetry?: () => void;
-};
-
-type PageStateStaleProps = {
-  updating: boolean;
-  children: ReactNode;
-};
-
-type PageStateTableSkeletonProps = {
-  rows?: number;
-  label?: string;
-  compact?: boolean;
-  className?: string;
-};
-
-export function Loading({ layout, rows = 5, label }: PageStateLoadingProps) {
+}) {
   return (
     <TableSkeleton
-      className={clsx("page-state-loading", `page-state-layout-${layout}`)}
+      className={cn("page-state-loading", `page-state-layout-${layout}`)}
       compact={layout === "inline"}
       label={label}
       rows={rows}
@@ -49,53 +33,66 @@ export function Loading({ layout, rows = 5, label }: PageStateLoadingProps) {
   );
 }
 
-export function Empty({ title, hint, action }: PageStateEmptyProps) {
+export function Empty({
+  action,
+  hint,
+  title,
+}: {
+  action?: ReactNode;
+  hint?: ReactNode;
+  title: ReactNode;
+}) {
   return (
-    <Panel className="page-state-empty">
+    <div className="page-state-empty">
       <b>{title}</b>
       {hint ? <span>{hint}</span> : null}
       {action ? <div className="page-state-empty-action">{action}</div> : null}
-    </Panel>
+    </div>
   );
 }
 
-export function Error({ error, onRetry }: PageStateErrorProps) {
+export function Error({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   return (
-    <Alert className="page-state-error" variant="destructive">
-      <AlertTitle>请求失败</AlertTitle>
-      <AlertDescription>{errorMessage(error)}</AlertDescription>
+    <div className="page-state-error" role="alert">
+      <b>请求失败</b>
+      <span>{errorMessage(error)}</span>
       {onRetry ? (
-        <Button size="sm" type="button" variant="outline" onClick={onRetry}>
-          Retry
-        </Button>
+        <ActionButton onClick={onRetry} size="sm">
+          重试
+        </ActionButton>
       ) : null}
-    </Alert>
+    </div>
   );
 }
 
-export function Stale({ updating, children }: PageStateStaleProps) {
+export function Stale({ children, updating }: { children: ReactNode; updating: boolean }) {
   return (
     <div
       aria-busy={updating}
-      className={clsx("page-state-stale", updating && "page-state-stale-updating")}
+      className={cn("page-state-stale", updating && "page-state-stale-updating")}
     >
       {children}
-      {updating ? <span className="sr-only">Updating</span> : null}
+      {updating ? <span className="sr-only">正在更新</span> : null}
     </div>
   );
 }
 
 export function TableSkeleton({
-  rows = 5,
-  label = "loading table",
-  compact = false,
   className,
-}: PageStateTableSkeletonProps) {
+  compact = false,
+  label = "正在加载",
+  rows = 5,
+}: {
+  className?: string;
+  compact?: boolean;
+  label?: string;
+  rows?: number;
+}) {
   return (
     <div
       aria-busy="true"
       aria-label={label}
-      className={clsx(
+      className={cn(
         "page-state-table-skeleton",
         compact && "page-state-table-skeleton-compact",
         className,
@@ -103,10 +100,10 @@ export function TableSkeleton({
       role="status"
     >
       {Array.from({ length: rows }, (_, index) => (
-        <div aria-hidden="true" className="page-state-table-row" key={index}>
-          <Skeleton className="page-state-table-block page-state-table-block-leading" />
-          <Skeleton className="page-state-table-block page-state-table-block-body" />
-          <Skeleton className="page-state-table-block page-state-table-block-trailing" />
+        <div aria-hidden className="page-state-table-row" key={index}>
+          <span className="page-state-table-block page-state-table-block-leading" />
+          <span className="page-state-table-block page-state-table-block-body" />
+          <span className="page-state-table-block page-state-table-block-trailing" />
         </div>
       ))}
     </div>
@@ -114,11 +111,7 @@ export function TableSkeleton({
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof globalThis.Error) {
-    return error.message;
-  }
-  if (typeof error === "string") {
-    return error;
-  }
-  return "unknown error";
+  if (error instanceof globalThis.Error) return error.message;
+  if (typeof error === "string") return error;
+  return "未知错误";
 }

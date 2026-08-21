@@ -1,11 +1,17 @@
-import "./newsDirection.css";
 import type { NewsTriageSummary } from "../../api/newsQueries";
 import { directionGlyph, directionTone } from "../../model/newsLabels";
 
+import "./newsDirection.css";
+
 /**
- * The model's market direction for one Event, paired with its magnitude. `direction_zh` and `magnitude_zh` are
- * server-owned copy; this component only picks the visual tone and the arrow that carries the same meaning
- * without colour.
+ * The model's market direction for one Event, paired with its magnitude.
+ *
+ * Set as coloured *text*, never a filled block: red and green are the only two hues on the page that mean
+ * something about the market, and a solid one at the head of a meta line out-shouts the headline it belongs
+ * to. The arrow carries the same meaning without colour — the two hues sit at near-equal luminance by
+ * necessity, since both have to clear 4.5:1 on white.
+ *
+ * `direction_zh` and `magnitude_zh` are server-owned copy; this only picks the tone and the glyph.
  */
 export function NewsDirectionChip({
   size = "sm",

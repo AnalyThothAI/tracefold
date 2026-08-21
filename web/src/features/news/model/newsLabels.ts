@@ -132,16 +132,6 @@ export function healthItemEyebrow(key: HealthItemKey): string {
   return HEALTH_ITEM_EYEBROWS[key];
 }
 
-/**
- * How full the card's bar reads. The level is the server's; this only turns four ordered states into four
- * comparable lengths so a screenful of cards can be scanned rather than read.
- */
-const HEALTH_BAR_SHARE: Record<NewsHealthLevel, number> = { ok: 100, warn: 62, bad: 28, off: 0 };
-
-export function healthBarShare(level: NewsHealthLevel): number {
-  return HEALTH_BAR_SHARE[level] ?? 0;
-}
-
 const REASON_STAGE_TITLES: Record<string, string> = {
   gate: "未送审",
   drop: "模型/规则不推",
@@ -170,11 +160,16 @@ export function reasonStageTone(stage: string): Tone {
   return REASON_STAGE_TONE[stage] ?? "neutral";
 }
 
+/**
+ * Three node colours and no more: grey for a step that simply happened, indigo for one where the pipeline
+ * decided something, amber for one that held the Event back. `gate` is grey because most Events pass it —
+ * the step's own `summary_zh` says when one did not.
+ */
 const TIMELINE_STAGE_TONE: Record<NewsTimelineStep["stage"], Tone> = {
   received: "neutral",
   gate: "neutral",
-  triage: "info",
-  decide: "info",
+  triage: "done",
+  decide: "done",
   delivery: "done",
 };
 
@@ -236,17 +231,16 @@ export function formatCount(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
-const MAX_ASSET_CHIPS = 4;
-
-/** Ticker chips for a row/hero: provider prefixes stripped, deduplicated, at most four. */
+/**
+ * Ticker chips for a row or hero: provider prefixes stripped and deduplicated. How many fit is the caller's
+ * decision — a row shows three and counts the rest, the detail page lists them all.
+ */
 export function displayAssets(grounded: readonly string[]): string[] {
-  return Array.from(
-    new Set(grounded.map((symbol) => symbol.replace(/^XYZ-/, "").toUpperCase())),
-  ).slice(0, MAX_ASSET_CHIPS);
+  return Array.from(new Set(grounded.map((symbol) => symbol.replace(/^XYZ-/, "").toUpperCase())));
 }
 
 /**
- * The same four chips, but resolved: each provider tag paired with what it names on a venue (#87).
+ * The same chips, but resolved: each provider tag paired with what it names on a venue (#87).
  *
  * The server sends `assets` alongside the raw `grounded_assets`; a response served before #87, or one whose
  * Event carried tags the resolver never saw, falls back to the bare symbol with `listed: false` — an unknown
@@ -289,4 +283,26 @@ export function percent(numerator: number, denominator: number): string {
   if (!denominator) return "—";
   const share = (numerator / denominator) * 100;
   return share >= 10 ? `${share.toFixed(0)}%` : `${share.toFixed(1)}%`;
+}
+
+/**
+ * Which hour an Event belongs to, and how that hour reads as a heading (design proposal 5).
+ *
+ * A real-time stream costs the reader any sense of when they are after two screens of scrolling. The bucket
+ * is the local hour of `opened_at_ms` — the provider's publication time, the same anchor the row's clock and
+ * the reaction measurement use — so a group heading and the rows under it can never disagree.
+ */
+export function hourBucketKey(value: number): string {
+  return absoluteTime(value).slice(0, 13);
+}
+
+export function hourBucketLabel(value: number): string {
+  const stamp = absoluteTime(value);
+  const hour = Number(stamp.slice(11, 13));
+  return `${stamp.slice(11, 13)}:00 — ${String((hour + 1) % 24).padStart(2, "0")}:00`;
+}
+
+/** `2026-08-21` — the day an hour group belongs to, shown when the window spans more than one. */
+export function dayBucketLabel(value: number): string {
+  return absoluteTime(value).slice(0, 10);
 }

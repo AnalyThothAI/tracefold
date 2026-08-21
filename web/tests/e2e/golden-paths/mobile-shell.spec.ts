@@ -54,8 +54,8 @@ async function expectMobileTopbarContract(page: Page) {
         .trim(),
     ),
   ]);
-  expect(mobileTopbarHeightToken).toBe("50px");
-  expect(topbarRect.height).toBeCloseTo(50, 0);
+  expect(mobileTopbarHeightToken).toBe("52px");
+  expect(topbarRect.height).toBeCloseTo(52, 0);
   expect(topbarRect.bottom).toBeLessThanOrEqual(centerColumnRect.top + 0.5);
 
   for (const [name, locator] of [

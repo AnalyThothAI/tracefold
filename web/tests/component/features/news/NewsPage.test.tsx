@@ -56,7 +56,7 @@ describe("NewsPage", () => {
       }),
     );
 
-    renderNews(<NewsPage token="test-token" view="feed" />);
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
 
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
     // Section navigation lives in the shell sidebar now (#82); this renders the surface on its own.
@@ -68,14 +68,15 @@ describe("NewsPage", () => {
       within(tabs)
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
-      // Label, the server's count for that group under the current filter, and the digit that selects it. The
-      // count and the digit are `aria-hidden`, so the tab's accessible name stays the label alone.
-    ).toEqual(["全部3201", "已推送412", "被拦截2713", "处理中84"]);
+      // Label plus the server's count for that group under the current filter. The count is `aria-hidden`,
+      // so the tab's accessible name stays the label alone; the digits that select the tabs are advertised
+      // once in the toolbar's key hints rather than repeated on every tab.
+    ).toEqual(["全部320", "已推送41", "被拦截271", "处理中8"]);
     expect(within(tabs).getByRole("tab", { name: "全部" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    expect(screen.getByText("1 / 320")).toBeInTheDocument();
+    expect(screen.getByText("1 / 320 条")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "时间范围" })).toHaveValue("24");
     await waitFor(() => expect(observed.hours).toBe("24"));
     expect(observed.sort).toBe("latest");
@@ -88,7 +89,7 @@ describe("NewsPage", () => {
   });
 
   it("renders one Event row as when · what · one outcome, with server-labelled facts and no rule keys", async () => {
-    renderNews(<NewsPage token="test-token" view="feed" />);
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
 
     const row = (
       await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
@@ -104,20 +105,30 @@ describe("NewsPage", () => {
       inRow.getByText("Central banks respond to a new global policy shock"),
     ).toBeInTheDocument();
     expect(inRow.getByText("Reuters World")).toBeInTheDocument();
-    expect(inRow.getByText("4 条报道")).toBeInTheDocument();
     expect(inRow.getByText("利空")).toBeInTheDocument();
-    expect(inRow.getByText("影响明显")).toBeInTheDocument();
     expect(inRow.getByText("宏观")).toBeInTheDocument();
+    /*
+     * The meta line is 来源 · 方向 · 类型 · 资产 and nothing else. Magnitude and the merged-report count are
+     * real facts, but they belong to the Event, not to a scan: both are one keystroke away in the drawer and
+     * on the Event's own page, and a fifth and sixth item here pushed the assets onto a second line.
+     */
+    expect(inRow.queryByText("4 条报道")).toBeNull();
+    expect(inRow.queryByText("影响明显")).toBeNull();
     // #87: a chip names the venue as well as the ticker, so the reader can tell a Binance perp from a
     // Hyperliquid builder-DEX equity without opening the Event.
     expect(inRow.getByLabelText("关联资产")).toHaveTextContent("binance.perp:BTCbinance.perp:ETH");
     // #87: the row carries no buttons of its own — copy, label and open-original all live on the Event.
     expect(inRow.queryByRole("link", { name: "打开原文" })).toBeNull();
     expect(inRow.queryByRole("button", { name: "复制标题" })).toBeNull();
-    // Exactly one outcome badge; its reason travels as the title, not as a second label.
+    // Exactly one outcome badge; its reason travels as the title, not as a second label. A normal-priority
+    // push states itself as a word — the filled capsule is reserved for the high-priority one.
     const badges = row!.querySelectorAll(".news-outcome");
     expect(badges).toHaveLength(1);
     expect(badges[0]).toHaveTextContent("已推送");
+    // This fixture is the high-priority push, the one place a filled capsule is allowed; an ordinary push
+    // states itself as a word so a screenful of rows does not become a vertical band of pills.
+    expect(row).toHaveAttribute("data-priority", "high");
+    expect(badges[0]).toHaveAttribute("data-variant", "chip");
     expect(badges[0]).toHaveAttribute("title", "模型判断值得推送");
     expect(inRow.getByText(/推送于/)).toBeInTheDocument();
     for (const raw of ["model_push_actionable", "candidate", "asset:BTC", "escalate", "general"]) {
@@ -167,24 +178,105 @@ describe("NewsPage", () => {
       ),
     );
 
-    renderNews(<NewsPage token="test-token" view="feed" />);
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
 
     /*
-     * Three quarters of a day's Events stop short of a card. Badging every one of them made a screenful of
-     * equals (#82), so a held row steps back to its reason and the badge is reserved for rows that got
-     * somewhere. The reason is still the server's `reason_zh` — nothing is dropped, only de-emphasised.
+     * Three quarters of a day's Events stop short of a card. Badging every one of them with a capsule made a
+     * screenful of equals (#82), so a held row states its outcome as a quiet grey *word* beside the server's
+     * `reason_zh` — nothing is dropped, only de-emphasised, and the phone card drops the word too. The rule
+     * key behind the decision never appears on a row either way.
      */
     const throttled = (
       await screen.findByText("BTC 同一话题 2 小时内已推过同等或更重要的消息")
     ).closest("article")!;
     expect(throttled).toHaveAttribute("data-outcome-group", "held");
     expect(throttled).toHaveAttribute("data-outcome", "throttled");
-    expect(throttled.querySelectorAll(".news-outcome")).toHaveLength(0);
-    expect(within(throttled).queryByText("未推送（限流）")).not.toBeInTheDocument();
+    const heldBadge = throttled.querySelector(".news-outcome")!;
+    expect(heldBadge).toHaveAttribute("data-variant", "text");
+    expect(heldBadge).toHaveAttribute("data-tone", "caution");
+    expect(heldBadge).toHaveTextContent("未推送（限流）");
     expect(within(throttled).queryByText("storyline:asset:BTC")).not.toBeInTheDocument();
     const recovery = screen.getByText("断线期间补抄的旧闻，仅用于去重与历史").closest("article")!;
-    expect(recovery.querySelectorAll(".news-outcome")).toHaveLength(0);
+    expect(recovery.querySelector(".news-outcome")).toHaveTextContent("补抄件，不推送");
     expect(within(recovery).getByRole("heading", { name: "补抄回来的旧闻" })).toBeInTheDocument();
+  });
+
+  it("expands one row's judgment in place, without leaving the list", async () => {
+    /*
+     * Design proposal ②. Reading why an Event was held used to cost a full-page navigation and the reader's
+     * scroll position. The expansion carries the model's own sentence and the verdict grid — server copy
+     * only, never the rule key behind the decision, which stays on the Event's page.
+     */
+    const copied: Array<[string, string]> = [];
+    renderNews(
+      <NewsPage copy={(text, note) => copied.push([text, note])} token="test-token" view="feed" />,
+    );
+
+    const row = (
+      await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
+    ).closest("article")!;
+    expect(row.querySelector(".news-event-verdict")).toBeNull();
+
+    fireEvent.click(within(row).getByRole("button", { name: /展开判定/ }));
+
+    const verdict = row.querySelector(".news-event-verdict")!;
+    expect(verdict).not.toBeNull();
+    expect(verdict).toHaveTextContent("利率指引与市场预期背离，风险资产定价需要重估");
+    expect(within(verdict as HTMLElement).getByLabelText("判定明细")).toBeInTheDocument();
+    for (const raw of ["model_push_actionable", "candidate", "asset:BTC"]) {
+      expect(verdict.textContent).not.toContain(raw);
+    }
+
+    fireEvent.click(within(row).getByRole("button", { name: /收起判定/ }));
+    expect(row.querySelector(".news-event-verdict")).toBeNull();
+    expect(copied).toEqual([]);
+  });
+
+  it("extends a bulk selection with Shift and copies one command per selected Event", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: ["a", "b", "c", "d"].map((suffix, index) =>
+              newsFeedEventFixture({
+                event_id: `evt-${suffix}`,
+                leader_title: `Bulk row ${index + 1}`,
+                opened_at_ms: NEWS_NOW_MS - index * 60_000,
+                title_zh: null,
+                triage: { ...newsFeedEventFixture().triage!, headline_zh: `批量行 ${index + 1}` },
+              }),
+            ),
+          }),
+        }),
+      ),
+    );
+    const copied: Array<[string, string]> = [];
+    renderNews(
+      <NewsPage copy={(text, note) => copied.push([text, note])} token="test-token" view="feed" />,
+    );
+
+    await screen.findByRole("heading", { name: "批量行 1" });
+    // 484 held Events waiting to be checked is a queue, and a button per row is not a review (proposal ④).
+    fireEvent.click(screen.getByRole("button", { name: "选择 批量行 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "选择 批量行 4" }), { shiftKey: true });
+
+    expect(screen.getByText("已选 4 条")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "批量标为漏推" }));
+
+    expect(copied).toEqual([
+      [
+        [
+          "tracefold news label evt-a missed",
+          "tracefold news label evt-b missed",
+          "tracefold news label evt-c missed",
+          "tracefold news label evt-d missed",
+        ].join("\n"),
+        "已复制 4 条「漏推」标注命令",
+      ],
+    ]);
+    // The bar clears itself, so the next selection starts from nothing rather than from a stale set.
+    expect(screen.queryByText(/已选/)).toBeNull();
   });
 
   it("keeps a 668-character feed headline accessible inside the compact density surface", async () => {
@@ -206,7 +298,7 @@ describe("NewsPage", () => {
       ),
     );
 
-    renderNews(<NewsPage token="test-token" view="feed" />);
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
 
     const heading = await screen.findByRole("heading", { level: 2, name: longTitle });
     expect(heading.textContent).toHaveLength(longTitle.length);
@@ -236,7 +328,7 @@ describe("NewsPage", () => {
     );
 
     renderNews(
-      <NewsPage token="test-token" view="feed" />,
+      <NewsPage copy={() => {}} token="test-token" view="feed" />,
       "/news?q=bitcoin&family=general&admission=candidate&priority=high&decision=push&symbol=btc&sort=priority&outcome=held&hours=6",
     );
 
@@ -312,7 +404,7 @@ describe("NewsPage", () => {
     );
 
     renderNews(
-      <NewsPage token="test-token" view="feed" />,
+      <NewsPage copy={() => {}} token="test-token" view="feed" />,
       "/news?priority=urgent&decision=maybe&outcome=whatever&hours=999",
     );
 
@@ -346,7 +438,7 @@ describe("NewsPage", () => {
         });
       }),
     );
-    renderNews(<NewsPage token="test-token" view="feed" />);
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
     await screen.findByText(/央行政策转向，风险资产承压/);
 
     fireEvent.click(screen.getByRole("button", { name: "加载更多事件" }));
@@ -359,7 +451,7 @@ describe("NewsPage", () => {
   it("shows new first-page events immediately when the reader is at the top", async () => {
     let feed = newsFeedFixture();
     server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
-    const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
+    const rendered = renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
     await screen.findByText(/央行政策转向，风险资产承压/);
 
     feed = newsFeedFixture({
@@ -403,7 +495,7 @@ describe("NewsPage", () => {
         });
       }),
     );
-    const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
+    const rendered = renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
     const currentTitle = await screen.findByText(/央行政策转向，风险资产承压/);
     const currentRow = currentTitle.closest("article");
     const scrollContainer = rendered.container.querySelector<HTMLElement>(".center-column");
@@ -439,27 +531,21 @@ describe("NewsPage", () => {
     expect(screen.queryByRole("button", { name: /条新事件/ })).not.toBeInTheDocument();
   });
 
-  it("keeps a thresholded health pill and the 24 h funnel on the Feed header", async () => {
-    renderNews(<NewsPage token="test-token" view="feed" />);
+  it("stays silent about a healthy pipeline and keeps the 24 h funnel on the Feed header", async () => {
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
 
-    const pill = await screen.findByRole("link", { name: "查看流水线状态" });
-    expect(pill).toHaveTextContent("流水线正常");
-    expect(pill).toHaveAttribute("data-tone", "done");
-    expect(pill).toHaveAttribute("href", "/news/status");
-    const funnel = screen.getByRole("region", { name: "过去 24 小时漏斗" });
-    expect(
-      within(funnel)
-        .getAllByRole("listitem")
-        .map((item) => item.textContent),
-    ).toEqual([
-      "收到320最近 1 小时 12",
-      "送审56%180门禁挡下 140",
-      // #87: how many of the Events that *carried* a tag had one land. The hint counts only those, never
-      // the tagless macro headlines that never offered a symbol (#87 review).
-      "符号落表98%168未落标的表 4",
-      "决定推送13%40模型判不推 135",
-      "已送达102%41最近 1 小时 2",
-    ]);
+    const funnel = await screen.findByRole("region", { name: "过去 24 小时漏斗" });
+    /*
+     * A permanent green "流水线正常" beside a feed is a light the reader learns to stop seeing. The sidebar
+     * carries a dot for the status destination and the status route carries the full read; the pill appears
+     * here only when a level is not `ok` (see the next test).
+     */
+    expect(screen.queryByRole("link", { name: "查看流水线状态" })).toBeNull();
+    expect(within(funnel).getByLabelText("24 小时漏斗").textContent).toBe(
+      // Five counts and the share each came from. #87: 符号落表 is measured against the Events that
+      // *carried* a tag, never against the tagless macro headlines that never offered a symbol.
+      "RECEIVED320收到1h 12TRIAGED180送审56%GROUNDED168符号落表98%DECIDED40决定推送13%DELIVERED41已送达102%",
+    );
   });
 
   it("turns the health pill red when the model degrades and names the failing item", async () => {
@@ -481,7 +567,7 @@ describe("NewsPage", () => {
         }),
       ),
     );
-    renderNews(<NewsPage token="test-token" view="feed" />);
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
     const pill = await screen.findByRole("link", { name: "查看流水线状态" });
     await waitFor(() => expect(pill).toHaveTextContent("流水线异常"));
     expect(pill).toHaveAttribute("data-tone", "alert");
@@ -513,7 +599,7 @@ describe("NewsPage", () => {
       ),
     );
 
-    renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="status" />, "/news/status");
 
     expect(await screen.findByRole("heading", { name: "流水线状态" })).toBeInTheDocument();
     expect(await screen.findByText("总体注意")).toBeInTheDocument();
@@ -564,17 +650,25 @@ describe("NewsPage", () => {
 
   // ------------------------------------------------------------------ detail
   it("renders Event detail as one conclusion, a timeline, members, labels, and folded technical details", async () => {
+    const copied: Array<[string, string]> = [];
     renderNews(
-      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      <NewsPage
+        copy={(text, note) => copied.push([text, note])}
+        eventId="evt-global-policy"
+        token="test-token"
+        view="event"
+      />,
       "/news/events/evt-global-policy",
     );
 
     const region = await screen.findByRole("region", { name: "新闻事件详情" });
     expect(screen.getByRole("link", { name: "返回新闻事件流" })).toHaveAttribute("href", "/news");
     await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
-    const badge = region.querySelector(".news-outcome")!;
-    expect(badge).toHaveTextContent("已推送");
-    expect(badge).toHaveTextContent("模型判断值得推送");
+    // The conclusion and its reason are siblings in the hero, not one capsule: the chip is the verdict and
+    // the sentence beside it is the server's reason for it.
+    const heroState = region.querySelector(".news-detail-hero-state")!;
+    expect(heroState.querySelector(".news-outcome")).toHaveTextContent("已推送");
+    expect(heroState).toHaveTextContent("模型判断值得推送");
     expect(
       screen.getByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" }),
     ).toBeInTheDocument();
@@ -616,16 +710,12 @@ describe("NewsPage", () => {
         .getAllByRole("button")
         .map((button) => button.textContent),
     ).toEqual(["判得对", "不该推", "漏推", "必须推"]);
-    const clipboard: string[] = [];
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: (text: string) => (clipboard.push(text), Promise.resolve()) },
-    });
+    // The page hands the command to the shell, which owns the console's one clipboard affordance and its
+    // one toast — the News API is read-only and nothing here writes a label.
     fireEvent.click(within(labels).getByRole("button", { name: "不该推" }));
-    await waitFor(() =>
-      expect(clipboard).toEqual(["tracefold news label evt-global-policy noise"]),
-    );
-    expect(await screen.findByRole("status")).toHaveTextContent("已复制「不该推」标注命令");
+    expect(copied).toEqual([
+      ["tracefold news label evt-global-policy noise", "已复制「不该推」标注命令"],
+    ]);
 
     const technical = screen.getByText(/技术详情/).closest("details")!;
     expect(technical).not.toHaveAttribute("open");
@@ -698,7 +788,7 @@ describe("NewsPage", () => {
     );
 
     renderNews(
-      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      <NewsPage copy={() => {}} eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
     );
 
@@ -706,7 +796,9 @@ describe("NewsPage", () => {
     await screen.findByText("未送达");
     const badge = region.querySelector(".news-outcome")!;
     expect(badge).toHaveTextContent("未送达");
-    expect(badge).toHaveTextContent("飞书发送失败（FeishuServerError）");
+    expect(badge.closest(".news-detail-hero-state")).toHaveTextContent(
+      "飞书发送失败（FeishuServerError）",
+    );
     expect(badge).toHaveAttribute("data-tone", "alert");
     const timeline = screen.getByRole("region", { name: "处理时间线" });
     expect(

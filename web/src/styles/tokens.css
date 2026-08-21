@@ -1,53 +1,68 @@
 @layer properties, theme, base, components, utilities, app.base, app.primitives, app.shell, app.features, app.overrides;
 
 /*
- * Tracefold console theme — light (#74).
+ * Tracefold console theme — 冷石板 / B SLATE v6.
  *
- * The product is a Chinese-language reading surface: a headline, one why sentence, a few chips. Han glyphs carry
- * far more strokes per em than Latin, and light-on-dark blooms them at the small sizes this console uses, so the
- * ground is light and the ink is near-black. Surfaces separate by border and shadow, not by lightening.
+ * The product is a Chinese-language reading surface: a headline, one why sentence, a few chips. Han glyphs
+ * carry far more strokes per em than Latin, and light-on-dark blooms them at the small sizes this console
+ * uses, so the ground is a cool light grey and the ink is near-black. A panel separates from the canvas by a
+ * 1px inset ring, never by lightening and never by a drop shadow — elevation is reserved for the four things
+ * that actually float (segmented pill, drawer, command palette, hover card).
  *
  * Colour carries exactly two axes and they never share a hue:
  *
  *   market direction — red = 利多, green = 利空 (the mainland convention this console is read in)
- *   pipeline outcome — blue / amber / grey, never red or green
+ *   pipeline outcome — indigo / grey / amber / brick, never red or green
  *
- * Before #74 both axes used red and green, so a delivered 利空 card showed one green for "sent" and another for
- * "bearish", and a failed delivery looked bullish. Reserving red and green for direction is what makes a scan
- * down the feed mean something.
+ * Before #74 both axes used red and green, so a delivered 利空 card showed one green for "sent" and another
+ * for "bearish", and a failed delivery looked bullish. Reserving red and green for direction is what makes a
+ * scan down the feed mean something. The design cap is two hues per screen: indigo marks the pipeline, and
+ * red/green appear only on a direction word and a percentage.
  */
 
 :root {
   color-scheme: light;
 
-  /* Surfaces — the canvas is a hair cool so a full-width white column does not glare. */
-  --surface-canvas: #f4f6f8;
+  /*
+   * Surfaces. The canvas is cool grey so a full-width white panel reads as a raised sheet; `raised` is the
+   * *sunken* block inside a panel (a well, not an elevation), and `cursor` is the keyboard reading position —
+   * one step darker than hover so the two are never confused mid-scan.
+   */
+  --surface-canvas: #eaedf1;
   --surface-root: #ffffff;
-  --surface-sidebar: #fbfcfd;
+  --surface-sidebar: #f8f9fb;
   --surface-panel: #ffffff;
-  --surface-raised: #f7f9fb;
-  --surface-hover: #eef1f5;
+  --surface-raised: #f8f9fb;
+  --surface-hover: #f8f9fb;
+  --surface-cursor: #e9edf2;
+  /* The segmented-control groove. Alpha, so it sits on white and on the sunken block alike. */
+  --surface-slot: rgba(13, 17, 23, 0.05);
 
-  /* Typography — every step clears 4.5:1 on #ffffff (18.5 / 8.4 / 5.9 / 4.6), so even a field label is
-     ordinary readable text rather than decoration. */
-  --text-primary: #101418;
-  --text-secondary: #454e5a;
-  --text-muted: #5c6572;
-  --text-subtle: #6d7684;
+  /*
+   * Six ink steps. The first five clear 4.5:1 on #ffffff (16.9 / 9.6 / 8.2 / 5.9 / 4.7); `subtle` is the
+   * quiet step for white grounds only and `muted` replaces it inside a #f8f9fb well, where `subtle` would
+   * fall under 4.5:1. `faint` draws graphics — dots, rules, disabled glyphs — and never sets text.
+   */
+  --text-primary: #0d1117;
+  --text-strong: #3d444d;
+  --text-secondary: #444c56;
+  --text-muted: #5b636e;
+  --text-subtle: #6e7781;
+  --text-faint: #98a1ac;
 
-  /* Structure */
-  --border-faint: #eff1f4;
-  --border-subtle: #e3e7ec;
-  --border-strong: #c9d0d9;
+  /* Structure: hairline separates rows inside a panel, subtle draws controls, strong is a scrollbar thumb. */
+  --border-faint: #eef1f5;
+  --border-subtle: #e4e8ee;
+  --border-strong: #c6ccd5;
 
-  /* Product accent */
-  --accent-primary: #0e7490;
-  --accent-soft: rgba(14, 116, 144, 0.08);
-  --accent-border: rgba(14, 116, 144, 0.3);
+  /* Product accent — the only brand colour, and it only ever marks the pipeline. */
+  --accent-primary: #2a5bd7;
+  --accent-soft: rgba(42, 91, 215, 0.09);
+  --accent-border: rgba(42, 91, 215, 0.3);
 
   /*
    * Axis 1 — market direction. Red is 利多 and green is 利空, matching how mainland market software is read.
-   * Both are dark enough to carry white text in a filled chip and to be read as text on white.
+   * Both are set as *text*: a filled block of either would out-shout the headline it belongs to.
    */
   --dir-bullish: #d32029;
   --dir-bullish-soft: rgba(211, 32, 41, 0.09);
@@ -59,39 +74,72 @@
   /*
    * Axis 2 — pipeline outcome. Deliberately no red and no green: "已推送" is a completed step, not a market
    * opinion, and colouring it green would compete with 利空.
+   *
+   *   done    indigo — the pipeline acted: 已推送 / 重点推送 / 审稿 / 决策
+   *   info    slate  — still in flight: 处理中 / 排队中. Its dot pulses; a colour would promise a verdict.
+   *   caution amber  — withheld or unresolved: 限流 / 符号未落标的表
+   *   alert   brick  — it failed: 投递失败 / 模型降级
+   *   neutral grey   — it stopped and that is the whole story: 未推送 / 门禁
    */
-  --signal-done: #1554c0;
-  --signal-done-soft: rgba(21, 84, 192, 0.09);
-  --signal-done-border: rgba(21, 84, 192, 0.28);
-  --signal-info: #2b6cb0;
-  --signal-info-soft: rgba(43, 108, 176, 0.1);
-  --signal-info-border: rgba(43, 108, 176, 0.3);
+  --signal-done: #2a5bd7;
+  --signal-done-soft: rgba(42, 91, 215, 0.09);
+  --signal-done-border: rgba(42, 91, 215, 0.26);
+  --signal-info: #444c56;
+  --signal-info-soft: #eaedf1;
+  --signal-info-border: #e4e8ee;
   --signal-caution: #a35a06;
-  --signal-caution-soft: rgba(163, 90, 6, 0.1);
-  --signal-caution-border: rgba(163, 90, 6, 0.3);
+  --signal-caution-soft: rgba(163, 90, 6, 0.08);
+  --signal-caution-border: rgba(163, 90, 6, 0.32);
   --signal-alert: #b8460e;
-  --signal-alert-soft: rgba(184, 70, 14, 0.1);
-  --signal-alert-border: rgba(184, 70, 14, 0.3);
-  --signal-neutral: #6b7480;
-  --signal-neutral-soft: rgba(107, 116, 128, 0.09);
-  --signal-neutral-border: rgba(107, 116, 128, 0.26);
+  --signal-alert-soft: rgba(184, 70, 14, 0.08);
+  --signal-alert-border: rgba(184, 70, 14, 0.26);
+  --signal-neutral: #5b636e;
+  --signal-neutral-soft: #eaedf1;
+  --signal-neutral-border: #e4e8ee;
 
-  /* Shape, density and motion — light elevation is a shadow, not a lighter surface. */
-  --radius-sm: 5px;
+  /* Shape. Panels 10, wells and cards 8, controls 6, chips 3. */
+  --radius-xs: 3px;
+  --radius-sm: 6px;
   --radius-md: 8px;
-  --radius-lg: 12px;
-  --shadow-raised: 0 1px 2px rgba(16, 24, 40, 0.05);
-  --shadow-elevated: 0 1px 2px rgba(16, 24, 40, 0.06), 0 10px 28px rgba(16, 24, 40, 0.08);
-  --focus-ring: #0e7490;
+  --radius-lg: 10px;
+
+  /*
+   * Depth. `ring` is the panel edge — an inset hairline, so a panel never grows by a pixel when it gains one.
+   * Everything below it is real elevation and is spent on exactly four things.
+   */
+  --ring-panel: inset 0 0 0 1px rgba(13, 17, 23, 0.06);
+  --ring-control: inset 0 0 0 1px var(--border-subtle);
+  --shadow-raised: inset 0 0 0 1px rgba(13, 17, 23, 0.06), 0 1px 2px rgba(13, 17, 23, 0.08);
+  --shadow-pill: 0 1px 2px rgba(13, 17, 23, 0.08);
+  --shadow-elevated: inset 0 0 0 1px rgba(13, 17, 23, 0.08), 0 6px 18px rgba(13, 17, 23, 0.12);
+  --shadow-overlay: 0 18px 48px rgba(13, 17, 23, 0.24);
+  --focus-halo: 0 0 0 3px rgba(42, 91, 215, 0.1);
+  --focus-ring: #2a5bd7;
+
+  /* Shell geometry and the minimum comfortable touch target, used by every control a thumb can reach. */
   --shell-topbar-height: 54px;
-  --shell-mobile-topbar-height: 50px;
-  /* Minimum comfortable touch target; used by every control a thumb can reach. */
+  --shell-mobile-topbar-height: 52px;
+  --shell-sidebar-width: 204px;
   --tap-target: 44px;
-  --font-mono: "SFMono-Regular", "Roboto Mono", Menlo, Consolas, monospace;
+
+  --font-mono: "SFMono-Regular", Menlo, Consolas, "Roboto Mono", monospace;
   /* CJK first: the console is read in Chinese, and a Latin-first stack sends Han glyphs to an arbitrary fallback. */
   --font-sans:
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", Inter, system-ui,
     -apple-system, sans-serif;
+
+  /*
+   * Seven type steps and no eighth. Chinese body text is set in the system sans; every figure, ticker, key
+   * and duration is monospace with tabular numerals, so a number that changes on a poll never re-flows the
+   * ones beside it. Tracking is applied at the call site because `font:` shorthand resets it.
+   */
+  --type-page-title: 650 19px/1.28 var(--font-sans);
+  --type-item-title: 640 14.5px/1.42 var(--font-sans);
+  --type-body: 400 13.5px/1.6 var(--font-sans);
+  --type-meta: 400 12px/1.45 var(--font-sans);
+  --type-mono-meta: 600 11px/1.5 var(--font-mono);
+  --type-metric: 660 21px/1.15 var(--font-mono);
+  --type-eyebrow: 700 8.5px/1 var(--font-mono);
 
   /* Radix/shadcn integration */
   --background: var(--surface-root);
@@ -104,11 +152,11 @@
   --primary-foreground: #ffffff;
   --secondary: var(--surface-raised);
   --secondary-foreground: var(--text-secondary);
-  --muted-foreground: var(--text-muted);
+  --muted-foreground: var(--text-subtle);
   --accent-foreground: var(--text-primary);
   --destructive: var(--signal-alert);
   --border: var(--border-subtle);
-  --input: var(--border-strong);
+  --input: var(--border-subtle);
   --ring: var(--focus-ring);
   --sidebar: var(--surface-sidebar);
   --sidebar-foreground: var(--text-secondary);

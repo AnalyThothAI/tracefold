@@ -5,8 +5,11 @@ import "./newsChrome.css";
 
 /**
  * The frame every News route shares. Each route owns its own content and its own stylesheet; this owns the
- * panel, the heading block, the folded technical-evidence disclosure, and the "nothing here" sentence, so the
- * three routes cannot drift apart on the parts a reader recognises as "the same console".
+ * reading measure, the heading block, the folded technical-evidence disclosure and the "nothing here"
+ * sentence, so the four routes cannot drift apart on the parts a reader recognises as "the same console".
+ *
+ * The archetype sets the measure and nothing else: `scan` is a wide list surface, `case` is one document and
+ * is centred at a reading width rather than hugging the frame.
  */
 export function NewsPageShell({
   archetype,
@@ -30,6 +33,10 @@ export function NewsPageShell({
   );
 }
 
+/**
+ * Title and subtitle share a baseline rather than stacking: the subtitle is a caption on the title, not a
+ * second heading, and stacking them cost the first row of every list a line of height.
+ */
 export function NewsPageHeader({
   children,
   subtitle,
@@ -45,9 +52,14 @@ export function NewsPageHeader({
         <h1>{title}</h1>
         {subtitle ? <p>{subtitle}</p> : null}
       </div>
-      {children}
+      {children ? <div className="news-heading-aside">{children}</div> : null}
     </header>
   );
+}
+
+/** When the page's own numbers were measured. Monospace so it does not twitch as the seconds tick. */
+export function NewsPageStamp({ children }: { children: ReactNode }) {
+  return <span className="news-page-stamp">{children}</span>;
 }
 
 /** Internal identifiers and raw records: present, replayable, and folded away from the reading surface. */

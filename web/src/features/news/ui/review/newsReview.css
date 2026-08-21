@@ -1,319 +1,352 @@
 @layer app.features {
-  /*
-   * 命中复盘 (#88). A scan surface like the status route, so it reuses the same panel, card and table
-   * rhythm rather than inventing a third one. Two rules shape everything here:
-   *
-   * 1. Coverage reads before accuracy — the first card is the denominators, and every rate carries its N
-   *    beside it in a smaller weight, so a percentage can never be read without one.
-   * 2. Market direction is red-up / green-down (`tokens.css`), the same hues as the direction chip, applied
-   *    only to actual returns. Pipeline outcome colours are not used on this page at all.
-   */
   .news-review-body {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
+    display: grid;
+    gap: 12px;
+    align-content: start;
+    min-width: 0;
+  }
+
+  .news-review-body > * {
+    min-width: 0;
   }
 
   .news-review-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
-    gap: 1rem;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
   }
 
   .news-review-window select {
-    padding: 0.3rem 0.5rem;
+    min-height: 28px;
+    padding: 0 9px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
-    background: var(--surface-raised);
-    color: var(--text-primary);
-    font-size: 0.82rem;
-  }
-
-  /* ---- coverage ---- */
-  .news-review-coverage {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-    gap: 0.9rem;
-  }
-
-  .news-review-coverage article {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    padding: 0.7rem 0.8rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
-  }
-
-  .news-review-coverage header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 0.5rem;
-  }
-
-  .news-review-coverage-title {
     color: var(--text-secondary);
-    font-size: 0.78rem;
-    font-weight: 600;
+    background: var(--surface-panel);
+    font-size: 12px;
   }
 
-  .news-review-coverage-pct {
+  /* ------------------------------------------------------------------ tables */
+  .news-review-table {
+    display: grid;
+  }
+
+  .news-review-head,
+  .news-review-row {
+    display: grid;
+    gap: 12px;
+    align-items: center;
+    padding: 9px 14px;
+  }
+
+  .news-review-head {
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.09em;
+  }
+
+  .news-review-row {
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-review-row:last-of-type {
+    border-bottom: 0;
+  }
+
+  /* Every figure column is right-aligned mono so a scan down it compares like with like. */
+  .news-review-head > span:not(:first-child):not(:nth-child(2)),
+  .news-review-row > :not(:first-child):not(:nth-child(2)) {
+    justify-self: end;
+    text-align: right;
+  }
+
+  .news-review-row b {
     color: var(--text-primary);
-    font: 600 1.1rem/1.2 var(--font-mono);
+    font: 640 12.5px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
-  .news-review-bar {
-    height: 6px;
-    border-radius: 999px;
-    background: var(--surface-sunken, var(--secondary));
+  .news-review-quiet {
     overflow: hidden;
-  }
-
-  .news-review-bar span {
-    display: block;
-    height: 100%;
-    background: var(--text-subtle);
-  }
-
-  .news-review-coverage-line {
-    margin: 0;
     color: var(--text-subtle);
-    font-size: 0.74rem;
+    font: 500 11px/1.5 var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
+  .news-review-quiet[data-tone="up"] {
+    color: var(--dir-bullish);
+  }
+
+  .news-review-quiet[data-tone="down"] {
+    color: var(--dir-bearish);
+  }
+
+  .news-review-row b[data-tone="up"] {
+    color: var(--dir-bullish);
+  }
+
+  .news-review-row b[data-tone="down"] {
+    color: var(--dir-bearish);
+  }
+
+  .news-review-name {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .news-review-call {
+    color: var(--text-subtle);
+    font-size: 12px;
+    font-weight: 620;
+  }
+
+  .news-review-call[data-dir="bullish"] {
+    color: var(--dir-bullish);
+  }
+
+  .news-review-call[data-dir="bearish"] {
+    color: var(--dir-bearish);
+  }
+
+  /* The rate never travels without its denominator. */
+  .news-review-hit {
+    display: inline-flex;
+    gap: 5px;
+    align-items: baseline;
+  }
+
+  .news-review-hit small {
+    color: var(--text-subtle);
+    font: 500 10px/1 var(--font-mono);
+  }
+
+  .news-review-direction-row {
+    grid-template-columns: 72px 64px 64px 96px 64px;
+  }
+
+  .news-review-magnitude-row {
+    grid-template-columns: minmax(0, 1fr) 60px 60px 92px 92px 68px;
+  }
+
+  .news-review-miss-row {
+    grid-template-columns: 48px minmax(160px, 1fr) 72px 128px 132px 88px;
+  }
+
+  .news-review-miss-row time {
+    color: var(--text-secondary);
+    font: 500 11px/1.5 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-review-miss-title {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 560;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The decision word over the rule that produced it: two registers, so neither reads as the other. */
+  .news-review-miss-rule {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .news-review-miss-rule > span {
+    color: var(--text-secondary);
+    font-size: 11.5px;
+  }
+
+  .news-review-miss-rule small {
+    overflow: hidden;
+    color: var(--text-subtle);
+    font-size: 10.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .news-review-miss-assets {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .news-review-miss-assets code {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    justify-content: space-between;
+    overflow: hidden;
+    color: var(--text-subtle);
+    font: 500 10.5px/1.5 var(--font-mono);
+    white-space: nowrap;
+  }
+
+  .news-review-miss-assets code b {
+    font: 600 10.5px/1.5 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ------------------------------------------------------------------ coverage & type bars */
   .news-review-reasons {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.3rem 0.7rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
+    gap: 6px 14px;
+    padding: 10px 14px 11px;
+    border-top: 1px solid var(--border-faint);
+    color: var(--text-subtle);
+    font-size: 11px;
   }
 
-  .news-review-reasons li {
+  .news-review-reasons > span {
     display: inline-flex;
-    gap: 0.3rem;
+    gap: 6px;
     align-items: baseline;
-    color: var(--text-subtle);
-    font-size: 0.72rem;
+  }
+
+  .news-review-reasons small {
+    color: var(--text-faint);
+    font: 500 10px/1 var(--font-mono);
+  }
+
+  .news-review-reasons em {
+    color: var(--text-muted);
+    font-style: normal;
   }
 
   .news-review-reasons b {
     color: var(--text-secondary);
-    font-family: var(--font-mono);
+    font: 600 11px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
-  /* ---- tables ---- */
-  .news-review-table-wrap {
-    overflow-x: auto;
+  /*
+   * Seventeen event types is a column of its own if it stays one; at the full width it reads as two, and the
+   * gap between the busiest type and the quietest — which is the point of the card — stays comparable.
+   */
+  .news-review-types {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 11px 28px;
   }
 
-  .news-review-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.8rem;
+  .news-review-type {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr) 44px 56px;
+    gap: 10px;
+    align-items: center;
   }
 
-  .news-review-table th,
-  .news-review-table td {
-    padding: 0.4rem 0.6rem;
-    border-bottom: 1px solid var(--border-subtle);
-    text-align: left;
-    white-space: nowrap;
+  .news-review-type-name {
+    display: grid;
+    gap: 0;
+    min-width: 0;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+    font-weight: 600;
   }
 
-  .news-review-table thead th {
+  .news-review-type-bar {
+    display: block;
+    min-width: 0;
+  }
+
+  .news-review-type-name small {
     color: var(--text-subtle);
-    font-size: 0.72rem;
-    font-weight: 600;
+    font: 500 9.5px/1.4 var(--font-mono);
   }
 
-  .news-review-table tbody th {
+  .news-review-type b {
     color: var(--text-primary);
-    font-weight: 600;
-  }
-
-  .news-review-table .news-review-n {
-    font-family: var(--font-mono);
+    font: 640 12px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
 
-  .news-review-table td[data-tone="up"] {
-    color: var(--dir-bullish);
+  .news-review-type .news-review-quiet {
+    text-align: right;
   }
 
-  .news-review-table td[data-tone="down"] {
-    color: var(--dir-bearish);
-  }
-
-  .news-review-table tbody tr:last-child th,
-  .news-review-table tbody tr:last-child td {
-    border-bottom: none;
-  }
-
-  /* A rate and its denominator are one visual unit; the N is never in a column the eye can skip. */
-  .news-review-hit {
-    display: inline-flex;
-    gap: 0.3rem;
-    align-items: baseline;
-    font-weight: 600;
-  }
-
-  .news-review-hit small,
-  .news-review-table small {
-    color: var(--text-subtle);
-    font-size: 0.68rem;
-    font-weight: 400;
-  }
-
-  .news-review-muted {
-    color: var(--text-subtle);
-  }
-
-  /* ---- potential misses ---- */
-  .news-review-misses {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
+  .news-review-meta {
+    display: grid;
+    gap: 5px;
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
-  .news-review-misses li {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    padding-bottom: 0.7rem;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .news-review-misses li:last-child {
-    padding-bottom: 0;
-    border-bottom: none;
-  }
-
-  .news-review-miss-head {
-    display: flex;
-    gap: 0.6rem;
-    align-items: baseline;
-  }
-
-  .news-review-miss-move {
-    min-width: 4.5rem;
-    color: var(--text-secondary);
-    font: 600 0.95rem/1.3 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .news-review-miss-move[data-tone="up"] {
-    color: var(--dir-bullish);
-  }
-
-  .news-review-miss-move[data-tone="down"] {
-    color: var(--dir-bearish);
-  }
-
-  .news-review-miss-title {
-    color: var(--text-primary);
-    font-size: 0.92rem;
-    font-weight: 600;
-    line-height: 1.5;
-    text-decoration: none;
-  }
-
-  .news-review-miss-title:hover {
-    text-decoration: underline;
-  }
-
-  .news-review-miss-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem 0.7rem;
-    margin: 0;
-    color: var(--text-subtle);
-    font-size: 0.74rem;
-  }
-
-  .news-review-miss-decision {
-    color: var(--text-secondary);
-    font-weight: 600;
-  }
-
-  .news-review-miss-assets {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    margin: 0;
-  }
-
-  .news-review-miss-assets code {
-    display: inline-flex;
-    gap: 0.35rem;
-    align-items: baseline;
-    padding: 0.05rem 0.4rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: 999px;
-    background: var(--surface-raised);
-    color: var(--text-subtle);
-    font: 500 0.66rem/1.6 var(--font-mono);
-  }
-
-  .news-review-miss-assets b[data-tone="up"] {
-    color: var(--dir-bullish);
-  }
-
-  .news-review-miss-assets b[data-tone="down"] {
-    color: var(--dir-bearish);
-  }
-
-  .news-review-miss-label {
-    align-self: flex-start;
-    padding: 0.15rem 0.5rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-subtle);
-    font-size: 0.72rem;
-    cursor: pointer;
-  }
-
-  .news-review-miss-label:hover {
-    color: var(--text-secondary);
-    border-color: var(--border-strong);
-  }
-
-  .news-review-meta {
+  .news-review-meta li {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-    gap: 0.5rem 1rem;
-    margin: 0;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 12px;
+    font-size: 11.5px;
   }
 
-  .news-review-meta dt {
+  .news-review-meta span {
     color: var(--text-subtle);
-    font-size: 0.72rem;
   }
 
-  .news-review-meta dd {
-    margin: 0;
+  .news-review-meta b {
     color: var(--text-secondary);
-    font-size: 0.78rem;
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 1023px) {
+    .news-review-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .news-review-miss-row {
+      grid-template-columns: 48px minmax(120px, 1fr) 72px 120px 88px;
+    }
+
+    .news-review-miss-row code {
+      display: none;
+    }
+
+    .news-review-types {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   @media (max-width: 767px) {
-    .news-review-grid {
-      grid-template-columns: 1fr;
+    .news-review-head {
+      display: none;
     }
 
-    .news-review-miss-head {
-      flex-direction: column;
-      gap: 0.15rem;
+    /*
+     * A phone gets cards, not columns: five numbers across a 390px screen is unreadable, and this is a queue
+     * the reviewer works through one row at a time anyway.
+     */
+    .news-review-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px 10px;
+      padding: 11px 12px 12px;
+    }
+
+    .news-review-row > :not(:first-child):not(:nth-child(2)) {
+      justify-self: start;
+      text-align: left;
+    }
+
+    .news-review-miss-title {
+      grid-column: 1 / -1;
+      white-space: normal;
+    }
+
+    .news-review-type {
+      grid-template-columns: minmax(0, 1fr) 44px 56px;
+    }
+
+    .news-review-type-bar {
+      display: none;
     }
   }
 }

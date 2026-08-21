@@ -33,6 +33,18 @@ import "./newsFeedToolbar.css";
 const OUTCOME_TABS: Array<NewsFeedOutcome | null> = [null, ...NEWS_FEED_OUTCOMES];
 const OUTCOME_TAB_TONE = { pushed: "done", held: "neutral", pending: "info" } as const;
 
+/** What the keyboard reaches for on this route. The panel behind `?` is the full list. */
+const KEY_HINTS: Array<[string, string]> = [
+  ["J K", "移动"],
+  ["↵", "打开"],
+  ["Space", "展开判定"],
+  ["X", "复制标注"],
+];
+
+/**
+ * The feed's own controls, sticky under the topbar: which task you are on, how far back, and the advanced
+ * filters folded into one disclosure. The shell owns navigation and search; this owns nothing else.
+ */
 export function NewsFeedToolbar({
   counts,
   filters,
@@ -48,13 +60,11 @@ export function NewsFeedToolbar({
 }) {
   return (
     <div className="news-feed-toolbar">
-      <div className="news-feed-toolbar-left">
-        <OutcomeTabs
-          active={filters.outcome}
-          counts={counts}
-          onChange={(outcome) => onChange({ outcome })}
-        />
-      </div>
+      <OutcomeTabs
+        active={filters.outcome}
+        counts={counts}
+        onChange={(outcome) => onChange({ outcome })}
+      />
       <FeedControls
         counts={counts}
         filters={filters}
@@ -67,8 +77,11 @@ export function NewsFeedToolbar({
 }
 
 /**
- * The four task tabs. Each carries the server's count for that group under the *current* filter and window, so
- * the reader can see a tab is empty without visiting it. Digits 1–4 select them; the hint is desktop-only.
+ * The four task tabs. Each carries the server's count for that group under the *current* filter and window,
+ * so the reader can see a tab is empty without visiting it. Digits 1–4 select them.
+ *
+ * The selected tab is a white pill in a 5% groove — one elevation in the whole console that is not a real
+ * overlay, because a segmented control that separates only by weight is unreadable at 12px.
  */
 function OutcomeTabs({
   active,
@@ -81,34 +94,31 @@ function OutcomeTabs({
 }) {
   return (
     <div aria-label="按结局筛选" className="news-segmented" role="tablist">
-      {OUTCOME_TABS.map((value, index) => {
+      {OUTCOME_TABS.map((value) => {
         const count = tabCount(counts, value);
         return (
           <button
             aria-selected={active === value}
             className="news-segmented-option news-toned"
-            data-outcome-group={value ?? "all"}
+            data-active={active === value || undefined}
             data-tone={value ? OUTCOME_TAB_TONE[value] : "neutral"}
             key={value ?? "all"}
             onClick={() => onChange(value)}
             role="tab"
             type="button"
           >
-            <NewsToneDot halo={false} />
+            <NewsToneDot />
             {outcomeTabLabel(value)}
             {/*
-             * The count and the digit hint are decoration on the tab, not part of what it selects. Folding a
-             * number that changes every three seconds into the accessible name would make the tab rename
-             * itself constantly; the labelled 24 h funnel above announces the same figures properly.
+             * The count is decoration on the tab, not part of what it selects. Folding a number that changes
+             * every three seconds into the accessible name would make the tab rename itself constantly; the
+             * labelled 24 h funnel above announces the same figures properly.
              */}
             {count == null ? null : (
               <span aria-hidden className="news-segmented-count">
                 {formatCount(count)}
               </span>
             )}
-            <kbd aria-hidden className="news-segmented-key">
-              {index + 1}
-            </kbd>
           </button>
         );
       })}
@@ -146,7 +156,7 @@ function FeedControls({
     <div className="news-filter-bar">
       {total == null ? null : (
         <span className="news-filter-total">
-          {formatCount(visibleCount)} / {formatCount(total)}
+          {formatCount(visibleCount)} / {formatCount(total)} 条
         </span>
       )}
       <label className="news-select">
@@ -261,6 +271,14 @@ function FeedControls({
           </label>
         </div>
       </details>
+      <span aria-hidden className="news-key-hints">
+        {KEY_HINTS.map(([keys, what]) => (
+          <span key={keys}>
+            <kbd>{keys}</kbd>
+            {what}
+          </span>
+        ))}
+      </span>
     </div>
   );
 }

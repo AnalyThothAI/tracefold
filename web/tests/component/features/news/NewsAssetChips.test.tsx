@@ -26,6 +26,19 @@ describe("NewsAssetChips", () => {
     expect(chips[1].textContent).not.toContain(":");
   });
 
+  it("shows the first few chips and counts the overflow", () => {
+    const assets = ["A", "B", "C", "D", "E"].map((symbol) => ({
+      base_symbol: symbol,
+      listed: true,
+      symbol,
+      venue: "hl.perp",
+    }));
+    render(<NewsAssetChips assets={assets} max={3} />);
+
+    expect(screen.getByLabelText("关联资产").querySelectorAll("code")).toHaveLength(3);
+    expect(screen.getByText("+2")).toBeInTheDocument();
+  });
+
   it("renders nothing rather than an empty container when an Event grounded on nothing", () => {
     const { container } = render(<NewsAssetChips assets={[]} />);
 
@@ -53,9 +66,11 @@ describe("displayAssetRefs", () => {
     expect(displayAssetRefs(["XYZ-UNITREE"], [unitree])).toEqual([unitree]);
   });
 
-  it("keeps the four-chip cap the row was laid out for", () => {
+  it("resolves every tag and leaves the cap to the surface rendering them", () => {
+    // A row shows three and counts the rest; the detail page lists them all. Capping here would have made
+    // "+2" mean "+2 of the four we kept", which is not a number about the Event.
     const many = ["A", "B", "C", "D", "E", "F"];
 
-    expect(displayAssetRefs(many, []).map((asset) => asset.symbol)).toEqual(["A", "B", "C", "D"]);
+    expect(displayAssetRefs(many, []).map((asset) => asset.symbol)).toEqual(many);
   });
 });

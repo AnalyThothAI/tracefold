@@ -1,0 +1,40 @@
+@layer app.primitives {
+  .ui-icon-button {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    background: var(--surface-panel);
+    transition:
+      color 120ms ease,
+      border-color 120ms ease,
+      background 120ms ease;
+  }
+
+  .ui-icon-button[data-size="sm"] {
+    width: 28px;
+    height: 28px;
+    border-radius: 5px;
+  }
+
+  .ui-icon-button:hover:not(:disabled),
+  .ui-icon-button:focus-visible {
+    border-color: var(--accent-border);
+    color: var(--accent-primary);
+    background: var(--accent-soft);
+  }
+
+  .ui-icon-button svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .ui-icon-button:disabled {
+    color: var(--text-faint);
+    background: var(--border-faint);
+  }
+}
