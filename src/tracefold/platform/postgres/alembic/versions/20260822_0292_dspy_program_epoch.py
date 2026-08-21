@@ -122,7 +122,7 @@ def upgrade() -> None:
                'https://github.com/AnalyThothAI/tracefold/issues/129',
                'tracefold.news.semantic_program.factory_v1',
                'news_semantic_program_artifact_v1', 'news_semantic_program_v1',
-               '00993fa0d127573d13d1c4cf38f43b03e159f8b385a25d1ff0694a8196cbef09',
+               '04b10a7cc83cb876b79d89f2727caab747e503d326cfdaa5636f76c2648b10c8',
                'audit_only', 'zero_compatibility_reset_reaccrue_evidence', at_ms
           FROM deployed
         """

@@ -83,7 +83,12 @@ The only loadable semantic image is a canonical, content-addressed, state-only
 selected by its code-owned registry. The loader verifies schema, Program/state
 hashes, fixed factory/topology/signatures, source and dependency-lock identity,
 Adapter/assembler/input contracts, exact files and safe path shape before use.
-It fails closed on unknown or mismatched state. Pickle, cloudpickle, DSPy Flex,
+The dependency-lock digest is a package-owned generated identity checked
+against `uv.lock` in development, so wheel loading never trusts or searches an
+ambient repository. Parsed demonstration JSON is recursively scanned and must
+match the exact model-visible input schema; audit `event_id`/fact ids, endpoints
+and secret keys cannot be smuggled through a JSON string. It fails closed on
+unknown or mismatched state. Pickle, cloudpickle, DSPy Flex,
 dynamic Python/classes, arbitrary callbacks/history, endpoints, credentials and
 secret-bearing headers are forbidden artifact state; a database candidate is
 not executable merely because it was persisted. Production candidate images

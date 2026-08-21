@@ -53,6 +53,7 @@ STRATEGIES_MAX: Final[int] = 16
 PROGRAM_DEMOS_MAX: Final[int] = 32
 PROGRAM_DEMO_JSON_MAX_BYTES: Final[int] = 32_768
 PROGRAM_INSTRUCTION_MAX_BYTES: Final[int] = 32_768
+PROGRAM_DEPENDENCY_LOCK_SHA256: Final[str] = "defdd610578ecd1f1f667f5eaf0ebf0b94ae866b16fd5cdd41ba3fc793ab4b37"
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_semantic_program_artifact_v1"
 PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.semantic_program.factory_v1"
@@ -142,10 +143,14 @@ def _runtime_factory_source_sha256() -> str:
 
 
 def _runtime_dependency_lock_sha256() -> str:
-    root_lock = Path(__file__).resolve().parents[4] / "uv.lock"
-    if not root_lock.is_file():
-        raise ValueError("news_program_dependency_lock_unavailable")
-    return hashlib.sha256(root_lock.read_bytes()).hexdigest()
+    """Return the lock identity carried by every installed package.
+
+    A wheel has no repository root or ``uv.lock``.  The generated constant is
+    therefore part of the trusted application package, while a drift test and
+    the artifact maintenance tool require it to match the source lock exactly.
+    """
+
+    return PROGRAM_DEPENDENCY_LOCK_SHA256
 
 
 class _ExactModel(BaseModel):
@@ -396,6 +401,52 @@ class ToldLedgerSnapshot(_ExactModel):
         return cls(storyline_key=storyline_key, entries=entries)
 
 
+class _ModelVisibleEvent(_ExactModel):
+    source: str
+    strategies: tuple[str, ...] = Field(max_length=STRATEGIES_MAX)
+    engine_type: str
+    title: str = Field(max_length=600)
+    raw_first_line: str = Field(max_length=300)
+    content: str = Field(max_length=600)
+    published_at_ms: int = Field(ge=0)
+    member_count: int = Field(ge=1)
+    family: str
+    provider_score: int | None
+    provider_coins: tuple[str, ...] = Field(max_length=10)
+    priority: str
+
+
+class _ModelVisibleGate(_ExactModel):
+    asset_class: str
+    grounded_assets: tuple[str, ...] = Field(max_length=GROUNDED_ASSETS_MAX)
+    macro_lexicon: bool
+    pr_template: bool
+    watchlist: tuple[str, ...] = Field(max_length=WATCHLIST_MAX)
+
+
+class _ModelVisibleToldEntry(_ExactModel):
+    i: int = Field(ge=0)
+    ago_min: int = Field(ge=0)
+    m: int = Field(ge=0, le=3)
+    dir: str
+    headline_zh: str = Field(max_length=60)
+
+
+class _ModelVisibleEventStatus(_ExactModel):
+    storyline_key: str
+    preliminary: bool
+    queue_lag_s: int = Field(ge=0)
+    told: tuple[_ModelVisibleToldEntry, ...] = Field(max_length=TOLD_MAX)
+
+
+class _ModelVisibleTriageInput(_ExactModel):
+    """The only JSON shape that an artifact demo may send to either Predictor."""
+
+    event: _ModelVisibleEvent
+    gate: _ModelVisibleGate
+    event_status: _ModelVisibleEventStatus
+
+
 class TriageContext(_ExactModel):
     """One immutable question for the semantic Program."""
 
@@ -461,44 +512,44 @@ class TriageContext(_ExactModel):
         """Return bounded model-visible evidence with audit-only ids removed."""
 
         event = self.evidence
-        return {
-            "event": {
-                "source": event.source,
-                "strategies": list(event.strategies),
-                "engine_type": event.engine_type,
-                "title": event.title,
-                "raw_first_line": event.raw_first_line,
-                "content": event.content,
-                "published_at_ms": event.published_at_ms,
-                "member_count": event.member_count,
-                "family": event.family,
-                "provider_score": event.provider_score,
-                "provider_coins": list(event.provider_coins),
-                "priority": event.priority,
-            },
-            "gate": {
-                "asset_class": self.gate.asset_class,
-                "grounded_assets": list(self.gate.grounded_assets),
-                "macro_lexicon": self.gate.macro_lexicon,
-                "pr_template": self.gate.pr_template,
-                "watchlist": list(self.watchlist),
-            },
-            "event_status": {
-                "storyline_key": self.told.storyline_key,
-                "preliminary": self.told.preliminary,
-                "queue_lag_s": self.queue_lag_ms // 1000,
-                "told": [
-                    {
-                        "i": entry.i,
-                        "ago_min": entry.ago_min,
-                        "m": entry.magnitude,
-                        "dir": entry.direction,
-                        "headline_zh": entry.headline_zh,
-                    }
+        return _ModelVisibleTriageInput(
+            event=_ModelVisibleEvent(
+                source=event.source,
+                strategies=event.strategies,
+                engine_type=event.engine_type,
+                title=event.title,
+                raw_first_line=event.raw_first_line,
+                content=event.content,
+                published_at_ms=event.published_at_ms,
+                member_count=event.member_count,
+                family=event.family,
+                provider_score=event.provider_score,
+                provider_coins=event.provider_coins,
+                priority=event.priority,
+            ),
+            gate=_ModelVisibleGate(
+                asset_class=self.gate.asset_class,
+                grounded_assets=self.gate.grounded_assets,
+                macro_lexicon=self.gate.macro_lexicon,
+                pr_template=self.gate.pr_template,
+                watchlist=self.watchlist,
+            ),
+            event_status=_ModelVisibleEventStatus(
+                storyline_key=self.told.storyline_key,
+                preliminary=self.told.preliminary,
+                queue_lag_s=self.queue_lag_ms // 1000,
+                told=tuple(
+                    _ModelVisibleToldEntry(
+                        i=entry.i,
+                        ago_min=entry.ago_min,
+                        m=entry.magnitude,
+                        dir=entry.direction,
+                        headline_zh=entry.headline_zh,
+                    )
                     for entry in self.told.entries
-                ],
-            },
-        }
+                ),
+            ),
+        ).model_dump(mode="json")
 
 
 class EventSemantics(_ExactModel):
@@ -856,8 +907,11 @@ def _validate_predictor_demos(name: str, demos: Sequence[Mapping[str, Any]]) -> 
             field="evidence_json",
             index=index,
         )
-        del evidence
+        _reject_unsafe_state(evidence, path=f"state.{name}.demos[{index}].evidence_json")
         try:
+            visible_input = _ModelVisibleTriageInput.model_validate(evidence)
+            if canonical_json(visible_input.model_dump(mode="json")) != demo["evidence_json"]:
+                raise ValueError("evidence_json_not_typed_canonical")
             if name == "event_semantics":
                 EventSemantics.model_validate(demo["semantics"])
             else:
@@ -2570,6 +2624,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
 
 
 __all__ = [
+    "PROGRAM_DEPENDENCY_LOCK_SHA256",
     "TOLD_MAX",
     "TOLD_SAME_KEY_MAX",
     "TOLD_WINDOW_MS",

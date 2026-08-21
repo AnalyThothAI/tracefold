@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import pytest
@@ -162,13 +163,23 @@ def test_observed_program_execution_identity_fails_closed(executions: list[dict[
 def test_partial_provider_cost_and_incomplete_call_identity_are_not_complete() -> None:
     assert (
         candidate_evaluator_module._usage_from_trace(
-            {"calls": [{"provider_cost_microusd": 10}, {"provider_cost_microusd": None}]}
+            {
+                "calls": [
+                    {"physical_provider_call": True, "provider_cost_microusd": 10},
+                    {"physical_provider_call": True, "provider_cost_microusd": None},
+                ]
+            }
         )["provider_cost_microusd"]
         is None
     )
     assert (
         candidate_evaluator_module._usage_from_trace(
-            {"calls": [{"provider_cost_microusd": 10}, {"provider_cost_microusd": 20}]}
+            {
+                "calls": [
+                    {"physical_provider_call": True, "provider_cost_microusd": 10},
+                    {"physical_provider_call": True, "provider_cost_microusd": 20},
+                ]
+            }
         )["provider_cost_microusd"]
         == 30
     )
@@ -203,6 +214,7 @@ def test_partial_provider_cost_and_incomplete_call_identity_are_not_complete() -
         "instruction_sha256": "4" * 64,
         "demos_sha256": "5" * 64,
         "model_binding": "news_triage_primary",
+        "physical_provider_call": True,
         "runtime_provider": "fixture-provider",
         "runtime_model": "configured-model",
         "runtime_model_sha256": runtime_model_sha,
@@ -212,10 +224,54 @@ def test_partial_provider_cost_and_incomplete_call_identity_are_not_complete() -
         "model_sha256": _sha({"provider": "fixture-provider", "model": "resolved-model"}),
         "validated_output": {"decision": "push"},
     }
-    assert candidate_evaluator_module._program_call_provenance_complete({"calls": [call]})
-    assert not candidate_evaluator_module._program_call_provenance_complete(
-        {"calls": [{key: value for key, value in call.items() if key != "runtime_binding_sha256"}]}
+    assert candidate_evaluator_module._program_call_provenance_complete(
+        {"calls": [call], "usage": {"physical_call_count": 1}}
     )
+    assert not candidate_evaluator_module._program_call_provenance_complete(
+        {
+            "calls": [{key: value for key, value in call.items() if key != "runtime_binding_sha256"}],
+            "usage": {"physical_call_count": 1},
+        }
+    )
+
+    synthetic = {
+        "predictor": "event_semantics",
+        "route": "primary",
+        "physical_provider_call": False,
+        "error_code": "news_program_model_binding_unresolved",
+    }
+    fallback_semantics = {**call, "route": "fallback", "provider_cost_microusd": 10}
+    fallback_card = {
+        **call,
+        "predictor": "reader_card",
+        "route": "fallback",
+        "provider_cost_microusd": 20,
+    }
+    trace = {"calls": [synthetic, fallback_semantics, fallback_card]}
+    usage = candidate_evaluator_module._usage_from_trace(trace)
+    observation = {"trace": trace, "calls": trace["calls"], "usage": usage}
+
+    assert usage == {
+        "wall_latency_ms": None,
+        "call_count": 3,
+        "physical_call_count": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+        "total_tokens": 0,
+        "provider_cost_microusd": 30,
+    }
+    assert candidate_evaluator_module._program_metric(observation)["call_count"] == 2
+    assert candidate_evaluator_module._program_metric(observation)["trace_entry_count"] == 3
+    assert candidate_evaluator_module._provider_cost_observation_complete(observation)
+    assert candidate_evaluator_module._program_call_provenance_complete(observation)
+    costs = candidate_evaluator_module._program_cost_by_predictor(
+        [{"stable": {"program": [observation]}, "candidate": {"program": []}}]
+    )["stable"]
+    assert costs["event_semantics:primary"]["trace_entry_n"] == 1
+    assert costs["event_semantics:primary"]["call_n"] == 0
+    assert costs["event_semantics:fallback"]["call_n"] == 1
+    assert costs["reader_card:fallback"]["call_n"] == 1
 
 
 def test_observed_program_selected_trace_and_verdict_fail_closed() -> None:
@@ -569,15 +625,61 @@ class _MissingProviderCostJudge(_StaticJudge):
         )
 
 
+class _SyntheticFallbackJudge(_StaticJudge):
+    async def judge(self, context: TriageContext) -> SemanticJudgment:
+        judgment = await super().judge(context)
+        first, second = judgment.trace.calls
+        synthetic = first.model_copy(
+            update={
+                "physical_provider_call": False,
+                "runtime_provider": None,
+                "runtime_model": None,
+                "runtime_model_sha256": None,
+                "runtime_binding_sha256": None,
+                "output_sha256": None,
+                "validated_output": None,
+                "provider": None,
+                "model": None,
+                "model_sha256": None,
+                "latency_ms": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_tokens": 0,
+                "total_tokens": 0,
+                "provider_cost_microusd": None,
+                "finish_reason": None,
+                "error_code": "news_program_model_binding_unresolved",
+            }
+        )
+        calls = (
+            synthetic,
+            first.model_copy(update={"route": "fallback"}),
+            second.model_copy(update={"route": "fallback"}),
+        )
+        return judgment.model_copy(
+            update={
+                "trace": judgment.trace.model_copy(
+                    update={
+                        "answering_route": "fallback",
+                        "fallback_from": "news_program_model_binding_unresolved",
+                        "calls": calls,
+                    }
+                ),
+                "usage": judgment.usage.model_copy(update={"call_count": 3}),
+                "fallback_from": "news_program_model_binding_unresolved",
+            }
+        )
+
+
 def _static_judges(
     stable: ArmManifest,
     candidate: ArmManifest | None = None,
     *,
     unstable_candidate: bool = False,
-) -> dict[str, _StaticJudge]:
-    result = {stable.program_sha256: _StaticJudge(stable)}
-    if candidate is not None and candidate.program_sha256 != stable.program_sha256:
-        result[candidate.program_sha256] = _StaticJudge(
+) -> dict[tuple[str, str], _StaticJudge]:
+    result = {("stable", stable.bundle_sha): _StaticJudge(stable)}
+    if candidate is not None:
+        result[("candidate", candidate.bundle_sha)] = _StaticJudge(
             candidate,
             candidate=True,
             unstable=unstable_candidate,
@@ -585,7 +687,7 @@ def _static_judges(
     return result
 
 
-def _judge_call_count(judges: dict[str, object]) -> int:
+def _judge_call_count(judges: Mapping[object, object]) -> int:
     return sum(len(judge.calls) for judge in {id(value): value for value in judges.values()}.values())
 
 
@@ -967,7 +1069,7 @@ def _accepted_event(conn, *, why: str = "fail", stale_reask: bool = False) -> st
 def test_policy_candidate_freezes_accepted_evidence_and_uses_zero_model_calls(conn) -> None:
     event_id = _accepted_event(conn)
     stable = _arm()
-    judges: dict[str, object] = {}
+    judges: dict[tuple[str, str], object] = {}
     evaluator = CandidateEvaluator(conn, stable=stable, judges=judges)
     development = asyncio.run(
         evaluator.freeze_dataset(
@@ -1328,7 +1430,7 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
 def test_model_recording_conflict_rejects_nondeterministic_response(conn) -> None:
     stable = _arm()
     judge = _NondeterministicJudge(stable)
-    evaluator = CandidateEvaluator(conn, stable=stable, judges={stable.program_sha256: judge})
+    evaluator = CandidateEvaluator(conn, stable=stable, judges={("stable", stable.bundle_sha): judge})
     context = TriageContext.from_card(
         {
             "event_id": "ev-recording-conflict",
@@ -1375,10 +1477,66 @@ def test_model_recording_conflict_rejects_nondeterministic_response(conn) -> Non
     assert conn.execute("SELECT count(*) AS n FROM news_learning_cases").fetchone()["n"] == 0
 
 
+def test_synthetic_trace_entry_is_audited_but_not_recorded_or_charged(conn) -> None:
+    stable = _arm()
+    judge = _SyntheticFallbackJudge(stable)
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges={("stable", stable.bundle_sha): judge},
+    )
+    context = TriageContext.from_card(
+        {
+            "event_id": "ev-synthetic-fallback",
+            "evidence_version": 1,
+            "evidence_sha256": "a" * 64,
+            "focus_fact_id": "fact-synthetic-fallback",
+            "reporting_origin": "Reuters",
+            "leader_title": "Micron says DRAM contract prices rose again",
+            "leader_description": "Contract prices rose in August.",
+            "opened_at_ms": NOW - 3_600_000,
+            "member_count": 1,
+            "family": "earnings",
+            "priority": "normal",
+            "asset_class": "equity",
+            "storyline_key": "asset:MU",
+        },
+        watchlist=(),
+        told_rows=(),
+        now_ms=NOW,
+        queue_lag_ms=0,
+    )
+    run_sha = _sha("synthetic-fallback-run")
+    observation = asyncio.run(
+        evaluator._invoke_and_record(
+            run_sha=run_sha,
+            case_id=_sha("synthetic-fallback-case"),
+            arm_name="stable",
+            arm=stable,
+            context=context,
+            trial=1,
+        )
+    )
+
+    assert observation["usage"]["call_count"] == 3
+    assert observation["usage"]["physical_call_count"] == 2
+    assert observation["usage"]["provider_cost_microusd"] == 200
+    assert [call["physical_provider_call"] for call in observation["calls"]] == [False, True, True]
+    recordings = conn.execute(
+        "SELECT call_index, route, provider_cost_microusd FROM news_model_recordings "
+        "WHERE run_sha = %s ORDER BY call_index",
+        (run_sha,),
+    ).fetchall()
+    assert [(row["call_index"], row["route"], row["provider_cost_microusd"]) for row in recordings] == [
+        (1, "fallback", 100),
+        (2, "fallback", 100),
+    ]
+
+
 def test_exact_one_variable_is_rejected_before_any_model_call(conn) -> None:
     _accepted_event(conn)
     stable = _arm()
-    judges: dict[str, object] = {}
+    judges: dict[tuple[str, str], object] = {}
     evaluator = CandidateEvaluator(conn, stable=stable, judges=judges)
     development = asyncio.run(
         evaluator.freeze_dataset(
@@ -1435,8 +1593,8 @@ def test_record_replay_miss_is_explicit_unknown_without_live_fallback(conn) -> N
         cluster_id=development.cases[0].cluster_id,
     )
     judges = {
-        stable.program_sha256: _AlwaysUnavailableJudge(stable, recording_missing=True),
-        candidate.candidate_arm.program_sha256: _AlwaysUnavailableJudge(
+        ("stable", stable.bundle_sha): _AlwaysUnavailableJudge(stable, recording_missing=True),
+        ("candidate", candidate.candidate_arm.bundle_sha): _AlwaysUnavailableJudge(
             candidate.candidate_arm,
             recording_missing=True,
         ),
@@ -1481,8 +1639,8 @@ def test_common_provider_outage_is_unknown_not_a_vacuous_candidate_pass(conn) ->
         cluster_id=development.cases[0].cluster_id,
     )
     judges = {
-        stable.program_sha256: _AlwaysUnavailableJudge(stable),
-        candidate.candidate_arm.program_sha256: _AlwaysUnavailableJudge(candidate.candidate_arm),
+        ("stable", stable.bundle_sha): _AlwaysUnavailableJudge(stable),
+        ("candidate", candidate.candidate_arm.bundle_sha): _AlwaysUnavailableJudge(candidate.candidate_arm),
     }
     evaluator = CandidateEvaluator(
         conn,
@@ -1528,8 +1686,8 @@ def test_missing_per_call_provider_cost_blocks_program_release(conn) -> None:
         cluster_id=development.cases[0].cluster_id,
     )
     judges = {
-        stable.program_sha256: _StaticJudge(stable),
-        candidate.candidate_arm.program_sha256: _MissingProviderCostJudge(
+        ("stable", stable.bundle_sha): _StaticJudge(stable),
+        ("candidate", candidate.candidate_arm.bundle_sha): _MissingProviderCostJudge(
             candidate.candidate_arm,
             candidate=True,
         ),
@@ -1694,7 +1852,7 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
 def test_candidate_requires_a_persisted_registration_before_evaluation(conn) -> None:
     _accepted_event(conn)
     stable = _arm()
-    judges: dict[str, object] = {}
+    judges: dict[tuple[str, str], object] = {}
     bootstrap = CandidateEvaluator(conn, stable=stable, judges=judges)
     development = asyncio.run(
         bootstrap.freeze_dataset(
@@ -1733,7 +1891,7 @@ def test_candidate_requires_a_persisted_registration_before_evaluation(conn) -> 
 def test_validation_window_must_begin_after_candidate_registration(conn) -> None:
     _accepted_event(conn)
     stable = _arm()
-    judges: dict[str, object] = {}
+    judges: dict[tuple[str, str], object] = {}
     bootstrap = CandidateEvaluator(conn, stable=stable, judges=judges)
     development = asyncio.run(
         bootstrap.freeze_dataset(
@@ -1866,7 +2024,7 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     ).fetchone()
 
     assert after == before
-    assert len(judges[candidate.candidate_arm.program_sha256].calls) == 1
+    assert len(judges[("candidate", candidate.candidate_arm.bundle_sha)].calls) == 1
     assert report.gate_outcome == "unknown"  # fixture is only six hours, not the required 24
     assert report.evidence["observation_n"] == 1
     assert report.evidence["evidence_dimensions"]["observation_scope"] == "all_live_triage_eligible"

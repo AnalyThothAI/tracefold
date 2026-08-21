@@ -22,6 +22,7 @@ from ..artifact_identity import canonical_json, canonical_sha
 from .semantic_program import (
     PROGRAM_ADAPTER_SHA256,
     PROGRAM_ASSEMBLER_SHA256,
+    PROGRAM_DEPENDENCY_LOCK_SHA256,
     PROGRAM_INPUT_CONTRACT_SHA256,
     PROGRAM_TOPOLOGY_SHA256,
     ProgramArtifactCodec,
@@ -125,7 +126,10 @@ def regenerate_stable_program_artifact(
     if receipt.get("mode") != "code_owned_baseline":
         raise ValueError("news_program_stable_receipt_not_baseline")
     manifest["factory_source_sha256"] = _sha_file(factory_source)
-    manifest["dependency_lock_sha256"] = _sha_file(dependency_lock)
+    dependency_lock_sha256 = _sha_file(dependency_lock)
+    if dependency_lock_sha256 != PROGRAM_DEPENDENCY_LOCK_SHA256:
+        raise ValueError("news_program_dependency_lock_identity_stale")
+    manifest["dependency_lock_sha256"] = dependency_lock_sha256
     manifest["topology_sha256"] = PROGRAM_TOPOLOGY_SHA256
     manifest["input_contract_sha256"] = PROGRAM_INPUT_CONTRACT_SHA256
     manifest["adapter_sha256"] = PROGRAM_ADAPTER_SHA256

@@ -33,6 +33,8 @@ EVALUATOR_VERSION = "news_candidate_evaluator_v1"
 LEARNING_EPOCH: Literal["program_v1"] = "program_v1"
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
+ArmName = Literal["stable", "candidate"]
+ArmJudgeKey = tuple[ArmName, str]
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
@@ -308,7 +310,7 @@ class CandidateEvaluator:
         conn: Any,
         *,
         stable: ArmManifest,
-        judges: Mapping[str, SemanticJudge],
+        judges: Mapping[ArmJudgeKey, SemanticJudge],
         candidate_catalog: Sequence[CandidateManifest] = (),
         principal: str = "operator",
         trusted_root_sha: str = TRUSTED_ROOT_SHA,
@@ -917,17 +919,17 @@ class CandidateEvaluator:
         dataset: DatasetManifest,
         candidate: CandidateManifest,
     ) -> list[dict[str, Any]]:
-        states = {
+        states: dict[ArmName, _ArmState] = {
             "stable": _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts)),
             "candidate": _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts)),
         }
-        arms = {"stable": self._stable, "candidate": candidate.candidate_arm}
+        arms: dict[ArmName, ArmManifest] = {"stable": self._stable, "candidate": candidate.candidate_arm}
         review_case_ids = self._review_case_ids(dataset, candidate=candidate)
         observations: list[dict[str, Any]] = []
         for case_ref in dataset.cases:
             case = self._load_case(case_ref)
             case_outputs: dict[str, dict[str, Any]] = {}
-            order = ["stable", "candidate"]
+            order: list[ArmName] = ["stable", "candidate"]
             if int(case_ref.case_id[:2], 16) % 2:
                 order.reverse()
             for arm_name in order:
@@ -1465,12 +1467,12 @@ class CandidateEvaluator:
         *,
         run_sha: str,
         case_id: str,
-        arm_name: str,
+        arm_name: ArmName,
         arm: ArmManifest,
         context: TriageContext,
         trial: int,
     ) -> dict[str, Any]:
-        judge = self._judges.get(arm.program_sha256)
+        judge = self._judges.get((arm_name, arm.bundle_sha))
         if judge is None:
             return {
                 "verdict": None,
@@ -1522,6 +1524,8 @@ class CandidateEvaluator:
         if trace_context_sha != context_sha:
             raise ValueError("news_program_trace_context_mismatch")
         for call_index, raw_call in enumerate(observation.get("calls") or []):
+            if not bool(raw_call.get("physical_provider_call")):
+                continue
             self._persist_program_call(
                 run_sha=run_sha,
                 case_id=case_id,
@@ -1540,7 +1544,7 @@ class CandidateEvaluator:
         *,
         run_sha: str,
         case_id: str,
-        arm_name: str,
+        arm_name: ArmName,
         trial: int,
         arm: ArmManifest,
         context_sha: str,
@@ -1795,6 +1799,8 @@ class CandidateEvaluator:
         candidate_tokens: list[int] = []
         stable_calls: list[int] = []
         candidate_calls: list[int] = []
+        stable_trace_entries: list[int] = []
+        candidate_trace_entries: list[int] = []
         stable_costs: list[int] = []
         candidate_costs: list[int] = []
         stable_latencies: list[int] = []
@@ -1832,9 +1838,23 @@ class CandidateEvaluator:
                 candidate_only_errors += 1
             elif stable_out.get("error_code"):
                 stable_only_errors += 1
-            for output, tokens, calls, costs, latencies in (
-                (stable_out, stable_tokens, stable_calls, stable_costs, stable_latencies),
-                (candidate_out, candidate_tokens, candidate_calls, candidate_costs, candidate_latencies),
+            for output, tokens, calls, trace_entries, costs, latencies in (
+                (
+                    stable_out,
+                    stable_tokens,
+                    stable_calls,
+                    stable_trace_entries,
+                    stable_costs,
+                    stable_latencies,
+                ),
+                (
+                    candidate_out,
+                    candidate_tokens,
+                    candidate_calls,
+                    candidate_trace_entries,
+                    candidate_costs,
+                    candidate_latencies,
+                ),
             ):
                 for program_obs in output.get("program") or []:
                     metric = _program_metric(program_obs)
@@ -1854,6 +1874,8 @@ class CandidateEvaluator:
                         tokens.append(int(metric["total_tokens"]))
                     if metric["call_count"] is not None:
                         calls.append(int(metric["call_count"]))
+                    if metric["trace_entry_count"] is not None:
+                        trace_entries.append(int(metric["trace_entry_count"]))
                     if metric["provider_cost_microusd"] is not None:
                         costs.append(int(metric["provider_cost_microusd"]))
                     if metric["latency_ms"] is not None:
@@ -2010,6 +2032,10 @@ class CandidateEvaluator:
             "candidate_mean_total_tokens": statistics.mean(candidate_tokens) if candidate_tokens else None,
             "stable_mean_call_count": statistics.mean(stable_calls) if stable_calls else None,
             "candidate_mean_call_count": statistics.mean(candidate_calls) if candidate_calls else None,
+            "stable_mean_trace_entry_count": (statistics.mean(stable_trace_entries) if stable_trace_entries else None),
+            "candidate_mean_trace_entry_count": (
+                statistics.mean(candidate_trace_entries) if candidate_trace_entries else None
+            ),
             "stable_mean_provider_cost_microusd": statistics.mean(stable_costs) if stable_costs else None,
             "candidate_mean_provider_cost_microusd": statistics.mean(candidate_costs) if candidate_costs else None,
             "program_cost_by_predictor": _program_cost_by_predictor(observations),
@@ -2588,11 +2614,12 @@ class CandidateEvaluator:
 
 def _usage_from_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
     calls = [dict(item) for item in trace.get("calls") or []]
-    costs = [cost for item in calls if (cost := _call_cost_microusd(item)) is not None]
+    physical_calls = [item for item in calls if item.get("physical_provider_call") is True]
+    costs = [cost for item in physical_calls if (cost := _call_cost_microusd(item)) is not None]
     return {
         "wall_latency_ms": trace.get("wall_latency_ms"),
         "call_count": len(calls),
-        "physical_call_count": sum(bool(item.get("physical_provider_call")) for item in calls),
+        "physical_call_count": len(physical_calls),
         "input_tokens": sum(int(item.get("input_tokens") or 0) for item in calls),
         "output_tokens": sum(int(item.get("output_tokens") or 0) for item in calls),
         "cached_tokens": sum(int(item.get("cached_tokens") or 0) for item in calls),
@@ -2601,7 +2628,7 @@ def _usage_from_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
             or (int(item.get("input_tokens") or 0) + int(item.get("output_tokens") or 0))
             for item in calls
         ),
-        "provider_cost_microusd": sum(costs) if calls and len(costs) == len(calls) else None,
+        "provider_cost_microusd": sum(costs) if len(costs) == len(physical_calls) else None,
     }
 
 
@@ -2624,11 +2651,19 @@ def _program_metric(observation: Mapping[str, Any]) -> dict[str, int | None]:
     cost_microusd = usage.get("provider_cost_microusd")
     if cost_microusd is None and usage.get("provider_cost_usd") is not None:
         cost_microusd = round(float(usage["provider_cost_usd"]) * 1_000_000)
-    call_count = usage.get("call_count")
+    trace_entry_count = usage.get("call_count")
+    physical_call_count = usage.get("physical_call_count")
+    if physical_call_count is None:
+        physical_call_count = sum(
+            isinstance(call, Mapping) and call.get("physical_provider_call") is True for call in calls
+        )
+    if cost_microusd is None and int(physical_call_count) == 0:
+        cost_microusd = 0
     wall_latency_ms = usage.get("wall_latency_ms")
     return {
         "total_tokens": int(total_tokens) if total_tokens is not None else None,
-        "call_count": int(call_count) if call_count is not None else len(calls),
+        "call_count": int(physical_call_count),
+        "trace_entry_count": int(trace_entry_count) if trace_entry_count is not None else len(calls),
         "provider_cost_microusd": int(cost_microusd) if cost_microusd is not None else None,
         "latency_ms": int(wall_latency_ms) if wall_latency_ms is not None else None,
     }
@@ -2638,17 +2673,29 @@ def _provider_cost_observation_complete(observation: Mapping[str, Any]) -> bool:
     usage = dict(observation.get("usage") or {})
     trace = observation.get("trace") or {}
     calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
-    if not calls or usage.get("provider_cost_microusd") is None:
+    physical_calls = [dict(call) for call in calls if isinstance(call, Mapping) and call.get("physical_provider_call")]
+    if usage.get("physical_call_count") is None:
         return False
-    if usage.get("call_count") is not None and int(usage["call_count"]) != len(calls):
+    if int(usage["physical_call_count"]) != len(physical_calls):
         return False
-    return all(dict(call).get("provider_cost_microusd") is not None for call in calls)
+    if not physical_calls:
+        return usage.get("provider_cost_microusd") in {None, 0}
+    costs = [_call_cost_microusd(call) for call in physical_calls]
+    if any(cost is None for cost in costs) or usage.get("provider_cost_microusd") is None:
+        return False
+    return int(usage["provider_cost_microusd"]) == sum(int(cost) for cost in costs if cost is not None)
 
 
 def _program_call_provenance_complete(observation: Mapping[str, Any]) -> bool:
+    usage = dict(observation.get("usage") or {})
     trace = observation.get("trace") or {}
     calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
-    return bool(calls) and all(isinstance(call, Mapping) and _program_call_identity_complete(call) for call in calls)
+    physical_calls = [call for call in calls if isinstance(call, Mapping) and call.get("physical_provider_call")]
+    return (
+        usage.get("physical_call_count") is not None
+        and int(usage["physical_call_count"]) == len(physical_calls)
+        and all(_program_call_identity_complete(call) for call in physical_calls)
+    )
 
 
 def _program_call_identity_complete(raw_call: Mapping[str, Any]) -> bool:
@@ -2656,7 +2703,8 @@ def _program_call_identity_complete(raw_call: Mapping[str, Any]) -> bool:
 
     call = dict(raw_call)
     if (
-        call.get("predictor") not in {"event_semantics", "reader_card"}
+        call.get("physical_provider_call") is not True
+        or call.get("predictor") not in {"event_semantics", "reader_card"}
         or call.get("route") not in {"primary", "fallback"}
         or type(call.get("attempt")) is not int
         or not 1 <= int(call["attempt"]) <= 2
@@ -2727,6 +2775,7 @@ def _program_cost_by_predictor(observations: Sequence[Mapping[str, Any]]) -> dic
                         name,
                         {
                             "call_n": 0,
+                            "trace_entry_n": 0,
                             "input_tokens": 0,
                             "output_tokens": 0,
                             "total_tokens": 0,
@@ -2735,6 +2784,9 @@ def _program_cost_by_predictor(observations: Sequence[Mapping[str, Any]]) -> dic
                             "latencies_ms": [],
                         },
                     )
+                    bucket["trace_entry_n"] += 1
+                    if call.get("physical_provider_call") is not True:
+                        continue
                     bucket["call_n"] += 1
                     bucket["input_tokens"] += int(call.get("input_tokens") or 0)
                     bucket["output_tokens"] += int(call.get("output_tokens") or 0)

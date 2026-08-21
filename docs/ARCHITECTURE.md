@@ -502,7 +502,11 @@ binds the fixed factory/topology, DSPy/dependency lock, input/Adapter/assembler
 contracts, execution budgets, Predictor state hashes and compile provenance;
 state is limited to the two validated Predictor records: signature identity,
 instructions, demonstrations, model-binding slots, token caps and their
-hashes. The production registry resolves an image-carried SHA,
+hashes. The dependency-lock digest is package-owned and drift-tested against
+the source `uv.lock`, so an installed wheel does not depend on a repository
+root. Demonstration `evidence_json` must validate as the exact model-visible
+input contract; audit ids, endpoints and secret-bearing keys are rejected even
+when nested inside that JSON string. The production registry resolves an image-carried SHA,
 never arbitrary database instructions. Loading fails closed on an unknown
 version/hash/factory/lock, unsafe path or extra state. Pickle, cloudpickle,
 DSPy Flex, dynamic code/classes, endpoints and credentials are not supported
@@ -604,9 +608,15 @@ cannot both send the same fact (the lock raises the lane's 250 ms
 shown has landed in the ledger by then (compared by event id, not by clock —
 verdict rows carry their handler's start stamp), the consumer reloads sent
 content evidence and control under a fresh stamp and calls the full Program once
-more with the fresh ledger (`reasked_after_told_change`) instead of pushing a
-restatement the reader just received; if that second execution fails, the model's
-first judgment is persisted (`reask_failed`), never the rule baseline.
+more. The trace distinguishes a stale sent ledger
+(`reask_reason=told`, `reasked_after_told_change`) from changed Event evidence
+(`reask_reason=evidence`, `reasked_after_evidence_change`). If a ledger-only
+re-ask fails, the first judgment is still bound to the same evidence and is
+persisted with `reask_failed`. If the evidence changed, the first judgment
+cannot truthfully be rebound to the refreshed snapshot: a failed re-ask uses
+the deterministic degraded fallback over the refreshed Gate facts, with no
+selected Program execution; a second evidence change before persistence raises
+`news_event_evidence_changed` for durable retry.
 The re-ask is a separate Program execution: the ordinary rare case is four
 provider calls total, while each execution independently retains the six-call,
 two-route ceiling. All work from both executions remains in audit and cost
@@ -618,7 +628,8 @@ per-Predictor request/input/instruction/demo/output hashes, finish reason,
 latency, tokens and provider-reported cost (or explicit unknown), the
 preliminary storyline key, the preliminary and final status-bar snapshots,
 the told ledger as shown with event ids, `told_count`, `restates_event_id`,
-every initial/re-ask Program execution and which one was selected,
+every initial/re-ask Program execution and which one was selected (when the
+persisted verdict came from the Program), `reask_reason`,
 `first_verdict`/`first_input_sha256`/`reask_failed` when re-asked,
 `novelty_defaulted`, and the final storyline key). Exact record/replay binds
 the request to the resolved runtime model identity; a recording mismatch or

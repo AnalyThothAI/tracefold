@@ -311,12 +311,16 @@ The trace binds the Program version/SHA, every `DecidePolicy` value,
 `gate_policy_version`, selected `input_sha256`, `storyline_key_preliminary`, `status`,
 `status_final`, `storyline_key`, `told[{i, event_id, at_ms, m, dir,
 headline_zh}]`, `told_count`, `seen_count`, `seen_similarity`, `seen_against
-{event_id, headline_zh}`, `restates_event_id`, `reasked_after_told_change`,
-`first_verdict`, `first_input_sha256`, `reask_failed`, and
-`novelty_defaulted`. `program_executions[]` preserves every initial/re-ask
+{event_id, headline_zh}`, `restates_event_id`, `reask_reason`, either
+`reasked_after_told_change` or `reasked_after_evidence_change`, `first_verdict`,
+`first_input_sha256`, `reask_failed`, and `novelty_defaulted`.
+`program_executions[]` preserves every initial/re-ask
 execution with phase, status, context, usage, error and global recording call
-indices; `program_trace` is always the selected execution that owns the
-persisted verdict. Its per-Predictor calls bind request/input/signature/
+indices. When a Program judgment owns the persisted verdict, `program_trace`
+is exactly that selected execution. It is absent when changed evidence makes
+the first judgment ineligible and the refreshed Program re-ask fails, because
+the persisted verdict is then the deterministic degraded fallback. A selected
+Program trace's per-Predictor calls bind request/input/signature/
 instruction/demo/upstream/output hashes, route and attempt, resolved runtime
 provider/model identity, validated output, finish reason, latency, input/
 output/cached/total tokens and optional provider cost in microusd. Aggregate
@@ -339,7 +343,11 @@ hashes and compile receipt; state is limited to the two validated Predictor
 records (name/signature identity, instruction, demonstrations, model-binding
 slots, token cap and their hashes). Loading fails closed on an
 unknown hash/version/factory/lock, a path or symlink violation, extra file, or
-unsafe state. Pickle, cloudpickle, DSPy Flex state, dynamic Python/classes,
+unsafe state. The lock digest is carried by the package and must match the
+source `uv.lock`; it is not discovered by walking outside an installed wheel.
+Demo evidence is accepted only in the exact model-visible input schema, which
+excludes Event/fact audit ids, endpoints and credentials. Pickle, cloudpickle,
+DSPy Flex state, dynamic Python/classes,
 endpoints and credentials are not artifact formats. DSPy cache and hidden
 provider retries are disabled; every provider attempt must appear in the trace.
 There is no legacy Prompt runtime, dual stack, compatibility Adapter or

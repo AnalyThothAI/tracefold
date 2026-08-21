@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import importlib.resources
 import json
+import os
+import subprocess
+import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +19,7 @@ from tracefold.news.agents import semantic_program as semantic_program_module
 from tracefold.news.agents.semantic_program import (
     PROGRAM_DEMO_JSON_MAX_BYTES,
     PROGRAM_DEMOS_MAX,
+    PROGRAM_DEPENDENCY_LOCK_SHA256,
     PROGRAM_INSTRUCTION_MAX_BYTES,
     TOLD_MAX,
     TOLD_SAME_KEY_MAX,
@@ -90,6 +96,10 @@ def _context(*, told_rows: list[dict[str, Any]] | None = None) -> TriageContext:
     )
 
 
+def _evidence_json() -> str:
+    return canonical_json(_context().model_payload())
+
+
 def _program(
     primary: ScriptedPredictorAdapter,
     *,
@@ -137,6 +147,51 @@ def test_builtin_artifact_is_registered_and_canonical() -> None:
     assert ProgramArtifactCodec.decode(manifest, state) == artifact
     assert artifact.program_sha256 == artifact.computed_sha256()
     assert artifact.state_sha256 == artifact.computed_state_sha256()
+
+
+def test_packaged_dependency_lock_identity_matches_the_source_lock() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    assert hashlib.sha256((repository_root / "uv.lock").read_bytes()).hexdigest() == PROGRAM_DEPENDENCY_LOCK_SHA256
+
+
+def test_built_wheel_loads_the_image_carried_program_without_a_repository_root(tmp_path: Path) -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    wheel_dir = tmp_path / "dist"
+    built = subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(wheel_dir)],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert built.returncode == 0, built.stderr
+    wheel = next(wheel_dir.glob("tracefold-*.whl"))
+    unpacked = tmp_path / "unpacked-wheel"
+    with zipfile.ZipFile(wheel) as archive:
+        archive.extractall(unpacked)
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(unpacked)
+    loaded = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; "
+                "from tracefold.news.agents import semantic_program as module; "
+                "print(Path(module.__file__).resolve()); "
+                "print(module.load_stable_program_artifact().program_sha256)"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert loaded.returncode == 0, loaded.stderr
+    module_path, program_sha = loaded.stdout.splitlines()
+    assert Path(module_path).is_relative_to(unpacked)
+    assert program_sha == load_stable_program_artifact().program_sha256
 
 
 def test_codec_rejects_noncanonical_documents_and_nonfinite_numbers() -> None:
@@ -1202,6 +1257,31 @@ def test_artifact_bounds_instruction_demo_count_and_canonical_demo_json() -> Non
         ProgramArtifactCodec.decode(manifest, state_document)
 
 
+@pytest.mark.parametrize(
+    ("container", "unsafe_key", "unsafe_value"),
+    [
+        (None, "event_id", "audit-event-must-not-reach-the-model"),
+        ("event", "endpoint", "https://evil.invalid"),
+        ("gate", "api_key", "sk-test-must-not-load"),
+    ],
+)
+def test_artifact_demo_evidence_rejects_audit_runtime_and_secret_fields(
+    container: str | None,
+    unsafe_key: str,
+    unsafe_value: str,
+) -> None:
+    evidence = _context().model_payload()
+    target = evidence if container is None else evidence[container]
+    target[unsafe_key] = unsafe_value
+    manifest, state_document = _artifact_documents_with_demo(
+        "event_semantics",
+        {"evidence_json": canonical_json(evidence), "semantics": _semantics()},
+    )
+
+    with pytest.raises(ValueError, match="artifact_schema_invalid"):
+        ProgramArtifactCodec.decode(manifest, state_document)
+
+
 def test_compiled_module_uses_the_same_exact_demo_validation() -> None:
     base = load_stable_program_artifact()
     cold = DspyCompileProgram(base)
@@ -1283,7 +1363,9 @@ def test_cold_compile_program_round_trips_only_predictor_state() -> None:
     cold.event_semantics.signature = cold.event_semantics.signature.with_instructions(
         "A reviewed candidate instruction"
     )
-    cold.event_semantics.demos = [dspy.Example(evidence_json="{}", semantics=_semantics()).with_inputs("evidence_json")]
+    cold.event_semantics.demos = [
+        dspy.Example(evidence_json=_evidence_json(), semantics=_semantics()).with_inputs("evidence_json")
+    ]
     candidate = ProgramArtifactCodec.from_compiled_module(
         cold,
         base_artifact=base,
@@ -1314,7 +1396,7 @@ def test_cold_compile_program_round_trips_only_predictor_state() -> None:
     assert candidate.compile_receipt.accepted_by == "unaccepted_candidate"
     manifest, state = ProgramArtifactCodec.encode(candidate)
     assert ProgramArtifactCodec.decode(manifest, state) == candidate
-    assert candidate.event_semantics.demos == ({"evidence_json": "{}", "semantics": _semantics()},)
+    assert candidate.event_semantics.demos == ({"evidence_json": _evidence_json(), "semantics": _semantics()},)
     candidate_manifest = json.loads(manifest)
     candidate_manifest["parent_program_sha256"] = None
     candidate_manifest["program_sha256"] = canonical_sha(

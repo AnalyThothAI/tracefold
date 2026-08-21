@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from tracefold.app.cli.commands.news import _learning_program_judges
 from tracefold.app.cli.parser import build_parser
+from tracefold.news.agents.semantic_program import load_stable_program_artifact
 
 
 def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
@@ -83,3 +86,40 @@ def test_learning_cli_has_no_prompt_or_legacy_model_adapter_path() -> None:
     assert "RecordReplayModelAdapter" not in source
     assert "LiveTriageModelAdapter" not in source
     assert "configured_chat_model" not in source
+
+
+def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> None:
+    class _Rows:
+        @staticmethod
+        def fetchall() -> list[object]:
+            return []
+
+    class _Connection:
+        @staticmethod
+        def execute(query: str) -> _Rows:
+            assert "news_model_recordings" in query
+            return _Rows()
+
+    artifact = load_stable_program_artifact()
+    stable = SimpleNamespace(program_sha256=artifact.program_sha256, bundle_sha="1" * 64)
+    candidate_arm = SimpleNamespace(program_sha256=artifact.program_sha256, bundle_sha="2" * 64)
+    candidate = SimpleNamespace(candidate_arm=candidate_arm)
+
+    judges = _learning_program_judges(
+        _Connection(),
+        settings=None,
+        stable=stable,
+        candidate=candidate,
+        artifact_paths={},
+        live=False,
+    )
+    stable_judge = judges[("stable", stable.bundle_sha)]
+    candidate_judge = judges[("candidate", candidate_arm.bundle_sha)]
+
+    assert stable_judge is not candidate_judge
+    assert stable_judge.primary_adapter is not candidate_judge.primary_adapter
+    assert stable_judge.primary_adapter.requests is not candidate_judge.primary_adapter.requests
+    for _ in range(artifact.execution.primary_breaker_failures):
+        stable_judge._record_primary_failure()
+    assert stable_judge._primary_open_until > 0
+    assert candidate_judge._primary_open_until == 0

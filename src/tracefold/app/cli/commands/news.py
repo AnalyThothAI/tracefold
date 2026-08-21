@@ -554,7 +554,7 @@ def _learning_program_judges(
     candidate: Any,
     artifact_paths: Mapping[str, str],
     live: bool,
-) -> dict[str, Any]:
+) -> dict[tuple[str, str], Any]:
     from tracefold.news.agents.semantic_program import (
         DspyNewsSemanticProgram,
         DspyPredictorAdapter,
@@ -567,15 +567,27 @@ def _learning_program_judges(
     stable_artifact = load_stable_program_artifact()
     if stable_artifact.program_sha256 != stable.program_sha256:
         raise ValueError("news_learning_stable_program_mismatch")
-    artifacts = {stable_artifact.program_sha256: stable_artifact}
+    candidate_arm = candidate.candidate_arm
     candidate_sha = candidate.candidate_arm.program_sha256
-    if candidate_sha not in artifacts:
+    candidate_artifact = stable_artifact
+    if candidate_sha != stable_artifact.program_sha256:
         path = artifact_paths.get(candidate_sha)
-        artifacts[candidate_sha] = ProgramArtifactCodec.load(path) if path else load_program_artifact(candidate_sha)
+        candidate_artifact = ProgramArtifactCodec.load(path) if path else load_program_artifact(candidate_sha)
+    if candidate_artifact.program_sha256 != candidate_sha:
+        raise ValueError("news_learning_candidate_program_mismatch")
+    arm_artifacts = (
+        ("stable", stable, stable_artifact),
+        ("candidate", candidate_arm, candidate_artifact),
+    )
     if live:
         return {
-            sha: _configured_program_judge(settings, artifact, DspyNewsSemanticProgram, DspyPredictorAdapter)
-            for sha, artifact in artifacts.items()
+            (arm_name, arm.bundle_sha): _configured_program_judge(
+                settings,
+                artifact,
+                DspyNewsSemanticProgram,
+                DspyPredictorAdapter,
+            )
+            for arm_name, arm, artifact in arm_artifacts
         }
     rows = conn.execute(
         "SELECT DISTINCT ON (request_sha256) request_sha256, request, response "
@@ -593,10 +605,10 @@ def _learning_program_judges(
             "request": recorded_request,
             "response": row["response"],
         }
-    judges: dict[str, Any] = {}
-    for sha, artifact in artifacts.items():
-        replay = RecordReplayPredictorAdapter(recordings_by_program.get(sha, {}))
-        judges[sha] = DspyNewsSemanticProgram(
+    judges: dict[tuple[str, str], Any] = {}
+    for arm_name, arm, artifact in arm_artifacts:
+        replay = RecordReplayPredictorAdapter(recordings_by_program.get(arm.program_sha256, {}))
+        judges[(arm_name, arm.bundle_sha)] = DspyNewsSemanticProgram(
             artifact,
             primary_adapter=replay,
             fallback_adapter=replay,
