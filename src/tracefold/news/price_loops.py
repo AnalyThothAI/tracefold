@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from decimal import Decimal
 from typing import Any
 
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
@@ -25,9 +26,10 @@ from .pricing import (
     CANDLE_INTERVAL_MS,
     EXTERNAL_CONCURRENCY,
     HORIZON_MS,
-    QUOTE_CHANGE_PERIOD_SECONDS,
+    QUOTE_DAY_PERIOD_SECONDS,
     QUOTE_LOOKBACK_MS,
     QUOTE_PERIOD_SECONDS,
+    QUOTE_SOURCE_GROUP_MAX,
     QUOTE_TURN_DEADLINE_SECONDS,
     REACTION_CANDLE_REQUESTS_MAX,
     REACTION_DUE_BATCH,
@@ -37,6 +39,7 @@ from .pricing import (
     PriceInstrument,
     ProviderQuote,
     Quote,
+    parse_change_pct,
     return_bps,
     select_candle,
 )
@@ -44,10 +47,8 @@ from .pricing import (
 log = logging.getLogger("tracefold.news.price")
 
 QuoteFetcher = Callable[[Sequence[str]], Awaitable[Sequence[ProviderQuote]]]
-ChangeFetcher = Callable[[Sequence[str]], Awaitable[Mapping[str, float]]]
 CandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]
 QuoteFetcherFactory = Callable[[str], QuoteFetcher | None]
-ChangeFetcherFactory = Callable[[str], ChangeFetcher | None]
 CandleFetcherFactory = Callable[[str], CandleFetcher | None]
 
 # A backfill turn that filled its whole batch immediately asks for the next one; without a ceiling that is a
@@ -121,25 +122,27 @@ class QuoteSnapshotLoop:
         *,
         db: Any,
         fetcher_for: QuoteFetcherFactory,
-        change_fetcher_for: ChangeFetcherFactory | None = None,
+        day_fetcher_for: QuoteFetcherFactory | None = None,
         watchlist: Sequence[str] = (),
         period_seconds: float = QUOTE_PERIOD_SECONDS,
-        change_period_seconds: float = QUOTE_CHANGE_PERIOD_SECONDS,
+        day_period_seconds: float = QUOTE_DAY_PERIOD_SECONDS,
         enabled: bool = True,
     ) -> None:
         self.db = _ColdDb(db)
         self.fetcher_for = fetcher_for
-        self.change_fetcher_for = change_fetcher_for
+        self.day_fetcher_for = day_fetcher_for
         self.watchlist = tuple(watchlist)
         self.period = float(period_seconds)
-        self.change_period_ms = max(0.0, float(change_period_seconds)) * 1000.0
+        self.day_period_ms = max(0.0, float(day_period_seconds)) * 1000.0
         self.enabled = bool(enabled)
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
-        # Per source: the last change map that arrived, and when we last *asked* for one. Asking is what the
-        # cadence governs — a venue that failed keeps its previous figure and is not retried every 20 s.
-        self._changes: dict[str, dict[str, float]] = {}
-        self._change_asked_at_ms: dict[str, int] = {}
+        # Per source, from the last *successful* day read: the reference each symbol's day change is measured
+        # against, which symbols that read covered, and when it landed. Nothing here is stamped for a call
+        # that failed or was cancelled — an unanswered question has not been asked (#109).
+        self._references: dict[str, dict[str, Decimal]] = {}
+        self._covered: dict[str, set[str]] = {}
+        self._day_at_ms: dict[str, int] = {}
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if not self.enabled:
@@ -169,13 +172,13 @@ class QuoteSnapshotLoop:
             self.last_error = None
             self.last_result = {**_plan_stats(plan), "sources": 0, "written": 0, "quotes": 0}
             return self.last_result
-        self._forget_changes_except(groups)
-        calls = [("quote", source) for source in sorted(groups)]
-        calls += [("change", source) for source in sorted(groups) if self._change_due(source, stamp)]
+        self._bound_cache(groups)
+        planned = sorted(groups)
+        day_reads = {source for source in planned if self._day_due(source, groups[source], stamp)}
         try:
             results = await asyncio.wait_for(
                 _gather_bounded(
-                    [self._call(kind, source, groups[source]) for kind, source in calls],
+                    [self._source_call(source, groups[source], day=source in day_reads) for source in planned],
                     limit=EXTERNAL_CONCURRENCY,
                 ),
                 timeout=QUOTE_TURN_DEADLINE_SECONDS,
@@ -187,20 +190,16 @@ class QuoteSnapshotLoop:
         received_at_ms = now_ms()
         writes: list[tuple[str, list[Quote], int]] = []
         errors: list[str] = []
-        # Changes first, so a map that arrived this turn is merged into this turn's prices.
-        for (kind, source), result in zip(calls, results, strict=False):
-            if kind == "change":
-                self._absorb_change(source, groups[source], result, errors)
-        for (kind, source), result in zip(calls, results, strict=False):
-            if kind != "quote":
-                continue
+        for source, result in zip(planned, results, strict=False):
             members = groups[source]
             if isinstance(result, BaseException):
                 code = getattr(result, "code", None) or type(result).__name__
                 errors.append(f"{source}:{code}")
                 log.warning("news quote source failed source=%s code=%s", source, code)
                 continue
-            quotes = _quotes_for(members, result, self._changes.get(source))
+            if source in day_reads:
+                self._absorb_day_read(source, members, result, stamp)
+            quotes = _quotes_for(members, result, self._references.get(source))
             if not quotes:
                 # A 200 carrying an error object parses to nothing. Replacing the row with an empty map would
                 # flip every symbol on the source from `fresh` to `unavailable` — the exact failure this
@@ -213,7 +212,7 @@ class QuoteSnapshotLoop:
         if not writes:
             return {**_plan_stats(plan), "sources": len(groups), "written": 0, "quotes": 0}
 
-        planned_sources = sorted(groups)
+        planned_sources = planned
 
         def _store(repos: Any, rows: list[tuple[str, list[Quote], int]] = writes) -> int:
             # A source whose targets rotated out of the working set has no reader left, and its row would
@@ -245,59 +244,70 @@ class QuoteSnapshotLoop:
         }
         return self.last_result
 
-    def _call(self, kind: str, source: str, members: Sequence[PriceInstrument]) -> Callable[[], Awaitable[Any]]:
-        fetcher = self.fetcher_for(source) if kind == "quote" else self._change_fetcher(source)
+    def _source_call(
+        self, source: str, members: Sequence[PriceInstrument], *, day: bool
+    ) -> Callable[[], Awaitable[Any]]:
+        """One call per source per turn, always — the day read replaces that turn's price read, never joins it.
+
+        Sharing the turn's deadline with a second, larger optional request is how an optional question voids
+        a mandatory one: `asyncio.wait_for` cancels the whole gather, so a slow `ticker/24hr` would discard
+        every already-fetched price, on every source, including the venues that answered instantly.
+        """
+
+        fetcher = (self.day_fetcher_for(source) if day and self.day_fetcher_for else None) or self.fetcher_for(source)
         symbols = [instrument.venue_symbol for instrument in members]
 
-        async def _run() -> Any:
+        async def _call() -> Sequence[ProviderQuote]:
             if fetcher is None:
                 raise TransientError(f"quote_source_unavailable:{source}")
             return await fetcher(symbols)
 
-        return _run
+        return _call
 
-    def _change_fetcher(self, source: str) -> ChangeFetcher | None:
-        return None if self.change_fetcher_for is None else self.change_fetcher_for(source)
+    def _day_due(self, source: str, members: Sequence[PriceInstrument], stamp: int) -> bool:
+        """Due on the cadence, and immediately for a symbol no day read has covered yet.
 
-    def _change_due(self, source: str, stamp: int) -> bool:
-        """Only sources that publish the change separately, and only once per its own cadence."""
+        The working set is ordered newest Event first, so the symbol that just joined it is the card the
+        operator is looking at right now — making it wait five minutes for its percentage is the wrong
+        trade. `_covered` records what the last day read *asked* for, not what it answered, so a symbol no
+        venue lists is covered after one attempt and cannot pin the source to the expensive endpoint.
+        """
 
-        if self._change_fetcher(source) is None:
+        if self.day_fetcher_for is None or self.day_fetcher_for(source) is None:
             return False
-        asked = self._change_asked_at_ms.get(source)
-        if asked is not None and stamp - asked < self.change_period_ms:
-            return False
-        self._change_asked_at_ms[source] = stamp
-        return True
+        landed = self._day_at_ms.get(source)
+        if landed is None or stamp - landed >= self.day_period_ms:
+            return True
+        covered = self._covered.get(source) or set()
+        return any(instrument.venue_symbol not in covered for instrument in members)
 
-    def _absorb_change(self, source: str, members: Sequence[PriceInstrument], result: Any, errors: list[str]) -> None:
-        """A change map that did not arrive never blocks the price write — the previous figure just ages."""
+    def _absorb_day_read(
+        self, source: str, members: Sequence[PriceInstrument], quotes: Sequence[ProviderQuote], stamp: int
+    ) -> None:
+        """Cache what this read answered. Only a read that returned stamps the clock (#109)."""
 
-        if isinstance(result, BaseException):
-            code = getattr(result, "code", None) or type(result).__name__
-            errors.append(f"{source}:change:{code}")
-            log.warning("news quote change fetch failed source=%s code=%s", source, code)
+        references = {quote.venue_symbol: quote.reference_price for quote in quotes if quote.reference_price}
+        if not references:
             return
-        symbols = {instrument.venue_symbol for instrument in members}
-        values = {
-            str(key): float(value)
-            for key, value in dict(result or {}).items()
-            if str(key) in symbols and value is not None
-        }
-        if not values:
-            # Same reasoning as an empty quote payload: replacing the map would turn every percentage on the
-            # source into a blank, which is a worse answer than a five-minute-old one.
-            errors.append(f"{source}:change:venue_payload_empty")
+        self._references[source] = references
+        self._covered[source] = {instrument.venue_symbol for instrument in members}
+        self._day_at_ms[source] = stamp
+
+    def _bound_cache(self, groups: Mapping[str, Any]) -> None:
+        """Keep the cache bounded without punishing a one-turn absence.
+
+        A source can drop out of a single plan (a burst of Events pushes it past `QUOTE_TARGET_MAX`) and be
+        back the next turn; evicting on sight would make it re-pay for the wide endpoint every time that
+        happens. Merging only ever reads the symbols in the current members, so a value nobody asks for is
+        already unreachable — this is a memory bound, not a correctness rule.
+        """
+
+        if len(self._references) <= 2 * QUOTE_SOURCE_GROUP_MAX:
             return
-        self._changes[source] = values
-
-    def _forget_changes_except(self, groups: Mapping[str, Any]) -> None:
-        """The cache is bounded by the working set: a source that rotated out cannot keep a value alive."""
-
-        for source in [key for key in self._changes if key not in groups]:
-            self._changes.pop(source, None)
-        for source in [key for key in self._change_asked_at_ms if key not in groups]:
-            self._change_asked_at_ms.pop(source, None)
+        for source in [key for key in self._references if key not in groups]:
+            self._references.pop(source, None)
+            self._covered.pop(source, None)
+            self._day_at_ms.pop(source, None)
 
 
 def _plan_stats(plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -314,13 +324,14 @@ def _plan_stats(plan: Mapping[str, Any]) -> dict[str, Any]:
 def _quotes_for(
     members: Sequence[PriceInstrument],
     provider: Sequence[ProviderQuote],
-    changes: Mapping[str, float] | None = None,
+    references: Mapping[str, Decimal] | None = None,
 ) -> list[Quote]:
     """Provider numbers keep provider identity; News identity comes from the resolved instrument.
 
-    A venue that publishes the day change with the price (Hyperliquid) carries it on the quote; one that
-    publishes it separately (Binance, #109) leaves it unset and the loop's cached map fills it in. Before the
-    first change map arrives the percentage is simply absent — never a number from some other window.
+    A quote that already carries its own day change keeps it. One that does not (a Binance price read, #109)
+    gets it derived here from *this turn's* price and the cached reference, so the percentage can never
+    disagree with the number rendered beside it. With no reference yet the percentage is simply absent —
+    never a ratio against some other turn's price.
     """
 
     by_symbol = {quote.venue_symbol: quote for quote in provider}
@@ -330,8 +341,8 @@ def _quotes_for(
         if quote is None:
             continue
         change_pct = quote.change_pct
-        if change_pct is None and changes:
-            change_pct = changes.get(instrument.venue_symbol)
+        if change_pct is None and references:
+            change_pct = parse_change_pct(quote.price, references.get(instrument.venue_symbol))
         out.append(
             Quote(
                 venue=instrument.venue,

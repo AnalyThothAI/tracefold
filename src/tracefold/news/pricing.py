@@ -43,15 +43,17 @@ HORIZON_MS: Final[Mapping[str, int]] = {"1h": 3_600_000, "4h": 14_400_000}
 # ---------------------------------------------------------------------------- code-owned budgets
 # 20 s, not 5. The five-second cadence was written for a freshness SLO the product never had: the browser
 # reads over HTTP polling, so no price can reach a reader faster than that poll anyway. What it did buy was
-# bandwidth — Binance's USD-M ticker has no `symbols=` filter, so every turn pulls the whole market (277 kB),
-# and at 5 s that measured 6.8 MB/min ≈ 9.8 GB/day in production. Quartering the cadence quarters that while
-# leaving the console's actual refresh behaviour unchanged.
+# bandwidth — Binance's USD-M ticker has no `symbols=` filter, so every turn pulled the whole market (270 kB
+# = 276,517 bytes), and at 5 s that measured 6.8 MB/min ≈ 9.8 GB/day in production. Quartering the cadence
+# quarters that while leaving the console's actual refresh behaviour unchanged.
 QUOTE_PERIOD_SECONDS: Final = 20.0
-# The day change is a 24-hour window, so asking for it every turn moves the displayed number by ~0.02% and
-# costs six times the price payload: Binance answers the price question in 45.5 kB (`ticker/price`) where the
-# combined one needs 270 kB (`ticker/24hr`). Two questions, two cadences (#109). Five minutes of age on a
-# 24-hour figure is not a freshness loss; `change_basis` still names the window either way.
-QUOTE_CHANGE_PERIOD_SECONDS: Final = 300.0
+# How often a Binance source pays for the wider `ticker/24hr` (270 kB) instead of `ticker/price` (45.5 kB for
+# the same market, weight 2 against 42). It is still exactly one request per source per turn — the day read
+# *is* that turn's price read — so the split costs no extra call, no extra deadline and no extra failure mode
+# (#109). What ages between day reads is the 24 h window's open, not the percentage: the percentage is
+# recomputed from every turn's own price, so it never disagrees with the number beside it, and a window open
+# moves 0.023% per turn. Five minutes of that is 0.35%, against the 6x payload it would cost to chase.
+QUOTE_DAY_PERIOD_SECONDS: Final = 300.0
 QUOTE_TURN_DEADLINE_SECONDS: Final = 10.0
 QUOTE_LOOKBACK_MS: Final = 72 * 3_600_000
 QUOTE_TARGET_MAX: Final = 256
@@ -161,6 +163,10 @@ class ProviderQuote:
     price: Decimal
     change_pct: float | None = None
     change_basis: str | None = None
+    # What the day change is measured against, when the venue publishes it. The loop caches this rather than
+    # the percentage, because a reference ages honestly (0.023% per 20 s turn) where a percentage does not:
+    # it is a ratio against a price the next turn is about to replace.
+    reference_price: Decimal | None = None
     source_at_ms: int | None = None
 
 
@@ -358,7 +364,7 @@ __all__ = [
     "PRICE_KIND_ZH",
     "PRICE_SOURCE_ORDER",
     "QUOTE_ASSET_ORDER",
-    "QUOTE_CHANGE_PERIOD_SECONDS",
+    "QUOTE_DAY_PERIOD_SECONDS",
     "QUOTE_FRESH_MAX_AGE_MS",
     "QUOTE_LOOKBACK_MS",
     "QUOTE_PERIOD_SECONDS",

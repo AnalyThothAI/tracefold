@@ -387,7 +387,11 @@ observed after deployment.
   one `state`: `fresh` (age <= 60 s, three collector turns), `stale`, `unavailable` (nothing quoted
   yet) or `unlisted` (no venue we poll lists it). A price is a positive decimal
   string or `null`; it is never `0`, and a failed venue leaves the previous row
-  in place rather than blanking it. Current quotes are deliberately **not** feed
+  in place rather than blanking it. `change_pct` is `null` until the venue's day
+  reference is known — always recomputed from the same response's price, never
+  carried over from another turn (#109) — and `source_at_ms` is `null` for venues
+  that publish no timestamp of their own (Hyperliquid always; `binance.spot`
+  between day reads). Current quotes are deliberately **not** feed
   fields — a price that changed must not invalidate the Feed ETag or re-run its
   count query every three seconds.
 - `GET /api/news/review?hours={1..720}` (default 168) returns the 命中复盘
