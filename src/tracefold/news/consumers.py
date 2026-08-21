@@ -839,13 +839,14 @@ class TriageConsumer:
         table = repos.instruments.alias_map()
         self._aliases = table or None
 
-    async def run(self, *, stop_event: asyncio.Event) -> None:
+    async def register_runtime_manifest(self) -> None:
         if self.runtime_manifest:
-            with contextlib.suppress(TransientError, DeferError):
-                await self.db.tx(
-                    "news_agent_runtime_manifest",
-                    lambda repos: repos.news.register_agent_runtime_manifest(**self.runtime_manifest),
-                )
+            await self.db.tx(
+                "news_agent_runtime_manifest",
+                lambda repos: repos.news.register_agent_runtime_manifest(**self.runtime_manifest),
+            )
+
+    async def run(self, *, stop_event: asyncio.Event) -> None:
         # A fresh process starts with a closed circuit: an incident left open by a previous process is over.
         with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
@@ -1795,6 +1796,9 @@ class NewsPipeline:
     quotes: QuoteSnapshotLoop | None = None
     reactions: EventReactionLoop | None = None
     tasks: list[tuple[str, Callable[..., Any]]] = field(default_factory=list)
+
+    async def register_runtime_manifest(self) -> None:
+        await self.triage.register_runtime_manifest()
 
     def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Any]]]:
         out: list[tuple[str, Callable[[asyncio.Event], Any]]] = []

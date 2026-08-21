@@ -1280,14 +1280,11 @@ class NewsRepository:
         runtime_revision: str,
         now_ms: int,
     ) -> None:
-        previous = self.conn.execute(
-            "SELECT * FROM news_agent_runtime_manifests ORDER BY registered_at_ms DESC LIMIT 1"
-        ).fetchone()
         previous_active = self.conn.execute(
-            "SELECT artifact_sha FROM news_learning_artifacts "
+            "SELECT artifact_sha, payload FROM news_learning_artifacts "
             "WHERE kind = 'active_agent' ORDER BY created_at_ms DESC LIMIT 1"
         ).fetchone()
-        cursor = self.conn.execute(
+        self.conn.execute(
             """
             INSERT INTO news_agent_runtime_manifests(
               manifest_sha, stable_bundle_sha, candidate_shas, image_digest,
@@ -1304,7 +1301,8 @@ class NewsRepository:
                 int(now_ms),
             ),
         )
-        if not cursor.rowcount:
+        previous_payload = dict(previous_active["payload"] or {}) if previous_active else {}
+        if previous_payload.get("runtime_manifest_sha") == manifest_sha:
             return
         active_sha = self._append_learning_artifact(
             "active_agent",
@@ -1320,26 +1318,25 @@ class NewsRepository:
             created_by="worker_startup",
             now_ms=now_ms,
         )
-        previous_stable = str(previous["stable_bundle_sha"]) if previous else None
-        previous_image = str(previous["image_digest"]) if previous else None
-        if previous is None or previous_stable != stable_bundle_sha or previous_image != image_digest:
-            self._append_learning_artifact(
-                "deployment_receipt",
-                {
-                    "action": "runtime_deploy",
-                    "active_agent_sha": active_sha,
-                    "stable_sha": stable_bundle_sha,
-                    "image_digest": image_digest,
-                    "runtime_revision": runtime_revision,
-                    "previous_stable_sha": previous_stable,
-                    "previous_image_digest": previous_image,
-                    "deployed_at_ms": int(now_ms),
-                    "rollback_available_until_ms": int(now_ms) + 24 * 3_600_000,
-                },
-                parent_sha=active_sha,
-                created_by="worker_startup",
-                now_ms=now_ms,
-            )
+        previous_stable = str(previous_payload["stable_sha"]) if previous_payload else None
+        previous_image = str(previous_payload["image_digest"]) if previous_payload else None
+        self._append_learning_artifact(
+            "deployment_receipt",
+            {
+                "action": "runtime_deploy",
+                "active_agent_sha": active_sha,
+                "stable_sha": stable_bundle_sha,
+                "image_digest": image_digest,
+                "runtime_revision": runtime_revision,
+                "previous_stable_sha": previous_stable,
+                "previous_image_digest": previous_image,
+                "deployed_at_ms": int(now_ms),
+                "rollback_available_until_ms": int(now_ms) + 24 * 3_600_000,
+            },
+            parent_sha=active_sha,
+            created_by="worker_startup",
+            now_ms=now_ms,
+        )
 
     def _append_learning_artifact(
         self,

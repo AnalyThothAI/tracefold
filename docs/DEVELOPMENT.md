@@ -109,10 +109,12 @@ by wall-clock deadlines, ~2 minutes), `make test-e2e`/`make test-golden` the
 service and corpus lanes, and `make test-all` everything (~6.5 minutes).
 Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
-head. There are no historical migration-path tests: the Alembic chain is the
+head. Historical migration-path tests are narrow and explicit: they cover the
+preservation/grant cuts that carry user evidence forward and the `0292` to
+`0293` append-only Program epoch transition. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
-`20260822_0292`, and schema tests run against that
-migrated head. The e2e lane (`tests/e2e/test_golden_path.py`) starts one
+`20260822_0293`; schema tests also run against that migrated head. The e2e lane
+(`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
 that the retired GMGN-lane and Macro routes answer `404`; it runs no Workers
@@ -163,19 +165,21 @@ and production stages. Record/replay is exact at each Predictor request and
 fails on an unrecorded request or runtime-model identity mismatch.
 
 Issue #129 deliberately resets learning eligibility. Migration `0292` records
-the `program_v1` epoch start from the database deployment clock. Prompt-era
-reviews, datasets, recordings and release receipts remain immutable audit
-history but are not training, validation, holdout or promotion evidence. New
-datasets require post-epoch reviews and acceptance receipts bound to the exact
-stable Program bundle, so quality evidence begins at zero.
+the initial `program_v1` epoch start from the database deployment clock;
+`0293` preserves it and appends the corrected `program_v2` epoch after the
+semantic fast-retry state bug was found in production proof. Prompt-era and
+`program_v1` reviews, datasets, recordings and release receipts remain immutable
+audit history but are not training, validation, holdout or promotion evidence.
+New datasets require post-epoch reviews and acceptance receipts bound to the
+exact stable Program bundle, so quality evidence begins at zero.
 
 `learning compile` is a cold, operator-invoked DSPy GEPA compiler, not a Worker
 and not a release gate. It can read only accepted development episodes and the
 fixed `EventSemantics -> ReaderCard` factory. Every invocation must state
 metric-call, total task/reflection-model-call and provider-cost-in-microusd
 limits plus an explicit seed. The result is canonical state-only JSON plus
-provenance and a
-machine diff. The compiler cannot see validation/holdout, write accepted truth,
+provenance and a machine diff. The compiler cannot see validation/holdout,
+write accepted truth,
 register a candidate, alter the Python topology, accept, deploy or promote.
 
 Promotion requires sealed PASS artifacts in order: development, future

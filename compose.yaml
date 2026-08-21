@@ -1,7 +1,7 @@
 name: tracefold
 
 x-tracefold-app: &tracefold-app
-  image: ${COMPOSE_PROJECT_NAME:-tracefold}-app:local
+  image: ${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}
   build:
     context: .
     args:

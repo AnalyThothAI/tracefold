@@ -7,7 +7,7 @@ import uuid
 from argparse import Namespace
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from tracefold.platform.config.settings import load_settings
 
@@ -230,6 +230,7 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
 def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repositories import postgres_connection
     from tracefold.news import (
+        LEARNING_EPOCH,
         CandidateEvaluator,
         CandidateManifest,
         ClosedWindow,
@@ -400,8 +401,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 development = conn.execute(
                     "SELECT artifact_sha FROM news_learning_artifacts "
                     "WHERE artifact_sha = %s AND kind = 'dataset' "
-                    "AND payload->>'role' = 'development' AND payload->>'learning_epoch' = 'program_v1'",
-                    (str(args.development),),
+                    "AND payload->>'role' = 'development' AND payload->>'learning_epoch' = %s",
+                    (str(args.development), LEARNING_EPOCH),
                 ).fetchone()
                 if development is None:
                     raise ValueError("news_learning_development_dataset_not_found")
@@ -500,32 +501,55 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if candidate is None:
                 raise ValueError("news_learning_candidate_required")
             observation_manifest = str(getattr(args, "observation_manifest", "") or "") or None
+            verify_recordings = bool(getattr(args, "verify_recordings", False))
             if action == "shadow" and observation_manifest is None and not bool(args.live_program):
                 raise ValueError("news_learning_shadow_live_program_confirmation_required")
-            judges = _learning_program_judges(
-                conn,
-                settings=settings,
-                stable=stable,
-                candidate=candidate,
-                artifact_paths=artifact_paths,
-                live=bool(getattr(args, "live_program", False)),
+            stage = str(args.stage) if action == "evaluate" else action
+            if verify_recordings and stage not in {"offline", "holdout"}:
+                raise ValueError(f"news_learning_recording_verification_stage_unsupported:{stage}")
+            request = EvaluationRequest(
+                development_dataset_sha=str(args.development),
+                validation_dataset_sha=str(args.validation) or None,
+                candidate_sha=candidate.candidate_sha,
+                stage=stage,
+                observation_manifest_sha=observation_manifest,
             )
+            recording_replay = None
+            if verify_recordings:
+                from tracefold.news import evaluation_run_sha
+
+                run_sha = evaluation_run_sha(
+                    request,
+                    stable_bundle_sha=stable.bundle_sha,
+                    candidate_sha=candidate.candidate_sha,
+                )
+                recording_replay = _learning_recording_replay_capability(
+                    conn,
+                    stable=stable,
+                    candidate=candidate,
+                    artifact_paths=artifact_paths,
+                    run_sha=run_sha,
+                )
+                judges = {}
+            else:
+                judges = _learning_program_judges(
+                    conn,
+                    settings=settings,
+                    stable=stable,
+                    candidate=candidate,
+                    artifact_paths=artifact_paths,
+                    live=bool(getattr(args, "live_program", False)),
+                )
             evaluator = CandidateEvaluator(
                 conn,
                 stable=stable,
                 judges=judges,
                 candidate_catalog=(candidate,),
             )
-            stage = str(args.stage) if action == "evaluate" else action
             report = asyncio.run(
                 evaluator.evaluate(
-                    EvaluationRequest(
-                        development_dataset_sha=str(args.development),
-                        validation_dataset_sha=str(args.validation) or None,
-                        candidate_sha=candidate.candidate_sha,
-                        stage=stage,
-                        observation_manifest_sha=observation_manifest,
-                    )
+                    request,
+                    recording_replay=recording_replay,
                 )
             )
             payload = report.model_dump(mode="json")
@@ -559,26 +583,13 @@ def _learning_program_judges(
     from tracefold.news.agents.semantic_program import (
         DspyNewsSemanticProgram,
         DspyPredictorAdapter,
-        ProgramArtifactCodec,
         RecordReplayPredictorAdapter,
-        load_program_artifact,
-        load_stable_program_artifact,
     )
 
-    stable_artifact = load_stable_program_artifact()
-    if stable_artifact.program_sha256 != stable.program_sha256:
-        raise ValueError("news_learning_stable_program_mismatch")
-    candidate_arm = candidate.candidate_arm
-    candidate_sha = candidate.candidate_arm.program_sha256
-    candidate_artifact = stable_artifact
-    if candidate_sha != stable_artifact.program_sha256:
-        path = artifact_paths.get(candidate_sha)
-        candidate_artifact = ProgramArtifactCodec.load(path) if path else load_program_artifact(candidate_sha)
-    if candidate_artifact.program_sha256 != candidate_sha:
-        raise ValueError("news_learning_candidate_program_mismatch")
-    arm_artifacts = (
-        ("stable", stable, stable_artifact),
-        ("candidate", candidate_arm, candidate_artifact),
+    arm_artifacts = _learning_program_arm_artifacts(
+        stable=stable,
+        candidate=candidate,
+        artifact_paths=artifact_paths,
     )
     if live:
         return {
@@ -615,6 +626,60 @@ def _learning_program_judges(
             fallback_adapter=replay,
         )
     return judges
+
+
+def _learning_recording_replay_capability(
+    conn: Any,
+    *,
+    stable: Any,
+    candidate: Any,
+    artifact_paths: Mapping[str, str],
+    run_sha: str,
+) -> Any:
+    from tracefold.news import ReplayArmSpec, load_recording_replay_capability
+
+    arm_artifacts = _learning_program_arm_artifacts(
+        stable=stable,
+        candidate=candidate,
+        artifact_paths=artifact_paths,
+    )
+    return load_recording_replay_capability(
+        conn,
+        run_sha=run_sha,
+        arms=tuple(
+            ReplayArmSpec(arm=arm_name, bundle_sha=arm.bundle_sha, artifact=artifact)
+            for arm_name, arm, artifact in arm_artifacts
+        ),
+    )
+
+
+def _learning_program_arm_artifacts(
+    *,
+    stable: Any,
+    candidate: Any,
+    artifact_paths: Mapping[str, str],
+) -> tuple[tuple[Literal["stable", "candidate"], Any, Any], ...]:
+    from tracefold.news.agents.semantic_program import (
+        ProgramArtifactCodec,
+        load_program_artifact,
+        load_stable_program_artifact,
+    )
+
+    stable_artifact = load_stable_program_artifact()
+    if stable_artifact.program_sha256 != stable.program_sha256:
+        raise ValueError("news_learning_stable_program_mismatch")
+    candidate_arm = candidate.candidate_arm
+    candidate_sha = candidate_arm.program_sha256
+    candidate_artifact = stable_artifact
+    if candidate_sha != stable_artifact.program_sha256:
+        path = artifact_paths.get(candidate_sha)
+        candidate_artifact = ProgramArtifactCodec.load(path) if path else load_program_artifact(candidate_sha)
+    if candidate_artifact.program_sha256 != candidate_sha:
+        raise ValueError("news_learning_candidate_program_mismatch")
+    return (
+        ("stable", stable, stable_artifact),
+        ("candidate", candidate_arm, candidate_artifact),
+    )
 
 
 def _configured_program_judge(settings: Any, artifact: Any, program_type: Any, adapter_type: Any) -> Any:

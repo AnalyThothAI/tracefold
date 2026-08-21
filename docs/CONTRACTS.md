@@ -412,9 +412,11 @@ durable canary control, bounded 90/365-day learning retention, and a
 role-authentic Workers evidence-append grant repair. `0291` removes the local
 Strategy allowlist. The irreversible `20260822_0292` hard cut adds Program
 identity to verdicts, per-Predictor call identity/usage/cost to recordings, and
-the append-only deployment-time `program_v1` epoch; all earlier Prompt-era
-learning rows are audit-only and promotion-ineligible. A database at an earlier revision upgrades with
-`tracefold db migrate`; a fresh database runs the complete chain. The exact
+the append-only deployment-time `program_v1` epoch. `20260822_0293` preserves
+that history and appends the corrected `program_v2` epoch; Prompt-era and
+`program_v1` learning rows are audit-only and promotion-ineligible. A database
+at an earlier revision upgrades with `tracefold db migrate`; a fresh database
+runs the complete chain. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -503,7 +505,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260822_0292`).
+append without rewrite access (current at migration `20260822_0293`).
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and
@@ -517,9 +519,9 @@ ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.
 
 `news learning freeze` seals accepted reviews into a content-addressed
-development or future temporal validation dataset. Every dataset is in the
-deployment-time `program_v1` epoch; Prompt-era evidence is audit-only, and
-reviews plus acceptance receipts before the epoch cannot enter a dataset.
+development or future temporal validation dataset. Every current dataset is in
+the deployment-time `program_v2` epoch; Prompt-era and `program_v1` evidence are
+audit-only, and reviews plus acceptance receipts before the epoch cannot enter a dataset.
 `learning compile --development SHA --artifact-root DIR --out FILE
 --max-metric-calls N --max-task-model-calls N --max-cost-microusd N [--seed
 N]` is the manual cold DSPy GEPA compiler. It consumes accepted development

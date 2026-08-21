@@ -97,7 +97,7 @@ There is no legacy Prompt executor or dynamic compatibility loader to bypass
 these checks; Prompt-era database fields are audit-only.
 
 The DSPy GEPA compiler is a cold manual development command, not a runtime
-Worker. It receives accepted `program_v1` development episodes only and must be
+Worker. It receives accepted `program_v2` development episodes only and must be
 given explicit metric-call, total task/reflection-model-call,
 provider-cost-in-microusd limits and a seed. It has no authority to read
 validation/holdout, write accepted truth, register, deploy or promote. Its
@@ -105,8 +105,10 @@ output remains an unaccepted candidate until the ordinary release chain and
 code review carry it into an image.
 
 Migration `0292` creates the append-only deployment-time `program_v1` learning
-epoch. Prompt-era reviews, datasets, recordings and release receipts are
-retained as audit history but are never training, validation, holdout or
+epoch; `0293` preserves it and appends `program_v2` for the corrected semantic
+retry state machine and hardened restatement sentinel. Prompt-era and
+`program_v1` reviews, datasets, recordings and release receipts are retained as
+audit history but are never training, validation, holdout or
 promotion evidence for this Program factory. The reset is an eligibility hard
 cut, not permission for an optimizer to relabel old evidence or delete it.
 

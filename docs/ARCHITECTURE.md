@@ -111,10 +111,13 @@ candidate manifests, evaluation reports, pairwise cases, model recordings,
 deployments and rollback receipts live in `news_learning_artifacts` and
 `news_learning_cases`. `news_canary_activations`, `news_agent_assignments`, and
 `news_agent_runtime_manifests` are the durable production control/audit seam.
-`news_learning_epochs` records the immutable deployment-time start of the
-`program_v1` evidence epoch. Prompt-era rows remain append-only audit history,
-but no dataset or release gate may treat them as training or promotion
-evidence.
+Workers registers the runtime manifest and its linked active/deployment receipt
+as a synchronous startup barrier before its probe can become ready.
+`news_learning_epochs` records immutable deployment-time evidence epochs. The
+current `program_v2` epoch supersedes the first Program baseline after its
+semantic fast-retry state bug was found; Prompt-era and `program_v1` rows remain
+append-only audit history, but no current dataset or release gate may treat them
+as training or promotion evidence.
 `news_learning_retention_state` makes the bounded 90/365-day cold purge and
 its current backlog/error observable; the database function pins the current
 and previous distinct stable release chains. The exact `news_*` base-table set
@@ -137,7 +140,7 @@ tracefold.news
   price_repository.py quote snapshots, Event Reactions, and the bounded review aggregates
   facts.py            atomic fact units and immutable Event evidence snapshots
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-  candidate_evaluator.py content-addressed program_v1 datasets and stable/candidate evaluation workflow
+  candidate_evaluator.py content-addressed program_v2 datasets and stable/candidate evaluation workflow
   canary.py           deterministic one-arm assignment and durable trip/close control
   events.py           the Deduper transaction (admit_item)
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
@@ -722,15 +725,17 @@ first bad owner). A judgment becomes training/eval truth only after a separate
 acceptance receipt. An important fact missing before Event creation enters as
 an immutable external-miss snapshot, rather than a fake Event id.
 
-Issue #129 starts the immutable `program_v1` learning epoch at migration
-deployment time. All Prompt-era reviews, datasets, recordings, reports and
-release receipts remain readable audit evidence, but they are promotion-
+Issue #129 first starts the immutable `program_v1` learning epoch at migration
+deployment time. Corrective migration `0293` preserves that history and appends
+`program_v2` after fixing the semantic retry state machine. All Prompt-era and
+`program_v1` reviews, datasets, recordings, reports and release receipts remain
+readable audit evidence, but they are promotion-
 ineligible and cannot seed a new Program dataset. Evidence accumulation starts
 from zero: Event reviews and acceptance receipts must be created after the
 epoch, and eligible verdicts must match the exact stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v1` evidence, compares stable with exactly one declared `program` or
+`program_v2` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -817,7 +822,9 @@ Workers evidence-append grant/lock repair and role-authentic audit. `0291`
 removes the local OpenNews Strategy allowlist. Issue #129's irreversible
 `0292` migration adds Program identity and per-Predictor recording fields,
 creates the append-only deployment-time `program_v1` epoch, and marks all
-earlier Prompt-era learning evidence audit-only. No
+earlier Prompt-era learning evidence audit-only. `0293` preserves that row and
+appends the corrected `program_v2` epoch, making `program_v1` evidence
+audit-only for current release decisions. No
 chained revision has a downgrade. Earlier hard cuts live only in git history;
 a fresh database and a database upgraded through the chain reach
 byte-identical schemas.

@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +26,7 @@ from tests.postgres_test_utils import (
 from tests.postgres_test_utils import (
     test_postgres_dsn as _test_postgres_dsn,
 )
+from tracefold.app import workers as workers_module
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.http.app import create_app
 from tracefold.app.repositories import repositories_for_connection
@@ -230,6 +232,35 @@ def test_workers_probe_has_only_private_operational_routes_and_health_never_call
     assert calls == 1
     assert ready.status_code == 503
     assert {route.path for route in app.routes} >= {"/healthz", "/readyz", "/metrics"}
+
+
+def test_workers_wiring_waits_for_the_runtime_manifest_before_it_can_reach_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Pipeline:
+        async def register_runtime_manifest(self) -> None:
+            calls.append("runtime_manifest_registered")
+
+    pipeline = Pipeline()
+
+    async def wire_news_pipeline(**_kwargs):
+        calls.append("news_pipeline_wired")
+        return object(), pipeline
+
+    monkeypatch.setattr(workers_module, "_wire_news_pipeline", wire_news_pipeline)
+
+    components = asyncio.run(
+        workers_module._wire_components(
+            settings=SimpleNamespace(news=SimpleNamespace(enabled=True)),
+            db=object(),
+            finite=object(),
+        )
+    )
+
+    assert calls == ["news_pipeline_wired", "runtime_manifest_registered"]
+    assert components.news_pipeline is pipeline
 
 
 def test_workers_metrics_render_does_not_block_readiness() -> None:

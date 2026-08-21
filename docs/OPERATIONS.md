@@ -52,13 +52,83 @@ migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
 HTML console all pass. It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
+### Exact-image rollback with the current database schema
+
+An image rollback is a runtime replacement, not an Alembic downgrade. Use the
+repo-owned target only when the previous image carries the exact same Alembic
+head as the current source. After the #129 retry correction that means
+`20260822_0293`;
+after any future migration it means that newer current head, so an older-schema
+image is deliberately unavailable as a rollback target.
+
+From the primary checkout on `main`, read the most recent recorded previous
+runtime image ID and verify that Docker still has it locally:
+
+```bash
+cd ~/Documents/Code/tracefold
+docker compose exec -T postgres sh -eu -c '
+  PGPASSWORD="$(cat /run/secrets/postgres_serve_password)"
+  PGOPTIONS="-c default_transaction_read_only=on"
+  export PGPASSWORD PGOPTIONS
+  exec psql -X -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$1"
+' sh \
+  "SELECT payload->>'previous_image_digest' AS image_id
+     FROM news_learning_artifacts
+    WHERE kind = 'deployment_receipt'
+      AND payload->>'action' = 'runtime_deploy'
+      AND NULLIF(payload->>'previous_image_digest', '') IS NOT NULL
+    ORDER BY created_at_ms DESC, artifact_sha DESC
+    LIMIT 1"
+docker image inspect --format '{{.Id}}' sha256:REPLACE_WITH_64_LOWERCASE_HEX
+make deploy-image IMAGE_ID=sha256:REPLACE_WITH_64_LOWERCASE_HEX
+```
+
+Copy the literal `sha256:` ID into both commands; do not substitute a tag,
+short ID, `name@sha256:` registry reference, or shell-discovered latest image.
+The target does not pull. It requires a deployment-clean primary checkout at an
+exact local `origin/main` commit; tracked/staged changes, `.env`, untracked or
+ignored Compose overrides, and untracked or ignored Alembic revisions fail
+closed, while unrelated untracked research files do not affect the rollback
+boundary. Inherited `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`, `COMPOSE_ENV_FILES`,
+and `COMPOSE_PROFILES` are refused; the target then pins Compose to the repository's
+absolute `compose.yaml` and the `tracefold` project. `IMAGE_ID` must arrive on the
+Make command line. The target re-inspects the local image to the
+same full ID, runs `latest_migration_version()` inside both the current source
+and target image, and reads the live database's `alembic_version` through the
+read-only Serve role. All three heads must match before anything stops. It also
+mounts the active operator config through the migration service and silently
+runs the target image's redacted `tracefold config` parser. A missing image,
+dirty/stale checkout, head mismatch, or config incompatibility is therefore a
+no-op failure. `make up` and `make deploy-image` share one kernel-held deployment
+lock from before initialization/mutation through the final status and success
+output; a concurrent lifecycle command is refused, and process exit releases the
+lock without stale-lock cleanup. Their `make -n` forms only print the plan.
+
+After those checks it sets both Compose's app image and
+`TRACEFOLD_IMAGE_DIGEST` to the inspected ID, stops Workers and Serve, and
+recreates `migrate`, `serve`, and `workers` with `--no-build`. Compose waits for
+the one-shot migration and both runtimes. Before reporting success, the target
+requires all three recreated containers' Docker image IDs to equal the requested
+ID, requires Workers `/readyz.image_digest` to equal it, and uses read-only SQL
+to require that the latest `active_agent`, linked `runtime_deploy` receipt, and
+runtime manifest all carry the same identity. It then runs the canonical
+`make status` gate. PostgreSQL and RabbitMQ are not replaced.
+
+The receipt's 24-hour rollback window is audit intent, not a promise that local
+Docker garbage collection retained the image. If the ID is absent, recover the
+trusted image into the local store through the operator's image-distribution
+process first; never weaken the target to a mutable tag or bypass the schema
+check. If recreation fails after the services were stopped, inspect
+`make logs`, then either correct the exact-image problem or use normal
+`make up` to rebuild and redeploy the current source.
+
 ## Health and status
 
 | Surface | Meaning | SQL/queue inspection |
 |---|---|---|
 | `/healthz` | process liveness | none |
 | Serve `/readyz` | DB liveness plus cached startup schema/composition | no queue inspection |
-| Workers `/readyz` | root running, singleton session healthy, and latest O(1) heartbeat persisted within 15 s, plus the `runtime_revision` / `image_digest` this process can prove | no queue inspection |
+| Workers `/readyz` | root running, singleton session healthy, latest O(1) heartbeat persisted within 15 s, and (when News is enabled) the runtime manifest plus linked active/deployment receipt committed, plus the `runtime_revision` / `image_digest` this process can prove | no queue inspection |
 | `/api/status` | `{measured_at_ms, runtime}`: database probe plus the Workers heartbeat row | bounded control read |
 | `/api/news/status` | four-layer News state (`ingest`, `broker`, `pipeline`, `delivery`) plus `control` | bounded News reads |
 | `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
@@ -388,9 +458,10 @@ Diagnose News in this order:
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-Issue #129 starts evidence eligibility from zero at the deployment timestamp
-stored in `news_learning_epochs(program_v1)`. Prompt-era rows remain readable
-audit history but cannot enter a dataset or satisfy a release stage. Do not
+Issue #129 starts current evidence eligibility from zero at the deployment
+timestamp stored in `news_learning_epochs(program_v2)`. Prompt-era rows and the
+superseded `program_v1` baseline remain readable audit history but cannot enter
+a dataset or satisfy a release stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
 two-Predictor trace as proof of higher quality; that claim begins only after
 post-epoch accepted reviews and future holdout/shadow/canary evidence exist.
@@ -466,7 +537,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260822_0292_dspy_program_epoch`. The #112 chain
+the linear revisions through `20260822_0293_program_v2_epoch`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -477,7 +548,7 @@ chained revision
 Workers hold the steady lock).
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
-Before its first 0284–0292 upgrade, take a restorable volume backup, stop Serve
+Before its first 0284–0293 upgrade, take a restorable volume backup, stop Serve
 and Workers, run the normal migration, then deploy the matching image. The
 migration owns the narrow ReviewDesk grants; the existing Serve credential is
 unchanged.
@@ -532,8 +603,10 @@ Strategy allowlist. 0292 adds Program version/SHA to verdicts, Predictor/call/
 attempt/route usage and cost fields to model recordings, and the append-only
 `news_learning_epochs` row whose database deployment timestamp starts
 `program_v1`; its explicit disposition makes all Prompt-era learning evidence
-audit-only and promotion-ineligible. It does not delete that history or claim
-a release PASS.
+audit-only and promotion-ineligible. `0293` preserves that row and appends
+`program_v2` after correcting the semantic fast-retry state machine and
+hardening the restatement sentinel, making `program_v1` evidence audit-only as
+well. Neither migration deletes history or claims a release PASS.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
@@ -573,10 +646,10 @@ Learning evidence follows #118's separate deterministic policy:
 - the newest manifest for each of the current and previous distinct stable
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
-- `news_learning_epochs` is append-only permanent audit truth. The
-  `program_v1` reset changes eligibility, not retention: Prompt-era evidence
-  remains auditable until the existing deterministic retention policy makes an
-  otherwise-unpinned row eligible;
+- `news_learning_epochs` is append-only permanent audit truth. The current
+  `program_v2` reset changes eligibility, not retention: Prompt-era and
+  `program_v1` evidence remain auditable until the existing deterministic
+  retention policy makes an otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;
 - every purge call deletes at most 500 recordings, 500 cases and 500 artifacts.
   Eligible counters are capped at 501: `501` means “at least one more full

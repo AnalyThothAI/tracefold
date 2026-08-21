@@ -592,6 +592,7 @@ async def _wire_components(
     news_bus: Any | None = None
     if settings.news.enabled:
         news_bus, news_pipeline = await _wire_news_pipeline(settings=settings, db=db, finite=finite)
+        await news_pipeline.register_runtime_manifest()
     return _Components(news_pipeline=news_pipeline, news_bus=news_bus)
 
 

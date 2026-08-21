@@ -114,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
         learning_eval.add_argument("--development", required=True, help="development dataset artifact SHA")
         learning_eval.add_argument("--validation", default="", help="validation dataset SHA")
         learning_eval.add_argument("--candidate", required=True, help="candidate manifest JSON/YAML")
+        execution_mode = learning_eval.add_mutually_exclusive_group()
         if stage is None:
             learning_eval.add_argument(
                 "--stage",
@@ -121,10 +122,15 @@ def build_parser() -> argparse.ArgumentParser:
                 default="offline",
                 help="evaluation evidence stage",
             )
-            learning_eval.add_argument(
+            execution_mode.add_argument(
                 "--live-program",
                 action="store_true",
                 help="run the assigned DSPy Program live and append per-Predictor recordings",
+            )
+            execution_mode.add_argument(
+                "--verify-recordings",
+                action="store_true",
+                help="strictly re-run an existing offline/holdout corpus without live provider calls",
             )
             learning_eval.add_argument(
                 "--observation-manifest",
@@ -137,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
                 default="",
                 help="reuse a sealed shadow observation artifact instead of collecting one",
             )
-            learning_eval.add_argument(
+            execution_mode.add_argument(
                 "--live-program",
                 action="store_true",
                 help="cold-run the candidate Program over the closed validation window",

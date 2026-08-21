@@ -200,9 +200,11 @@ offline, holdout, shadow and canary gates under `tracefold news learning`.
 The optional `learning compile` command cold-runs bounded DSPy GEPA over
 accepted development episodes only; it requires explicit metric-call,
 model-call and provider-cost limits plus a seed, and cannot inspect holdout,
-accept, deploy or promote. The `program_v1` epoch begins when migration `0292` is
-deployed: older Prompt-era evidence remains audit-only, and quality evidence
-restarts from zero. The hard cut itself does not prove a quality uplift; it
+accept, deploy or promote. Migration `0292` records the initial `program_v1`
+epoch; migration `0293` preserves it and starts the corrected `program_v2`
+epoch. Prompt-era and `program_v1` evidence remain audit-only, and quality
+evidence restarts from zero at the `program_v2` deployment. The hard cut itself
+does not prove a quality uplift; it
 creates future per-Predictor feedback, demo, routing and fine-tuning leverage
 at the immediate cost of the normal call count increasing from one to two.
 `tracefold config` prints the effective values. Policy v7 has no 1 h/2 h/4 h
@@ -269,7 +271,7 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 The Alembic chain starts at the `20260818_0275` current-schema baseline and is
-linear through `20260822_0292_dspy_program_epoch`. A new empty database applies
+linear through `20260822_0293_program_v2_epoch`. A new empty database applies
 the complete chain without replaying retired runtime tables. A database
 stamped at an earlier revision migrates forward with `tracefold db migrate`;
 all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers
@@ -311,6 +313,25 @@ It intentionally does not make business-data freshness part of readiness. Use
 The preflight verifies `uv`, the Docker CLI, Compose plugin, `curl`, and daemon
 access before a build starts. If the daemon is unavailable, start Docker
 Desktop or grant this shell access to the Docker socket, then rerun `make up`.
+
+`make deploy-image IMAGE_ID=sha256:<64 lowercase hex>` is the narrow
+database-compatible image rollback/redeployment path. Run it only from the
+primary checkout on `main`, and pass the full ID of an image already present in
+the local Docker image store; tags, short IDs, registry digest references, and
+an `IMAGE_ID` inherited only from the environment are refused. The checkout
+must have no tracked/staged changes, must equal local `origin/main`, and must
+have no `.env`, untracked Compose override, or untracked Alembic revision; an
+unrelated untracked research artifact is not a deployment input. The target
+inspects the local ID and requires the image, source, and live database Alembic
+heads to match (therefore rejecting every image on a different schema head
+mismatch), then validates that the target can parse the active config without
+printing it. It injects that exact ID as `TRACEFOLD_IMAGE_DIGEST`, stops Serve
+and Workers, and recreates migration, Serve, and Workers with `--no-build`.
+Before running `make status`, it verifies every recreated container image,
+Workers readiness identity, and the linked active/runtime-deployment receipt.
+It never downgrades PostgreSQL. See `OPERATIONS.md` for the receipt lookup and
+rollback runbook. Normal `make up` still builds and deploys the current checkout
+and ignores this exact-image override.
 
 The official PostgreSQL 18 Bookworm image preloads `pg_stat_statements` with
 query IDs enabled. Use `tracefold db health`, supported audit/query-audit and

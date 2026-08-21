@@ -27,6 +27,7 @@ from tracefold.news.agents.semantic_program import (
     DspyCompileProgram,
     DspyNewsSemanticProgram,
     DspyPredictorAdapter,
+    EventSemantics,
     PredictorAdapterError,
     PredictorRequest,
     PredictorResponse,
@@ -149,6 +150,18 @@ def test_builtin_artifact_is_registered_and_canonical() -> None:
     assert artifact.state_sha256 == artifact.computed_state_sha256()
 
 
+def test_stable_artifact_encodes_the_restatement_index_contract() -> None:
+    restates_schema = EventSemantics.model_json_schema()["properties"]["restates"]
+    assert restates_schema["description"] == (
+        "Visible event_status.told index if and only if novelty is restatement; -1 for new_fact or progression."
+    )
+    instruction = load_stable_program_artifact().event_semantics.instruction
+    assert (
+        "Set restates to a visible told index if and only if novelty is restatement. "
+        "new_fact and progression always use -1, even when progression follows a prior card."
+    ) in instruction
+
+
 def test_packaged_dependency_lock_identity_matches_the_source_lock() -> None:
     repository_root = Path(__file__).resolve().parents[2]
     assert hashlib.sha256((repository_root / "uv.lock").read_bytes()).hexdigest() == PROGRAM_DEPENDENCY_LOCK_SHA256
@@ -169,8 +182,10 @@ def test_built_wheel_loads_the_image_carried_program_without_a_repository_root(t
     unpacked = tmp_path / "unpacked-wheel"
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(unpacked)
+    installed_path = tmp_path / "installed-wheel"
+    installed_path.symlink_to(unpacked, target_is_directory=True)
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(unpacked)
+    environment["PYTHONPATH"] = str(installed_path)
     loaded = subprocess.run(
         [
             sys.executable,
@@ -397,6 +412,57 @@ def test_one_retry_is_shared_by_route_and_fallback_restarts_graph() -> None:
     ]
     assert [request.predictor for request in fallback.requests] == ["event_semantics", "reader_card"]
     assert judgment.usage.call_count == 5
+
+
+def test_cross_field_semantics_retry_reenters_semantics_before_reader_card() -> None:
+    adapter = ScriptedPredictorAdapter(
+        [
+            _semantics(novelty="progression", restates=0),
+            _semantics(novelty="progression", restates=-1),
+            _card(),
+        ]
+    )
+    context = _context(
+        told_rows=[
+            {
+                "event_id": "prior-card",
+                "at_ms": 1_005_000,
+                "storyline_key": "asset:BTC",
+                "magnitude": 1,
+                "direction": "bullish",
+                "headline_zh": "比特币此前进展",
+            }
+        ]
+    )
+
+    judgment = asyncio.run(_program(adapter).judge(context))
+
+    assert [(request.predictor, request.attempt) for request in adapter.requests] == [
+        ("event_semantics", 1),
+        ("event_semantics", 2),
+        ("reader_card", 1),
+    ]
+    assert judgment.verdict.novelty == "progression"
+    assert judgment.verdict.restates == -1
+
+
+def test_exhausted_cross_field_semantics_retry_never_calls_reader_card() -> None:
+    adapter = ScriptedPredictorAdapter(
+        [
+            _semantics(novelty="progression", restates=0),
+            _semantics(novelty="progression", restates=0),
+            _card(),
+        ]
+    )
+
+    with pytest.raises(SemanticProgramError) as caught:
+        asyncio.run(_program(adapter).judge(_context()))
+
+    assert caught.value.code == "news_program_non_restatement_index_invalid"
+    assert [(request.predictor, request.attempt) for request in adapter.requests] == [
+        ("event_semantics", 1),
+        ("event_semantics", 2),
+    ]
 
 
 def test_chain_budget_is_six_calls_and_reports_partial_trace() -> None:

@@ -27,15 +27,26 @@ from tracefold.news import (
     ProgramTrace,
     ProgramUsage,
     ProposalReceipt,
+    ReplayArmSpec,
     SemanticJudgment,
     TaskRef,
     TriageContext,
+    load_recording_replay_capability,
 )
 from tracefold.news import (
     CandidateEvaluator as _CandidateEvaluator,
 )
 from tracefold.news import ReviewDesk as _ReviewDesk
-from tracefold.news.agents.semantic_program import ProgramCallTrace, SemanticProgramError
+from tracefold.news.agents.semantic_program import (
+    CompileProvenance,
+    DspyCompileProgram,
+    DspyNewsSemanticProgram,
+    ProgramArtifactCodec,
+    ProgramCallTrace,
+    ScriptedPredictorAdapter,
+    SemanticProgramError,
+    load_stable_program_artifact,
+)
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.triage_rules import DEFAULT_POLICY
@@ -413,9 +424,27 @@ def test_observed_non_degraded_program_requires_a_selected_execution() -> None:
 
 def _epoch_started_at_ms(conn: object) -> int:
     row = conn.execute(  # type: ignore[attr-defined]
-        "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = 'program_v1'"
+        "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
+        (LEARNING_EPOCH,),
     ).fetchone()
     return int(row["starts_at_ms"])
+
+
+def test_candidate_evaluator_pins_the_program_v2_epoch_contract(conn) -> None:
+    row = conn.execute(
+        "SELECT prior_evidence_disposition, reset_reason FROM news_learning_epochs WHERE epoch_id = %s",
+        (LEARNING_EPOCH,),
+    ).fetchone()
+
+    assert LEARNING_EPOCH == "program_v2"
+    assert (
+        candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON == "semantic_retry_and_restatement_contract_reidentity"
+    )
+    assert dict(row) == {
+        "prior_evidence_disposition": "audit_only",
+        "reset_reason": candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON,
+    }
+    assert CandidateEvaluator(conn, stable=_arm(), judges={})._learning_epoch_started_at_ms() > 0
 
 
 def _arm(
@@ -691,6 +720,41 @@ def _judge_call_count(judges: Mapping[object, object]) -> int:
     return sum(len(judge.calls) for judge in {id(value): value for value in judges.values()}.values())
 
 
+def _compiled_candidate_artifact(development_sha: str):
+    base = load_stable_program_artifact()
+    cold = DspyCompileProgram(base)
+    cold.event_semantics.signature = cold.event_semantics.signature.with_instructions(
+        "A sealed replay integration candidate instruction"
+    )
+    provenance = CompileProvenance(
+        mode="optimizer_candidate",
+        development_dataset_sha=development_sha,
+        learning_epoch=LEARNING_EPOCH,
+        optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",
+        gepa_version="0.1.1",
+        metric_sha256="5" * 64,
+        optimizer_config_sha256="6" * 64,
+        seed=129,
+        max_metric_calls=20,
+        max_task_model_calls=40,
+        max_cost_microusd=1_000_000,
+        metric_calls=12,
+        task_model_calls=20,
+        reflection_model_calls=10,
+        actual_cost_microusd=500_000,
+        trajectory_sha256="7" * 64,
+        checkpoint_sha256="8" * 64,
+    )
+    artifact = ProgramArtifactCodec.from_compiled_module(
+        cold,
+        base_artifact=base,
+        compiler="GEPA",
+        source="sealed-development-set",
+        compile_provenance=provenance,
+    )
+    return artifact, provenance.model_dump(mode="json")
+
+
 def _program_candidate(
     conn,
     *,
@@ -700,11 +764,13 @@ def _program_candidate(
     persist_receipt: bool = True,
     compile_provenance_override: dict[str, object] | None = None,
     generator_kind: str = "model",
+    program_version: str | None = None,
+    program_sha256: str | None = None,
 ) -> CandidateManifest:
     arm_payload = stable.model_dump(mode="json")
     arm_payload.update(
-        program_version="news_semantic_program_v1_gepa_why_support",
-        program_sha256=_sha({"program": "candidate", "cluster_id": cluster_id}),
+        program_version=program_version or "news_semantic_program_v1_gepa_why_support",
+        program_sha256=program_sha256 or _sha({"program": "candidate", "cluster_id": cluster_id}),
     )
     candidate_arm = ArmManifest.model_validate(arm_payload)
     registered_at_ms = NOW
@@ -1043,12 +1109,24 @@ def _open_event(
     return opened.event_id
 
 
-def _accepted_event(conn, *, why: str = "fail", stale_reask: bool = False) -> str:
-    event_id = _open_event(conn, stale_reask=stale_reask)
-    stable = _arm()
+def _accepted_event(
+    conn,
+    *,
+    why: str = "fail",
+    stale_reask: bool = False,
+    stable: ArmManifest | None = None,
+) -> str:
+    selected_stable = stable or _arm()
+    event_id = _open_event(
+        conn,
+        bundle_sha=selected_stable.bundle_sha,
+        program_version=selected_stable.program_version,
+        program_sha256=selected_stable.program_sha256,
+        stale_reask=stale_reask,
+    )
     conn.execute(
         "UPDATE news_verdicts SET trace = trace || %s::jsonb WHERE event_id = %s AND stage = 'triage'",
-        (json.dumps({"agent_assignment": {"arm": "stable", "bundle_sha": stable.bundle_sha}}), event_id),
+        (json.dumps({"agent_assignment": {"arm": "stable", "bundle_sha": selected_stable.bundle_sha}}), event_id),
     )
     desk = ReviewDesk(conn, now_ms=NOW)
     task = desk.open(
@@ -1425,6 +1503,134 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         "machine_diff": candidate.proposal_receipt.program_machine_diff,
         "compile_provenance": candidate.proposal_receipt.compile_provenance,
     }
+
+
+def test_strict_recording_verification_reexecutes_real_program_graph_without_new_truth(conn) -> None:
+    stable_artifact = load_stable_program_artifact()
+    stable = _arm(
+        program_version=stable_artifact.program_version,
+        program_sha256=stable_artifact.program_sha256,
+    )
+    with repositories_for_connection(conn).transaction():
+        repositories_for_connection(conn).news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "record-replay-test"}),
+            stable_bundle_sha=stable.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:record-replay-test",
+            runtime_revision="record-replay-test",
+            now_ms=NOW - 23 * 3_600_000,
+        )
+    _accepted_event(conn, stable=stable)
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate_artifact, provenance = _compiled_candidate_artifact(development.artifact_sha)
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+        compile_provenance_override=provenance,
+        program_version=candidate_artifact.program_version,
+        program_sha256=candidate_artifact.program_sha256,
+    )
+    semantics = {key: value for key, value in _verdict().items() if key not in {"headline_zh", "title_zh", "why_zh"}}
+    card = {key: _verdict()[key] for key in ("headline_zh", "title_zh", "why_zh")}
+    stable_adapter = ScriptedPredictorAdapter([value for _ in range(6) for value in (semantics, card)])
+    candidate_adapter = ScriptedPredictorAdapter([value for _ in range(6) for value in (semantics, card)])
+    judges = {
+        ("stable", stable.bundle_sha): DspyNewsSemanticProgram(
+            stable_artifact,
+            primary_adapter=stable_adapter,
+        ),
+        ("candidate", candidate.candidate_arm.bundle_sha): DspyNewsSemanticProgram(
+            candidate_artifact,
+            primary_adapter=candidate_adapter,
+        ),
+    }
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=judges,
+        candidate_catalog=(candidate,),
+    )
+    request = EvaluationRequest(
+        development_dataset_sha=development.artifact_sha,
+        candidate_sha=candidate.candidate_sha,
+        stage="offline",
+    )
+    first = asyncio.run(evaluator.evaluate(request))
+    before = conn.execute(
+        "SELECT "
+        "(SELECT count(*) FROM news_learning_cases WHERE run_sha = %s) AS cases, "
+        "(SELECT count(*) FROM news_model_recordings WHERE run_sha = %s) AS recordings",
+        (first.run_sha, first.run_sha),
+    ).fetchone()
+
+    capability = load_recording_replay_capability(
+        conn,
+        run_sha=first.run_sha,
+        arms=(
+            ReplayArmSpec(arm="stable", bundle_sha=stable.bundle_sha, artifact=stable_artifact),
+            ReplayArmSpec(
+                arm="candidate",
+                bundle_sha=candidate.candidate_arm.bundle_sha,
+                artifact=candidate_artifact,
+            ),
+        ),
+    )
+    replay_evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges={},
+        candidate_catalog=(candidate,),
+    )
+    ordinary_repeat = asyncio.run(replay_evaluator.evaluate(request))
+    verified = asyncio.run(replay_evaluator.evaluate(request, recording_replay=capability))
+    after = conn.execute(
+        "SELECT "
+        "(SELECT count(*) FROM news_learning_cases WHERE run_sha = %s) AS cases, "
+        "(SELECT count(*) FROM news_model_recordings WHERE run_sha = %s) AS recordings",
+        (first.run_sha, first.run_sha),
+    ).fetchone()
+
+    assert ordinary_repeat.run_sha == first.run_sha == verified.run_sha
+    assert after == before
+    verification = verified.evidence["recording_verification"]
+    assert set(verification) == {
+        "mode",
+        "run_sha",
+        "case_n",
+        "observation_root",
+        "recording_n",
+        "recording_corpus_root",
+    }
+    assert verification["mode"] == "strict_record_replay_v1"
+    assert verification["run_sha"] == first.run_sha
+    assert verification["case_n"] == 1
+    assert len(verification["observation_root"]) == 64
+    assert verification["recording_n"] == before["recordings"]
+    assert len(verification["recording_corpus_root"]) == 64
+
+
+def test_strict_recording_verification_rejects_an_unsealed_judge_map(conn) -> None:
+    with pytest.raises(ValueError, match="news_learning_recording_replay_capability_invalid"):
+        asyncio.run(
+            CandidateEvaluator(conn, stable=_arm(), judges={}).evaluate(  # type: ignore[arg-type]
+                EvaluationRequest(
+                    development_dataset_sha="d" * 64,
+                    candidate_sha="c" * 64,
+                    stage="offline",
+                ),
+                recording_replay={"judges": _static_judges(_arm())},
+            )
+        )
 
 
 def test_model_recording_conflict_rejects_nondeterministic_response(conn) -> None:

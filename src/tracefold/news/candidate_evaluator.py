@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .agents.semantic_program import CompileProvenance, SemanticJudge, SemanticProgramError, TriageContext
 from .artifact_identity import canonical_json, canonical_sha
 from .models import TriageVerdict
+from .recording_replay import RecordingReplayCapability
 from .review import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .storyline import final_storyline_key
 from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
@@ -30,7 +31,8 @@ from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
 LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
-LEARNING_EPOCH: Literal["program_v1"] = "program_v1"
+LEARNING_EPOCH: Literal["program_v2"] = "program_v2"
+LEARNING_EPOCH_RESET_REASON = "semantic_retry_and_restatement_contract_reidentity"
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
@@ -100,7 +102,7 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v1"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v2"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
 
@@ -128,7 +130,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: Literal["program_v1"]
+    learning_epoch: Literal["program_v2"]
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
@@ -279,6 +281,26 @@ class EvaluationReport(BaseModel):
 
 class RecordReplayMiss(RuntimeError):
     pass
+
+
+def evaluation_run_sha(
+    request: EvaluationRequest,
+    *,
+    stable_bundle_sha: str,
+    candidate_sha: str,
+    trusted_root_sha: str = TRUSTED_ROOT_SHA,
+) -> str:
+    """Return the stable identity of one evaluation run."""
+
+    return _sha(
+        {
+            "request": request.model_dump(mode="json"),
+            "stable": stable_bundle_sha,
+            "candidate": candidate_sha,
+            "trusted_root": trusted_root_sha,
+            "evaluator": EVALUATOR_VERSION,
+        }
+    )
 
 
 @dataclass(slots=True)
@@ -445,7 +467,16 @@ class CandidateEvaluator:
                 )
         return tuple(episodes)
 
-    async def evaluate(self, request: EvaluationRequest) -> EvaluationReport:
+    async def evaluate(
+        self,
+        request: EvaluationRequest,
+        *,
+        recording_replay: RecordingReplayCapability | None = None,
+    ) -> EvaluationReport:
+        if recording_replay is not None and not isinstance(recording_replay, RecordingReplayCapability):
+            raise ValueError("news_learning_recording_replay_capability_invalid")
+        if recording_replay is not None and request.stage not in {"offline", "holdout"}:
+            raise ValueError(f"news_learning_recording_verification_stage_unsupported:{request.stage}")
         # Reject a stale constructor arm before loading data or spending one
         # model call. Re-read after execution as well, because a deployment can
         # legitimately change the active root while a long evaluation runs.
@@ -466,6 +497,8 @@ class CandidateEvaluator:
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
         candidate = self._candidate(request.candidate_sha)
         self._validate_candidate_static(candidate)
+        if recording_replay is not None and candidate.target != "program":
+            raise ValueError("news_learning_recording_verification_target_unsupported:policy")
         self._persist_candidate(candidate)
         prior_stage = {"holdout": "offline", "shadow": "holdout", "canary": "shadow"}.get(request.stage)
         if prior_stage and not self._has_passed_stage(candidate.candidate_sha, prior_stage):
@@ -475,20 +508,28 @@ class CandidateEvaluator:
         if request.stage != "offline" and validation.observation_ref != candidate.candidate_sha:
             raise ValueError("news_learning_validation_candidate_mismatch")
 
-        run_sha = _sha(
-            {
-                "request": request.model_dump(mode="json"),
-                "stable": self._stable.bundle_sha,
-                "candidate": candidate.candidate_sha,
-                "trusted_root": self._trusted_root_sha,
-                "evaluator": EVALUATOR_VERSION,
-            }
+        run_sha = evaluation_run_sha(
+            request,
+            stable_bundle_sha=self._stable.bundle_sha,
+            candidate_sha=candidate.candidate_sha,
+            trusted_root_sha=self._trusted_root_sha,
         )
         dataset = development if request.stage == "offline" else validation
         existing = self._load_run_cases(run_sha)
         execution_errors: list[str] = []
         observation_dimensions: dict[str, Any] | None = None
         observation_manifest_sha = request.observation_manifest_sha
+        recording_verification = None
+        if recording_replay is not None:
+            recording_replay.assert_for_run(run_sha)
+            recording_verification = await self._verify_recorded_run(
+                request=request,
+                run_sha=run_sha,
+                dataset=dataset,
+                candidate=candidate,
+                existing=existing,
+                recording_replay=recording_replay,
+            )
         if not existing:
             if request.stage in {"shadow", "canary"}:
                 if request.observation_manifest_sha:
@@ -567,6 +608,8 @@ class CandidateEvaluator:
         )
         if observation_manifest_sha:
             evidence["observation_manifest_sha"] = observation_manifest_sha
+        if recording_verification is not None:
+            evidence["recording_verification"] = recording_verification
         outcome = str(evidence["gate_outcome"])
         active_sha = self._active_stable_sha()
         eligibility = "current" if active_sha == candidate.parent_stable_sha else "stale"
@@ -918,6 +961,7 @@ class CandidateEvaluator:
         run_sha: str,
         dataset: DatasetManifest,
         candidate: CandidateManifest,
+        recording_replay: RecordingReplayCapability | None = None,
     ) -> list[dict[str, Any]]:
         states: dict[ArmName, _ArmState] = {
             "stable": _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts)),
@@ -956,6 +1000,8 @@ class CandidateEvaluator:
                         arm=arm,
                         context=context,
                         trial=1,
+                        persist_recordings=recording_replay is None,
+                        recording_replay=recording_replay,
                     )
                     program_observations = [first]
                     verdict = first.get("verdict")
@@ -984,6 +1030,8 @@ class CandidateEvaluator:
                             arm=arms[arm_name],
                             context=context,
                             trial=trial,
+                            persist_recordings=recording_replay is None,
+                            recording_replay=recording_replay,
                         )
                         for trial in (2, 3)
                     ]
@@ -1071,6 +1119,47 @@ class CandidateEvaluator:
                 }
             )
         return observations
+
+    async def _verify_recorded_run(
+        self,
+        *,
+        request: EvaluationRequest,
+        run_sha: str,
+        dataset: DatasetManifest,
+        candidate: CandidateManifest,
+        existing: Sequence[Mapping[str, Any]],
+        recording_replay: RecordingReplayCapability,
+    ) -> dict[str, Any]:
+        """Re-execute an existing corpus through its supplied replay judges without appending model truth."""
+
+        if not existing:
+            raise ValueError("news_learning_recording_verification_cases_missing")
+        try:
+            replayed = await self._run_sequential(
+                run_sha=run_sha,
+                dataset=dataset,
+                candidate=candidate,
+                recording_replay=recording_replay,
+            )
+        except RecordReplayMiss as exc:
+            raise ValueError(f"news_learning_recording_verification_miss:{exc}") from exc
+
+        expected_roots, expected_root = _recording_verification_roots(existing)
+        actual_roots, actual_root = _recording_verification_roots(replayed)
+        if expected_roots.keys() != actual_roots.keys():
+            raise ValueError("news_learning_recording_verification_case_set_mismatch")
+        for case_id, expected in expected_roots.items():
+            if actual_roots[case_id] != expected:
+                raise ValueError(f"news_learning_recording_verification_mismatch:{case_id}")
+        if actual_root != expected_root:
+            raise ValueError("news_learning_recording_verification_root_mismatch")
+        replay_receipt = recording_replay.sealed_receipt()
+        return {
+            "mode": "strict_record_replay_v1",
+            **replay_receipt,
+            "case_n": len(expected_roots),
+            "observation_root": expected_root,
+        }
 
     @staticmethod
     def _review_case_ids(dataset: DatasetManifest, *, candidate: CandidateManifest) -> frozenset[str]:
@@ -1471,9 +1560,11 @@ class CandidateEvaluator:
         arm: ArmManifest,
         context: TriageContext,
         trial: int,
+        persist_recordings: bool = True,
+        recording_replay: RecordingReplayCapability | None = None,
     ) -> dict[str, Any]:
-        judge = self._judges.get((arm_name, arm.bundle_sha))
-        if judge is None:
+        judge = self._judges.get((arm_name, arm.bundle_sha)) if recording_replay is None else None
+        if judge is None and recording_replay is None:
             return {
                 "verdict": None,
                 "program_version": arm.program_version,
@@ -1486,7 +1577,18 @@ class CandidateEvaluator:
             }
         observation: dict[str, Any]
         try:
-            judgment = await judge.judge(context)
+            if recording_replay is not None:
+                judgment = await recording_replay.judge(
+                    arm=arm_name,
+                    bundle_sha=arm.bundle_sha,
+                    case_id=case_id,
+                    trial=trial,
+                    context=context,
+                )
+            else:
+                if judge is None:  # pragma: no cover - guarded by the artifact-missing return above
+                    raise RuntimeError("news_program_artifact_missing")
+                judgment = await judge.judge(context)
         except SemanticProgramError as exc:
             if "recording_missing" in exc.code:
                 raise RecordReplayMiss(exc.code) from exc
@@ -1523,20 +1625,21 @@ class CandidateEvaluator:
         trace_context_sha = str(trace.get("context_sha256") or context_sha)
         if trace_context_sha != context_sha:
             raise ValueError("news_program_trace_context_mismatch")
-        for call_index, raw_call in enumerate(observation.get("calls") or []):
-            if not bool(raw_call.get("physical_provider_call")):
-                continue
-            self._persist_program_call(
-                run_sha=run_sha,
-                case_id=case_id,
-                arm_name=arm_name,
-                trial=trial,
-                arm=arm,
-                context_sha=context_sha,
-                trace=trace,
-                call_index=call_index,
-                raw_call=raw_call,
-            )
+        if persist_recordings:
+            for call_index, raw_call in enumerate(observation.get("calls") or []):
+                if not bool(raw_call.get("physical_provider_call")):
+                    continue
+                self._persist_program_call(
+                    run_sha=run_sha,
+                    case_id=case_id,
+                    arm_name=arm_name,
+                    trial=trial,
+                    arm=arm,
+                    context_sha=context_sha,
+                    trace=trace,
+                    call_index=call_index,
+                    raw_call=raw_call,
+                )
         return observation
 
     def _persist_program_call(
@@ -2594,7 +2697,7 @@ class CandidateEvaluator:
             str(row["program_factory_id"]) != "tracefold.news.semantic_program.factory_v1"
             or str(row["artifact_schema_version"]) != "news_semantic_program_artifact_v1"
             or str(row["prior_evidence_disposition"]) != "audit_only"
-            or str(row["reset_reason"]) != "zero_compatibility_reset_reaccrue_evidence"
+            or str(row["reset_reason"]) != LEARNING_EPOCH_RESET_REASON
         ):
             raise ValueError("news_learning_epoch_contract_mismatch")
         return int(row["starts_at_ms"])
@@ -2964,6 +3067,63 @@ def _observation_root(observations: Sequence[Mapping[str, Any]]) -> str:
     return _sha({"observation_root_version": "news_observation_root_v1", "leaves": leaves})
 
 
+def _recording_verification_roots(
+    observations: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, str], str]:
+    """Hash only persisted, replay-deterministic observation fields.
+
+    Program wall time measures the verifier process rather than the recorded
+    provider call, so it is deliberately excluded. Per-call latency, usage,
+    cost, model identity, graph outputs, assembler verdict and policy result
+    remain in the root.
+    """
+
+    case_fields = (
+        "case_id",
+        "subject_kind",
+        "event_id",
+        "evidence_version",
+        "external_snapshot_id",
+        "evidence_sha256",
+        "review_id",
+        "cluster_id",
+        "stratum",
+        "opened_at_ms",
+    )
+    roots: dict[str, str] = {}
+    for item in observations:
+        case_ref = dict(item.get("case_ref") or {})
+        case_id = str(case_ref.get("case_id") or "")
+        if not case_id or case_id in roots:
+            raise ValueError("news_learning_recording_verification_case_identity_invalid")
+        payload = {
+            "case_ref": {field: case_ref.get(field) for field in case_fields},
+            "stable": _recording_verification_projection(item.get("stable") or {}),
+            "candidate": _recording_verification_projection(item.get("candidate") or {}),
+            "comparison": item.get("comparison") or {},
+        }
+        roots[case_id] = _sha(payload)
+    leaves = [{"case_id": case_id, "root": roots[case_id]} for case_id in sorted(roots)]
+    root = _sha({"observation_root_version": "news_strict_record_replay_v1", "leaves": leaves})
+    return roots, root
+
+
+def _recording_verification_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
+    decoded: object = json.loads(_json(dict(raw)))
+    if not isinstance(decoded, dict):
+        raise ValueError("news_learning_recording_verification_projection_invalid")
+    projected = cast(dict[str, Any], decoded)
+    programs = projected.get("program")
+    if isinstance(programs, list):
+        for program in programs:
+            if not isinstance(program, dict):
+                continue
+            usage = program.get("usage")
+            if isinstance(usage, dict):
+                usage.pop("wall_latency_ms", None)
+    return projected
+
+
 def _percentile95(values: Sequence[int]) -> int | None:
     if not values:
         return None
@@ -3129,6 +3289,7 @@ def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "LEARNING_EPOCH",
+    "LEARNING_EPOCH_RESET_REASON",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "CandidateEvaluator",
@@ -3139,4 +3300,5 @@ __all__ = [
     "EvaluationReport",
     "EvaluationRequest",
     "ProposalReceipt",
+    "evaluation_run_sha",
 ]
