@@ -422,7 +422,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260821_0289_learning_runtime_grants`. The #112 chain
+the linear revisions through `20260821_0290_evidence_append_lock_contract`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -433,7 +433,7 @@ chained revision
 Workers hold the steady lock).
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
-Before its first 0284–0289 upgrade, take a restorable volume backup, stop Serve
+Before its first 0284–0290 upgrade, take a restorable volume backup, stop Serve
 and Workers, run the normal migration, then deploy the matching image. The
 migration owns the narrow ReviewDesk grants; the existing Serve credential is
 unchanged.
@@ -480,8 +480,10 @@ runtime manifests. 0288 adds the bounded retention function, cold-Janitor
 state, and indexes used by its ordered batches. 0289 reasserts the exact
 Workers `SELECT`/`INSERT` evidence-snapshot grant and revokes rewrite access;
 `db audit` now verifies that role contract so a missing runtime grant fails the
-rollout check before a live Event discovers it. Migration never calls the model
-or derives a release PASS.
+rollout check before a live Event discovers it. 0290 removes an ineffective
+`FOR SHARE` from the append read: PostgreSQL otherwise requires UPDATE for the
+locking SELECT even though the immutable table rejects UPDATE. Migration never
+calls the model or derives a release PASS.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

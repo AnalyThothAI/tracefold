@@ -27,9 +27,12 @@ from tests.postgres_test_utils import (
 )
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.http.app import create_app
+from tracefold.app.repositories import repositories_for_connection
 from tracefold.app.workers import _ProbeState
 from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.news.events import admit_item
+from tracefold.news.opennews import parse_opennews_message
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.postgres.runtime_roles import (
     RUNTIME_LOGIN_ROLES,
@@ -79,6 +82,68 @@ def test_postgres_runtime_roles_enforce_read_write_and_ddl_boundaries() -> None:
         conn.execute("DELETE FROM workers_runtime WHERE singleton_key")
         with pytest.raises(InsufficientPrivilege):
             conn.execute("CREATE TABLE public.worker_ddl_forbidden(id integer)")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_workers_role_appends_evidence_without_table_rewrite_privilege() -> None:
+    prepare_postgres_database()
+    conn = connect_postgres_test(read_only=False)
+    try:
+        event = parse_opennews_message(
+            {
+                "method": "strategy.triggered",
+                "params": {
+                    "id": 112_901,
+                    "text": "Micron says DRAM contract prices rose again in August",
+                    "link": "https://example.test/112901",
+                    "source": "Reuters",
+                    "newsType": "news",
+                    "engineType": "news",
+                    "ts": "2026-08-21T08:00:00+08:00",
+                    "aiRating": {"score": 82, "signal": "long", "status": "done"},
+                    "coins": [],
+                    "strategy": {
+                        "id": 1018,
+                        "name": "News Score > 70",
+                        "engine_type": "news",
+                        "source_type": "news",
+                    },
+                },
+            },
+            strategy_ids=frozenset({"1018"}),
+        )
+        assert event is not None
+        repos = repositories_for_connection(conn)
+        with repos.transaction():
+            opened = admit_item(
+                repos,
+                event=event,
+                ingest_mode="live",
+                observed_at_ms=1_787_287_000_000,
+                trace_id="role-authentic-evidence",
+                watchlist_symbols=frozenset(),
+                now_ms=1_787_287_000_000,
+            )
+
+        conn.execute("SET ROLE tracefold_workers")
+        conn.execute(
+            "UPDATE news_events SET provider_score_max = provider_score_max + 1 WHERE event_id = %s",
+            (opened.event_id,),
+        )
+        evidence = repositories_for_connection(conn).news.append_evidence_snapshot(
+            event_id=opened.event_id,
+            now_ms=1_787_287_000_001,
+        )
+        assert evidence["evidence_version"] == 2
+        conn.commit()
+
+        with pytest.raises(InsufficientPrivilege):
+            conn.execute(
+                "UPDATE news_event_evidence_snapshots SET created_at_ms = created_at_ms + 1 WHERE event_id = %s",
+                (opened.event_id,),
+            )
         conn.rollback()
     finally:
         conn.close()

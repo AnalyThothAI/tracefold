@@ -591,7 +591,6 @@ class NewsRepository:
                    created_at_ms
               FROM news_event_evidence_snapshots
              WHERE event_id = %s ORDER BY evidence_version DESC LIMIT 1
-             FOR SHARE
             """,
             (event_id,),
         ).fetchone()

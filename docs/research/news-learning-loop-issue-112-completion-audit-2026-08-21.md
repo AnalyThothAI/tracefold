@@ -14,14 +14,15 @@
 - 本轮补齐的发布门：固定 Agent cohort、显式标记 mutable model alias、50-cluster 预注册盲测、100 次人工预算耗尽返回 `UNKNOWN`、候选新增 critical error 直接 `FAIL`、前序阶段未 PASS 时禁止花下一阶段模型预算；0288 还实现了 90/365 天 bounded retention、当前/上一 stable pin、冷 Janitor 与状态指标（[#118](https://github.com/AnalyThothAI/tracefold/issues/118)）。
 - 生产层：#120 已把机制迁到 `0288` 并完成第一条真实 DRAM ReviewDesk
   提交；上线同时暴露出 Workers evidence INSERT 缺权与 historical evidence
-  eligibility 两个 correctness 问题。`0289` 负责正式修复并把逐项角色权限纳入
-  `db audit`。这证明闭环开始接触真实生产，但仍没有数据可诚实证明 precision、
+  eligibility 两个 correctness 问题。`0289` 负责逐项角色权限；真实重放又证明
+  `FOR SHARE` 会额外要求 UPDATE，`0290` 删除这把无效锁并加入 role-authentic
+  append test。这证明闭环开始接触真实生产，但仍没有数据可诚实证明 precision、
   recall 或读者价值提高。
 
 因此要把两个完成条件分开：
 
 ```text
-机制代码 + 0289 生产验证 -> 关闭架构实施票 #112
+机制代码 + 0290 生产验证 -> 关闭架构实施票 #112
 
 收真实人工证据
   -> 跑第一个 DRAM Prompt candidate
@@ -185,7 +186,7 @@
 ### Phase 0：迁移前
 
 1. 固定 Git SHA、镜像 digest、当前 `0283` schema head、备份与回滚命令。
-2. 在生产快照的隔离数据库演练 `0283 → 0289`，核对 legacy label count/hash、role grants、query plans 与 learning-retention backlog。
+2. 在生产快照的隔离数据库演练 `0283 → 0290`，核对 legacy label count/hash、role grants、query plans 与 learning-retention backlog。
 3. 明确 review bearer；沿用现有 Serve 凭据及其两张表的最小 INSERT grant，不向 HTTP 进程暴露 Workers/Migrate 凭据。
 
 ### Phase 1：只上证据与 ReviewDesk
@@ -245,25 +246,26 @@
 
 ## 11. 最终代码验证（仍不是生产效果证明）
 
-本工作树在目标 schema `20260821_0289` 上完成回归；这些数字证明实现没有破坏既有合同，不能替代未来真实 holdout 与 canary：
+本工作树在目标 schema `20260821_0290` 上完成回归；这些数字证明实现没有破坏既有合同，不能替代未来真实 holdout 与 canary：
 
-- 后端全量（含 integration/e2e/golden/slow real-process 与 `0283 → 0289` 有数据迁移演练）：`581 passed`；
+- 后端全量（含 integration/e2e/golden/slow real-process 与 `0283 → 0290` 有数据迁移演练）：`582 passed`；
 - 前端 Vitest：`162 passed`；ESLint + 前端架构：`76 passed`；production build 与 Prettier：PASS；
 - Playwright 四种视口：`63 passed`、`53 skipped`（按 project/viewport 条件跳过），四张 golden snapshot 复核通过；
-- Ruff check/format、MyPy `119 source files`、compileall、CLI help/OpenAPI/generated-schema drift 与 `git diff --check`：PASS；
+- Ruff check/format、MyPy `120 source files`、compileall、CLI help/OpenAPI/generated-schema drift 与 `git diff --check`：PASS；
 - `#118` retention 测试覆盖 90/365 天边界、当前/上一 distinct stable pin、active canary/release chain、stale rejected 清理、rollback receipt、worker-only 权限、每表 bounded batch、cold-lane 10 秒 deadline 与错误隔离。
 
 2026-08-21 的 KISS 决策删除了独立
 `tracefold_review` 登录、密码、Compose mount、连接池和离线 bootstrap；
 生产沿用 Serve 账号，并只对两张 append-only Review 表开放 INSERT。
-`0289` 还把 Workers evidence append 的真实权限加入 `db audit`，避免容器
-ready 却在第一条 Event 上失败。shadow/canary 和 stable pointer 仍未改变。
+`0289` 把 Workers evidence append 的逐项权限加入 `db audit`；`0290` 再用
+真实 Workers role 跑 repository append，避免容器 ready、ACL 表面正确，却因
+locking SELECT 在第一条 Event 上失败。shadow/canary 和 stable pointer 仍未改变。
 
 ## 12. 完成定义
 
 关闭 #112 的完成定义是：
 
-> 固定 Git/image/schema 后完成生产 `0289` 迁移；`db audit` 的逐项角色合同、
+> 固定 Git/image/schema 后完成生产 `0290` 迁移；`db audit` 的逐项角色合同、
 > 热链路新 evidence snapshot、ReviewDesk 真写、DLQ 与回滚凭证全部可验证；
 > 独立 Review 密码与账号不再存在。
 
