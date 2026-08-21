@@ -1,5 +1,4 @@
 import { AppSidebar } from "@features/cockpit/ui/AppSidebar";
-import { SidebarProvider } from "@shared/ui/sidebar";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,14 +6,14 @@ import { afterEach, describe, expect, it } from "vitest";
 afterEach(() => cleanup());
 
 describe("AppSidebar", () => {
-  it("renders the Tracefold research workbench and one focused navigation group", () => {
+  it("renders the Tracefold console mark and one focused navigation group", () => {
     renderSidebar();
 
     expect(screen.getByText("Tracefold")).toBeInTheDocument();
-    expect(screen.getByText("Research Workbench")).toBeInTheDocument();
+    expect(screen.getByText("News V3 Console")).toBeInTheDocument();
     const navigation = screen.getByRole("navigation", { name: "Primary navigation" });
     const headings = within(navigation).getAllByRole("heading", { level: 2 });
-    expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Research"]);
+    expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Workbench"]);
   });
 
   it("renders the three supported primary destinations", () => {
@@ -27,11 +26,24 @@ describe("AppSidebar", () => {
       "/news/review",
       "/news/status",
     ]);
-    // The feed carries the 24 h intake behind it; review and status have no count of their own.
+    // The feed carries the 24 h intake behind it, compacted to fit beside the label; review and status have
+    // no count of their own.
     expect(links[0].textContent).toContain("事件流");
-    expect(links[0].textContent).toContain("1,463");
+    expect(links[0].textContent).toContain("1.4k");
     expect(links[1].textContent?.trim()).toBe("命中复盘");
     expect(links[2].textContent?.trim()).toBe("流水线状态");
+  });
+
+  it("keeps the count and the health dot out of the accessible name", () => {
+    // Both change on a poll. Folding either into the link's name would rename the destination every few
+    // seconds; the funnel and the status cards announce the same figures properly.
+    renderSidebar({ counts: { events: 1463 }, statusLevel: "warn" });
+
+    expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("href", "/news");
+    expect(screen.getByRole("link", { name: "流水线状态" })).toHaveAttribute(
+      "href",
+      "/news/status",
+    );
   });
 
   it("marks the feed current on a drilldown, and only the feed", () => {
@@ -63,30 +75,23 @@ describe("AppSidebar", () => {
       expect(screen.queryByRole("link", { name: label })).not.toBeInTheDocument();
     }
     expect(screen.queryByRole("status", { name: "Desk status" })).not.toBeInTheDocument();
-  });
-
-  it("keeps navigation free of server-backed badges", () => {
-    renderSidebar();
-
     expect(screen.queryByRole("link", { name: "Radar" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Stocks" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "事件流" })).toBeInTheDocument();
-    expect(document.querySelectorAll('[data-sidebar="menu-badge"]')).toHaveLength(0);
   });
 });
 
 function renderSidebar({
   counts,
   route = "/",
+  statusLevel,
 }: {
   counts?: { events?: number };
   route?: string;
+  statusLevel?: "ok" | "warn" | "bad";
 } = {}) {
   return render(
     <MemoryRouter initialEntries={[route]}>
-      <SidebarProvider>
-        <AppSidebar counts={counts} />
-      </SidebarProvider>
+      <AppSidebar counts={counts} statusLevel={statusLevel} />
     </MemoryRouter>,
   );
 }

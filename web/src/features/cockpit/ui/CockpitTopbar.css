@@ -1,81 +1,72 @@
 @layer app.shell {
+  /*
+   * Three regions and nothing else: where you are, what you are looking for, and the pipeline's own numbers.
+   * The bar is translucent with a blur so a feed scrolled under it stays legible as texture rather than
+   * disappearing behind a hard white band.
+   */
   .topbar {
     position: relative;
-    z-index: 20;
+    z-index: 30;
     display: grid;
-    grid-template-columns: minmax(78px, auto) minmax(260px, 1fr) auto auto 32px;
+    grid-template-columns: minmax(78px, auto) minmax(240px, 1fr) auto;
     align-items: center;
-    gap: 9px;
+    gap: 10px;
+    height: var(--shell-topbar-height);
     min-height: var(--shell-topbar-height);
-    border-bottom: 1px solid var(--border-subtle);
-    background: color-mix(in srgb, var(--surface-root) 92%, transparent);
     padding: 0 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: rgba(255, 255, 255, 0.94);
     backdrop-filter: blur(14px);
   }
 
   .brand {
     display: flex;
-    grid-column: 1;
-    grid-row: 1;
     align-items: center;
     gap: 8px;
     min-width: 0;
-    height: var(--shell-topbar-height);
   }
 
-  .topbar-sidebar-trigger-slot {
-    display: inline-grid;
-    flex: 0 0 auto;
-    place-items: center;
+  .topbar-page-title {
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 620;
+    white-space: nowrap;
   }
 
   .topbar-sidebar-trigger {
-    width: 28px;
-    height: 28px;
-    border: 1px solid var(--border-subtle);
-    color: var(--text-muted);
-    background: var(--surface-panel);
-  }
-
-  .topbar-sidebar-trigger:hover,
-  .topbar-sidebar-trigger:focus-visible {
-    color: var(--accent-primary);
-    border-color: var(--accent-border);
-    background: var(--accent-soft);
-  }
-
-  .topbar-product-name {
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 780;
-    letter-spacing: 0.02em;
+    display: inline-grid;
   }
 
   .searchbar {
     display: flex;
-    grid-column: 2;
-    grid-row: 1;
     align-items: center;
-    justify-self: stretch;
+    justify-self: start;
     gap: 8px;
     min-width: 0;
-    width: min(100%, 760px);
-    height: 34px;
+    width: 100%;
+    max-width: 420px;
+    height: 30px;
+    padding: 0 10px;
     border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-root);
-    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-panel);
   }
 
+  /* Focus adds an accent ring and a 10% halo; it never changes the height, so the row does not jump. */
   .searchbar:focus-within {
     border-color: var(--accent-border);
-    box-shadow: 0 0 0 2px var(--accent-soft);
+    box-shadow: var(--focus-halo);
   }
 
   .searchbar svg {
+    width: 13px;
+    height: 13px;
     flex: 0 0 auto;
     color: var(--text-subtle);
+  }
+
+  .searchbar:focus-within svg {
+    color: var(--accent-primary);
   }
 
   .searchbar input {
@@ -84,37 +75,39 @@
     width: 100%;
     border: 0;
     outline: 0;
-    color: var(--text-secondary);
+    color: var(--text-primary);
     background: transparent;
-    font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .searchbar input::placeholder {
     color: var(--text-subtle);
   }
 
-  .searchbar button {
+  .searchbar kbd {
     flex: 0 0 auto;
-    height: 25px;
-    border: 0;
-    border-radius: var(--radius-sm);
-    color: var(--accent-primary);
-    background: var(--accent-soft);
-    padding: 0 8px;
-    font-family: var(--font-mono);
-    font-size: 9px;
+    padding: 1px 5px;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-xs);
+    color: var(--text-subtle);
+    font: 500 9.5px/1.5 var(--font-mono);
+  }
+
+  .topbar-right {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-self: end;
+    min-width: 0;
   }
 
   /*
-   * Two pipeline figures, right-aligned before the anomaly pill (#87). Mono and tabular so a number that
-   * changes on a poll does not shift the ones beside it.
+   * Pipeline figures, right-aligned. Mono and tabular so a number that changes on a poll does not shift the
+   * ones beside it.
    */
   .topbar-figures {
     display: inline-flex;
-    grid-column: 3;
-    grid-row: 1;
-    gap: 14px;
+    gap: 16px;
     align-items: center;
   }
 
@@ -126,15 +119,20 @@
 
   .topbar-figures small {
     color: var(--text-subtle);
-    font: 700 8.5px/12px var(--font-mono);
+    font: var(--type-eyebrow);
+    line-height: 12px;
     letter-spacing: 0.08em;
     white-space: nowrap;
   }
 
   .topbar-figures b {
     color: var(--text-primary);
-    font: 640 13px/1.3 var(--font-mono);
+    font: 640 14px/1.25 var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+
+  .topbar-figures > span[data-tone="accent"] b {
+    color: var(--accent-primary);
   }
 
   .topbar-figures > span[data-tone="caution"] b {
@@ -143,20 +141,24 @@
 
   .topbar-anomaly {
     display: inline-flex;
-    grid-column: 4;
-    grid-row: 1;
     align-items: center;
     justify-content: center;
     gap: 5px;
-    min-width: 32px;
-    height: 32px;
-    border: 1px solid var(--signal-caution-border);
+    min-width: 30px;
+    height: 30px;
+    padding: 0 9px;
     border-radius: var(--radius-sm);
     color: var(--signal-caution);
     background: var(--signal-caution-soft);
-    padding: 0 8px;
-    font-family: var(--font-mono);
-    font-size: 9px;
+    box-shadow: inset 0 0 0 1px var(--signal-caution-border);
+    font-size: 11px;
+    font-weight: 560;
+  }
+
+  .topbar-anomaly svg {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
   }
 
   .topbar-anomaly span {
@@ -166,81 +168,55 @@
     white-space: nowrap;
   }
 
-  .topbar-refresh-button {
-    grid-column: 5;
-    grid-row: 1;
-  }
-
-  @media (min-width: 1280px) {
-    .topbar-sidebar-trigger {
-      display: none;
-    }
-  }
-
   @media (max-width: 1279px) {
     .topbar {
-      grid-template-columns: 32px minmax(0, 1fr) auto auto 32px;
-      padding: 0 8px;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      padding: 0 10px;
     }
 
-    .topbar-product-name {
-      display: none;
-    }
-
-    .searchbar {
-      width: 100%;
-    }
-
+    .topbar-page-title,
     .topbar-anomaly span {
       display: none;
     }
+
+    .topbar-anomaly {
+      padding: 0;
+    }
   }
 
+  /*
+   * Phone: search, the anomaly dot, and refresh. There is no sidebar trigger to place (#87) and the brand is
+   * not a control, so the row spends its width on the one input a thumb actually uses. The figures and the
+   * palette both go — ⌘K is not a phone gesture, and the same two numbers lead the feed's funnel card.
+   */
   @media (max-width: 767px) {
-    /*
-     * Phone: search, the anomaly dot, and refresh. There is no sidebar trigger to place (#87) and the brand
-     * is not a control, so the row spends its width on the one input a thumb actually uses.
-     */
     .topbar {
-      grid-template-columns: minmax(0, 1fr) auto 32px;
-      gap: 7px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
       height: var(--shell-mobile-topbar-height);
       min-height: var(--shell-mobile-topbar-height);
-      padding: 7px;
+      padding: 0 10px;
     }
 
-    .brand {
+    .brand,
+    .topbar-figures,
+    .topbar-palette-button {
       display: none;
     }
 
     .searchbar {
       grid-column: 1;
-      height: 32px;
+      max-width: none;
+      height: 34px;
+      background: var(--surface-raised);
     }
 
-    .searchbar button {
+    .searchbar kbd {
       display: none;
     }
 
-    .topbar-anomaly {
+    .topbar-right {
       grid-column: 2;
-      width: 32px;
-      padding: 0;
-    }
-
-    /* No room beside a full-width search box; the same two numbers lead the feed's funnel card. */
-    .topbar-figures {
-      display: none;
-    }
-
-    /*
-     * Refresh is back on the phone. It was hidden when the sidebar trigger and the brand shared the row;
-     * with both gone there is room, and a poll-driven page that cannot be poked by hand is worse than one
-     * button. It keeps the 32px box the desktop row uses; the surrounding 7px padding carries it past a
-     * comfortable target.
-     */
-    .topbar-refresh-button {
-      grid-column: 3;
     }
   }
 }

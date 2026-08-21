@@ -1,0 +1,82 @@
+@layer app.primitives {
+  .ui-drawer-overlay {
+    position: fixed;
+    z-index: 70;
+    inset: 0;
+    background: rgba(13, 17, 23, 0.28);
+  }
+
+  .ui-drawer {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 71;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(420px, 100%);
+    background: var(--surface-panel);
+  }
+
+  .ui-drawer[data-side="right"] {
+    right: 0;
+    box-shadow: -14px 0 40px rgba(13, 17, 23, 0.2);
+  }
+
+  .ui-drawer[data-side="left"] {
+    left: 0;
+    box-shadow: 14px 0 40px rgba(13, 17, 23, 0.2);
+  }
+
+  .ui-drawer-head {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    min-height: var(--shell-topbar-height);
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .ui-drawer-eyebrow {
+    display: inline-flex;
+    gap: 9px;
+    align-items: center;
+    min-width: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 620;
+  }
+
+  .ui-drawer-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 640;
+  }
+
+  .ui-drawer-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+
+  .ui-drawer-body {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 15px 16px 24px;
+  }
+
+  .ui-drawer[data-flush] .ui-drawer-body {
+    padding: 0;
+  }
+
+  /* Below the tablet breakpoint a drawer is the whole screen: a 420px sheet on a 390px phone is a modal with
+     a useless gutter beside it. */
+  @media (max-width: 767px) {
+    .ui-drawer {
+      width: 100% !important;
+    }
+  }
+}

@@ -25,12 +25,35 @@ test("moves a reading cursor down the feed and opens the Event under it", async 
   await page.keyboard.press("k");
   await expect(page.locator(cursorRow)).toHaveAttribute("data-event-id", "evt-global-policy");
 
-  // The cursor is real focus, so Enter is the row's own activation rather than a synthetic one.
+  /*
+   * The cursor is real focus, so Enter is the row's own activation rather than a synthetic one. At this
+   * width it opens the Event beside the list rather than replacing it (design proposal ⑦): the queue stays
+   * on screen, the URL does not move, and Esc puts the reader back where they were with nothing to reload.
+   */
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/news\/events\/evt-global-policy$/);
-  await expect(page.getByRole("region", { name: "新闻事件详情" })).toBeVisible();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("link", { name: "打开整页" })).toHaveAttribute(
+    "href",
+    "/news/events/evt-global-policy",
+  );
+  await expect(page.locator(".news-event-row").first()).toBeVisible();
+
+  /*
+   * The whole point of the drawer: `J` keeps walking the list and the drawer follows. The panel has to keep
+   * its dismiss layer out of the way for that — Radix would otherwise close a non-modal sheet the moment
+   * focus lands back on a row, which is every keystroke of this walk.
+   */
+  await page.keyboard.press("j");
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("link", { name: "打开整页" })).toHaveAttribute(
+    "href",
+    "/news/events/evt-global-policy-2",
+  );
+  await expect(page.locator(cursorRow)).toHaveAttribute("data-event-id", "evt-global-policy-2");
 
   await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
   await expect(page).toHaveURL(/\/news(\?|$)/);
 
   await expectNoUnhandledApiRequests(page);
@@ -114,8 +137,12 @@ test("keeps the cursor on its Event when the feed re-polls", async ({ page }) =>
   );
   await expect(page.locator(cursorRow)).toHaveAttribute("data-event-id", "evt-global-policy-2");
 
+  // The drawer follows the cursor, so it opens on the Event the reader is actually standing on.
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/news\/events\/evt-global-policy-2$/);
+  await expect(page.getByRole("dialog").getByRole("link", { name: "打开整页" })).toHaveAttribute(
+    "href",
+    "/news/events/evt-global-policy-2",
+  );
 });
 
 test("Esc out of an Event returns to the feed the reader left", async ({ page }) => {
@@ -125,6 +152,7 @@ test("Esc out of an Event returns to the feed the reader left", async ({ page })
 
   await page.keyboard.press("j");
   await page.keyboard.press("Enter");
+  await page.getByRole("dialog").getByRole("link", { name: "打开整页" }).click();
   await expect(page).toHaveURL(/\/news\/events\//);
 
   await page.keyboard.press("Escape");

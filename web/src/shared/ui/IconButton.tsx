@@ -1,31 +1,26 @@
 import { cn } from "@lib/utils";
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
-import { Button } from "./button";
+import "./IconButton.css";
 
-type IconButtonProps = Omit<
-  ComponentProps<typeof Button>,
-  "aria-label" | "asChild" | "size" | "variant"
-> & {
-  "aria-label": string;
-  children: ReactNode;
-};
-
+/**
+ * A square control that carries only a glyph, so it must carry a name for anyone who cannot see the glyph —
+ * `aria-label` is required by the type, not by review.
+ */
 export function IconButton({
   children,
-  className = "",
+  className,
+  size = "md",
   type = "button",
   ...props
-}: IconButtonProps) {
+}: Omit<ComponentPropsWithoutRef<"button">, "aria-label"> & {
+  "aria-label": string;
+  children: ReactNode;
+  size?: "sm" | "md";
+}) {
   return (
-    <Button
-      className={cn("size-7 p-0", className)}
-      size="icon-sm"
-      type={type}
-      variant="outline"
-      {...props}
-    >
+    <button className={cn("ui-icon-button", className)} data-size={size} type={type} {...props}>
       {children}
-    </Button>
+    </button>
   );
 }

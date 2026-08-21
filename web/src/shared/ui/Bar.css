@@ -1,0 +1,50 @@
+@layer app.primitives {
+  .ui-bar {
+    display: block;
+    min-width: 0;
+    height: 7px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--border-faint);
+  }
+
+  .ui-bar > span {
+    display: block;
+    min-width: 2px;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--border-strong);
+    transition: width 240ms ease;
+  }
+
+  .ui-bar[data-size="sm"] {
+    height: 5px;
+  }
+
+  /* The funnel's own bar: tall enough to read as a stacked quantity rather than a progress track. */
+  .ui-bar[data-size="lg"] {
+    height: 14px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-canvas);
+  }
+
+  .ui-bar[data-size="lg"] > span {
+    border-radius: var(--radius-xs);
+  }
+
+  .ui-bar[data-tone="accent"] > span {
+    background: var(--accent-primary);
+  }
+
+  .ui-bar[data-tone="caution"] > span {
+    background: var(--signal-caution);
+  }
+
+  .ui-bar[data-tone="bullish"] > span {
+    background: var(--dir-bullish);
+  }
+
+  .ui-bar[data-tone="bearish"] > span {
+    background: var(--dir-bearish);
+  }
+}

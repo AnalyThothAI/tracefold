@@ -17,7 +17,7 @@ test("tablet shell keeps top-level route navigation in the sidebar drawer", asyn
   await expect(page).toHaveURL(/\/news(?:\?|$)/);
   await expect(page.getByRole("heading", { name: "新闻事件流" })).toBeVisible();
 
-  const sidebarTrigger = page.getByRole("button", { name: "Toggle Sidebar" });
+  const sidebarTrigger = page.getByRole("button", { name: "切换侧栏" });
   await expect(sidebarTrigger).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeHidden();
 
@@ -33,7 +33,7 @@ test("tablet shell keeps top-level route navigation in the sidebar drawer", asyn
   await expect(primaryNavigation).toBeHidden();
 
   await page.getByLabel("news search").fill("tablet-token");
-  await page.getByRole("button", { name: "检索" }).click();
+  await page.getByLabel("news search").press("Enter");
   await expect(page).toHaveURL(/\/news\?q=tablet-token/);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);

@@ -1,4 +1,5 @@
 import { newsPath } from "@shared/routing/paths";
+import { Bar } from "@shared/ui/Bar";
 import { Card } from "@shared/ui/Card";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import * as PageState from "@shared/ui/PageState";
@@ -15,7 +16,6 @@ import {
   HEALTH_ITEM_KEYS,
   absoluteTime,
   formatCount,
-  healthBarShare,
   healthItemEyebrow,
   healthItemTitle,
   healthLevelLabel,
@@ -54,7 +54,7 @@ export function NewsStatusPage({ token }: { token: string }) {
       </NewsPageHeader>
 
       {query.isLoading && !status ? (
-        <PageState.Loading layout="panel" rows={4} label="正在读取流水线状态" />
+        <PageState.Loading label="正在读取流水线状态" layout="panel" rows={4} />
       ) : null}
       {query.isError && !status ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
@@ -77,31 +77,32 @@ export function NewsStatusPage({ token }: { token: string }) {
             </div>
 
             <Card
-              title="标的表快照"
-              hint="Binance / Hyperliquid 公开目录，用于符号归一与落表判断"
               aria-label="标的表快照"
+              flush
+              hint="Binance / Hyperliquid 公开目录，用于符号归一与落表判断"
+              title="标的表快照"
             >
               <InstrumentUniverse status={status} />
             </Card>
 
             <div className="news-status-grid">
               <Card
-                title="过去 24 小时去向"
-                hint="点击一层可跳到对应事件"
                 aria-label="过去 24 小时漏斗"
+                hint="点一层跳到对应事件"
+                title="过去 24 小时去向"
               >
                 <Funnel status={status} />
               </Card>
-              <Card title="原因排行" hint="过去 24 小时，按事件数" aria-label="拦截与推送原因">
+              <Card aria-label="拦截与推送原因" hint="过去 24 小时，按事件数" title="原因排行">
                 <ReasonBars reasons={status.reasons_24h ?? []} />
               </Card>
             </div>
 
             <div className="news-status-grid">
-              <Card title="控制" hint="用 tracefold news control 修改" aria-label="控制状态">
+              <Card aria-label="控制状态" hint="用 tracefold news control 修改" title="控制">
                 <ControlView status={status} />
               </Card>
-              <Card title="关注列表与策略" aria-label="关注列表与策略">
+              <Card aria-label="关注列表与策略" title="关注列表与策略">
                 <WatchAndStrategies status={status} />
               </Card>
             </div>
@@ -115,9 +116,10 @@ export function NewsStatusPage({ token }: { token: string }) {
 }
 
 /**
- * One environment, one thresholded read. The eyebrow names the stage in the pipeline's own Latin vocabulary,
- * the title is the server's Chinese sentence, and the bar makes a screenful of four comparable at a glance.
- * The browser never computes a second health state — level, summary and detail all arrive decided.
+ * One environment, one thresholded read. The eyebrow names the stage in the pipeline's own Latin vocabulary
+ * so a card lines up with the thing an operator would grep; the title is the server's Chinese sentence, and
+ * the 2px top edge is the level. The browser never computes a second health state — level, summary and
+ * detail all arrive decided.
  */
 function HealthCard({
   children,
@@ -133,14 +135,8 @@ function HealthCard({
     <article className="news-health-card news-toned" data-level={item.level} data-tone={tone}>
       <header>
         <span className="news-health-card-eyebrow">{healthItemEyebrow(name)}</span>
-        <span className="news-health-card-level">
-          <NewsToneDot />
-          {healthLevelLabel(item.level)}
-        </span>
+        <span className="news-health-card-level">{healthLevelLabel(item.level)}</span>
       </header>
-      <div aria-hidden className="news-health-card-bar">
-        <span style={{ width: `${healthBarShare(item.level)}%` }} />
-      </div>
       <p className="news-health-card-summary">
         <span className="sr-only">{healthItemTitle(name)}：</span>
         {item.summary_zh}
@@ -161,22 +157,22 @@ function HealthNumbers({
   const cells: Array<[string, string]> =
     keyName === "ingest"
       ? [
-          ["最近一帧", optionalTime(status.ingest.last_frame_at_ms).slice(11) || "尚无"],
-          ["最近 1 小时事件", formatCount(status.pipeline.events_1h)],
+          ["FRAME", optionalTime(status.ingest.last_frame_at_ms).slice(11) || "尚无"],
+          ["EVT 1H", formatCount(status.pipeline.events_1h)],
         ]
       : keyName === "broker"
         ? [
-            ["审稿队列", formatCount(status.broker.queues?.["news.triage"]?.messages ?? 0)],
-            ["投递队列", formatCount(status.broker.queues?.["news.deliver"]?.messages ?? 0)],
+            ["TRIAGE", formatCount(status.broker.queues?.["news.triage"]?.messages ?? 0)],
+            ["DELIVER", formatCount(status.broker.queues?.["news.deliver"]?.messages ?? 0)],
           ]
         : keyName === "model"
           ? [
-              ["24h 判断", formatCount(status.pipeline.triage_24h)],
-              ["延迟 p95", optionalDuration(status.pipeline.triage_p95_ms)],
+              ["JUDGED", formatCount(status.pipeline.triage_24h)],
+              ["P95", optionalDuration(status.pipeline.triage_p95_ms)],
             ]
           : [
-              ["24h 送达", formatCount(status.delivery.sent_24h)],
-              ["每小时上限", formatCount(status.delivery.hourly_cap)],
+              ["SENT", formatCount(status.delivery.sent_24h)],
+              ["CAP/H", formatCount(status.delivery.hourly_cap)],
             ];
   return (
     <dl className="news-health-card-numbers">
@@ -195,47 +191,55 @@ function Funnel({ status }: { status: NewsStatus }) {
   const max = Math.max(1, funnel.received);
   const layers = [
     {
+      hint: `1h ${formatCount(funnel.received_1h)}`,
       label: "收到",
-      value: funnel.received,
-      hint: `最近 1 小时 ${formatCount(funnel.received_1h)}`,
       to: newsPath(),
+      value: funnel.received,
     },
     {
-      label: "候选（送审）",
-      value: funnel.candidates,
       hint: percent(funnel.candidates, funnel.received),
+      label: "送审",
       to: null,
+      value: funnel.candidates,
     },
     {
-      label: "模型判断",
-      value: funnel.triaged,
       hint: percent(funnel.triaged, funnel.received),
+      label: "模型判断",
       to: null,
+      value: funnel.triaged,
     },
     {
-      label: "决定推送",
-      value: funnel.decided_push,
       hint: percent(funnel.decided_push, funnel.received),
+      label: "决定推送",
       to: `${newsPath()}?outcome=pushed`,
+      value: funnel.decided_push,
     },
     {
+      hint: `1h ${formatCount(funnel.delivered_1h)}`,
       label: "已送达",
-      value: funnel.delivered,
-      hint: `最近 1 小时 ${formatCount(funnel.delivered_1h)}`,
       to: `${newsPath()}?outcome=pushed`,
+      value: funnel.delivered,
     },
   ];
   return (
     <>
+      {/*
+       * The bars are the chain and only the chain: 收到 ⊇ 送审 ⊇ 模型判断 ⊇ 决定推送 ⊇ 已送达, so every band is a
+       * share of the one above it and the drop sentence below can name any two adjacent rows. 符号落表 is
+       * deliberately not here — an Event whose symbols never landed can still have been pushed, so it is a
+       * property of the Events in these bands rather than a band of its own, and it gets a tile on the feed
+       * where its own denominator (the Events that carried a tag) fits beside it.
+       */}
       <ol className="news-funnel">
         {layers.map((layer) => {
-          const width = `${Math.max(4, Math.round((layer.value / max) * 100))}%`;
           const content = (
             <>
               <span className="news-funnel-label">{layer.label}</span>
-              <span className="news-funnel-track">
-                <span className="news-funnel-bar" style={{ width }} />
-              </span>
+              <Bar
+                share={Math.max(4, (layer.value / max) * 100)}
+                size="lg"
+                tone={layer.to ? "accent" : "neutral"}
+              />
               <b>{formatCount(layer.value)}</b>
               <small>{layer.hint}</small>
             </>
@@ -265,16 +269,15 @@ function Funnel({ status }: { status: NewsStatus }) {
 function BiggestDrop({ status }: { status: NewsStatus }) {
   const funnel = status.funnel_24h;
   const drops = [
-    { from: "收到", to: "候选（送审）", lost: funnel.received - funnel.candidates },
-    { from: "候选（送审）", to: "模型判断", lost: funnel.candidates - funnel.triaged },
-    { from: "模型判断", to: "决定推送", lost: funnel.triaged - funnel.decided_push },
-    { from: "决定推送", to: "已送达", lost: funnel.decided_push - funnel.delivered },
+    { from: "收到", lost: funnel.received - funnel.candidates, to: "送审" },
+    { from: "送审", lost: funnel.candidates - funnel.triaged, to: "模型判断" },
+    { from: "模型判断", lost: funnel.triaged - funnel.decided_push, to: "决定推送" },
+    { from: "决定推送", lost: funnel.decided_push - funnel.delivered, to: "已送达" },
   ];
   const worst = drops.reduce((best, drop) => (drop.lost > best.lost ? drop : best), drops[0]);
   if (worst.lost <= 0) return null;
   return (
     <p className="news-funnel-note">
-      <span aria-hidden className="news-funnel-note-dot" />
       最大流失在「{worst.from} → {worst.to}」，{formatCount(worst.lost)} 条没有往下走。
     </p>
   );
@@ -284,8 +287,8 @@ function ReasonBars({ reasons }: { reasons: NewsReasonCount[] }) {
   if (!reasons.length) return <NewsEmptyNote>过去 24 小时没有记录。</NewsEmptyNote>;
   const max = Math.max(1, ...reasons.map((reason) => reason.count));
   const groups = REASON_STAGE_ORDER.map((stage) => ({
-    stage,
     rows: reasons.filter((reason) => reason.stage === stage).slice(0, 6),
+    stage,
   })).filter((group) => group.rows.length);
   return (
     <div className="news-reason-groups">
@@ -297,7 +300,7 @@ function ReasonBars({ reasons }: { reasons: NewsReasonCount[] }) {
           key={group.stage}
         >
           <h3>
-            <NewsToneDot halo={false} />
+            <NewsToneDot />
             {reasonStageLabel(group.stage)}
             <span className="news-reason-total">
               {formatCount(group.rows.reduce((sum, reason) => sum + reason.count, 0))}
@@ -307,10 +310,11 @@ function ReasonBars({ reasons }: { reasons: NewsReasonCount[] }) {
             {group.rows.map((reason) => (
               <li key={`${reason.stage}-${reason.key}`} title={reason.key}>
                 <span className="news-reason-label">{reason.label_zh}</span>
-                <span className="news-reason-bar-track">
-                  <span
-                    className="news-reason-bar"
-                    style={{ width: `${Math.max(3, Math.round((reason.count / max) * 100))}%` }}
+                <span className="news-reason-bar">
+                  <Bar
+                    share={Math.max(3, (reason.count / max) * 100)}
+                    size="sm"
+                    tone={reasonBarTone(group.stage)}
                   />
                 </span>
                 <b>{formatCount(reason.count)}</b>
@@ -321,6 +325,13 @@ function ReasonBars({ reasons }: { reasons: NewsReasonCount[] }) {
       ))}
     </div>
   );
+}
+
+/** Only the two groups worth pointing at take a colour; the rest are inventory and stay neutral grey. */
+function reasonBarTone(stage: string) {
+  if (stage === "push") return "accent" as const;
+  if (stage === "ungrounded" || stage === "throttle") return "caution" as const;
+  return "neutral" as const;
 }
 
 /**
@@ -398,16 +409,10 @@ function WatchAndStrategies({ status }: { status: NewsStatus }) {
       {matched == null ? (
         <p className="news-strategy-note">provider 列表暂不可用，无法核对</p>
       ) : (
-        <div aria-hidden className="news-strategy-bar">
-          <span style={{ width: `${configured ? (matched / configured) * 100 : 0}%` }} />
-          <span
-            data-unmatched
-            style={{ width: `${configured ? ((configured - matched) / configured) * 100 : 0}%` }}
-          />
-        </div>
+        <Bar share={configured ? (matched / configured) * 100 : 0} tone="accent" />
       )}
       {warnings.length ? (
-        <div className="news-warning-block">
+        <div className="news-warning-block news-toned" data-tone="caution">
           <TriangleAlert aria-hidden />
           <ul>
             {warnings.map((warning) => (

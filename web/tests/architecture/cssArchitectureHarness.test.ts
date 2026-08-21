@@ -19,20 +19,7 @@ const retiredGlobalCssBuckets = new Set([
 const globalStyleFiles = new Set(["styles/base.css", "styles/tailwind.css", "styles/tokens.css"]);
 
 const featureClassPrefixes: Record<string, string[]> = {
-  cockpit: [
-    "brand",
-    "brand-",
-    "center-column",
-    "cockpit-",
-    "decision-count",
-    "rail-",
-    "searchbar",
-    "side-rail",
-    "status-pills",
-    "top-stats",
-    "topbar",
-    "topbar-",
-  ],
+  cockpit: ["brand", "brand-", "center-column", "cockpit-", "searchbar", "topbar", "topbar-"],
   news: ["news-"],
 };
 

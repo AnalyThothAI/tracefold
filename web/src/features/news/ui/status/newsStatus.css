@@ -1,124 +1,112 @@
 @layer app.features {
   .news-status-body {
     display: grid;
-    gap: 0.9rem;
+    gap: 12px;
+    align-content: start;
     min-width: 0;
   }
 
-  .news-health-grid,
-  .news-status-grid {
-    display: grid;
-    gap: 0.7rem;
-    min-width: 0;
-  }
-
-  .news-health-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .news-status-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: start;
-  }
-
-  .news-status-grid > * {
+  .news-status-body > * {
     min-width: 0;
   }
 
   /* ------------------------------------------------------------------ health cards */
+  .news-health-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    overflow: clip;
+    border-radius: var(--radius-lg);
+    background: var(--border-faint);
+    box-shadow: var(--ring-panel);
+  }
+
   /*
-   * Four environments, one thresholded read each. Colour comes from the tone the level resolves to, and the
-   * bar turns four ordered states into four comparable lengths so the row can be scanned instead of read.
+   * Four cards in one panel, separated by the grid gap. The level is a 2px top edge and a word: no bar, no
+   * badge — the whole row is comparable at a glance because the coloured edges line up.
    */
   .news-health-card {
     display: grid;
-    gap: 0.35rem;
-    align-content: start;
-    padding: 0.7rem 0.85rem 0.75rem;
-    border: 1px solid var(--news-tone-border);
-    border-radius: var(--radius-lg);
+    grid-template-rows: auto auto 1fr auto;
+    gap: 5px;
+    padding: 13px 15px 14px;
+    border-top: 2px solid var(--tone);
     background: var(--surface-panel);
-    box-shadow: var(--shadow-raised);
   }
 
   .news-health-card header {
     display: flex;
-    gap: 0.5rem;
-    align-items: center;
+    gap: 8px;
+    align-items: baseline;
     justify-content: space-between;
   }
 
   .news-health-card-eyebrow {
-    color: var(--text-subtle);
-    font: 700 0.56rem/1 var(--font-mono);
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
-  }
-
-  .news-health-card-level {
-    display: inline-flex;
-    gap: 0.3rem;
-    align-items: center;
-    color: var(--news-tone);
-    font-size: 0.72rem;
+    color: var(--text-primary);
+    font-size: 12.5px;
     font-weight: 640;
   }
 
-  .news-health-card-bar {
-    height: 3px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--border-faint);
-  }
-
-  .news-health-card-bar span {
-    display: block;
-    height: 100%;
-    border-radius: 999px;
-    background: var(--news-tone);
+  .news-health-card-level {
+    color: var(--tone);
+    font-size: 11px;
+    font-weight: 640;
+    white-space: nowrap;
   }
 
   .news-health-card-summary {
-    margin: 0.1rem 0 0;
-    color: var(--text-primary);
-    font-size: 0.82rem;
-    font-weight: 620;
+    margin: 1px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 560;
     line-height: 1.4;
   }
 
   .news-health-card-detail {
     margin: 0;
-    color: var(--text-muted);
-    font-size: 0.72rem;
+    color: var(--text-subtle);
+    font-size: 11px;
     line-height: 1.45;
   }
 
   .news-health-card-numbers {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.3rem;
-    margin: 0.2rem 0 0;
-    padding-top: 0.5rem;
+    gap: 8px;
+    margin: 5px 0 0;
+    padding-top: 9px;
     border-top: 1px solid var(--border-faint);
   }
 
   .news-health-card-numbers dt {
+    height: 13px;
+    overflow: hidden;
     color: var(--text-subtle);
-    font-size: 0.66rem;
+    font: var(--type-eyebrow);
+    line-height: 13px;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
   }
 
   .news-health-card-numbers dd {
     margin: 0;
-    color: var(--text-secondary);
-    font-size: 0.82rem;
-    font-weight: 620;
+    color: var(--text-primary);
+    font: 640 13px/1.3 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
-  /* ------------------------------------------------------------------ 24h funnel */
+  /* ------------------------------------------------------------------ two-column bands */
+  .news-status-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+
+  /* ------------------------------------------------------------------ funnel */
   .news-funnel {
     display: grid;
-    gap: 0.1rem;
+    gap: 2px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -126,11 +114,11 @@
 
   .news-funnel-row {
     display: grid;
-    grid-template-columns: 5.5rem minmax(0, 1fr) 3.5rem max-content;
-    gap: 0 0.7rem;
+    grid-template-columns: 76px minmax(0, 1fr) 58px 56px;
+    gap: 0 12px;
     align-items: center;
-    padding: 0.28rem 0.4rem;
-    border-radius: var(--radius-sm);
+    padding: 6px;
+    border-radius: var(--radius-xs);
     color: inherit;
     text-decoration: none;
   }
@@ -141,91 +129,56 @@
 
   .news-funnel-label {
     color: var(--text-secondary);
-    font-size: 0.74rem;
-  }
-
-  .news-funnel-track {
-    display: block;
-    height: 8px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--surface-canvas);
-  }
-
-  .news-funnel-bar {
-    display: block;
-    height: 100%;
-    border-radius: 999px;
-    background: var(--border-strong);
-    transition: width 240ms ease;
-  }
-
-  /* The end of the pipeline is the number the reader came for. */
-  .news-funnel li:last-child .news-funnel-bar,
-  .news-funnel li:nth-last-child(2) .news-funnel-bar {
-    background: var(--signal-done);
+    font-size: 11.5px;
   }
 
   .news-funnel-row b {
     color: var(--text-primary);
-    font-size: 0.8rem;
-    font-weight: 640;
+    font: 640 12px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
 
   .news-funnel-row small {
     color: var(--text-subtle);
-    font: 500 0.66rem/1 var(--font-mono);
+    font: 500 10px/1 var(--font-mono);
     text-align: right;
-    white-space: nowrap;
   }
 
   .news-funnel-note {
-    display: flex;
-    gap: 0.5rem;
-    align-items: center;
-    margin: 0.8rem 0 0;
-    padding-top: 0.65rem;
+    margin: 10px 0 0;
+    padding-top: 9px;
     border-top: 1px solid var(--border-faint);
     color: var(--text-muted);
-    font-size: 0.72rem;
-  }
-
-  .news-funnel-note-dot {
-    flex: 0 0 auto;
-    width: 5px;
-    height: 5px;
-    border-radius: 999px;
-    background: var(--signal-caution);
+    font-size: 11.5px;
+    line-height: 1.5;
   }
 
   /* ------------------------------------------------------------------ reason ranking */
   .news-reason-groups {
     display: grid;
-    gap: 0.8rem;
+    gap: 12px;
   }
 
   .news-reason-group h3 {
     display: flex;
-    gap: 0.4rem;
+    gap: 7px;
     align-items: center;
-    margin: 0 0 0.35rem;
-    color: var(--text-subtle);
-    font: 700 0.56rem/1 var(--font-mono);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    margin: 0 0 7px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .news-reason-total {
-    color: var(--border-strong);
-    font-weight: 500;
+    color: var(--text-subtle);
+    font: 500 10px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   .news-reason-group ul {
     display: grid;
-    gap: 0.15rem;
+    gap: 4px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -233,10 +186,10 @@
 
   .news-reason-group li {
     display: grid;
-    grid-template-columns: minmax(0, 10rem) minmax(0, 1fr) 3rem;
-    gap: 0 0.6rem;
+    grid-template-columns: minmax(0, 10rem) minmax(0, 1fr) 2.6rem;
+    gap: 0 10px;
     align-items: center;
-    font-size: 0.74rem;
+    font-size: 11.5px;
   }
 
   .news-reason-label {
@@ -246,173 +199,140 @@
     white-space: nowrap;
   }
 
-  .news-reason-bar-track {
-    display: block;
-    height: 6px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--surface-canvas);
-  }
-
   .news-reason-bar {
     display: block;
-    height: 100%;
-    border-radius: 999px;
-    background: var(--news-tone);
+    min-width: 0;
   }
 
-  .news-reason-group li b {
+  .news-reason-group b {
     color: var(--text-secondary);
-    font-size: 0.74rem;
-    font-weight: 620;
+    font: 600 11px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
     text-align: right;
   }
 
-  /* ------------------------------------------------------------------ control + watchlist */
+  /* ------------------------------------------------------------------ control & watchlist */
   .news-control,
   .news-watch {
     display: grid;
-    gap: 0.5rem;
-    min-width: 0;
+    gap: 8px;
+    align-content: start;
   }
 
   .news-control-state {
-    display: flex;
-    gap: 0.5rem;
+    display: inline-flex;
+    gap: 7px;
     align-items: center;
+    justify-self: start;
+    min-height: 26px;
+    padding: 0 9px;
+    border-radius: var(--radius-sm);
+    color: var(--tone);
+    background: var(--tone-soft);
+    box-shadow: inset 0 0 0 1px var(--tone-border);
     margin: 0;
-    padding: 0.5rem 0.7rem;
-    border: 1px solid var(--news-tone-border);
-    border-radius: var(--radius-md);
-    background: var(--news-tone-soft);
-    color: var(--text-primary);
-    font-size: 0.8rem;
+    font-size: 12px;
+    font-weight: 620;
   }
 
   .news-control-heading {
-    margin: 0.3rem 0 0;
+    margin: 4px 0 0;
     color: var(--text-subtle);
-    font: 700 0.56rem/1 var(--font-mono);
-    letter-spacing: 0.08em;
+    font: var(--type-eyebrow);
+    letter-spacing: 0.09em;
     text-transform: uppercase;
-  }
-
-  .news-chip-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    align-items: center;
-  }
-
-  .news-chip-row code {
-    padding: 0.1rem 0.45rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: 999px;
-    background: var(--surface-raised);
-    color: var(--text-secondary);
-    font: 600 0.7rem/1.6 var(--font-mono);
-  }
-
-  .news-chip-row em {
-    color: var(--text-subtle);
-    font-size: 0.72rem;
-    font-style: normal;
   }
 
   .news-mute-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.74rem;
-  }
-
-  .news-mute-table th,
-  .news-mute-table td {
-    padding: 0.35rem 0.15rem;
-    border-bottom: 1px solid var(--border-faint);
-    text-align: left;
+    font-size: 11.5px;
   }
 
   .news-mute-table th {
+    padding: 0 0 5px;
     color: var(--text-subtle);
-    font: 700 0.56rem/1 var(--font-mono);
+    font: var(--type-eyebrow);
     letter-spacing: 0.06em;
-    text-transform: uppercase;
+    text-align: left;
   }
 
-  .news-mute-table td code {
+  .news-mute-table td {
+    padding: 5px 0;
+    border-top: 1px solid var(--border-faint);
     color: var(--text-secondary);
-    font: 0.72rem/1.5 var(--font-mono);
   }
 
-  /* ------------------------------------------------------------------ strategy usage */
+  .news-mute-table code {
+    font: 500 11px/1.5 var(--font-mono);
+  }
+
+  .news-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .news-chip-row code {
+    padding: 0 6px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--border-faint);
+    color: var(--text-secondary);
+    font: 500 10.5px/1.7 var(--font-mono);
+  }
+
+  .news-chip-row em {
+    color: var(--text-subtle);
+    font-size: 11.5px;
+    font-style: normal;
+  }
+
   .news-strategy-count {
     margin: 0;
     color: var(--text-primary);
-    font-size: 1.05rem;
-    font-weight: 660;
+    font: 640 17px/1.2 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   .news-strategy-count small {
     color: var(--text-subtle);
-    font-size: 0.78rem;
-    font-weight: 500;
-  }
-
-  .news-strategy-bar {
-    display: flex;
-    gap: 2px;
-    height: 6px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--border-faint);
-  }
-
-  .news-strategy-bar span {
-    background: var(--accent-primary);
-  }
-
-  .news-strategy-bar span[data-unmatched] {
-    background: var(--signal-caution);
+    font: 500 11px/1 var(--font-mono);
   }
 
   .news-strategy-note {
     margin: 0;
     color: var(--text-subtle);
-    font-size: 0.7rem;
+    font-size: 11px;
   }
 
   .news-warning-block {
     display: flex;
-    gap: 0.5rem;
-    align-items: flex-start;
-    padding: 0.5rem 0.7rem;
-    border: 1px solid var(--signal-caution-border);
+    gap: 8px;
+    padding: 9px 11px;
     border-radius: var(--radius-md);
-    background: var(--signal-caution-soft);
+    color: var(--tone);
+    background: var(--tone-soft);
+    font-size: 11.5px;
+    line-height: 1.5;
   }
 
   .news-warning-block svg {
-    width: 0.85rem;
-    height: 0.85rem;
+    width: 13px;
+    height: 13px;
     flex: 0 0 auto;
-    margin-top: 0.1rem;
-    color: var(--signal-caution);
+    margin-top: 2px;
   }
 
   .news-warning-block ul {
     display: grid;
-    gap: 0.2rem;
+    gap: 3px;
     margin: 0;
-    padding: 0;
-    color: var(--text-secondary);
-    font-size: 0.72rem;
-    line-height: 1.5;
+    padding-left: 0;
     list-style: none;
   }
 
-  @media (max-width: 1279px) {
+  @media (max-width: 1023px) {
     .news-health-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -424,9 +344,8 @@
       grid-template-columns: 1fr;
     }
 
-    /* The percentage hint is the first thing to go: the bar already shows the share. */
     .news-funnel-row {
-      grid-template-columns: 4.5rem minmax(0, 1fr) 3rem;
+      grid-template-columns: 72px minmax(0, 1fr) 52px;
     }
 
     .news-funnel-row small {
@@ -434,7 +353,12 @@
     }
 
     .news-reason-group li {
-      grid-template-columns: minmax(0, 7rem) minmax(0, 1fr) 2.6rem;
+      grid-template-columns: minmax(0, 1fr) 2.8rem;
+    }
+
+    /* No room for a bar beside a Chinese reason label on a phone; the count carries the ranking. */
+    .news-reason-bar {
+      display: none;
     }
   }
 }

@@ -27,9 +27,10 @@ describe("NewsReviewPage", () => {
     renderReview();
 
     const coverage = await screen.findByLabelText("复盘覆盖率");
-    expect(within(coverage).getByText("事件后 1H")).toBeInTheDocument();
+    expect(within(coverage).getAllByText("事件后 1H").length).toBeGreaterThan(0);
     expect(within(coverage).getByText("66.7%")).toBeInTheDocument();
-    expect(within(coverage).getByText(/可评估 3 · 已定价 2/)).toBeInTheDocument();
+    // The share never travels without the two counts it came from.
+    expect(within(coverage).getByText("已定价 2 / 3")).toBeInTheDocument();
     // The reason a horizon could not be priced is on screen, not folded into the percentage.
     expect(within(coverage).getByText("该时段没有成交 K 线，不做前向填充")).toBeInTheDocument();
 
@@ -114,7 +115,7 @@ function renderReview(path = "/news/review"): ReactNode {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <div className="center-column">
-          <NewsPage token="test-token" view="review" />
+          <NewsPage copy={() => {}} token="test-token" view="review" />
         </div>
       </MemoryRouter>
     </QueryClientProvider>,

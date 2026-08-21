@@ -1,198 +1,385 @@
 @layer app.features {
+  /*
+   * One Event as a document: conclusion, evidence, audit trail — in that order, top to bottom. The measure is
+   * the `case` archetype's 1000px; the panel stacks rather than filling a height, so a short Event does not
+   * stretch its cards to the viewport.
+   */
   .news-panel.news-detail-shell {
     grid-template-rows: none;
     grid-auto-rows: max-content;
-    /* A reading measure, centred in the column. The sidebar used to absorb the leftover width; it defaults
-       collapsed since #70, so without this the case page hugs the left edge on a wide display. */
-    max-width: 68rem;
-    margin-inline: auto;
   }
 
   .news-detail-toolbar {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.6rem 1rem;
+    gap: 10px;
     align-items: center;
     justify-content: space-between;
   }
 
-  /* ------------------------------------------------------------------ pager */
-  .news-detail-pager {
-    display: flex;
-    gap: 0.4rem;
-    align-items: center;
-  }
-
-  .news-detail-pager-position {
-    color: var(--text-subtle);
-    font: 500 0.7rem/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .news-detail-pager-button {
-    display: inline-flex;
-    gap: 0.35rem;
-    align-items: center;
-    min-height: 1.9rem;
-    padding: 0 0.6rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-root);
-    color: var(--text-secondary);
-    font-size: 0.74rem;
-  }
-
-  .news-detail-pager-button:hover:not(:disabled) {
-    border-color: var(--border-strong);
-    color: var(--text-primary);
-  }
-
-  .news-detail-pager-button svg {
-    width: 0.75rem;
-    height: 0.75rem;
-  }
-
-  .news-detail-pager-button kbd {
-    padding: 0 0.2rem;
-    border: 1px solid var(--border-faint);
-    border-radius: 3px;
-    color: var(--text-subtle);
-    font: 500 0.6rem/1.5 var(--font-mono);
-  }
-
   /* ------------------------------------------------------------------ hero */
-  /*
-   * The hero carries the market judgment. A left rail in the direction colour makes 利多 / 利空 readable before
-   * any text is parsed; neutral and unclear stay uncoloured on purpose (~42% of live verdicts are neutral, and
-   * colouring them would drown the ones that matter).
-   */
   .news-detail-hero {
     display: grid;
-    gap: 0.55rem;
-    padding: 1.1rem 1.25rem 1.2rem;
+    gap: 10px;
+    padding: 16px 20px 18px;
     border: 1px solid var(--border-subtle);
-    border-left: 3px solid var(--news-direction-rail, var(--border-subtle));
+    border-left: 3px solid var(--border-subtle);
     border-radius: var(--radius-lg);
-    background:
-      radial-gradient(
-        circle at 100% 0%,
-        color-mix(in srgb, var(--accent-primary) 7%, transparent),
-        transparent 22rem
-      ),
-      color-mix(in srgb, var(--surface-panel) 88%, transparent);
+    background: var(--surface-panel);
+  }
+
+  /* The rail is the market call. A neutral verdict leaves it uncoloured rather than picking a side. */
+  .news-detail-hero[data-direction="bullish"] {
+    border-left-color: var(--dir-bullish);
+  }
+
+  .news-detail-hero[data-direction="bearish"] {
+    border-left-color: var(--dir-bearish);
   }
 
   .news-detail-hero-top {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem 1rem;
+    gap: 8px 14px;
     align-items: center;
     justify-content: space-between;
   }
 
+  .news-detail-hero-state {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .news-detail-hero-state > span {
+    color: var(--text-subtle);
+    font-size: 12px;
+  }
+
   .news-detail-hero-time {
-    color: var(--text-muted);
-    font-size: 0.74rem;
+    color: var(--text-secondary);
+    font: 500 11px/1.6 var(--font-mono);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .news-detail-headline {
-    margin: 0.2rem 0 0;
-    font-size: clamp(1.25rem, 2vw, 1.6rem);
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    line-height: 1.3;
-    overflow-wrap: anywhere;
+    margin: 2px 0 0;
+    color: var(--text-primary);
+    font-size: 23px;
+    font-weight: 680;
+    letter-spacing: -0.024em;
+    line-height: 1.34;
+    text-wrap: pretty;
   }
 
   .news-detail-translated {
     margin: 0;
-    color: var(--text-secondary);
-    font-size: 0.9rem;
+    color: var(--text-muted);
+    font-size: 13px;
     line-height: 1.5;
   }
 
+  .news-detail-verdict {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    align-items: center;
+  }
+
+  .news-detail-rule {
+    width: 1px;
+    height: 12px;
+    background: var(--border-subtle);
+  }
+
+  /* The model's one sentence. It is the reason the reader opened this page, so it is set as reading matter. */
   .news-detail-why {
-    margin: 0;
-    padding: 0.55rem 0.8rem;
-    border-left: 3px solid var(--accent-border);
-    background: var(--accent-soft);
+    margin: 2px 0 0;
+    padding: 10px 14px;
+    border-left: 2px solid var(--accent-border);
+    background: var(--surface-raised);
     color: var(--text-primary);
-    font-size: 0.86rem;
-    line-height: 1.55;
-    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    font: var(--type-body);
+    text-wrap: pretty;
+  }
+
+  .news-detail-fact-grid {
+    margin-top: 4px;
+  }
+
+  .news-detail-intent {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    align-items: baseline;
+    margin: 0;
+  }
+
+  .news-detail-asset-group {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: baseline;
+  }
+
+  .news-detail-asset-group small {
+    color: var(--text-subtle);
+    font-size: 10.5px;
+  }
+
+  .news-detail-asset-group code {
+    color: var(--text-secondary);
+    font: 600 11px/1.6 var(--font-mono);
+  }
+
+  .news-detail-asset-group b {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 620;
   }
 
   .news-detail-original {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35rem 0.6rem;
+    gap: 7px 10px;
     align-items: baseline;
-    margin: 0.2rem 0 0;
-    color: var(--text-muted);
-    font-size: 0.78rem;
+    margin: 6px 0 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-faint);
+    color: var(--text-secondary);
+    font-size: 12px;
     line-height: 1.5;
-    overflow-wrap: anywhere;
   }
 
   .news-detail-original-label {
-    padding: 0 0.4rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: 999px;
-    font-size: 0.64rem;
-    letter-spacing: 0.04em;
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    line-height: 1.7;
+    letter-spacing: 0.09em;
+    white-space: nowrap;
   }
 
-  .news-detail-original a,
-  .news-member-meta a {
+  .news-detail-original > span:nth-child(2) {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .news-detail-original a {
     display: inline-flex;
-    gap: 0.2rem;
+    gap: 4px;
     align-items: center;
-    color: var(--accent-primary);
-    text-decoration: none;
+    font-size: 11.5px;
   }
 
-  .news-detail-original a svg,
-  .news-member-meta a svg {
-    width: 0.7rem;
-    height: 0.7rem;
+  .news-detail-original svg {
+    width: 11px;
+    height: 11px;
   }
 
-  .news-detail-facts {
+  /* ------------------------------------------------------------------ 符号归一 */
+  .news-detail-normalization ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-detail-normalization li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 20px 92px;
+    gap: 12px;
+    align-items: center;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-detail-normalization li:last-child {
+    border-bottom: 0;
+  }
+
+  .news-detail-normalization svg {
+    width: 13px;
+    height: 13px;
+    color: var(--border-strong);
+  }
+
+  .news-normalization-aliases {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.3rem 0.9rem;
-    align-items: center;
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.74rem;
+    gap: 4px;
+    min-width: 0;
   }
 
-  /* ------------------------------------------------------------------ timeline + side column */
-  /*
-   * What happened, beside what to do about it. The timeline is the wider half because its sentences run long;
-   * labelling and the merged reports are short and stack.
-   */
+  .news-normalization-aliases code {
+    padding: 0 6px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--border-faint);
+    color: var(--text-secondary);
+    font: 500 10.5px/1.7 var(--font-mono);
+  }
+
+  .news-normalization-base {
+    color: var(--text-primary);
+    font: 700 12px/1.4 var(--font-mono);
+  }
+
+  /* ------------------------------------------------------------------ 事件后反应 */
+  .news-detail-reactions {
+    display: grid;
+    gap: 10px;
+  }
+
+  .news-detail-reaction-aggregate {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    align-items: baseline;
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .news-detail-reaction-aggregate small {
+    color: var(--text-subtle);
+    font-size: 10.5px;
+  }
+
+  .news-detail-reaction-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-detail-reaction-list li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: baseline;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-detail-reaction-list li:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .news-detail-quote-symbol {
+    display: inline-flex;
+    gap: 6px;
+    align-items: baseline;
+    min-width: 8rem;
+  }
+
+  .news-detail-quote-symbol code {
+    color: var(--text-primary);
+    font: 600 12px/1.4 var(--font-mono);
+  }
+
+  .news-detail-quote-symbol small {
+    color: var(--text-subtle);
+    font: 500 10.5px/1.4 var(--font-mono);
+  }
+
+  /* The raw closes behind each return, so the number is auditable rather than asserted. */
+  .news-detail-reaction-closes {
+    flex: 1 1 12rem;
+    color: var(--text-subtle);
+    font: 500 10.5px/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  /* ------------------------------------------------------------------ evidence band */
   .news-detail-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.42fr) minmax(0, 1fr);
-    gap: 0.9rem;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    gap: 12px;
     align-items: start;
-  }
-
-  .news-detail-grid > * {
-    min-width: 0;
   }
 
   .news-detail-side {
     display: grid;
-    gap: 0.9rem;
+    gap: 12px;
+    align-content: start;
     min-width: 0;
   }
 
+  .news-detail-pager {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+
+  .news-detail-pager-position {
+    color: var(--text-subtle);
+    font: 500 11px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ------------------------------------------------------------------ labels */
+  .news-label-block {
+    display: grid;
+    gap: 10px;
+  }
+
+  .news-label-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .news-label-hint {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .news-label-hint kbd {
+    padding: 1px 5px;
+    border-radius: var(--radius-xs);
+    background: var(--border-faint);
+    font: 600 10px/1.5 var(--font-mono);
+  }
+
+  .news-label-list {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .news-label-list li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    align-items: baseline;
+    font-size: 12px;
+  }
+
+  .news-label-list b {
+    color: var(--text-primary);
+    font-weight: 620;
+  }
+
+  .news-label-list small {
+    color: var(--text-subtle);
+    font: 500 10.5px/1.5 var(--font-mono);
+  }
+
+  /* ------------------------------------------------------------------ members */
   .news-member-list {
     display: grid;
-    gap: 0.5rem;
+    gap: 10px;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -200,246 +387,102 @@
 
   .news-member {
     display: grid;
-    grid-template-columns: 3.2rem minmax(0, 1fr);
-    gap: 0.6rem;
-    align-items: start;
+    grid-template-columns: 46px minmax(0, 1fr);
+    gap: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-faint);
+  }
+
+  .news-member:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
   }
 
   .news-member time {
-    color: var(--text-muted);
-    font: 500 0.7rem/1.6 var(--font-mono);
+    color: var(--text-secondary);
+    font: 500 11px/1.6 var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
   .news-member-title {
     margin: 0;
     color: var(--text-primary);
-    font-size: 0.78rem;
+    font-size: 12.5px;
     line-height: 1.45;
-    overflow-wrap: anywhere;
+    text-wrap: pretty;
   }
 
   .news-member-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.2rem 0.6rem;
-    margin: 0.1rem 0 0;
-    color: var(--text-muted);
-    font-size: 0.68rem;
-  }
-
-  .news-label-block {
-    display: grid;
-    gap: 0.6rem;
-    min-width: 0;
-  }
-
-  .news-label-list {
-    display: grid;
-    gap: 0.4rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .news-label-list li {
-    display: grid;
-    gap: 0.1rem;
-    padding: 0.45rem 0.6rem;
-    border: 1px solid var(--border-faint);
-    border-radius: var(--radius-md);
-    font-size: 0.74rem;
-  }
-
-  .news-label-list small {
-    color: var(--text-muted);
-    font-size: 0.66rem;
-  }
-
-  /*
-   * Three verdicts on the verdict. They copy the `tracefold news label` command rather than writing it — the
-   * News API is read-only by design, and the learning plane is the CLI. Only 判错了 and 判得对 take a colour,
-   * and they take the market-direction pair on purpose: this is a judgment about the judgment, not a pipeline
-   * state, so the pipeline's blue/amber would read as a delivery outcome.
-   */
-  .news-label-actions {
-    display: flex;
-    gap: 0.4rem;
-  }
-
-  .news-label-action {
-    display: inline-flex;
-    flex: 1;
-    gap: 0.3rem;
-    align-items: center;
-    justify-content: center;
-    min-height: 2.1rem;
-    padding: 0 0.5rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-root);
-    color: var(--text-secondary);
-    font-size: 0.76rem;
-    font-weight: 600;
-  }
-
-  .news-label-action svg {
-    width: 0.75rem;
-    height: 0.75rem;
-  }
-
-  .news-label-action[data-label="good"] {
-    border-color: var(--dir-bearish-border);
-    background: var(--dir-bearish-soft);
-    color: var(--dir-bearish);
-  }
-
-  .news-label-action[data-label="bad"] {
-    border-color: var(--dir-bullish-border);
-    background: var(--dir-bullish-soft);
-    color: var(--dir-bullish);
-  }
-
-  .news-label-action:hover {
-    border-color: var(--border-strong);
-  }
-
-  .news-label-hint {
-    margin: 0;
+    gap: 4px 10px;
+    align-items: baseline;
+    margin: 3px 0 0;
     color: var(--text-subtle);
-    font-size: 0.7rem;
-    line-height: 1.5;
+    font-size: 11px;
   }
 
-  .news-label-hint kbd {
-    padding: 0 0.25rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: 3px;
-    background: var(--surface-raised);
-    color: var(--text-secondary);
-    font: 600 0.66rem/1.5 var(--font-mono);
-  }
-
-  @media (max-width: 1279px) {
-    .news-detail-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  /* ------------------------------------------------------------- symbol normalization */
-  .news-detail-normalization ul {
-    display: grid;
-    gap: 0.45rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .news-detail-normalization li {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
+  .news-member-meta a {
+    display: inline-flex;
+    gap: 4px;
     align-items: center;
   }
 
-  .news-normalization-aliases {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
+  .news-member-meta svg {
+    width: 11px;
+    height: 11px;
   }
 
-  .news-detail-normalization code {
-    padding: 0.05rem 0.4rem;
-    border: 1px solid var(--border-faint);
-    border-radius: var(--radius-sm);
-    background: var(--surface-raised);
-    color: var(--text-muted);
-    font: 500 0.68rem/1.6 var(--font-mono);
-  }
-
-  .news-detail-normalization .news-normalization-base {
-    border-color: var(--border-subtle);
-    color: var(--text-primary);
-    font-weight: 700;
-  }
-
-  .news-detail-normalization svg {
-    width: 0.8rem;
-    height: 0.8rem;
-    color: var(--border-strong);
+  @media (max-width: 1023px) {
+    .news-detail-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   @media (max-width: 767px) {
     .news-detail-hero {
-      padding: 0.9rem 0.95rem 1rem;
+      padding: 13px 14px 15px;
     }
 
-    .news-detail-toolbar {
-      align-items: stretch;
-      flex-direction: column;
+    /* A key hint on a device with no keyboard is decoration that costs the pager its width. */
+    .news-detail-pager kbd {
+      display: none;
     }
 
-    .news-detail-pager {
-      justify-content: space-between;
+    .news-detail-headline {
+      font-size: 19px;
+      letter-spacing: -0.02em;
+      line-height: 1.4;
+    }
+
+    .news-detail-normalization li {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 5px;
+    }
+
+    .news-detail-normalization svg {
+      display: none;
     }
 
     /*
-     * Labelling is the one thing an operator does with a thumb, and it is destructive to get wrong — a
-     * mis-tap writes the opposite judgment into the regression set. Three equal targets at the full tap
-     * size (#87).
+     * The wire line stacks under its label on a phone. As a flex row it kept the long origin label on one
+     * line and squeezed the English headline into a six-word column beside it.
      */
-    .news-label-action {
-      min-height: var(--tap-target);
-      font-size: 0.85rem;
+    .news-detail-original {
+      display: grid;
+      gap: 5px;
     }
-  }
 
-  /* ------------------------------------------------------------- verdict */
-  .news-detail-hero[data-direction="bullish"] {
-    --news-direction-rail: var(--dir-bullish);
-  }
+    .news-detail-original-label {
+      white-space: normal;
+    }
 
-  .news-detail-hero[data-direction="bearish"] {
-    --news-direction-rail: var(--dir-bearish);
-  }
+    .news-detail-original > span:nth-child(2) {
+      min-width: 0;
+    }
 
-  .news-detail-verdict {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem 0.9rem;
-    align-items: center;
-    margin: 0.15rem 0 0;
-  }
-
-  /* The verdict grid sits inside the hero, so it uses the hero's own raised ground rather than a second card. */
-  .news-detail-fact-grid {
-    margin-top: 0.25rem;
-  }
-
-  /* The model asked for one thing and the policy did another — the single most useful line for an operator. */
-  .news-detail-intent {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    align-items: baseline;
-    margin: 0.1rem 0 0;
-    color: var(--text-secondary);
-    font-size: 0.78rem;
-  }
-
-  .news-detail-intent b {
-    color: var(--text-primary);
-    font-weight: 600;
-  }
-
-  .news-detail-asset-group {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    align-items: center;
-  }
-
-  .news-detail-asset-group > small {
-    color: var(--text-subtle);
-    font-size: 0.7rem;
+    .news-detail-original a {
+      justify-self: start;
+    }
   }
 }

@@ -1,0 +1,77 @@
+@layer app.features {
+  /*
+   * The current-quote table. Three columns and a note that says what the numbers are, because the one wrong
+   * reading available here — "the market moved this much because of this headline" — is exactly what a
+   * rolling 24 h change beside a news item invites.
+   */
+  .news-quote-table {
+    overflow: clip;
+    border-radius: var(--radius-sm);
+    box-shadow: inset 0 0 0 1px var(--border-faint);
+  }
+
+  .news-quote-table-head,
+  .news-quote-table-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 112px 80px;
+    gap: 12px;
+    align-items: center;
+    padding: 7px 12px;
+  }
+
+  .news-quote-table-head {
+    border-bottom: 1px solid var(--border-faint);
+    background: var(--surface-raised);
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.09em;
+  }
+
+  .news-quote-table-head span:nth-child(2),
+  .news-quote-table-head span:nth-child(3),
+  .news-quote-table-row > :nth-child(2),
+  .news-quote-table-row > :nth-child(3) {
+    text-align: right;
+    justify-self: end;
+  }
+
+  .news-quote-table-row {
+    border-top: 1px solid var(--border-faint);
+  }
+
+  .news-quote-table-row:first-of-type {
+    border-top: 0;
+  }
+
+  .news-quote-table-row code {
+    overflow-wrap: anywhere;
+    font: 11.5px/1.5 var(--font-mono);
+  }
+
+  .news-quote-table-row code span {
+    color: var(--text-subtle);
+  }
+
+  .news-quote-table-row code b {
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .news-quote-table-note {
+    margin: 0;
+    padding: 7px 12px 8px;
+    border-top: 1px solid var(--border-faint);
+    color: var(--text-subtle);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 767px) {
+    .news-quote-table-head,
+    .news-quote-table-row {
+      grid-template-columns: minmax(0, 1fr) 84px 62px;
+      gap: 10px;
+      padding: 7px 11px;
+    }
+  }
+}

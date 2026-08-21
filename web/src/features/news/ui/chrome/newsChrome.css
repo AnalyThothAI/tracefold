@@ -1,98 +1,88 @@
 @layer app.features {
   /*
-   * Chrome every News route wears: the panel the route content sits in, its heading block, the ordinary
-   * button, the folded technical-evidence disclosure, and the one-line "nothing here" note. Surface-specific
-   * layout lives beside its own route (`ui/feed`, `ui/detail`, `ui/status`).
+   * Chrome every News route wears: the measure the route sits in, its heading block, the folded technical
+   * disclosure and the one-line "nothing here" note. Surface-specific layout lives beside its own route
+   * (`ui/feed`, `ui/detail`, `ui/status`, `ui/review`).
    */
   .news-panel {
-    min-height: 100%;
-    padding: 1rem 1.15rem 1.5rem;
-    color: var(--foreground);
-  }
-
-  .news-feed-shell,
-  .news-detail-shell,
-  .news-status-shell {
     display: grid;
     align-content: start;
+    gap: 12px;
+    width: 100%;
+    max-width: 1340px;
+    margin: 0 auto;
+    padding: 16px 16px 48px;
   }
 
-  /* Grid items default to `min-width: auto`, so a wide child (the funnel's scrolling tile row on a phone)
-     would push the whole panel past the viewport instead of scrolling inside itself. */
-  .news-feed-shell > *,
-  .news-detail-shell > *,
-  .news-status-shell > * {
+  /* One document, read left to right: a case is centred at a reading measure, not stretched to the frame. */
+  .news-panel[data-page-archetype="case"] {
+    max-width: 1000px;
+  }
+
+  /* Grid items default to `min-width: auto`, so a wide child (a metric row scrolling on a phone) would push
+     the whole panel past the viewport instead of scrolling inside itself. */
+  .news-panel > * {
     min-width: 0;
-  }
-
-  .news-feed-shell {
-    gap: 0.55rem;
-  }
-
-  .news-detail-shell,
-  .news-status-shell {
-    gap: 0.9rem;
   }
 
   .news-page-header {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.75rem 1.25rem;
-    align-items: center;
+    gap: 6px 20px;
+    align-items: baseline;
     justify-content: space-between;
   }
 
   .news-heading-copy {
-    display: grid;
-    gap: 0.15rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
     min-width: 0;
   }
 
   .news-heading-copy h1 {
     margin: 0;
-    font-size: clamp(1.15rem, 1.6vw, 1.4rem);
-    font-weight: 680;
-    letter-spacing: -0.03em;
-    line-height: 1.25;
+    color: var(--text-primary);
+    font: var(--type-page-title);
+    letter-spacing: -0.025em;
   }
 
   .news-heading-copy p {
     margin: 0;
-    color: var(--text-muted);
-    font-size: 0.78rem;
+    color: var(--text-subtle);
+    font-size: 12px;
   }
 
-  /* ------------------------------------------------------------------ shared buttons */
-  .news-button {
-    min-height: 1.9rem;
-    padding: 0 0.75rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--surface-raised);
-    color: var(--text-primary);
-    font-size: 0.72rem;
-    font-weight: 500;
+  .news-heading-aside {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
   }
 
-  .news-button:hover {
-    border-color: var(--border-strong);
+  .news-page-stamp {
+    color: var(--text-subtle);
+    font: 500 11px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   /* ------------------------------------------------------------------ technical details disclosure */
   .news-technical {
-    border: 1px dashed var(--border-subtle);
     border-radius: var(--radius-lg);
+    background: var(--surface-panel);
+    box-shadow: var(--ring-panel);
   }
 
   .news-technical > summary {
     display: flex;
-    gap: 0.5rem;
+    gap: 8px;
     align-items: center;
-    padding: 0.6rem 0.9rem;
+    padding: 10px 14px;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 0.74rem;
-    font-weight: 500;
+    font-size: 12px;
     list-style: none;
   }
 
@@ -102,7 +92,12 @@
 
   .news-technical > summary::before {
     content: "▸";
-    font-size: 0.7rem;
+    color: var(--text-faint);
+    font-size: 10px;
+  }
+
+  .news-technical[open] > summary {
+    border-bottom: 1px solid var(--border-faint);
   }
 
   .news-technical[open] > summary::before {
@@ -111,41 +106,41 @@
 
   .news-technical > div {
     display: grid;
-    gap: 0.75rem;
-    padding: 0 0.9rem 0.9rem;
+    gap: 14px;
+    padding: 13px 14px 14px;
   }
 
   .news-technical h4 {
-    margin: 0 0 0.35rem;
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
+    margin: 0 0 6px;
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.09em;
     text-transform: uppercase;
   }
 
   .news-json {
     max-height: 22rem;
-    margin: 0;
-    padding: 0.6rem 0.75rem;
+    margin: 6px 0 0;
+    padding: 9px 11px;
     overflow: auto;
-    border: 1px solid var(--border-faint);
-    border-radius: var(--radius-md);
-    background: var(--surface-root);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
     color: var(--text-secondary);
-    font: 0.68rem/1.5 var(--font-mono);
+    font: 11px/1.5 var(--font-mono);
   }
 
   /* One sentence where a section has nothing to show — never an empty grid or a row of dashes. */
   .news-empty-note {
     margin: 0;
     color: var(--text-muted);
-    font-size: 0.76rem;
+    font-size: 12px;
+    line-height: 1.5;
   }
 
   @media (max-width: 767px) {
     .news-panel {
-      padding: 0.75rem 0.75rem 1.25rem;
+      gap: 9px;
+      padding: 12px 12px calc(16px + env(safe-area-inset-bottom, 0px));
     }
 
     /* The subtitle is context, not the reason the page was opened; dropping it lifts the first Event up. */
@@ -154,12 +149,12 @@
     }
 
     .news-heading-copy h1 {
-      font-size: 1.15rem;
+      font-size: 18px;
     }
 
     .news-page-header {
-      align-items: stretch;
-      flex-direction: column;
+      align-items: baseline;
+      justify-content: space-between;
     }
   }
 }

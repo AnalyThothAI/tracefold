@@ -24,12 +24,12 @@
   body {
     margin: 0;
     overflow: hidden;
-    color: var(--text-secondary);
+    color: var(--text-primary);
     background: var(--surface-canvas);
     font-family: var(--font-sans);
-    /* rem-relative so WeChat's reader font setting scales the whole console coherently. */
+    /* rem-relative so WeChat's reader font setting scales the console's inherited text coherently. */
     font-size: 0.8125rem;
-    line-height: 1.55;
+    line-height: 1.5;
     letter-spacing: 0;
     -webkit-font-smoothing: antialiased;
   }
@@ -41,8 +41,13 @@
     }
   }
 
+  ::selection {
+    background: rgba(42, 91, 215, 0.16);
+  }
+
   button,
-  input {
+  input,
+  select {
     font: inherit;
   }
 
@@ -52,7 +57,15 @@
 
   button:disabled {
     cursor: not-allowed;
-    opacity: 0.38;
+  }
+
+  a {
+    color: var(--accent-primary);
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: #1e46ad;
   }
 
   .lucide {
@@ -75,5 +88,90 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     clip-path: inset(50%);
+  }
+
+  /*
+   * A scrollbar the operator can aim at without it drawing a hard grey band down the page: the thumb is
+   * inset by its own transparent border, so the track reads as empty until there is something to grab.
+   */
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border: 3.5px solid transparent;
+    border-radius: 999px;
+    background: var(--border-strong);
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-faint);
+    background-clip: content-box;
+  }
+
+  /*
+   * The console's four motions. They live here rather than beside a component because more than one owner
+   * uses each, and a `@keyframes` name is global no matter which file declares it.
+   *
+   *   pulse    a dot for work still in flight (处理中, a queued delivery)
+   *   shimmer  a skeleton row — the loading state keeps the row's shape instead of spinning
+   *   slide-in a new Event landing at the top of the feed
+   *   flash    that same Event's ground, once, so a reader who was already looking sees which one is new
+   */
+  @keyframes tf-pulse {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    50% {
+      opacity: 0.4;
+      transform: scale(0.78);
+    }
+  }
+
+  @keyframes tf-shimmer {
+    0% {
+      background-position: -320px 0;
+    }
+
+    100% {
+      background-position: 320px 0;
+    }
+  }
+
+  @keyframes tf-slide-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes tf-flash {
+    0% {
+      background: rgba(42, 91, 215, 0.14);
+    }
+
+    100% {
+      background: transparent;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
   }
 }

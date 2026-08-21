@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { mockAppRoutes } from "@tests/msw/scenarios";
 import { renderAppRoute } from "@tests/render/renderRoute";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -28,7 +28,9 @@ describe("news route", () => {
     await waitFor(() => expect(search).toHaveValue(""));
 
     fireEvent.change(search, { target: { value: "BTC ETF" } });
-    fireEvent.click(screen.getByRole("button", { name: "检索" }));
+    // Enter submits: the box carries a `/` hint instead of a button, so the row spends its width on the
+    // one input a reader actually uses.
+    fireEvent.submit(search.closest("form")!);
     await waitFor(() => {
       expect(apiMock.readApi).toHaveBeenCalledWith(
         "/api/news/feed",
@@ -66,13 +68,23 @@ describe("news route", () => {
     fireEvent.click(screen.getByRole("link", { name: "事件流" }));
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
 
+    /*
+     * At desktop width an Event opens *beside* the list, not instead of it (design proposal ⑦): the row link
+     * is a real href — every modified click, middle click and assistive path still follows it — but a plain
+     * click keeps the queue on screen and puts the Event in the drawer. 打开整页 is the way to the canonical,
+     * shareable page from there.
+     */
     fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
-    expect(await screen.findByRole("region", { name: "新闻事件详情" })).toBeInTheDocument();
+    const drawer = await screen.findByRole("dialog");
     await waitFor(() =>
       expect(apiMock.readApi).toHaveBeenCalledWith(
         "/api/news/events/evt-global-policy",
         expect.any(Object),
       ),
     );
+    expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
+
+    fireEvent.click(within(drawer).getByRole("link", { name: "打开整页" }));
+    expect(await screen.findByRole("region", { name: "新闻事件详情" })).toBeInTheDocument();
   });
 });

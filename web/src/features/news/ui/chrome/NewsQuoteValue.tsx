@@ -15,47 +15,52 @@ import "./newsQuote.css";
 /**
  * The two market values, deliberately rendered as two different things (#88).
  *
- * `NewsQuoteValue` is *now*: a current price on a named contract, with its age and its price kind. It moves
- * every few seconds and says how old it is; when it goes stale it stays on screen, marked, because a provider
- * outage that blanks a price looks exactly like a market that moved.
+ * A quote is *now*: a current price on a named contract. It moves every few seconds, so it carries its venue,
+ * its price kind and its age in a tooltip; when it goes stale it stays on screen, dimmed and marked, because a
+ * provider outage that blanks a price looks exactly like a market that moved.
  *
- * `NewsReactionValue` is *then*: the fixed return between an Event's anchor and a horizon. It never changes
- * once complete. A horizon that has not matured says 未到期 — it is never drawn as 0.00%.
+ * A reaction is *then*: the fixed return between an Event's anchor and a horizon. It never changes once
+ * complete. A horizon that has not matured says 未到期 — it is never drawn as 0.00%.
+ *
+ * Both use red-up / green-down, the same convention as the direction word, and are told apart from the
+ * model's judgment by weight: the judgment is a word, the outcome is figures.
  */
-export function NewsQuoteValue({ quote }: { quote: NewsQuote | undefined }) {
+
+/** The compact half of a quote: what it did, for a meta line where a full price would not fit. */
+export function NewsQuoteChange({ quote }: { quote: NewsQuote | undefined }) {
+  if (!quote || quote.state === "unlisted" || quote.state === "unavailable") return null;
+  if (quote.change_pct == null) return null;
+  return (
+    <span
+      className="news-quote-change"
+      data-state={quote.state}
+      data-tone={priceTone(quote.change_pct)}
+      title={quoteTitle(quote)}
+    >
+      {formatChangePct(quote.change_pct)}
+    </span>
+  );
+}
+
+/** The price itself, for the detail page's quote table where the column has room for it. */
+export function NewsQuotePrice({ quote }: { quote: NewsQuote | undefined }) {
   if (!quote || quote.state === "unlisted") {
     return (
-      <span
-        className="news-quote"
-        data-state="unlisted"
-        title="该符号没有可交易合约，本地没有行情源"
-      >
+      <span className="news-quote-state" title="该符号没有可交易合约，本地没有行情源">
         {quote?.state_zh ?? "无可交易合约"}
       </span>
     );
   }
   if (quote.state === "unavailable" || !quote.price) {
     return (
-      <span className="news-quote" data-state="unavailable" title={quoteVenueLabel(quote)}>
+      <span className="news-quote-state" title={quoteVenueLabel(quote)}>
         {quote.state_zh || "暂无报价"}
       </span>
     );
   }
-  const tone = priceTone(quote.change_pct);
   return (
-    <span
-      className="news-quote"
-      data-state={quote.state}
-      data-tone={tone}
-      title={`${quoteVenueLabel(quote)} · ${quote.price_kind_zh} · ${quoteAgeLabel(quote)}${
-        quote.change_basis_zh && quote.change_pct != null ? ` · ${quote.change_basis_zh}变动` : ""
-      }`}
-    >
-      <span className="news-quote-price">{formatPrice(quote.price)}</span>
-      {quote.change_pct == null ? null : (
-        <span className="news-quote-change">{formatChangePct(quote.change_pct)}</span>
-      )}
-      {quote.state === "stale" ? <span className="news-quote-stale">陈旧</span> : null}
+    <span className="news-quote-price" data-state={quote.state} title={quoteTitle(quote)}>
+      {formatPrice(quote.price)}
     </span>
   );
 }
@@ -88,4 +93,16 @@ export function NewsReactionValue({
       <b>{formatBps(value)}</b>
     </span>
   );
+}
+
+function quoteTitle(quote: NewsQuote): string {
+  return [
+    quoteVenueLabel(quote),
+    quote.price_kind_zh,
+    quoteAgeLabel(quote),
+    quote.change_basis_zh && quote.change_pct != null ? `${quote.change_basis_zh}变动` : "",
+    quote.state === "stale" ? "报价陈旧" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }

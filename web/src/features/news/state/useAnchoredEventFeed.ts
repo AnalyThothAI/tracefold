@@ -1,10 +1,17 @@
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import type { NewsFeedEvent } from "../api/newsQueries";
+
+/** How long a newly landed Event keeps its highlight. Long enough to catch the eye, short enough to forget. */
+const FRESH_MS = 1_400;
 
 /**
  * Keeps the reader's place: while they are scrolled away from the top, new first-page Events are held back
  * (counted in `count`) instead of shifting the list; `reveal()` scrolls up and shows them.
+ *
+ * `freshIds` is which Events just landed (design proposal ⑥). A live stream that inserts silently makes the
+ * reader re-read the top of the list to find out what changed; one flash on the rows that are actually new
+ * answers that without moving anything.
  */
 export function useAnchoredEventFeed(
   listRef: RefObject<HTMLDivElement | null>,
@@ -13,6 +20,8 @@ export function useAnchoredEventFeed(
   identity: string,
 ) {
   const [count, setCount] = useState(0);
+  const [freshIds, setFreshIds] = useState<ReadonlySet<string>>(EMPTY_IDS);
+  const freshTimer = useRef<number | undefined>(undefined);
   const [, setRevision] = useState(0);
   const acceptedEventsRef = useRef<NewsFeedEvent[]>(serverEvents);
   const awayFromTopRef = useRef(false);
@@ -38,6 +47,15 @@ export function useAnchoredEventFeed(
   const events = shouldDefer
     ? appendNonDeferredTail(acceptedEventsRef.current, serverEvents, excludedTopIds)
     : serverEvents;
+
+  const markFresh = useCallback((ids: readonly string[]) => {
+    if (!ids.length) return;
+    window.clearTimeout(freshTimer.current);
+    setFreshIds(new Set(ids));
+    freshTimer.current = window.setTimeout(() => setFreshIds(EMPTY_IDS), FRESH_MS);
+  }, []);
+
+  useEffect(() => () => window.clearTimeout(freshTimer.current), []);
 
   useEffect(() => {
     const scrollContainer =
@@ -84,11 +102,16 @@ export function useAnchoredEventFeed(
       if (newlyDeferred) setCount((current) => current + newlyDeferred);
       return;
     }
-    if (!deferredRef.current) acceptedEventsRef.current = serverEvents;
-  }, [firstPageKey, firstPageEvents, identity, serverEvents]);
+    if (!deferredRef.current) {
+      acceptedEventsRef.current = serverEvents;
+      // Landed straight into the list because the reader is already at the top — flash them there.
+      markFresh(newlyAddedIds);
+    }
+  }, [firstPageKey, firstPageEvents, identity, markFresh, serverEvents]);
 
   const reveal = () => {
     const scrollContainer = scrollContainerRef.current;
+    markFresh([...deferredTopIdsRef.current]);
     acceptedEventsRef.current = latestEventsRef.current;
     deferredTopIdsRef.current.clear();
     deferredRef.current = false;
@@ -102,8 +125,10 @@ export function useAnchoredEventFeed(
     setCount(0);
   };
 
-  return { count, events, reveal };
+  return { count, events, freshIds, reveal };
 }
+
+const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
 function appendNonDeferredTail(
   acceptedEvents: NewsFeedEvent[],

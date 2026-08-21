@@ -1,4 +1,5 @@
 import { newsEventPath } from "@shared/routing/paths";
+import { ActionButton } from "@shared/ui/ActionButton";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -59,26 +60,16 @@ export function NewsEventPager({
       <span className="news-detail-pager-position">
         {formatCount(index + 1)} / {formatCount(events.length)}
       </span>
-      <button
-        className="news-detail-pager-button"
-        disabled={!previous}
-        onClick={() => go(previous)}
-        type="button"
-      >
+      <ActionButton disabled={!previous} onClick={() => go(previous)} size="sm">
         <ChevronLeft aria-hidden />
         上一条
         <kbd>K</kbd>
-      </button>
-      <button
-        className="news-detail-pager-button"
-        disabled={!next}
-        onClick={() => go(next)}
-        type="button"
-      >
+      </ActionButton>
+      <ActionButton disabled={!next} onClick={() => go(next)} size="sm">
         下一条
         <kbd>J</kbd>
         <ChevronRight aria-hidden />
-      </button>
+      </ActionButton>
     </div>
   );
 }

@@ -1,92 +1,63 @@
 @layer app.features {
-  /*
-   * Current quote and Event Reaction (#88). Both are market numbers, so both use the market-direction hues
-   * from `tokens.css` — red up, green down — but they are told apart by weight, not colour: the model's
-   * judgment chip is a solid fill, and these are plain tabular figures. Pipeline outcome stays blue/amber/grey
-   * and is never repurposed here.
-   *
-   * A stale or unavailable quote keeps its box and loses its colour. It must never collapse to nothing and
-   * must never render as `0` / `0.00%` — a provider outage that looks like a flat market is the one failure
-   * mode this whole plane exists to avoid.
-   */
-  .news-quote {
-    display: inline-flex;
-    gap: 0.28rem;
-    align-items: baseline;
-    color: var(--text-secondary);
-    font: 500 0.7rem/1.5 var(--font-mono);
+  .news-quote-change {
+    margin-left: 6px;
+    color: var(--text-subtle);
     font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .news-quote[data-tone="up"] .news-quote-change {
-    color: var(--dir-bullish);
-  }
-
-  .news-quote[data-tone="down"] .news-quote-change {
-    color: var(--dir-bearish);
-  }
-
-  .news-quote[data-state="stale"],
-  .news-quote[data-state="unavailable"],
-  .news-quote[data-state="unlisted"] {
-    color: var(--text-subtle);
-  }
-
-  .news-quote[data-state="stale"] .news-quote-change {
-    color: var(--text-subtle);
   }
 
   .news-quote-price {
-    font-weight: 600;
+    color: var(--text-secondary);
+    font: 500 12px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
-  .news-quote-stale {
-    padding: 0 0.25rem;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    color: var(--text-subtle);
-    font-size: 0.62rem;
+  .news-quote-state {
+    color: var(--text-faint);
+    font: 500 11px/1 var(--font-mono);
+  }
+
+  /*
+   * Red up, green down — the mainland convention the direction word uses. Applied to *actual* returns only:
+   * the model's call is a word, the market's answer is a figure, and they never share a shape.
+   */
+  .news-quote-change[data-tone="up"],
+  .news-reaction[data-tone="up"] b {
+    color: var(--dir-bullish);
+  }
+
+  .news-quote-change[data-tone="down"],
+  .news-reaction[data-tone="down"] b {
+    color: var(--dir-bearish);
+  }
+
+  /* A stale price keeps its number and dims: a blanked price looks exactly like a market that moved. */
+  .news-quote-change[data-state="stale"],
+  .news-quote-price[data-state="stale"] {
+    opacity: 0.55;
   }
 
   .news-reaction {
     display: inline-flex;
-    gap: 0.3rem;
+    gap: 5px;
     align-items: baseline;
-    color: var(--text-secondary);
-    font: 500 0.72rem/1.5 var(--font-mono);
-    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
   .news-reaction small {
     color: var(--text-subtle);
-    font-size: 0.62rem;
-    letter-spacing: 0.04em;
-  }
-
-  .news-reaction[data-tone="up"] b {
-    color: var(--dir-bullish);
-  }
-
-  .news-reaction[data-tone="down"] b {
-    color: var(--dir-bearish);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.09em;
   }
 
   .news-reaction b {
-    font-weight: 600;
+    color: var(--text-primary);
+    font: 640 12px/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
-  /* Pending and unavailable are words, never numbers: an unfinished measurement is not a zero return. */
+  /* Nothing missing is ever drawn as 0.00%: a horizon that has not matured says so, in words. */
   .news-reaction-empty {
-    color: var(--text-subtle);
-    font-size: 0.66rem;
-  }
-
-  @media (max-width: 767px) {
-    .news-quote,
-    .news-reaction {
-      font-size: 0.68rem;
-    }
+    color: var(--text-faint);
+    font-size: 10.5px;
   }
 }

@@ -54,10 +54,20 @@ test("keeps the current quote and the post-Event reaction visibly apart on an Ev
   await page.setViewportSize({ height: 900, width: 1440 });
   await page.goto("/news/events/evt-global-policy");
 
-  await expect(page.getByLabel("当前报价")).toBeVisible();
-  await expect(page.getByLabel("事件后反应")).toBeVisible();
-  // The current price names its venue and its price kind; the reaction names its horizon.
-  await expect(page.getByLabel("当前报价").getByText("最新成交价").first()).toBeVisible();
+  /*
+   * Two market blocks, never one table. The current price sits with the assets it belongs to, inside the
+   * hero; the fixed post-Event return is a card of its own further down. A rolling 24H change and a return
+   * anchored at this headline are different time semantics, and a single table would invite reading the
+   * first as the market's answer to the second.
+   */
+  const quotes = page.locator(".news-detail-hero .news-quote-table");
+  await expect(quotes).toBeVisible();
+  await expect(quotes).toContainText("现价");
+  await expect(quotes).toContainText("24H");
+  await expect(quotes).toContainText("不是事件时点的回填收益");
+  const reactions = page.getByLabel("事件后反应");
+  await expect(reactions).toBeVisible();
+  await expect(reactions.locator(".news-detail-hero")).toHaveCount(0);
   await expectNoUnhandledApiRequests(page);
 });
 

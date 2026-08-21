@@ -1,54 +1,73 @@
 @layer app.features {
   /*
-   * One Event: when · what · one outcome.
-   *
-   * Roughly three quarters of a day's rows stop short of a card. Giving each of them a badge of the same
-   * weight as a delivered one made a screenful of equals, and the handful that actually went out drowned in
-   * it. So a row with an outcome keeps the badge and a coloured rail, and a held row steps back: smaller
-   * headline, secondary ink, no badge, and just the server's one-line reason in grey. The reason still says
-   * what happened — it is the same `outcome.reason_zh` the badge would have carried as its tooltip.
+   * `54 / 1fr / 150` with a 3px rail. Three grounds and nothing else: white at rest, `#f8f9fb` under the
+   * pointer, `#e9edf2` under the keyboard cursor — one step apart so a reader mid-scan can tell which is
+   * which. Selection tints with the accent wash, which is the only place the pipeline's own colour lands on
+   * a whole row.
    */
   .news-event-row {
+    --rail: var(--border-strong);
+
     position: relative;
     display: grid;
-    grid-template-columns: 3.5rem minmax(0, 1fr) minmax(9.5rem, 13.5rem);
     grid-template-areas:
       "time main badge"
       "time main reason";
+    grid-template-columns: 54px minmax(0, 1fr) 150px;
     grid-template-rows: auto 1fr;
-    gap: 0.25rem 0.9rem;
+    gap: 3px 14px;
     align-items: start;
-    padding: 0.62rem 0.9rem 0.68rem;
+    padding: 9px 14px 10px;
     border-bottom: 1px solid var(--border-faint);
-    border-left: 3px solid transparent;
-    cursor: pointer;
-    transition: background-color 110ms ease;
+    border-left: 3px solid var(--rail);
+    background: var(--surface-panel);
+  }
+
+  .news-event-row[data-selectable] {
+    grid-template-areas:
+      "select time main badge"
+      "select time main reason";
+    grid-template-columns: 18px 54px minmax(0, 1fr) 150px;
   }
 
   .news-event-row:last-child {
     border-bottom: 0;
   }
 
-  .news-event-row:hover {
-    background: var(--surface-raised);
+  .news-event-row[data-direction="bullish"] {
+    --rail: var(--dir-bullish);
   }
 
-  /* The keyboard cursor outranks hover: it is where Enter will go. */
-  .news-event-row[data-cursor] {
-    border-left-color: var(--border-strong);
+  .news-event-row[data-direction="bearish"] {
+    --rail: var(--dir-bearish);
+  }
+
+  /*
+   * A held Event keeps its direction rail at 45%: the call it carried still reads, but the row does not
+   * compete with the ones that got somewhere. Roughly three quarters of a day's Events are held.
+   */
+  .news-event-row[data-outcome-group="held"] {
+    --rail: #dfe3e9;
+  }
+
+  .news-event-row[data-outcome-group="held"][data-direction="bullish"] {
+    --rail: rgba(211, 32, 41, 0.45);
+  }
+
+  .news-event-row[data-outcome-group="held"][data-direction="bearish"] {
+    --rail: rgba(10, 125, 74, 0.45);
+  }
+
+  .news-event-row:hover {
     background: var(--surface-hover);
   }
 
-  .news-event-row[data-outcome-group="pushed"] {
-    border-left-color: var(--signal-done);
+  .news-event-row[data-cursor] {
+    background: var(--surface-cursor);
   }
 
-  .news-event-row[data-outcome-group="pending"] {
-    border-left-color: var(--signal-info);
-  }
-
-  .news-event-row[data-outcome="delivery_failed"] {
-    border-left-color: var(--signal-alert);
+  .news-event-row[data-selected] {
+    background: rgba(42, 91, 215, 0.06);
   }
 
   .news-event-row:focus-visible {
@@ -56,231 +75,262 @@
     outline-offset: -2px;
   }
 
+  /* A new Event landing at the top while the reader is already there: it arrives, and says so once. */
+  @media (prefers-reduced-motion: no-preference) {
+    .news-event-row[data-fresh] {
+      animation:
+        tf-slide-in 260ms ease,
+        tf-flash 1.2s ease;
+    }
+  }
+
   .news-event-time {
     grid-area: time;
-    padding-top: 0.15rem;
+    padding-top: 1px;
     color: var(--text-secondary);
-    font: 500 0.74rem/1.5 var(--font-mono);
-    letter-spacing: 0.02em;
+    font: 500 11.5px/1.6 var(--font-mono);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
-  .news-event-row[data-outcome-group="held"] .news-event-time {
-    color: var(--text-subtle);
-  }
-
   .news-event-main {
-    grid-area: main;
     display: grid;
-    gap: 0.18rem;
+    grid-area: main;
+    gap: 3px;
     min-width: 0;
   }
 
   .news-event-headline {
     margin: 0;
-    font-size: 0.93rem;
-    font-weight: 640;
-    line-height: 1.4;
-    letter-spacing: -0.005em;
-    overflow-wrap: anywhere;
+    font: var(--type-item-title);
+    letter-spacing: -0.006em;
   }
 
   .news-event-headline a {
     display: -webkit-box;
     overflow: hidden;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
     color: var(--text-primary);
     text-decoration: none;
+    text-wrap: pretty;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
-  /* The headline link stretches over the row, so the whole row opens the Event with one accessible name. */
+  /*
+   * The link stretches over the row so the whole thing opens the Event while staying one accessible name.
+   * Everything else interactive in the row has to be lifted above it.
+   */
   .news-event-headline a::after {
     position: absolute;
     inset: 0;
     content: "";
   }
 
-  /* Everything the reader can also click has to sit above that overlay. */
-  .news-event-actions,
-  .news-event-meta a {
-    position: relative;
-    z-index: 1;
-  }
-
-  .news-event-headline a:hover,
-  .news-event-headline a:focus-visible {
-    color: var(--accent-primary);
-  }
-
-  .news-event-row[data-outcome-group="held"] .news-event-headline {
-    font-size: 0.86rem;
-    font-weight: 560;
-  }
-
-  .news-event-row[data-outcome-group="held"] .news-event-headline a {
-    color: var(--text-secondary);
-  }
-
-  .news-event-priority-icon {
-    display: inline-block;
-    width: 0.8rem;
-    height: 0.8rem;
-    margin: -0.1rem 0.25rem 0 0;
-    color: var(--signal-caution);
-    vertical-align: middle;
-  }
-
   .news-event-original {
     display: -webkit-box;
+    margin: 0;
     overflow: hidden;
+    color: var(--text-subtle);
+    font-size: 11.5px;
+    line-height: 1.45;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 1;
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 0.76rem;
-    line-height: 1.45;
-    overflow-wrap: anywhere;
   }
 
   .news-event-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.2rem 0.6rem;
+    gap: 2px 7px;
     align-items: center;
-    margin: 0.05rem 0 0;
-    color: var(--text-muted);
-    font-size: 0.72rem;
+    margin: 0;
+    min-width: 0;
+    font-size: 11px;
     line-height: 1.4;
   }
 
   .news-event-origin {
     color: var(--text-subtle);
-    font: 500 0.68rem/1.5 var(--font-mono);
-  }
-
-  .news-event-members {
-    display: inline-flex;
-    gap: 0.25rem;
-    align-items: center;
-  }
-
-  .news-event-members svg {
-    width: 0.75rem;
-    height: 0.75rem;
+    font: 500 10.5px/1.5 var(--font-mono);
   }
 
   .news-event-divider {
     color: var(--border-subtle);
   }
 
-  .news-event-facts {
+  .news-event-kind {
     color: var(--text-secondary);
+    font-weight: 600;
   }
 
-  /* An Event the model called noise gets its type in the quiet register too. */
-  .news-event-row[data-outcome-group="held"] .news-event-facts {
-    color: var(--text-muted);
-    font-weight: 400;
+  /* ------------------------------------------------------------------ row controls (pointer widths only) */
+  .news-event-select,
+  .news-event-expand {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    transition: opacity 120ms ease;
+  }
+
+  .news-event-select {
+    grid-area: select;
+    width: 15px;
+    height: 15px;
+    margin-top: 3px;
+    border-radius: 4px;
+    background: var(--surface-panel);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+    opacity: 0.25;
+  }
+
+  .news-event-select svg {
+    width: 9px;
+    height: 9px;
+    color: #ffffff;
+    opacity: 0;
+    stroke-width: 3.4;
+  }
+
+  .news-event-row:hover .news-event-select,
+  .news-event-select:focus-visible {
+    opacity: 1;
+  }
+
+  .news-event-row[data-selected] .news-event-select {
+    background: var(--accent-primary);
+    box-shadow: inset 0 0 0 1px var(--accent-primary);
+    opacity: 1;
+  }
+
+  .news-event-row[data-selected] .news-event-select svg {
+    opacity: 1;
+  }
+
+  .news-event-expand {
+    width: 16px;
+    height: 16px;
+    margin-left: auto;
+    border-radius: var(--radius-xs);
+    color: var(--text-faint);
+    opacity: 0;
+  }
+
+  .news-event-row:hover .news-event-expand,
+  .news-event-row[data-cursor] .news-event-expand,
+  .news-event-row[data-expanded] .news-event-expand,
+  .news-event-expand:focus-visible {
+    opacity: 1;
+  }
+
+  .news-event-expand svg {
+    width: 12px;
+    height: 12px;
+    transition: transform 140ms ease;
+  }
+
+  .news-event-row[data-expanded] .news-event-expand svg {
+    transform: rotate(90deg);
+  }
+
+  /* ------------------------------------------------------------------ inline verdict (proposal ②) */
+  .news-event-verdict {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    gap: 8px;
+    margin-top: 5px;
+    padding: 10px 12px 11px;
+    border-radius: var(--radius-md);
+    background: var(--surface-raised);
+  }
+
+  .news-event-why {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    line-height: 1.55;
+    text-wrap: pretty;
   }
 
   /* ------------------------------------------------------------------ outcome column */
   .news-event-badge {
+    display: inline-flex;
     grid-area: badge;
-    display: flex;
     justify-content: flex-end;
     min-width: 0;
+    padding-top: 1px;
   }
 
   .news-event-reason {
     grid-area: reason;
-    display: flex;
-    gap: 0.3rem;
-    align-items: baseline;
-    justify-content: flex-end;
-    color: var(--text-muted);
-    font-size: 0.7rem;
-    line-height: 1.4;
+    align-self: start;
+    overflow: hidden;
+    color: var(--text-subtle);
+    font-size: 10.5px;
+    line-height: 1.45;
     text-align: right;
-    overflow-wrap: anywhere;
   }
 
-  .news-event-reason::before {
-    flex: 0 0 auto;
-    width: 0.3rem;
-    height: 0.3rem;
-    margin-top: 0.3rem;
-    border-radius: 999px;
-    background: var(--border-strong);
-    content: "";
-  }
-
-  .news-event-row[data-outcome-group="pushed"] .news-event-reason::before,
-  .news-event-row[data-outcome-group="pending"] .news-event-reason::before {
-    display: none;
-  }
-
+  /*
+   * Phone: one card per Event, time and conclusion on the first line, then the headline. No row controls —
+   * a hover-only target means nothing under a thumb, and bulk labelling is not a phone task.
+   */
   @media (max-width: 767px) {
-    /*
-     * Phone: each Event is its own card rather than a row in a table (#87). At 390px a shared left column
-     * for the clock left the headline about 19 characters of Han text per line; a card gives it the full
-     * width and separates Events by a gap and a rail instead of by alignment.
-     *
-     * The conclusion rides the top line beside the clock, where the eye lands first — the same order the
-     * desktop row reads left to right, turned ninety degrees.
-     */
-    .news-event-row {
-      grid-template-columns: auto minmax(0, 1fr);
+    .news-event-row,
+    .news-event-row[data-selectable] {
       grid-template-areas:
         "time badge"
         "main main"
         "reason reason";
-      grid-template-rows: auto auto auto;
-      gap: 0.4rem 0.6rem;
-      padding: 0.7rem 0.75rem 0.75rem;
-      border: 1px solid var(--border-subtle);
-      border-left-width: 3px;
-      border-radius: var(--radius-md);
-      background: var(--surface-root);
+      grid-template-columns: auto minmax(0, 1fr);
+      grid-template-rows: none;
+      gap: 6px 8px;
+      padding: 11px 12px 12px;
+      border-bottom: 0;
+      border-radius: var(--radius-lg);
+      box-shadow: var(--ring-panel);
     }
 
-    .news-event-row:last-child {
-      border-bottom: 1px solid var(--border-subtle);
+    .news-event-select,
+    .news-event-expand {
+      display: none;
+    }
+
+    .news-event-time {
+      padding-top: 0;
     }
 
     .news-event-badge {
       justify-content: flex-start;
+      padding-top: 0;
     }
 
-    .news-event-reason {
-      justify-content: flex-start;
-      text-align: left;
+    .news-event-headline {
+      font-size: 15px;
     }
 
     .news-event-headline a {
-      font-size: 1rem;
-      line-height: 1.45;
+      -webkit-line-clamp: 3;
     }
 
-    .news-event-row[data-outcome-group="held"] .news-event-headline a {
-      font-size: 0.94rem;
+    /* The wire line is a desktop luxury: on a card it competes with the headline it duplicates. */
+    .news-event-original {
+      display: none;
     }
 
     .news-event-meta {
-      gap: 0.4rem 0.6rem;
-      font-size: 0.78rem;
+      font-size: 11.5px;
     }
-  }
 
-  /*
-   * The fixed post-Event return (#88), on its own line under the meta row. It is a different time semantic
-   * from everything above it — the judgment is about the future, this is what happened — so it gets its own
-   * line rather than another chip in the same sentence.
-   */
-  .news-event-reaction {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.2rem 0.9rem;
-    margin: 0.15rem 0 0;
+    .news-event-reason {
+      text-align: left;
+    }
+
+    /* Three quarters of a day's Events are held; a grey capsule on each of those cards is noise. */
+    .news-event-row[data-outcome-group="held"] .news-event-badge {
+      display: none;
+    }
   }
 }

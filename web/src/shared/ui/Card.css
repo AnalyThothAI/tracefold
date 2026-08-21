@@ -1,37 +1,73 @@
 @layer app.primitives {
-  /*
-   * The console's one panel shape. It lived as `.news-card` inside the News feature bucket and was hand-repeated
-   * at 14 call sites across three pages; the second page that needed a titled panel is what made it a primitive.
-   * On a light ground a card separates from the canvas by border and a hairline shadow, never by lightening.
-   */
   .ui-card {
-    padding: 0.9rem 1rem;
-    border: 1px solid var(--border-subtle);
+    min-width: 0;
+    overflow: hidden;
     border-radius: var(--radius-lg);
     background: var(--surface-panel);
-    box-shadow: var(--shadow-raised);
+    box-shadow: var(--ring-panel);
   }
 
   .ui-card-header {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem 0.75rem;
+    gap: 4px 12px;
     align-items: baseline;
     justify-content: space-between;
-    margin-bottom: 0.6rem;
+    padding: 10px 14px;
   }
 
   .ui-card-header h2,
   .ui-card-header h3 {
     margin: 0;
     color: var(--text-primary);
-    font-size: 0.82rem;
-    font-weight: 620;
-    letter-spacing: 0.01em;
+    font-size: 13px;
+    font-weight: 640;
+    letter-spacing: -0.01em;
+  }
+
+  /* A window label, not a subject: `LAST 24H` names the slice the numbers came from. */
+  .ui-card-header[data-title-style="eyebrow"] h2,
+  .ui-card-header[data-title-style="eyebrow"] h3 {
+    color: var(--text-subtle);
+    font: var(--type-eyebrow);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
   }
 
   .ui-card-header small {
-    color: var(--text-muted);
-    font-size: 0.72rem;
+    color: var(--text-subtle);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .ui-card-body {
+    min-width: 0;
+    padding: 2px 14px 14px;
+  }
+
+  /* No header, no dead band above the body. */
+  .ui-card > .ui-card-body:first-child {
+    padding-top: 13px;
+  }
+
+  .ui-card[data-flush] > .ui-card-header {
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .ui-card[data-flush] > .ui-card-body {
+    padding: 0;
+  }
+
+  .ui-card-note {
+    margin: 0;
+    padding: 10px 14px 11px;
+    color: var(--text-subtle);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  /* Inside a flush card the note follows rows, so it needs the rule the rows would have drawn. */
+  .ui-card[data-flush] .ui-card-note {
+    border-top: 1px solid var(--border-faint);
   }
 }

@@ -26,7 +26,12 @@ describe("CockpitTopbar", () => {
     };
     const { rerender } = render(
       <MemoryRouter>
-        <CockpitTopbar search={search} status={healthyStatus} onRefresh={vi.fn()} />
+        <CockpitTopbar
+          title="新闻事件流"
+          search={search}
+          status={healthyStatus}
+          onRefresh={vi.fn()}
+        />
       </MemoryRouter>,
     );
     const input = screen.getByRole("textbox", { name: "news search" });
@@ -39,6 +44,7 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
+          title="新闻事件流"
           search={{ ...search, query: "ethereum" }}
           status={healthyStatus}
           onRefresh={vi.fn()}
@@ -50,6 +56,7 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
+          title="新闻事件流"
           search={{ ...search, query: "" }}
           status={healthyStatus}
           onRefresh={vi.fn()}
@@ -64,6 +71,7 @@ describe("CockpitTopbar", () => {
     render(
       <MemoryRouter>
         <CockpitTopbar
+          title="新闻事件流"
           search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery }}
           status={healthyStatus}
           onRefresh={vi.fn()}
@@ -74,7 +82,7 @@ describe("CockpitTopbar", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "news search" }), {
       target: { value: "BTC ETF" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "检索" }));
+    fireEvent.submit(screen.getByRole("textbox", { name: "news search" }).closest("form")!);
 
     expect(onSubmitQuery).toHaveBeenCalledWith("BTC ETF");
     expect(screen.queryByRole("button", { name: "Main" })).not.toBeInTheDocument();
@@ -84,6 +92,7 @@ describe("CockpitTopbar", () => {
     const { container } = render(
       <MemoryRouter>
         <CockpitTopbar
+          title="新闻事件流"
           search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, status: appStatusFixture() }}
           onRefresh={vi.fn()}
@@ -92,7 +101,8 @@ describe("CockpitTopbar", () => {
     );
 
     expect(screen.getByRole("textbox", { name: "news search" })).toBeInTheDocument();
-    expect(screen.getByText("Tracefold")).toBeInTheDocument();
+    // The frame says where you are; the product name lives in the sidebar, which owns identity.
+    expect(screen.getByText("新闻事件流")).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.queryByText(/实时连接|WebSocket/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "notifications" })).not.toBeInTheDocument();
@@ -104,6 +114,7 @@ describe("CockpitTopbar", () => {
     render(
       <MemoryRouter>
         <CockpitTopbar
+          title="新闻事件流"
           search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
           status={{
             ...healthyStatus,
@@ -129,6 +140,7 @@ describe("CockpitTopbar", () => {
     const { rerender } = render(
       <MemoryRouter>
         <CockpitTopbar
+          title="新闻事件流"
           search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, statusError: true }}
           onRefresh={vi.fn()}
@@ -140,6 +152,7 @@ describe("CockpitTopbar", () => {
     rerender(
       <MemoryRouter>
         <CockpitTopbar
+          title="新闻事件流"
           search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, configReady: false }}
           onRefresh={vi.fn()}

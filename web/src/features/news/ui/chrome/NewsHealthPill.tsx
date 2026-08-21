@@ -12,9 +12,12 @@ import "./newsHealthPill.css";
 const HEALTH_ITEMS = ["ingest", "broker", "model", "delivery"] as const;
 
 /**
- * The feed's corner read on the pipeline: the server's overall level, the failing item's own sentence, and a
- * door to the status route. Healthy state is not silent here the way the topbar's is — the reader is already
- * looking at the feed this pipeline fills, so "正常" is the useful answer, not noise.
+ * The feed's read on the pipeline behind it — but only when there is something to say.
+ *
+ * A healthy pipeline is silent here: the sidebar already carries a dot for the status destination, the status
+ * route carries the full read, and a permanent green "正常" beside a feed is a light the reader learns to
+ * stop seeing. When a level is `warn` or `bad` the pill appears with the failing item's own sentence and a
+ * door to the page that explains it, which is the only moment it earns its place in the header.
  */
 export function NewsHealthPill({ error, status }: { error: boolean; status?: NewsStatus }) {
   if (error) {
@@ -29,14 +32,7 @@ export function NewsHealthPill({ error, status }: { error: boolean; status?: New
   // `health` is required by the contract; the guard only covers the seconds of a rolling deploy where the
   // console is newer than the API, so the feed keeps rendering instead of throwing.
   const health = status?.health;
-  if (!status || !health) {
-    return (
-      <span className="news-health-pill news-toned" data-tone="neutral" role="status">
-        <NewsToneDot halo={false} />
-        <b>正在检查流水线</b>
-      </span>
-    );
-  }
+  if (!status || !health || health.overall === "ok") return null;
   const level = health.overall;
   const worst = HEALTH_ITEMS.map((key) => health[key]).find((item) => item.level === level);
   return (
@@ -54,7 +50,7 @@ export function NewsHealthPill({ error, status }: { error: boolean; status?: New
   );
 }
 
-/** The status route's own header pill: the same read, plus when it was measured. */
+/** The status route's own header pill: the same read, always shown, plus when it was measured. */
 export function NewsOverallPill({ status }: { status: NewsStatus }) {
   const level = status.health.overall;
   return (

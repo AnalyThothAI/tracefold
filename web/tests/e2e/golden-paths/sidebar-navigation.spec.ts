@@ -6,11 +6,11 @@ import {
 import { installMockApi } from "@tests/e2e/support/mockApi";
 
 /**
- * The sidebar is offcanvas everywhere, but it is part of the frame from 1280px up (#82) and the drawer the
- * topbar trigger opens below that (#70). Both widths reach the same two News destinations.
+ * The sidebar is part of the frame from 1280px up (#82) and the drawer the topbar trigger opens below that
+ * (#70). Both widths reach the same three News destinations, and both read one navigation model.
  */
 async function openSidebar(page: Page) {
-  await page.getByRole("button", { name: "Toggle Sidebar" }).click();
+  await page.getByRole("button", { name: "切换侧栏" }).click();
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(primaryNavigation).toBeVisible();
   return primaryNavigation;
@@ -36,15 +36,12 @@ test.describe("desktop sidebar navigation", () => {
     await installMockApi(page);
     await page.goto("/");
 
-    const sidebarRoot = page.locator('[data-slot="sidebar"]');
-    await expect(sidebarRoot).toHaveAttribute("data-state", "expanded");
+    const sidebarRoot = page.locator(".cockpit-app-sidebar");
+    await expect(sidebarRoot).toBeVisible();
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
     await expect(primaryNavigation).toBeVisible();
     // The frame reserves the sidebar's width; the route column starts after it, not at the left edge.
-    // (The nav element itself is `display: contents` and has no box of its own — measure the panel.)
-    const panel = await page
-      .locator('[data-slot="sidebar"] [data-sidebar="sidebar"]')
-      .boundingBox();
+    const panel = await sidebarRoot.boundingBox();
     expect(panel?.width ?? 0).toBeGreaterThan(180);
     const column = await page.locator(".center-column").boundingBox();
     expect(column?.x ?? 0).toBeGreaterThanOrEqual(panel?.width ?? 0);
@@ -58,15 +55,14 @@ test.describe("desktop sidebar navigation", () => {
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);
 
     // The trigger still folds it away when the reader wants the whole column.
-    await page.getByRole("button", { name: "Toggle Sidebar" }).click();
-    await expect(sidebarRoot).toHaveAttribute("data-state", "collapsed");
-    // The offcanvas slide is animated, so poll the column's left edge rather than reading it once.
+    await page.getByRole("button", { name: "切换侧栏" }).click();
+    await expect(sidebarRoot).toHaveCount(0);
     await expect
       .poll(async () => (await page.locator(".center-column").boundingBox())?.x ?? 999)
       .toBeLessThanOrEqual(1);
 
     await openSidebar(page);
-    await expect(sidebarRoot).toHaveAttribute("data-state", "expanded");
+    await expect(sidebarRoot).toBeVisible();
 
     await expectNoDocumentHorizontalOverflow(page);
     await expectNoUnhandledApiRequests(page);
@@ -85,7 +81,13 @@ test.describe("desktop sidebar navigation", () => {
     );
 
     await expectSidebarRouteChange(page, "事件流", "/news");
+    /*
+     * At this width an Event opens in the drawer beside the list (design proposal ⑦): the list stays where
+     * it was and the reader walks it with J/K. 打开整页 is the way to the canonical, shareable page, and the
+     * navigation still marks the feed — and only the feed — as current on it.
+     */
     await page.locator("[data-event-id] h2 a").first().click();
+    await page.getByRole("dialog").getByRole("link", { name: "打开整页" }).click();
     await expect(page).toHaveURL(/\/news\/events\//);
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toHaveAttribute(
       "aria-current",
@@ -135,7 +137,7 @@ test.describe("mobile bottom navigation", () => {
     await page.goto("/");
 
     // #87: no drawer to open on a phone. The bar is there from the first paint and stays there.
-    await expect(page.getByRole("button", { name: "Toggle Sidebar" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "切换侧栏" })).toHaveCount(0);
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
     await expect(primaryNavigation).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "Radar" })).toHaveCount(0);

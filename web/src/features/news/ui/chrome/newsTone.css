@@ -1,83 +1,57 @@
 @layer app.features {
   /*
-   * The pipeline tone grammar. Any element carrying `.news-toned[data-tone]` resolves three custom properties
-   * that its own stylesheet then spends — badge, health pill, health card, timeline marker, tab and funnel all
-   * read the same three, so a tone means one thing everywhere.
+   * One tone vocabulary for the whole News feature. A container carries `.news-toned` plus `data-tone`, and
+   * everything inside it reads `--tone` / `--tone-soft` / `--tone-border` — so a badge, its dot and its ground
+   * cannot disagree, and adding a surface never means repeating the five-way colour switch.
    *
-   * This axis is deliberately blue / amber / grey and never red or green (#74): "已推送" is a completed step,
-   * not a market opinion, and colouring it green would compete with 利空.
+   * These five are the pipeline axis and never include red or green: 已推送 is a completed step, not a market
+   * opinion. Direction owns red and green, and only ever as text.
    */
   .news-toned {
-    --news-tone: var(--signal-neutral);
-    --news-tone-soft: var(--signal-neutral-soft);
-    --news-tone-border: var(--signal-neutral-border);
+    --tone: var(--signal-neutral);
+    --tone-soft: var(--signal-neutral-soft);
+    --tone-border: var(--signal-neutral-border);
   }
 
   .news-toned[data-tone="done"] {
-    --news-tone: var(--signal-done);
-    --news-tone-soft: var(--signal-done-soft);
-    --news-tone-border: var(--signal-done-border);
+    --tone: var(--signal-done);
+    --tone-soft: var(--signal-done-soft);
+    --tone-border: var(--signal-done-border);
   }
 
   .news-toned[data-tone="info"] {
-    --news-tone: var(--signal-info);
-    --news-tone-soft: var(--signal-info-soft);
-    --news-tone-border: var(--signal-info-border);
+    --tone: var(--signal-info);
+    --tone-soft: var(--signal-info-soft);
+    --tone-border: var(--signal-info-border);
   }
 
   .news-toned[data-tone="caution"] {
-    --news-tone: var(--signal-caution);
-    --news-tone-soft: var(--signal-caution-soft);
-    --news-tone-border: var(--signal-caution-border);
+    --tone: var(--signal-caution);
+    --tone-soft: var(--signal-caution-soft);
+    --tone-border: var(--signal-caution-border);
   }
 
   .news-toned[data-tone="alert"] {
-    --news-tone: var(--signal-alert);
-    --news-tone-soft: var(--signal-alert-soft);
-    --news-tone-border: var(--signal-alert-border);
+    --tone: var(--signal-alert);
+    --tone-soft: var(--signal-alert-soft);
+    --tone-border: var(--signal-alert-border);
   }
 
-  /* The status light itself. `data-halo="off"` drops the ring where a quiet state should not glow. */
   .news-tone-dot {
+    width: 5px;
+    height: 5px;
     flex: 0 0 auto;
-    width: 0.5rem;
-    height: 0.5rem;
     border-radius: 999px;
-    background: var(--news-tone);
-    box-shadow: 0 0 0 0.18rem color-mix(in srgb, var(--news-tone) 18%, transparent);
-  }
-
-  .news-tone-dot[data-halo="off"] {
-    box-shadow: none;
+    background: var(--tone);
   }
 
   .news-tone-dot[data-size="lg"] {
-    width: 0.55rem;
-    height: 0.55rem;
-    box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--news-tone) 18%, transparent);
+    width: 7px;
+    height: 7px;
   }
 
-  /* Something is still moving through the pipeline. Readers who ask for less motion get a static dot. */
+  /* Work still in flight. The dot moves because the state will change on its own; nothing else here does. */
   .news-tone-dot[data-pulse="on"] {
-    animation: news-tone-pulse 1.6s ease-in-out infinite;
-  }
-
-  @keyframes news-tone-pulse {
-    0%,
-    100% {
-      opacity: 1;
-      transform: scale(1);
-    }
-
-    50% {
-      opacity: 0.4;
-      transform: scale(0.78);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .news-tone-dot[data-pulse="on"] {
-      animation: none;
-    }
+    animation: tf-pulse 1.6s ease-in-out infinite;
   }
 }

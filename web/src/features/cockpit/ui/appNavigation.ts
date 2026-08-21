@@ -2,12 +2,14 @@ import { Activity, Newspaper, Target, type LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
   children?: AppNavigationItem[];
-  /** Which count from `CockpitShellProps.navCounts` this destination shows, if any. */
+  /** Which count from `AppNavigationCounts` this destination shows, if any. */
   count?: "events";
   icon: LucideIcon;
   /** Whether the current path belongs to this destination. Event detail belongs to the feed, not to itself. */
   isActive: (pathname: string) => boolean;
   label: string;
+  /** The one non-count signal a destination may carry: the pipeline health behind it. */
+  signal?: "health";
   to: string;
 };
 
@@ -18,12 +20,15 @@ export type AppNavigationGroup = {
 
 /**
  * The console's whole route tree. News is the only product (#68), so its three surfaces are the navigation:
- * the Event feed, the pipeline status behind it, and 命中复盘 — what the market actually did after the Events
- * the pipeline judged (#88). Event detail lives under the feed and highlights it.
+ * the Event feed, 命中复盘 — what the market actually did after the Events the pipeline judged (#88) — and the
+ * pipeline status behind both. Event detail lives under the feed and highlights it.
+ *
+ * One model, three presentations: the desktop sidebar, the tablet drawer and the phone tab bar all read this
+ * list, so a destination cannot exist in one and be missing from another.
  */
 export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
   {
-    label: "Research",
+    label: "Workbench",
     items: [
       {
         count: "events",
@@ -42,6 +47,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
         icon: Activity,
         isActive: (pathname) => pathname === "/news/status",
         label: "流水线状态",
+        signal: "health",
         to: "/news/status",
       },
     ],
