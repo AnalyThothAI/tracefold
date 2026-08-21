@@ -283,7 +283,7 @@ def test_timeline_for_a_recovery_event_stops_at_the_gate() -> None:
 
 def _status_inputs(**over: object) -> dict[str, object]:
     base: dict[str, object] = {
-        "ingest": {"connected": True, "last_frame_at_ms": NOW - 60_000, "open_incidents": [], "strategy_warnings": []},
+        "ingest": {"connected": True, "last_frame_at_ms": NOW - 60_000, "open_incidents": []},
         "broker": {
             "configured": True,
             "connected": True,

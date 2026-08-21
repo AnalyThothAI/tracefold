@@ -57,8 +57,8 @@ using `--force`.
 `tracefold init` is the sole default-config authority. There is no maintained
 static example or `.env` fallback. The generated default creates a local API
 token but contains no model, OpenNews, or Feishu credential, points
-`news.broker.url` at the compose RabbitMQ service, leaves
-`news.opennews_strategy_ids` empty, and leaves News push disabled. Edit only the operator-owned
+`news.broker.url` at the compose RabbitMQ service, and leaves News push
+disabled. Edit only the operator-owned
 `~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
 terminal output, docs, tests, and commits.
 
@@ -83,8 +83,8 @@ The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
 
 - absent `news.opennews_token` keeps the News Receiver idle (`ingest.connected`
-  false, no incidents); when a token is configured while News is enabled,
-  `news.opennews_strategy_ids` must be non-empty or configuration fails closed;
+  false, no incidents); a configured token is the whole News source setup —
+  which Strategies push is decided in the OpenNews account (#126);
 - absent or unreachable `news.broker.url` makes Workers fail startup while News
   is enabled (the broker is the News transport plane);
 - an absent direct DeepSeek triple (`llm.api_key`, `llm.base_url`,
@@ -118,11 +118,8 @@ llm:
 
 news:
   enabled: true
+  # Which Strategies feed the pipeline is set in the OpenNews account, not here.
   opennews_token: "<operator secret>"
-  opennews_strategy_ids:
-    - "1018" # News Score > 70
-    - "1352" # Storage News
-    - "1353" # Listing and Delisting Announcements
   broker:
     url: "amqp://tracefold:<rabbitmq password>@rabbitmq:5672/"
   push:
@@ -182,9 +179,10 @@ The compose stack runs `rabbitmq:4-management` with the default user
 Setting `news.enabled: false` leaves Workers with only the probe and control
 children and needs no RabbitMQ.
 
-Workers validate the configured Strategy allowlist against the provider
-Strategy list at startup and expose `strategy_warnings` in `/api/news/status`;
-provider-side enablement never silently edits Tracefold configuration.
+Workers read the account's Strategy list at startup and expose
+`ingest.provider_strategy_count` in `/api/news/status`. There is no local
+allowlist to keep in step (#126): enabling a Strategy in the OpenNews dashboard
+starts feeding the pipeline, and disabling it stops.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain only the News credentials above; the `llm` block

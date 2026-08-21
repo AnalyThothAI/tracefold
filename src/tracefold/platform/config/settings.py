@@ -13,8 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from tracefold.platform.paths import app_home, app_log_path, config_path
 
-OPENNEWS_STRATEGY_ID_LIMIT = 32
-
 
 class ApiConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -309,7 +307,6 @@ class NewsSettings(BaseModel):
 
     enabled: bool = True
     opennews_token: str | None = None
-    opennews_strategy_ids: tuple[str, ...] = ()
     broker: NewsBrokerSettings = Field(default_factory=NewsBrokerSettings)
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
@@ -325,31 +322,6 @@ class NewsSettings(BaseModel):
         normalized = str(value or "").strip()
         return normalized or None
 
-    @field_validator("opennews_strategy_ids", mode="before")
-    @classmethod
-    def parse_opennews_strategy_ids(cls, value: Any) -> tuple[str, ...]:
-        if value is None:
-            return ()
-        if not isinstance(value, list | tuple):
-            raise ValueError("opennews_strategy_ids_invalid")
-        if len(value) > OPENNEWS_STRATEGY_ID_LIMIT:
-            raise ValueError("opennews_strategy_ids_too_many")
-        normalized: list[str] = []
-        for raw in value:
-            if not isinstance(raw, str):
-                raise ValueError("opennews_strategy_id_invalid")
-            strategy_id = raw.strip()
-            if not strategy_id or "\x00" in strategy_id or len(strategy_id) > 128:
-                raise ValueError("opennews_strategy_id_invalid")
-            try:
-                strategy_id.encode("utf-8")
-            except UnicodeEncodeError as exc:
-                raise ValueError("opennews_strategy_id_invalid") from exc
-            normalized.append(strategy_id)
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("opennews_strategy_ids_duplicate")
-        return tuple(sorted(normalized))
-
     @field_validator("watchlist", mode="before")
     @classmethod
     def parse_watchlist(cls, value: Any) -> tuple[Any, ...]:
@@ -358,12 +330,6 @@ class NewsSettings(BaseModel):
         if not isinstance(value, list | tuple):
             raise ValueError("news_watchlist_invalid")
         return tuple(value)
-
-    @model_validator(mode="after")
-    def validate_opennews_strategy_configuration(self) -> NewsSettings:
-        if self.enabled and self.opennews_token and not self.opennews_strategy_ids:
-            raise ValueError("opennews_strategy_ids_required")
-        return self
 
     @property
     def watchlist_symbols(self) -> frozenset[str]:
@@ -563,7 +529,6 @@ llm:
 news:
   enabled: true
   opennews_token:
-  opennews_strategy_ids: []
   broker:
     url: "amqp://tracefold:tracefold@rabbitmq:5672/"
     name_prefix: ""

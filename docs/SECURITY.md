@@ -89,18 +89,16 @@ request validation, secret handling, PostgreSQL role/transaction integrity,
 migration confirmation, and source-fact provenance remain mandatory and are
 not product configuration.
 
-`news.opennews_token`, `news.broker.url`, and the configured
-`news.opennews_strategy_ids` set are operator-owned secrets/configuration.
-Diagnostics expose `opennews_token_configured`, broker `url_configured`,
-`opennews_strategy_ids_configured`, and `opennews_strategy_count`; the status
-route lists configured and provider-enabled Strategy IDs (non-secret opaque
-IDs) so allowlist warnings are actionable, but never the token or broker URL. OpenNews transport exceptions, logs,
-generated artifacts, and public source/status responses must never contain the
-token, authorization header, or allowlist values.
-The current reviewed configuration contains exactly `1018`, `1352`, `1353`,
-and `1672`, so diagnostics expose count `4`; `1019` is disabled provider-side
-and not configured. A future change requires an explicit reviewed
-configuration change.
+`news.opennews_token` and `news.broker.url` are operator-owned secrets.
+Diagnostics expose `opennews_token_configured` and broker `url_configured`,
+never the token or the URL. OpenNews transport exceptions, logs, generated
+artifacts, and public source/status responses must never contain the token or
+the authorization header.
+
+Which Strategies feed News is account configuration held in the OpenNews
+dashboard, not in Tracefold (#126). Strategy IDs stay server-side: the status
+route reports `ingest.provider_strategy_count`, a number, and the IDs
+themselves never reach the browser.
 
 The authenticated WSS automatically sends the account owner's
 `strategy.triggered` notifications. Tracefold sends no application subscription

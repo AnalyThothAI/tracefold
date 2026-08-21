@@ -588,9 +588,10 @@ describe("NewsPage", () => {
     expect(within(control).queryByText(/until_ms/)).not.toBeInTheDocument();
     const watch = screen.getByRole("region", { name: "关注列表与策略" });
     expect(within(watch).getByText("BTC")).toBeInTheDocument();
-    // Strategy IDs are private: the console shows counts only.
-    expect(within(watch).getByText(/\/ 2 已配置/)).toBeInTheDocument();
-    expect(within(watch).queryByText("1018")).not.toBeInTheDocument();
+    // Strategy IDs are private account configuration: since #126 the server sends only a count, and there is
+    // no local allowlist left to compare it against.
+    expect(within(watch).getByText("5")).toBeInTheDocument();
+    expect(within(watch).getByText(/provider 启用/)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("1018");
     // Raw metrics stay available, but folded away.
     const technical = screen.getByText(/技术指标/).closest("details")!;

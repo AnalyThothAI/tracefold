@@ -64,7 +64,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260821_0290"
+        assert revision["version_num"] == "20260821_0291"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -168,7 +168,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260821_0290"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260821_0291"
     finally:
         if conn is not None:
             conn.close()

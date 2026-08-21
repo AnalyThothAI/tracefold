@@ -318,8 +318,9 @@ the route components into the eager shell chunk.
   stage lists provider tags that name nothing, where the tag *is* the label
   because inventing the English word it collided with would be a guess),
   read-only `control`
-  (paused state and a mute table), the watchlist chips, configured/provider-enabled
-  Strategy *counts* (never the IDs) as a usage bar with `strategy_warnings`, and a
+  (paused state and a mute table), the watchlist chips, the
+  `provider_strategy_count` figure (a count, never the IDs — #126 left one list,
+  so there is nothing to compare and no warning to raise), and a
   collapsed `技术指标` disclosure with the raw pipeline/ingest/broker facts (latency
   percentiles, queue depths, incidents, counters). No layer computes a second health
   state; thresholds are the server's. There are no pause/resume/mute controls — control

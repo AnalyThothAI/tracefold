@@ -1065,8 +1065,6 @@ export interface components {
         };
         /** NewsIngestStatusData */
         NewsIngestStatusData: {
-            /** Configured Strategy Ids */
-            configured_strategy_ids?: string[];
             /** Connected */
             connected: boolean;
             /** Last Error Code */
@@ -1077,10 +1075,8 @@ export interface components {
             last_publish_at_ms?: number | null;
             /** Open Incidents */
             open_incidents?: components["schemas"]["NewsIncidentData"][];
-            /** Provider Enabled Strategy Ids */
-            provider_enabled_strategy_ids?: string[] | null;
-            /** Strategy Warnings */
-            strategy_warnings?: string[];
+            /** Provider Strategy Count */
+            provider_strategy_count?: number | null;
             /** Token Configured */
             token_configured: boolean;
         };

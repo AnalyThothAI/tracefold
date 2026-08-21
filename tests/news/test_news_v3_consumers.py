@@ -242,6 +242,15 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 family="listing",
                 gate=SimpleNamespace(priority="high", amqp_priority=5),
             ),
+            # #126: a Strategy Tracefold has no local knowledge of. There is no allowlist to consult — the
+            # provider account enabled it and the socket pushed it, so the Gate judges it like any other.
+            SimpleNamespace(
+                event_created=True,
+                admission="candidate",
+                event_id="ev-4",
+                family="general",
+                gate=SimpleNamespace(priority="normal", amqp_priority=0),
+            ),
         ]
     )
     seen: list[dict[str, Any]] = []
@@ -253,9 +262,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(consumers_module, "admit_frame", fake_admit)
     news = RecordingNews()
     bus = FakeBus()
-    deduper = DeduperConsumer(
-        bus=bus, db=FakeWorkerDatabase(news), strategy_ids=("1018",), watchlist_symbols=frozenset({"BTC"})
-    )
+    deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset({"BTC"}))
     params = {
         "id": 3_568_501,
         "engineType": "news",
@@ -275,6 +282,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
         await deduper.handle(raw)  # redelivery: admit_frame reports nothing new
         await deduper.handle(raw)  # a suppressed admission never reaches Triage
         await deduper.handle(raw)  # a listing admission does
+        # An unknown Strategy is ordinary work now, not a frame to drop.
         foreign = _message(
             "raw",
             {"params": {**params, "strategy": {"id": 4242, "name": "other"}}, "strategy_id": "4242"},
@@ -286,15 +294,15 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
     asyncio.run(scenario())
 
-    assert len(seen) == 4
+    assert len(seen) == 5
     assert seen[0]["ingest_mode"] == "live" and seen[0]["observed_at_ms"] == NOW_MS - 5
     assert seen[0]["trace_id"] == "trace-1" and seen[0]["watchlist_symbols"] == frozenset({"BTC"})
     assert seen[0]["event"].provider_record_id == "3568501"
-    assert bus.routing_keys() == ["event.macro.high", "event.listing.high"]
+    assert bus.routing_keys() == ["event.macro.high", "event.listing.high", "event.general.normal"]
     assert bus.published[0].payload == {"event_id": "ev-1"}
     assert bus.published[0].priority == 5 and bus.published[0].message_id == "event:ev-1"
     assert bus.published[1].payload == {"event_id": "ev-3"}
-    assert news.names() == ["mark_event_published", "mark_event_published"]
+    assert news.names() == ["mark_event_published"] * 3
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-1"
 
 
@@ -305,7 +313,6 @@ def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkey
     deduper = DeduperConsumer(
         bus=bus,
         db=FakeWorkerDatabase(news, admission_timeout_for={"news_deduper_admit"}),
-        strategy_ids=("1018",),
         watchlist_symbols=frozenset(),
     )
     raw = _message(

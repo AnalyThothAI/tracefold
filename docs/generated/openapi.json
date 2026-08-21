@@ -2255,13 +2255,6 @@
       "NewsIngestStatusData": {
         "additionalProperties": false,
         "properties": {
-          "configured_strategy_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Configured Strategy Ids",
-            "type": "array"
-          },
           "connected": {
             "title": "Connected",
             "type": "boolean"
@@ -2306,26 +2299,16 @@
             "title": "Open Incidents",
             "type": "array"
           },
-          "provider_enabled_strategy_ids": {
+          "provider_strategy_count": {
             "anyOf": [
               {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Provider Enabled Strategy Ids"
-          },
-          "strategy_warnings": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Strategy Warnings",
-            "type": "array"
+            "title": "Provider Strategy Count"
           },
           "token_configured": {
             "title": "Token Configured",

@@ -250,8 +250,6 @@ class ProjectionValidationAudit:
                        WHEN count(*) <> 1 THEN 1
                        ELSE count(*) FILTER (
                          WHERE singleton_key <> 'opennews'
-                            OR jsonb_typeof(configured_strategy_ids) <> 'array'
-                            OR jsonb_typeof(strategy_warnings) <> 'array'
                             OR (
                               provider_enabled_strategy_ids IS NOT NULL
                               AND jsonb_typeof(provider_enabled_strategy_ids) <> 'array'

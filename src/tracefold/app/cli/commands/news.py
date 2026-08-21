@@ -573,7 +573,6 @@ def _handle_replay(args: Namespace) -> tuple[int, dict[str, Any]]:
         hits.extend(h for h in raw if isinstance(h, Mapping))
     report = replay_hits(
         hits,
-        strategy_ids=settings.news.opennews_strategy_ids or ("1018", "1352", "1353"),
         watchlist_symbols=settings.news.watchlist_symbols,
         suppress_low_signal=(
             settings.news.gate.suppress_low_signal if args.gate_policy == "config" else args.gate_policy == "strict"

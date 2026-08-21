@@ -20,7 +20,6 @@ from tracefold.news.opennews import parse_opennews_message
 from tracefold.platform.config.settings import NewsSettings, Settings
 
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
-OPENNEWS_STRATEGY_IDS = frozenset({"1018", "1019"})
 
 
 def test_api_json_response_encodes_decimal_payloads():
@@ -60,7 +59,7 @@ def make_settings(tmp_path, *, reset: bool = True) -> Settings:
         _SCHEMA_STATE["prepared"] = True
     settings = Settings(
         ws_token="secret",
-        news=NewsSettings(opennews_strategy_ids=("1018", "1019")),
+        news=NewsSettings(),
         storage=postgres_settings_storage(),
     )
     settings.set_config_dir(tmp_path / "app-home")
@@ -105,9 +104,7 @@ def _seed_news_v3_events(*, now_ms: int) -> list[str]:
         for offset, hit in enumerate(sorted(hits, key=lambda h: str(h.get("ts") or ""))[:40]):
             # pin the fixture into the live 24 h window (the corpus ages; the status counters are windowed)
             fresh = {**hit, "ts": (now_ms - 3600_000 + offset * 1000) / 1000}
-            event = parse_opennews_message(
-                {"method": "strategy.triggered", "params": fresh}, strategy_ids=frozenset({"1018", "1352", "1353"})
-            )
+            event = parse_opennews_message({"method": "strategy.triggered", "params": fresh})
             if event is None:
                 continue
             result = admit_item(

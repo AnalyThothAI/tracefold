@@ -57,7 +57,6 @@ def write_runtime_config(
     ws_token: str | None = None,
     llm: bool = False,
     opennews_token: str | None = None,
-    opennews_strategy_ids: tuple[str, ...] = (),
 ) -> Path:
     app_home = home / ".tracefold"
     app_home.mkdir(parents=True, exist_ok=True)
@@ -81,11 +80,8 @@ def write_runtime_config(
             "base_url": "https://deepseek.test/v1",
             "news_triage_model": "deepseek-chat",
         }
-    if opennews_token is not None or opennews_strategy_ids:
-        payload["news"] = {
-            "opennews_token": opennews_token,
-            "opennews_strategy_ids": list(opennews_strategy_ids),
-        }
+    if opennews_token is not None:
+        payload["news"] = {"opennews_token": opennews_token}
     path = app_home / "config.yaml"
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path
@@ -209,7 +205,6 @@ class CliTests(unittest.TestCase):
                 ws_token="secret",
                 llm=True,
                 opennews_token="opennews-secret",
-                opennews_strategy_ids=("private-strategy-alpha", "private-strategy-beta"),
             )
             stdout = io.StringIO()
             with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
@@ -231,8 +226,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("macro", payload["data"])
         self.assertNotIn("upstream", payload["data"])
         news = payload["data"]["news"]
-        self.assertTrue(news["opennews_strategy_ids_configured"])
-        self.assertEqual(news["opennews_strategy_count"], 2)
+        self.assertTrue(news["opennews_token_configured"])
         self.assertNotIn("opennews_strategy_ids", news)
         self.assertNotIn("opennews_token", news)
         self.assertEqual(
@@ -240,8 +234,6 @@ class CliTests(unittest.TestCase):
             {
                 "enabled",
                 "opennews_token_configured",
-                "opennews_strategy_ids_configured",
-                "opennews_strategy_count",
                 "broker",
                 "models",
                 "triage",
@@ -290,7 +282,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("rss_enabled", payload["news"])
         self.assertNotIn("title_presentation", payload["news"])
         self.assertNotIn("news_brief_model", payload.get("llm") or {})
-        self.assertEqual(payload["news"]["opennews_strategy_ids"], [])
+        self.assertNotIn("opennews_strategy_ids", payload["news"])
         self.assertEqual(payload["news"]["broker"]["url"], "amqp://tracefold:tracefold@rabbitmq:5672/")
         self.assertEqual(settings.news.broker.name_prefix, "")
         self.assertFalse(settings.news.push.enabled)

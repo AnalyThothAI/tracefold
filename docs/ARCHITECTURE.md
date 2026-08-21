@@ -263,7 +263,7 @@ decisions, and audit; every write is idempotent by key. The Story/Brief/RSS/
 pinned-WorldMonitor lane and the title-translation lane are retired.
 
 ```text
-OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
+OpenNews account Strategies (whatever the account has enabled; no local allowlist)
   -> authenticated persistent WSS; server pushes strategy.triggered; no app subscribe frame
   -> Receiver publishes each accepted frame to x:news with publisher confirms
      (routing key raw.opennews.<strategy_id>; recovery frames use raw.recovery.<strategy_id>)

@@ -69,14 +69,13 @@ cadence, retries, and reservations are code-owned. Environment variables are
 not a credential contract.
 
 `news.opennews_token` is the operator-owned secret for the production News
-source. `news.opennews_strategy_ids` is the operator-owned, duplicate-free
-allowlist of account Strategy IDs; IDs are trimmed opaque strings and mutable
-Strategy names are never admission keys. When News is enabled, a configured
-token with an empty Strategy set fails closed. Workers compare the configured
-list with the provider Strategy list at startup: configured-but-disabled and
-enabled-but-unconfigured IDs become `strategy_warnings` in `/api/news/status`;
-they never fail startup or recovery. The current operator set is `1018`,
-`1352`, `1353`, `1672`; `1019` is disabled provider-side and not configured.
+source, and it is the whole News source configuration. Which Strategies feed the
+pipeline is decided in the OpenNews account (#126): Tracefold sends no
+subscription frame, so the socket delivers what the account has enabled, the
+Receiver filters nothing, and there is no `news.opennews_strategy_ids`. Adding
+or removing a source is a provider dashboard switch — no config edit, no
+restart. `/api/news/status` reports `ingest.provider_strategy_count`, the number
+of Strategies the account has enabled; the IDs themselves stay server-side.
 
 `news.broker.url` (`amqp://` or `amqps://`, a secret) is required for News to
 run; `news.broker.name_prefix` prefixes every exchange and queue name and

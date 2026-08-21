@@ -22,11 +22,10 @@ only business truth. The deterministic derived read model (`news_events`) has
 exactly one runtime writer and is rebuildable. Current read models use stable
 product/window keys, never run/generation/attempt/timestamp/UUID identity. News
 V3 is one broker-driven Event pipeline: the authenticated OpenNews WSS pushes
-the account owner's `strategy.triggered` frames for the configured
-`news.opennews_strategy_ids` (validated against the provider Strategy list at
-startup; mismatches warn, never fail); a thin Receiver publishes each frame to
-RabbitMQ with publisher confirms and Tracefold sends no application subscription
-frame. RabbitMQ (`aio-pika`, quorum queues `news.raw`[SAC] / `news.triage` /
+every `strategy.triggered` frame the account owner has enabled provider-side;
+a thin Receiver publishes each one to RabbitMQ with publisher confirms and
+Tracefold sends no application subscription frame and keeps no local Strategy
+allowlist (#126). RabbitMQ (`aio-pika`, quorum queues `news.raw`[SAC] / `news.triage` /
 `news.deliver`[SAC], two-level priority, one 30 s retry lane, one dead-letter
 queue) is the only transport/buffer/retry/concurrency plane for News; consumers
 handle up to `prefetch` messages concurrently, `TransientError` retries are
@@ -198,12 +197,18 @@ recover by re-consuming durable broker queues plus database idempotency; there
 is no database wake plane, no projection/EDF frontier, and no durable queue
 terminal-evidence lane. Provider raw frames are inputs, not facts.
 
-The News allowlist is operator-owned in `news.opennews_strategy_ids` (currently
-`1018` News Score > 70, `1352` Storage News, `1353` Listing and Delisting
-Announcements, `1672` 行情异动监控); provider-side `1019` OI Event Monitor is
-disabled and not configured. Workers compare the configured list with the
-provider Strategy list at startup and expose warnings in `/api/news/status`; any
-change is an explicit configuration change.
+Which Strategies feed News is decided in the OpenNews account and nowhere else
+(#126). Tracefold sends no subscription frame, so the socket delivers what the
+account has enabled; there is no `news.opennews_strategy_ids`, the Receiver
+filters nothing, and adding or removing a source is a dashboard switch that
+takes effect without a config edit or a restart. The old local allowlist was a
+second switch for the same decision and had drifted: it listed `1672`
+行情异动监控, which had produced nothing in seven days, while silently dropping
+every `1019` OI Event Monitor frame the provider was pushing. `/api/news/status`
+reports `ingest.provider_strategy_count` — how many Strategies the account has
+enabled, a fact with nothing to disagree with. Strategy IDs stay server-side;
+one, `1353`, is read by the Gate off each Event's own provider metadata to mark
+a listing/delisting frame, which is unrelated to configuration.
 
 ## Agent skills
 

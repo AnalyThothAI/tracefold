@@ -230,9 +230,12 @@ describe("News console contract", () => {
     expect(statusPage).not.toMatch(/news-source-|newsSources|Brief/);
     // Pause and mute are written by `tracefold news control`; the browser is not a second writer.
     expect(statusPage).not.toMatch(/暂停推送|解除|useMutation|postApi/);
-    // Strategy IDs are private account configuration: counts only, never the values.
-    expect(statusPage).toContain("configured_strategy_ids ?? []).length");
-    expect(statusPage).toMatch(/Counts only/);
+    // Strategy IDs are private account configuration: the server sends a count and nothing else (#126), and
+    // there is no local allowlist left for the page to compare it against.
+    expect(statusPage).toContain("provider_strategy_count");
+    expect(statusPage).not.toMatch(
+      /configured_strategy_ids|provider_enabled_strategy_ids|strategy_warnings/,
+    );
   });
 });
 

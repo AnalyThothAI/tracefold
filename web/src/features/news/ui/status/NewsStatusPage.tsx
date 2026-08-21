@@ -3,7 +3,6 @@ import { Bar } from "@shared/ui/Bar";
 import { Card } from "@shared/ui/Card";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import * as PageState from "@shared/ui/PageState";
-import { TriangleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import {
@@ -374,20 +373,15 @@ function ControlView({ status }: { status: NewsStatus }) {
 }
 
 function WatchAndStrategies({ status }: { status: NewsStatus }) {
-  const warnings = status.ingest.strategy_warnings ?? [];
   const watchlist = status.watchlist ?? [];
-  const configuredIds = status.ingest.configured_strategy_ids ?? [];
-  const providerIds = status.ingest.provider_enabled_strategy_ids;
-  const configured = configuredIds.length;
   /*
-   * Counts only: the Strategy IDs are private account configuration and never reach the browser as rendered
-   * values. The matched figure has to be a real intersection — comparing the two lengths would report a full
-   * match for three configured IDs the provider has never heard of, contradicting `strategy_warnings` right
-   * below it. When the provider list is unavailable there is nothing to match against, so no ratio is shown.
+   * One number, because there is only one list now (#126). The Strategy allowlist used to live in Tracefold's
+   * config too, so this panel compared the two and warned when they drifted. The socket pushes what the
+   * provider account has enabled and Tracefold sends no subscription frame, so the account is the only switch
+   * and there is nothing to disagree with. A count, not the IDs — those are private account configuration and
+   * the server no longer sends them. `null` means the Strategy list has not been read yet.
    */
-  const matched = providerIds
-    ? configuredIds.filter((id) => providerIds.includes(id)).length
-    : null;
+  const strategies = status.ingest.provider_strategy_count;
   return (
     <div className="news-watch">
       <h3 className="news-control-heading">关注列表 {formatCount(watchlist.length)}</h3>
@@ -399,25 +393,14 @@ function WatchAndStrategies({ status }: { status: NewsStatus }) {
         )}
       </div>
       <h3 className="news-control-heading">Strategy</h3>
-      <p className="news-strategy-count">
-        {formatCount(matched ?? configured)}
-        <small> / {formatCount(configured)} 已配置</small>
-      </p>
-      {matched == null ? (
-        <p className="news-strategy-note">provider 列表暂不可用，无法核对</p>
+      {strategies == null ? (
+        <p className="news-strategy-note">provider 列表暂不可用</p>
       ) : (
-        <Bar share={configured ? (matched / configured) * 100 : 0} tone="accent" />
+        <p className="news-strategy-count">
+          {formatCount(strategies)}
+          <small> provider 启用</small>
+        </p>
       )}
-      {warnings.length ? (
-        <div className="news-warning-block news-toned" data-tone="caution">
-          <TriangleAlert aria-hidden />
-          <ul>
-            {warnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -478,12 +461,8 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="last_publish_at_ms" v={optionalTime(status.ingest.last_publish_at_ms)} />
           <KeyValueRow k="last_error_code" v={status.ingest.last_error_code ?? "—"} />
           <KeyValueRow
-            k="provider_enabled_strategy_count"
-            v={String(status.ingest.provider_enabled_strategy_ids?.length ?? "—")}
-          />
-          <KeyValueRow
-            k="configured_strategy_count"
-            v={String((status.ingest.configured_strategy_ids ?? []).length)}
+            k="provider_strategy_count"
+            v={String(status.ingest.provider_strategy_count ?? "—")}
           />
           <KeyValueRow
             k="open_incidents"

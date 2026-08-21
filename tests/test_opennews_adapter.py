@@ -4,6 +4,7 @@ import asyncio
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from websockets.exceptions import ConcurrencyError, ProtocolError
 
 from tracefold.integrations.opennews import client as opennews_client
@@ -21,39 +22,15 @@ def test_opennews_source_id_is_stable() -> None:
     assert OPENNEWS_SOURCE_ID == "news-opennews"
 
 
-def test_opennews_strategy_configuration_is_normalized_and_fails_closed() -> None:
-    configured = NewsSettings(
-        opennews_token="  secret  ",
-        opennews_strategy_ids=["1019", " 1018 ", "listing-private"],
-    )
+def test_opennews_token_is_normalized_and_needs_no_strategy_configuration() -> None:
+    """#126: a token is the whole News configuration. The account decides which Strategies push."""
+
+    configured = NewsSettings(opennews_token="  secret  ")
     assert configured.opennews_token == "secret"
-    assert configured.opennews_strategy_ids == ("1018", "1019", "listing-private")
     assert NewsSettings(opennews_token="  ").opennews_token is None
 
-    with pytest.raises(ValueError, match="opennews_strategy_ids_required"):
-        NewsSettings(opennews_token="secret")
-    with pytest.raises(ValueError, match="opennews_strategy_ids_duplicate"):
-        NewsSettings(opennews_token="secret", opennews_strategy_ids=["1018", " 1018 "])
-
-
-@pytest.mark.parametrize("strategy_id", [None, True, 1019, 10.19, "", "bad\x00id", "x" * 129])
-def test_opennews_strategy_ids_reject_invalid_values(strategy_id: object) -> None:
-    with pytest.raises(ValueError):
-        NewsSettings(opennews_token="secret", opennews_strategy_ids=[strategy_id])
-
-
-def test_opennews_strategy_configuration_is_bounded_to_32_ids() -> None:
-    boundary = NewsSettings(
-        opennews_token="secret",
-        opennews_strategy_ids=[f"strategy-{index:02d}" for index in range(32)],
-    )
-    assert len(boundary.opennews_strategy_ids) == 32
-
-    with pytest.raises(ValueError):
-        NewsSettings(
-            opennews_token="secret",
-            opennews_strategy_ids=[f"strategy-{index}" for index in range(33)],
-        )
+    with pytest.raises(ValidationError):
+        NewsSettings(opennews_token="secret", opennews_strategy_ids=["1018"])
 
 
 def test_websocket_connect_sends_nothing_and_preserves_the_first_strategy_frame(monkeypatch) -> None:
@@ -147,7 +124,6 @@ def test_allowlisted_market_strategy_is_normalized_as_a_linkless_report() -> Non
                 "aiRating": {"score": 85},
             },
         },
-        strategy_ids=frozenset({"1019"}),
     )
 
     assert event is not None
@@ -228,14 +204,12 @@ def test_official_strategy_history_adapter_uses_exact_authenticated_endpoints() 
 
     assert parse_opennews_strategy_list(
         strategy_list,
-        strategy_ids=frozenset({"1018", "1019"}),
     ) == (
         {"id": "1018", "name": "News Score >70", "enabled": True},
         {"id": "1019", "name": "OI Event Monitor", "enabled": True},
     )
     parsed_hits = parse_opennews_strategy_hits(
         strategy_hits,
-        strategy_ids=frozenset({"1018", "1019"}),
     )
     assert [event.provider_record_id for event in parsed_hits.events] == ["3568500"]
     assert parsed_hits.has_more is False
@@ -275,7 +249,7 @@ def test_official_strategy_history_adapter_classifies_unavailable_endpoint() -> 
         ("listing-monitor", "listing"),
     ],
 )
-def test_allowlist_is_the_only_strategy_admission_filter(strategy_id: str, engine_type: str) -> None:
+def test_every_strategy_frame_is_admitted_with_its_provider_metadata(strategy_id: str, engine_type: str) -> None:
     event = parse_opennews_message(
         {
             "method": "strategy.triggered",
@@ -291,7 +265,6 @@ def test_allowlist_is_the_only_strategy_admission_filter(strategy_id: str, engin
                 },
             },
         },
-        strategy_ids=frozenset({strategy_id}),
     )
 
     assert event is not None
@@ -305,7 +278,7 @@ def test_allowlist_is_the_only_strategy_admission_filter(strategy_id: str, engin
     ]
 
 
-def test_raw_news_and_unconfigured_strategy_frames_are_ignored() -> None:
+def test_only_the_strategy_triggered_method_is_admitted() -> None:
     base_params = {
         "id": "provider-event-1",
         "engineType": "news",
@@ -318,20 +291,19 @@ def test_raw_news_and_unconfigured_strategy_frames_are_ignored() -> None:
         assert (
             parse_opennews_message(
                 {"method": method, "params": base_params},
-                strategy_ids=frozenset({"configured"}),
             )
             is None
         )
-    assert (
-        parse_opennews_message(
-            {
-                "method": "strategy.triggered",
-                "params": {**base_params, "strategy": {"id": "not-configured"}},
-            },
-            strategy_ids=frozenset({"configured"}),
-        )
-        is None
+    # #126: there is no local allowlist. A Strategy Tracefold has never heard of is admitted, because the
+    # provider account decided to enable it and the socket pushed it.
+    unknown = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": {**base_params, "strategy": {"id": "never-seen-before"}},
+        },
     )
+    assert unknown is not None
+    assert unknown.provider_metadata["strategies"][0]["id"] == "never-seen-before"
 
 
 def test_same_provider_event_keeps_each_strategy_as_mergeable_provenance_input() -> None:
@@ -351,7 +323,6 @@ def test_same_provider_event_keeps_each_strategy_as_mergeable_provenance_input()
                     },
                 },
             },
-            strategy_ids=frozenset({"1018", "1019"}),
         )
         for strategy_id, strategy_name, engine_type in (
             (1019, "OI Event Monitor", "market"),
@@ -482,7 +453,6 @@ def test_strategy_normalization_keeps_only_bounded_provider_metadata() -> None:
                 },
             },
         },
-        strategy_ids=frozenset({"strategy-private"}),
     )
 
     assert event is not None
@@ -628,7 +598,6 @@ def _strategy_event(**overrides):
     }
     return parse_opennews_message(
         {"method": "strategy.triggered", "params": params},
-        strategy_ids=frozenset({"strategy-test"}),
     )
 
 

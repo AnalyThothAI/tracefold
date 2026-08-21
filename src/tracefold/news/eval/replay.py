@@ -24,7 +24,6 @@ from tracefold.news.tokens import comparison_tokens, jaccard
 def replay_hits(
     hits: Sequence[Mapping[str, Any]],
     *,
-    strategy_ids: Sequence[str],
     watchlist_symbols: frozenset[str],
     suppress_low_signal: bool = False,
     instrument_classes: Mapping[str, str] | None = None,
@@ -33,16 +32,15 @@ def replay_hits(
     out and the replay silently exercises the fallback instead of the deployed behaviour — which is why the CLI
     loads it from the universe when a database is reachable."""
 
-    ids = frozenset(str(s) for s in strategy_ids)
     seen: set[str] = set()
     events: list[dict[str, Any]] = []
     band_index: dict[tuple[int, str, str], list[int]] = collections.defaultdict(list)
     fp_index: dict[tuple[str, str], int] = {}
     counts: collections.Counter[str] = collections.Counter()
     for raw in sorted(hits, key=lambda h: str(h.get("ts") or "")):
-        event = parse_opennews_message({"method": "strategy.triggered", "params": dict(raw)}, strategy_ids=ids)
+        event = parse_opennews_message({"method": "strategy.triggered", "params": dict(raw)})
         if event is None:
-            counts["ignored_unconfigured"] += 1
+            counts["unparseable_frame"] += 1
             continue
         if event.provider_record_id in seen:
             counts["duplicate_provider_id"] += 1

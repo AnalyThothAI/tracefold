@@ -658,9 +658,9 @@ class NewsIngestStatusData(ExactApiSchema):
     last_frame_at_ms: int | None = None
     last_publish_at_ms: int | None = None
     last_error_code: str | None = None
-    configured_strategy_ids: list[str] = Field(default_factory=list)
-    provider_enabled_strategy_ids: list[str] | None = None
-    strategy_warnings: list[str] = Field(default_factory=list)
+    # How many Strategies the provider account has enabled. `None` until the Strategy list has been read
+    # once. The IDs themselves are private account configuration and stay server-side.
+    provider_strategy_count: int | None = None
     open_incidents: list[NewsIncidentData] = Field(default_factory=list)
     token_configured: bool
 

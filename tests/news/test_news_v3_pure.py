@@ -912,9 +912,7 @@ def test_bus_envelope_roundtrip() -> None:
 # ---------------------------------------------------------------- golden replay
 def test_golden_replay_on_real_sample() -> None:
     hits = _hits()
-    report = replay_hits(
-        hits, strategy_ids=("1018", "1352", "1353"), watchlist_symbols=frozenset({"BTC", "ETH", "NVDA"})
-    )
+    report = replay_hits(hits, watchlist_symbols=frozenset({"BTC", "ETH", "NVDA"}))
     counts = report["counts"]
     assert counts["items"] == len({h["id"] for h in hits})
     # Levi & Korsinsky template PRs must not merge (ticker veto) and are vetoed at the Gate
@@ -925,11 +923,11 @@ def test_golden_replay_on_real_sample() -> None:
     # 'reply <url>' items with distinct slugs must not collapse into one event
     replies = [h for h in hits if str(h.get("text", "")).lower().startswith("reply http")]
     assert len(replies) >= 2
-    reply_report = replay_hits(replies, strategy_ids=("1018",), watchlist_symbols=frozenset())
+    reply_report = replay_hits(replies, watchlist_symbols=frozenset())
     assert reply_report["counts"]["events"] == len(replies)
     # Binance CFX announcement burst collapses into one shared event
     cfx = [h for h in hits if "Conflux Network (CFX)" in str(h.get("text"))]
-    cfx_report = replay_hits(cfx, strategy_ids=("1018",), watchlist_symbols=frozenset())
+    cfx_report = replay_hits(cfx, watchlist_symbols=frozenset())
     assert cfx_report["counts"]["events"] == 1 and cfx_report["counts"]["exact_members"] == len(cfx) - 1
     # The Gate no longer decides relevance: most items reach Triage (the model is the semantic filter)
     assert report["candidate_share_of_items"] >= 0.65
@@ -944,7 +942,7 @@ def test_gate_expectations_over_the_recall_corpus() -> None:
     """Trajectory-prefix regression: every case names a real headline and the acceptable Gate outcome set."""
 
     hits = _hits() + json.loads(RECALL_FIXTURE.read_text(encoding="utf-8"))
-    report = replay_hits(hits, strategy_ids=("1018", "1352", "1353"), watchlist_symbols=frozenset())
+    report = replay_hits(hits, watchlist_symbols=frozenset())
     events = report["events"]
     failures: list[str] = []
     for case in json.loads(EXPECTATIONS.read_text(encoding="utf-8"))["cases"]:

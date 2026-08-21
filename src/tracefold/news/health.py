@@ -84,8 +84,6 @@ def ingest_health(ingest: Mapping[str, Any], *, now_ms: int, workers_state: str 
     if incidents:
         causes = "、".join(incident_cause_zh(i.get("cause_class")) for i in incidents)
         return HealthItem("warn", "已连接，有未关闭的接入事故", causes)
-    if ingest.get("strategy_warnings"):
-        return HealthItem("warn", "已连接，策略配置与 provider 不一致", "；".join(ingest["strategy_warnings"]))
     # No wall-clock text on the healthy path: the status ETag must not churn while nothing changes.
     return HealthItem("ok", "已连接，正在收帧", "")
 
