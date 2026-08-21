@@ -50,7 +50,6 @@ class NewsRepository:
         last_publish_at_ms: int | None = None,
         last_error_code: str | None = None,
         clear_error: bool = False,
-        provider_enabled_strategy_ids: Sequence[str] | None = None,
     ) -> None:
         self.conn.execute(
             """
@@ -59,7 +58,6 @@ class NewsRepository:
                    last_frame_at_ms = COALESCE(%s, last_frame_at_ms),
                    last_publish_at_ms = COALESCE(%s, last_publish_at_ms),
                    last_error_code = CASE WHEN %s THEN NULL ELSE COALESCE(%s, last_error_code) END,
-                   provider_enabled_strategy_ids = COALESCE(%s::jsonb, provider_enabled_strategy_ids),
                    updated_at_ms = GREATEST(updated_at_ms, %s)
              WHERE singleton_key = 'opennews'
             """,
@@ -69,7 +67,6 @@ class NewsRepository:
                 last_publish_at_ms,
                 bool(clear_error),
                 last_error_code,
-                _dumps(list(provider_enabled_strategy_ids)) if provider_enabled_strategy_ids is not None else None,
                 int(now_ms),
             ),
         )
@@ -1769,13 +1766,6 @@ class NewsRepository:
                 "last_frame_at_ms": ingest["last_frame_at_ms"] if ingest else None,
                 "last_publish_at_ms": ingest["last_publish_at_ms"] if ingest else None,
                 "last_error_code": ingest["last_error_code"] if ingest else None,
-                # A count, not the IDs: Strategy IDs are private account configuration, and with the local
-                # allowlist gone there is no second list for the browser to compare them against.
-                "provider_strategy_count": (
-                    len(ingest["provider_enabled_strategy_ids"])
-                    if ingest and ingest["provider_enabled_strategy_ids"] is not None
-                    else None
-                ),
                 "open_incidents": [
                     {
                         "incident_id": int(r["incident_id"]),

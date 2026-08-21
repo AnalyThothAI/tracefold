@@ -205,10 +205,12 @@ takes effect without a config edit or a restart. The old local allowlist was a
 second switch for the same decision and had drifted: it listed `1672`
 行情异动监控, which had produced nothing in seven days, while silently dropping
 every `1019` OI Event Monitor frame the provider was pushing. `/api/news/status`
-reports `ingest.provider_strategy_count` — how many Strategies the account has
-enabled, a fact with nothing to disagree with. Strategy IDs stay server-side;
-one, `1353`, is read by the Gate off each Event's own provider metadata to mark
-a listing/delisting frame, which is unrelated to configuration.
+says nothing about Strategies at all — not the IDs, not a count: Tracefold
+neither chooses nor filters them, so a figure there would only restate the
+provider's dashboard. Recovery is the one place that still needs the list, read
+live from the account because the provider's hits endpoint is per-strategy. One
+ID, `1353`, is read by the Gate off each Event's own provider metadata to mark a
+listing/delisting frame, which is provenance rather than configuration.
 
 ## Agent skills
 

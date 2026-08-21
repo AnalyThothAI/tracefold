@@ -2299,17 +2299,6 @@
             "title": "Open Incidents",
             "type": "array"
           },
-          "provider_strategy_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider Strategy Count"
-          },
           "token_configured": {
             "title": "Token Configured",
             "type": "boolean"

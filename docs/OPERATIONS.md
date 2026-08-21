@@ -306,7 +306,8 @@ kinds, and only those two are worth chasing as backlog.
 Diagnose News in this order:
 
 1. `/api/news/status.state` and `ingest`: `connected`, `last_frame_at_ms`,
-   `provider_strategy_count`, `open_incidents`.
+   `open_incidents`. Which Strategies are feeding the pipeline is a question for
+   the OpenNews dashboard, not for Tracefold.
 2. `tracefold news bus-check`: consumers attached to every queue (Deduper and
    Deliverer show exactly one), `news.dead` depth, `news.retry` depth;
    `tracefold news dlq inspect` for the dead-letter bodies.

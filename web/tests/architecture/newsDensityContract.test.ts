@@ -230,12 +230,11 @@ describe("News console contract", () => {
     expect(statusPage).not.toMatch(/news-source-|newsSources|Brief/);
     // Pause and mute are written by `tracefold news control`; the browser is not a second writer.
     expect(statusPage).not.toMatch(/暂停推送|解除|useMutation|postApi/);
-    // Strategy IDs are private account configuration: the server sends a count and nothing else (#126), and
-    // there is no local allowlist left for the page to compare it against.
-    expect(statusPage).toContain("provider_strategy_count");
-    expect(statusPage).not.toMatch(
-      /configured_strategy_ids|provider_enabled_strategy_ids|strategy_warnings/,
-    );
+    // #126: which Strategies feed News is provider account configuration. The page reads no Strategy field
+    // and renders no Strategy section — Tracefold neither chooses nor filters them, so a figure here would
+    // only restate the provider's dashboard. (Prose explaining the absence is fine; a heading is not.)
+    expect(statusPage).not.toMatch(/strategy_ids|strategy_warnings|provider_strategy_count/);
+    expect(statusPage).not.toContain(">Strategy<");
   });
 });
 

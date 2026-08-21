@@ -397,7 +397,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       last_frame_at_ms: NEWS_NOW_MS - 5_000,
       last_publish_at_ms: NEWS_NOW_MS - 6_000,
       open_incidents: [],
-      provider_strategy_count: 5,
       token_configured: true,
     },
     learning_retention: {

@@ -250,10 +250,6 @@ class ProjectionValidationAudit:
                        WHEN count(*) <> 1 THEN 1
                        ELSE count(*) FILTER (
                          WHERE singleton_key <> 'opennews'
-                            OR (
-                              provider_enabled_strategy_ids IS NOT NULL
-                              AND jsonb_typeof(provider_enabled_strategy_ids) <> 'array'
-                            )
                        )::integer
                      END AS count
                 FROM news_ingest_state

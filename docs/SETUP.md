@@ -200,10 +200,10 @@ The compose stack runs `rabbitmq:4-management` with the default user
 Setting `news.enabled: false` leaves Workers with only the probe and control
 children and needs no RabbitMQ.
 
-Workers read the account's Strategy list at startup and expose
-`ingest.provider_strategy_count` in `/api/news/status`. There is no local
-allowlist to keep in step (#126): enabling a Strategy in the OpenNews dashboard
-starts feeding the pipeline, and disabling it stops.
+There is no local allowlist to keep in step (#126): enabling a Strategy in the
+OpenNews dashboard starts feeding the pipeline, disabling it stops, and
+`/api/news/status` reports nothing about Strategies because Tracefold neither
+chooses nor filters them.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain only the News credentials above; the `llm` block

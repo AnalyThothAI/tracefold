@@ -288,24 +288,6 @@
     font-style: normal;
   }
 
-  .news-strategy-count {
-    margin: 0;
-    color: var(--text-primary);
-    font: 640 17px/1.2 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .news-strategy-count small {
-    color: var(--text-subtle);
-    font: 500 11px/1 var(--font-mono);
-  }
-
-  .news-strategy-note {
-    margin: 0;
-    color: var(--text-subtle);
-    font-size: 11px;
-  }
-
   @media (max-width: 1023px) {
     .news-health-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -74,8 +74,9 @@ pipeline is decided in the OpenNews account (#126): Tracefold sends no
 subscription frame, so the socket delivers what the account has enabled, the
 Receiver filters nothing, and there is no `news.opennews_strategy_ids`. Adding
 or removing a source is a provider dashboard switch — no config edit, no
-restart. `/api/news/status` reports `ingest.provider_strategy_count`, the number
-of Strategies the account has enabled; the IDs themselves stay server-side.
+restart. `/api/news/status` reports nothing about Strategies — Tracefold neither
+chooses nor filters them, so a figure there would only restate the provider's
+dashboard.
 
 `news.broker.url` (`amqp://` or `amqps://`, a secret) is required for News to
 run; `news.broker.name_prefix` prefixes every exchange and queue name and

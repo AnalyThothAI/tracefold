@@ -1075,8 +1075,6 @@ export interface components {
             last_publish_at_ms?: number | null;
             /** Open Incidents */
             open_incidents?: components["schemas"]["NewsIncidentData"][];
-            /** Provider Strategy Count */
-            provider_strategy_count?: number | null;
             /** Token Configured */
             token_configured: boolean;
         };

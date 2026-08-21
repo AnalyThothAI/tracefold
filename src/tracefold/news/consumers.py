@@ -166,45 +166,14 @@ class OpenNewsReceiver:
         self.recovery = recovery
         self._backpressure_open = False
 
-    async def record_provider_strategies(self) -> None:
-        """Record which Strategies the account has enabled. A fact for the status surface, never a filter.
-
-        The socket pushes what the provider account is configured to push and Tracefold sends no subscription
-        frame, so there is nothing here to agree or disagree with — one switch, in the provider's dashboard.
-        An unreachable Strategy list leaves the previous value alone rather than claiming the account is empty.
-        """
-
-        enabled: list[str] | None = None
-        if self.history_client is not None:
-            try:
-                payload = await self.history_client.get_strategy_list(limit=100, page=1)
-                enabled = sorted(enabled_strategy_ids(payload))
-            except Exception as exc:
-                log.warning("news strategy list unavailable: %s", type(exc).__name__)
-        if enabled is None:
-            return
-        stamp = now_ms()
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx(
-                "news_ingest_strategies",
-                lambda repos: repos.news.update_ingest_state(
-                    now_ms=stamp,
-                    provider_enabled_strategy_ids=enabled,
-                ),
-            )
-
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if self.ws_client is None:
             await stop_event.wait()
             return
-        await self.record_provider_strategies()
         while not stop_event.is_set():
             try:
                 await self.ws_client.connect()
                 await self._connected()
-                # Re-read on every reconnect. Ingestion follows a dashboard switch immediately; without this
-                # the operator's only view of it would sit frozen at whatever was true when Workers booted.
-                await self.record_provider_strategies()
                 while not stop_event.is_set():
                     message = await _receive_or_stop(self.ws_client, stop_event=stop_event)
                     if message is None:

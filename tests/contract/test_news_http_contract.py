@@ -116,7 +116,6 @@ class _FakeNewsRepository:
                 "last_frame_at_ms": None,
                 "last_publish_at_ms": None,
                 "last_error_code": None,
-                "provider_strategy_count": 5,
                 "open_incidents": [],
             },
             "pipeline": {"events_1h": 0, "events_24h": 0},
@@ -416,7 +415,6 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "last_frame_at_ms",
         "last_publish_at_ms",
         "last_error_code",
-        "provider_strategy_count",
         "open_incidents",
         "token_configured",
     }

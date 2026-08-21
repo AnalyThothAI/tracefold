@@ -227,7 +227,6 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "last_frame_at_ms",
         "last_publish_at_ms",
         "last_error_code",
-        "provider_enabled_strategy_ids",
         "broker_snapshot",
         "updated_at_ms",
     }

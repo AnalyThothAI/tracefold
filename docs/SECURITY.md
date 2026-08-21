@@ -96,9 +96,9 @@ artifacts, and public source/status responses must never contain the token or
 the authorization header.
 
 Which Strategies feed News is account configuration held in the OpenNews
-dashboard, not in Tracefold (#126). Strategy IDs stay server-side: the status
-route reports `ingest.provider_strategy_count`, a number, and the IDs
-themselves never reach the browser.
+dashboard, not in Tracefold (#126). No Strategy ID and no Strategy count reaches
+the browser; Workers read the list only where recovery genuinely needs it,
+because the provider's hits endpoint is per-strategy.
 
 The authenticated WSS automatically sends the account owner's
 `strategy.triggered` notifications. Tracefold sends no application subscription

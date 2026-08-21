@@ -101,8 +101,8 @@ export function NewsStatusPage({ token }: { token: string }) {
               <Card aria-label="控制状态" hint="用 tracefold news control 修改" title="控制">
                 <ControlView status={status} />
               </Card>
-              <Card aria-label="关注列表与策略" title="关注列表与策略">
-                <WatchAndStrategies status={status} />
+              <Card aria-label="关注列表" title="关注列表">
+                <WatchPanel status={status} />
               </Card>
             </div>
 
@@ -372,16 +372,13 @@ function ControlView({ status }: { status: NewsStatus }) {
   );
 }
 
-function WatchAndStrategies({ status }: { status: NewsStatus }) {
-  const watchlist = status.watchlist ?? [];
+function WatchPanel({ status }: { status: NewsStatus }) {
   /*
-   * One number, because there is only one list now (#126). The Strategy allowlist used to live in Tracefold's
-   * config too, so this panel compared the two and warned when they drifted. The socket pushes what the
-   * provider account has enabled and Tracefold sends no subscription frame, so the account is the only switch
-   * and there is nothing to disagree with. A count, not the IDs — those are private account configuration and
-   * the server no longer sends them. `null` means the Strategy list has not been read yet.
+   * Just the watchlist. The Strategy panel went with #126: which Strategies feed News is decided in the
+   * OpenNews account, Tracefold sends no subscription frame and filters nothing, so a figure here would only
+   * restate the provider's dashboard — one more thing to keep in step, for a number nobody acts on.
    */
-  const strategies = status.ingest.provider_strategy_count;
+  const watchlist = status.watchlist ?? [];
   return (
     <div className="news-watch">
       <h3 className="news-control-heading">关注列表 {formatCount(watchlist.length)}</h3>
@@ -392,15 +389,6 @@ function WatchAndStrategies({ status }: { status: NewsStatus }) {
           <em>未配置</em>
         )}
       </div>
-      <h3 className="news-control-heading">Strategy</h3>
-      {strategies == null ? (
-        <p className="news-strategy-note">provider 列表暂不可用</p>
-      ) : (
-        <p className="news-strategy-count">
-          {formatCount(strategies)}
-          <small> provider 启用</small>
-        </p>
-      )}
     </div>
   );
 }
@@ -460,10 +448,6 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="last_frame_at_ms" v={optionalTime(status.ingest.last_frame_at_ms)} />
           <KeyValueRow k="last_publish_at_ms" v={optionalTime(status.ingest.last_publish_at_ms)} />
           <KeyValueRow k="last_error_code" v={status.ingest.last_error_code ?? "—"} />
-          <KeyValueRow
-            k="provider_strategy_count"
-            v={String(status.ingest.provider_strategy_count ?? "—")}
-          />
           <KeyValueRow
             k="open_incidents"
             v={

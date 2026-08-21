@@ -7,8 +7,10 @@ Receiver threw away. With the list gone there is no configured set to record
 and nothing to disagree with, so `configured_strategy_ids` and the
 `strategy_warnings` they produced go with it.
 
-`provider_enabled_strategy_ids` stays: it is the observed provider fact the
-status surface reports and recovery reads.
+`provider_enabled_strategy_ids` goes too. Recovery still needs to know which
+Strategies exist, because the provider's hits endpoint is per-strategy, but it
+reads that live from the account rather than from a row Tracefold keeps in step.
+Storing it only ever produced a number for the console to show.
 
 Deploy note: `NewsSettings` is ``extra="forbid"``, so `~/.tracefold/config.yaml`
 must lose its `news.opennews_strategy_ids` key between `git pull` and `make up`
@@ -32,6 +34,7 @@ depends_on = None
 def upgrade() -> None:
     op.execute("ALTER TABLE news_ingest_state DROP COLUMN IF EXISTS configured_strategy_ids")
     op.execute("ALTER TABLE news_ingest_state DROP COLUMN IF EXISTS strategy_warnings")
+    op.execute("ALTER TABLE news_ingest_state DROP COLUMN IF EXISTS provider_enabled_strategy_ids")
 
 
 def downgrade() -> None:
