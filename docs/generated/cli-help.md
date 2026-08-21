@@ -370,7 +370,7 @@ usage: tracefold news learning evaluate [-h] --development DEVELOPMENT
                                         [--validation VALIDATION]
                                         --candidate CANDIDATE
                                         [--stage {offline,holdout,canary}]
-                                        [--live-program]
+                                        [--live-program | --verify-recordings]
                                         [--observation-manifest OBSERVATION_MANIFEST]
                                         --out OUT
 
@@ -386,6 +386,8 @@ options:
                         evaluation evidence stage
   --live-program        run the assigned DSPy Program live and append per-
                         Predictor recordings
+  --verify-recordings   strictly re-run an existing offline/holdout corpus
+                        without live provider calls
   --observation-manifest OBSERVATION_MANIFEST
                         optional sealed canary observation artifact SHA
   --out OUT             write the sealed evaluation report

@@ -55,7 +55,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         "postgres_migrate_password",
     ]
 
-    shared_app_image = "${COMPOSE_PROJECT_NAME:-tracefold}-app:local"
+    shared_app_image = "${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}"
     shared_app_build = {
         "context": ".",
         "args": {
@@ -222,6 +222,7 @@ def test_retired_ops_tree_and_orphan_scripts_are_absent() -> None:
         "regen_cli_help.py",
         "regen_db_schema.py",
         "regen_openapi.py",
+        "with_deployment_lock.py",
     }
     assert not Path("docker/postgres-provision-review-role.sh").exists()
 

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
+
+RUNTIME_MANIFEST_BARRIER_SHA = "a" * 64
 
 
 def _ignore_sigterm_and_sleep(delay_seconds: float) -> None:
@@ -38,6 +42,7 @@ def _arguments() -> argparse.Namespace:
         required=True,
         choices=(
             "inert",
+            "manifest_barrier",
             "child_failure",
             "finite_overrun",
             "finite_never_returns",
@@ -67,6 +72,38 @@ class _TurnPipeline:
 
     async def close(self) -> None:
         return None
+
+
+class _ManifestBarrierPipeline(_TurnPipeline):
+    def __init__(self, *, dsn: str, release_gate: Path) -> None:
+        super().__init__(())
+        self._dsn = dsn
+        self._release_gate = release_gate
+
+    async def register_runtime_manifest(self) -> None:
+        Path(f"{self._release_gate}.entered").touch()
+        while not self._release_gate.exists():
+            await asyncio.sleep(0.01)
+
+        from psycopg import connect
+        from psycopg.rows import dict_row
+
+        from tracefold.app.repositories import repositories_for_connection
+
+        conn = connect(self._dsn, row_factory=dict_row)
+        try:
+            repositories = repositories_for_connection(conn)
+            with repositories.transaction():
+                repositories.news.register_agent_runtime_manifest(
+                    manifest_sha=RUNTIME_MANIFEST_BARRIER_SHA,
+                    stable_bundle_sha="b" * 64,
+                    candidate_shas=(),
+                    image_digest="sha256:" + "c" * 64,
+                    runtime_revision="git:test-manifest-barrier",
+                    now_ms=int(time.time() * 1_000),
+                )
+        finally:
+            conn.close()
 
 
 def _turn_runner(turn: Any, idle_seconds: float) -> Any:
@@ -282,9 +319,17 @@ async def _main() -> None:
 
         return _components(workers, due_turns=((provider_publication, 1.0),))
 
-    workers._wire_components = wire_components
+    if arguments.mode == "manifest_barrier":
+        release_gate = Path(os.environ["TRACEFOLD_TEST_MANIFEST_GATE"])
+
+        async def wire_news_pipeline(**_kwargs: Any) -> tuple[None, _ManifestBarrierPipeline]:
+            return None, _ManifestBarrierPipeline(dsn=arguments.dsn, release_gate=release_gate)
+
+        workers._wire_news_pipeline = wire_news_pipeline
+    else:
+        workers._wire_components = wire_components
     settings = Settings(
-        news={"enabled": False},
+        news={"enabled": arguments.mode == "manifest_barrier"},
         storage={
             "postgres": {
                 "serve_dsn": arguments.dsn,

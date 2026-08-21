@@ -111,10 +111,13 @@ candidate manifests, evaluation reports, pairwise cases, model recordings,
 deployments and rollback receipts live in `news_learning_artifacts` and
 `news_learning_cases`. `news_canary_activations`, `news_agent_assignments`, and
 `news_agent_runtime_manifests` are the durable production control/audit seam.
-`news_learning_epochs` records the immutable deployment-time start of the
-`program_v1` evidence epoch. Prompt-era rows remain append-only audit history,
-but no dataset or release gate may treat them as training or promotion
-evidence.
+Workers registers the runtime manifest and its linked active/deployment receipt
+as a synchronous startup barrier before its probe can become ready.
+`news_learning_epochs` records immutable deployment-time evidence epochs. The
+current `program_v2` epoch supersedes the first Program baseline after its
+semantic fast-retry state bug was found; Prompt-era and `program_v1` rows remain
+append-only audit history, but no current dataset or release gate may treat them
+as training or promotion evidence.
 `news_learning_retention_state` makes the bounded 90/365-day cold purge and
 its current backlog/error observable; the database function pins the current
 and previous distinct stable release chains. The exact `news_*` base-table set
@@ -137,7 +140,8 @@ tracefold.news
   price_repository.py quote snapshots, Event Reactions, and the bounded review aggregates
   facts.py            atomic fact units and immutable Event evidence snapshots
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-  candidate_evaluator.py content-addressed program_v1 datasets and stable/candidate evaluation workflow
+  candidate_evaluator.py content-addressed program_v2 datasets and stable/candidate evaluation workflow
+  recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   events.py           the Deduper transaction (admit_item)
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
@@ -473,17 +477,22 @@ A/A+ or cashtag asset; the final key is computed after Triage from the
 verdict's grounded primaries and scope, written back to `news_events`, and
 used by duplicate comparison, operator grouping, advisory locking, and mute.
 
-Triage is a deep semantic-judgment **Module**. Its only caller-facing
+Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
 consumer does not know DSPy signatures, instructions, demonstrations, model
 routing, retry state, or artifact layout. That **Interface** lives at the
-semantic-judgment **Seam**. `DspyNewsSemanticProgram` is the production
-**Adapter** at that Seam, while the strict record/replay Adapter supplies the
-same Interface to evaluation. This shape gives callers **Leverage** (one call
-owns graph execution, validation, fallback and audit) and maintainers
-**Locality** (Program behavior and its verification stay in the owning Module).
-Its **Depth** is the amount of those behaviors hidden behind the single
-`judge()` method, not the number of internal DSPy nodes.
+semantic-judgment **Seam**, and `DspyNewsSemanticProgram` is the production
+**Adapter** there. Cold strict replay is an evaluator-side sealed-corpus
+verification composition seam, not a second production generation Interface:
+it scopes one persisted run's physical calls to the requested arm/case/trial,
+then re-executes the real arm-scoped `DspyNewsSemanticProgram` graph. The graph
+still enters through `judge(TriageContext)`. A missing corpus or recording makes
+the verification evaluation `incomplete`/`UNKNOWN` without falling through to a
+live provider; an identity or tamper mismatch fails closed. This shape gives
+the hot-path caller **Leverage** (one call owns graph execution, validation,
+fallback and audit) while keeping replay authority outside production
+generation. Its **Depth** is the amount of behavior hidden behind the single
+hot-path `judge()` method, not the number of internal DSPy nodes.
 
 Inside the Module, the fixed Program graph is
 `EventSemantics -> ReaderCard -> deterministic VerdictAssembler`.
@@ -722,15 +731,17 @@ first bad owner). A judgment becomes training/eval truth only after a separate
 acceptance receipt. An important fact missing before Event creation enters as
 an immutable external-miss snapshot, rather than a fake Event id.
 
-Issue #129 starts the immutable `program_v1` learning epoch at migration
-deployment time. All Prompt-era reviews, datasets, recordings, reports and
-release receipts remain readable audit evidence, but they are promotion-
+Issue #129 first starts the immutable `program_v1` learning epoch at migration
+deployment time. Corrective migration `0293` preserves that history and appends
+`program_v2` after fixing the semantic retry state machine. All Prompt-era and
+`program_v1` reviews, datasets, recordings, reports and release receipts remain
+readable audit evidence, but they are promotion-
 ineligible and cannot seed a new Program dataset. Evidence accumulation starts
 from zero: Event reviews and acceptance receipts must be created after the
 epoch, and eligible verdicts must match the exact stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v1` evidence, compares stable with exactly one declared `program` or
+`program_v2` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -817,7 +828,9 @@ Workers evidence-append grant/lock repair and role-authentic audit. `0291`
 removes the local OpenNews Strategy allowlist. Issue #129's irreversible
 `0292` migration adds Program identity and per-Predictor recording fields,
 creates the append-only deployment-time `program_v1` epoch, and marks all
-earlier Prompt-era learning evidence audit-only. No
+earlier Prompt-era learning evidence audit-only. `0293` preserves that row and
+appends the corrected `program_v2` epoch, making `program_v1` evidence
+audit-only for current release decisions. No
 chained revision has a downgrade. Earlier hard cuts live only in git history;
 a fresh database and a database upgraded through the chain reach
 byte-identical schemas.

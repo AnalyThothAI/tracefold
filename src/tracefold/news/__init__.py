@@ -21,6 +21,7 @@ from .candidate_evaluator import (
     EvaluationReport,
     EvaluationRequest,
     ProposalReceipt,
+    evaluation_run_sha,
 )
 from .control import apply_control, parse_control
 from .facts import FACT_UNIT_VERSION, FactUnit, extract_fact_units
@@ -46,6 +47,12 @@ from .outcome import Outcome, event_outcome
 # #88: the public bounds of the price surfaces. The HTTP layer validates `/api/news/quotes` and
 # `/api/news/review` against them and must not restate the numbers.
 from .pricing import QUOTE_REQUEST_SYMBOL_MAX, REACTION_METRIC_VERSION, REVIEW_DEFAULT_HOURS, REVIEW_MAX_HOURS
+from .recording_replay import (
+    RecordingReplayCapability,
+    RecordingReplayError,
+    ReplayArmSpec,
+    load_recording_replay_capability,
+)
 from .review import (
     READER_CONTRACT_VERSION,
     REVIEW_RUBRIC_VERSION,
@@ -99,6 +106,9 @@ __all__ = [
     "ProgramUsage",
     "ProposalReceipt",
     "ReaderReceipt",
+    "RecordingReplayCapability",
+    "RecordingReplayError",
+    "ReplayArmSpec",
     "ReviewDesk",
     "ReviewSubmission",
     "SemanticJudge",
@@ -109,9 +119,11 @@ __all__ = [
     "apply_canary_control",
     "apply_control",
     "canonical_sha",
+    "evaluation_run_sha",
     "event_outcome",
     "extract_fact_units",
     "grounding_rollup",
+    "load_recording_replay_capability",
     "parse_canary_control",
     "parse_control",
     "parse_opennews_message",

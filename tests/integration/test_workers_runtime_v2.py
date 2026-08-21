@@ -45,6 +45,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 RUNTIME_ID = "00000000-0000-0000-0000-000000000099"
 SECOND_RUNTIME_ID = "00000000-0000-0000-0000-000000000100"
+RUNTIME_MANIFEST_BARRIER_SHA = "a" * 64
 _PROCESS_ENTRY = Path(__file__).with_name("_workers_runtime_process_entry.py")
 _LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -230,6 +231,75 @@ def test_workers_probe_has_only_private_operational_routes_and_health_never_call
     assert calls == 1
     assert ready.status_code == 503
     assert {route.path for route in app.routes} >= {"/healthz", "/readyz", "/metrics"}
+
+
+def test_real_workers_readiness_waits_for_the_persisted_runtime_manifest(tmp_path: Path) -> None:
+    prepare_postgres_database()
+    port = _free_port()
+    release_gate = tmp_path / "release-runtime-manifest"
+    entered_gate = Path(f"{release_gate}.entered")
+    process = _start_workers_process(
+        "manifest_barrier",
+        port,
+        extra_env={"TRACEFOLD_TEST_MANIFEST_GATE": str(release_gate)},
+    )
+    try:
+        deadline = time.monotonic() + 20.0
+        while not entered_gate.exists() and time.monotonic() < deadline:
+            if process.poll() is not None:
+                output = process.stdout.read() if process.stdout is not None else ""
+                raise AssertionError(
+                    f"workers exited before manifest barrier: code={process.returncode}; output={output!r}"
+                )
+            time.sleep(0.01)
+        assert entered_gate.exists(), "workers never reached the runtime-manifest barrier"
+
+        try:
+            with _LOCAL_HTTP.open(f"http://127.0.0.1:{port}/readyz", timeout=0.2) as response:
+                readiness_status: int | None = response.status
+        except urllib.error.HTTPError as exc:
+            readiness_status = exc.code
+        except OSError:
+            readiness_status = None
+        assert readiness_status != 200
+
+        conn = connect_postgres_test(read_only=False)
+        try:
+            assert (
+                conn.execute(
+                    "SELECT manifest_sha FROM news_agent_runtime_manifests WHERE manifest_sha = %s",
+                    (RUNTIME_MANIFEST_BARRIER_SHA,),
+                ).fetchone()
+                is None
+            )
+        finally:
+            conn.close()
+
+        release_gate.touch()
+        _wait_ready(process, port)
+
+        conn = connect_postgres_test(read_only=False)
+        try:
+            manifest = conn.execute(
+                "SELECT manifest_sha FROM news_agent_runtime_manifests WHERE manifest_sha = %s",
+                (RUNTIME_MANIFEST_BARRIER_SHA,),
+            ).fetchone()
+            active = conn.execute(
+                "SELECT payload ->> 'runtime_manifest_sha' AS runtime_manifest_sha "
+                "FROM news_learning_artifacts WHERE kind = 'active_agent' "
+                "ORDER BY created_at_ms DESC, artifact_sha DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert manifest is not None
+        assert active is not None
+        assert active["runtime_manifest_sha"] == RUNTIME_MANIFEST_BARRIER_SHA
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
+    finally:
+        release_gate.touch(exist_ok=True)
+        _ensure_process_stopped(process)
 
 
 def test_workers_metrics_render_does_not_block_readiness() -> None:
@@ -663,7 +733,12 @@ def _free_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def _start_workers_process(mode: str, port: int) -> subprocess.Popen[str]:
+def _start_workers_process(
+    mode: str,
+    port: int,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [
             sys.executable,
@@ -676,7 +751,7 @@ def _start_workers_process(mode: str, port: int) -> subprocess.Popen[str]:
             mode,
         ],
         cwd=_PROCESS_ENTRY.parents[2],
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env={**os.environ, **(extra_env or {}), "PYTHONUNBUFFERED": "1"},
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

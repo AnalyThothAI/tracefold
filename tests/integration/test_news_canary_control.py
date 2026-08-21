@@ -364,6 +364,17 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
         repos.news.register_agent_runtime_manifest(**first)
         repos.news.register_agent_runtime_manifest(**{**first, "now_ms": NOW + 1})
     assert conn.execute("SELECT count(*) AS n FROM news_agent_runtime_manifests").fetchone()["n"] == 1
+    assert (
+        conn.execute("SELECT count(*) AS n FROM news_learning_artifacts WHERE kind = 'active_agent'").fetchone()["n"]
+        == 1
+    )
+    assert (
+        conn.execute(
+            "SELECT count(*) AS n FROM news_learning_artifacts WHERE kind = 'deployment_receipt' "
+            "AND payload->>'action' = 'runtime_deploy'"
+        ).fetchone()["n"]
+        == 1
+    )
     active = conn.execute("SELECT payload FROM news_learning_artifacts WHERE kind = 'active_agent'").fetchone()[
         "payload"
     ]
@@ -390,6 +401,33 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
     ).fetchone()["payload"]
     assert latest["previous_stable_sha"] == "2" * 64
     assert latest["previous_image_digest"] == "sha256:first"
+
+    with repos.transaction():
+        repos.news.register_agent_runtime_manifest(**{**first, "now_ms": NOW + 20})
+
+    assert conn.execute("SELECT count(*) AS n FROM news_agent_runtime_manifests").fetchone()["n"] == 2
+    active_rows = conn.execute(
+        "SELECT artifact_sha, parent_sha, payload FROM news_learning_artifacts "
+        "WHERE kind = 'active_agent' ORDER BY created_at_ms"
+    ).fetchall()
+    assert len(active_rows) == 3
+    assert active_rows[-1]["parent_sha"] == active_rows[-2]["artifact_sha"]
+    assert active_rows[-1]["payload"]["runtime_manifest_sha"] == first["manifest_sha"]
+    assert active_rows[-1]["payload"]["image_digest"] == first["image_digest"]
+    assert active_rows[-1]["payload"]["registered_at_ms"] == NOW + 20
+    deployment_rows = conn.execute(
+        "SELECT parent_sha, payload FROM news_learning_artifacts WHERE kind = 'deployment_receipt' "
+        "AND payload->>'action' = 'runtime_deploy' ORDER BY created_at_ms"
+    ).fetchall()
+    assert len(deployment_rows) == 3
+    rollback_row = deployment_rows[-1]
+    rollback = rollback_row["payload"]
+    assert rollback_row["parent_sha"] == active_rows[-1]["artifact_sha"]
+    assert rollback["active_agent_sha"] == active_rows[-1]["artifact_sha"]
+    assert rollback["image_digest"] == "sha256:first"
+    assert rollback["stable_sha"] == "2" * 64
+    assert rollback["previous_image_digest"] == "sha256:second"
+    assert rollback["previous_stable_sha"] == "5" * 64
 
 
 def test_rolling_canary_slo_survives_repository_restart_and_fails_closed(conn) -> None:

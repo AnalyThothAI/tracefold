@@ -52,6 +52,9 @@ PUBLIC_NEWS_INTERFACE = {
     "ProgramTrace",
     "ProgramUsage",
     "ReaderReceipt",
+    "RecordingReplayCapability",
+    "RecordingReplayError",
+    "ReplayArmSpec",
     "ReviewDesk",
     "ReviewSubmission",
     "SemanticJudge",
@@ -62,11 +65,13 @@ PUBLIC_NEWS_INTERFACE = {
     "apply_control",
     "apply_canary_control",
     "event_outcome",
+    "evaluation_run_sha",
     "canonical_sha",
     # #87: the console's «符号落表» funnel segment folds two halves neither repository reaches across for —
     # News owns which tags an Event carried, the instrument universe owns what they name. The fold is pure,
     # so the HTTP route imports it from the package root like `status_health`.
     "grounding_rollup",
+    "load_recording_replay_capability",
     "extract_fact_units",
     "parse_canary_control",
     "parse_control",

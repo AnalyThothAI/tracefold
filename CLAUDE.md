@@ -128,9 +128,10 @@ removed real equities with no crypto perp, and listing/delisting facts arrive as
 provider frames (#72) that the snapshot diff could only have duplicated for the
 two venues we poll. The learning plane is immutable `EventEvidenceSnapshot`
 plus append-only multi-dimensional reviews/external misses and one
-`CandidateEvaluator`. The deployment-time `program_v1` epoch makes all earlier
-Prompt-era evidence audit-only and reaccrues release evidence from zero. It
-freezes accepted evidence, runs stable and exactly one declared `program` or
+`CandidateEvaluator`. The corrected deployment-time `program_v2` epoch makes
+Prompt-era and the superseded `program_v1` baseline evidence audit-only and
+reaccrues release evidence from zero. It freezes accepted evidence, runs stable
+and exactly one declared `program` or
 `policy` variable sequentially, then requires sealed future holdout, blind
 pairwise, shadow and deterministic one-arm canary evidence before promotion. A
 cold, manually invoked DSPy GEPA compiler reads only accepted development

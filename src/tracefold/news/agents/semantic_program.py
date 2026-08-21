@@ -554,7 +554,13 @@ class TriageContext(_ExactModel):
 
 class EventSemantics(_ExactModel):
     novelty: Literal["new_fact", "progression", "restatement"]
-    restates: int = Field(default=-1, ge=-1)
+    restates: int = Field(
+        default=-1,
+        ge=-1,
+        description=(
+            "Visible event_status.told index if and only if novelty is restatement; -1 for new_fact or progression."
+        ),
+    )
     event_type: Literal[
         "listing",
         "delisting",
@@ -1087,16 +1093,25 @@ def load_stable_program_artifact() -> ProgramArtifact:
 
 
 def _programs_resource_root() -> Any:
-    root = importlib.resources.files("tracefold.news.agents").joinpath("programs")
+    package_root = importlib.resources.files("tracefold.news.agents")
+    root = package_root.joinpath("programs")
     if not isinstance(root, Path):
         # Zip/importlib Traversables have no filesystem symlink surface.  Their
         # bytes still pass the same strict registry and artifact codec below.
         return root
+    if not isinstance(package_root, Path):
+        raise ValueError("news_program_registry_path_invalid")
     try:
+        resolved_package_root = package_root.resolve(strict=True)
         resolved = root.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise ValueError("news_program_registry_path_invalid") from exc
-    if root.is_symlink() or root.absolute() != resolved or not resolved.is_dir():
+    if (
+        package_root.is_symlink()
+        or root.is_symlink()
+        or resolved.parent != resolved_package_root
+        or not resolved.is_dir()
+    ):
         raise ValueError("news_program_registry_path_invalid")
     return resolved
 
@@ -2193,6 +2208,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             except _CallFailure as exc:
                 if retry_available and exc.fast_retryable:
                     retry_available = False
+                    semantics = None
                     semantics_attempt += 1
                     continue
                 if (

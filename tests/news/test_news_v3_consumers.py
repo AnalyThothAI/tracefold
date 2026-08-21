@@ -766,6 +766,33 @@ def test_triage_consumer_start_closes_incidents_left_open_by_a_previous_process(
     assert bus.consumed == ["news.triage"]
 
 
+def test_triage_runtime_manifest_registration_is_a_required_startup_operation() -> None:
+    news = RecordingNews()
+    triage = TriageConsumer(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news, admission_timeout_for={"news_agent_runtime_manifest"}),
+        judge=None,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        watchlist_symbols=WATCHLIST,
+        watchlist=sorted(WATCHLIST),
+        concurrency=1,
+        circuit_failures=3,
+        circuit_open_seconds=60.0,
+        runtime_manifest={
+            "manifest_sha": "1" * 64,
+            "stable_bundle_sha": "2" * 64,
+            "candidate_shas": [],
+            "image_digest": "sha256:" + "3" * 64,
+            "runtime_revision": "git:test",
+            "now_ms": NOW_MS,
+        },
+    )
+
+    with pytest.raises(DeferError, match="db_admission_timeout:news_agent_runtime_manifest"):
+        asyncio.run(triage.register_runtime_manifest())
+
+
 def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_incident() -> None:
     from tracefold.news.models import TriageVerdict
 
