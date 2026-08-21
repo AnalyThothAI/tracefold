@@ -932,10 +932,7 @@ function reviewMutationError(error: unknown) {
   if (error.message.includes("news_review_idempotency_conflict")) {
     return "这次提交编号已被另一份内容使用，请刷新后再提交。";
   }
-  if (
-    error.message.includes("review_write_unavailable") ||
-    error.message.includes("review_write_busy")
-  ) {
+  if (error.message.includes("review_write_busy")) {
     return "复盘写入暂时不可用；新闻读取和线上推送不受影响，请稍后重试。";
   }
   return error.message || "提交失败，请重试。";

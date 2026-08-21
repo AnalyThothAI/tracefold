@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from tracefold.app.database import ReviewDatabase, ReviewDatabaseBusy, ServeDatabase, ServeDatabaseBusy
+from tracefold.app.database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.http.exceptions import ApiUnavailable
 from tracefold.app.repositories import RepositorySession
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
@@ -18,13 +18,11 @@ from tracefold.platform.postgres.postgres_migrations import latest_migration_ver
 
 @dataclass(slots=True)
 class ServeRuntime:
-    """PostgreSQL-only read-side composition."""
+    """PostgreSQL-only HTTP composition."""
 
     settings: Settings
     db: ServeDatabase
     telemetry: TelemetryRegistry
-    review_db: ReviewDatabase | None = None
-    review_error_code: str | None = None
 
     @contextmanager
     def repositories(self, *, lane: str = "ordinary") -> Iterator[RepositorySession]:
@@ -41,12 +39,14 @@ class ServeRuntime:
 
     @contextmanager
     def review_transaction(self) -> Iterator[Any]:
-        if self.review_db is None:
-            raise ApiUnavailable("review_write_unavailable")
         try:
-            with self.review_db.transaction() as conn:
-                yield conn
-        except ReviewDatabaseBusy as exc:
+            with self.db.api_session("ordinary") as repos, repos.transaction():
+                # tracefold_serve defaults to read-only.  Only this authenticated
+                # ReviewDesk path opts one transaction into its two table-level
+                # INSERT grants; every other table remains privilege-protected.
+                repos.conn.execute("SET TRANSACTION READ WRITE")
+                yield repos.conn
+        except ServeDatabaseBusy as exc:
             raise ApiUnavailable("review_write_busy") from exc
 
     def readiness_payload(self, *, now_ms: int | None = None) -> dict[str, Any]:
@@ -63,10 +63,6 @@ class ServeRuntime:
             "db": db_status,
             "composition": {
                 "workers_runtime": runtime["workers_runtime"],
-                "review_write": {
-                    "available": self.review_db is not None,
-                    "error_code": self.review_error_code,
-                },
             },
         }
 
@@ -126,8 +122,6 @@ class ServeRuntime:
 
     async def aclose(self) -> None:
         await self.db.aclose()
-        if self.review_db is not None:
-            await self.review_db.aclose()
 
 
 def bootstrap_serve(settings: Settings) -> ServeRuntime:
@@ -135,19 +129,11 @@ def bootstrap_serve(settings: Settings) -> ServeRuntime:
         raise ValueError("ws_token is required in config.yaml")
     telemetry = TelemetryRegistry()
     db = ServeDatabase.create(settings, telemetry=telemetry)
-    review_db: ReviewDatabase | None = None
-    review_error_code: str | None = None
-    try:
-        review_db = ReviewDatabase.create(settings)
-    except Exception as exc:
-        review_error_code = type(exc).__name__
     try:
         runtime = ServeRuntime(
             settings=settings,
             db=db,
             telemetry=telemetry,
-            review_db=review_db,
-            review_error_code=review_error_code,
         )
         readiness = runtime.readiness_payload()
         if readiness["db"]["error_code"] == "database_unavailable":
@@ -155,8 +141,6 @@ def bootstrap_serve(settings: Settings) -> ServeRuntime:
         return runtime
     except Exception:
         db.api_pool.close()
-        if review_db is not None:
-            review_db.pool.close()
         raise
 
 

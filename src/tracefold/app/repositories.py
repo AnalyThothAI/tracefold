@@ -60,7 +60,7 @@ def repositories_for_connection(
 def postgres_connection(
     settings: Any,
     *,
-    role: Literal["serve", "review", "workers", "migrate"],
+    role: Literal["serve", "workers", "migrate"],
 ) -> Iterator[Any]:
     """Open the short-lived PostgreSQL connection used by application operations."""
     postgres = settings.storage.postgres

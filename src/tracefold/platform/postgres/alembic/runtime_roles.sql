@@ -17,9 +17,6 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_workers') THEN
       CREATE ROLE tracefold_workers LOGIN;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_review') THEN
-      CREATE ROLE tracefold_review LOGIN;
-    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_migrate') THEN
       CREATE ROLE tracefold_migrate LOGIN NOINHERIT;
     END IF;
@@ -32,9 +29,6 @@ BEGIN
       NOREPLICATION NOBYPASSRLS;
     ALTER ROLE tracefold_serve SET default_transaction_read_only = on;
     ALTER ROLE tracefold_workers
-      LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
-      NOREPLICATION NOBYPASSRLS;
-    ALTER ROLE tracefold_review
       LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS;
     ALTER ROLE tracefold_migrate
@@ -93,20 +87,6 @@ BEGIN
        AND NOT rolbypassrls
   ) THEN
     RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_workers';
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1
-      FROM pg_roles
-     WHERE rolname = 'tracefold_review'
-       AND rolcanlogin
-       AND rolinherit
-       AND NOT rolsuper
-       AND NOT rolcreatedb
-       AND NOT rolcreaterole
-       AND NOT rolreplication
-       AND NOT rolbypassrls
-  ) THEN
-    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_review';
   END IF;
   IF NOT EXISTS (
     SELECT 1
@@ -209,11 +189,11 @@ END
 $ownership$;
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public
-  FROM tracefold_serve, tracefold_workers, tracefold_review;
+  FROM tracefold_serve, tracefold_workers;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public
-  FROM tracefold_serve, tracefold_workers, tracefold_review;
+  FROM tracefold_serve, tracefold_workers;
 
-GRANT USAGE ON SCHEMA public TO tracefold_serve, tracefold_workers, tracefold_review;
+GRANT USAGE ON SCHEMA public TO tracefold_serve, tracefold_workers;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO tracefold_serve;
 GRANT SELECT, INSERT, UPDATE, DELETE
   ON ALL TABLES IN SCHEMA public TO tracefold_workers;

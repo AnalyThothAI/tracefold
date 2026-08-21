@@ -235,9 +235,8 @@ the complete chain without replaying retired runtime tables. A database
 stamped at an earlier revision migrates forward with `tracefold db migrate`;
 all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers
 before applying them and start Workers only after the migration is current.
-An existing 0283 volume also needs the one-time, offline
-`make db-provision-review-role` step documented in `OPERATIONS.md`; ordinary
-migrations never create login roles.
+An existing 0283 volume uses the backup/stop/migrate/redeploy sequence
+documented in `OPERATIONS.md`; #112 adds no login role or password.
 
 Retired routes return `404`; there is no compatibility alias.
 

@@ -27,16 +27,14 @@ class PostgresConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     serve_dsn: str = "postgresql://tracefold_serve@postgres:5432/tracefold"
-    review_dsn: str = "postgresql://tracefold_review@postgres:5432/tracefold"
     workers_dsn: str = "postgresql://tracefold_workers@postgres:5432/tracefold"
     migrate_dsn: str = "postgresql://tracefold_migrate@postgres:5432/tracefold"
     serve_password_file: str | None = "postgres_serve_password"
-    review_password_file: str | None = "postgres_review_password"
     workers_password_file: str | None = "postgres_workers_password"
     migrate_password_file: str | None = "postgres_migrate_password"
     connect_timeout_seconds: float = 5.0
 
-    @field_validator("serve_dsn", "review_dsn", "workers_dsn", "migrate_dsn", mode="before")
+    @field_validator("serve_dsn", "workers_dsn", "migrate_dsn", mode="before")
     @classmethod
     def parse_dsn(cls, value: Any) -> str:
         normalized = str(value or "").strip()
@@ -46,7 +44,6 @@ class PostgresConfig(BaseModel):
 
     @field_validator(
         "serve_password_file",
-        "review_password_file",
         "workers_password_file",
         "migrate_password_file",
         mode="before",
@@ -391,12 +388,12 @@ class Settings(BaseModel):
     def app_home(self) -> Path:
         return self._config_dir
 
-    def postgres_dsn(self, role: Literal["serve", "review", "workers", "migrate"]) -> str:
+    def postgres_dsn(self, role: Literal["serve", "workers", "migrate"]) -> str:
         return cast(str, getattr(self.storage.postgres, f"{role}_dsn"))
 
     def postgres_password_file(
         self,
-        role: Literal["serve", "review", "workers", "migrate"],
+        role: Literal["serve", "workers", "migrate"],
     ) -> Path | None:
         value = cast(str | None, getattr(self.storage.postgres, f"{role}_password_file"))
         if not value:
@@ -547,11 +544,9 @@ api:
 storage:
   postgres:
     serve_dsn: "postgresql://tracefold_serve@postgres:5432/tracefold"
-    review_dsn: "postgresql://tracefold_review@postgres:5432/tracefold"
     workers_dsn: "postgresql://tracefold_workers@postgres:5432/tracefold"
     migrate_dsn: "postgresql://tracefold_migrate@postgres:5432/tracefold"
     serve_password_file: "postgres_serve_password"
-    review_password_file: "postgres_review_password"
     workers_password_file: "postgres_workers_password"
     migrate_password_file: "postgres_migrate_password"
     connect_timeout_seconds: 5

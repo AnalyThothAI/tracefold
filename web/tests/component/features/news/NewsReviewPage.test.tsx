@@ -325,7 +325,7 @@ describe("NewsReviewPage", () => {
 
   it.each([
     [409, "news_review_idempotency_conflict", "这次提交编号已被另一份内容使用"],
-    [503, "review_write_unavailable", "新闻读取和线上推送不受影响"],
+    [503, "review_write_busy", "新闻读取和线上推送不受影响"],
   ])(
     "explains mutation error %s without implying the News hot path failed",
     async (status, code, copy) => {

@@ -96,10 +96,10 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
             app_home = home / ".tracefold"
-            (app_home / "postgres_review_password").mkdir(parents=True)
+            (app_home / "postgres_serve_password").mkdir(parents=True)
             with (
                 patch.dict("os.environ", {"HOME": str(home)}, clear=False),
-                self.assertRaisesRegex(ValueError, "postgres_password_path_not_file:postgres_review_password"),
+                self.assertRaisesRegex(ValueError, "postgres_password_path_not_file:postgres_serve_password"),
             ):
                 main(["init"], stdout=io.StringIO())
 
@@ -274,7 +274,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")
         self.assertEqual(
             set(payload["data"]["store"]["postgres_roles"]),
-            {"serve", "review", "workers", "migrate"},
+            {"serve", "workers", "migrate"},
         )
         self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 7)
         self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 8)
@@ -439,7 +439,6 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
-        "postgres_review_password",
         "postgres_migrate_password",
     ):
         path = app_home / name
@@ -459,7 +458,6 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
-        "postgres_review_password",
         "postgres_migrate_password",
     )
     before = {name: (app_home / name).read_bytes() for name in tracked_names}

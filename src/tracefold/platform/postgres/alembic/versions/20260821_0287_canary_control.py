@@ -111,17 +111,10 @@ def upgrade() -> None:
         "GRANT SELECT ON news_canary_activations, news_agent_assignments, news_agent_runtime_manifests "
         "TO tracefold_serve"
     )
-    op.execute(
-        "REVOKE SELECT ON news_canary_activations, news_agent_assignments, news_agent_runtime_manifests "
-        "FROM tracefold_review"
-    )
     op.execute("GRANT SELECT, INSERT, UPDATE ON news_canary_activations TO tracefold_workers")
     op.execute("GRANT SELECT, INSERT ON news_agent_assignments, news_agent_runtime_manifests TO tracefold_workers")
-    op.execute("REVOKE DELETE ON news_canary_activations FROM tracefold_workers, tracefold_review")
-    op.execute(
-        "REVOKE UPDATE, DELETE ON news_agent_assignments, news_agent_runtime_manifests "
-        "FROM tracefold_workers, tracefold_review"
-    )
+    op.execute("REVOKE DELETE ON news_canary_activations FROM tracefold_workers")
+    op.execute("REVOKE UPDATE, DELETE ON news_agent_assignments, news_agent_runtime_manifests FROM tracefold_workers")
 
 
 def downgrade() -> None:

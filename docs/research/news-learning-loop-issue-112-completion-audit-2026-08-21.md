@@ -87,7 +87,7 @@
 |---|---|---|
 | 默认是可操作 queue | 已实现 | `/news/review` 四视图 hard cut |
 | submit 返回 receipt + next | 已实现 | typed mutation hook、If-Match、idempotency |
-| 匿名 A/B 不泄露 arm/outcome | 已实现 | security-barrier pairwise view；review role 看不到 base mapping |
+| 匿名 A/B 不泄露 arm/outcome | 已实现 | task-scoped HTTP response 不返回 arm mapping，直到可解盲阶段 |
 | 页面能标 critical error | 已加固 | 现在可分别标 A/B 的事实、实体、方向、漏事实、严重重复、注入服从 |
 | coverage 显示 N/比例/区间/strata | 已实现 | 空证据显示“证据不足”，不显示绿色 PASS |
 | event rubric / pairwise / external miss | 已实现 | 页面不可 promote/canary/rollback |
@@ -99,9 +99,9 @@
 
 | 要求 | 当前状态 | 证据/说明 |
 |---|---|---|
-| serve 只读；review 窄写 | 已实现 | role grants/audit tests；review role 不能读 base business/arm mapping |
+| Serve 默认只读；Review 窄写 | 已实现 | 同一 Serve 连接仅在两个认证 POST 中显式 read-write；角色只能 INSERT 两张 append-only review 表 |
 | bearer + exact JSON | 已实现 | query token 不可 mutation；reviewer/source/arm 服务端拥有 |
-| review 写故障不影响 readiness | 已实现 | 独立 one-slot review pool，readiness 只报告 availability |
+| review 写故障不改变线上判断 | 已实现 | ReviewDesk 使用普通 HTTP DB admission；失败只返回该请求，不进入 News 热路径 |
 | shadow 不碰正式真相 | 已实现 | 只写 learning/model-recording tables |
 | canary 一 Event 一 arm/一卡 | 已实现 | 模型调用前 durable assignment，无同步 stable fallback |
 | canary CAS、trip、restart safety | 已实现 | immediate/rolling/manual hold tests |
@@ -180,7 +180,7 @@
 
 1. 固定 Git SHA、镜像 digest、当前 `0283` schema head、备份与回滚命令。
 2. 在生产快照的隔离数据库演练 `0283 → 0288`，核对 legacy label count/hash、role grants、query plans 与 learning-retention backlog。
-3. 明确 review bearer 与 `tracefold_review` 连接；禁止复用 workers/serve 凭据。
+3. 明确 review bearer；沿用现有 Serve 凭据及其两张表的最小 INSERT grant，不向 HTTP 进程暴露 Workers/Migrate 凭据。
 
 ### Phase 1：只上证据与 ReviewDesk
 
@@ -241,17 +241,16 @@
 
 本工作树在目标 schema `20260821_0288` 上完成了以下回归；这些数字证明实现没有破坏既有合同，不能替代未来真实 holdout 与 canary：
 
-- 后端全量（含 integration/e2e/golden/slow real-process、`0283 → 0288` 有数据迁移演练与旧卷 review-role 引导）：`580 passed`；
+- 后端全量（含 integration/e2e/golden/slow real-process 与 `0283 → 0288` 有数据迁移演练）：`580 passed`；
 - 前端 Vitest：`162 passed`；ESLint + 前端架构：`76 passed`；production build 与 Prettier：PASS；
 - Playwright 四种视口：`63 passed`、`53 skipped`（按 project/viewport 条件跳过），四张 golden snapshot 复核通过；
 - Ruff check/format、MyPy `118 source files`、compileall、CLI help/OpenAPI/generated-schema drift 与 `git diff --check`：PASS；
 - `#118` retention 测试覆盖 90/365 天边界、当前/上一 distinct stable pin、active canary/release chain、stale rejected 清理、rollback receipt、worker-only 权限、每表 bounded batch、cold-lane 10 秒 deadline 与错误隔离。
 
-生产数据库仍为 `0283`。只读 preflight 还确认旧卷没有
-`tracefold_review` 登录，且本机 `postgres_review_password` 路径是旧 bind
-mount 留下的目录而不是密钥文件；代码现会 fail closed，并提供停库后
-`make db-provision-review-role` 的一次性引导。上面所有验证均没有迁移
-生产、修复该本机路径、写 review、切 shadow/canary 或改变 stable pointer。
+生产数据库仍为 `0283`。2026-08-21 的 KISS 决策删除了独立
+`tracefold_review` 登录、密码、Compose mount、连接池和离线 bootstrap；
+0283 可在备份、停止 Serve/Workers 后直接迁移。上面这些验证本身仍没有
+迁移生产、写 review、切 shadow/canary 或改变 stable pointer。
 
 ## 12. 完成定义
 

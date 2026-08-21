@@ -69,13 +69,13 @@ PostgreSQL runtime roles are code-owned:
 `src/tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
 `20260818_0275` baseline migration and extended by the #112 migrations,
 creates the non-login `tracefold_owner` plus `tracefold_serve`
-(`default_transaction_read_only=on`, SELECT only), `tracefold_workers`
-(pipeline/control writes), `tracefold_review` (SELECT on the
-security-barrier review view and append-only INSERT on review evidence only),
-and `tracefold_migrate`. Serve's normal pool never writes. The two ReviewDesk
-POST routes explicitly enter the bounded Review pool; that role cannot read
-the base Event/Item tables, update/delete reviews, control delivery, or deploy
-a candidate. CLI ReviewDesk submissions use the same narrow role. Learning
+(`default_transaction_read_only=on`), `tracefold_workers` (pipeline/control
+writes), and `tracefold_migrate`. Serve has SELECT plus INSERT only on
+`news_reviews` and `news_external_miss_snapshots`; it has no UPDATE/DELETE on
+those append-only facts and no write grant on Event, verdict, delivery,
+learning-artifact or control tables. Every ordinary Serve transaction remains
+read-only. Only the two bearer-authenticated ReviewDesk POST routes explicitly
+open one transaction as read-write through the existing Serve pool. Learning
 freeze/evaluate and canary control run under Workers, while assignment and
 runtime/deployment receipts are append-only.
 

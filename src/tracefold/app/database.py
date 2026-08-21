@@ -16,7 +16,7 @@ from psycopg_pool import PoolClosed, PoolTimeout
 
 from tracefold.app.repositories import RepositorySession, repositories_for_connection
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.postgres.postgres_client import create_pool, transaction, with_password_from_file
+from tracefold.platform.postgres.postgres_client import create_pool, with_password_from_file
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
     ResourceCapability,
@@ -74,13 +74,14 @@ class ServeDatabaseBusy(RuntimeError):
     pass
 
 
-class ReviewDatabaseBusy(RuntimeError):
-    pass
-
-
 @dataclass(slots=True)
 class ServeDatabase:
-    """The read-only database boundary owned by the public serving runtime."""
+    """The public serving database boundary.
+
+    Connections default to read-only.  The two authenticated ReviewDesk
+    mutations explicitly open a read-write transaction; PostgreSQL grants the
+    role INSERT only on the append-only review fact tables.
+    """
 
     api_pool: Any
     telemetry: TelemetryRegistry | None = field(default_factory=TelemetryRegistry)
@@ -150,45 +151,6 @@ class ServeDatabase:
 
     async def aclose(self) -> None:
         await _close_pool(self.api_pool)
-
-
-@dataclass(slots=True)
-class ReviewDatabase:
-    """One optional, narrow write connection for append-only ReviewDesk mutations."""
-
-    pool: Any
-
-    @classmethod
-    def create(cls, settings: Any) -> ReviewDatabase:
-        postgres = settings.storage.postgres
-        dsn = with_password_from_file(
-            settings.postgres_dsn("review"),
-            settings.postgres_password_file("review"),
-        )
-        pool = create_pool(
-            dsn,
-            min_size=0,
-            max_size=1,
-            max_waiting=1,
-            connect_timeout_seconds=postgres.connect_timeout_seconds,
-            application_name="tracefold_review",
-            statement_timeout_seconds=2.0,
-            lock_timeout_seconds=0.250,
-            idle_in_transaction_session_timeout_seconds=5.0,
-        )
-        pool.wait(timeout=float(postgres.connect_timeout_seconds))
-        return cls(pool=pool)
-
-    @contextmanager
-    def transaction(self) -> Iterator[Any]:
-        try:
-            with self.pool.connection(timeout=_SERVE_CHECKOUT_TIMEOUT_SECONDS) as conn, transaction(conn):
-                yield conn
-        except (PoolClosed, PoolTimeout) as exc:
-            raise ReviewDatabaseBusy("review_database_pool_busy") from exc
-
-    async def aclose(self) -> None:
-        await _close_pool(self.pool)
 
 
 @dataclass(slots=True)

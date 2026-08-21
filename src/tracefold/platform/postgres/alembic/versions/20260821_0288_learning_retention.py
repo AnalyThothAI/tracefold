@@ -512,7 +512,6 @@ def upgrade() -> None:
     op.execute("GRANT EXECUTE ON FUNCTION purge_news_learning_retention(integer) TO tracefold_workers")
     op.execute("GRANT SELECT ON news_learning_retention_state TO tracefold_serve, tracefold_workers")
     op.execute("GRANT UPDATE ON news_learning_retention_state TO tracefold_workers")
-    op.execute("REVOKE ALL ON news_learning_retention_state FROM tracefold_review")
 
 
 def downgrade() -> None:

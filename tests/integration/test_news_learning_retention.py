@@ -350,11 +350,10 @@ def test_only_workers_can_execute_the_retention_function(conn) -> None:
         conn.execute("RESET ROLE")
         conn.rollback()
 
-    for role in ("tracefold_serve", "tracefold_review"):
-        conn.execute(f"SET ROLE {role}")
-        try:
-            with pytest.raises(InsufficientPrivilege):
-                conn.execute("SELECT purge_news_learning_retention(1)")
-        finally:
-            conn.execute("RESET ROLE")
-            conn.rollback()
+    conn.execute("SET ROLE tracefold_serve")
+    try:
+        with pytest.raises(InsufficientPrivilege):
+            conn.execute("SELECT purge_news_learning_retention(1)")
+    finally:
+        conn.execute("RESET ROLE")
+        conn.rollback()

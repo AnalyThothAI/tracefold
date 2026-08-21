@@ -414,7 +414,9 @@ reader/writer.
   `POST
   /api/news/review/external-misses` applies the same receipt contract to an
   immutable fact the pipeline never turned into an Event. These are the only
-  News HTTP writes and run through the narrow `tracefold_review` role.
+  News HTTP writes. They use the existing Serve connection in an explicit
+  read-write transaction; PostgreSQL permits that role to INSERT only the two
+  append-only review fact tables and still denies all News/control rewrites.
 - `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
   Event Reaction: the feed the compact event-level aggregate (median signed
   return of the Triage primaries that price, with `state`

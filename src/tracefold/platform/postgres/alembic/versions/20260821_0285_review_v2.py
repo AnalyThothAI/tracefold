@@ -22,15 +22,6 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         """
-        DO $$ BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_review') THEN
-            RAISE EXCEPTION 'tracefold_review_role_missing:provision_runtime_role_before_migration';
-          END IF;
-        END $$
-        """
-    )
-    op.execute(
-        """
         CREATE TABLE news_external_miss_snapshots (
           snapshot_id       text   PRIMARY KEY,
           evidence_sha256   text   NOT NULL,
@@ -134,8 +125,8 @@ def upgrade() -> None:
         "WHERE review_kind = 'acceptance'"
     )
 
-    # The review login can revalidate a virtual task without being able to read
-    # any News business table directly. The task follows the latest immutable
+    # The HTTP runtime can revalidate a virtual task before appending a review.
+    # The task follows the latest immutable
     # evidence snapshot while separately naming the evidence version used by
     # the latest verdict. Stronger post-verdict evidence is therefore a new
     # task and cannot inherit an acceptance for the old question.
@@ -190,9 +181,8 @@ def upgrade() -> None:
           ) reaction ON true
         """
     )
-    # The narrow HTTP writer can fold append-only judgments and re-read an
-    # external snapshot without gaining SELECT on either base table.  These
-    # views contain no News business rows or candidate arm mapping.
+    # ReviewDesk folds append-only judgments and re-reads external snapshots
+    # through stable read views. These views contain no candidate arm mapping.
     op.execute(
         """
         CREATE VIEW news_review_records_v1 WITH (security_barrier = true) AS
@@ -272,16 +262,11 @@ def upgrade() -> None:
     op.execute("GRANT SELECT ON news_reviews, news_external_miss_snapshots TO tracefold_workers")
     op.execute("REVOKE INSERT, UPDATE, DELETE ON news_reviews, news_external_miss_snapshots FROM tracefold_workers")
     op.execute("GRANT SELECT ON news_review_task_source_v1 TO tracefold_serve, tracefold_workers")
-    op.execute("GRANT INSERT ON news_reviews, news_external_miss_snapshots TO tracefold_review")
-    op.execute(
-        "GRANT SELECT ON news_review_task_source_v1, news_review_records_v1, "
-        "news_review_external_source_v1 TO tracefold_review"
-    )
+    op.execute("GRANT INSERT ON news_reviews, news_external_miss_snapshots TO tracefold_serve")
     op.execute(
         "GRANT SELECT ON news_review_records_v1, news_review_external_source_v1 TO tracefold_serve, tracefold_workers"
     )
-    op.execute("REVOKE SELECT ON news_reviews, news_external_miss_snapshots FROM tracefold_review")
-    op.execute("REVOKE UPDATE, DELETE ON news_reviews, news_external_miss_snapshots FROM tracefold_review")
+    op.execute("REVOKE UPDATE, DELETE ON news_reviews, news_external_miss_snapshots FROM tracefold_serve")
 
 
 def downgrade() -> None:

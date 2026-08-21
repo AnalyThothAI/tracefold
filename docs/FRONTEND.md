@@ -112,7 +112,7 @@ the route components into the eager shell chunk.
   (sealed proposal/evaluation/deployment evidence), and `市场旁证`. Selecting a
   task loads its evidence-bound version; submission sends that version plus a
   UUID idempotency key and the multi-dimensional rubric to the append-only
-  Review role, then advances to the server-provided next task. The browser
+  ReviewDesk write path, then advances to the server-provided next task. The browser
   never manufactures labels, release decisions, candidate hashes or queue
   order. Blind A/B exposes a side-qualified critical-error checklist; the
   browser still does not know which side is stable/candidate, while the server

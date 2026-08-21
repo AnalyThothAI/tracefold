@@ -675,9 +675,9 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
     }
 
 
-def test_review_role_has_only_task_read_and_append_privileges(conn) -> None:
+def test_serve_role_has_only_append_review_write_privileges(conn) -> None:
     event_id = _open_event(conn)
-    conn.execute("SET ROLE tracefold_review")
+    conn.execute("SET ROLE tracefold_serve")
     try:
         assert (
             conn.execute("SELECT event_id FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)).fetchone()[
@@ -685,26 +685,6 @@ def test_review_role_has_only_task_read_and_append_privileges(conn) -> None:
             ]
             == event_id
         )
-
-        for table in (
-            "news_events",
-            "news_reviews",
-            "news_external_miss_snapshots",
-            "news_learning_artifacts",
-            "news_learning_cases",
-            "news_model_recordings",
-            "news_canary_activations",
-            "news_agent_assignments",
-            "news_agent_runtime_manifests",
-            "news_learning_retention_state",
-        ):
-            conn.execute("BEGIN")
-            conn.execute("SAVEPOINT denied_base")
-            with pytest.raises(InsufficientPrivilege):
-                conn.execute(f"SELECT * FROM {table} LIMIT 1")
-            conn.execute("ROLLBACK TO SAVEPOINT denied_base")
-            conn.execute("RELEASE SAVEPOINT denied_base")
-            conn.commit()
 
         task = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
         with repositories_for_connection(conn).transaction():
@@ -732,11 +712,16 @@ def test_review_role_has_only_task_read_and_append_privileges(conn) -> None:
         assert external["receipt"]["external_snapshot_id"]
 
         conn.execute("BEGIN")
-        conn.execute("SAVEPOINT denied_mutation")
+        conn.execute("SAVEPOINT denied_review_rewrite")
         with pytest.raises((InsufficientPrivilege, RaiseException)):
             conn.execute("DELETE FROM news_reviews")
-        conn.execute("ROLLBACK TO SAVEPOINT denied_mutation")
-        conn.execute("RELEASE SAVEPOINT denied_mutation")
+        conn.execute("ROLLBACK TO SAVEPOINT denied_review_rewrite")
+        conn.execute("RELEASE SAVEPOINT denied_review_rewrite")
+        conn.execute("SAVEPOINT denied_news_write")
+        with pytest.raises(InsufficientPrivilege):
+            conn.execute("INSERT INTO news_events(event_id) VALUES (%s)", ("f" * 64,))
+        conn.execute("ROLLBACK TO SAVEPOINT denied_news_write")
+        conn.execute("RELEASE SAVEPOINT denied_news_write")
         conn.commit()
     finally:
         conn.execute("RESET ROLE")

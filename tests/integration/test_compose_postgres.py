@@ -52,7 +52,6 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
-        "postgres_review_password",
         "postgres_migrate_password",
     ]
 
@@ -86,8 +85,8 @@ def test_compose_declares_host_role_password_files_as_postgres_init_secrets() ->
 
     assert compose["secrets"]["postgres_serve_password"]["file"] == "${HOME}/.tracefold/postgres_serve_password"
     assert compose["secrets"]["postgres_workers_password"]["file"] == "${HOME}/.tracefold/postgres_workers_password"
-    assert compose["secrets"]["postgres_review_password"]["file"] == "${HOME}/.tracefold/postgres_review_password"
     assert compose["secrets"]["postgres_migrate_password"]["file"] == "${HOME}/.tracefold/postgres_migrate_password"
+    assert "postgres_review_password" not in compose["secrets"]
 
 
 def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputting_passwords(tmp_path: Path) -> None:
@@ -96,8 +95,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     passwords = {
         "postgres_serve_password": "A" * 43,
         "postgres_workers_password": "B" * 43,
-        "postgres_review_password": "C" * 43,
-        "postgres_migrate_password": "D" * 43,
+        "postgres_migrate_password": "C" * 43,
     }
     for name, password in passwords.items():
         path = secrets_dir / name
@@ -136,7 +134,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     assert "CREATE ROLE tracefold_owner" in sql
     assert "CREATE ROLE tracefold_serve" in sql
     assert "CREATE ROLE tracefold_workers" in sql
-    assert "CREATE ROLE tracefold_review" in sql
+    assert "tracefold_review" not in sql
     assert "CREATE ROLE tracefold_migrate" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE" in sql
@@ -157,8 +155,7 @@ def test_postgres_init_script_rejects_invalid_password_charset_without_echoing_v
     passwords = {
         "postgres_serve_password": invalid_password,
         "postgres_workers_password": "B" * 43,
-        "postgres_review_password": "C" * 43,
-        "postgres_migrate_password": "D" * 43,
+        "postgres_migrate_password": "C" * 43,
     }
     for name, password in passwords.items():
         path = secrets_dir / name
@@ -179,87 +176,6 @@ def test_postgres_init_script_rejects_invalid_password_charset_without_echoing_v
     assert invalid_password not in result.stderr
 
 
-def test_review_role_upgrade_script_uses_stopped_single_user_mode_without_echoing_password(tmp_path: Path) -> None:
-    secrets_dir = tmp_path / "secrets"
-    secrets_dir.mkdir()
-    password = "R" * 43
-    (secrets_dir / "postgres_review_password").write_text(password + "\n", encoding="utf-8")
-    pgdata = tmp_path / "pgdata"
-    pgdata.mkdir()
-    (pgdata / "PG_VERSION").write_text("18\n", encoding="utf-8")
-    capture_path = tmp_path / "captured.sql"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    commands = {
-        "id": '#!/bin/sh\nprintf "1000\\n"\n',
-        "pg_ctl": "#!/bin/sh\nexit 1\n",
-        "postgres": '#!/bin/sh\ncat > "$TRACEFOLD_CAPTURE_SQL"\n',
-    }
-    for name, body in commands.items():
-        path = bin_dir / name
-        path.write_text(body, encoding="utf-8")
-        path.chmod(0o700)
-
-    result = subprocess.run(
-        ["sh", "docker/postgres-provision-review-role.sh", str(secrets_dir)],
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "PGDATA": str(pgdata),
-            "POSTGRES_DB": "tracefold",
-            "TRACEFOLD_CAPTURE_SQL": str(capture_path),
-        },
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "tracefold_review role provisioned" in result.stdout
-    assert password not in result.stdout and password not in result.stderr
-    sql = capture_path.read_text(encoding="utf-8")
-    assert len(sql.splitlines()) == 1
-    assert "CREATE ROLE tracefold_review" in sql
-    assert "ALTER ROLE tracefold_review" in sql
-    assert "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS" in sql
-    assert password in sql
-    assert "__TRACEFOLD_REVIEW_PASSWORD__" not in sql
-
-
-def test_review_role_upgrade_script_fails_closed_on_single_user_sql_error(tmp_path: Path) -> None:
-    secrets_dir = tmp_path / "secrets"
-    secrets_dir.mkdir()
-    password = "R" * 43
-    (secrets_dir / "postgres_review_password").write_text(password + "\n", encoding="utf-8")
-    pgdata = tmp_path / "pgdata"
-    pgdata.mkdir()
-    (pgdata / "PG_VERSION").write_text("18\n", encoding="utf-8")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    commands = {
-        "id": '#!/bin/sh\nprintf "1000\\n"\n',
-        "pg_ctl": "#!/bin/sh\nexit 1\n",
-        "postgres": '#!/bin/sh\ncat >/dev/null\nprintf "server ERROR: simulated\\n" >&2\nexit 0\n',
-    }
-    for name, body in commands.items():
-        path = bin_dir / name
-        path.write_text(body, encoding="utf-8")
-        path.chmod(0o700)
-
-    result = subprocess.run(
-        ["sh", "docker/postgres-provision-review-role.sh", str(secrets_dir)],
-        capture_output=True,
-        check=False,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "PGDATA": str(pgdata)},
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "reported a PostgreSQL error" in result.stderr
-    assert "simulated" not in result.stderr
-    assert password not in result.stdout and password not in result.stderr
-
-
 def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_membership() -> None:
     migration = Path("src/tracefold/platform/postgres/alembic/runtime_roles.sql").read_text(encoding="utf-8")
 
@@ -269,7 +185,6 @@ def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_
         "tracefold_owner",
         "tracefold_serve",
         "tracefold_workers",
-        "tracefold_review",
         "tracefold_migrate",
         "tracefold_migrate_owner_membership",
         "public_schema_owner",
@@ -289,16 +204,12 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     worker_volumes = compose["services"]["workers"].get("volumes", [])
 
     assert any("postgres_serve_password" in volume for volume in serve_volumes)
-    assert any("postgres_review_password" in volume for volume in serve_volumes)
     assert not any(
         "postgres_workers_password" in volume or "postgres_migrate_password" in volume for volume in serve_volumes
     )
     assert any("postgres_workers_password" in volume for volume in worker_volumes)
     assert not any(
-        "postgres_serve_password" in volume
-        or "postgres_review_password" in volume
-        or "postgres_migrate_password" in volume
-        for volume in worker_volumes
+        "postgres_serve_password" in volume or "postgres_migrate_password" in volume for volume in worker_volumes
     )
     assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes])
     assert "tracefold-postgres" in compose["volumes"]
@@ -312,6 +223,7 @@ def test_retired_ops_tree_and_orphan_scripts_are_absent() -> None:
         "regen_db_schema.py",
         "regen_openapi.py",
     }
+    assert not Path("docker/postgres-provision-review-role.sh").exists()
 
 
 def test_postgres_keeps_supported_extensions_and_removes_retired_ones() -> None:

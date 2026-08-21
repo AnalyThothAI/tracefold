@@ -102,12 +102,18 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
         privileges = conn.execute(
             """
             SELECT
-              has_table_privilege('tracefold_review', 'news_reviews', 'SELECT') AS base_reviews,
-              has_table_privilege('tracefold_review', 'news_learning_artifacts', 'SELECT') AS base_artifacts,
-              has_table_privilege('tracefold_review', 'news_review_active_agent_v1', 'SELECT') AS active_view
+              has_table_privilege('tracefold_serve', 'news_reviews', 'SELECT') AS review_select,
+              has_table_privilege('tracefold_serve', 'news_reviews', 'INSERT') AS review_insert,
+              has_table_privilege('tracefold_serve', 'news_reviews', 'UPDATE,DELETE') AS review_rewrite,
+              has_table_privilege('tracefold_serve', 'news_events', 'INSERT') AS news_insert
             """
         ).fetchone()
-        assert privileges == {"base_reviews": False, "base_artifacts": False, "active_view": True}
+        assert privileges == {
+            "review_select": True,
+            "review_insert": True,
+            "review_rewrite": False,
+            "news_insert": False,
+        }
     finally:
         if conn is not None:
             conn.close()

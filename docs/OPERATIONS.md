@@ -117,10 +117,13 @@ root, and recovery restores readiness. Invariant failures and an unfinished
 native control future remain process-fatal. This retry does not apply to
 general control writes whose commit outcome could be ambiguous.
 
-Serve owns a read-only pool of seven with ordinary/control admission `6/1`,
+Serve owns one pool of seven with ordinary/control admission `6/1`,
 50 ms permit wait, 250 ms checkout, one-second statement timeout, JIT off,
-parallel gather off, and 8 MiB work memory. Workers owns the exact pool/lane
-topology above. Finite provider/filesystem operations share the three-slot
+parallel gather off, and 8 MiB work memory. Connections and ordinary requests
+default to read-only; the two authenticated ReviewDesk POST routes explicitly
+open a read-write transaction whose role grants permit INSERT only on the two
+append-only review fact tables. Workers owns the exact pool/lane topology
+above. Finite provider/filesystem operations share the three-slot
 external capability; the OpenNews WSS socket remains a long-lived async root
 child outside it. Only the owning source seam may map an outer
 finite-operation overrun into its existing durable failure policy. A typed
@@ -420,29 +423,20 @@ creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
 the linear revisions through `20260821_0288_learning_retention`. The #112 chain
-adds the separately credentialed `tracefold_review` role. A live database
-stamped at an earlier revision upgrades with `tracefold db migrate`; a fresh
-database runs the same complete chain. Every revision is irreversible; a
-downgrade is a backup restore. Stop Serve and Workers before applying a
+adds ReviewDesk tables and grants the existing Serve role only their
+append-only INSERT capability. It adds no login role or password. A live
+database stamped at an earlier revision upgrades with `tracefold db migrate`;
+a fresh database runs the same complete chain. Every revision is irreversible;
+a downgrade is a backup restore. Stop Serve and Workers before applying a
 chained revision
 (each takes the maintenance gate advisory lock and refuses to run while
 Workers hold the steady lock).
 
-An existing volume at 0283 predates `tracefold_review`; the migration role is
-intentionally unable to create login roles. Before its first 0284–0288
-upgrade, take a restorable volume backup, run `tracefold init` so the new
-review password file exists, stop Serve, Workers, migrate and PostgreSQL, then
-run `make db-provision-review-role`. The target refuses to run while
-PostgreSQL is online and opens the existing cluster only in local single-user
-mode; it idempotently creates or reconciles the login with no superuser,
-CREATEDB, CREATEROLE, replication or RLS-bypass capability. Restart
-PostgreSQL and run the normal migration. 0285 still fails closed if the role
-is absent, and only the migration grants its narrow ReviewDesk privileges.
-If `tracefold init` reports
-`postgres_password_path_not_file:postgres_review_password`, the old bind mount
-left a directory where the secret file belongs; verify it contains no data,
-move or remove that directory explicitly, and rerun `tracefold init`. The CLI
-never deletes or overwrites that path automatically.
+An existing volume at 0283 needs no new password or offline role bootstrap.
+Before its first 0284–0288 upgrade, take a restorable volume backup, stop Serve
+and Workers, run the normal migration, then deploy the matching image. The
+migration owns the narrow ReviewDesk grants; the existing Serve credential is
+unchanged.
 
 0276 drops `news_title_presentations`, `token_discovery_results`,
 `token_discovery_dirty_lookup_keys`, `asset_profiles`,
@@ -478,8 +472,8 @@ broker, or outbound call.
 0279–0283 add listing admission, the instrument universe, legacy label-v1 and
 Price Review. 0284 freezes fact/evidence versions. 0285 verifies legacy-label
 migration, hard-deletes `news_event_labels`, creates append-only ReviewDesk
-evidence and the security-barrier task view, and grants the Review role only
-that view plus INSERT on review evidence. 0286 adds content-addressed datasets,
+evidence and the security-barrier task view, and grants Serve only INSERT on
+the two review fact tables in addition to its read access. 0286 adds content-addressed datasets,
 candidate/evaluation/deployment artifacts, pairwise cases and exact model
 recordings. 0287 adds durable canary activations, one assignment per Event and
 runtime manifests. 0288 adds the bounded retention function, cold-Janitor
