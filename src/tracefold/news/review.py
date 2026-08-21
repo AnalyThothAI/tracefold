@@ -19,6 +19,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from .artifact_identity import canonical_json, canonical_sha
+from .outcome import decision_zh
 from .price_repository import PriceRepository
 
 REVIEW_RUBRIC_VERSION = "news_review_v2"
@@ -83,6 +85,92 @@ _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
     "headline_fidelity": "triage_prompt",
     "why_support": "triage_prompt",
     "why_value": "triage_prompt",
+}
+
+_STRATUM_ZH = {
+    "delivery_ambiguous": "送达状态未知",
+    "delivery_failed": "送达明确失败",
+    "critical": "重点事件",
+    "throttled": "历史拦截或同事实重复",
+    "gate_suppress": "入口被拦截",
+    "model_drop": "模型判断不推",
+    "delivered": "已送达抽样",
+    "high_reaction": "高波动发现样本（非成绩）",
+    "random_control": "随机对照",
+    "eventless_miss": "系统外漏报",
+    "blind_pairwise": "匿名候选对比",
+    "development_pairwise": "开发集候选对比",
+}
+_SELECTION_REASON_ZH = {
+    "delivery_truth_unknown": "投递结果无法确定",
+    "delivery_terminal_failure": "投递已明确失败",
+    "high_priority_or_escalate": "高优先级或重点推送",
+    "duplicate_or_historical_throttle": "同事实重复或历史版本数量拦截",
+    "sent_quality_sample": "从真实送达中抽样",
+    "market_discovery_only": "仅因事后波动进入发现队列",
+    "semantic_or_policy_hold": "语义或策略判断不送达",
+    "upstream_recall_sample": "入口召回抽样",
+    "coverage_control": "随机覆盖对照",
+}
+_RELEASE_STAGE_ZH = {
+    "offline": "离线开发集",
+    "holdout": "未来留出集",
+    "shadow": "影子运行",
+    "canary": "小流量上线",
+}
+_RELEASE_OUTCOME_ZH = {"pass": "通过", "fail": "失败", "unknown": "证据不足"}
+_PROPOSAL_STATUS_ZH = {
+    "proposed": "已提案",
+    "evaluating": "评估中",
+    "review_required": "需要更多证据",
+    "rejected": "已拒绝",
+    "shadow_ready": "可进入影子运行",
+    "canary_ready": "可进入小流量上线",
+    "canary": "小流量运行中",
+    "canary_closed": "小流量已关闭",
+    "promotion_ready": "等待人工发布",
+    "rolled_back": "已回滚",
+}
+_TARGET_ZH = {"prompt": "Prompt", "policy": "确定性策略"}
+_DIMENSION_ZH = {
+    "should_push": "是否应送达",
+    "asset_grounding": "标的对应",
+    "direction": "方向与机制",
+    "factual_fidelity": "事实忠实",
+    "headline_fidelity": "标题忠实",
+    "magnitude": "重要程度",
+    "timeliness": "送达时效",
+    "why_support": "Why 证据支持",
+    "why_value": "Why 读者价值",
+    "novelty": "新颖性",
+}
+_RELEASE_CODE_ZH = {
+    "active_stable_changed": "运行期间稳定版已变化",
+    "development_safety_empty": "开发集缺少安全样本",
+    "development_pairwise_review_empty": "开发集匿名对比尚无人工判断",
+    "development_pairwise_review_incomplete": "开发集匿名对比尚未完成",
+    "development_target_improvement_not_observed": "开发集尚未观察到目标改善",
+    "development_pairwise_regression": "开发集匿名对比出现回归",
+    "must_push_regression": "候选漏掉必须送达的事实",
+    "candidate_schema_or_provider_regression": "候选出现新增结构或调用错误",
+    "candidate_token_cost_regression": "候选模型成本超出边界",
+    "candidate_latency_slo_regression": "候选延迟超出边界",
+    "candidate_schema_contract_breach": "候选违反输出结构合同",
+    "candidate_degraded_or_error_slo_regression": "候选降级或错误率超出边界",
+    "candidate_critical_error_regression": "候选新增关键质量错误",
+    "stable_or_common_execution_unavailable": "稳定版或共同模型调用不可用",
+    "validation_duration_insufficient": "未来留出集时间不足",
+    "validation_eligible_events_insufficient": "未来留出集事件数不足",
+    "validation_primary_review_insufficient": "未来留出集独立事实簇不足",
+    "validation_primary_review_incomplete": "未来留出集匿名判断未完成",
+    "validation_review_budget_exhausted": "人工判断预算已用完但结论仍不确定",
+    "validation_primary_interval_crosses_zero": "改善区间跨过零，无法证明提升",
+    "shadow_duration_insufficient": "影子运行时间不足",
+    "shadow_observations_empty": "影子运行没有观测",
+    "canary_duration_insufficient": "小流量运行时间不足",
+    "canary_observations_empty": "小流量运行没有观测",
+    "canary_candidate_assignment_n_insufficient": "候选分臂样本不足",
+    "canary_one_arm_assignment_invariant_breach": "一个事件被错误分到多个分臂",
 }
 
 
@@ -212,6 +300,168 @@ class _VirtualTask:
     selection: Mapping[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewReadStatement:
+    """One bounded ReviewDesk read shared by serving and query audit."""
+
+    name: str
+    sql: str
+    params: tuple[Any, ...]
+
+
+def _event_queue_statement(
+    *,
+    lower_ms: int,
+    upper_ms: int,
+    cohort_sha: str,
+    cursor: tuple[int, str] | None,
+    limit: int,
+) -> ReviewReadStatement:
+    filters = [
+        "opened_at_ms >= %s",
+        "opened_at_ms < %s",
+        "ingest_mode = 'live'",
+        "COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') = %s",
+    ]
+    params: list[Any] = [int(lower_ms), int(upper_ms), cohort_sha]
+    if cursor is not None:
+        filters.append("(opened_at_ms, event_id) < (%s, %s)")
+        params.extend(cursor)
+    params.append(int(limit))
+    return ReviewReadStatement(
+        name="news_review_task_queue",
+        sql=f"""
+            SELECT * FROM news_review_task_source_v1
+             WHERE {" AND ".join(filters)}
+             ORDER BY opened_at_ms DESC, event_id DESC
+             LIMIT %s
+        """,
+        params=tuple(params),
+    )
+
+
+def _event_task_statement(event_id: str, *, evidence_version: int | None) -> ReviewReadStatement:
+    if evidence_version is None:
+        return ReviewReadStatement(
+            name="news_review_task_evidence",
+            sql=("SELECT * FROM news_review_task_source_v1 WHERE event_id = %s ORDER BY evidence_version DESC LIMIT 1"),
+            params=(event_id,),
+        )
+    return ReviewReadStatement(
+        name="news_review_task_evidence_version",
+        sql="SELECT * FROM news_review_task_source_v1 WHERE event_id = %s AND evidence_version = %s",
+        params=(event_id, int(evidence_version)),
+    )
+
+
+def _coverage_statement(*, lower_ms: int, upper_ms: int) -> ReviewReadStatement:
+    return ReviewReadStatement(
+        name="news_review_coverage_source",
+        sql=(
+            "SELECT * FROM news_review_task_source_v1 "
+            "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live'"
+        ),
+        params=(int(lower_ms), int(upper_ms)),
+    )
+
+
+def _pairwise_queue_statement(
+    *,
+    proposal: str,
+    status: str,
+    cursor: tuple[int, int, str] | None,
+    limit: int,
+) -> ReviewReadStatement:
+    filters = ["true"]
+    params: list[Any] = []
+    if proposal:
+        filters.append("c.run_sha = %s")
+        params.append(proposal)
+    if cursor is not None:
+        filters.append(
+            "(CASE WHEN c.dataset_role = 'validation' THEN 0 ELSE 1 END, c.created_at_ms, c.case_id) > (%s, %s, %s)"
+        )
+        params.extend(cursor)
+    if status == "pending":
+        filters.append("accepted_pair.review_id IS NULL")
+    elif status == "accepted":
+        filters.append("accepted_pair.review_id IS NOT NULL")
+    elif status != "all":
+        raise ValueError("news_review_status_invalid")
+    params.append(int(limit) + 1)
+    return ReviewReadStatement(
+        name="news_review_pairwise_queue",
+        sql=f"""
+            WITH accepted_pair AS (
+              SELECT DISTINCT ON (j.pairwise_case_id)
+                     j.pairwise_case_id, j.review_id
+                FROM news_review_records_v1 a
+                JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
+               WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'pairwise'
+               ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
+            )
+            SELECT c.*, accepted_pair.review_id AS accepted_review_id
+              FROM news_review_pairwise_tasks_v1 c
+              LEFT JOIN accepted_pair ON accepted_pair.pairwise_case_id = c.run_sha || ':' || c.case_id
+             WHERE {" AND ".join(filters)}
+             ORDER BY CASE WHEN c.dataset_role = 'validation' THEN 0 ELSE 1 END,
+                      c.created_at_ms, c.case_id
+             LIMIT %s
+        """,
+        params=tuple(params),
+    )
+
+
+def _proposal_candidates_statement(limit: int) -> ReviewReadStatement:
+    return ReviewReadStatement(
+        name="news_review_proposal_candidates",
+        sql=(
+            "SELECT artifact_sha, parent_sha, payload, created_at_ms "
+            "FROM news_learning_artifacts WHERE kind = 'candidate' "
+            "ORDER BY created_at_ms DESC LIMIT %s"
+        ),
+        params=(int(limit),),
+    )
+
+
+def _proposal_releases_statement() -> ReviewReadStatement:
+    return ReviewReadStatement(
+        name="news_review_proposal_releases",
+        sql=(
+            "SELECT artifact_sha, parent_sha, payload, created_at_ms "
+            "FROM news_learning_artifacts WHERE kind = 'release_evidence' ORDER BY created_at_ms"
+        ),
+        params=(),
+    )
+
+
+def _proposal_reports_statement() -> ReviewReadStatement:
+    return ReviewReadStatement(
+        name="news_review_proposal_reports",
+        sql=(
+            "SELECT artifact_sha, parent_sha, payload, created_at_ms "
+            "FROM news_learning_artifacts WHERE kind = 'evaluation_report'"
+        ),
+        params=(),
+    )
+
+
+def _proposal_activations_statement() -> ReviewReadStatement:
+    return ReviewReadStatement(
+        name="news_review_proposal_activations",
+        sql="SELECT * FROM news_canary_activations ORDER BY created_at_ms",
+        params=(),
+    )
+
+
+def _active_agent_statement() -> ReviewReadStatement:
+    return ReviewReadStatement(
+        name="news_review_active_agent",
+        sql="SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1",
+        params=(),
+    )
+
+
 class ReviewDesk:
     """One narrow interface for HTTP, CLI, dataset freeze, and tests."""
 
@@ -239,7 +489,7 @@ class ReviewDesk:
             if virtual.task_version != task.task_version:
                 raise ValueError("news_review_task_version_conflict")
             row = virtual.row
-            accepted = self._latest_accepted(subject_kind="event", subject_id=event_id)
+            accepted = self._latest_accepted(virtual)
             reactions = PriceRepository(self._conn).event_reactions(event_id)
             trace = dict(row.get("trace") or {})
             return {
@@ -286,7 +536,7 @@ class ReviewDesk:
                 raise ValueError("news_review_task_not_found")
             if virtual.task_version != task.task_version:
                 raise ValueError("news_review_task_version_conflict")
-            accepted = self._latest_accepted("pairwise", task.task_id)
+            accepted = self._latest_accepted(virtual)
             reveal = self._pairwise_reveal(virtual, accepted=accepted)
             return _pairwise_evidence(
                 virtual,
@@ -348,13 +598,13 @@ class ReviewDesk:
         if query.task:
             if query.task.startswith("pair."):
                 task = self._pairwise_task(query.task)
-                accepted = None if task is None else self._latest_accepted("pairwise", task.task_id)
+                accepted = None if task is None else self._latest_accepted(task)
                 tasks = [] if task is None else [_pairwise_task_public(task, accepted=accepted)]
                 return self._queue_response(query.model_copy(update={"mode": "pairwise"}), tasks, next_cursor=None)
             if query.task.startswith("evt."):
                 event_id, evidence_version = _parse_event_task_id(query.task)
                 task = self._event_task(event_id, evidence_version=evidence_version)
-                accepted = None if task is None else self._latest_accepted("event", event_id)
+                accepted = None if task is None else self._latest_accepted(task)
                 tasks = [] if task is None else [_task_public(task, accepted=accepted)]
                 return self._queue_response(query.model_copy(update={"mode": "event"}), tasks, next_cursor=None)
             raise ValueError("news_review_task_id_invalid")
@@ -362,44 +612,29 @@ class ReviewDesk:
             return self._open_pairwise_queue(query)
         if query.event:
             task = self._event_task(query.event)
-            single_tasks = (
-                [] if task is None else [_task_public(task, accepted=self._latest_accepted("event", query.event))]
-            )
+            single_tasks = [] if task is None else [_task_public(task, accepted=self._latest_accepted(task))]
             return self._queue_response(query, single_tasks, next_cursor=None)
 
         lower = self._now_ms - int(query.hours) * 3_600_000
-        params: list[Any] = [lower, self._now_ms]
-        filters = ["opened_at_ms >= %s", "opened_at_ms < %s", "ingest_mode = 'live'"]
-        if query.cohort:
-            prompt, policy, model = _parse_cohort(query.cohort)
-            filters.extend(
-                [
-                    "COALESCE(prompt_version, '') = %s",
-                    "COALESCE(policy_version, '') = %s",
-                    "COALESCE(model, '') = %s",
-                ]
-            )
-            params.extend([prompt, policy, model])
+        cohort_sha = _parse_agent_cohort_sha(query.cohort) if query.cohort else self._active_agent_cohort_sha()
+        if cohort_sha is None:
+            return self._queue_response(query, [], next_cursor=None)
         cursor = _decode_cursor(query.cursor) if query.cursor else None
-        if cursor is not None:
-            filters.append("(opened_at_ms, event_id) < (%s, %s)")
-            params.extend(cursor)
-        rows = self._conn.execute(
-            f"""
-            SELECT * FROM news_review_task_source_v1
-             WHERE {" AND ".join(filters)}
-             ORDER BY opened_at_ms DESC, event_id DESC
-             LIMIT %s
-            """,
-            (*params, min(2_000, query.limit * 50 + 100)),
-        ).fetchall()
-        accepted_by_event = self._accepted_by_events([str(row["event_id"]) for row in rows])
+        statement = _event_queue_statement(
+            lower_ms=lower,
+            upper_ms=self._now_ms,
+            cohort_sha=cohort_sha,
+            cursor=cursor,
+            limit=min(2_000, query.limit * 50 + 100),
+        )
+        rows = self._conn.execute(statement.sql, statement.params).fetchall()
+        accepted_by_task = self._accepted_event_tasks([str(row["event_id"]) for row in rows])
         ranked_tasks: list[tuple[int, _VirtualTask, dict[str, Any] | None]] = []
         for row in rows:
             task = _virtual_task(row)
             if not _sampler_selected(task):
                 continue
-            accepted = accepted_by_event.get(str(row["event_id"]))
+            accepted = accepted_by_task.get((task.task_id, task.task_version))
             stratum = str(task.selection["stratum"])
             if query.stratum and stratum != query.stratum:
                 continue
@@ -418,53 +653,20 @@ class ReviewDesk:
         return self._queue_response(query, public, next_cursor=next_cursor)
 
     def _open_pairwise_queue(self, query: DeskQuery) -> dict[str, Any]:
-        filters = ["true"]
-        params: list[Any] = []
-        if query.proposal:
-            filters.append("c.run_sha = %s")
-            params.append(query.proposal)
-        if query.status not in {"pending", "accepted", "all"}:
-            raise ValueError("news_review_status_invalid")
         cursor = _decode_pairwise_cursor(query.cursor) if query.cursor else None
-        if cursor is not None:
-            filters.append(
-                "(CASE WHEN c.dataset_role = 'validation' THEN 0 ELSE 1 END, c.created_at_ms, c.case_id) > (%s, %s, %s)"
-            )
-            params.extend(cursor)
-        if query.status == "pending":
-            filters.append("accepted_pair.review_id IS NULL")
-        elif query.status == "accepted":
-            filters.append("accepted_pair.review_id IS NOT NULL")
-        rows = self._conn.execute(
-            f"""
-            WITH accepted_pair AS (
-              SELECT DISTINCT ON (j.pairwise_case_id)
-                     j.pairwise_case_id, j.review_id
-                FROM news_review_records_v1 a
-                JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
-               WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'pairwise'
-               ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
-            )
-            SELECT c.*, accepted_pair.review_id AS accepted_review_id
-              FROM news_review_pairwise_tasks_v1 c
-              LEFT JOIN accepted_pair ON accepted_pair.pairwise_case_id = c.run_sha || ':' || c.case_id
-             WHERE {" AND ".join(filters)}
-             ORDER BY CASE WHEN c.dataset_role = 'validation' THEN 0 ELSE 1 END,
-                      c.created_at_ms, c.case_id
-             LIMIT %s
-            """,
-            (*params, query.limit + 1),
-        ).fetchall()
+        statement = _pairwise_queue_statement(
+            proposal=query.proposal,
+            status=query.status,
+            cursor=cursor,
+            limit=query.limit,
+        )
+        rows = self._conn.execute(statement.sql, statement.params).fetchall()
         has_more = len(rows) > query.limit
         page = rows[: query.limit]
         tasks = []
         for row in page:
             virtual = _pairwise_virtual(row)
-            accepted = (
-                self._latest_accepted("pairwise", virtual.task_id)
-                if row.get("accepted_review_id") is not None
-                else None
-            )
+            accepted = self._latest_accepted(virtual) if row.get("accepted_review_id") is not None else None
             tasks.append(_pairwise_task_public(virtual, accepted=accepted))
         next_cursor = None
         if has_more and page:
@@ -490,37 +692,19 @@ class ReviewDesk:
         }
 
     def _proposals(self, query: DeskQuery) -> dict[str, Any]:
-        candidates = self._conn.execute(
-            """
-            SELECT artifact_sha, parent_sha, payload, created_at_ms
-              FROM news_learning_artifacts
-             WHERE kind = 'candidate'
-             ORDER BY created_at_ms DESC
-             LIMIT %s
-            """,
-            (query.limit,),
-        ).fetchall()
-        releases = self._conn.execute(
-            """
-            SELECT artifact_sha, parent_sha, payload, created_at_ms
-              FROM news_learning_artifacts
-             WHERE kind = 'release_evidence'
-             ORDER BY created_at_ms
-            """
-        ).fetchall()
+        candidate_statement = _proposal_candidates_statement(query.limit)
+        candidates = self._conn.execute(candidate_statement.sql, candidate_statement.params).fetchall()
+        release_statement = _proposal_releases_statement()
+        releases = self._conn.execute(release_statement.sql, release_statement.params).fetchall()
+        report_statement = _proposal_reports_statement()
         reports = {
             str(row["artifact_sha"]): dict(row)
-            for row in self._conn.execute(
-                """
-                SELECT artifact_sha, parent_sha, payload, created_at_ms
-                  FROM news_learning_artifacts
-                 WHERE kind = 'evaluation_report'
-                """
-            ).fetchall()
+            for row in self._conn.execute(report_statement.sql, report_statement.params).fetchall()
         }
+        activation_statement = _proposal_activations_statement()
         activations = {
             str(row["candidate_manifest_sha"]): dict(row)
-            for row in self._conn.execute("SELECT * FROM news_canary_activations ORDER BY created_at_ms").fetchall()
+            for row in self._conn.execute(activation_statement.sql, activation_statement.params).fetchall()
         }
         public: list[dict[str, Any]] = []
         for row in candidates:
@@ -541,12 +725,22 @@ class ReviewDesk:
                 timeline.append(
                     {
                         "stage": release.get("stage"),
+                        "stage_zh": _RELEASE_STAGE_ZH.get(str(release.get("stage") or ""), "未知阶段"),
                         "outcome": release.get("gate_outcome"),
+                        "outcome_zh": _RELEASE_OUTCOME_ZH.get(str(release.get("gate_outcome") or ""), "证据状态未知"),
                         "report_sha": release.get("report_sha"),
                         "run_sha": release.get("run_sha"),
                         "recommended_action": report_payload.get("recommended_action"),
                         "blockers": (report_payload.get("evidence") or {}).get("blockers", []),
+                        "blockers_zh": [
+                            _release_code_zh(str(code))
+                            for code in (report_payload.get("evidence") or {}).get("blockers", [])
+                        ],
                         "failures": (report_payload.get("evidence") or {}).get("failures", []),
+                        "failures_zh": [
+                            _release_code_zh(str(code))
+                            for code in (report_payload.get("evidence") or {}).get("failures", [])
+                        ],
                         "created_at_ms": int(release_row["created_at_ms"]),
                     }
                 )
@@ -559,8 +753,12 @@ class ReviewDesk:
                     "candidate_bundle_sha": candidate_arm.get("bundle_sha"),
                     "parent_stable_sha": manifest.get("parent_stable_sha"),
                     "target": manifest.get("target"),
+                    "target_zh": _TARGET_ZH.get(str(manifest.get("target") or ""), "未知变更"),
                     "hypothesis": manifest.get("hypothesis"),
                     "target_dimensions": manifest.get("target_dimensions", []),
+                    "target_dimensions_zh": [
+                        _DIMENSION_ZH.get(str(value), "未识别维度") for value in manifest.get("target_dimensions", [])
+                    ],
                     "failure_cluster_ids": receipt.get("failure_cluster_ids", []),
                     "guardrails": receipt.get("guardrails", []),
                     "development_dataset_sha": manifest.get("development_dataset_sha"),
@@ -569,6 +767,7 @@ class ReviewDesk:
                     "diff_withheld_reason": None if reveal_diff else "hidden_validation_in_progress",
                     "created_at_ms": int(row["created_at_ms"]),
                     "status": status,
+                    "status_zh": _PROPOSAL_STATUS_ZH.get(status, "证据状态未知"),
                     "timeline": timeline,
                     "canary": activation,
                 }
@@ -702,14 +901,9 @@ class ReviewDesk:
 
     def _coverage(self, query: DeskQuery) -> dict[str, Any]:
         lower = self._now_ms - int(query.hours) * 3_600_000
-        rows = self._conn.execute(
-            """
-            SELECT * FROM news_review_task_source_v1
-             WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live'
-            """,
-            (lower, self._now_ms),
-        ).fetchall()
-        accepted_by_event = self._accepted_by_events([str(row["event_id"]) for row in rows])
+        statement = _coverage_statement(lower_ms=lower, upper_ms=self._now_ms)
+        rows = self._conn.execute(statement.sql, statement.params).fetchall()
+        accepted_by_task = self._accepted_event_tasks([str(row["event_id"]) for row in rows])
         cohorts: dict[str, dict[str, Any]] = {}
         strata: dict[str, dict[str, Any]] = {}
         reviewed = 0
@@ -720,7 +914,8 @@ class ReviewDesk:
             agent_identity = _agent_identity(row)
             cohort = str(agent_identity["cohort_sha256"])
             stratum = _selection(row)["stratum"]
-            accepted_row = accepted_by_event.get(str(row["event_id"]))
+            virtual = _virtual_task(row)
+            accepted_row = accepted_by_task.get((virtual.task_id, virtual.task_version))
             bucket = cohorts.setdefault(
                 cohort,
                 {
@@ -800,7 +995,10 @@ class ReviewDesk:
                 "external_misses": int(external["n"] or 0),
             },
             "cohorts": [{"cohort": name, **data} for name, data in sorted(cohorts.items())],
-            "strata": [{"stratum": name, **data} for name, data in sorted(strata.items())],
+            "strata": [
+                {"stratum": name, "stratum_zh": _STRATUM_ZH.get(name, "未识别复盘分层"), **data}
+                for name, data in sorted(strata.items())
+            ],
             "holdout": {
                 "status": "ready" if blind_case_n and blind_accepted_n == blind_case_n else "insufficient_evidence",
                 "case_n": blind_case_n,
@@ -818,7 +1016,7 @@ class ReviewDesk:
     def _market(self, query: DeskQuery) -> dict[str, Any]:
         if query.hours > REVIEW_MARKET_MAX_HOURS:
             raise ValueError("news_review_market_hours_too_large")
-        cohort = _parse_cohort(query.cohort) if query.cohort else self._latest_cohort(hours=query.hours)
+        cohort = self._market_cohort(query.cohort, hours=query.hours)
         review = PriceRepository(self._conn).review(
             hours=query.hours,
             now_ms=self._now_ms,
@@ -836,31 +1034,30 @@ class ReviewDesk:
             "message_zh": None if cohort else "当前窗口没有可比较的同版本 Agent cohort。",
         }
 
-    def _latest_cohort(self, *, hours: int) -> tuple[str, str, str] | None:
+    def _market_cohort(self, cohort_sha: str, *, hours: int) -> tuple[str, str, str] | None:
         lower = self._now_ms - int(hours) * 3_600_000
+        selected_sha = _parse_agent_cohort_sha(cohort_sha) if cohort_sha else self._active_agent_cohort_sha()
+        if selected_sha is None:
+            return None
         row = self._conn.execute(
             """
             SELECT prompt_version, policy_version, model
               FROM news_review_task_source_v1
              WHERE prompt_version IS NOT NULL AND policy_version IS NOT NULL AND model IS NOT NULL
                AND opened_at_ms >= %s AND opened_at_ms < %s
+               AND COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') = %s
              ORDER BY verdict_created_at_ms DESC NULLS LAST
              LIMIT 1
             """,
-            (lower, self._now_ms),
+            (lower, self._now_ms, selected_sha),
         ).fetchone()
         if row is None:
             return None
         return str(row["prompt_version"]), str(row["policy_version"]), str(row["model"])
 
     def _event_task(self, event_id: str, *, evidence_version: int | None = None) -> _VirtualTask | None:
-        params: tuple[Any, ...]
-        condition = "event_id = %s"
-        params = (event_id,)
-        if evidence_version is not None:
-            condition += " AND evidence_version = %s"
-            params = (event_id, evidence_version)
-        row = self._conn.execute(f"SELECT * FROM news_review_task_source_v1 WHERE {condition}", params).fetchone()
+        statement = _event_task_statement(event_id, evidence_version=evidence_version)
+        row = self._conn.execute(statement.sql, statement.params).fetchone()
         return _virtual_task(row) if row is not None else None
 
     def _pairwise_task(self, task_id: str) -> _VirtualTask | None:
@@ -904,7 +1101,7 @@ class ReviewDesk:
             raise ValueError("news_review_task_not_found")
         if task.task_version != task_ref.task_version:
             raise ValueError("news_review_task_version_conflict")
-        previous = self._latest_accepted("event", event_id)
+        previous = self._latest_accepted(task)
         owner = submission.first_bad_owner or _derive_owner(submission)
         created_at = self._db_now_ms()
         payload = submission.model_dump(mode="json")
@@ -990,7 +1187,7 @@ class ReviewDesk:
             raise ValueError("news_review_task_version_conflict")
         run_sha, case_id = _parse_pairwise_task_id(task.task_id)
         pairwise_case_id = f"{run_sha}:{case_id}"
-        previous = self._latest_accepted("pairwise", task.task_id)
+        previous = self._latest_accepted(task)
         created_at = self._db_now_ms()
         payload = submission.model_dump(mode="json")
         review_id = _sha(
@@ -1241,42 +1438,44 @@ class ReviewDesk:
             "updated_queue_counts": dict(queue.get("counts") or {}),
         }
 
-    def _latest_accepted(self, subject_kind: str, subject_id: str) -> dict[str, Any] | None:
-        if subject_kind == "event":
-            condition, params = "j.event_id = %s", (subject_id,)
-        elif subject_kind == "pairwise":
-            run_sha, case_id = _parse_pairwise_task_id(subject_id)
-            condition, params = "j.pairwise_case_id = %s", (f"{run_sha}:{case_id}",)
-        else:
-            condition, params = "j.external_snapshot_id = %s", (subject_id,)
+    def _latest_accepted(self, task: _VirtualTask) -> dict[str, Any] | None:
         row = self._conn.execute(
-            f"""
+            """
             SELECT j.*
              FROM news_review_records_v1 a
               JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
-             WHERE a.review_kind = 'acceptance' AND {condition}
+             WHERE a.review_kind = 'acceptance'
+               AND j.task_id = %s AND j.task_version = %s
                AND j.reader_contract_version = %s
              ORDER BY a.created_at_ms DESC, a.review_id DESC LIMIT 1
             """,
-            (*params, READER_CONTRACT_VERSION),
+            (task.task_id, task.task_version, READER_CONTRACT_VERSION),
         ).fetchone()
         return _review_public(row) if row is not None else None
 
-    def _accepted_by_events(self, event_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    def _accepted_event_tasks(self, event_ids: Sequence[str]) -> dict[tuple[str, str], dict[str, Any]]:
         if not event_ids:
             return {}
         rows = self._conn.execute(
             """
-            SELECT DISTINCT ON (j.event_id) j.*, a.created_at_ms AS accepted_at_ms
+            SELECT DISTINCT ON (j.task_id, j.task_version) j.*, a.created_at_ms AS accepted_at_ms
               FROM news_review_records_v1 a
               JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
              WHERE a.review_kind = 'acceptance' AND j.event_id = ANY(%s)
                AND j.reader_contract_version = %s
-             ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
+             ORDER BY j.task_id, j.task_version, a.created_at_ms DESC, a.review_id DESC
             """,
             (list(event_ids), READER_CONTRACT_VERSION),
         ).fetchall()
-        return {str(row["event_id"]): _review_public(row) for row in rows}
+        return {(str(row["task_id"]), str(row["task_version"])): _review_public(row) for row in rows}
+
+    def _active_agent_cohort_sha(self) -> str | None:
+        statement = _active_agent_statement()
+        row = self._conn.execute(statement.sql, statement.params).fetchone()
+        if row is None:
+            return None
+        stable_sha = str(row.get("stable_sha") or "")
+        return stable_sha if _is_sha256(stable_sha) else None
 
     def _idempotent_receipt(self, reviewer: str, idempotency_key: str, *, request_sha: str) -> dict[str, Any] | None:
         row = self._conn.execute(
@@ -1354,6 +1553,11 @@ def _pairwise_virtual(row: Mapping[str, Any]) -> _VirtualTask:
     case_id = str(row["case_id"])
     selection = {
         "stratum": "blind_pairwise" if row.get("dataset_role") == "validation" else "development_pairwise",
+        "stratum_zh": (
+            _STRATUM_ZH["blind_pairwise"]
+            if row.get("dataset_role") == "validation"
+            else _STRATUM_ZH["development_pairwise"]
+        ),
         "sampling_probability": 1.0,
         "selection_version": "news_blind_pairwise_v1",
     }
@@ -1434,6 +1638,7 @@ def _blind_output(observation: Mapping[str, Any]) -> dict[str, Any]:
         "magnitude": verdict.get("magnitude"),
         "actionable": verdict.get("actionable"),
         "final_decision": observation.get("final_decision"),
+        "final_decision_zh": _review_decision_zh(observation.get("final_decision")),
         "error_code": observation.get("error_code"),
     }
 
@@ -1459,7 +1664,9 @@ def _selection(row: Mapping[str, Any]) -> dict[str, Any]:
         stratum, reason, probability = "random_control", "coverage_control", 0.02
     return {
         "stratum": stratum,
+        "stratum_zh": _STRATUM_ZH.get(stratum, "未识别复盘分层"),
         "reason": reason,
+        "reason_zh": _SELECTION_REASON_ZH.get(reason, "未识别抽样原因"),
         "sampling_probability": probability,
         "selection_version": "news_review_sampler_v1",
     }
@@ -1477,11 +1684,13 @@ def _task_public(task: _VirtualTask, *, accepted: Mapping[str, Any] | None) -> d
         "mode": "event",
         "event_id": row["event_id"],
         "evidence_version": row["evidence_version"],
+        "verdict_evidence_version": row.get("verdict_evidence_version"),
         "opened_at_ms": row["opened_at_ms"],
         "headline": focus.get("text") or card.get("leader_title") or "",
         "agent_headline": verdict.get("headline_zh") or "",
         "agent_why": verdict.get("why_zh") or "",
         "final_decision": row.get("final_decision"),
+        "final_decision_zh": _review_decision_zh(row.get("final_decision")),
         "reader_receipt": _receipt_public(row),
         "cohort": _cohort(row),
         "agent_cohort": _agent_identity(row),
@@ -1502,6 +1711,7 @@ def _receipt_public(row: Mapping[str, Any]) -> dict[str, Any]:
         truth = "not_received"
     return {
         "truth": truth,
+        "truth_zh": {"received": "读者已收到", "not_received": "读者未收到", "unknown": "送达未知"}[truth],
         "state": state,
         "settled_at_ms": row.get("settled_at_ms"),
         "rendered_card": row.get("delivery_card") if state == "sent" else None,
@@ -1632,11 +1842,34 @@ def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
-def _parse_cohort(value: str) -> tuple[str, str, str]:
-    parts = value.split("/")
-    if len(parts) != 3 or any(not part.strip() for part in parts):
+def _review_decision_zh(value: object) -> str:
+    return "同事实重复未推" if str(value or "") == "throttled" else decision_zh(str(value or ""))
+
+
+def _release_code_zh(code: str) -> str:
+    if code in _RELEASE_CODE_ZH:
+        return _RELEASE_CODE_ZH[code]
+    if code.startswith("development_") and code.endswith("_insufficient"):
+        field = code.removeprefix("development_").removesuffix("_insufficient")
+        field_zh = {
+            "boundary_cluster_n": "边界事实簇",
+            "retention_cluster_n": "保留集事实簇",
+            "negative_cluster_n": "负例事实簇",
+            "natural_day_n": "自然日",
+            "stratum_n": "抽样分层",
+        }.get(field, "开发集证据")
+        return f"{field_zh}数量不足"
+    if code.startswith("prior_") and code.endswith("_evidence_not_passed"):
+        stage = code.removeprefix("prior_").removesuffix("_evidence_not_passed")
+        return f"前一阶段{_RELEASE_STAGE_ZH.get(stage, '评估')}尚未通过"
+    return "未识别的发布证据原因"
+
+
+def _parse_agent_cohort_sha(value: str) -> str:
+    normalized = value.strip().lower()
+    if not _is_sha256(normalized):
         raise ValueError("news_review_cohort_invalid")
-    return parts[0], parts[1], parts[2]
+    return normalized
 
 
 def _parse_event_task_id(task_id: str) -> tuple[str, int]:
@@ -1702,11 +1935,11 @@ def _idempotency_key(value: str) -> str:
 
 
 def _sha(value: Any) -> str:
-    return hashlib.sha256(_json(value).encode()).hexdigest()
+    return canonical_sha(value)
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return canonical_json(value)
 
 
 def _pct(numerator: int, denominator: int) -> float | None:
@@ -1784,6 +2017,36 @@ def _proposal_status(timeline: Sequence[Mapping[str, Any]], activation: Mapping[
     }.get(str(latest.get("stage") or ""), "review_required")
 
 
+def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
+    """Exact bounded ReviewDesk statements for PostgreSQL query-plan audit."""
+
+    lower = int(now_ms) - 24 * 3_600_000
+    market_sql, market_params, *_ = PriceRepository.review_statement(
+        hours=24,
+        now_ms=int(now_ms),
+        cohort=("news_triage_prompt_v9", "news_triage_policy_v7", "audit-model"),
+    )
+    return (
+        _event_queue_statement(
+            lower_ms=lower,
+            upper_ms=int(now_ms),
+            cohort_sha="0" * 64,
+            cursor=None,
+            limit=100,
+        ),
+        _event_task_statement("event", evidence_version=None),
+        _event_task_statement("event", evidence_version=1),
+        _coverage_statement(lower_ms=lower, upper_ms=int(now_ms)),
+        _pairwise_queue_statement(proposal="", status="pending", cursor=None, limit=30),
+        _proposal_candidates_statement(100),
+        _proposal_releases_statement(),
+        _proposal_reports_statement(),
+        _proposal_activations_statement(),
+        _active_agent_statement(),
+        ReviewReadStatement(name="news_review_market", sql=market_sql, params=market_params),
+    )
+
+
 __all__ = [
     "READER_CONTRACT_SHA256",
     "READER_CONTRACT_TEXT",
@@ -1795,6 +2058,8 @@ __all__ = [
     "ExternalMissSubmission",
     "Principal",
     "ReviewDesk",
+    "ReviewReadStatement",
     "ReviewSubmission",
     "TaskRef",
+    "review_read_statements",
 ]

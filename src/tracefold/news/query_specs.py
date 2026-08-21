@@ -5,6 +5,8 @@ from __future__ import annotations
 from tracefold.news.pricing import REACTION_METRIC_VERSION
 from tracefold.platform.postgres.postgres_audit import ReadQuerySpec
 
+from .review import review_read_statements
+
 
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     day_ago = int(now_ms) - 24 * 3600_000
@@ -142,57 +144,9 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             ),
             params=(["event"], REACTION_METRIC_VERSION),
         ),
-        ReadQuerySpec(
-            name="news_review_task_queue",
-            sql="""
-                SELECT event_id, evidence_version, opened_at_ms, delivery_state
-                  FROM news_review_task_source_v1
-                 WHERE opened_at_ms >= %s AND opened_at_ms < %s
-                 ORDER BY opened_at_ms DESC, event_id DESC
-                 LIMIT 30
-            """,
-            params=(day_ago, now_ms),
-        ),
-        ReadQuerySpec(
-            name="news_review_task_evidence",
-            sql="""
-                SELECT event_id, evidence_version, evidence_snapshot, verdict, trace, delivery_state
-                  FROM news_review_task_source_v1
-                 WHERE event_id = %s
-                 ORDER BY evidence_version DESC
-                 LIMIT 1
-            """,
-            params=("event",),
-        ),
-        ReadQuerySpec(
-            name="news_review_pairwise_queue",
-            sql="""
-                SELECT run_sha, case_id, dataset_role, created_at_ms
-                  FROM news_review_pairwise_tasks_v1
-                 ORDER BY CASE WHEN dataset_role = 'validation' THEN 0 ELSE 1 END,
-                          created_at_ms, case_id
-                 LIMIT 30
-            """,
-        ),
-        ReadQuerySpec(
-            name="news_review_proposals",
-            sql="""
-                SELECT artifact_sha, kind, parent_sha, created_at_ms
-                  FROM news_learning_artifacts
-                 WHERE kind IN ('candidate', 'evaluation_report', 'deployment_receipt', 'rollback_receipt')
-                 ORDER BY created_at_ms DESC
-                 LIMIT 100
-            """,
-        ),
-        ReadQuerySpec(
-            name="news_review_window",
-            sql="""
-                SELECT r.event_id, r.return_1h_bps, r.return_4h_bps, r.state
-                  FROM news_event_reactions r
-                  JOIN news_events e ON e.event_id = r.event_id
-                 WHERE r.metric_version = %s AND r.anchor_at_ms >= %s AND e.ingest_mode = 'live'
-            """,
-            params=(REACTION_METRIC_VERSION, day_ago),
+        *(
+            ReadQuerySpec(name=statement.name, sql=statement.sql, params=statement.params)
+            for statement in review_read_statements(now_ms=int(now_ms))
         ),
     )
 

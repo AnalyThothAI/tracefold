@@ -428,6 +428,22 @@ chained revision
 (each takes the maintenance gate advisory lock and refuses to run while
 Workers hold the steady lock).
 
+An existing volume at 0283 predates `tracefold_review`; the migration role is
+intentionally unable to create login roles. Before its first 0284–0288
+upgrade, take a restorable volume backup, run `tracefold init` so the new
+review password file exists, stop Serve, Workers, migrate and PostgreSQL, then
+run `make db-provision-review-role`. The target refuses to run while
+PostgreSQL is online and opens the existing cluster only in local single-user
+mode; it idempotently creates or reconciles the login with no superuser,
+CREATEDB, CREATEROLE, replication or RLS-bypass capability. Restart
+PostgreSQL and run the normal migration. 0285 still fails closed if the role
+is absent, and only the migration grants its narrow ReviewDesk privileges.
+If `tracefold init` reports
+`postgres_password_path_not_file:postgres_review_password`, the old bind mount
+left a directory where the secret file belongs; verify it contains no data,
+move or remove that directory explicitly, and rerun `tracefold init`. The CLI
+never deletes or overwrites that path automatically.
+
 0276 drops `news_title_presentations`, `token_discovery_results`,
 `token_discovery_dirty_lookup_keys`, `asset_profiles`,
 `asset_profile_refresh_targets`, `cex_token_profiles`, `token_image_assets`,

@@ -22,6 +22,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .agents.triage_model import TriageModel, build_triage_input, told_ledger_for_prompt
+from .artifact_identity import canonical_json, canonical_sha
 from .models import TriageVerdict
 from .review import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .storyline import final_storyline_key
@@ -111,6 +112,7 @@ class DatasetCaseRef(BaseModel):
     stratum: str
     should_push: str
     opened_at_ms: int
+    delivery_truth: Literal["observed_sent", "observed_not_sent", "unknown"] = "unknown"
 
 
 class DatasetManifest(BaseModel):
@@ -425,6 +427,7 @@ class CandidateEvaluator:
         self._trusted_root_sha = trusted_root_sha
 
     async def freeze_dataset(self, spec: DatasetSpec) -> DatasetManifest:
+        self._assert_active_stable()
         freeze_as_of_ms = self._db_now_ms()
         if spec.window.to_ms > freeze_as_of_ms - SETTLEMENT_GRACE_MS:
             raise ValueError("news_learning_window_not_settled")
@@ -471,6 +474,10 @@ class CandidateEvaluator:
         return DatasetManifest(artifact_sha=artifact_sha, **payload)
 
     async def evaluate(self, request: EvaluationRequest) -> EvaluationReport:
+        # Reject a stale constructor arm before loading data or spending one
+        # model call. Re-read after execution as well, because a deployment can
+        # legitimately change the active root while a long evaluation runs.
+        self._assert_active_stable()
         development = self._load_dataset(request.development_dataset_sha)
         validation = (
             development if request.stage == "offline" else self._load_dataset(str(request.validation_dataset_sha))
@@ -663,7 +670,7 @@ class CandidateEvaluator:
             case.cluster_id
             for case in development.cases
             if (
-                case.should_push in {"must_push", "must_hold"}
+                _case_delivery_failed(case)
                 or "fail" in dict(reviews.get(case.review_id, {}).get("dimensions") or {}).values()
                 or bool(reviews.get(case.review_id, {}).get("expected_correction"))
             )
@@ -762,6 +769,13 @@ class CandidateEvaluator:
                 stratum=str(selection.get("stratum") or "eventless_miss"),
                 should_push=str(row.get("should_push") or "uncertain"),
                 opened_at_ms=int(row["opened_at_ms"]),
+                delivery_truth=(
+                    "observed_not_sent"
+                    if subject_kind == "external_miss"
+                    else "observed_sent"
+                    if str(row.get("delivery_state") or "") == "sent"
+                    else "observed_not_sent"
+                ),
             )
             novelty = dict(row.get("novelty") or {})
             duplicate_of = (
@@ -922,10 +936,49 @@ class CandidateEvaluator:
                         for trial in (2, 3)
                     ]
                     first_verdict = case_outputs[arm_name]["verdict"]
+                    serialized_observations: list[dict[str, Any]] = list(case_outputs[arm_name].get("model") or [])
+                    serialized_observations.extend(item.model_dump(mode="json") for item in trials)
+                    case_outputs[arm_name]["model"] = serialized_observations
+                    trial_results: list[dict[str, Any]] = [
+                        {
+                            "trial": 1,
+                            "error_code": case_outputs[arm_name].get("error_code"),
+                            "delivered": bool(case_outputs[arm_name].get("delivered")),
+                            "verdict_sha256": _sha(first_verdict),
+                        }
+                    ]
+                    for trial_number, trial_observation in zip((2, 3), trials, strict=True):
+                        trial_result: dict[str, Any] = {
+                            "trial": trial_number,
+                            "error_code": trial_observation.error_code,
+                            "delivered": False,
+                            "verdict_sha256": None,
+                        }
+                        if trial_observation.verdict is not None:
+                            replayed = self._apply_policy(
+                                case,
+                                trial_observation.verdict,
+                                state,
+                                arms[arm_name],
+                            )
+                            trial_result.update(
+                                delivered=bool(replayed.get("delivered")),
+                                verdict_sha256=_sha(trial_observation.verdict),
+                            )
+                        trial_results.append(trial_result)
+                    expected_delivery = _expected_delivery(case_ref.should_push)
+                    pass_n = (
+                        None
+                        if expected_delivery is None
+                        else sum(bool(result["delivered"]) == expected_delivery for result in trial_results)
+                    )
                     case_outputs[arm_name]["stability"] = {
                         "trials": 3,
                         "agreement_n": 1
                         + sum(item.verdict == first_verdict for item in trials if item.verdict is not None),
+                        "pass_n": pass_n,
+                        "pass_k": None if pass_n is None else pass_n == 3,
+                        "trial_results": trial_results,
                     }
             for arm_name, state in states.items():
                 output = case_outputs.get(arm_name) or {"error_code": "arm_missing", "delivered": False}
@@ -1470,11 +1523,20 @@ class CandidateEvaluator:
         candidate_observed_n = 0
         candidate_bad_n = 0
         candidate_schema_errors = 0
+        stability: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
         for item in observations:
             review = reviews.get(str(item["case_ref"]["review_id"]), {})
             expected = _expected_delivery(str(review.get("should_push") or "uncertain"))
             stable_out = item["stable"]
             candidate_out = item["candidate"]
+            for arm_name, output in (("stable", stable_out), ("candidate", candidate_out)):
+                if output.get("stability"):
+                    stability[arm_name].append(
+                        {
+                            "case_id": str(item["case_ref"]["case_id"]),
+                            **dict(output["stability"]),
+                        }
+                    )
             if not candidate_out.get("not_assigned"):
                 candidate_observed_n += 1
                 candidate_bad_n += int(bool(candidate_out.get("error_code")) or bool(candidate_out.get("degraded")))
@@ -1641,6 +1703,7 @@ class CandidateEvaluator:
             "candidate_degraded_or_error_n": candidate_bad_n,
             "candidate_degraded_or_error_rate": candidate_bad_rate,
             "critical_regressions": critical_regressions,
+            "stability": stability,
             "blockers": blockers,
             "failures": failures,
             "gate_outcome": outcome,
@@ -2142,6 +2205,12 @@ class CandidateEvaluator:
             raise ValueError("news_learning_active_stable_receipt_missing")
         return str(row["stable_sha"])
 
+    def _assert_active_stable(self) -> str:
+        active_sha = self._active_stable_sha()
+        if active_sha != self._stable.bundle_sha:
+            raise ValueError("news_learning_active_stable_mismatch")
+        return active_sha
+
     def _reviews_by_id(self, review_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         if not review_ids:
             return {}
@@ -2208,6 +2277,8 @@ def _observation_root(observations: Sequence[Mapping[str, Any]]) -> str:
         "review_id",
         "cluster_id",
         "stratum",
+        "should_push",
+        "delivery_truth",
         "opened_at_ms",
     )
     leaves = [
@@ -2237,6 +2308,15 @@ def _expected_delivery(should_push: str) -> bool | None:
     if should_push in {"must_hold", "should_hold"}:
         return False
     return None
+
+
+def _case_delivery_failed(case: DatasetCaseRef) -> bool:
+    """Whether the accepted expected action disagrees with frozen delivery truth."""
+
+    expected = _expected_delivery(case.should_push)
+    if expected is None or case.delivery_truth == "unknown":
+        return False
+    return (case.delivery_truth == "observed_sent") != expected
 
 
 def _bootstrap_interval(values: Sequence[int]) -> dict[str, float] | None:
@@ -2360,11 +2440,11 @@ def _arm_exact_diff(stable: ArmManifest, candidate: ArmManifest, *, target: str)
 
 
 def _sha(value: Any) -> str:
-    return hashlib.sha256(_json(value).encode()).hexdigest()
+    return canonical_sha(value)
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return canonical_json(value)
 
 
 def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:

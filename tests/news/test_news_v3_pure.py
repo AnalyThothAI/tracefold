@@ -1158,8 +1158,8 @@ def test_decide_never_withholds_a_reversal_as_a_duplicate() -> None:
 
 def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
     """`TriageAsset.symbol` is free text and this fallback is reached when nothing grounded it, so it is the least
-    validated string in the pipeline — and it becomes a throttle bucket, an advisory-lock key and a console
-    label."""
+    validated string in the pipeline — and it becomes a duplicate-comparison group, an advisory-lock key and a
+    console label."""
 
     def key(primaries: list[str], **over: object) -> str:
         return final_storyline_key(
@@ -1172,7 +1172,7 @@ def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
         )
 
     assert key(["TSLA"]) == "asset:TSLA"
-    # An exchange-qualified identifier we have no bucket for falls through instead of minting one.
+    # An exchange-qualified identifier we cannot group falls through instead of minting one.
     assert key(["0001.HK"]) == "macro:general"
     assert key(["a" * 11]) == "macro:general"
 

@@ -2,21 +2,17 @@
 
 The Deduper merges Items that *look* alike (comparison tokens, MinHash/LSH) before Triage sees them. It cannot
 merge a Reuters wire in English with a 金十 line in Chinese about the same fact — different bytes, different
-family windows — so the same event reaches `decide()` twice as two Events, and until policy v5 the only thing
-between it and the reader was a per-storyline *count* cap, which is uncorrelated with whether the second card
-says anything new (#81: 74% of everything the throttle stopped was a fact the reader never received in any form).
+family windows — so the same event can reach `decide()` twice as two Events.
 
 This module gives `decide()` the one piece of evidence that cap was missing: how much of this card's Chinese
 headline the reader has already read. Character bigrams because the text is Chinese (no whitespace tokens) and
 short (<= 60 chars); Jaccard because it is symmetric and scale-free. It is deliberately crude — a paraphrase with
 no shared characters scores 0.
 
-Through policy v5 it was used only in the direction where a mistake is cheap: a card that looked new was
-*released* from the count cap, never dropped for it. Policy v6 (#100) changed that — it is now the primary reason
-a card is withheld, including on storylines no count rule ever touched — so `decide()` carries two guards the
-metric itself cannot provide: it never withholds an `escalate`, and it never withholds a card whose direction
-contradicts the ledger entry it matched (character bigrams are blind to negation: "SEC 批准…" and "SEC 拒绝…"
-score 0.60). Anyone raising `similarity_max` should read those guards first.
+Policy v7 uses this evidence directly and has no count quota. `decide()` carries two guards the metric itself
+cannot provide: it never withholds an `escalate`, and it never withholds a card whose direction contradicts the
+ledger entry it matched (character bigrams are blind to negation: "SEC 批准…" and "SEC 拒绝…" score 0.60).
+Anyone raising `similarity_max` should read those guards first.
 """
 
 from __future__ import annotations

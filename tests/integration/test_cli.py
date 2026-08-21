@@ -92,6 +92,17 @@ def write_runtime_config(
 
 
 class CliTests(unittest.TestCase):
+    def test_init_rejects_a_password_path_that_is_a_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            app_home = home / ".tracefold"
+            (app_home / "postgres_review_password").mkdir(parents=True)
+            with (
+                patch.dict("os.environ", {"HOME": str(home)}, clear=False),
+                self.assertRaisesRegex(ValueError, "postgres_password_path_not_file:postgres_review_password"),
+            ):
+                main(["init"], stdout=io.StringIO())
+
     def test_runtime_roles_are_explicit_cli_commands(self):
         parser = build_parser()
 

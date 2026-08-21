@@ -1541,6 +1541,8 @@ export interface components {
             reviewed?: number | null;
             /** Stratum */
             stratum?: string | null;
+            /** Stratum Zh */
+            stratum_zh?: string | null;
         };
         /**
          * NewsReviewCoverageData
@@ -1933,17 +1935,32 @@ export interface components {
              * @enum {string}
              */
             truth: "received" | "not_received" | "unknown";
+            /**
+             * Truth Zh
+             * @default
+             */
+            truth_zh: string;
         };
         /** NewsReviewSelectionData */
         NewsReviewSelectionData: {
             /** Reason */
             reason?: string | null;
+            /**
+             * Reason Zh
+             * @default
+             */
+            reason_zh: string;
             /** Sampling Probability */
             sampling_probability: number;
             /** Selection Version */
             selection_version: string;
             /** Stratum */
             stratum: string;
+            /**
+             * Stratum Zh
+             * @default
+             */
+            stratum_zh: string;
         };
         /** NewsReviewSubmissionReceiptData */
         NewsReviewSubmissionReceiptData: {
@@ -2011,6 +2028,11 @@ export interface components {
             evidence_version?: number | null;
             /** Final Decision */
             final_decision?: string | null;
+            /**
+             * Final Decision Zh
+             * @default
+             */
+            final_decision_zh: string;
             /** Headline */
             headline?: string | null;
             /**
@@ -2031,6 +2053,8 @@ export interface components {
             task_id: string;
             /** Task Version */
             task_version: string;
+            /** Verdict Evidence Version */
+            verdict_evidence_version?: number | null;
         };
         /** NewsReviewUnavailableData */
         NewsReviewUnavailableData: {

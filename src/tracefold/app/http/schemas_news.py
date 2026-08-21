@@ -486,13 +486,16 @@ class NewsMarketReviewData(ExactApiSchema):
 
 class NewsReviewSelectionData(ExactApiSchema):
     stratum: str
+    stratum_zh: str = ""
     reason: str | None = None
+    reason_zh: str = ""
     sampling_probability: float
     selection_version: str
 
 
 class NewsReviewReceiptTruthData(ExactApiSchema):
     truth: Literal["received", "not_received", "unknown"]
+    truth_zh: str = ""
     state: str | None = None
     settled_at_ms: int | None = None
     rendered_card: dict[str, Any] | None = None
@@ -505,11 +508,13 @@ class NewsReviewTaskData(ExactApiSchema):
     mode: Literal["event", "pairwise"]
     event_id: str | None = None
     evidence_version: int | None = None
+    verdict_evidence_version: int | None = None
     opened_at_ms: int | None = None
     headline: str | None = None
     agent_headline: str | None = None
     agent_why: str | None = None
     final_decision: str | None = None
+    final_decision_zh: str = ""
     reader_receipt: NewsReviewReceiptTruthData | None = None
     cohort: str | None = None
     agent_cohort: dict[str, str] | None = None
@@ -530,6 +535,7 @@ class NewsReviewCoverageBucketData(ExactApiSchema):
     legacy_cohort: str | None = None
     agent: dict[str, str] | None = None
     stratum: str | None = None
+    stratum_zh: str | None = None
     events: int
     accepted: int
     received: int | None = None

@@ -69,11 +69,17 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert catalog.query_routes["/api/news/quotes"] == ("news_quote_snapshot_read",)
     assert catalog.query_routes["/api/news/review"] == (
         "news_review_task_queue",
+        "news_review_task_evidence",
+        "news_review_active_agent",
+        "news_review_coverage_source",
         "news_review_pairwise_queue",
-        "news_review_proposals",
-        "news_review_window",
+        "news_review_proposal_candidates",
+        "news_review_proposal_releases",
+        "news_review_proposal_reports",
+        "news_review_proposal_activations",
+        "news_review_market",
     )
-    assert catalog.query_routes["/api/news/review/tasks/{task_id}/evidence"] == ("news_review_task_evidence",)
+    assert catalog.query_routes["/api/news/review/tasks/{task_id}/evidence"] == ("news_review_task_evidence_version",)
     assert catalog.write_routes == {
         "/api/news/review/tasks/{task_id}/responses",
         "/api/news/review/external-misses",
@@ -137,11 +143,17 @@ _NEWS_QUERY_NAMES = (
     "news_quote_snapshot_read",
     "news_reaction_due_scan",
     "news_reaction_attach",
-    "news_review_window",
     "news_review_task_queue",
-    "news_review_pairwise_queue",
     "news_review_task_evidence",
-    "news_review_proposals",
+    "news_review_task_evidence_version",
+    "news_review_active_agent",
+    "news_review_coverage_source",
+    "news_review_pairwise_queue",
+    "news_review_proposal_candidates",
+    "news_review_proposal_releases",
+    "news_review_proposal_reports",
+    "news_review_proposal_activations",
+    "news_review_market",
 )
 
 

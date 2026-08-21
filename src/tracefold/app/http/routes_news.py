@@ -469,7 +469,7 @@ def _normalization(event: dict[str, Any], instruments: Any) -> list[dict[str, An
     Venue-derived aliases are excluded (#87 review). `learn_aliases_from_universe` writes an `XYZ-{base}` row
     for every builder-DEX base and a `dex:SYMBOL` form besides, so counting those would fire the block on
     routine commodity and index Events — `GOLD XAU XAUT XYZ-GOLD -> GOLD` explains nothing a reader did not
-    already assume. What is worth a row is the operator-owned collapse the throttle depends on:
+    already assume. What is worth a row is the operator-owned collapse the storyline identity depends on:
     SKHY / SKHX / SKHYNIX.
     """
 

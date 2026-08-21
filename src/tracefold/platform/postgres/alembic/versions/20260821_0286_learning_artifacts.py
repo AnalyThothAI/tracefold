@@ -162,8 +162,21 @@ def upgrade() -> None:
             "FOR EACH ROW EXECUTE FUNCTION reject_news_learning_mutation()"
         )
 
+    # ReviewDesk needs the current stable cohort to make its default queue
+    # homogeneous. Expose only that public identity; the narrow review role
+    # must not gain access to candidate manifests, reports, or arm mappings.
+    op.execute(
+        """
+        CREATE VIEW news_review_active_agent_v1 WITH (security_barrier = true) AS
+        SELECT payload ->> 'stable_sha' AS stable_sha, created_at_ms
+          FROM news_learning_artifacts
+         WHERE kind = 'active_agent'
+        """
+    )
+
     op.execute("GRANT SELECT ON news_learning_artifacts, news_learning_cases, news_model_recordings TO tracefold_serve")
     op.execute("GRANT SELECT ON news_review_pairwise_tasks_v1 TO tracefold_serve, tracefold_review")
+    op.execute("GRANT SELECT ON news_review_active_agent_v1 TO tracefold_serve, tracefold_workers, tracefold_review")
     op.execute(
         "REVOKE SELECT ON news_learning_artifacts, news_learning_cases, news_model_recordings FROM tracefold_review"
     )

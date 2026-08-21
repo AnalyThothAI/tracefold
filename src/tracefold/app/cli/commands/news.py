@@ -237,6 +237,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         EvaluationRequest,
         ProposalReceipt,
         RecordReplayModelAdapter,
+        canonical_sha,
     )
 
     settings = load_settings(require_ws_token=False)
@@ -297,7 +298,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 policy = dict(stable.policy)
                 policy.update(dict(spec.get("policy") or {}))
                 arm_payload = stable.model_dump(mode="json")
-                arm_payload.update(policy=policy, policy_sha256=_canonical_sha(policy))
+                arm_payload.update(policy=policy, policy_sha256=canonical_sha(policy))
                 candidate_arm = type(stable).model_validate(arm_payload)
                 patch_payload = {"policy": dict(spec.get("policy") or {})}
             else:
@@ -324,7 +325,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     generator_model_sha=spec.get("generator_model_sha"),
                     generator_execution_sha=spec.get("generator_execution_sha"),
                     registered_at_ms=registered_at_ms,
-                    candidate_patch_sha=_canonical_sha(patch_payload),
+                    candidate_patch_sha=canonical_sha(patch_payload),
                     declared_target_dimensions=dimensions,
                     guardrails=tuple(str(value) for value in spec.get("guardrails") or ()),
                 )
@@ -479,11 +480,6 @@ def _learning_model_adapter(conn: Any, *, settings: Any, live: bool) -> Any:
     return RecordReplayModelAdapter({str(row["request_sha256"]): row["response"] for row in rows})
 
 
-def _canonical_sha(value: Any) -> str:
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
 def _insert_learning_artifact(
     conn: Any,
     *,
@@ -493,7 +489,9 @@ def _insert_learning_artifact(
     created_at_ms: int,
 ) -> str:
     public = json.loads(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, default=str))
-    artifact_sha = _canonical_sha({"kind": kind, "payload": public})
+    from tracefold.news import canonical_sha
+
+    artifact_sha = canonical_sha({"kind": kind, "payload": public})
     conn.execute(
         "INSERT INTO news_learning_artifacts "
         "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "

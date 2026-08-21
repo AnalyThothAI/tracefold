@@ -45,6 +45,7 @@ NEWS_TABLES = {
     "news_review_records_v1",
     "news_review_external_source_v1",
     "news_review_pairwise_tasks_v1",
+    "news_review_active_agent_v1",
     # #75 instrument universe: a News-owned provider fact table plus its alias map.
     "news_market_instruments",
     "news_symbol_aliases",

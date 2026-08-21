@@ -1,5 +1,6 @@
 """Public News module interface (V3: broker-driven Event pipeline)."""
 
+from .artifact_identity import canonical_sha
 from .canary import apply_canary_control, parse_canary_control
 from .candidate_evaluator import (
     TRUSTED_ROOT_SHA,
@@ -103,6 +104,7 @@ __all__ = [
     "TriageVerdict",
     "apply_canary_control",
     "apply_control",
+    "canonical_sha",
     "event_outcome",
     "extract_fact_units",
     "grounding_rollup",

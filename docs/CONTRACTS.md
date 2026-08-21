@@ -323,7 +323,7 @@ pinned in `TRIAGE_PROMPT_SHA256_BY_VERSION`; editing the prompt without bumping
 are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
-verdict or a label is evidence and outlives the raw tier.
+verdict or accepted review is evidence and outlives the raw tier.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
@@ -446,8 +446,9 @@ generation/run identity or make a provider response the source of truth.
 maintenance lock, so operators can inspect the running singleton without
 interrupting it.
 
-`db audit` reports the migration revision, row `counts` for the eleven
-`news_*` tables, and `news_schema` exactness over those same tables.
+`db audit` reports the migration revision, row `counts` for every table in the
+code-owned `NEWS_TABLES` contract, and `news_schema` exactness over that same
+set (24 tables at migration `20260821_0288`).
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and

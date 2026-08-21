@@ -224,7 +224,7 @@
 
 - review adoption 再次归零：默认 queue、提交并下一条、覆盖缺口可见；
 - reviewer 被候选风格带偏：validation A/B 隐藏 arm、diff、价格和目标方向；
-- candidate 拉高读者负载：peak ≤30/h、mean 不超过 stable + max(2/h,10%)；
+- candidate 改变读者负载：stable/candidate 的每小时均值与峰值只作为报告证据，不能阻止一个已经满足语义条件的独立事实发送，也不能单独阻止候选发布；
 - mutable model alias 漂移：报告明确标为 mutable，不声称 exact snapshot；
 - canary 造成双发：分臂在模型前持久化，每 Event 一 arm，无同步 fallback；
 - 结果不显著却想上线：interval 跨 0、证据不足或预算耗尽一律 `UNKNOWN`。
@@ -241,13 +241,17 @@
 
 本工作树在目标 schema `20260821_0288` 上完成了以下回归；这些数字证明实现没有破坏既有合同，不能替代未来真实 holdout 与 canary：
 
-- 后端全量（含 integration/e2e/golden/slow real-process）：`555 passed`；
+- 后端全量（含 integration/e2e/golden/slow real-process、`0283 → 0288` 有数据迁移演练与旧卷 review-role 引导）：`580 passed`；
 - 前端 Vitest：`162 passed`；ESLint + 前端架构：`76 passed`；production build 与 Prettier：PASS；
 - Playwright 四种视口：`63 passed`、`53 skipped`（按 project/viewport 条件跳过），四张 golden snapshot 复核通过；
-- Ruff check/format、MyPy `117 source files`、compileall、CLI help/OpenAPI/generated-schema drift 与 `git diff --check`：PASS；
+- Ruff check/format、MyPy `118 source files`、compileall、CLI help/OpenAPI/generated-schema drift 与 `git diff --check`：PASS；
 - `#118` retention 测试覆盖 90/365 天边界、当前/上一 distinct stable pin、active canary/release chain、stale rejected 清理、rollback receipt、worker-only 权限、每表 bounded batch、cold-lane 10 秒 deadline 与错误隔离。
 
-生产数据库仍为 `0283`。上面所有验证均没有迁移生产、写 review、切 shadow/canary 或改变 stable pointer。
+生产数据库仍为 `0283`。只读 preflight 还确认旧卷没有
+`tracefold_review` 登录，且本机 `postgres_review_password` 路径是旧 bind
+mount 留下的目录而不是密钥文件；代码现会 fail closed，并提供停库后
+`make db-provision-review-role` 的一次性引导。上面所有验证均没有迁移
+生产、修复该本机路径、写 review、切 shadow/canary 或改变 stable pointer。
 
 ## 12. 完成定义
 

@@ -179,6 +179,87 @@ def test_postgres_init_script_rejects_invalid_password_charset_without_echoing_v
     assert invalid_password not in result.stderr
 
 
+def test_review_role_upgrade_script_uses_stopped_single_user_mode_without_echoing_password(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    password = "R" * 43
+    (secrets_dir / "postgres_review_password").write_text(password + "\n", encoding="utf-8")
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    (pgdata / "PG_VERSION").write_text("18\n", encoding="utf-8")
+    capture_path = tmp_path / "captured.sql"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "id": '#!/bin/sh\nprintf "1000\\n"\n',
+        "pg_ctl": "#!/bin/sh\nexit 1\n",
+        "postgres": '#!/bin/sh\ncat > "$TRACEFOLD_CAPTURE_SQL"\n',
+    }
+    for name, body in commands.items():
+        path = bin_dir / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o700)
+
+    result = subprocess.run(
+        ["sh", "docker/postgres-provision-review-role.sh", str(secrets_dir)],
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "PGDATA": str(pgdata),
+            "POSTGRES_DB": "tracefold",
+            "TRACEFOLD_CAPTURE_SQL": str(capture_path),
+        },
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "tracefold_review role provisioned" in result.stdout
+    assert password not in result.stdout and password not in result.stderr
+    sql = capture_path.read_text(encoding="utf-8")
+    assert len(sql.splitlines()) == 1
+    assert "CREATE ROLE tracefold_review" in sql
+    assert "ALTER ROLE tracefold_review" in sql
+    assert "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS" in sql
+    assert password in sql
+    assert "__TRACEFOLD_REVIEW_PASSWORD__" not in sql
+
+
+def test_review_role_upgrade_script_fails_closed_on_single_user_sql_error(tmp_path: Path) -> None:
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    password = "R" * 43
+    (secrets_dir / "postgres_review_password").write_text(password + "\n", encoding="utf-8")
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    (pgdata / "PG_VERSION").write_text("18\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "id": '#!/bin/sh\nprintf "1000\\n"\n',
+        "pg_ctl": "#!/bin/sh\nexit 1\n",
+        "postgres": '#!/bin/sh\ncat >/dev/null\nprintf "server ERROR: simulated\\n" >&2\nexit 0\n',
+    }
+    for name, body in commands.items():
+        path = bin_dir / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o700)
+
+    result = subprocess.run(
+        ["sh", "docker/postgres-provision-review-role.sh", str(secrets_dir)],
+        capture_output=True,
+        check=False,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "PGDATA": str(pgdata)},
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "reported a PostgreSQL error" in result.stderr
+    assert "simulated" not in result.stderr
+    assert password not in result.stdout and password not in result.stderr
+
+
 def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_membership() -> None:
     migration = Path("src/tracefold/platform/postgres/alembic/runtime_roles.sql").read_text(encoding="utf-8")
 

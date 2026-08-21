@@ -465,13 +465,13 @@ is theme-first (`crypto_treasury`, `mideast_energy`, `rates`, `trade`,
 `china_macro`, `metals`, `us_equity_macro`, `us_macro_data`), then the first
 A/A+ or cashtag asset; the final key is computed after Triage from the
 verdict's grounded primaries and scope, written back to `news_events`, and
-used by every window query, throttle, and mute.
+used by duplicate comparison, operator grouping, advisory locking, and mute.
 
 Triage (`tracefold.news.agents.triage_model`, `tracefold.news.triage_rules`)
 never retrieves: the worker builds reader context from settled sent cards,
 the consumer adds the **told ledger** — the cards the reader actually received
 in the last 4 h (`repository.told_ledger`: newest push/escalate verdicts whose
-first card was not terminalised, no degraded fallbacks, plus the preliminary
+first delivery has a durable `sent` receipt, no degraded fallbacks, plus the preliminary
 storyline's own newest cards fetched separately; at most 12 entries in the
 status bar, up to six same-storyline slots reserved, the rest the newest
 cross-storyline cards, each with index `i`, age, magnitude, direction,
@@ -548,11 +548,11 @@ counts toward the circuit and records `finish_reason`, `output_tokens`, and
 persists in one transaction under a per-storyline advisory lock on the final
 key (`repository.lock_storyline`; `pg_advisory_xact_lock('NEWS', hashtext(key))`),
 re-reading the reader evidence inside the lock so two same-key Events in flight
-cannot both pass the throttle (the lock raises the lane's 250 ms
+cannot both send the same fact (the lock raises the lane's 250 ms
 `lock_timeout` for that transaction only); when a card the model was not
 shown has landed in the ledger by then (compared by event id, not by clock —
-verdict rows carry their handler's start stamp), the consumer reloads window
-facts, control and hourly count under a fresh stamp and asks the model once
+verdict rows carry their handler's start stamp), the consumer reloads sent
+content evidence and control under a fresh stamp and asks the model once
 more with the fresh ledger (`reasked_after_told_change`) instead of pushing a
 restatement the reader just received; if that second call fails, the model's
 first judgment is persisted (`reask_failed`), never the rule baseline. `news_verdicts` stores `model_decision`, `rule_baseline_decision`,

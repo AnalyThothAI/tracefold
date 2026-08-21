@@ -122,7 +122,7 @@ describe("NewsReviewPage", () => {
               },
             },
             market_reactions: [],
-            reader_receipt: { state: null, truth: "not_received" },
+            reader_receipt: { state: null, truth: "not_received", truth_zh: "未送达" },
             rubric: {},
             task: newsReviewFixture().tasks?.[0],
             versions: {},
@@ -141,7 +141,7 @@ describe("NewsReviewPage", () => {
       await screen.findByText("South Korea DRAM export unit price continued to rise"),
     );
     expect(await screen.findByText("模型当时看到的事实")).toBeInTheDocument();
-    expect(screen.getByText("读者未收到")).toBeInTheDocument();
+    expect(screen.getByText("未送达")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "提交并下一条" })).toBeInTheDocument();
     expect(screen.queryByText(/复制.*标注命令/)).not.toBeInTheDocument();
   });

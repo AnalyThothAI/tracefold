@@ -555,29 +555,12 @@ class PriceRepository:
         trip that returns tens of rows rather than the window.
         """
 
-        window_ms = int(hours) * 3_600_000
-        start_ms, end_ms = int(now_ms) - window_ms, int(now_ms)
-        discovery_start_ms = max(start_ms, end_ms - _REVIEW_DISCOVERY_MAX_HOURS * 3_600_000)
-        # `ev` bounds the window, `agg` bounds the same window on the Reaction index.
-        params: list[Any] = [end_ms, end_ms, start_ms, end_ms]
-        cohort_filter = ""
-        if cohort is not None:
-            cohort_filter = (
-                "AND COALESCE(v.prompt_version, '') = %s "
-                "AND COALESCE(v.policy_version, '') = %s "
-                "AND COALESCE(v.model, '') = %s"
-            )
-            params.extend(cohort)
-        params.extend(
-            (
-                discovery_start_ms,
-                discovery_start_ms,
-                REACTION_METRIC_VERSION,
-                start_ms,
-                end_ms,
-            )
+        sql, params, start_ms, end_ms, discovery_start_ms = self.review_statement(
+            hours=hours,
+            now_ms=now_ms,
+            cohort=cohort,
         )
-        sections = self._review_sections(tuple(params), cohort_filter=cohort_filter)
+        sections = self._review_sections(sql, params)
         coverage = _coverage_rows(sections["coverage"][0] if sections["coverage"] else {})
         return {
             "meta": {
@@ -603,12 +586,53 @@ class PriceRepository:
             },
         }
 
-    def _review_sections(self, params: tuple[Any, ...], *, cohort_filter: str = "") -> dict[str, list[dict[str, Any]]]:
+    def _review_sections(self, sql: str, params: tuple[Any, ...]) -> dict[str, list[dict[str, Any]]]:
         """Every section of the page in one statement, tagged by section and carried as JSON rows."""
 
+        rows = self.conn.execute(sql, params).fetchall()
+        out: dict[str, list[dict[str, Any]]] = {
+            "coverage": [],
+            "miss": [],
+        }
+        for row in rows:
+            payload = row["payload"]
+            # psycopg hands jsonb back as a mapping when a loader is registered and as text otherwise; the
+            # section rows are small, so accept either rather than depending on connection setup.
+            out[str(row["section"])].append(dict(json.loads(payload) if isinstance(payload, str) else payload))
+        return out
+
+    @staticmethod
+    def review_statement(
+        *,
+        hours: int,
+        now_ms: int,
+        cohort: tuple[str, str, str] | None,
+    ) -> tuple[str, tuple[Any, ...], int, int, int]:
+        """Build the exact bounded market-review read used by serving and query audit."""
+
+        window_ms = int(hours) * 3_600_000
+        start_ms, end_ms = int(now_ms) - window_ms, int(now_ms)
+        discovery_start_ms = max(start_ms, end_ms - _REVIEW_DISCOVERY_MAX_HOURS * 3_600_000)
+        params: list[Any] = [end_ms, end_ms, start_ms, end_ms]
+        cohort_filter = ""
+        if cohort is not None:
+            cohort_filter = (
+                "AND COALESCE(v.prompt_version, '') = %s "
+                "AND COALESCE(v.policy_version, '') = %s "
+                "AND COALESCE(v.model, '') = %s"
+            )
+            params.extend(cohort)
+        params.extend(
+            (
+                discovery_start_ms,
+                discovery_start_ms,
+                REACTION_METRIC_VERSION,
+                start_ms,
+                end_ms,
+            )
+        )
         facts_cte = _REVIEW_FACTS_CTE.format(cohort_filter=cohort_filter)
-        rows = self.conn.execute(
-            f"""
+        sql = f"""
             WITH {facts_cte},
             -- One coverage aggregate and one bounded discovery queue over one materialized fact set.  #112
             -- retired the direction/magnitude/event-type price rankings: they were neither causal quality
@@ -648,19 +672,8 @@ class PriceRepository:
             -- resolves to the column, and `to_jsonb(direction)` silently returned the string 'bullish'.
             SELECT 'coverage' AS section, to_jsonb(c) AS payload FROM coverage c
             UNION ALL SELECT 'miss', to_jsonb(x) FROM miss x
-            """,
-            params,
-        ).fetchall()
-        out: dict[str, list[dict[str, Any]]] = {
-            "coverage": [],
-            "miss": [],
-        }
-        for row in rows:
-            payload = row["payload"]
-            # psycopg hands jsonb back as a mapping when a loader is registered and as text otherwise; the
-            # section rows are small, so accept either rather than depending on connection setup.
-            out[str(row["section"])].append(dict(json.loads(payload) if isinstance(payload, str) else payload))
-        return out
+            """
+        return sql, tuple(params), start_ms, end_ms, discovery_start_ms
 
     def _miss_rows(self, misses: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Withheld Events ranked by how much the market moved afterwards — a queue, never a verdict.

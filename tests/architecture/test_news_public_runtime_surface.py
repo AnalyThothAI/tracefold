@@ -61,6 +61,7 @@ PUBLIC_NEWS_INTERFACE = {
     "apply_control",
     "apply_canary_control",
     "event_outcome",
+    "canonical_sha",
     # #87: the console's «符号落表» funnel segment folds two halves neither repository reaches across for —
     # News owns which tags an Event carried, the instrument universe owns what they name. The fold is pure,
     # so the HTTP route imports it from the package root like `status_health`.

@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, and `/api/news/review` over HTTP. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out, and the Macro lane was removed in #68 and `web/tests/architecture/macroLaneHardCut.test.ts` keeps it out.
+The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/review`, and `/api/news/review/tasks/{task_id}/evidence` over HTTP; the two ReviewDesk mutation endpoints are the only browser writes. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out, and the Macro lane was removed in #68 and `web/tests/architecture/macroLaneHardCut.test.ts` keeps it out.
 
 ## Source Layer Map (`web/src/`)
 

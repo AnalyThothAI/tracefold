@@ -236,7 +236,7 @@
   .news-review-pair section > b {
     width: 24px;
     padding: 3px 0;
-    border-radius: 999px;
+    border-radius: var(--radius-lg);
     color: var(--surface-panel);
     background: var(--text-primary);
     text-align: center;
@@ -409,7 +409,7 @@
   .news-review-proposals header span,
   .news-review-proposals li span {
     padding: 3px 7px;
-    border-radius: 999px;
+    border-radius: var(--radius-lg);
     background: var(--surface-sunken);
     font: var(--type-mono-meta);
   }

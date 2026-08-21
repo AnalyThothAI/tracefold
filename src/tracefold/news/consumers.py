@@ -617,7 +617,7 @@ def _close_circuit_incidents(repos: Any, *, now_ms: int) -> Any:
 
 def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The ledger exactly as the model saw it (plus event ids), so ``news why`` can name the restated card and
-    ``replay-decisions`` can rebuild ``StorylineStatus.told_directions``."""
+    CandidateEvaluator recordings can reproduce ``StorylineStatus.told_directions``."""
 
     return [
         {
@@ -1059,7 +1059,7 @@ class TriageConsumer:
         trace["storyline_key"] = s.final_key
         trace["seen_count"] = len(status.seen_headlines)
         if decision.seen_similarity is not None:
-            # What the throttle actually measured, so `news why` can name the card this one resembled instead of
+            # What the duplicate check actually measured, so `news why` can name the card this one resembled instead of
             # reporting a bare rule (#81). ``seen_scope=all`` means the normal
             # push path was compared with the received-card ledger.
             trace["seen_similarity"] = round(float(decision.seen_similarity), 4)

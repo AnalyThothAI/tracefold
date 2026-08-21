@@ -135,6 +135,17 @@ class _AlwaysUnavailableAdapter:
         return ModelObservation(error_code="provider_unavailable")
 
 
+class _StabilityAdapter(_StaticModelAdapter):
+    async def invoke(self, invocation: ModelInvocation) -> ModelObservation:
+        observation = await super().invoke(invocation)
+        verdict = dict(observation.verdict or {})
+        if invocation.arm == "candidate":
+            verdict["headline_zh"] = "候选：DRAM 合约价续涨"
+        if invocation.arm == "candidate" and invocation.trial == 3:
+            verdict.update(magnitude=0, actionable=False, decision="drop")
+        return observation.model_copy(update={"verdict": verdict})
+
+
 def _prompt_candidate(
     conn,
     *,
@@ -221,7 +232,7 @@ def _insert_stage_pass(conn, *, candidate_sha: str, stage: str) -> None:
     )
 
 
-def _accepted_event(conn) -> str:
+def _accepted_event(conn, *, why: str = "fail") -> str:
     event_id = _open_event(conn)
     stable = _arm()
     conn.execute(
@@ -237,7 +248,7 @@ def _accepted_event(conn) -> str:
     with repositories_for_connection(conn).transaction():
         desk.submit(
             TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
-            _rubric(),
+            _rubric(why=why),
             principal=PRINCIPAL,
             idempotency_key=str(uuid.uuid4()),
         )
@@ -328,6 +339,104 @@ def test_policy_candidate_freezes_accepted_evidence_and_uses_zero_model_calls(co
             "candidate": candidate_policy["similarity_max"],
         }
     }
+
+
+def test_active_stable_is_checked_before_freeze_or_model_work(conn) -> None:
+    stale = _arm(model="other-model")
+    adapter = _StaticModelAdapter()
+    evaluator = CandidateEvaluator(conn, stable=stale, model_adapter=adapter)
+
+    with pytest.raises(ValueError, match="news_learning_active_stable_mismatch"):
+        asyncio.run(
+            evaluator.freeze_dataset(
+                DatasetSpec(
+                    role="development",
+                    window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+                )
+            )
+        )
+    assert adapter.calls == []
+
+
+def test_successful_critical_case_cannot_authorize_a_failure_cluster(conn) -> None:
+    _accepted_event(conn, why="pass")
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, model_adapter=RecordReplayModelAdapter({}))
+    development = asyncio.run(
+        bootstrap.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate = _prompt_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        model_adapter=_StaticModelAdapter(),
+        candidate_catalog=(candidate,),
+    )
+
+    with pytest.raises(ValueError, match="news_learning_proposal_failure_cluster_unverified"):
+        asyncio.run(
+            evaluator.evaluate(
+                EvaluationRequest(
+                    development_dataset_sha=development.artifact_sha,
+                    candidate_sha=candidate.candidate_sha,
+                    stage="offline",
+                )
+            )
+        )
+
+
+def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
+    _accepted_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, model_adapter=RecordReplayModelAdapter({}))
+    development = asyncio.run(
+        bootstrap.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate = _prompt_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+    )
+    adapter = _StabilityAdapter()
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        model_adapter=adapter,
+        candidate_catalog=(candidate,),
+    )
+    report = asyncio.run(
+        evaluator.evaluate(
+            EvaluationRequest(
+                development_dataset_sha=development.artifact_sha,
+                candidate_sha=candidate.candidate_sha,
+                stage="offline",
+            )
+        )
+    )
+
+    candidate_stability = report.evidence["stability"]["candidate"]
+    assert len(candidate_stability) == 1
+    assert candidate_stability[0]["trials"] == 3
+    assert candidate_stability[0]["pass_n"] == 2
+    assert candidate_stability[0]["pass_k"] is False
+    assert len(candidate_stability[0]["trial_results"]) == 3
+    assert len(adapter.calls) == 6
 
 
 def test_exact_one_variable_is_rejected_before_any_model_call(conn) -> None:

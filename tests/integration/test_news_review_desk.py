@@ -29,12 +29,22 @@ pytestmark = pytest.mark.integration
 
 NOW = 1_787_287_000_000
 PRINCIPAL = Principal(subject="operator")
+ACTIVE_BUNDLE = "1" * 64
 
 
 @pytest.fixture()
 def conn():
     connection = connect_postgres_test(read_only=False)
     migrate(connection)
+    with repositories_for_connection(connection).transaction():
+        repositories_for_connection(connection).news.register_agent_runtime_manifest(
+            manifest_sha="a" * 64,
+            stable_bundle_sha=ACTIVE_BUNDLE,
+            candidate_shas=(),
+            image_digest="sha256:review-test",
+            runtime_revision="review-test",
+            now_ms=NOW - 24 * 3_600_000,
+        )
     yield connection
     connection.close()
 
@@ -45,7 +55,7 @@ def _open_event(
     delivered: bool = True,
     hit_id: int = 112001,
     title: str = "Micron says DRAM contract prices rose again in August",
-    bundle_sha: str = "",
+    bundle_sha: str = ACTIVE_BUNDLE,
 ) -> str:
     repos = repositories_for_connection(conn)
     wire = {
@@ -167,14 +177,14 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
     assert evidence["evidence"]["focus_fact"]["text"].startswith("Micron")
     assert evidence["agent"]["cohort"] == "v9/v6/test-model"
     assert evidence["agent"]["agent_cohort"]["cohort_sha256"] == task["agent_cohort"]["cohort_sha256"]
-    cohort_queue = desk.open(DeskQuery(cohort="v9/v6/test-model"), principal=PRINCIPAL)
-    repeated_cohort_queue = desk.open(DeskQuery(cohort="v9/v6/test-model"), principal=PRINCIPAL)
+    cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
+    repeated_cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
     # Delivered cases use a deterministic 25% sample.  This particular case
     # may be absent, but reopening the queue must not draw a different sample.
     assert cohort_queue["tasks"] == repeated_cohort_queue["tasks"]
     assert all(item["event_id"] == event_id for item in cohort_queue["tasks"])
     with pytest.raises(ValueError, match="news_review_cohort_invalid"):
-        desk.open(DeskQuery(cohort="v9/v6"), principal=PRINCIPAL)
+        desk.open(DeskQuery(cohort="v9/v6/test-model"), principal=PRINCIPAL)
 
     key = str(uuid.uuid4())
     with repositories_for_connection(conn).transaction():
@@ -219,13 +229,19 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
 
 def test_coverage_keeps_exact_agent_bundles_separate(conn) -> None:
     first_bundle, second_bundle = "1" * 64, "2" * 64
-    _open_event(conn, hit_id=112011, title="Micron DRAM contract prices rise in August", bundle_sha=first_bundle)
-    _open_event(
+    first_event = _open_event(
+        conn,
+        hit_id=112011,
+        title="Micron DRAM contract prices rise in August",
+        bundle_sha=first_bundle,
+    )
+    second_event = _open_event(
         conn,
         hit_id=112012,
         title="Federal Reserve governor announces an immediate resignation",
         bundle_sha=second_bundle,
     )
+    conn.execute("UPDATE news_events SET priority = 'high' WHERE event_id = ANY(%s)", ([first_event, second_event],))
 
     coverage = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="coverage"), principal=PRINCIPAL)
     by_cohort = {row["cohort"]: row for row in coverage["cohorts"]}
@@ -233,6 +249,10 @@ def test_coverage_keeps_exact_agent_bundles_separate(conn) -> None:
     assert by_cohort[first_bundle]["agent"]["bundle_sha"] == first_bundle
     assert by_cohort[second_bundle]["agent"]["bundle_sha"] == second_bundle
     assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {"v9/v6/test-model"}
+    default_queue = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(), principal=PRINCIPAL)
+    assert {task["event_id"] for task in default_queue["tasks"]} == {first_event}
+    second_queue = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(cohort=second_bundle), principal=PRINCIPAL)
+    assert {task["event_id"] for task in second_queue["tasks"]} == {second_event}
 
 
 def test_evidence_refs_are_bounded_per_entry() -> None:
@@ -275,7 +295,9 @@ def test_high_reaction_held_case_is_discovery_only_and_not_release_truth(conn) -
     task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
     assert task["selection"] == {
         "stratum": "high_reaction",
+        "stratum_zh": "高波动发现样本（非成绩）",
         "reason": "market_discovery_only",
+        "reason_zh": "仅因事后波动进入发现队列",
         "sampling_probability": 1.0,
         "selection_version": "news_review_sampler_v1",
     }
@@ -310,6 +332,65 @@ def test_task_version_conflicts_when_delivery_truth_changes(conn) -> None:
         )
     with repos.transaction(), pytest.raises(ValueError, match="news_review_task_version_conflict"):
         desk.submit(ref, _rubric(), principal=PRINCIPAL, idempotency_key=str(uuid.uuid4()))
+
+
+def test_acceptance_is_bound_to_exact_task_version(conn) -> None:
+    event_id = _open_event(conn, delivered=False)
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    with repositories_for_connection(conn).transaction():
+        desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            _rubric(),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+    assert desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]["review_status"] == "accepted"
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        assert repos.news.begin_delivery(event_id=event_id, kind="first", card={}, now_ms=NOW - 1000) == "new"
+        assert repos.news.settle_delivery(
+            event_id=event_id,
+            kind="first",
+            state="sent",
+            receipt={"ok": True},
+            error_code=None,
+            now_ms=NOW,
+        )
+    changed = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    assert changed["task_version"] != task["task_version"]
+    assert changed["review_status"] == "pending"
+    assert changed["accepted_review"] is None
+
+
+def test_stronger_evidence_creates_a_new_pending_review_task(conn) -> None:
+    event_id = _open_event(conn)
+    desk = ReviewDesk(conn, now_ms=NOW)
+    first = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    with repositories_for_connection(conn).transaction():
+        desk.submit(
+            TaskRef(task_id=first["task_id"], task_version=first["task_version"]),
+            _rubric(),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        conn.execute(
+            "UPDATE news_events SET member_count = member_count + 1, last_member_at_ms = last_member_at_ms + 1 "
+            "WHERE event_id = %s",
+            (event_id,),
+        )
+        evidence = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=NOW + 1)
+    assert evidence["evidence_version"] == 2
+
+    second = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    assert second["evidence_version"] == 2
+    assert second["verdict_evidence_version"] == 1
+    assert second["task_id"] != first["task_id"]
+    assert second["review_status"] == "pending"
+    assert second["accepted_review"] is None
 
 
 def test_delivery_terminal_error_code_distinguishes_unknown_from_known_failure(conn) -> None:

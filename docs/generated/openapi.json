@@ -3331,6 +3331,17 @@
               }
             ],
             "title": "Stratum"
+          },
+          "stratum_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stratum Zh"
           }
         },
         "required": [
@@ -4447,6 +4458,11 @@
             ],
             "title": "Truth",
             "type": "string"
+          },
+          "truth_zh": {
+            "default": "",
+            "title": "Truth Zh",
+            "type": "string"
           }
         },
         "required": [
@@ -4469,6 +4485,11 @@
             ],
             "title": "Reason"
           },
+          "reason_zh": {
+            "default": "",
+            "title": "Reason Zh",
+            "type": "string"
+          },
           "sampling_probability": {
             "title": "Sampling Probability",
             "type": "number"
@@ -4479,6 +4500,11 @@
           },
           "stratum": {
             "title": "Stratum",
+            "type": "string"
+          },
+          "stratum_zh": {
+            "default": "",
+            "title": "Stratum Zh",
             "type": "string"
           }
         },
@@ -4733,6 +4759,11 @@
             ],
             "title": "Final Decision"
           },
+          "final_decision_zh": {
+            "default": "",
+            "title": "Final Decision Zh",
+            "type": "string"
+          },
           "headline": {
             "anyOf": [
               {
@@ -4791,6 +4822,17 @@
           "task_version": {
             "title": "Task Version",
             "type": "string"
+          },
+          "verdict_evidence_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict Evidence Version"
           }
         },
         "required": [

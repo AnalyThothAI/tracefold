@@ -11,7 +11,7 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up status logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help up status logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-provision-review-role db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -82,6 +82,18 @@ config: ## print effective runtime config
 
 db-migrate: ## apply PostgreSQL migrations
 	@$(TRACEFOLD) db migrate
+
+db-provision-review-role: preflight init ## one-time role bootstrap for an existing pre-#112 PostgreSQL volume
+	@set -eu; \
+		container_id=$$(docker compose ps -q postgres); \
+		if [ -n "$$container_id" ]; then \
+			echo "postgres is running; stop serve, workers, migrate, and postgres before provisioning" >&2; \
+			exit 1; \
+		fi; \
+		docker compose run --rm --no-deps --user postgres \
+			--entrypoint /bin/sh \
+			-v "$(CURDIR)/docker/postgres-provision-review-role.sh:/usr/local/bin/tracefold-provision-review-role:ro" \
+			postgres /usr/local/bin/tracefold-provision-review-role
 
 db-health: ## check PostgreSQL liveness and migration version
 	@$(TRACEFOLD) db health
@@ -194,4 +206,3 @@ docs-db-schema: ## regenerate docs/generated/db-schema.md (requires Postgres)
 
 docs-cli-help: ## regenerate docs/generated/cli-help.md
 	@uv run python scripts/regen_cli_help.py
-

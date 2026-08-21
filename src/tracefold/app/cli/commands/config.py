@@ -105,19 +105,19 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
 
 def _ensure_postgres_password_file(app_home: Path, *, role: str) -> Path:
     path = app_home / f"postgres_{role}_password"
-    if not path.exists():
-        path.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
-    path.chmod(0o600)
-    return path
+    return _ensure_password_file(path)
 
 
 def _ensure_bootstrap_postgres_password_file(app_home: Path) -> Path:
     path = app_home / "postgres_password"
+    return _ensure_password_file(path)
+
+
+def _ensure_password_file(path: Path) -> Path:
+    if path.exists() and not path.is_file():
+        raise ValueError(f"postgres_password_path_not_file:{path.name}")
     if not path.exists():
-        path.write_text(
-            secrets.token_urlsafe(32) + "\n",
-            encoding="utf-8",
-        )
+        path.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
     path.chmod(0o600)
     return path
 

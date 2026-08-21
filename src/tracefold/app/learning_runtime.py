@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any
 
-from tracefold.news import ArmManifest
+from tracefold.news import ArmManifest, canonical_sha
 from tracefold.news.agents.prompts import TRIAGE_PROMPT_SHA256, TRIAGE_SCHEMA_SHA256, TRIAGE_SYSTEM_PROMPT
 from tracefold.news.models import TRIAGE_PROMPT_VERSION
 from tracefold.platform.config.settings import news_model_availability
@@ -45,11 +43,6 @@ def active_arm_manifest(settings: Any) -> ArmManifest:
         policy=policy,
         policy_sha256=canonical_sha(policy),
     )
-
-
-def canonical_sha(value: Any) -> str:
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def runtime_manifest_sha(

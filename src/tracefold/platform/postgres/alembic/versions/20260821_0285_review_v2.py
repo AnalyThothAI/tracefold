@@ -24,12 +24,7 @@ def upgrade() -> None:
         """
         DO $$ BEGIN
           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_review') THEN
-            IF COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) THEN
-              CREATE ROLE tracefold_review LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
-                NOREPLICATION NOBYPASSRLS;
-            ELSE
-              RAISE EXCEPTION 'tracefold_review_role_missing:provision_runtime_role_before_migration';
-            END IF;
+            RAISE EXCEPTION 'tracefold_review_role_missing:provision_runtime_role_before_migration';
           END IF;
         END $$
         """
@@ -140,9 +135,10 @@ def upgrade() -> None:
     )
 
     # The review login can revalidate a virtual task without being able to read
-    # any News business table directly.  The view contains the exact historical
-    # evidence bound to the latest verdict (or the latest snapshot if no verdict
-    # exists) and only presentation-safe fields.
+    # any News business table directly. The task follows the latest immutable
+    # evidence snapshot while separately naming the evidence version used by
+    # the latest verdict. Stronger post-verdict evidence is therefore a new
+    # task and cannot inherit an acceptance for the old question.
     op.execute(
         """
         CREATE VIEW news_review_task_source_v1 WITH (security_barrier = true) AS
@@ -157,6 +153,7 @@ def upgrade() -> None:
                e.storyline_key,
                e.ingest_mode,
                v.created_at_ms AS verdict_created_at_ms,
+               v.evidence_version AS verdict_evidence_version,
                v.final_decision,
                v.degraded,
                v.error_code AS verdict_error_code,
@@ -181,11 +178,7 @@ def upgrade() -> None:
           JOIN LATERAL (
             SELECT x.* FROM news_event_evidence_snapshots x
              WHERE x.event_id = e.event_id
-               AND x.evidence_version = COALESCE(
-                 v.evidence_version,
-                 (SELECT max(z.evidence_version) FROM news_event_evidence_snapshots z
-                   WHERE z.event_id = e.event_id)
-               )
+             ORDER BY x.evidence_version DESC LIMIT 1
           ) s ON true
           LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
           LEFT JOIN LATERAL (

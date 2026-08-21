@@ -147,7 +147,7 @@ class NewsPushSettings(BaseModel):
         return normalized or None
 
     @model_validator(mode="after")
-    def validate_limits(self) -> NewsPushSettings:
+    def validate_pacing(self) -> NewsPushSettings:
         if self.min_interval_seconds < 0 or self.min_interval_seconds > 60:
             raise ValueError("news_push_min_interval_invalid")
         return self

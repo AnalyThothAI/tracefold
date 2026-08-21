@@ -205,10 +205,12 @@ function QueueView({
                     {task.headline || (task.mode === "pairwise" ? "匿名输出 A / B" : task.task_id)}
                   </span>
                   <small>
-                    {stratumLabel(task.selection.stratum)}
-                    {task.final_decision ? ` · ${decisionLabel(task.final_decision)}` : ""}
+                    {task.selection.stratum_zh || "未识别复盘分层"}
+                    {task.final_decision ? ` · ${task.final_decision_zh || "未识别送达决定"}` : ""}
                   </small>
-                  {task.reader_receipt ? <b>{receiptLabel(task.reader_receipt.truth)}</b> : null}
+                  {task.reader_receipt ? (
+                    <b>{task.reader_receipt.truth_zh || "送达状态未知"}</b>
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -664,7 +666,7 @@ function CoverageBuckets({ rows, title }: { rows: NewsReview["strata"]; title: s
             <div key={`${row.stratum || row.cohort}-${index}`}>
               <span title={row.cohort || undefined}>
                 {row.stratum
-                  ? stratumLabel(row.stratum)
+                  ? row.stratum_zh || "未识别复盘分层"
                   : `${row.legacy_cohort || "Agent"} · ${row.cohort?.slice(0, 8) || "未知"}`}
               </span>
               <b>
@@ -694,14 +696,14 @@ function ProposalView({ review }: { review: NewsReview }) {
             return (
               <article key={String(proposal.candidate_sha || index)}>
                 <header>
-                  <span>{proposalStatus(String(proposal.status || "proposed"))}</span>
+                  <span>{String(proposal.status_zh || "证据状态未知")}</span>
                   <code>{shortSha(proposal.candidate_sha)}</code>
                 </header>
                 <h3>{String(proposal.hypothesis || "未填写假设")}</h3>
                 <p>
-                  单变量：{String(proposal.target || "—")} · 目标维度：
-                  {Array.isArray(proposal.target_dimensions)
-                    ? proposal.target_dimensions.join("、")
+                  单变量：{String(proposal.target_zh || "未知变更")} · 目标维度：
+                  {Array.isArray(proposal.target_dimensions_zh)
+                    ? proposal.target_dimensions_zh.join("、")
                     : "—"}
                 </p>
                 <dl>
@@ -726,15 +728,15 @@ function ProposalView({ review }: { review: NewsReview }) {
                   {timeline.length ? (
                     timeline.map((step, stepIndex) => (
                       <li key={`${String(step.report_sha)}-${stepIndex}`}>
-                        <b>{String(step.stage || "unknown").toUpperCase()}</b>
+                        <b>{String(step.stage_zh || "未知阶段")}</b>
                         <span data-outcome={String(step.outcome || "unknown")}>
-                          {String(step.outcome || "unknown").toUpperCase()}
+                          {String(step.outcome_zh || "证据状态未知")}
                         </span>
                         <small>
-                          {Array.isArray(step.blockers) && step.blockers.length
-                            ? `阻塞：${step.blockers.join("、")}`
-                            : Array.isArray(step.failures) && step.failures.length
-                              ? `失败：${step.failures.join("、")}`
+                          {Array.isArray(step.blockers_zh) && step.blockers_zh.length
+                            ? `阻塞：${step.blockers_zh.join("、")}`
+                            : Array.isArray(step.failures_zh) && step.failures_zh.length
+                              ? `失败：${step.failures_zh.join("、")}`
                               : "证据已封存"}
                         </small>
                       </li>
@@ -818,13 +820,13 @@ function MarketView({ review }: { review: NewsReview }) {
               return (
                 <article key={String(item.fact_cluster_key || item.event_id)}>
                   <div>
-                    <span>{String(item.final_decision || "held")}</span>
+                    <span>{String(item.decision_zh || "未送达")}</span>
                     {clusterN > 1 ? <b>{clusterN} 个 Event / 1 个事实</b> : <b>1 个事实</b>}
                   </div>
                   <h3>{String(item.headline_zh || item.leader_title || "未命名事实")}</h3>
                   <p>
                     1H {formatBps(item.return_1h_bps)} · 4H {formatBps(item.return_4h_bps)} · 规则
-                    {String(item.override_rule || item.throttled_by || "unknown")}
+                    {String(item.override_rule_zh || item.throttled_by_zh || "未识别规则")}
                   </p>
                   <a href={`/news/events/${String(item.event_id)}`}>查看事件证据</a>
                 </article>
@@ -855,7 +857,8 @@ function BlindOutput({ label, output }: { label: string; output: Record<string, 
       <h3>{String(output.headline_zh || "—")}</h3>
       <p>{String(output.why_zh || "—")}</p>
       <small>
-        {String(output.final_decision || "—")} · magnitude {String(output.magnitude ?? "—")}
+        {String(output.final_decision_zh || "未识别送达决定")} · 重要程度{" "}
+        {String(output.magnitude ?? "—")}
       </small>
     </section>
   );
@@ -886,39 +889,6 @@ function SelectField({
   );
 }
 
-function receiptLabel(value: string) {
-  return value === "received" ? "读者已收到" : value === "unknown" ? "送达未知" : "读者未收到";
-}
-
-function stratumLabel(value: string) {
-  return (
-    {
-      delivery_ambiguous: "送达状态未知",
-      delivery_failed: "送达明确失败",
-      critical: "重点事件",
-      throttled: "同事实重复",
-      gate_suppress: "入口被拦截",
-      model_drop: "模型判断不推",
-      delivered: "已送达抽样",
-      high_reaction: "高波动发现样本（非成绩）",
-      random_control: "随机对照",
-      eventless_miss: "系统外漏报",
-      blind_pairwise: "匿名候选对比",
-    }[value] || value
-  );
-}
-
-function decisionLabel(value: string) {
-  return (
-    {
-      push: "推送",
-      escalate: "重点推送",
-      drop: "不推送",
-      throttled: "重复未推",
-    }[value] || value
-  );
-}
-
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
@@ -933,23 +903,6 @@ function formatBps(value: unknown) {
   if (!Number.isFinite(parsed)) return "—";
   const prefix = parsed > 0 ? "+" : "";
   return `${prefix}${parsed} bps`;
-}
-
-function proposalStatus(value: string) {
-  return (
-    {
-      proposed: "已提案",
-      evaluating: "评估中",
-      review_required: "需要更多证据",
-      rejected: "已拒绝",
-      shadow_ready: "可进入 Shadow",
-      canary_ready: "可进入 Canary",
-      canary: "Canary 运行中",
-      canary_closed: "Canary 已关闭",
-      promotion_ready: "等待人工发布",
-      rolled_back: "已回滚",
-    }[value] || value
-  );
 }
 
 function parseView(value: string | null): ReviewView {
