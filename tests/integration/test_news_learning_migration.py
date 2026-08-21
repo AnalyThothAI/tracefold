@@ -221,7 +221,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         assert epoch["program_factory_id"] == "tracefold.news.semantic_program.factory_v1"
         assert epoch["artifact_schema_version"] == "news_semantic_program_artifact_v1"
         assert epoch["baseline_program_version"] == "news_semantic_program_v1"
-        assert epoch["baseline_program_sha256"] == ("04b10a7cc83cb876b79d89f2727caab747e503d326cfdaa5636f76c2648b10c8")
+        assert epoch["baseline_program_sha256"] == ("87c62ed2b3a89eadddbdc90bdab03405c11da30ee259da49e11b0bd973094119")
         legacy = conn.execute(
             "SELECT predictor_name, call_index, attempt, route, cached_tokens, total_tokens, "
             "provider_cost_microusd FROM news_model_recordings WHERE recording_sha = %s",

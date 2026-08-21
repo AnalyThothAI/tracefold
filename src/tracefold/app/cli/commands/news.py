@@ -243,9 +243,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     action = str(args.learning_command)
     from tracefold.app.learning_runtime import active_arm_manifest
 
-    stable = active_arm_manifest(settings)
     try:
         if action == "canary":
+            from tracefold.app.learning_runtime import artifact_valid_candidate_bundles
             from tracefold.app.repositories import repositories
             from tracefold.news import apply_canary_control, parse_canary_control
             from tracefold.news.agents.programs.candidates import compiled_canary_candidates
@@ -258,23 +258,24 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "reason": getattr(args, "reason", None),
             }
             command = parse_canary_control(payload)
-            compiled = compiled_canary_candidates()
-            shipped = {
-                sha: candidate.candidate_arm.bundle_sha
-                for sha, candidate in compiled.items()
-                if candidate.parent_stable_sha == stable.bundle_sha
-            }
+            stable_bundle_sha = ""
+            shipped: dict[str, str] = {}
+            if subcommand in {"arm", "resume"}:
+                stable = active_arm_manifest(settings)
+                stable_bundle_sha = stable.bundle_sha
+                shipped = artifact_valid_candidate_bundles(stable, compiled_canary_candidates())
             stamp = int(time.time() * 1000)
             with repositories(settings) as repos, repos.transaction():
                 result = apply_canary_control(
                     repos,
                     command,
-                    stable_bundle_sha=stable.bundle_sha,
+                    stable_bundle_sha=stable_bundle_sha,
                     shipped_candidates=shipped,
                     now_ms=stamp,
                 )
             return 0, {"ok": True, "data": result}
 
+        stable = active_arm_manifest(settings)
         if action == "compile":
             from tracefold.app.llm import configured_lm_endpoint
             from tracefold.news.agents.program_compiler import (

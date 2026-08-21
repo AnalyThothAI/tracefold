@@ -610,6 +610,104 @@ def _program_error(
     )
 
 
+def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_calls() -> None:
+    synthetic = _program_call(
+        predictor="event_semantics",
+        marker="0",
+        input_tokens=101,
+        output_tokens=102,
+        cached_tokens=103,
+        provider_cost_microusd=10_000,
+    ).model_copy(
+        update={
+            "physical_provider_call": False,
+            "latency_ms": 1_000,
+            "error_code": "news_program_model_binding_unresolved",
+        }
+    )
+    fallback_calls = (
+        _program_call(
+            predictor="event_semantics",
+            marker="1",
+            input_tokens=5,
+            output_tokens=2,
+            cached_tokens=1,
+            provider_cost_microusd=11,
+        ).model_copy(update={"route": "fallback"}),
+        _program_call(
+            predictor="reader_card",
+            marker="2",
+            input_tokens=7,
+            output_tokens=3,
+            cached_tokens=0,
+            provider_cost_microusd=13,
+        ).model_copy(update={"route": "fallback"}),
+    )
+    program_trace = _program_trace(
+        fallback_from="news_program_model_binding_unresolved",
+        verdict_sha256=None,
+        calls=(synthetic, *fallback_calls),
+    )
+
+    usage = consumers_module._usage_from_partial_trace(program_trace, attempts=3)
+    trace: dict[str, Any] = {}
+    executions = [{"trace": program_trace.model_dump(mode="json"), "usage": usage}]
+    consumers_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
+
+    assert usage == {
+        "wall_latency_ms": 14,
+        "call_count": 3,
+        "physical_call_count": 2,
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "cached_tokens": 1,
+        "total_tokens": 17,
+        "provider_cost_microusd": 24,
+    }
+    assert trace["model_attempts"] == 3
+    assert trace["physical_model_attempts"] == 2
+    assert trace["provider_cost_microusd"] == 24
+    assert len(trace["program_executions"][0]["trace"]["calls"]) == 3
+
+
+def test_failed_program_synthetic_only_trace_has_zero_physical_cost() -> None:
+    synthetic = _program_call(
+        predictor="event_semantics",
+        marker="0",
+        input_tokens=101,
+        output_tokens=102,
+        cached_tokens=103,
+        provider_cost_microusd=10_000,
+    ).model_copy(
+        update={
+            "physical_provider_call": False,
+            "latency_ms": 1_000,
+            "error_code": "news_program_model_binding_unresolved",
+        }
+    )
+    program_trace = _program_trace(verdict_sha256=None, calls=(synthetic,))
+
+    usage = consumers_module._usage_from_partial_trace(program_trace, attempts=1)
+    trace: dict[str, Any] = {}
+    executions = [{"trace": program_trace.model_dump(mode="json"), "usage": usage}]
+    consumers_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
+
+    assert usage == {
+        "wall_latency_ms": 0,
+        "call_count": 1,
+        "physical_call_count": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+        "total_tokens": 0,
+        "provider_cost_microusd": 0,
+    }
+    assert trace["model_attempts"] == 1
+    assert trace["physical_model_attempts"] == 0
+    assert trace["provider_cost_microusd"] == 0
+    assert trace["program_executions"][0]["trace"]["calls"][0]["physical_provider_call"] is False
+
+
 class _ScriptedSemanticJudge:
     """SemanticJudge double that records typed contexts and returns or raises scripted outcomes."""
 

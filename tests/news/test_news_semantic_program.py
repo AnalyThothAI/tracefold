@@ -213,6 +213,15 @@ def test_codec_rejects_noncanonical_documents_and_nonfinite_numbers() -> None:
         ProgramArtifactCodec.decode(manifest_document, canonical_json(state))
 
 
+def test_codec_rejects_coercive_state_that_cannot_round_trip_exactly() -> None:
+    manifest_document, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
+    state = json.loads(state_document)
+    state["event_semantics"]["max_tokens"] = str(state["event_semantics"]["max_tokens"])
+
+    with pytest.raises(ValueError, match="artifact_round_trip_mismatch"):
+        ProgramArtifactCodec.decode(manifest_document, canonical_json(state))
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

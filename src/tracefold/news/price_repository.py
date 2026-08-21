@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Final
 
 from .instruments import REFERENCE_VENUES, normalize_symbol
@@ -41,6 +42,22 @@ from .similarity import similarity
 
 _JSON_SEPARATORS = (",", ":")
 _REVIEW_DISCOVERY_MAX_HOURS: Final = 168
+
+
+@dataclass(frozen=True, slots=True)
+class MarketReviewCohort:
+    """Exact release identity plus the human-readable verdict labels it selected."""
+
+    bundle_sha256: str
+    program_version: str
+    program_sha256: str
+    policy_version: str
+    model: str
+
+    @property
+    def label(self) -> str:
+        return "/".join((self.program_version, self.policy_version, self.model))
+
 
 # The latest Triage verdict per Event, and the Events a review window covers. Both sections below start here
 # so "which Event counts" is written once.
@@ -544,7 +561,7 @@ class PriceRepository:
         *,
         hours: int,
         now_ms: int,
-        cohort: tuple[str, str, str] | None = None,
+        cohort: MarketReviewCohort | None = None,
     ) -> dict[str, Any]:
         """The whole 命中复盘 payload for one bounded window. Coverage first, then accuracy.
 
@@ -570,7 +587,9 @@ class PriceRepository:
                 "discovery_window_start_ms": discovery_start_ms,
                 "metric_version": REACTION_METRIC_VERSION,
                 "measured_at_ms": int(now_ms),
-                "cohort": "/".join(cohort) if cohort else None,
+                "cohort": cohort.label if cohort else None,
+                "cohort_sha256": cohort.bundle_sha256 if cohort else None,
+                "program_sha256": cohort.program_sha256 if cohort else None,
             },
             "coverage": coverage,
             "directions": [],
@@ -606,7 +625,7 @@ class PriceRepository:
         *,
         hours: int,
         now_ms: int,
-        cohort: tuple[str, str, str] | None,
+        cohort: MarketReviewCohort | None,
     ) -> tuple[str, tuple[Any, ...], int, int, int]:
         """Build the exact bounded market-review read used by serving and query audit."""
 
@@ -617,11 +636,21 @@ class PriceRepository:
         cohort_filter = ""
         if cohort is not None:
             cohort_filter = (
+                "AND COALESCE(v.trace #>> '{agent_assignment,bundle_sha}', '') = %s "
                 "AND COALESCE(v.program_version, '') = %s "
+                "AND COALESCE(v.program_sha256, '') = %s "
                 "AND COALESCE(v.policy_version, '') = %s "
                 "AND COALESCE(v.model, '') = %s"
             )
-            params.extend(cohort)
+            params.extend(
+                (
+                    cohort.bundle_sha256,
+                    cohort.program_version,
+                    cohort.program_sha256,
+                    cohort.policy_version,
+                    cohort.model,
+                )
+            )
         params.extend(
             (
                 discovery_start_ms,
@@ -1003,4 +1032,4 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
-__all__ = ["PriceRepository"]
+__all__ = ["MarketReviewCohort", "PriceRepository"]

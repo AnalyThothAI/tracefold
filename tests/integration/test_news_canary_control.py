@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from tests.integration.test_news_review_desk import NOW, _open_event
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
+from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tracefold.app import learning_runtime, workers
+from tracefold.app.database import WorkerDatabase
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.news import apply_canary_control, parse_canary_control
 from tracefold.news.canary import CANARY_ROLLING_PROFILE_SHA
+from tracefold.platform.postgres.postgres_client import create_pool
 
 pytestmark = pytest.mark.integration
 
@@ -168,6 +173,181 @@ def test_canary_control_requires_shadow_pass_and_keeps_one_event_arm(conn) -> No
     rollback = conn.execute("SELECT payload FROM news_learning_artifacts WHERE kind = 'rollback_receipt'").fetchone()
     assert rollback["payload"]["action"] == "canary_trip"
     assert rollback["payload"]["activation_id"] == activation_id
+
+
+def test_canary_arm_rejects_an_invalid_program_artifact_before_writing_activation(conn, monkeypatch) -> None:
+    candidate_sha = "7" * 64
+    stable = SimpleNamespace(
+        bundle_sha="8" * 64,
+        program_version="program-v1",
+        program_sha256="9" * 64,
+    )
+    stable_artifact = SimpleNamespace(
+        program_version=stable.program_version,
+        program_sha256=stable.program_sha256,
+    )
+    candidate = SimpleNamespace(
+        target="program",
+        parent_stable_sha=stable.bundle_sha,
+        candidate_arm=SimpleNamespace(
+            bundle_sha="a" * 64,
+            program_version="program-v2",
+            program_sha256="b" * 64,
+        ),
+    )
+    monkeypatch.setattr(learning_runtime, "load_stable_program_artifact", lambda: stable_artifact)
+
+    def reject_artifact(_program_sha256: str):
+        raise ValueError("news_program_artifact_hash_mismatch")
+
+    monkeypatch.setattr(learning_runtime, "load_program_artifact", reject_artifact)
+    shipped = learning_runtime.artifact_valid_candidate_bundles(stable, {candidate_sha: candidate})
+    assert shipped == {}
+
+    repos = repositories_for_connection(conn)
+    with (
+        pytest.raises(ValueError, match=r"^news_canary_candidate_not_in_image$"),
+        repos.transaction(),
+    ):
+        apply_canary_control(
+            repos,
+            parse_canary_control({"action": "arm", "candidate_sha": candidate_sha}),
+            stable_bundle_sha=stable.bundle_sha,
+            shipped_candidates=shipped,
+            now_ms=NOW,
+        )
+
+    assert conn.execute("SELECT count(*) AS n FROM news_canary_activations").fetchone()["n"] == 0
+
+
+def test_canary_resume_trips_a_held_candidate_no_longer_carried_by_the_image(conn) -> None:
+    activation_id = "c" * 32
+    stable_bundle = "d" * 64
+    candidate_sha = "e" * 64
+    candidate_bundle = "f" * 64
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.arm_canary(
+            activation_id=activation_id,
+            baseline_bundle_sha=stable_bundle,
+            candidate_manifest_sha=candidate_sha,
+            candidate_bundle_sha=candidate_bundle,
+            selector_version="news_canary_selector_v1",
+            exposure_bps=1_000,
+            eligibility_profile_sha="1" * 64,
+            rolling_profile_sha="2" * 64,
+            now_ms=NOW,
+        )
+        repos.news.transition_canary(
+            activation_id=activation_id,
+            target_state="armed",
+            reason="operator_hold",
+            now_ms=NOW + 1,
+        )
+
+    with repos.transaction():
+        status = apply_canary_control(
+            repos,
+            parse_canary_control({"action": "resume", "activation_id": activation_id, "reason": "operator_resume"}),
+            stable_bundle_sha=stable_bundle,
+            shipped_candidates={},
+            now_ms=NOW + 2,
+        )
+
+    assert status["state"] == "tripped"
+    assert status["activation"]["trip_reason"] == "candidate_artifact_missing"
+    assert conn.execute("SELECT count(*) AS n FROM news_canary_activations WHERE state = 'active'").fetchone()["n"] == 0
+    receipt = conn.execute(
+        "SELECT payload FROM news_learning_artifacts WHERE kind = 'rollback_receipt' "
+        "AND payload->>'activation_id' = %s",
+        (activation_id,),
+    ).fetchone()
+    assert receipt["payload"]["action"] == "canary_trip"
+    assert receipt["payload"]["reason"] == "candidate_artifact_missing"
+
+
+def test_worker_startup_persists_unrunnable_candidate_trip_before_consumption(conn) -> None:
+    activation_id = "1" * 32
+    stable_bundle = "2" * 64
+    candidate_sha = "3" * 64
+    candidate_bundle = "4" * 64
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.arm_canary(
+            activation_id=activation_id,
+            baseline_bundle_sha=stable_bundle,
+            candidate_manifest_sha=candidate_sha,
+            candidate_bundle_sha=candidate_bundle,
+            selector_version="news_canary_selector_v1",
+            exposure_bps=1_000,
+            eligibility_profile_sha="5" * 64,
+            rolling_profile_sha="6" * 64,
+            now_ms=NOW,
+        )
+        repos.news.transition_canary(
+            activation_id=activation_id,
+            target_state="armed",
+            reason="operator_hold",
+            now_ms=NOW + 1,
+        )
+
+    pool = create_pool(
+        _test_postgres_dsn(),
+        min_size=0,
+        max_size=1,
+        connect_timeout_seconds=5.0,
+        application_name="tracefold_canary_startup_test",
+        statement_timeout_seconds=5.0,
+    )
+    pool.wait(timeout=5.0)
+    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    try:
+        assert workers._trip_unavailable_active_canary(
+            database,
+            {candidate_sha: candidate_bundle},
+            frozenset(),
+            {candidate_sha: "candidate_artifact_invalid"},
+        )
+        assert not workers._trip_unavailable_active_canary(
+            database,
+            {candidate_sha: candidate_bundle},
+            frozenset(),
+            {candidate_sha: "candidate_artifact_invalid"},
+        )
+    finally:
+        database.close_executors()
+        pool.close()
+
+    activation = conn.execute(
+        "SELECT baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha, state, revision, trip_reason "
+        "FROM news_canary_activations WHERE activation_id = %s",
+        (activation_id,),
+    ).fetchone()
+    assert activation == {
+        "baseline_bundle_sha": stable_bundle,
+        "candidate_manifest_sha": candidate_sha,
+        "candidate_bundle_sha": candidate_bundle,
+        "state": "tripped",
+        "revision": 3,
+        "trip_reason": "candidate_artifact_invalid",
+    }
+    receipts = conn.execute(
+        "SELECT payload FROM news_learning_artifacts WHERE kind = 'rollback_receipt' "
+        "AND payload->>'activation_id' = %s",
+        (activation_id,),
+    ).fetchall()
+    assert len(receipts) == 1
+    assert receipts[0]["payload"] == {
+        "action": "canary_trip",
+        "activation_id": activation_id,
+        "baseline_bundle_sha": stable_bundle,
+        "candidate_manifest_sha": candidate_sha,
+        "candidate_bundle_sha": candidate_bundle,
+        "reason": "candidate_artifact_invalid",
+        "transitioned_at_ms": receipts[0]["payload"]["transitioned_at_ms"],
+        "previous_revision": 2,
+        "new_revision": 3,
+    }
 
 
 def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn) -> None:

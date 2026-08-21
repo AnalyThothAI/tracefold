@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from tracefold.app.cli.commands.news import _learning_program_judges
+from tracefold.app import learning_runtime
+from tracefold.app.cli.commands import news as news_commands
+from tracefold.app.cli.commands.news import _handle_learning, _learning_program_judges
 from tracefold.app.cli.parser import build_parser
+from tracefold.news.agents.programs import candidates as candidate_programs
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 
 
@@ -86,6 +91,76 @@ def test_learning_cli_has_no_prompt_or_legacy_model_adapter_path() -> None:
     assert "RecordReplayModelAdapter" not in source
     assert "LiveTriageModelAdapter" not in source
     assert "configured_chat_model" not in source
+
+
+def test_canary_catalog_isolates_a_malformed_compiled_document(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        candidate_programs,
+        "COMPILED_CANDIDATE_DOCUMENTS",
+        ({"target": "program", "candidate_arm": {"program_sha256": "bad"}},),
+    )
+
+    assert candidate_programs.compiled_canary_candidates() == {}
+
+
+def test_emergency_canary_trip_does_not_load_stable_or_parse_candidate_catalog(monkeypatch: Any) -> None:
+    activation_id = "1" * 32
+
+    class _News:
+        def __init__(self) -> None:
+            self.state = "active"
+
+        def canary_status(self) -> dict[str, Any]:
+            return {
+                "state": self.state,
+                "activation": {"activation_id": activation_id},
+                "assignments": {"stable": 0, "candidate": 0},
+            }
+
+        def transition_canary(self, **kwargs: Any) -> bool:
+            assert kwargs["activation_id"] == activation_id
+            assert kwargs["target_state"] == "tripped"
+            self.state = "tripped"
+            return True
+
+    class _Repos:
+        def __init__(self) -> None:
+            self.news = _News()
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+    repos = _Repos()
+
+    @contextmanager
+    def fake_repositories(_settings: Any):
+        yield repos
+
+    def unexpected_stable(_settings: Any):
+        raise AssertionError("emergency rollback must not load the Program catalog")
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", unexpected_stable)
+    monkeypatch.setattr("tracefold.app.repositories.repositories", fake_repositories)
+    monkeypatch.setattr(
+        candidate_programs,
+        "COMPILED_CANDIDATE_DOCUMENTS",
+        ({"target": "program", "candidate_arm": {"program_sha256": "bad"}},),
+    )
+
+    code, payload = _handle_learning(
+        SimpleNamespace(
+            learning_command="canary",
+            canary_command="trip",
+            candidate=None,
+            activation=activation_id,
+            reason="operator_rollback",
+        )
+    )
+
+    assert code == 0
+    assert payload["data"]["state"] == "tripped"
 
 
 def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> None:

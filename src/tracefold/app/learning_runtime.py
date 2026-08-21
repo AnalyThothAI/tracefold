@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any, NamedTuple
 
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
-from tracefold.news import ArmManifest, canonical_sha
-from tracefold.news.agents.semantic_program import RuntimeModelIdentity, load_stable_program_artifact
+from tracefold.news import ArmManifest, CandidateManifest, canonical_sha
+from tracefold.news.agents.semantic_program import (
+    ProgramArtifact,
+    RuntimeModelIdentity,
+    load_program_artifact,
+    load_stable_program_artifact,
+)
 from tracefold.platform.config.settings import news_model_availability
 
 
@@ -48,6 +54,56 @@ def active_arm_manifest(settings: Any) -> ArmManifest:
         policy=policy,
         policy_sha256=canonical_sha(policy),
     )
+
+
+def candidate_program_artifact(candidate: CandidateManifest, stable_artifact: ProgramArtifact) -> ProgramArtifact:
+    """Resolve and validate the Program executable carried by one candidate.
+
+    Policy candidates reuse the stable artifact identity. Program candidates
+    must resolve to an image-carried child of that exact stable Program. This
+    resolver is shared by worker composition and the canary control CLI so an
+    artifact rejected at startup cannot later be armed from its manifest alone.
+    """
+
+    arm = candidate.candidate_arm
+    if candidate.target == "policy":
+        if (
+            arm.program_version != stable_artifact.program_version
+            or arm.program_sha256 != stable_artifact.program_sha256
+        ):
+            raise ValueError("news_policy_candidate_program_identity_changed")
+        return stable_artifact
+    artifact = load_program_artifact(arm.program_sha256)
+    if (
+        artifact.program_version != arm.program_version
+        or artifact.parent_program_sha256 != stable_artifact.program_sha256
+    ):
+        raise ValueError("news_candidate_program_parent_mismatch")
+    return artifact
+
+
+def artifact_valid_candidate_bundles(
+    stable: ArmManifest,
+    candidates: Mapping[str, CandidateManifest],
+) -> dict[str, str]:
+    """Return only same-parent candidates whose executable artifact validates."""
+
+    stable_artifact = load_stable_program_artifact()
+    if (
+        stable_artifact.program_version != stable.program_version
+        or stable_artifact.program_sha256 != stable.program_sha256
+    ):
+        raise ValueError("news_stable_program_manifest_mismatch")
+    shipped: dict[str, str] = {}
+    for candidate_sha, candidate in candidates.items():
+        if candidate.parent_stable_sha != stable.bundle_sha:
+            continue
+        try:
+            candidate_program_artifact(candidate, stable_artifact)
+        except (OSError, ValueError):
+            continue
+        shipped[candidate_sha] = candidate.candidate_arm.bundle_sha
+    return shipped
 
 
 def _endpoint_identity(endpoint: ConfiguredLMEndpoint) -> dict[str, str]:
@@ -105,6 +161,8 @@ __all__ = [
     "UNVERSIONED",
     "RuntimeIdentity",
     "active_arm_manifest",
+    "artifact_valid_candidate_bundles",
+    "candidate_program_artifact",
     "canonical_sha",
     "runtime_identity",
     "runtime_manifest_sha",

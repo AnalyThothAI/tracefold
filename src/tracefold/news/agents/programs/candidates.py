@@ -19,8 +19,16 @@ COMPILED_CANDIDATE_DOCUMENTS: tuple[dict[str, Any], ...] = ()
 
 
 def compiled_canary_candidates() -> dict[str, CandidateManifest]:
-    candidates = [CandidateManifest.model_validate(value) for value in COMPILED_CANDIDATE_DOCUMENTS]
-    return {candidate.candidate_sha: candidate for candidate in candidates}
+    """Return valid image manifests without letting one bad document mask its siblings."""
+
+    candidates: dict[str, CandidateManifest] = {}
+    for value in COMPILED_CANDIDATE_DOCUMENTS:
+        try:
+            candidate = CandidateManifest.model_validate(value)
+        except (TypeError, ValueError):
+            continue
+        candidates[candidate.candidate_sha] = candidate
+    return candidates
 
 
 __all__ = ["COMPILED_CANDIDATE_DOCUMENTS", "compiled_canary_candidates"]

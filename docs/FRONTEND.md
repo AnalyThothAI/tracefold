@@ -120,11 +120,11 @@ the route components into the eager shell chunk.
   injection failure into a hard release guard. Market data stays hidden until
   a judgment is accepted.
 
-  `市场旁证` defaults to one exact prompt/policy/model cohort and leads with
+  `市场旁证` defaults to one exact Program/policy/runtime-model cohort and leads with
   mature-horizon coverage, not HIT. Similar withheld Events are shown as one
   fact cluster with related Event ids. The permanent disclaimer states that a
   1 h/4 h move is neither causality, reward nor `should_push` truth; the page
-  exposes no action that can promote a prompt from this view. An empty or mixed
+  exposes no action that can promote a Program from this view. An empty or mixed
   cohort reports insufficient evidence instead of combining versions.
 
   Current quotes are a separate 15 s query (`/api/news/quotes`) keyed by the

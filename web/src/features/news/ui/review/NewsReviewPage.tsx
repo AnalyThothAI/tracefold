@@ -101,7 +101,7 @@ export function NewsReviewPage({ token }: { token: string }) {
   return (
     <NewsPageShell archetype="scan" className="news-review-shell" label="学习复盘">
       <NewsPageHeader
-        subtitle="先对齐真实事件、Agent 判断、读者是否收到和人工复核，再允许候选 Prompt 或策略进入影子验证。价格只作旁证。"
+        subtitle="先对齐真实事件、Agent 判断、读者是否收到和人工复核，再允许候选 DSPy Program 或策略进入影子验证。价格只作旁证。"
         title="学习复盘"
       >
         <label className="news-review-window">

@@ -982,6 +982,10 @@ class ProgramArtifactCodec:
         try:
             manifest = _ProgramManifest.model_validate(manifest_raw)
             state = _ProgramState.model_validate(state_raw)
+            if canonical_json(manifest_raw) != canonical_json(manifest.model_dump(mode="json")) or canonical_json(
+                state_raw
+            ) != canonical_json(state.model_dump(mode="json")):
+                raise ValueError("news_program_artifact_round_trip_mismatch")
             artifact = ProgramArtifact.model_validate(
                 {**manifest.model_dump(mode="json"), **state.model_dump(mode="json")}
             )

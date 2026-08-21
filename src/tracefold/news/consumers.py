@@ -634,26 +634,25 @@ def _usage_from_partial_trace(program_trace: ProgramTrace | None, *, attempts: i
 
     ``SemanticProgramError`` deliberately carries a partial trace rather than a
     second usage object.  Calls already made before the failure are nevertheless
-    billable facts and must survive a stale-ledger re-ask.  When an older/test
-    implementation cannot supply the partial call trace, ``attempts`` is kept as
-    the only known call count and cost remains unknown rather than being reported
-    as zero.
+    billable facts and must survive a stale-ledger re-ask.  Synthetic trace
+    entries remain in ``call_count`` for audit, while only entries explicitly
+    marked as physical provider calls contribute usage or cost.  With no such
+    entry the observed physical cost is exactly zero.
     """
 
     calls = tuple(program_trace.calls) if program_trace is not None else ()
-    costs = [call.provider_cost_microusd for call in calls]
+    physical_calls = tuple(call for call in calls if call.physical_provider_call)
+    costs = [call.provider_cost_microusd for call in physical_calls]
     return {
-        "wall_latency_ms": sum(call.latency_ms for call in calls),
+        "wall_latency_ms": sum(call.latency_ms for call in physical_calls),
         "call_count": len(calls) if calls else max(0, int(attempts)),
-        "physical_call_count": sum(1 for call in calls if call.physical_provider_call),
-        "input_tokens": sum(call.input_tokens for call in calls),
-        "output_tokens": sum(call.output_tokens for call in calls),
-        "cached_tokens": sum(call.cached_tokens for call in calls),
-        "total_tokens": sum(call.total_tokens for call in calls),
+        "physical_call_count": len(physical_calls),
+        "input_tokens": sum(call.input_tokens for call in physical_calls),
+        "output_tokens": sum(call.output_tokens for call in physical_calls),
+        "cached_tokens": sum(call.cached_tokens for call in physical_calls),
+        "total_tokens": sum(call.total_tokens for call in physical_calls),
         "provider_cost_microusd": (
-            sum(int(cost) for cost in costs if cost is not None)
-            if calls and all(cost is not None for cost in costs)
-            else None
+            sum(int(cost) for cost in costs if cost is not None) if all(cost is not None for cost in costs) else None
         ),
     }
 
@@ -747,14 +746,14 @@ def _sync_program_audit(
         trace[field_name] = sum(
             int(dict(execution.get("usage") or {}).get(field_name) or 0) for execution in executions
         )
-    call_bearing = [
+    physical_call_bearing = [
         dict(execution.get("usage") or {})
         for execution in executions
-        if int(dict(execution.get("usage") or {}).get("call_count") or 0) > 0
+        if int(dict(execution.get("usage") or {}).get("physical_call_count") or 0) > 0
     ]
     trace["provider_cost_microusd"] = (
-        sum(int(usage["provider_cost_microusd"]) for usage in call_bearing)
-        if call_bearing and all(usage.get("provider_cost_microusd") is not None for usage in call_bearing)
+        sum(int(usage["provider_cost_microusd"]) for usage in physical_call_bearing)
+        if all(usage.get("provider_cost_microusd") is not None for usage in physical_call_bearing)
         else None
     )
 
