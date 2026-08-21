@@ -847,6 +847,16 @@ def test_http_review_adapter_enforces_match_auth_and_idempotency(conn) -> None:
     assert first.status_code == 200 and first.json()["data"]["idempotent"] is False
     assert again.status_code == 200 and again.json()["data"]["idempotent"] is True
     assert first.json()["data"]["receipt"]["review_id"] == again.json()["data"]["receipt"]["review_id"]
+    reopened = api.get(
+        "/api/news/review",
+        params={"event": event_id, "status": "all"},
+        headers={"Authorization": "Bearer review-token"},
+    )
+    assert reopened.status_code == 200
+    accepted_review = reopened.json()["data"]["tasks"][0]["accepted_review"]
+    assert accepted_review["subject_kind"] == "event"
+    assert accepted_review["event_id"] == event_id
+    assert accepted_review["external_snapshot_id"] is None
     conflict = api.post(
         f"/api/news/review/tasks/{task['task_id']}/responses",
         headers=headers,

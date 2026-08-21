@@ -238,6 +238,9 @@ class NewsReaderReceiptData(ExactApiSchema):
 
 class NewsAcceptedReviewData(ExactApiSchema):
     review_id: str
+    subject_kind: Literal["event", "external_miss", "pairwise", "legacy_label"]
+    event_id: str | None = None
+    external_snapshot_id: str | None = None
     should_push: Literal["must_push", "should_push", "should_hold", "must_hold", "uncertain"] | None = None
     dimensions: dict[str, str] = Field(default_factory=dict)
     novelty: dict[str, Any] = Field(default_factory=dict)
