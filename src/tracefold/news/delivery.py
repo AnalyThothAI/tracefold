@@ -1,17 +1,26 @@
-"""Feishu card rendering — the reader contract (issue #57): one Event, one card, three lines.
+"""Feishu card rendering — the reader contract (issue #57): one Event, one card, four lines (#113).
 
     header  ⚡? headline_zh            (model: one complete headline incl. the decisive fact, Chinese)
     line 1  why_zh                     (model: why it matters now and to whom, Chinese)
-    line 2  利多 · 影响明显 · BTC ETH · CoinDesk, 2 条报道 · 14:32
-            (code: direction, magnitude, tickers, source, local time)
+    line 2  利多 · 新进展 · 影响明显 · BTC ETH · CoinDesk, 2 条报道 · 14:32
+            (code: direction, novelty, magnitude, tickers, source, local time)
+    line 3  行情 BTC $74,553.10 24h +7.91%
+            (code: the market's own number, only when a fresh quote exists — see `_quote_line`)
 
 No original headline, no translated title, no scope/type enums, no provider score, no "AI" label, no follow-up
 card. Pipeline internals live in the console and `tracefold news why`.
 
+Line 3 is the only place a price reaches a reader, and it is **display, never decision** (#88/#113): nothing
+here is read back by the Gate, Triage, `decide()`, a storyline key, the ⚡ header or any ranking. It is a
+separate line rather than a chunk of the facts line on purpose — the market's number and the model's judgment
+are different kinds of claim and must not blur into one another. On a week of live cards 68.7% carried a fresh
+quote; the rest simply have no line, because a stale or absent price is worse than none.
+
 Degraded Events (the model chain failed and the rule baseline still pushes) get the wire text instead of a
 verdict view (issue #65): the header is the original headline, the body is the original description when there
-is one, and the facts line carries only tickers / source / time — no direction or magnitude the model never judged,
-and no "model unavailable" copy in the reader's face.
+is one, and the facts line carries only tickers / source / time — no direction, magnitude or novelty the model
+never judged, and no "model unavailable" copy in the reader's face. The quote line still renders: the price is
+our own fact and does not depend on the model having answered.
 """
 
 from __future__ import annotations
@@ -19,9 +28,11 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Mapping, Sequence
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from math import isfinite
 from typing import Any
 
-from .outcome import DIRECTION_ZH, MAGNITUDE_ZH
+from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"(?<!\w)@[\w]{1,32}")
@@ -32,6 +43,18 @@ _SPACE_RE = re.compile(r"\s+")
 _DIRECTION_COLOR = {"bullish": "green", "bearish": "red", "neutral": "grey", "unclear": "grey"}
 _MAX_ASSETS = 4
 _CARD_TZ_OFFSET_S = 8 * 3600  # the reader's clock (Asia/Shanghai); the source timestamp is UTC ms
+
+# The window a change percentage was measured over, said in the reader's words. Never hard-coded to "24h":
+# Binance publishes a rolling 24 h window and Hyperliquid the venue's own day, and about 8% of a week's card
+# assets price on Hyperliquid. A basis we cannot name means the percentage is dropped, not guessed — the price
+# still renders.
+_CHANGE_BASIS_LABEL = {"rolling_24h": "24h", "provider_day": "日内"}
+# `crypto` is the only class whose venue price is the asset's own market. An `equity` / `commodity` / `index`
+# tag prices on a Binance TradFi perp or a Hyperliquid builder-DEX — a real traded contract (95% of a week's
+# reactions found candles for them) but not the exchange's official quote, and the card says so.
+_SPOT_CLASS = "crypto"
+_PERP_MARK = "（永续）"
+_QUOTE_LINE_PREFIX = "行情 "
 
 
 def sanitize_ai_text(value: object, *, limit: int, fallback: str = "") -> str:
@@ -56,6 +79,90 @@ def _wire_text(value: object, *, limit: int) -> str:
     return _SPACE_RE.sub(" ", cleaned).strip()[:limit]
 
 
+def _format_price(value: object) -> str:
+    """A provider price as the characters the reader sees.
+
+    Deliberately the same rule as the console's `formatPrice` (`web/src/features/news/model/newsPrice.ts`):
+    >= 1000 keeps two decimals and thousands separators, >= 1 keeps up to four, below 1 up to six, and trailing
+    zeros are dropped. The two surfaces must agree character for character — a reader who sees 74,553.10 on a
+    card and 74,553.1 in the console has been given a reason to doubt both. Editing one without the other is
+    the drift this comment exists to prevent.
+
+    A price that rounds away to zero is not rendered at all; `""` means the caller drops the whole entry.
+    """
+
+    try:
+        price = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return ""
+    if not price.is_finite() or price <= 0:
+        return ""
+    if price >= 1000:
+        return f"{price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}"
+    places = Decimal("0.0001") if price >= 1 else Decimal("0.000001")
+    text = f"{price.quantize(places, rounding=ROUND_HALF_UP):,f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "" if text == "0" else text
+
+
+def _format_change(value: object, basis: object) -> str:
+    """`24h +7.91%` — a percentage is never shown without the window it was measured over.
+
+    Two decimals, matching the console's `formatChangePct`. An unknown or missing basis returns `""`: the
+    price still renders, the number whose meaning we cannot state does not.
+    """
+
+    label = _CHANGE_BASIS_LABEL.get(str(basis or ""))
+    if label is None or isinstance(value, bool) or not isinstance(value, int | float):
+        return ""
+    pct = float(value)
+    if not isfinite(pct):  # NaN / inf never reach a reader
+        return ""
+    return f"{label} {'+' if pct > 0 else ''}{pct:.2f}%"
+
+
+def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
+    """The market's own number for the assets already named on the facts line, or nothing at all.
+
+    Only `fresh` quotes render (the freshness rule lives in `PriceRepository.quote_state`, not here). A
+    `stale`, `unavailable` or `unlisted` answer leaves no line, no placeholder and no zero — #88's whole point
+    is that "we have not managed to quote this" and "this is worth nothing" are different sentences.
+
+    The perpetual mark flags assets whose price is a perpetual contract, not the asset's own market. When
+    every rendered asset is one — the common case for an all-equity card — the mark is said once at the end of
+    the line instead of four times.
+    """
+
+    parts: list[str] = []
+    classes: list[str] = []
+    for quote in quotes[:_MAX_ASSETS]:
+        if not isinstance(quote, Mapping) or str(quote.get("state") or "") != "fresh":
+            continue
+        price = _format_price(quote.get("price"))
+        if not price:
+            continue
+        # The ticker the facts line already printed, not the contract's base symbol: the two lines annotate the
+        # same assets and must line up. They differ for 0.34% of a week's priced assets — all issuer aliases
+        # (`XIAOMI` prices on `HK1810`), where the card's own ticker is the clearer of the two names.
+        symbol = str(quote.get("requested_symbol") or quote.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        change = _format_change(quote.get("change_pct"), quote.get("change_basis"))
+        # Space inside an entry, ` · ` between them. A middot in both places reads as four assets when there
+        # are two: `AAPL $312.56 · 24h -1.25% · AMZN $260.77` has no visible seam.
+        parts.append(f"{symbol} ${price} {change}" if change else f"{symbol} ${price}")
+        classes.append(str(quote.get("instrument_class") or ""))
+    if not parts:
+        return ""
+    perps = [index for index, klass in enumerate(classes) if klass != _SPOT_CLASS]
+    if perps and len(perps) < len(parts):
+        for index in perps:
+            parts[index] += _PERP_MARK
+    line = _QUOTE_LINE_PREFIX + " · ".join(parts)
+    return line + _PERP_MARK if perps and len(perps) == len(parts) else line
+
+
 def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> list[str]:
     """Assets shown on the card: the verdict's primary assets that the Gate grounded (code fact ∩ model claim);
     when the model named no grounded primary, the grounded assets themselves — never provider noise alone."""
@@ -76,6 +183,7 @@ def _facts_line(
     *,
     direction: str | None,
     magnitude: int | None,
+    novelty: str | None,
     assets: Sequence[str],
     source: str,
     members: int,
@@ -83,7 +191,13 @@ def _facts_line(
 ) -> str:
     parts: list[str] = []
     if direction is not None and magnitude is not None:
-        parts += [DIRECTION_ZH.get(direction, direction), MAGNITUDE_ZH.get(magnitude, str(magnitude))]
+        parts.append(DIRECTION_ZH.get(direction, direction))
+        # 28.8% of a week's cards advanced a story the reader already had one for, and the card said nothing
+        # about it (#113). `新进展` is the model's own `novelty`, not a count: policy v6 already withheld the
+        # near-duplicates, so what survives here is a genuine next step the reader can read as a delta.
+        if novelty == "progression":
+            parts.append(NOVELTY_ZH["progression"])
+        parts.append(MAGNITUDE_ZH.get(magnitude, str(magnitude)))
     if assets:
         parts.append(" ".join(assets))
     origin = source or "-"
@@ -100,9 +214,16 @@ def render_first_card(
     decision: str,
     grounded_assets: Sequence[str],
     degraded: bool = False,
+    quotes: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
+    """`quotes` are `PriceRepository.quotes_for_symbols` rows for `card_assets()`, in that order.
+
+    Passing none renders exactly the v9 card, so the price is additive and never a precondition for delivery.
+    """
+
     original_title = str(event.get("leader_title") or "")
     link = str(event.get("leader_url") or "")
+    novelty: str | None = None
     if degraded:
         header_text = _wire_text(original_title, limit=100)
         why = _wire_text(event.get("leader_description"), limit=140)
@@ -111,6 +232,7 @@ def render_first_card(
     else:
         direction = str(verdict.get("direction") or "unclear")
         magnitude = int(verdict.get("magnitude") or 0)
+        novelty = str(verdict.get("novelty") or "") or None
         headline = sanitize_ai_text(verdict.get("headline_zh"), limit=60)
         why = sanitize_ai_text(verdict.get("why_zh"), limit=140)
         # An empty title_zh means "same as headline_zh" (#101), so it is a fallback only when headline_zh
@@ -124,12 +246,16 @@ def render_first_card(
         _facts_line(
             direction=direction,
             magnitude=magnitude,
+            novelty=novelty,
             assets=card_assets(verdict, grounded_assets),
             source=str(event.get("reporting_origin") or ""),
             members=int(event.get("member_count") or 1),
             at_ms=event.get("leader_published_at_ms") or event.get("opened_at_ms"),
         )
     )
+    market = _quote_line(quotes)
+    if market:
+        lines.append(market)
     elements: list[dict[str, Any]] = [{"tag": "markdown", "content": "\n".join(lines)}]
     if link:
         elements.append(

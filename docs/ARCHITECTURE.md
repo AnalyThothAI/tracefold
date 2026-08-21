@@ -306,7 +306,11 @@ stale quote stays visibly stale rather than becoming zero or vanishing. A
 transient provider failure writes no Reaction row at all, which leaves the work
 due; only a stable semantic reason (`instrument_unresolved`, `reference_only`,
 `history_expired`, `no_candle_within_gap`) terminalizes one. Price never enters
-the Gate, Triage, `decide()`, a card, a throttle key or a ranking signal.
+the Gate, Triage, `decide()`, a throttle key or a ranking signal. Since card v10
+(#113) it does reach the reader's card, as display and only as display: one
+行情 line rendered from a `fresh` (<= 60 s) Quote Snapshot, never read back by
+any decision, and absent rather than approximated when no fresh value exists —
+68.7% of a week's cards carried one.
 
 The price and the day change are two questions on two cadences (#109). Binance
 answers "what is it worth now" in 45.5 kB (`ticker/price`, whole USD-M market,
@@ -567,21 +571,37 @@ rows that are never written again, and topology declaration deletes an old
 `news.deep` queue at startup.
 
 Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders the
-reader contract (`news_delivery_card_v9`): the header is `headline_zh` (⚡ when
+reader contract (`news_delivery_card_v10`): the header is `headline_zh` (⚡ when
 the decision is escalate; it falls back to `title_zh`, then the original
 title), the first body line is `why_zh`, and the second is the facts in plain
-words — direction label, magnitude label, the tickers the model called primary
-and the Gate grounded, source（N 条报道）, and the leader item's publication
-time in the reader's zone (UTC+8) — followed by a 打开来源 button and a small
-`Tracefold · <event_id[:8]>` note. There is no original headline line, no
-translated title, no event type or scope enum, no provider score, and no line
-labelled as AI: those internals stay in the console and `tracefold news why`.
+words — direction label, `新进展` when the verdict's `novelty` is `progression`
+(#113: 28.8% of a week's cards advanced a story the reader already had one for
+and the card said nothing), magnitude label, the tickers the model called
+primary and the Gate grounded, source（N 条报道）, and the leader item's
+publication time in the reader's zone (UTC+8). The third body line is the
+market's own number for those same tickers — `行情 CL $86.43 24h +2.30%（永续）`
+— and it exists only when `PriceRepository.quotes_for_symbols` answered `fresh`:
+a `stale`, `unavailable` or `unlisted` quote leaves no line, no placeholder and
+no zero. The change window is named from `change_basis` rather than assumed
+(`rolling_24h` -> `24h`, `provider_day` -> `日内`, unknown -> the price without a
+percentage), `（永续）` marks assets priced on a perpetual rather than their own
+market (51.9% of a week's card assets are equity/commodity/index on a Binance
+TradFi perp or a Hyperliquid builder-DEX), and the price/percentage formatting
+mirrors the console's `web/src/features/news/model/newsPrice.ts` character for
+character. The quotes are read inside the one existing `news_delivery_load`
+session over exactly `card_assets()`, so the two lines cannot name different
+assets, and any price failure degrades to no line: delivery never depends on
+the price plane. Then a 打开来源 button and a small `Tracefold · <event_id[:8]>`
+note. There is no original headline line, no translated title, no event type or
+scope enum, no provider score, and no line labelled as AI: those internals stay
+in the console and `tracefold news why`.
 A degraded Event (the model chain failed and the rule baseline still pushes)
 gets the wire text instead of a verdict view: the original headline as header,
 the original description as the body line, and a facts line of tickers,
-source and time only — no direction or magnitude the model never judged and
-no "模型不可用" copy; the degraded verdict's `headline_zh` is the wire headline
-too, so the console feed and the context line name the Event (issue #65).
+source and time only — no direction, magnitude or novelty the model never judged
+and no "模型不可用" copy; the degraded verdict's `headline_zh` is the wire headline
+too, so the console feed and the context line name the Event (issue #65). The
+行情 line still renders there: the price is our own fact, not the model's.
 AI copy is sanitized (URLs fall back to the code-owned title). There is no
 retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;

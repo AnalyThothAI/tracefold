@@ -44,7 +44,7 @@ from .bus import (
     now_ms,
 )
 from .control import is_muted
-from .delivery import render_first_card
+from .delivery import card_assets, render_first_card
 from .events import admit_item
 from .models import (
     ADMITTED_ADMISSIONS,
@@ -1019,6 +1019,24 @@ class TriageConsumer:
 
 
 # ---------------------------------------------------------------------------- Deliverer
+def _card_quotes(repos: Any, card: Mapping[str, Any], triage: Mapping[str, Any], stamp: int) -> list[Any]:
+    """Current prices for exactly the assets the card will name, read inside the delivery load (#113).
+
+    `card_assets()` is the same function the renderer uses, so the facts line and the quote line can never
+    disagree about which assets this card is about. Resolution and venue precedence stay in
+    `PriceRepository.quotes_for_symbols` — there is deliberately no second copy of that ranking here.
+
+    The price plane must never be able to hold up a card: any failure degrades to no quote line at all, which
+    is the same output as a market we could not reach. Delivery does not depend on #88 being healthy.
+    """
+
+    try:
+        shown = card_assets(dict(triage.get("verdict") or {}), list(card.get("grounded_assets") or []))
+        return list(repos.price.quotes_for_symbols(shown, now_ms=stamp)) if shown else []
+    except Exception:  # a price is never worth losing a card over
+        return []
+
+
 class DelivererConsumer:
     """SAC consumer: one Feishu attempt per (event, kind); crash between send and ack never resends."""
 
@@ -1056,7 +1074,7 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, control, sent_last_hour = bundle
+        card, triage_row, control, sent_last_hour, quotes = bundle
         tv = dict(triage_row.get("verdict") or {})
         if triage_row["final_decision"] not in {"push", "escalate"}:
             return
@@ -1069,6 +1087,7 @@ class DelivererConsumer:
             decision=str(triage_row["final_decision"]),
             grounded_assets=list(card.get("grounded_assets") or []),
             degraded=bool(triage_row.get("degraded")),
+            quotes=quotes,
         )
         if control.get("paused"):
             # News is perishable: a paused lane drops instead of holding an unacked message.
@@ -1143,7 +1162,7 @@ class DelivererConsumer:
             return None
         control = repos.news.read_control(now_ms=stamp)
         sent = repos.news.sent_count_since(since_ms=stamp - 3600_000)
-        return card, triage, control, sent
+        return card, triage, control, sent, _card_quotes(repos, card, triage, stamp)
 
     async def close(self) -> None:
         if self.sender is not None:

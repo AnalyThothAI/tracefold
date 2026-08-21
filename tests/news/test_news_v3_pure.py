@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tracefold.news import bus
 from tracefold.news.control import apply_control, is_muted, parse_control
-from tracefold.news.delivery import card_assets, render_first_card, sanitize_ai_text
+from tracefold.news.delivery import _quote_line, card_assets, render_first_card, sanitize_ai_text
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
@@ -764,6 +765,110 @@ def test_card_is_the_reader_contract() -> None:
     assert card_assets({"assets": [{"symbol": "CC", "role": "primary"}]}, ["CC"]) == ["CC"]
     assert card_assets({"assets": []}, ["A", "B", "C", "D", "E"]) == []
     assert card_assets({"assets": [{"symbol": "BTC", "role": "primary"}]}, ["BTC", "CL", "XYZ-CL"]) == ["BTC"]
+
+
+def _quote(symbol: str, price: str, change: float | None, **overrides: Any) -> dict[str, Any]:
+    quote = {
+        "symbol": symbol,
+        "price": price,
+        "change_pct": change,
+        "change_basis": "rolling_24h",
+        "instrument_class": "crypto",
+        "state": "fresh",
+    }
+    quote.update(overrides)
+    return quote
+
+
+def _market_lines(**overrides: Any) -> list[str]:
+    card = render_first_card(
+        event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
+        verdict={"direction": "bearish", "magnitude": 3, "headline_zh": "标题"},
+        decision="push",
+        grounded_assets=["CL"],
+        **overrides,
+    )
+    return card["elements"][0]["content"].splitlines()
+
+
+def test_card_market_line_is_display_only() -> None:
+    # The market's own number, on its own line, for the assets the facts line already named (#113).
+    assert _market_lines(quotes=[_quote("CL", "86.43", 2.296, instrument_class="commodity")]) == [
+        "利空 · 影响重大 · CL · jin10",
+        "行情 CL $86.43 24h +2.30%（永续）",
+    ]
+    # Formatting is the console's `formatPrice`/`formatChangePct` character for character: thousands and two
+    # decimals from 1000 up, up to four below it, up to six below one, trailing zeros dropped.
+    assert _quote_line([_quote("BTC", "74757.60", 7.914)]) == "行情 BTC $74,757.60 24h +7.91%"
+    assert _quote_line([_quote("SAMSUNG", "201.70000", 3.916)]) == "行情 SAMSUNG $201.7 24h +3.92%"
+    assert _quote_line([_quote("MANTRA", "0.0043290", -10.516)]) == "行情 MANTRA $0.004329 24h -10.52%"
+    # The window is named from `change_basis`, never assumed: Hyperliquid publishes the venue's day, not 24 h.
+    assert (
+        _quote_line([_quote("GOLD", "4538.55", 0.9239, change_basis="provider_day")])
+        == "行情 GOLD $4,538.55 日内 +0.92%"
+    )
+    # A basis we cannot name costs the percentage, not the price.
+    assert _quote_line([_quote("XX", "12.5", 1.0, change_basis="who_knows")]) == "行情 XX $12.5"
+    assert _quote_line([_quote("XX", "12.5", None)]) == "行情 XX $12.5"
+    # An issuer alias prices on another contract; the line keeps the ticker the facts line printed.
+    alias = _quote("HK1810", "40.5", 1.0, requested_symbol="XIAOMI", instrument_class="equity")
+    assert _quote_line([alias]) == "行情 XIAOMI $40.5 24h +1.00%（永续）"
+    # Only `fresh` renders. Everything else leaves no line at all — never a placeholder, never a zero.
+    for absent in ("stale", "unavailable", "unlisted"):
+        assert _quote_line([_quote("BTC", "74757.60", 7.914, state=absent)]) == ""
+        assert _market_lines(quotes=[_quote("CL", "86.43", 2.3, state=absent)]) == ["利空 · 影响重大 · CL · jin10"]
+    assert _quote_line([_quote("X", "0", 1.0)]) == "" and _quote_line([_quote("X", "not-a-price", 1.0)]) == ""
+    assert _quote_line([]) == "" and _market_lines() == ["利空 · 影响重大 · CL · jin10"]
+    # The perpetual mark is said once when every asset is one, and per asset when the card mixes the two.
+    equities = [
+        _quote(s, p, c, instrument_class="equity")
+        for s, p, c in (
+            ("AAPL", "312.56", -1.248),
+            ("AMZN", "260.77", 1.1),
+            ("META", "547.11", 0.4),
+            ("MSFT", "481.85", -0.8),
+        )
+    ]
+    assert _quote_line(equities) == (
+        "行情 AAPL $312.56 24h -1.25% · AMZN $260.77 24h +1.10% · META $547.11 24h +0.40%"
+        " · MSFT $481.85 24h -0.80%（永续）"
+    )
+    mixed = _quote_line(
+        [_quote("BTC", "74757.60", 7.914), _quote("SAMSUNG", "201.70", 3.916, instrument_class="equity")]
+    )
+    assert mixed == "行情 BTC $74,757.60 24h +7.91% · SAMSUNG $201.7 24h +3.92%（永续）"
+    assert _quote_line([*equities, _quote("BTC", "1", 1.0)]) == _quote_line(equities)  # bounded at four
+    # A degraded card keeps its price: it is our fact, not the model's. The facts line still names no judgment.
+    degraded = render_first_card(
+        event={"event_id": "e2", "leader_title": "wire", "reporting_origin": "wire", "member_count": 1},
+        verdict={"direction": "neutral", "magnitude": 2, "novelty": "progression", "headline_zh": "x"},
+        decision="push",
+        grounded_assets=["ETH"],
+        degraded=True,
+        quotes=[_quote("ETH", "2348.14", 4.252)],
+    )
+    assert degraded["elements"][0]["content"].splitlines()[-1] == "行情 ETH $2,348.14 24h +4.25%"
+    assert "新进展" not in json.dumps(degraded, ensure_ascii=False)
+
+
+def test_card_marks_a_progression() -> None:
+    # 28.8% of a week's cards advanced a story the reader already had one for and the card said nothing (#113).
+    card = render_first_card(
+        event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
+        verdict={"direction": "bearish", "magnitude": 3, "novelty": "progression", "headline_zh": "标题"},
+        decision="push",
+        grounded_assets=["CL"],
+    )
+    assert card["elements"][0]["content"].splitlines() == ["利空 · 新进展 · 影响重大 · CL · jin10"]
+    for quiet in ("new_fact", "restatement", "", None):
+        verdict = {"direction": "bearish", "magnitude": 3, "novelty": quiet, "headline_zh": "标题"}
+        card = render_first_card(
+            event={"event_id": "e1", "leader_title": "t", "reporting_origin": "jin10", "member_count": 1},
+            verdict=verdict,
+            decision="push",
+            grounded_assets=["CL"],
+        )
+        assert card["elements"][0]["content"].splitlines() == ["利空 · 影响重大 · CL · jin10"]
 
 
 def test_control_commands() -> None:
