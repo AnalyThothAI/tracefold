@@ -24,6 +24,8 @@ from tracefold.integrations.venues.quotes import (
 from tracefold.news.pricing import (
     CANDLE_INTERVAL_MS,
     HORIZON_MS,
+    QUOTE_FRESH_MAX_AGE_MS,
+    QUOTE_PERIOD_SECONDS,
     REACTION_METRIC_VERSION,
     Candle,
     PriceInstrument,
@@ -104,9 +106,15 @@ def test_day_change_is_derived_from_the_providers_own_previous_close() -> None:
 
 def test_quote_freshness_is_derived_at_read_time() -> None:
     assert quote_state(0) == "fresh"
-    assert quote_state(15_000) == "fresh"
-    assert quote_state(15_001) == "stale"
+    assert quote_state(QUOTE_FRESH_MAX_AGE_MS) == "fresh"
+    assert quote_state(QUOTE_FRESH_MAX_AGE_MS + 1) == "stale"
     assert quote_state(None) == "unavailable"
+
+
+def test_freshness_leaves_room_for_three_turns() -> None:
+    """`stale` must mean the collector stopped, not that one turn ran long (#88 follow-up)."""
+
+    assert QUOTE_FRESH_MAX_AGE_MS >= 3 * QUOTE_PERIOD_SECONDS * 1000
 
 
 # ---------------------------------------------------------------------------- candle alignment

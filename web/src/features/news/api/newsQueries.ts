@@ -65,10 +65,12 @@ export const NEWS_FEED_REFETCH_MS = 3_000;
 export const NEWS_STATUS_REFETCH_MS = 15_000;
 export const NEWS_EVENT_REFETCH_MS = 15_000;
 /**
- * Quotes poll on the feed's own rhythm but from a separate query key (#88): a price that changed must not
- * make the feed and its counts query return a new body every three seconds.
+ * Quotes have their own query key and their own rhythm (#88): a price that changed must not make the feed
+ * and its counts query return a new body, and polling faster than the collector writes is pure noise. The
+ * server refreshes每 20 s, so 15 s keeps the reader within one cycle of the truth without asking three times
+ * for the same bytes.
  */
-export const NEWS_QUOTES_REFETCH_MS = 3_000;
+export const NEWS_QUOTES_REFETCH_MS = 15_000;
 /** The review window is a stable aggregate; a minute is plenty and keeps a 720 h query off the hot path. */
 export const NEWS_REVIEW_REFETCH_MS = 60_000;
 /** `/api/news/quotes` accepts at most this many symbols; the hook batches the visible rows into one call. */

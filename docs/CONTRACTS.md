@@ -384,7 +384,7 @@ observed after deployment.
   venue and venue symbol, instrument class, quote asset, price, `price_kind`
   (`last|mark|mid`), optional `change_pct` with the `change_basis` it came from
   (`rolling_24h|provider_day`), provider and receipt timestamps, `age_ms`, and
-  one `state`: `fresh` (age <= 15 s), `stale`, `unavailable` (nothing quoted
+  one `state`: `fresh` (age <= 60 s, three collector turns), `stale`, `unavailable` (nothing quoted
   yet) or `unlisted` (no venue we poll lists it). A price is a positive decimal
   string or `null`; it is never `0`, and a failed venue leaves the previous row
   in place rather than blanking it. Current quotes are deliberately **not** feed
