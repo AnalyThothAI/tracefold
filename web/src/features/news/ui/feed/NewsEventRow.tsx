@@ -67,7 +67,6 @@ export function NewsEventRow({
   const headline = triage?.headline_zh?.trim() || event.title_zh?.trim() || event.leader_title;
   const showOriginal = headline !== event.leader_title;
   const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
-  const held = event.outcome.group === "held";
   const sentAt = event.delivery?.state === "sent" ? event.delivery.settled_at_ms : null;
   const openState = searchState == null ? undefined : { feedSearch: searchState };
   const onHeadlineClick = (clickEvent: MouseEvent<HTMLAnchorElement>) => {
@@ -172,8 +171,12 @@ export function NewsEventRow({
       <span className="news-event-badge">
         <NewsOutcomeBadge
           outcome={event.outcome}
-          /* One filled thing per screenful, and it marks the loudest Events: a high-priority push. */
-          variant={event.priority === "high" && !held ? "chip" : "text"}
+          /*
+           * One filled thing per screenful, and it marks the loudest Events: a high-priority *push*. Not
+           * merely "not held" — that would give the capsule to an Event still sitting in the delivery queue,
+           * before anything has reached a reader.
+           */
+          variant={event.priority === "high" && event.outcome.group === "pushed" ? "chip" : "text"}
         />
       </span>
       {/* One line under the badge, never two: a sent row wants the time it went out, everything else wants

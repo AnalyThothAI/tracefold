@@ -31,7 +31,7 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
       className="news-funnel-card"
       flush
       hint={
-        <>
+        <span className="news-funnel-summary">
           转化 <b>{percent(funnel.delivered, funnel.received)}</b>
           {ungrounded ? (
             <>
@@ -46,7 +46,7 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
           ) : (
             " · 无投递失败"
           )}
-        </>
+        </span>
       }
       title="Last 24h"
       titleStyle="eyebrow"

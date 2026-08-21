@@ -279,6 +279,41 @@ describe("NewsPage", () => {
     expect(screen.queryByText(/已选/)).toBeNull();
   });
 
+  it("drops a bulk selection when the list it was made in changes", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: ["a", "b"].map((suffix, index) =>
+              newsFeedEventFixture({
+                event_id: `evt-${suffix}`,
+                leader_title: `Scoped row ${index + 1}`,
+                opened_at_ms: NEWS_NOW_MS - index * 60_000,
+                title_zh: null,
+                triage: { ...newsFeedEventFixture().triage!, headline_zh: `作用域行 ${index + 1}` },
+              }),
+            ),
+          }),
+        }),
+      ),
+    );
+    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+
+    await screen.findByRole("heading", { name: "作用域行 1" });
+    fireEvent.click(screen.getByRole("button", { name: "选择 作用域行 1" }));
+    expect(screen.getByText("已选 1 条")).toBeInTheDocument();
+
+    /*
+     * Switching the task tab replaces the URL without unmounting anything. Without a scope the bar kept
+     * counting rows that had left the screen and could no longer be deselected, and 批量标为漏推 would then
+     * copy commands for Events the operator cannot see.
+     */
+    fireEvent.click(screen.getByRole("tab", { name: "已推送" }));
+
+    await waitFor(() => expect(screen.queryByText(/已选/)).toBeNull());
+  });
+
   it("keeps a 668-character feed headline accessible inside the compact density surface", async () => {
     const longTitle = "Very long headline ".repeat(35).trim();
     server.use(

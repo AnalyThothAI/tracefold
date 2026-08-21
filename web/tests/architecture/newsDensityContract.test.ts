@@ -24,8 +24,12 @@ describe("News console contract", () => {
      * one badge, and `outcome` is still what decides.
      */
     expect(row.match(/<NewsOutcomeBadge/g)).toHaveLength(1);
-    expect(row).toContain('const held = event.outcome.group === "held"');
-    expect(row).toMatch(/variant=\{event\.priority === "high" && !held \? "chip" : "text"\}/);
+    expect(row).toContain("data-outcome-group={event.outcome.group}");
+    // The capsule is a high-priority *push*, not merely "not held": an Event still in the delivery queue
+    // must not take the one loud thing on the screenful before anything reached a reader.
+    expect(row).toMatch(
+      /variant=\{event\.priority === "high" && event\.outcome\.group === "pushed" \? "chip" : "text"\}/,
+    );
     expect(rowCss).toMatch(
       /@media \(max-width: 767px\)[\s\S]*?\.news-event-row\[data-outcome-group="held"\] \.news-event-badge \{[^}]*display: none;/,
     );
@@ -139,6 +143,22 @@ describe("News console contract", () => {
         budget,
       );
     }
+  });
+
+  it("keeps feature CSS from reaching the primitives rendered inside a feature card", () => {
+    /*
+     * `app.features` beats `app.primitives` whatever the specificity, so a bare element selector under a
+     * feature class silently restyles every primitive underneath it. `.news-funnel-card b` did exactly that:
+     * the five 24 h figures rendered at the header sentence's 11.5px instead of the 21px `--type-metric` the
+     * design asks for, and lost their accent and caution tones on the way. The rule belongs to the sentence.
+     */
+    const funnelCss = readSource("src/features/news/ui/feed/newsFunnel.css").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+
+    expect(funnelCss).toContain(".news-funnel-summary b");
+    expect(funnelCss).not.toMatch(/\.news-funnel-card\s+b\b/);
   });
 
   it("renders every field the instrument-universe summary carries", () => {

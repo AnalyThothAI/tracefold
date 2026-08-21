@@ -23,6 +23,7 @@ import {
 } from "../../model/feedFilters";
 import {
   absoluteTime,
+  dayBucketLabel,
   formatCount,
   hourBucketKey,
   hourBucketLabel,
@@ -113,9 +114,10 @@ export function NewsFeedPage({
   );
   const feedSearch = searchParams.toString();
   const wideEnoughForDrawer = useMediaQuery(DRAWER_QUERY);
+  const selectable = wideEnoughForDrawer;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [drawerId, setDrawerId] = useState<string | null>(null);
-  const selection = useRowSelection(eventIds);
+  const selection = useRowSelection(eventIds, selectable ? feedIdentity : "off");
 
   const updateFeedParams = (changes: FeedFilterChanges) => {
     setSearchParams(nextFeedParams(searchParams, filters, changes), { replace: true });
@@ -263,14 +265,14 @@ export function NewsFeedPage({
                       onSelect={selection.toggle}
                       quotes={quotes}
                       searchState={feedSearch}
-                      selectable={wideEnoughForDrawer}
+                      selectable={selectable}
                       selected={selection.ids.has(event.event_id)}
                     />
                   ))}
                 </Fragment>
               ))}
             </div>
-            {selection.ids.size ? (
+            {selectable && selection.ids.size ? (
               <div className="news-selection-bar" role="group" aria-label="批量标注">
                 <span className="news-selection-count">已选 {selection.ids.size} 条</span>
                 <span className="news-selection-actions">
@@ -332,11 +334,23 @@ type FeedGroup = { events: NewsFeedEvent[]; key: string; label: string };
 function groupByHour(events: NewsFeedEvent[], enabled: boolean): FeedGroup[] {
   if (!enabled) return [{ events, key: "all", label: "" }];
   const groups: FeedGroup[] = [];
+  let day: string | null = null;
   for (const event of events) {
     const key = hourBucketKey(event.opened_at_ms);
     const last = groups[groups.length - 1];
-    if (last && last.key === key) last.events.push(event);
-    else groups.push({ events: [event], key, label: hourBucketLabel(event.opened_at_ms) });
+    if (last && last.key === key) {
+      last.events.push(event);
+      continue;
+    }
+    // The date appears on the first group of each day and nowhere else: enough to place a run of hours,
+    // quiet enough that it does not repeat down a screenful from the same afternoon.
+    const eventDay = dayBucketLabel(event.opened_at_ms);
+    groups.push({
+      events: [event],
+      key,
+      label: hourBucketLabel(event.opened_at_ms, day !== null && eventDay !== day),
+    });
+    day = eventDay;
   }
   return groups;
 }
@@ -348,9 +362,21 @@ function groupByHour(events: NewsFeedEvent[], enabled: boolean): FeedGroup[] {
  * Selection is per-render list state and deliberately not in the URL: it is a scratch pad for the next
  * clipboard copy, not something to share. Nothing here writes to the server — the bar copies CLI commands.
  */
-function useRowSelection(eventIds: string[]) {
+function useRowSelection(eventIds: string[], scope: string) {
   const [ids, setIds] = useState<ReadonlySet<string>>(() => new Set<string>());
   const anchor = useRef<string | null>(null);
+  /*
+   * A selection belongs to the list it was made in. Changing the tab, the window or a filter replaces the
+   * URL without unmounting anything, so without this the bar kept counting rows that had left the screen and
+   * could no longer be deselected — and 批量标为漏推 would then copy commands for Events the operator could
+   * not see. Narrowing past the drawer breakpoint takes the checkboxes away and does the same.
+   */
+  const lastScope = useRef(scope);
+  if (lastScope.current !== scope) {
+    lastScope.current = scope;
+    anchor.current = null;
+    if (ids.size) setIds(new Set<string>());
+  }
   const toggle = (eventId: string, shiftKey: boolean) => {
     /*
      * The anchor is resolved *before* the updater runs and never read inside it. React may invoke a state

@@ -296,13 +296,16 @@ export function hourBucketKey(value: number): string {
   return absoluteTime(value).slice(0, 13);
 }
 
-export function hourBucketLabel(value: number): string {
+export function hourBucketLabel(value: number, withDay = false): string {
   const stamp = absoluteTime(value);
   const hour = Number(stamp.slice(11, 13));
-  return `${stamp.slice(11, 13)}:00 — ${String((hour + 1) % 24).padStart(2, "0")}:00`;
+  const span = `${stamp.slice(11, 13)}:00 — ${String((hour + 1) % 24).padStart(2, "0")}:00`;
+  // The feed window reaches 72 h, and 加载更多 walks further back still. Two headings reading `03:00 — 04:00`
+  // three days apart, with nothing between them to say so, is worse than no heading at all.
+  return withDay ? `${dayBucketLabel(value)} ${span}` : span;
 }
 
-/** `2026-08-21` — the day an hour group belongs to, shown when the window spans more than one. */
+/** `08-21` — the day an hour group belongs to, shown when the window spans more than one. */
 export function dayBucketLabel(value: number): string {
-  return absoluteTime(value).slice(0, 10);
+  return absoluteTime(value).slice(5, 10);
 }

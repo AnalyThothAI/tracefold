@@ -1,4 +1,5 @@
 import type { NewsQuote } from "../../api/newsQueries";
+import { quoteAgeLabel } from "../../model/newsPrice";
 import { NewsEmptyNote } from "../chrome/NewsChrome";
 import { NewsQuoteChange, NewsQuotePrice } from "../chrome/NewsQuoteValue";
 
@@ -11,8 +12,13 @@ import "./newsQuoteTable.css";
  * measurement anchored at this Event; one table would invite reading a rolling 24 h change as the market's
  * answer to this headline, which is the single wrong conclusion this whole plane exists to prevent.
  */
-export function NewsQuoteTable({ quoteTime, quotes }: { quoteTime?: string; quotes: NewsQuote[] }) {
+export function NewsQuoteTable({ quotes }: { quotes: NewsQuote[] }) {
   if (!quotes.length) return <NewsEmptyNote>这条事件没有可以定价的标的。</NewsEmptyNote>;
+  // The oldest row in the table, because that is the only freshness the whole table can honour. A stale
+  // quote stays on screen by design (#88), and a blanket "刚刚" would have been flatly wrong for it.
+  const oldest = quotes.reduce((worst, quote) =>
+    (worst.age_ms ?? 0) >= (quote.age_ms ?? 0) ? worst : quote,
+  );
   return (
     <div className="news-quote-table">
       <div className="news-quote-table-head">
@@ -31,7 +37,7 @@ export function NewsQuoteTable({ quoteTime, quotes }: { quoteTime?: string; quot
         </div>
       ))}
       <p className="news-quote-table-note">
-        读取于 {quoteTime ?? "刚刚"} 的现价，不是事件时点的回填收益。
+        {quoteAgeLabel(oldest)}读取的现价，不是事件时点的回填收益。
       </p>
     </div>
   );

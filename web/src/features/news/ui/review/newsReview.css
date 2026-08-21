@@ -137,9 +137,16 @@
   }
 
   .news-review-miss-row time {
+    display: grid;
+    gap: 0;
     color: var(--text-secondary);
-    font: 500 11px/1.5 var(--font-mono);
+    font: 500 11px/1.4 var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+
+  .news-review-miss-row time small {
+    color: var(--text-faint);
+    font-size: 9.5px;
   }
 
   .news-review-miss-title {

@@ -90,6 +90,11 @@ describe("responsive CSS contract", () => {
     const shell = readFileSync(join(cockpitUiRoot, "CockpitShell.tsx"), "utf8");
     expect(shell).toContain("<AppBottomNav />");
     expect(shell).toContain("(max-width: 767px)");
+    /*
+     * The route column is the page's `main` landmark. The shadcn `SidebarInset` used to supply one; a console
+     * without it makes a screen-reader user walk the sidebar and the topbar again on every route.
+     */
+    expect(shell).toContain('<main className="center-column">');
   });
 
   it("prevents non-cockpit feature CSS from owning cockpit shell selectors", () => {

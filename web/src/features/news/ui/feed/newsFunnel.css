@@ -1,20 +1,22 @@
 @layer app.features {
   /*
-   * The funnel frames a `Card` and a `MetricRow`; it owns neither. Everything here is the one line of copy
-   * the header carries — the tiles are the primitive's, unchanged, so the same figures read the same way in
-   * the status route's snapshot card.
+   * The funnel frames a `Card` and a `MetricRow`; it owns neither. Everything here belongs to the one line of
+   * copy in the header — and it is scoped to that line on purpose. `.news-funnel-card b` would have reached
+   * the `.ui-metric-value` elements below it too, and `app.features` beats `app.primitives` whatever the
+   * specificity, so the five figures silently rendered at the header's 11.5px instead of the 21px the design
+   * asks for, with the accent and caution tones stripped off.
    */
-  .news-funnel-card b {
+  .news-funnel-summary b {
     color: var(--text-primary);
     font: 600 11.5px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
-  .news-funnel-card b[data-tone="caution"] {
+  .news-funnel-summary b[data-tone="caution"] {
     color: var(--signal-caution);
   }
 
-  .news-funnel-card b[data-tone="alert"] {
+  .news-funnel-summary b[data-tone="alert"] {
     color: var(--signal-alert);
   }
 }

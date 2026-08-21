@@ -464,8 +464,25 @@
       display: none;
     }
 
+    /*
+     * The wire line stacks under its label on a phone. As a flex row it kept the long origin label on one
+     * line and squeezed the English headline into a six-word column beside it.
+     */
+    .news-detail-original {
+      display: grid;
+      gap: 5px;
+    }
+
+    .news-detail-original-label {
+      white-space: normal;
+    }
+
     .news-detail-original > span:nth-child(2) {
       min-width: 0;
+    }
+
+    .news-detail-original a {
+      justify-self: start;
     }
   }
 }

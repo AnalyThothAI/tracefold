@@ -51,11 +51,15 @@ export function InstrumentUniverse({ status }: { status: NewsStatus }) {
           title="美股上市代码，只用来判断标的是不是股票，在这里不可交易"
           value={formatCount(universe.reference_symbols ?? 0)}
         />
+        {/* The date stays: the loop runs every six hours and skips a venue that fails to answer, so how
+         *old* the snapshot is, is the whole point of showing it. */}
         <Metric
           caption="最近快照"
           eyebrow="SNAPSHOT"
+          note={optionalTime(universe.last_snapshot_ms).slice(0, 10)}
           size="sm"
-          value={optionalTime(universe.last_snapshot_ms).slice(11) || "尚无"}
+          title={optionalTime(universe.last_snapshot_ms)}
+          value={optionalTime(universe.last_snapshot_ms).slice(11, 16) || "尚无"}
         />
         <Metric
           caption="悬空别名"

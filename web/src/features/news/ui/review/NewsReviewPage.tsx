@@ -245,9 +245,15 @@ function DirectionTable({ directions }: { directions: NewsReviewDirection[] }) {
 function EventTypeBars({ review }: { review: NewsReview }) {
   const rows = review.event_types ?? [];
   if (!rows.length) return <NewsEmptyNote>这个窗口还没有事件类型样本。</NewsEmptyNote>;
-  // The gap between the best and worst push rate is the point; the lowest quartile takes the amber.
-  const rates = rows.map((row) => row.pushed_pct ?? 0);
-  const low = Math.min(...rates) + (Math.max(...rates) - Math.min(...rates)) * 0.25;
+  /*
+   * The gap between the best and worst push rate is the point, so the lowest quartile takes the amber — but
+   * only when there is a gap to divide. One row, or a window where every type pushes at the same rate, has
+   * no worst quartile; and a type whose rate the server could not compute is not a zero rate, so it must
+   * neither be flagged itself nor drag the floor down for the ones that were measured.
+   */
+  const rates = rows.map((row) => row.pushed_pct).filter((rate): rate is number => rate != null);
+  const spread = rates.length ? Math.max(...rates) - Math.min(...rates) : 0;
+  const low = spread > 0 ? Math.min(...rates) + spread * 0.25 : -1;
   return (
     <>
       <div className="news-review-types">
@@ -260,7 +266,7 @@ function EventTypeBars({ review }: { review: NewsReview }) {
             <span className="news-review-type-bar">
               <Bar
                 share={row.pushed_pct ?? 0}
-                tone={(row.pushed_pct ?? 0) <= low ? "caution" : "neutral"}
+                tone={row.pushed_pct != null && row.pushed_pct <= low ? "caution" : "neutral"}
               />
             </span>
             <b>{row.pushed_pct == null ? "—" : `${row.pushed_pct}%`}</b>

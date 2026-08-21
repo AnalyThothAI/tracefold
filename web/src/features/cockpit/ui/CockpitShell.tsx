@@ -85,10 +85,14 @@ export function CockpitShell({
           navigationTrigger={
             phone ? null : (
               <IconButton
+                aria-controls={desktop ? undefined : "cockpit-nav-drawer"}
+                aria-expanded={desktop ? undefined : drawerOpen}
                 aria-label="切换侧栏"
-                aria-pressed={desktop ? sidebarOpen : drawerOpen}
+                aria-pressed={desktop ? sidebarOpen : undefined}
                 className="topbar-sidebar-trigger"
-                onClick={() => (desktop ? setSidebarOpen((open) => !open) : setDrawerOpen(true))}
+                onClick={() =>
+                  desktop ? setSidebarOpen((open) => !open) : setDrawerOpen((open) => !open)
+                }
                 size="sm"
                 title="切换侧栏"
               >
@@ -97,9 +101,11 @@ export function CockpitShell({
             )
           }
         />
-        <section className="center-column">
+        {/* The route column is the page's `main`. The shadcn `SidebarInset` used to supply the landmark; a
+            console without one makes a screen reader walk the sidebar and topbar on every route. */}
+        <main className="center-column">
           <Outlet context={outletContext} />
-        </section>
+        </main>
         {phone ? <AppBottomNav /> : null}
       </div>
       {desktop || phone ? null : (

@@ -203,10 +203,10 @@ function Funnel({ status }: { status: NewsStatus }) {
       value: funnel.candidates,
     },
     {
-      hint: percent(funnel.grounded, funnel.tagged),
-      label: "符号落表",
+      hint: percent(funnel.triaged, funnel.received),
+      label: "模型判断",
       to: null,
-      value: funnel.grounded,
+      value: funnel.triaged,
     },
     {
       hint: percent(funnel.decided_push, funnel.received),
@@ -223,6 +223,13 @@ function Funnel({ status }: { status: NewsStatus }) {
   ];
   return (
     <>
+      {/*
+       * The bars are the chain and only the chain: 收到 ⊇ 送审 ⊇ 模型判断 ⊇ 决定推送 ⊇ 已送达, so every band is a
+       * share of the one above it and the drop sentence below can name any two adjacent rows. 符号落表 is
+       * deliberately not here — an Event whose symbols never landed can still have been pushed, so it is a
+       * property of the Events in these bands rather than a band of its own, and it gets a tile on the feed
+       * where its own denominator (the Events that carried a tag) fits beside it.
+       */}
       <ol className="news-funnel">
         {layers.map((layer) => {
           const content = (
