@@ -424,6 +424,8 @@ export interface components {
             dimensions?: {
                 [key: string]: string;
             };
+            /** Event Id */
+            event_id?: string | null;
             /** Evidence Refs */
             evidence_refs?: string[];
             /**
@@ -431,6 +433,8 @@ export interface components {
              * @default
              */
             expected_correction: string;
+            /** External Snapshot Id */
+            external_snapshot_id?: string | null;
             /** First Bad Owner */
             first_bad_owner?: string | null;
             /**
@@ -458,6 +462,11 @@ export interface components {
             rubric_version: string;
             /** Should Push */
             should_push?: ("must_push" | "should_push" | "should_hold" | "must_hold" | "uncertain") | null;
+            /**
+             * Subject Kind
+             * @enum {string}
+             */
+            subject_kind: "event" | "external_miss" | "pairwise" | "legacy_label";
         };
         /**
          * NewsAssetRefData

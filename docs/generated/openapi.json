@@ -658,6 +658,17 @@
             "title": "Dimensions",
             "type": "object"
           },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
           "evidence_refs": {
             "items": {
               "type": "string"
@@ -669,6 +680,17 @@
             "default": "",
             "title": "Expected Correction",
             "type": "string"
+          },
+          "external_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Snapshot Id"
           },
           "first_bad_owner": {
             "anyOf": [
@@ -740,10 +762,21 @@
               }
             ],
             "title": "Should Push"
+          },
+          "subject_kind": {
+            "enum": [
+              "event",
+              "external_miss",
+              "pairwise",
+              "legacy_label"
+            ],
+            "title": "Subject Kind",
+            "type": "string"
           }
         },
         "required": [
           "review_id",
+          "subject_kind",
           "reviewer",
           "created_at_ms",
           "rubric_version",
