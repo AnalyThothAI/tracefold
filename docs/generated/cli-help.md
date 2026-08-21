@@ -288,11 +288,13 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {propose,freeze,evaluate,shadow,canary} ...
+                               {compile,propose,freeze,evaluate,shadow,canary} ...
 
 positional arguments:
-  {propose,freeze,evaluate,shadow,canary}
-    propose             seal a prompt or policy candidate manifest
+  {compile,propose,freeze,evaluate,shadow,canary}
+    compile             compile a bounded DSPy Program candidate from accepted
+                        development evidence
+    propose             seal a Program or policy candidate manifest
     freeze              freeze accepted reviews into a dataset
     evaluate            run the evaluate release-evidence gate
     shadow              run the shadow release-evidence gate
@@ -301,6 +303,30 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+
+```
+
+## `news learning compile`
+
+```
+usage: tracefold news learning compile [-h] --development DEVELOPMENT
+                                       --artifact-root ARTIFACT_ROOT --out OUT
+                                       --max-metric-calls MAX_METRIC_CALLS
+                                       --max-task-model-calls MAX_TASK_MODEL_CALLS
+                                       --max-cost-microusd MAX_COST_MICROUSD
+                                       [--seed SEED]
+
+options:
+  -h, --help            show this help message and exit
+  --development DEVELOPMENT
+                        development dataset artifact SHA
+  --artifact-root ARTIFACT_ROOT
+                        write <program-sha>/manifest.json and state.json
+  --out OUT             write compile receipt and proposal input JSON
+  --max-metric-calls MAX_METRIC_CALLS
+  --max-task-model-calls MAX_TASK_MODEL_CALLS
+  --max-cost-microusd MAX_COST_MICROUSD
+  --seed SEED
 
 ```
 
@@ -344,7 +370,7 @@ usage: tracefold news learning evaluate [-h] --development DEVELOPMENT
                                         [--validation VALIDATION]
                                         --candidate CANDIDATE
                                         [--stage {offline,holdout,canary}]
-                                        [--live-model]
+                                        [--live-program]
                                         [--observation-manifest OBSERVATION_MANIFEST]
                                         --out OUT
 
@@ -358,7 +384,8 @@ options:
                         candidate manifest JSON/YAML
   --stage {offline,holdout,canary}
                         evaluation evidence stage
-  --live-model          call the configured Triage model and append recordings
+  --live-program        run the assigned DSPy Program live and append per-
+                        Predictor recordings
   --observation-manifest OBSERVATION_MANIFEST
                         optional sealed canary observation artifact SHA
   --out OUT             write the sealed evaluation report
@@ -372,7 +399,7 @@ usage: tracefold news learning shadow [-h] --development DEVELOPMENT
                                       [--validation VALIDATION]
                                       --candidate CANDIDATE
                                       [--observation-manifest OBSERVATION_MANIFEST]
-                                      [--live-model] --out OUT
+                                      [--live-program] --out OUT
 
 options:
   -h, --help            show this help message and exit
@@ -385,8 +412,8 @@ options:
   --observation-manifest OBSERVATION_MANIFEST
                         reuse a sealed shadow observation artifact instead of
                         collecting one
-  --live-model          cold-run the candidate over the closed validation
-                        window
+  --live-program        cold-run the candidate Program over the closed
+                        validation window
   --out OUT             write the sealed evaluation report
 
 ```

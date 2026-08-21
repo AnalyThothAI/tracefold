@@ -5380,6 +5380,28 @@
             "title": "Policy Version",
             "type": "string"
           },
+          "program_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Program Sha256"
+          },
+          "program_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Program Version"
+          },
           "prompt_version": {
             "anyOf": [
               {

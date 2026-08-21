@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from .artifact_identity import canonical_json, canonical_sha
 from .outcome import decision_zh
-from .price_repository import PriceRepository
+from .price_repository import MarketReviewCohort, PriceRepository
 
 REVIEW_RUBRIC_VERSION = "news_review_v2"
 READER_CONTRACT_VERSION = "reader_contract_v2"
@@ -131,7 +131,7 @@ _PROPOSAL_STATUS_ZH = {
     "promotion_ready": "等待人工发布",
     "rolled_back": "已回滚",
 }
-_TARGET_ZH = {"prompt": "Prompt", "policy": "确定性策略"}
+_TARGET_ZH = {"prompt": "提示词（历史审计）", "program": "DSPy Program", "policy": "确定性策略"}
 _DIMENSION_ZH = {
     "should_push": "是否应送达",
     "asset_grounding": "标的对应",
@@ -1034,16 +1034,17 @@ class ReviewDesk:
             "message_zh": None if cohort else "当前窗口没有可比较的同版本 Agent cohort。",
         }
 
-    def _market_cohort(self, cohort_sha: str, *, hours: int) -> tuple[str, str, str] | None:
+    def _market_cohort(self, cohort_sha: str, *, hours: int) -> MarketReviewCohort | None:
         lower = self._now_ms - int(hours) * 3_600_000
         selected_sha = _parse_agent_cohort_sha(cohort_sha) if cohort_sha else self._active_agent_cohort_sha()
         if selected_sha is None:
             return None
         row = self._conn.execute(
             """
-            SELECT prompt_version, policy_version, model
+            SELECT program_version, program_sha256, policy_version, model
               FROM news_review_task_source_v1
-             WHERE prompt_version IS NOT NULL AND policy_version IS NOT NULL AND model IS NOT NULL
+             WHERE program_version IS NOT NULL AND program_sha256 IS NOT NULL
+               AND policy_version IS NOT NULL AND model IS NOT NULL
                AND opened_at_ms >= %s AND opened_at_ms < %s
                AND COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') = %s
              ORDER BY verdict_created_at_ms DESC NULLS LAST
@@ -1053,7 +1054,13 @@ class ReviewDesk:
         ).fetchone()
         if row is None:
             return None
-        return str(row["prompt_version"]), str(row["policy_version"]), str(row["model"])
+        return MarketReviewCohort(
+            bundle_sha256=selected_sha,
+            program_version=str(row["program_version"]),
+            program_sha256=str(row["program_sha256"]),
+            policy_version=str(row["policy_version"]),
+            model=str(row["model"]),
+        )
 
     def _event_task(self, event_id: str, *, evidence_version: int | None = None) -> _VirtualTask | None:
         statement = _event_task_statement(event_id, evidence_version=evidence_version)
@@ -1803,9 +1810,10 @@ def _review_public(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _cohort(row: Mapping[str, Any]) -> str:
+    generation_version = row.get("program_version") or row.get("prompt_version")
     return "/".join(
         [
-            str(row.get("prompt_version") or "no_prompt"),
+            str(generation_version or "no_generation"),
             str(row.get("policy_version") or "no_policy"),
             str(row.get("model") or "no_model"),
         ]
@@ -1826,6 +1834,9 @@ def _agent_identity(row: Mapping[str, Any]) -> dict[str, str]:
     policy = dict(trace.get("policy") or {})
     identity = {
         "bundle_sha": bundle_sha,
+        "program_version": str(row.get("program_version") or ""),
+        "program_sha256": str(row.get("program_sha256") or trace.get("program_sha256") or ""),
+        # Kept only when explaining immutable Prompt-era audit rows.
         "prompt_version": str(row.get("prompt_version") or ""),
         "prompt_sha256": str(trace.get("prompt_sha256") or ""),
         "schema_sha256": str(trace.get("schema_sha256") or ""),
@@ -2026,7 +2037,13 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
     market_sql, market_params, *_ = PriceRepository.review_statement(
         hours=24,
         now_ms=int(now_ms),
-        cohort=("news_triage_prompt_v9", "news_triage_policy_v7", "audit-model"),
+        cohort=MarketReviewCohort(
+            bundle_sha256="0" * 64,
+            program_version="news_semantic_program_v1",
+            program_sha256="1" * 64,
+            policy_version="news_triage_policy_v7",
+            model="audit-model",
+        ),
     )
     return (
         _event_queue_statement(

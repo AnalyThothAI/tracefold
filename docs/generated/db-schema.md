@@ -269,6 +269,21 @@
 | `comparison` | `JSONB` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 
+## `news_learning_epochs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `epoch_id` | `TEXT` | False | `None` |
+| `starts_at_ms` | `BIGINT` | False | `None` |
+| `source_issue` | `TEXT` | False | `None` |
+| `program_factory_id` | `TEXT` | False | `None` |
+| `artifact_schema_version` | `TEXT` | False | `None` |
+| `baseline_program_version` | `TEXT` | False | `None` |
+| `baseline_program_sha256` | `TEXT` | False | `None` |
+| `prior_evidence_disposition` | `TEXT` | False | `None` |
+| `reset_reason` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_learning_retention_state`
 
 | Column | Type | Nullable | Default |
@@ -322,6 +337,13 @@
 | `finish_reason` | `TEXT` | True | `None` |
 | `error_code` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `predictor_name` | `TEXT` | False | `None` |
+| `call_index` | `INTEGER` | False | `None` |
+| `attempt` | `INTEGER` | False | `None` |
+| `route` | `TEXT` | False | `None` |
+| `cached_tokens` | `INTEGER` | True | `None` |
+| `total_tokens` | `INTEGER` | True | `None` |
+| `provider_cost_microusd` | `BIGINT` | True | `None` |
 
 ## `news_opennews_incidents`
 
@@ -417,6 +439,8 @@
 | `evidence_version` | `INTEGER` | True | `None` |
 | `evidence_sha256` | `TEXT` | True | `None` |
 | `focus_fact_id` | `TEXT` | True | `None` |
+| `program_version` | `TEXT` | True | `None` |
+| `program_sha256` | `TEXT` | True | `None` |
 
 ## `workers_runtime`
 

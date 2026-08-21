@@ -2247,6 +2247,10 @@ export interface components {
             override_rule?: string | null;
             /** Policy Version */
             policy_version: string;
+            /** Program Sha256 */
+            program_sha256?: string | null;
+            /** Program Version */
+            program_version?: string | null;
             /** Prompt Version */
             prompt_version?: string | null;
             /** Published At Ms */

@@ -196,6 +196,8 @@ class NewsVerdictData(ExactApiSchema):
     throttled_by: str | None = None
     verdict: dict[str, Any] = Field(default_factory=dict)
     model: str | None = None
+    program_version: str | None = None
+    program_sha256: str | None = None
     prompt_version: str | None = None
     degraded: bool = False
     error_code: str | None = None

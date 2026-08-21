@@ -7,11 +7,20 @@ import json
 import logging
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
 from tracefold.news import consumers as consumers_module
+from tracefold.news.agents.semantic_program import (
+    ProgramCallTrace,
+    ProgramTrace,
+    ProgramUsage,
+    SemanticJudgment,
+    SemanticProgramError,
+    TriageContext,
+)
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import (
     RK_RAW_LIVE,
     RK_VERDICT_PUSH,
@@ -28,12 +37,14 @@ from tracefold.news.consumers import (
     RecoveryRunner,
     TriageConsumer,
 )
-from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
+from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION
 from tracefold.news.triage_rules import DEFAULT_POLICY
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
 WATCHLIST = frozenset({"BTC", "NVDA"})
+PROGRAM_VERSION = "news_semantic_program_test_v1"
+PROGRAM_SHA256 = "9" * 64
 
 
 class FakeBus:
@@ -334,7 +345,9 @@ def _triage(news: RecordingNews, bus: FakeBus) -> TriageConsumer:
     return TriageConsumer(
         bus=bus,
         db=FakeWorkerDatabase(news),
-        model=None,
+        judge=None,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
         watchlist_symbols=WATCHLIST,
         watchlist=sorted(WATCHLIST),
         concurrency=1,
@@ -356,14 +369,16 @@ def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degrad
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["stage"] == "triage" and inserted["policy_version"] == TRIAGE_POLICY_VERSION
-    assert inserted["degraded"] is True and inserted["error_code"] == "news_triage_model_unconfigured"
+    assert inserted["degraded"] is True and inserted["error_code"] == "news_semantic_program_unconfigured"
     assert inserted["model"] is None and inserted["model_decision"] is None
-    assert inserted["prompt_version"] == TRIAGE_PROMPT_VERSION
+    assert "prompt_version" not in inserted
+    assert inserted["program_version"] == PROGRAM_VERSION
+    assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "push"
     assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
     trace = inserted["trace"]
     assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
-    assert len(trace["prompt_sha256"]) == 64
+    assert trace["program_version"] == PROGRAM_VERSION and trace["program_sha256"] == PROGRAM_SHA256
     assert trace["status"] == {
         "storyline_key": "asset:NVDA",
         "preliminary": True,
@@ -461,24 +476,258 @@ def test_triage_without_model_never_pushes_while_muted_or_paused() -> None:
     assert bus.published == []
 
 
-class _FailingTriageModel:
-    """TriageModel double: raises the scripted TriageModelError per call, or returns a fixed verdict."""
+def _program_call(
+    *,
+    predictor: Literal["event_semantics", "reader_card"],
+    marker: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    provider_cost_microusd: int | None,
+) -> ProgramCallTrace:
+    return ProgramCallTrace(
+        predictor=predictor,
+        route="primary",
+        attempt=1,
+        request_sha256=marker * 64,
+        input_sha256=marker * 64,
+        signature_sha256="a" * 64,
+        instruction_sha256="b" * 64,
+        demos_sha256="c" * 64,
+        model_binding="primary",
+        physical_provider_call=True,
+        output_sha256="d" * 64,
+        validated_output={"marker": marker},
+        provider="test",
+        model="fake",
+        model_sha256="e" * 64,
+        latency_ms=7,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
+        total_tokens=input_tokens + output_tokens,
+        provider_cost_microusd=provider_cost_microusd,
+        finish_reason="stop",
+    )
 
-    model_name = "fake"
+
+def _program_trace(
+    *,
+    fallback_from: str | None = None,
+    novelty_defaulted: bool = False,
+    context_sha256: str = "1" * 64,
+    verdict_sha256: str | None = "7" * 64,
+    calls: tuple[ProgramCallTrace, ...] = (),
+) -> ProgramTrace:
+    return ProgramTrace(
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        context_sha256=context_sha256,
+        factory_id="news_semantic_program_v1",
+        topology_sha256="2" * 64,
+        adapter_sha256="3" * 64,
+        assembler_sha256="4" * 64,
+        event_semantics_sha256="5" * 64,
+        reader_card_sha256="6" * 64,
+        verdict_sha256=verdict_sha256,
+        answering_route="fallback" if fallback_from else "primary",
+        fallback_from=fallback_from,
+        novelty_defaulted=novelty_defaulted,
+        calls=calls,
+    )
+
+
+def _judgment(
+    verdict: Any,
+    *,
+    model: str = "fake",
+    fallback_from: str | None = None,
+    trace: ProgramTrace | None = None,
+    usage: ProgramUsage | None = None,
+) -> SemanticJudgment:
+    verdict_payload = verdict.model_dump(mode="json") if hasattr(verdict, "model_dump") else dict(verdict)
+    default_calls = (
+        _program_call(
+            predictor="event_semantics",
+            marker="8",
+            input_tokens=1,
+            output_tokens=1,
+            cached_tokens=0,
+            provider_cost_microusd=None,
+        ),
+        _program_call(
+            predictor="reader_card",
+            marker="9",
+            input_tokens=1,
+            output_tokens=1,
+            cached_tokens=0,
+            provider_cost_microusd=None,
+        ),
+    )
+    actual_trace = trace or _program_trace(
+        fallback_from=fallback_from,
+        verdict_sha256=canonical_sha(verdict_payload),
+        calls=default_calls,
+    )
+    physical_calls = tuple(call for call in actual_trace.calls if call.physical_provider_call)
+    complete_cost = bool(physical_calls) and all(call.provider_cost_microusd is not None for call in physical_calls)
+    return SemanticJudgment(
+        verdict=verdict,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        trace=actual_trace,
+        usage=usage
+        or ProgramUsage(
+            wall_latency_ms=10,
+            call_count=len(actual_trace.calls),
+            physical_call_count=len(physical_calls),
+            input_tokens=sum(call.input_tokens for call in actual_trace.calls),
+            output_tokens=sum(call.output_tokens for call in actual_trace.calls),
+            cached_tokens=sum(call.cached_tokens for call in actual_trace.calls),
+            total_tokens=sum(call.total_tokens for call in actual_trace.calls),
+            provider_cost_microusd=(
+                sum(int(call.provider_cost_microusd) for call in physical_calls) if complete_cost else None
+            ),
+        ),
+        answering_model=model,
+        fallback_from=fallback_from,
+    )
+
+
+def _program_error(
+    code: str,
+    *,
+    retryable: bool = False,
+    output_failure: bool = False,
+    partial_trace: ProgramTrace | None = None,
+) -> SemanticProgramError:
+    return SemanticProgramError(
+        code,
+        retryable=retryable,
+        output_failure=output_failure,
+        attempts=1,
+        partial_trace=partial_trace,
+    )
+
+
+def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_calls() -> None:
+    synthetic = _program_call(
+        predictor="event_semantics",
+        marker="0",
+        input_tokens=101,
+        output_tokens=102,
+        cached_tokens=103,
+        provider_cost_microusd=10_000,
+    ).model_copy(
+        update={
+            "physical_provider_call": False,
+            "latency_ms": 1_000,
+            "error_code": "news_program_model_binding_unresolved",
+        }
+    )
+    fallback_calls = (
+        _program_call(
+            predictor="event_semantics",
+            marker="1",
+            input_tokens=5,
+            output_tokens=2,
+            cached_tokens=1,
+            provider_cost_microusd=11,
+        ).model_copy(update={"route": "fallback"}),
+        _program_call(
+            predictor="reader_card",
+            marker="2",
+            input_tokens=7,
+            output_tokens=3,
+            cached_tokens=0,
+            provider_cost_microusd=13,
+        ).model_copy(update={"route": "fallback"}),
+    )
+    program_trace = _program_trace(
+        fallback_from="news_program_model_binding_unresolved",
+        verdict_sha256=None,
+        calls=(synthetic, *fallback_calls),
+    )
+
+    usage = consumers_module._usage_from_partial_trace(program_trace, attempts=3)
+    trace: dict[str, Any] = {}
+    executions = [{"trace": program_trace.model_dump(mode="json"), "usage": usage}]
+    consumers_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
+
+    assert usage == {
+        "wall_latency_ms": 14,
+        "call_count": 3,
+        "physical_call_count": 2,
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "cached_tokens": 1,
+        "total_tokens": 17,
+        "provider_cost_microusd": 24,
+    }
+    assert trace["model_attempts"] == 3
+    assert trace["physical_model_attempts"] == 2
+    assert trace["provider_cost_microusd"] == 24
+    assert len(trace["program_executions"][0]["trace"]["calls"]) == 3
+
+
+def test_failed_program_synthetic_only_trace_has_zero_physical_cost() -> None:
+    synthetic = _program_call(
+        predictor="event_semantics",
+        marker="0",
+        input_tokens=101,
+        output_tokens=102,
+        cached_tokens=103,
+        provider_cost_microusd=10_000,
+    ).model_copy(
+        update={
+            "physical_provider_call": False,
+            "latency_ms": 1_000,
+            "error_code": "news_program_model_binding_unresolved",
+        }
+    )
+    program_trace = _program_trace(verdict_sha256=None, calls=(synthetic,))
+
+    usage = consumers_module._usage_from_partial_trace(program_trace, attempts=1)
+    trace: dict[str, Any] = {}
+    executions = [{"trace": program_trace.model_dump(mode="json"), "usage": usage}]
+    consumers_module._sync_program_audit(trace, executions=executions, selected_execution_index=None)
+
+    assert usage == {
+        "wall_latency_ms": 0,
+        "call_count": 1,
+        "physical_call_count": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+        "total_tokens": 0,
+        "provider_cost_microusd": 0,
+    }
+    assert trace["model_attempts"] == 1
+    assert trace["physical_model_attempts"] == 0
+    assert trace["provider_cost_microusd"] == 0
+    assert trace["program_executions"][0]["trace"]["calls"][0]["physical_provider_call"] is False
+
+
+class _ScriptedSemanticJudge:
+    """SemanticJudge double that records typed contexts and returns or raises scripted outcomes."""
 
     def __init__(self, outcomes: list[Any]) -> None:
         self.outcomes = list(outcomes)
+        self.inputs: list[TriageContext] = []
 
-    async def triage(self, _human: str) -> Any:
+    async def judge(self, context: TriageContext) -> SemanticJudgment:
+        self.inputs.append(context)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
-        return outcome
+        if isinstance(outcome, SemanticJudgment):
+            return outcome
+        return _judgment(outcome)
 
 
-def _triage_with_model(news: RecordingNews, bus: FakeBus, model: Any) -> TriageConsumer:
+def _triage_with_judge(news: RecordingNews, bus: FakeBus, judge: Any) -> TriageConsumer:
     triage = _triage(news, bus)
-    triage.model = model
+    triage.judge = judge
     return triage
 
 
@@ -486,31 +735,19 @@ def test_triage_output_failure_is_traced_and_never_opens_the_circuit() -> None:
     """max_tokens truncation / schema mismatch: degraded verdict with finish_reason + parsing_error in the trace, the
     transport circuit stays closed (no incident), and the next Event still reaches the model."""
 
-    from tracefold.news.agents.triage_model import TriageModelError
-
     card = _card()
     news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
     bus = FakeBus()
-    truncated = [
-        TriageModelError(
-            "news_triage_output_truncated",
-            output_failure=True,
-            finish_reason="length",
-            output_tokens=300,
-            detail="ValidationError: 8 validation errors",
-        )
-        for _ in range(4)
-    ]
-    triage = _triage_with_model(news, bus, _FailingTriageModel(truncated))
+    truncated = [_program_error("news_program_output_truncated", output_failure=True) for _ in range(4)]
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(truncated))
 
     for index in range(4):
         asyncio.run(triage.handle(_message("event", {"event_id": f"ev-trunc-{index}"})))
 
     inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
     assert len(inserted) == 4
-    assert all(row["degraded"] is True and row["error_code"] == "news_triage_output_truncated" for row in inserted)
-    assert inserted[0]["trace"]["finish_reason"] == "length" and inserted[0]["trace"]["output_tokens"] == 300
-    assert inserted[0]["trace"]["parsing_error"] == "ValidationError: 8 validation errors"
+    assert all(row["degraded"] is True and row["error_code"] == "news_program_output_truncated" for row in inserted)
+    assert inserted[0]["trace"]["model_failure_retryable"] is False
     assert "open_incident" not in news.names()
     assert not triage.circuit.is_open(NOW_MS * 2)
     assert triage.circuit.failures == 0
@@ -530,7 +767,6 @@ def test_triage_consumer_start_closes_incidents_left_open_by_a_previous_process(
 
 
 def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_incident() -> None:
-    from tracefold.news.agents.triage_model import TriageCallResult, TriageModelError
     from tracefold.news.models import TriageVerdict
 
     card = _card()
@@ -542,8 +778,8 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
         close_open_incidents=1,
     )
     bus = FakeBus()
-    ok = TriageCallResult(
-        verdict=TriageVerdict(
+    ok = _judgment(
+        TriageVerdict(
             novelty="new_fact",
             event_type="partnership",
             assets=[],
@@ -554,15 +790,10 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
             confidence=0.6,
             decision="push",
             headline_zh="ok",
-        ),
-        latency_ms=10,
-        input_tokens=1,
-        output_tokens=1,
-        cached_tokens=None,
-        model="fake",
+        )
     )
-    outcomes: list[Any] = [TriageModelError("news_triage_timeout", retryable=True) for _ in range(3)] + [ok]
-    triage = _triage_with_model(news, bus, _FailingTriageModel(outcomes))
+    outcomes: list[Any] = [_program_error("news_program_timeout", retryable=True) for _ in range(3)] + [ok]
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(outcomes))
     triage.circuit.open_seconds = 0.0  # let the fourth call reach the model in the same test clock
 
     for index in range(4):
@@ -576,13 +807,12 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
 
 
 def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
-    from tracefold.news.agents.triage_model import TriageCallResult
     from tracefold.news.models import TriageVerdict
 
     news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
     bus = FakeBus()
-    answered_by_fallback = TriageCallResult(
-        verdict=TriageVerdict(
+    answered_by_fallback = _judgment(
+        TriageVerdict(
             novelty="new_fact",
             event_type="partnership",
             assets=[],
@@ -594,21 +824,16 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
             decision="push",
             headline_zh="ok",
         ),
-        latency_ms=10,
-        input_tokens=1,
-        output_tokens=1,
-        cached_tokens=None,
         model="deepseek-chat",
-        attempts=2,
-        fallback_from="news_triage_timeout",
+        fallback_from="news_program_timeout",
     )
-    triage = _triage_with_model(news, bus, _FailingTriageModel([answered_by_fallback]))
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([answered_by_fallback]))
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-fallback"})))
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["model"] == "deepseek-chat" and inserted["degraded"] is False
-    assert inserted["trace"]["model_fallback_from"] == "news_triage_timeout"
+    assert inserted["trace"]["model_fallback_from"] == "news_program_timeout"
     assert inserted["trace"]["model_attempts"] == 2
 
 
@@ -908,25 +1133,6 @@ def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
     assert error["error_code"] == "learning_retention_failed:RuntimeError"
 
 
-class _ScriptedTriageModel:
-    """TriageModel double that records every human input and answers with scripted verdicts."""
-
-    model_name = "fake"
-
-    def __init__(self, verdicts: list[Any]) -> None:
-        self.verdicts = list(verdicts)
-        self.inputs: list[str] = []
-
-    async def triage(self, human: str) -> Any:
-        from tracefold.news.agents.triage_model import TriageCallResult
-
-        self.inputs.append(human)
-        verdict = self.verdicts.pop(0)
-        return TriageCallResult(
-            verdict=verdict, latency_ms=10, input_tokens=1, output_tokens=1, cached_tokens=None, model="fake"
-        )
-
-
 def _model_verdict(**overrides: Any) -> Any:
     from tracefold.news.models import TriageVerdict
 
@@ -948,8 +1154,8 @@ def _model_verdict(**overrides: Any) -> Any:
 
 
 def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment() -> None:
-    stable_model = _ScriptedTriageModel([_model_verdict(headline_zh="稳定版不应被调用")])
-    candidate_model = _ScriptedTriageModel([_model_verdict(headline_zh="候选版真实输出")])
+    stable_judge = _ScriptedSemanticJudge([_model_verdict(headline_zh="稳定版不应被调用")])
+    candidate_judge = _ScriptedSemanticJudge([_model_verdict(headline_zh="候选版真实输出")])
     stable_bundle = "a" * 64
     candidate_bundle = "b" * 64
     activation_id = "c" * 32
@@ -969,7 +1175,9 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     triage = TriageConsumer(
         bus=FakeBus(),
         db=FakeWorkerDatabase(news),
-        model=stable_model,
+        judge=stable_judge,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
         watchlist_symbols=WATCHLIST,
         watchlist=sorted(WATCHLIST),
         concurrency=1,
@@ -979,20 +1187,21 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
         canary_arms={
             candidate_bundle: CanaryRuntimeArm(
                 bundle_sha=candidate_bundle,
-                model=candidate_model,
+                program=candidate_judge,
                 policy=DEFAULT_POLICY,
-                prompt_version="candidate-v1",
-                prompt_sha256="d" * 64,
+                program_version=PROGRAM_VERSION,
+                program_sha256=PROGRAM_SHA256,
             )
         },
     )
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
-    assert stable_model.inputs == []
-    assert len(candidate_model.inputs) == 1
+    assert stable_judge.inputs == []
+    assert len(candidate_judge.inputs) == 1
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["prompt_version"] == "candidate-v1"
+    assert inserted["program_version"] == PROGRAM_VERSION
+    assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
     assert inserted["trace"]["agent_assignment"] == {
         "activation_id": activation_id,
@@ -1003,6 +1212,45 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     }
     assert news.names().index("assign_agent_arm") < news.names().index("insert_verdict")
     assert "evaluate_canary_rolling_slo" in news.names()
+
+
+def test_triage_fails_closed_when_a_persisted_stable_assignment_names_a_retired_bundle() -> None:
+    current_bundle = "a" * 64
+    retired_bundle = "b" * 64
+    judge = _ScriptedSemanticJudge([_model_verdict(headline_zh="绝不能由新 Program 回答旧 assignment")])
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(),
+        insert_verdict=True,
+        assign_agent_arm={
+            "activation_id": None,
+            "arm": "stable",
+            "bundle_sha": retired_bundle,
+            "selector_version": "stable_only_v1",
+            "eligibility_reason": "no_active_canary",
+        },
+    )
+    triage = TriageConsumer(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        judge=judge,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        watchlist_symbols=WATCHLIST,
+        watchlist=sorted(WATCHLIST),
+        concurrency=1,
+        circuit_failures=3,
+        circuit_open_seconds=60.0,
+        stable_bundle_sha=current_bundle,
+    )
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert judge.inputs == []
+    assert inserted["degraded"] is True
+    assert inserted["error_code"] == "news_semantic_program_identity_mismatch"
+    assert inserted["trace"]["agent_assignment"]["bundle_sha"] == retired_bundle
 
 
 def _ledger_row(
@@ -1030,16 +1278,16 @@ def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restat
         told_ledger=ledger,
     )
     bus = FakeBus()
-    model = _ScriptedTriageModel([_model_verdict(novelty="restatement", restates=0, decision="drop")])
-    triage = _triage_with_model(news, bus, model)
+    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0, decision="drop")])
+    triage = _triage_with_judge(news, bus, model)
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
     assert len(model.inputs) == 1
-    human = model.inputs[0]
-    assert '"told": [{"ago_min": ' in human and "英伟达投资 OpenAI" in human and "ev-earlier" not in human
-    assert human.count('"headline_zh": "英伟达投资 OpenAI"') == 2
-    assert human.index("<event_status>") < human.index('"told"')
+    context = model.inputs[0]
+    assert [entry.event_id for entry in context.told.entries] == ["ev-earlier", "ev-other"]
+    assert context.told.entries[0].headline_zh == "英伟达投资 OpenAI"
+    assert context.evidence.title == "NVIDIA to invest $100bn in OpenAI data centre"
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "restatement"
     assert inserted["verdict"]["novelty"] == "restatement" and inserted["verdict"]["restates"] == 0
@@ -1079,18 +1327,91 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
         told_ledger=told_ledger,
     )
     bus = FakeBus()
-    model = _ScriptedTriageModel(
+    first_verdict = _model_verdict(novelty="new_fact")
+    reask_verdict = _model_verdict(novelty="restatement", restates=0, decision="drop")
+    first_trace = _program_trace(
+        context_sha256="a" * 64,
+        verdict_sha256=canonical_sha(first_verdict.model_dump(mode="json")),
+        calls=(
+            _program_call(
+                predictor="event_semantics",
+                marker="1",
+                input_tokens=5,
+                output_tokens=2,
+                cached_tokens=1,
+                provider_cost_microusd=11,
+            ),
+            _program_call(
+                predictor="reader_card",
+                marker="2",
+                input_tokens=7,
+                output_tokens=3,
+                cached_tokens=0,
+                provider_cost_microusd=13,
+            ),
+        ),
+    )
+    reask_trace = _program_trace(
+        context_sha256="b" * 64,
+        verdict_sha256=canonical_sha(reask_verdict.model_dump(mode="json")),
+        calls=(
+            _program_call(
+                predictor="event_semantics",
+                marker="3",
+                input_tokens=11,
+                output_tokens=4,
+                cached_tokens=2,
+                provider_cost_microusd=17,
+            ),
+            _program_call(
+                predictor="reader_card",
+                marker="4",
+                input_tokens=13,
+                output_tokens=5,
+                cached_tokens=1,
+                provider_cost_microusd=19,
+            ),
+        ),
+    )
+    model = _ScriptedSemanticJudge(
         [
-            _model_verdict(novelty="new_fact"),  # judged against the empty ledger
-            _model_verdict(novelty="restatement", restates=0, decision="drop"),  # sees ev-just-pushed
+            _judgment(
+                first_verdict,
+                trace=first_trace,
+                usage=ProgramUsage(
+                    wall_latency_ms=20,
+                    call_count=2,
+                    physical_call_count=2,
+                    input_tokens=12,
+                    output_tokens=5,
+                    cached_tokens=1,
+                    total_tokens=17,
+                    provider_cost_microusd=24,
+                ),
+            ),  # judged against the empty ledger
+            _judgment(
+                reask_verdict,
+                trace=reask_trace,
+                usage=ProgramUsage(
+                    wall_latency_ms=30,
+                    call_count=2,
+                    physical_call_count=2,
+                    input_tokens=24,
+                    output_tokens=9,
+                    cached_tokens=3,
+                    total_tokens=33,
+                    provider_cost_microusd=36,
+                ),
+            ),  # sees ev-just-pushed
         ]
     )
-    triage = _triage_with_model(news, bus, model)
+    triage = _triage_with_judge(news, bus, model)
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
-    assert len(model.inputs) == 2 and '"told": []' in model.inputs[0] and "ev-just-pushed" not in model.inputs[0]
-    assert '"headline_zh": "英伟达投资 OpenAI"' in model.inputs[1]
+    assert len(model.inputs) == 2 and model.inputs[0].told.entries == ()
+    assert model.inputs[1].told.entries[0].event_id == "ev-just-pushed"
+    assert model.inputs[1].told.entries[0].headline_zh == "英伟达投资 OpenAI"
     inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
     assert len(inserted) == 1  # the stale round wrote nothing
     row = inserted[0]
@@ -1098,17 +1419,198 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     trace = row["trace"]
     assert trace["reasked_after_told_change"] is True
     assert trace["first_verdict"]["novelty"] == "new_fact" and trace["first_verdict"]["decision"] == "push"
+    assert trace["first_input_sha256"] == first_trace.context_sha256
     assert trace["told_count"] == 1 and trace["restates_event_id"] == "ev-just-pushed"
+    # The verdict-owning trace is the re-ask trace; the stale trace remains a
+    # separate execution instead of having its calls spliced under this context.
+    assert row["verdict"] == reask_verdict.model_dump(mode="json")
+    assert trace["program_execution_index"] == 1
+    assert trace["program_trace"]["context_sha256"] == reask_trace.context_sha256
+    assert trace["program_trace"]["verdict_sha256"] == canonical_sha(row["verdict"])
+    executions = trace["program_executions"]
+    assert [execution["status"] for execution in executions] == ["superseded_stale_ledger", "accepted"]
+    assert [execution["context_sha256"] for execution in executions] == [
+        first_trace.context_sha256,
+        reask_trace.context_sha256,
+    ]
+    assert [execution["recording_call_indices"] for execution in executions] == [[0, 1], [2, 3]]
+    assert sum(len(execution["trace"]["calls"]) for execution in executions) == 4
+    assert {
+        field: trace[field]
+        for field in (
+            "latency_ms",
+            "model_attempts",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "total_tokens",
+            "provider_cost_microusd",
+        )
+    } == {
+        "latency_ms": 50,
+        "model_attempts": 4,
+        "input_tokens": 36,
+        "output_tokens": 14,
+        "cached_tokens": 4,
+        "total_tokens": 50,
+        "provider_cost_microusd": 60,
+    }
     assert news.names().count("lock_storyline") == 2
     # The re-ask reloads everything the model and decide() look at: card, sent ledger, and control state.
     assert news.names().count("event_card") == 2 and news.names().count("read_control") == 2
     assert bus.published == []
 
 
+def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> None:
+    initial = _card()
+    refreshed = _card(
+        evidence_version=2,
+        evidence_sha256="f" * 64,
+        focus_fact_id="fact-2",
+        grounded_assets=[],
+        provider_score_max=10.0,
+        priority="normal",
+        storyline_key="macro:general",
+    )
+    cards = iter((initial, refreshed))
+    verdict = _model_verdict(decision="drop", magnitude=1, actionable=False)
+    judge = _ScriptedSemanticJudge([verdict, verdict])
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=lambda _event_id: next(cards),
+        latest_evidence_snapshot={
+            "evidence_version": 2,
+            "evidence_sha256": "f" * 64,
+            "focus_fact_id": "fact-2",
+        },
+        insert_verdict=True,
+    )
+    triage = _triage_with_judge(news, FakeBus(), judge)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert len(judge.inputs) == 2
+    assert judge.inputs[0].gate.grounded_assets == ("NVDA",)
+    assert judge.inputs[1].gate.grounded_assets == ()
+    assert inserted["rule_baseline_decision"] == "drop"
+    assert inserted["final_decision"] == "drop"
+    assert inserted["trace"]["storyline_key_preliminary"] == "macro:general"
+    assert inserted["trace"]["first_storyline_key_preliminary"] == "asset:NVDA"
+    assert inserted["trace"]["reask_reason"] == "evidence"
+    assert inserted["trace"]["reasked_after_evidence_change"] is True
+
+
+def test_triage_evidence_reask_failure_degrades_against_the_refreshed_evidence() -> None:
+    """A v1 judgment must never be persisted under the identity or Gate facts of v2 evidence."""
+
+    initial = _card()
+    refreshed = _card(
+        leader_title="Second evidence no longer names a grounded asset",
+        evidence_version=2,
+        evidence_sha256="f" * 64,
+        focus_fact_id="fact-2",
+        grounded_assets=[],
+        watchlist_hits=[],
+        provider_score_max=10.0,
+        priority="normal",
+        storyline_key="macro:general",
+    )
+    cards = iter((initial, refreshed))
+    first_verdict = _model_verdict(magnitude=3, direction="bearish", scope="macro")
+
+    class _EvidenceReaskFails:
+        def __init__(self) -> None:
+            self.inputs: list[TriageContext] = []
+
+        async def judge(self, context: TriageContext) -> SemanticJudgment:
+            self.inputs.append(context)
+            context_sha = canonical_sha(context.model_dump(mode="json"))
+            if len(self.inputs) == 1:
+                return _judgment(
+                    first_verdict,
+                    trace=_program_trace(
+                        context_sha256=context_sha,
+                        verdict_sha256=canonical_sha(first_verdict.model_dump(mode="json")),
+                        calls=(
+                            _program_call(
+                                predictor="event_semantics",
+                                marker="1",
+                                input_tokens=5,
+                                output_tokens=2,
+                                cached_tokens=0,
+                                provider_cost_microusd=11,
+                            ),
+                            _program_call(
+                                predictor="reader_card",
+                                marker="2",
+                                input_tokens=7,
+                                output_tokens=3,
+                                cached_tokens=0,
+                                provider_cost_microusd=13,
+                            ),
+                        ),
+                    ),
+                )
+            failed_trace = _program_trace(
+                context_sha256=context_sha,
+                verdict_sha256=None,
+                calls=(
+                    _program_call(
+                        predictor="event_semantics",
+                        marker="3",
+                        input_tokens=9,
+                        output_tokens=4,
+                        cached_tokens=0,
+                        provider_cost_microusd=17,
+                    ),
+                ),
+            )
+            raise _program_error("news_program_timeout", retryable=True, partial_trace=failed_trace)
+
+    judge = _EvidenceReaskFails()
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=lambda _event_id: next(cards),
+        latest_evidence_snapshot={
+            "evidence_version": 2,
+            "evidence_sha256": "f" * 64,
+            "focus_fact_id": "fact-2",
+        },
+        insert_verdict=True,
+    )
+    triage = _triage_with_judge(news, FakeBus(), judge)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert len(judge.inputs) == 2
+    assert inserted["evidence_version"] == 2
+    assert inserted["evidence_sha256"] == "f" * 64
+    assert inserted["focus_fact_id"] == "fact-2"
+    assert inserted["degraded"] is True
+    assert inserted["error_code"] == "news_program_timeout"
+    assert inserted["model"] is None
+    assert inserted["rule_baseline_decision"] == "drop"
+    assert inserted["final_decision"] == "drop"
+    assert inserted["verdict"]["headline_zh"] == "Second evidence no longer names a grounded asset"
+    trace = inserted["trace"]
+    assert trace["reask_reason"] == "evidence"
+    assert trace["reasked_after_evidence_change"] is True
+    assert trace["reask_failed"] == "news_program_timeout"
+    assert "program_execution_index" not in trace
+    assert "program_trace" not in trace
+    assert "input_sha256" not in trace
+    executions = trace["program_executions"]
+    assert [execution["status"] for execution in executions] == ["superseded_evidence_change", "failed"]
+    assert [execution["context"]["evidence"]["evidence_version"] for execution in executions] == [1, 2]
+    assert [execution["recording_call_indices"] for execution in executions] == [[0, 1], [2]]
+    assert trace["model_attempts"] == 3
+    assert trace["physical_model_attempts"] == 3
+
+
 def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseline() -> None:
     """If the re-ask itself fails, the model's first (valid) judgment is persisted, not a degraded fallback."""
-
-    from tracefold.news.agents.triage_model import TriageModelError
 
     fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
     ledger_calls = {"n": 0}
@@ -1125,15 +1627,74 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     )
     bus = FakeBus()
 
-    class _FirstOkThenTimeout(_ScriptedTriageModel):
-        async def triage(self, human: str) -> Any:
-            if self.inputs:
-                self.inputs.append(human)
-                raise TriageModelError("news_triage_timeout", retryable=True)
-            return await super().triage(human)
+    first_verdict = _model_verdict(novelty="new_fact", magnitude=3, direction="bearish", scope="macro")
+    first_trace = _program_trace(
+        context_sha256="a" * 64,
+        verdict_sha256=canonical_sha(first_verdict.model_dump(mode="json")),
+        calls=(
+            _program_call(
+                predictor="event_semantics",
+                marker="1",
+                input_tokens=5,
+                output_tokens=2,
+                cached_tokens=1,
+                provider_cost_microusd=11,
+            ),
+            _program_call(
+                predictor="reader_card",
+                marker="2",
+                input_tokens=7,
+                output_tokens=3,
+                cached_tokens=0,
+                provider_cost_microusd=13,
+            ),
+        ),
+    )
+    failed_reask_trace = _program_trace(
+        context_sha256="c" * 64,
+        verdict_sha256=None,
+        calls=(
+            _program_call(
+                predictor="event_semantics",
+                marker="3",
+                input_tokens=17,
+                output_tokens=6,
+                cached_tokens=2,
+                provider_cost_microusd=23,
+            ),
+        ),
+    )
 
-    model = _FirstOkThenTimeout([_model_verdict(novelty="new_fact", magnitude=3, direction="bearish", scope="macro")])
-    triage = _triage_with_model(news, bus, model)
+    class _FirstOkThenTimeout(_ScriptedSemanticJudge):
+        async def judge(self, context: TriageContext) -> SemanticJudgment:
+            if self.inputs:
+                self.inputs.append(context)
+                raise _program_error(
+                    "news_program_timeout",
+                    retryable=True,
+                    partial_trace=failed_reask_trace,
+                )
+            return await super().judge(context)
+
+    model = _FirstOkThenTimeout(
+        [
+            _judgment(
+                first_verdict,
+                trace=first_trace,
+                usage=ProgramUsage(
+                    wall_latency_ms=20,
+                    call_count=2,
+                    physical_call_count=2,
+                    input_tokens=12,
+                    output_tokens=5,
+                    cached_tokens=1,
+                    total_tokens=17,
+                    provider_cost_microusd=24,
+                ),
+            )
+        ]
+    )
+    triage = _triage_with_judge(news, bus, model)
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
@@ -1141,8 +1702,40 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["degraded"] is False and inserted["error_code"] is None
     assert inserted["final_decision"] == "escalate" and inserted["verdict"]["magnitude"] == 3
-    assert inserted["trace"]["reask_failed"] == "news_triage_timeout"
-    assert inserted["trace"]["reasked_after_told_change"] is True
+    assert inserted["verdict"] == first_verdict.model_dump(mode="json")
+    trace = inserted["trace"]
+    assert trace["reask_failed"] == "news_program_timeout"
+    assert trace["reasked_after_told_change"] is True
+    assert trace["program_execution_index"] == 0
+    assert trace["program_trace"]["context_sha256"] == first_trace.context_sha256
+    assert trace["program_trace"]["verdict_sha256"] == canonical_sha(inserted["verdict"])
+    executions = trace["program_executions"]
+    assert [execution["status"] for execution in executions] == ["accepted_after_reask_failure", "failed"]
+    assert executions[1]["context_sha256"] == failed_reask_trace.context_sha256
+    assert executions[1]["error"]["code"] == "news_program_timeout"
+    assert executions[1]["trace"]["verdict_sha256"] is None
+    assert [execution["recording_call_indices"] for execution in executions] == [[0, 1], [2]]
+    assert sum(len(execution["trace"]["calls"]) for execution in executions) == 3
+    assert {
+        field: trace[field]
+        for field in (
+            "latency_ms",
+            "model_attempts",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "total_tokens",
+            "provider_cost_microusd",
+        )
+    } == {
+        "latency_ms": 27,
+        "model_attempts": 3,
+        "input_tokens": 29,
+        "output_tokens": 11,
+        "cached_tokens": 3,
+        "total_tokens": 40,
+        "provider_cost_microusd": 47,
+    }
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
@@ -1181,7 +1774,7 @@ def test_triage_sends_a_distinct_card_and_traces_the_duplicate_measurement() -> 
 
     news = _duplicate_news(ledger_headline="美联储纪要显示官员对通胀存在分歧")
     bus = FakeBus()
-    triage = _triage_with_model(news, bus, _ScriptedTriageModel([_model_verdict()]))
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([_model_verdict()]))
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
@@ -1198,7 +1791,7 @@ def test_triage_withholds_a_card_the_reader_already_received() -> None:
 
     news = _duplicate_news(ledger_headline="英伟达投资 OpenAI 数据中心")
     bus = FakeBus()
-    triage = _triage_with_model(news, bus, _ScriptedTriageModel([_model_verdict(novelty="progression")]))
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([_model_verdict(novelty="progression")]))
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
@@ -1219,10 +1812,10 @@ def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on(
 
     news = _duplicate_news(ledger_headline="Ciena Corporation（$CIENx）出现在 OKX")
     bus = FakeBus()
-    triage = _triage_with_model(
+    triage = _triage_with_judge(
         news,
         bus,
-        _ScriptedTriageModel([_model_verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")]),
+        _ScriptedSemanticJudge([_model_verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")]),
     )
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))

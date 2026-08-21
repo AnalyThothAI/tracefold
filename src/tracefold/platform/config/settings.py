@@ -178,15 +178,12 @@ class NewsBrokerSettings(BaseModel):
 class NewsTriageSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    deadline_seconds: float = 6.0
     concurrency: int = 4
     circuit_failures: int = 3
     circuit_open_seconds: float = 60.0
 
     @model_validator(mode="after")
     def validate_bounds(self) -> NewsTriageSettings:
-        if not 0.5 <= self.deadline_seconds <= 30:
-            raise ValueError("news_triage_deadline_invalid")
         if not 1 <= self.concurrency <= 32:
             raise ValueError("news_triage_concurrency_invalid")
         return self
@@ -533,7 +530,6 @@ news:
     url: "amqp://tracefold:tracefold@rabbitmq:5672/"
     name_prefix: ""
   triage:
-    deadline_seconds: 6.0
     concurrency: 4
   push:
     enabled: false

@@ -56,6 +56,7 @@ def _open_event(
     hit_id: int = 112001,
     title: str = "Micron says DRAM contract prices rose again in August",
     bundle_sha: str = ACTIVE_BUNDLE,
+    program_sha256: str = "d" * 64,
 ) -> str:
     repos = repositories_for_connection(conn)
     wire = {
@@ -111,7 +112,8 @@ def _open_event(
             throttled_by=None,
             verdict=verdict,
             model="test-model",
-            prompt_version="v9",
+            program_version="news_semantic_program_test",
+            program_sha256=program_sha256,
             degraded=False,
             error_code=None,
             trace={
@@ -175,7 +177,7 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
     ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
     evidence = desk.evidence(ref, principal=PRINCIPAL)
     assert evidence["evidence"]["focus_fact"]["text"].startswith("Micron")
-    assert evidence["agent"]["cohort"] == "v9/v6/test-model"
+    assert evidence["agent"]["cohort"] == "news_semantic_program_test/v6/test-model"
     assert evidence["agent"]["agent_cohort"]["cohort_sha256"] == task["agent_cohort"]["cohort_sha256"]
     cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
     repeated_cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
@@ -248,7 +250,7 @@ def test_coverage_keeps_exact_agent_bundles_separate(conn) -> None:
     assert set(by_cohort) == {first_bundle, second_bundle}
     assert by_cohort[first_bundle]["agent"]["bundle_sha"] == first_bundle
     assert by_cohort[second_bundle]["agent"]["bundle_sha"] == second_bundle
-    assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {"v9/v6/test-model"}
+    assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {"news_semantic_program_test/v6/test-model"}
     default_queue = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(), principal=PRINCIPAL)
     assert {task["event_id"] for task in default_queue["tasks"]} == {first_event}
     second_queue = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(cohort=second_bundle), principal=PRINCIPAL)
@@ -267,9 +269,19 @@ def test_evidence_refs_are_bounded_per_entry() -> None:
 
 def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_bad_taxonomy(conn) -> None:
     _open_event(conn)
+    _open_event(
+        conn,
+        hit_id=112099,
+        title="A second event from another Program artifact",
+        bundle_sha="f" * 64,
+        program_sha256="e" * 64,
+    )
     market = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="market"), principal=PRINCIPAL)
     assert market["status"] == "ready"
-    assert market["reaction"]["meta"]["cohort"] == "v9/v6/test-model"
+    assert market["reaction"]["meta"]["cohort"] == "news_semantic_program_test/v6/test-model"
+    assert market["reaction"]["meta"]["cohort_sha256"] == ACTIVE_BUNDLE
+    assert market["reaction"]["meta"]["program_sha256"] == "d" * 64
+    assert market["reaction"]["coverage"][0]["eligible_n"] == 1
     assert market["reaction"]["event_types"] == []
     assert "不是新闻因果" in market["disclaimer_zh"]
     with pytest.raises(ValueError, match="news_review_market_hours_too_large"):
@@ -612,6 +624,30 @@ def test_pairwise_queue_hides_arm_identity_and_appends_blind_acceptance(conn) ->
     assert after["disclosure"]["arm_identity_revealed"] is False
 
 
+def test_prompt_era_proposal_remains_readable_as_audit_history(conn) -> None:
+    candidate_sha = "0" * 64
+    conn.execute(
+        "INSERT INTO news_learning_artifacts "
+        "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
+        "VALUES (%s, 'candidate', %s, %s::jsonb, 'test', %s)",
+        (
+            "f" * 64,
+            "e" * 64,
+            json.dumps(
+                {
+                    "candidate_sha": candidate_sha,
+                    "manifest": {"target": "prompt", "hypothesis": "historical audit only"},
+                }
+            ),
+            NOW,
+        ),
+    )
+
+    proposals = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="proposals"), principal=PRINCIPAL)["proposals"]
+
+    assert [(item["target"], item["target_zh"]) for item in proposals] == [("prompt", "提示词（历史审计）")]
+
+
 def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acceptance(conn) -> None:
     event_id = _open_event(conn)
     source = conn.execute(
@@ -650,9 +686,9 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
         ),
     )
     exact_diff = {
-        "target": "prompt",
-        "changed_fields": ["prompt_version", "prompt_text", "prompt_sha256"],
-        "unified_diff": "--- stable/v9\n+++ candidate/v10\n@@ changed\n",
+        "target": "program",
+        "changed_fields": ["program_version", "program_sha256"],
+        "unified_diff": "--- stable/program-v1\n+++ candidate/program-v2\n@@ changed\n",
     }
     conn.execute(
         "INSERT INTO news_learning_artifacts "
@@ -665,7 +701,7 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
             json.dumps(
                 {
                     "candidate_sha": candidate_sha,
-                    "manifest": {"target": "prompt", "hypothesis": "修复无证据的 priced-in 判断"},
+                    "manifest": {"target": "program", "hypothesis": "修复无证据的 priced-in 判断"},
                     "exact_diff": exact_diff,
                 }
             ),
@@ -676,6 +712,8 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
             NOW,
         ),
     )
+    proposals = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="proposals"), principal=PRINCIPAL)["proposals"]
+    assert [(item["target"], item["target_zh"]) for item in proposals] == [("program", "DSPy Program")]
     second_case_id = "a" * 64
     conn.execute(
         """
@@ -717,7 +755,7 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
         "accepted_preference": "A",
         "preferred_arm": "candidate",
         "candidate_sha": candidate_sha,
-        "target": "prompt",
+        "target": "program",
         "hypothesis": "修复无证据的 priced-in 判断",
         "exact_diff": exact_diff,
     }

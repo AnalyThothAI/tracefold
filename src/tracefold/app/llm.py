@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_litellm import ChatLiteLLM
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredLMEndpoint:
+    """Provider-neutral runtime binding; the semantic Program owns the concrete LM Adapter."""
+
+    model_name: str
+    api_key: str = field(repr=False)
+    api_base: str
+    model_kwargs: dict[str, Any]
 
 
-def configured_chat_model(
+def configured_lm_endpoint(
     settings: Any,
     *,
     model_name: str,
-    request_timeout_seconds: float,
-    max_tokens: int,
     thinking: bool = False,
     api_key: str | None = None,
     base_url: str | None = None,
-) -> tuple[ChatLiteLLM, str]:
-    """One direct chat model on ``settings.llm`` (or on the explicit ``api_key``/``base_url`` endpoint override,
-    used for the Triage fallback endpoint)."""
+) -> ConfiguredLMEndpoint:
+    """Resolve one direct endpoint without importing a model framework.
+
+    The explicit override composes the semantic Program's fallback route. Retry, cache, token and deadline policy
+    live behind the Program's Adapter Seam rather than in this application configuration helper.
+    """
 
     endpoint_key = api_key if api_key is not None else settings.llm.api_key
     endpoint_url = base_url if base_url is not None else settings.llm.base_url
@@ -25,18 +35,11 @@ def configured_chat_model(
         base_url=endpoint_url,
     )
     model_kwargs = _provider_model_kwargs(effective_model, thinking=thinking)
-    return (
-        ChatLiteLLM(
-            model=effective_model,
-            api_key=endpoint_key,
-            api_base=endpoint_url,
-            temperature=0,
-            max_tokens=max_tokens,
-            max_retries=0,
-            request_timeout=request_timeout_seconds,
-            model_kwargs=model_kwargs,
-        ),
-        effective_model,
+    return ConfiguredLMEndpoint(
+        model_name=effective_model,
+        api_key=str(endpoint_key),
+        api_base=str(endpoint_url),
+        model_kwargs=model_kwargs,
     )
 
 
@@ -69,7 +72,8 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
 
 
 __all__ = [
-    "configured_chat_model",
+    "ConfiguredLMEndpoint",
+    "configured_lm_endpoint",
     "litellm_proxy_model_name",
     "llm_is_configured",
 ]

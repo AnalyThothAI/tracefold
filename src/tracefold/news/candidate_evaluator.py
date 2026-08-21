@@ -8,7 +8,6 @@ broker, or canary controls.
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
 import math
@@ -17,11 +16,11 @@ import statistics
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .agents.triage_model import TriageModel, build_triage_input, told_ledger_for_prompt
+from .agents.semantic_program import CompileProvenance, SemanticJudge, SemanticProgramError, TriageContext
 from .artifact_identity import canonical_json, canonical_sha
 from .models import TriageVerdict
 from .review import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
@@ -31,11 +30,15 @@ from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
 LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
+LEARNING_EPOCH: Literal["program_v1"] = "program_v1"
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
+ArmName = Literal["stable", "candidate"]
+ArmJudgeKey = tuple[ArmName, str]
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
+    "learning_epoch": LEARNING_EPOCH,
     "development": {
         "boundary_clusters_min": 30,
         "retention_clusters_min": 100,
@@ -52,14 +55,16 @@ _PROFILE: dict[str, Any] = {
         "max_review_budget": 100,
     },
     "guardrails": {
-        "mean_tokens_growth_pct": 0.10,
+        "mean_total_tokens_growth_pct": 0.10,
+        "mean_call_growth_pct": 0.10,
+        "mean_provider_cost_growth_pct": 0.10,
         "candidate_latency_p95_ms_max": 30_000,
         "candidate_degraded_or_error_rate_max": 0.05,
         "canary_candidate_min_n": 8,
         "critical_regressions": 0,
     },
     "bootstrap": {"seed": 112, "replicates": 2_000, "confidence": 0.95},
-    "supported_candidates": ["prompt", "policy"],
+    "supported_candidates": ["program", "policy"],
 }
 TRUSTED_ROOT_SHA = hashlib.sha256(
     json.dumps(
@@ -95,6 +100,7 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
+    learning_epoch: Literal["program_v1"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
 
@@ -122,6 +128,8 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
+    learning_epoch: Literal["program_v1"]
+    learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
     settlement_grace_ms: int
@@ -137,33 +145,20 @@ class DatasetManifest(BaseModel):
 class ArmManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    prompt_version: str
-    prompt_text: str = Field(min_length=1, max_length=64_000)
-    prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    program_version: str = Field(min_length=1, max_length=128)
+    program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_model_bindings_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     retrieval_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    provider: str
-    model: str
-    model_snapshot_kind: Literal["immutable_revision", "mutable_alias"]
-    model_revision: str | None = None
-    model_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    execution_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy: dict[str, Any]
     policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def hashes_match(self) -> ArmManifest:
-        if _text_sha(self.prompt_text) != self.prompt_sha256:
-            raise ValueError("news_learning_prompt_sha_mismatch")
         if _sha(self.policy) != self.policy_sha256:
             raise ValueError("news_learning_policy_sha_mismatch")
         # Parse now, before a model call, so a malformed candidate policy can
         # never consume provider budget.
         DecidePolicy(**self.policy)
-        if self.model_snapshot_kind == "immutable_revision" and not self.model_revision:
-            raise ValueError("news_learning_immutable_model_revision_required")
-        if self.model_snapshot_kind == "mutable_alias" and self.model_revision is not None:
-            raise ValueError("news_learning_mutable_model_revision_not_allowed")
         return self
 
     @property
@@ -185,6 +180,10 @@ class ProposalReceipt(BaseModel):
     candidate_patch_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     declared_target_dimensions: tuple[str, ...] = Field(min_length=1)
     guardrails: tuple[str, ...] = ()
+    program_parent_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    program_candidate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    program_machine_diff: dict[str, Any] | None = None
+    compile_provenance: dict[str, Any] | None = None
     holdout_access_attestation: Literal[False] = False
 
     @classmethod
@@ -207,6 +206,20 @@ class ProposalReceipt(BaseModel):
             (self.generator_prompt_sha, self.generator_model_sha, self.generator_execution_sha)
         ):
             raise ValueError("news_learning_model_generator_receipt_incomplete")
+        program_fields = (
+            self.program_parent_sha256,
+            self.program_candidate_sha256,
+            self.program_machine_diff,
+            self.compile_provenance,
+        )
+        if any(value is not None for value in program_fields) and not all(
+            value is not None for value in program_fields
+        ):
+            raise ValueError("news_learning_program_receipt_incomplete")
+        if self.program_machine_diff is not None and not self.program_machine_diff:
+            raise ValueError("news_learning_program_machine_diff_empty")
+        if self.compile_provenance is not None and not self.compile_provenance:
+            raise ValueError("news_learning_program_compile_provenance_empty")
         expected = _sha({"kind": "candidate_registration", "payload": self.registration_payload})
         if self.registration_receipt_sha != expected:
             raise ValueError("news_learning_registration_receipt_sha_mismatch")
@@ -220,7 +233,7 @@ class ProposalReceipt(BaseModel):
 class CandidateManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    target: Literal["prompt", "policy", "model", "retrieval", "program"]
+    target: Literal["program", "policy"]
     parent_stable_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_arm: ArmManifest
     hypothesis: str = Field(min_length=1, max_length=2_000)
@@ -264,123 +277,8 @@ class EvaluationReport(BaseModel):
     evidence: dict[str, Any]
 
 
-class ModelInvocation(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    run_sha: str
-    case_id: str
-    arm: Literal["stable", "candidate"]
-    trial: int = Field(ge=1, le=3)
-    arm_manifest: ArmManifest
-    human_input: str
-
-    @property
-    def request(self) -> dict[str, Any]:
-        return {
-            "arm_bundle_sha": self.arm_manifest.bundle_sha,
-            "prompt_sha256": self.arm_manifest.prompt_sha256,
-            "schema_sha256": self.arm_manifest.schema_sha256,
-            "model_sha256": self.arm_manifest.model_sha256,
-            "model_snapshot_kind": self.arm_manifest.model_snapshot_kind,
-            "model_revision": self.arm_manifest.model_revision,
-            "execution_contract_sha256": self.arm_manifest.execution_contract_sha256,
-            "human_input": self.human_input,
-            "trial": self.trial,
-        }
-
-    @property
-    def request_sha256(self) -> str:
-        return _sha(self.request)
-
-
-class ModelObservation(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    verdict: dict[str, Any] | None = None
-    latency_ms: int | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    finish_reason: str | None = None
-    error_code: str | None = None
-
-
-class SemanticModelAdapter(Protocol):
-    async def invoke(self, invocation: ModelInvocation) -> ModelObservation: ...
-
-
 class RecordReplayMiss(RuntimeError):
     pass
-
-
-class RecordReplayModelAdapter:
-    """Strict offline adapter.  A miss is explicit and never calls a provider."""
-
-    def __init__(self, recordings: Mapping[str, Mapping[str, Any]]) -> None:
-        self._recordings = {str(key): dict(value) for key, value in recordings.items()}
-        self.calls = 0
-
-    async def invoke(self, invocation: ModelInvocation) -> ModelObservation:
-        self.calls += 1
-        payload = self._recordings.get(invocation.request_sha256)
-        if payload is None:
-            raise RecordReplayMiss(f"news_model_recording_missing:{invocation.request_sha256}")
-        return ModelObservation.model_validate(payload)
-
-
-class LiveTriageModelAdapter:
-    """True-external adapter over the same structured Triage contract as production."""
-
-    def __init__(
-        self,
-        *,
-        chat_model: Any,
-        deadline_seconds: float,
-        fallback_chat_model: Any | None = None,
-        fallback_model_name: str | None = None,
-        primary_breaker_failures: int = 3,
-        primary_breaker_open_seconds: float = 60.0,
-    ) -> None:
-        self._chat_model = chat_model
-        self._deadline_seconds = float(deadline_seconds)
-        self._fallback_chat_model = fallback_chat_model
-        self._fallback_model_name = fallback_model_name
-        self._primary_breaker_failures = int(primary_breaker_failures)
-        self._primary_breaker_open_seconds = float(primary_breaker_open_seconds)
-        self._models: dict[str, TriageModel] = {}
-
-    async def invoke(self, invocation: ModelInvocation) -> ModelObservation:
-        key = invocation.arm_manifest.bundle_sha
-        triage = self._models.get(key)
-        if triage is None:
-            fallback = (
-                TriageModel(
-                    model=self._fallback_chat_model,
-                    model_name=str(self._fallback_model_name),
-                    deadline_seconds=self._deadline_seconds,
-                )
-                if self._fallback_chat_model is not None and self._fallback_model_name
-                else None
-            )
-            triage = TriageModel(
-                model=self._chat_model,
-                model_name=invocation.arm_manifest.model,
-                deadline_seconds=self._deadline_seconds,
-                system_prompt=invocation.arm_manifest.prompt_text,
-                fallback=fallback,
-                primary_breaker_failures=self._primary_breaker_failures,
-                primary_breaker_open_seconds=self._primary_breaker_open_seconds,
-            )
-            self._models[key] = triage
-        try:
-            result = await triage.triage(invocation.human_input)
-        except Exception as exc:
-            return ModelObservation(error_code=getattr(exc, "code", None) or type(exc).__name__)
-        return ModelObservation(
-            verdict=result.verdict.model_dump(mode="json"),
-            latency_ms=result.latency_ms,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-        )
 
 
 @dataclass(slots=True)
@@ -412,7 +310,7 @@ class CandidateEvaluator:
         conn: Any,
         *,
         stable: ArmManifest,
-        model_adapter: SemanticModelAdapter,
+        judges: Mapping[ArmJudgeKey, SemanticJudge],
         candidate_catalog: Sequence[CandidateManifest] = (),
         principal: str = "operator",
         trusted_root_sha: str = TRUSTED_ROOT_SHA,
@@ -421,13 +319,18 @@ class CandidateEvaluator:
             raise ValueError("news_learning_trusted_root_invalid")
         self._conn = conn
         self._stable = stable
-        self._model = model_adapter
+        self._judges = dict(judges)
         self._candidates = {candidate.candidate_sha: candidate for candidate in candidate_catalog}
         self._principal = principal
         self._trusted_root_sha = trusted_root_sha
 
     async def freeze_dataset(self, spec: DatasetSpec) -> DatasetManifest:
         self._assert_active_stable()
+        if spec.learning_epoch != LEARNING_EPOCH:
+            raise ValueError("news_learning_epoch_mismatch")
+        epoch_started_at_ms = self._learning_epoch_started_at_ms()
+        if spec.window.from_ms < epoch_started_at_ms:
+            raise ValueError("news_learning_window_precedes_program_epoch")
         freeze_as_of_ms = self._db_now_ms()
         if spec.window.to_ms > freeze_as_of_ms - SETTLEMENT_GRACE_MS:
             raise ValueError("news_learning_window_not_settled")
@@ -446,13 +349,19 @@ class CandidateEvaluator:
         elif spec.observation_ref is not None:
             raise ValueError("news_learning_development_observation_ref_not_allowed")
 
-        cases = self._accepted_cases(spec.window, freeze_as_of_ms=freeze_as_of_ms)
-        seed = self._seed_receipts(spec.window.from_ms)
+        cases = self._accepted_cases(
+            spec.window,
+            freeze_as_of_ms=freeze_as_of_ms,
+            epoch_started_at_ms=epoch_started_at_ms,
+        )
+        seed = self._seed_receipts(spec.window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
         counts = self._dataset_counts(spec, cases)
         payload = {
             "dataset_version": DATASET_VERSION,
             "role": spec.role,
             "profile_id": spec.profile_id,
+            "learning_epoch": spec.learning_epoch,
+            "learning_epoch_started_at_ms": epoch_started_at_ms,
             "window": spec.window.model_dump(mode="json"),
             "freeze_as_of_ms": freeze_as_of_ms,
             "settlement_grace_ms": SETTLEMENT_GRACE_MS,
@@ -464,6 +373,7 @@ class CandidateEvaluator:
             "counts": counts,
             "hashes": {
                 "trusted_root_sha": self._trusted_root_sha,
+                "learning_epoch_sha": _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms}),
                 "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
                 "reader_contract_sha": READER_CONTRACT_SHA256,
                 "agent_bundle_sha": self._stable.bundle_sha,
@@ -472,6 +382,68 @@ class CandidateEvaluator:
         }
         artifact_sha = self._persist_artifact("dataset", payload)
         return DatasetManifest(artifact_sha=artifact_sha, **payload)
+
+    def development_compile_episodes(self, dataset_sha: str) -> tuple[dict[str, Any], ...]:
+        """Expose accepted development truth to a cold Program compiler.
+
+        This is the learning plane's only compiler-facing Interface. It keeps
+        dataset/epoch validation and told-ledger construction inside the
+        evaluator instead of making a CLI depend on private case loaders.
+        """
+
+        self._assert_active_stable()
+        dataset = self._load_dataset(dataset_sha)
+        if dataset.role != "development":
+            raise ValueError("news_learning_compile_requires_development_dataset")
+        if dataset.agent_cohort != self._agent_cohort():
+            raise ValueError("news_learning_dataset_agent_cohort_mismatch")
+
+        state = _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts))
+        pending: list[_Receipt] = []
+        episodes: list[dict[str, Any]] = []
+        for case_ref in sorted(dataset.cases, key=lambda item: (item.opened_at_ms, item.case_id)):
+            ready = [receipt for receipt in pending if receipt.at_ms <= case_ref.opened_at_ms]
+            pending = [receipt for receipt in pending if receipt.at_ms > case_ref.opened_at_ms]
+            state.receipts.extend(sorted(ready, key=lambda item: (item.at_ms, item.event_id)))
+            state.expire(case_ref.opened_at_ms)
+            case = self._load_case(case_ref)
+            context = self._build_context(case, state)
+            review = dict(case["review"])
+            episodes.append(
+                {
+                    "case_id": case_ref.case_id,
+                    "cluster_id": case_ref.cluster_id,
+                    "stratum": case_ref.stratum,
+                    "context": context.model_dump(mode="json"),
+                    "accepted_review": {
+                        "review_id": case_ref.review_id,
+                        "should_push": review.get("should_push"),
+                        "dimensions": dict(review.get("dimensions") or {}),
+                        "novelty": dict(review.get("novelty") or {}),
+                        "first_bad_owner": review.get("first_bad_owner"),
+                        "evidence_refs": list(review.get("evidence_refs") or []),
+                        "expected_correction": str(review.get("expected_correction") or ""),
+                        "note": str(review.get("note") or ""),
+                    },
+                    "production_verdict": case.get("production_verdict"),
+                }
+            )
+            verdict_payload = case.get("production_verdict")
+            receipt_at_ms = case.get("receipt_at_ms")
+            if case_ref.delivery_truth == "observed_sent" and verdict_payload and receipt_at_ms is not None:
+                verdict = TriageVerdict.model_validate(verdict_payload)
+                card = dict((case.get("snapshot") or {}).get("card") or {})
+                pending.append(
+                    _Receipt(
+                        event_id=str(case_ref.event_id or case_ref.case_id),
+                        at_ms=int(receipt_at_ms),
+                        storyline_key=str(card.get("storyline_key") or "macro:general"),
+                        magnitude=verdict.magnitude,
+                        direction=verdict.direction,
+                        headline_zh=verdict.headline_zh,
+                    )
+                )
+        return tuple(episodes)
 
     async def evaluate(self, request: EvaluationRequest) -> EvaluationReport:
         # Reject a stale constructor arm before loading data or spending one
@@ -644,20 +616,62 @@ class CandidateEvaluator:
         return EvaluationReport(report_sha=report_sha, **report_payload)
 
     def _validate_candidate_static(self, candidate: CandidateManifest) -> None:
-        if candidate.target not in {"prompt", "policy"}:
-            raise ValueError("candidate_kind_unsupported")
         if candidate.parent_stable_sha != self._stable.bundle_sha:
             raise ValueError("news_learning_candidate_parent_stable_mismatch")
         stable = self._stable.model_dump(mode="json")
         proposed = candidate.candidate_arm.model_dump(mode="json")
         changed = {key for key in stable if stable[key] != proposed[key]}
         allowed = (
-            {"prompt_version", "prompt_text", "prompt_sha256"}
-            if candidate.target == "prompt"
-            else {"policy", "policy_sha256"}
+            {"program_version", "program_sha256"} if candidate.target == "program" else {"policy", "policy_sha256"}
         )
         if not changed or not changed <= allowed:
             raise ValueError(f"news_learning_exact_one_variable_violation:{','.join(sorted(changed))}")
+        receipt = candidate.proposal_receipt
+        if candidate.target == "program":
+            if receipt.generator_kind != "model":
+                raise ValueError("news_learning_program_generator_must_be_model")
+            if candidate.candidate_arm.program_sha256 == self._stable.program_sha256:
+                raise ValueError("news_learning_program_sha_unchanged")
+            if receipt.program_parent_sha256 != self._stable.program_sha256:
+                raise ValueError("news_learning_program_parent_mismatch")
+            if receipt.program_candidate_sha256 != candidate.candidate_arm.program_sha256:
+                raise ValueError("news_learning_program_candidate_mismatch")
+            if not receipt.program_machine_diff:
+                raise ValueError("news_learning_program_machine_diff_required")
+            provenance = dict(receipt.compile_provenance or {})
+            try:
+                parsed_provenance = CompileProvenance.model_validate(provenance)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("news_learning_program_compile_provenance_invalid") from exc
+            canonical_provenance = parsed_provenance.model_dump(mode="json")
+            if (
+                parsed_provenance.mode != "optimizer_candidate"
+                or canonical_provenance != provenance
+                or parsed_provenance.holdout_access_attestation is not False
+            ):
+                raise ValueError("news_learning_program_compile_provenance_invalid")
+            if provenance.get("development_dataset_sha") != candidate.development_dataset_sha:
+                raise ValueError("news_learning_program_compile_dataset_mismatch")
+            expected_patch_sha = _sha(
+                {
+                    "parent_program_sha256": receipt.program_parent_sha256,
+                    "candidate_program_sha256": receipt.program_candidate_sha256,
+                    "machine_diff": receipt.program_machine_diff,
+                    "compile_provenance": provenance,
+                }
+            )
+            if receipt.candidate_patch_sha != expected_patch_sha:
+                raise ValueError("news_learning_program_patch_sha_mismatch")
+        elif any(
+            value is not None
+            for value in (
+                receipt.program_parent_sha256,
+                receipt.program_candidate_sha256,
+                receipt.program_machine_diff,
+                receipt.compile_provenance,
+            )
+        ):
+            raise ValueError("news_learning_policy_receipt_contains_program_change")
         if candidate.development_dataset_sha != candidate.proposal_receipt.development_dataset_sha:
             raise ValueError("news_learning_proposal_dataset_mismatch")
         if tuple(candidate.target_dimensions) != tuple(candidate.proposal_receipt.declared_target_dimensions):
@@ -681,7 +695,13 @@ class CandidateEvaluator:
             raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
         self._verify_registration_receipt(candidate.proposal_receipt)
 
-    def _accepted_cases(self, window: ClosedWindow, *, freeze_as_of_ms: int) -> tuple[DatasetCaseRef, ...]:
+    def _accepted_cases(
+        self,
+        window: ClosedWindow,
+        *,
+        freeze_as_of_ms: int,
+        epoch_started_at_ms: int,
+    ) -> tuple[DatasetCaseRef, ...]:
         rows = self._conn.execute(
             """
             WITH accepted AS (
@@ -690,6 +710,7 @@ class CandidateEvaluator:
                 JOIN news_reviews j ON j.review_id = a.accepts_review_id
                WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
                  AND a.release_eligible AND j.release_eligible
+                 AND a.created_at_ms >= %s AND j.created_at_ms >= %s
                  AND a.created_at_ms <= %s AND j.rubric_version = %s
                  AND j.reader_contract_version = %s
                ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
@@ -704,6 +725,7 @@ class CandidateEvaluator:
              WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s
                AND source.ingest_mode = 'live' AND source.evidence_release_eligible
                AND source.trace #>> '{agent_assignment,bundle_sha}' = %s
+               AND source.program_version = %s AND source.program_sha256 = %s
                AND NOT (
                  source.final_decision IN ('push', 'escalate')
                  AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
@@ -714,12 +736,16 @@ class CandidateEvaluator:
                )
             """,
             (
+                epoch_started_at_ms,
+                epoch_started_at_ms,
                 freeze_as_of_ms,
                 REVIEW_RUBRIC_VERSION,
                 READER_CONTRACT_VERSION,
                 window.from_ms,
                 window.to_ms,
                 self._stable.bundle_sha,
+                self._stable.program_version,
+                self._stable.program_sha256,
             ),
         ).fetchall()
         external = self._conn.execute(
@@ -730,12 +756,23 @@ class CandidateEvaluator:
               JOIN news_reviews j ON j.review_id = a.accepts_review_id
               JOIN news_external_miss_snapshots x ON x.snapshot_id = j.external_snapshot_id
              WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'external_miss'
+               AND a.created_at_ms >= %s AND j.created_at_ms >= %s
                AND a.created_at_ms <= %s AND j.rubric_version = %s
                AND j.reader_contract_version = %s
+               AND x.created_at_ms >= %s
                AND x.occurred_at_ms >= %s AND x.occurred_at_ms < %s
              ORDER BY j.external_snapshot_id, a.created_at_ms DESC, a.review_id DESC
             """,
-            (freeze_as_of_ms, REVIEW_RUBRIC_VERSION, READER_CONTRACT_VERSION, window.from_ms, window.to_ms),
+            (
+                epoch_started_at_ms,
+                epoch_started_at_ms,
+                freeze_as_of_ms,
+                REVIEW_RUBRIC_VERSION,
+                READER_CONTRACT_VERSION,
+                epoch_started_at_ms,
+                window.from_ms,
+                window.to_ms,
+            ),
         ).fetchall()
         drafts: list[tuple[DatasetCaseRef, str, str]] = []
         for row in [*rows, *external]:
@@ -824,8 +861,15 @@ class CandidateEvaluator:
         eligible = self._conn.execute(
             "SELECT count(*) AS n FROM news_review_task_source_v1 "
             "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
-            "AND trace #>> '{agent_assignment,bundle_sha}' = %s",
-            (spec.window.from_ms, spec.window.to_ms, self._stable.bundle_sha),
+            "AND trace #>> '{agent_assignment,bundle_sha}' = %s "
+            "AND program_version = %s AND program_sha256 = %s",
+            (
+                spec.window.from_ms,
+                spec.window.to_ms,
+                self._stable.bundle_sha,
+                self._stable.program_version,
+                self._stable.program_sha256,
+            ),
         ).fetchone()
         return {
             "case_n": len(cases),
@@ -841,7 +885,7 @@ class CandidateEvaluator:
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }
 
-    def _seed_receipts(self, from_ms: int) -> tuple[dict[str, Any], ...]:
+    def _seed_receipts(self, from_ms: int, *, epoch_started_at_ms: int) -> tuple[dict[str, Any], ...]:
         rows = self._conn.execute(
             """
             SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
@@ -854,9 +898,17 @@ class CandidateEvaluator:
               JOIN news_events e ON e.event_id = d.event_id
              WHERE d.kind = 'first' AND d.state = 'sent'
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
+               AND v.program_version = %s AND v.program_sha256 = %s
+               AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
              ORDER BY d.settled_at_ms, v.event_id
             """,
-            (from_ms - 4 * 3_600_000, from_ms),
+            (
+                max(epoch_started_at_ms, from_ms - 4 * 3_600_000),
+                from_ms,
+                self._stable.program_version,
+                self._stable.program_sha256,
+                self._stable.bundle_sha,
+            ),
         ).fetchall()
         return tuple(dict(row) for row in rows)
 
@@ -867,17 +919,17 @@ class CandidateEvaluator:
         dataset: DatasetManifest,
         candidate: CandidateManifest,
     ) -> list[dict[str, Any]]:
-        states = {
+        states: dict[ArmName, _ArmState] = {
             "stable": _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts)),
             "candidate": _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts)),
         }
-        arms = {"stable": self._stable, "candidate": candidate.candidate_arm}
+        arms: dict[ArmName, ArmManifest] = {"stable": self._stable, "candidate": candidate.candidate_arm}
         review_case_ids = self._review_case_ids(dataset, candidate=candidate)
         observations: list[dict[str, Any]] = []
         for case_ref in dataset.cases:
             case = self._load_case(case_ref)
             case_outputs: dict[str, dict[str, Any]] = {}
-            order = ["stable", "candidate"]
+            order: list[ArmName] = ["stable", "candidate"]
             if int(case_ref.case_id[:2], 16) % 2:
                 order.reverse()
             for arm_name in order:
@@ -891,31 +943,31 @@ class CandidateEvaluator:
                 frozen_policy_screen = candidate.target == "policy" and dataset.role == "development"
                 if frozen_policy_screen:
                     verdict = case.get("production_verdict")
-                    model_observations: list[ModelObservation] = []
+                    program_observations: list[dict[str, Any]] = []
                     if verdict is None:
                         case_outputs[arm_name] = {"error_code": "frozen_verdict_missing", "delivered": False}
                         continue
                 else:
-                    human = self._build_input(case, state)
+                    context = self._build_context(case, state)
                     first = await self._invoke_and_record(
                         run_sha=run_sha,
                         case_id=case_ref.case_id,
                         arm_name=arm_name,
                         arm=arm,
-                        human=human,
+                        context=context,
                         trial=1,
                     )
-                    model_observations = [first]
-                    verdict = first.verdict
+                    program_observations = [first]
+                    verdict = first.get("verdict")
                     if verdict is None:
                         case_outputs[arm_name] = {
-                            "error_code": first.error_code or "model_output_missing",
+                            "error_code": first.get("error_code") or "program_output_missing",
                             "delivered": False,
-                            "model": [first.model_dump(mode="json")],
+                            "program": [first],
                         }
                         continue
                 result = self._apply_policy(case, verdict, state, arm)
-                result["model"] = [item.model_dump(mode="json") for item in model_observations]
+                result["program"] = list(program_observations)
                 case_outputs[arm_name] = result
             # A pre-registered stability subset plus every first-trial disagreement gets k=3.
             if candidate.target != "policy" and self._needs_stability_trials(case_ref.case_id, case_outputs):
@@ -923,22 +975,22 @@ class CandidateEvaluator:
                     if not case_outputs.get(arm_name, {}).get("verdict"):
                         continue
                     state = states[arm_name]
-                    human = self._build_input(case, state)
+                    context = self._build_context(case, state)
                     trials = [
                         await self._invoke_and_record(
                             run_sha=run_sha,
                             case_id=case_ref.case_id,
                             arm_name=arm_name,
                             arm=arms[arm_name],
-                            human=human,
+                            context=context,
                             trial=trial,
                         )
                         for trial in (2, 3)
                     ]
                     first_verdict = case_outputs[arm_name]["verdict"]
-                    serialized_observations: list[dict[str, Any]] = list(case_outputs[arm_name].get("model") or [])
-                    serialized_observations.extend(item.model_dump(mode="json") for item in trials)
-                    case_outputs[arm_name]["model"] = serialized_observations
+                    serialized_observations: list[dict[str, Any]] = list(case_outputs[arm_name].get("program") or [])
+                    serialized_observations.extend(trials)
+                    case_outputs[arm_name]["program"] = serialized_observations
                     trial_results: list[dict[str, Any]] = [
                         {
                             "trial": 1,
@@ -950,20 +1002,20 @@ class CandidateEvaluator:
                     for trial_number, trial_observation in zip((2, 3), trials, strict=True):
                         trial_result: dict[str, Any] = {
                             "trial": trial_number,
-                            "error_code": trial_observation.error_code,
+                            "error_code": trial_observation.get("error_code"),
                             "delivered": False,
                             "verdict_sha256": None,
                         }
-                        if trial_observation.verdict is not None:
+                        if trial_observation.get("verdict") is not None:
                             replayed = self._apply_policy(
                                 case,
-                                trial_observation.verdict,
+                                trial_observation["verdict"],
                                 state,
                                 arms[arm_name],
                             )
                             trial_result.update(
                                 delivered=bool(replayed.get("delivered")),
-                                verdict_sha256=_sha(trial_observation.verdict),
+                                verdict_sha256=_sha(trial_observation["verdict"]),
                             )
                         trial_results.append(trial_result)
                     expected_delivery = _expected_delivery(case_ref.should_push)
@@ -975,7 +1027,9 @@ class CandidateEvaluator:
                     case_outputs[arm_name]["stability"] = {
                         "trials": 3,
                         "agreement_n": 1
-                        + sum(item.verdict == first_verdict for item in trials if item.verdict is not None),
+                        + sum(
+                            item.get("verdict") == first_verdict for item in trials if item.get("verdict") is not None
+                        ),
                         "pass_n": pass_n,
                         "pass_k": None if pass_n is None else pass_n == 3,
                         "trial_results": trial_results,
@@ -1022,14 +1076,14 @@ class CandidateEvaluator:
     def _review_case_ids(dataset: DatasetManifest, *, candidate: CandidateManifest) -> frozenset[str]:
         """Freeze the human review batch without looking at either arm output.
 
-        Development Prompt replay remains a diagnostic screen, so every
+        Development Program replay remains a diagnostic screen, so every
         independent reviewed case is exposed.  Hidden validation pre-registers
         one deterministic representative for at most the profile's planned
         number of fact clusters.  Policy candidates use accepted should-push
         truth directly and do not create copy-preference work.
         """
 
-        if candidate.target != "prompt":
+        if candidate.target != "program":
             return frozenset()
         by_cluster: dict[str, DatasetCaseRef] = {}
         for case in dataset.cases:
@@ -1077,9 +1131,18 @@ class CandidateEvaluator:
                AND admission IN ('candidate', 'listing_deterministic')
                AND evidence_release_eligible
                AND verdict IS NOT NULL
+               AND trace #>> '{agent_assignment,arm}' = 'stable'
+               AND trace #>> '{agent_assignment,bundle_sha}' = %s
+               AND program_version = %s AND program_sha256 = %s
              ORDER BY opened_at_ms, event_id, evidence_version
             """,
-            (dataset.window.from_ms, dataset.window.to_ms),
+            (
+                dataset.window.from_ms,
+                dataset.window.to_ms,
+                self._stable.bundle_sha,
+                self._stable.program_version,
+                self._stable.program_sha256,
+            ),
         ).fetchall()
         state = _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts))
         observations: list[dict[str, Any]] = []
@@ -1109,32 +1172,32 @@ class CandidateEvaluator:
                 "opened_at_ms": opened_at_ms,
             }
             case = {"snapshot": snapshot, "opened_at_ms": opened_at_ms}
-            human = self._build_input(case, state)
-            model_observation = await self._invoke_and_record(
+            context = self._build_context(case, state)
+            program_observation = await self._invoke_and_record(
                 run_sha=run_sha,
                 case_id=case_id,
                 arm_name="candidate",
                 arm=candidate.candidate_arm,
-                human=human,
+                context=context,
                 trial=1,
             )
-            if model_observation.verdict is None:
+            if program_observation.get("verdict") is None:
                 candidate_output: dict[str, Any] = {
-                    "error_code": model_observation.error_code or "model_output_missing",
+                    "error_code": program_observation.get("error_code") or "program_output_missing",
                     "delivered": False,
                     "execution": "live",
                     "delivery": "simulated",
-                    "model": [model_observation.model_dump(mode="json")],
+                    "program": [program_observation],
                 }
             else:
                 candidate_output = self._apply_policy(
                     case,
-                    model_observation.verdict,
+                    program_observation["verdict"],
                     state,
                     candidate.candidate_arm,
                 )
                 candidate_output["execution"] = "live"
-                candidate_output["model"] = [model_observation.model_dump(mode="json")]
+                candidate_output["program"] = [program_observation]
             if candidate_output.get("delivered"):
                 verdict = dict(candidate_output.get("verdict") or {})
                 state.receipts.append(
@@ -1200,7 +1263,8 @@ class CandidateEvaluator:
                    a.assigned_at_ms, e.event_id, e.opened_at_ms,
                    s.evidence_version, s.evidence_sha256, s.snapshot AS evidence_snapshot,
                    v.verdict, v.final_decision, v.degraded, v.error_code AS verdict_error_code,
-                   v.trace, d.state AS delivery_state, d.error_code AS delivery_error_code, d.settled_at_ms
+                   v.trace, v.program_version, v.program_sha256,
+                   d.state AS delivery_state, d.error_code AS delivery_error_code, d.settled_at_ms
               FROM news_agent_assignments a
               JOIN news_events e ON e.event_id = a.event_id
               LEFT JOIN LATERAL (
@@ -1229,14 +1293,21 @@ class CandidateEvaluator:
         candidate_n = 0
         for row in rows:
             arm = str(row["arm"])
-            expected_bundle = candidate.candidate_arm.bundle_sha if arm == "candidate" else self._stable.bundle_sha
+            expected_agent = candidate.candidate_arm if arm == "candidate" else self._stable
+            expected_bundle = expected_agent.bundle_sha
             trace = dict(row.get("trace") or {})
             assignment_trace = dict(trace.get("agent_assignment") or {})
-            if str(row["bundle_sha"]) != expected_bundle or (
-                assignment_trace
-                and (
-                    str(assignment_trace.get("arm") or "") != arm
-                    or str(assignment_trace.get("bundle_sha") or "") != expected_bundle
+            if (
+                arm not in {"stable", "candidate"}
+                or str(row["bundle_sha"]) != expected_bundle
+                or str(row.get("program_version") or "") != expected_agent.program_version
+                or str(row.get("program_sha256") or "") != expected_agent.program_sha256
+                or (
+                    assignment_trace
+                    and (
+                        str(assignment_trace.get("arm") or "") != arm
+                        or str(assignment_trace.get("bundle_sha") or "") != expected_bundle
+                    )
                 )
             ):
                 invariant_breaches.append(str(row["event_id"]))
@@ -1307,25 +1378,13 @@ class CandidateEvaluator:
         }
         return observations, dimensions
 
-    def _build_input(self, case: Mapping[str, Any], state: _ArmState) -> str:
+    def _build_context(self, case: Mapping[str, Any], state: _ArmState) -> TriageContext:
         snapshot = case["snapshot"]
         event = dict(snapshot.get("card") or {})
         focus = dict(snapshot.get("focus_fact") or {})
         event["focus_fact_id"] = focus.get("fact_id")
         event["leader_title"] = focus.get("text") or event.get("leader_title")
         event["leader_description"] = focus.get("context") or event.get("leader_description")
-        gate = {
-            "asset_class": event.get("asset_class"),
-            "grounded_assets": event.get("grounded_assets") or [],
-            "macro_lexicon": event.get("macro_lexicon"),
-            "pr_template": str(event.get("admission") or "").startswith("suppressed_pr"),
-        }
-        storyline_key = str(event.get("storyline_key") or "macro:general")
-        status_bar = {
-            "storyline_key": storyline_key,
-            "preliminary": True,
-            "queue_lag_ms": 0,
-        }
         told_rows = [
             {
                 "event_id": receipt.event_id,
@@ -1337,17 +1396,12 @@ class CandidateEvaluator:
             }
             for receipt in reversed(state.receipts)
         ]
-        told = told_ledger_for_prompt(
-            told_rows,
-            now_ms=int(case["opened_at_ms"]),
-            prefer_key=storyline_key,
-        )
-        return build_triage_input(
-            event=event,
-            gate=gate,
-            event_status=status_bar,
+        return TriageContext.from_card(
+            event,
             watchlist=tuple(str(value) for value in case.get("watchlist") or ()),
-            told=told,
+            told_rows=told_rows,
+            now_ms=int(case["opened_at_ms"]),
+            queue_lag_ms=0,
         )
 
     def _apply_policy(
@@ -1413,40 +1467,237 @@ class CandidateEvaluator:
         *,
         run_sha: str,
         case_id: str,
-        arm_name: str,
+        arm_name: ArmName,
         arm: ArmManifest,
-        human: str,
+        context: TriageContext,
         trial: int,
-    ) -> ModelObservation:
-        invocation = ModelInvocation(
-            run_sha=run_sha,
-            case_id=case_id,
-            arm=arm_name,
-            trial=trial,
-            arm_manifest=arm,
-            human_input=human,
+    ) -> dict[str, Any]:
+        judge = self._judges.get((arm_name, arm.bundle_sha))
+        if judge is None:
+            return {
+                "verdict": None,
+                "program_version": arm.program_version,
+                "program_sha256": arm.program_sha256,
+                "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
+                "trace": {},
+                "usage": {},
+                "calls": [],
+                "error_code": "news_program_artifact_missing",
+            }
+        observation: dict[str, Any]
+        try:
+            judgment = await judge.judge(context)
+        except SemanticProgramError as exc:
+            if "recording_missing" in exc.code:
+                raise RecordReplayMiss(exc.code) from exc
+            partial_trace = exc.partial_trace.model_dump(mode="json") if exc.partial_trace is not None else {}
+            observation = {
+                "verdict": None,
+                "program_version": arm.program_version,
+                "program_sha256": arm.program_sha256,
+                "trace": partial_trace,
+                "usage": _usage_from_trace(partial_trace),
+                "calls": list(partial_trace.get("calls") or []),
+                "error_code": exc.code,
+                "retryable": exc.retryable,
+                "output_failure": exc.output_failure,
+                "attempts": exc.attempts,
+            }
+        else:
+            if (
+                judgment.program_version != arm.program_version
+                or judgment.program_sha256 != arm.program_sha256
+                or judgment.trace.program_version != arm.program_version
+                or judgment.trace.program_sha256 != arm.program_sha256
+            ):
+                raise ValueError("news_program_judgment_identity_mismatch")
+            observation = judgment.model_dump(mode="json")
+            observation["verdict"] = judgment.verdict.model_dump(mode="json")
+            observation["calls"] = list(observation.get("trace", {}).get("calls") or [])
+            observation["error_code"] = None
+        observation["runtime_model_bindings_sha256"] = arm.runtime_model_bindings_sha256
+
+        context_payload = context.model_dump(mode="json")
+        context_sha = _sha(context_payload)
+        trace = dict(observation.get("trace") or {})
+        trace_context_sha = str(trace.get("context_sha256") or context_sha)
+        if trace_context_sha != context_sha:
+            raise ValueError("news_program_trace_context_mismatch")
+        for call_index, raw_call in enumerate(observation.get("calls") or []):
+            if not bool(raw_call.get("physical_provider_call")):
+                continue
+            self._persist_program_call(
+                run_sha=run_sha,
+                case_id=case_id,
+                arm_name=arm_name,
+                trial=trial,
+                arm=arm,
+                context_sha=context_sha,
+                trace=trace,
+                call_index=call_index,
+                raw_call=raw_call,
+            )
+        return observation
+
+    def _persist_program_call(
+        self,
+        *,
+        run_sha: str,
+        case_id: str,
+        arm_name: ArmName,
+        trial: int,
+        arm: ArmManifest,
+        context_sha: str,
+        trace: Mapping[str, Any],
+        call_index: int,
+        raw_call: Mapping[str, Any],
+    ) -> None:
+        call = dict(raw_call)
+        if call_index < 0 or not _program_call_identity_complete(call):
+            raise ValueError("news_program_call_trace_incomplete")
+        predictor_name = str(call.get("predictor") or "")
+        attempt = int(call.get("attempt") or 0)
+        route = str(call.get("route") or "")
+        model_binding = str(call.get("model_binding") or "")
+        runtime_provider = str(call.get("runtime_provider") or "")
+        runtime_model = str(call.get("runtime_model") or "")
+        runtime_model_sha = str(call.get("runtime_model_sha256") or "")
+        runtime_binding_sha = str(call.get("runtime_binding_sha256") or "")
+        response_provider = str(call.get("provider") or "")
+        response_model = str(call.get("model") or "")
+        response_model_sha = str(call.get("model_sha256") or "")
+        provider = response_provider or "unobserved"
+        request_sha = str(call.get("request_sha256") or "")
+        input_sha = str(call.get("input_sha256") or "")
+        signature_sha = str(call.get("signature_sha256") or "")
+        instruction_sha = str(call.get("instruction_sha256") or "")
+        demos_sha = str(call.get("demos_sha256") or "")
+        model = response_model or "unobserved"
+        model_sha = response_model_sha or _sha({"provider": provider, "model": model})
+        expected_runtime_binding_sha = _sha(
+            {
+                "provider": runtime_provider,
+                "model": runtime_model,
+                "model_sha256": runtime_model_sha,
+            }
         )
-        observation = await self._model.invoke(invocation)
-        response = observation.model_dump(mode="json")
-        request = invocation.request
-        if (
-            len(_json(request).encode()) > MODEL_RECORDING_BYTES_MAX
-            or len(_json(response).encode()) > MODEL_RECORDING_BYTES_MAX
+        execution_sha = _sha(
+            {
+                "program_sha256": arm.program_sha256,
+                "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
+                "factory_id": trace.get("factory_id"),
+                "topology_sha256": trace.get("topology_sha256"),
+                "adapter_sha256": trace.get("adapter_sha256"),
+                "assembler_sha256": trace.get("assembler_sha256"),
+                "signature_sha256": signature_sha,
+                "instruction_sha256": instruction_sha,
+                "demos_sha256": demos_sha,
+                "runtime_binding_sha256": runtime_binding_sha,
+                "provider": provider,
+            }
+        )
+        if not model or runtime_binding_sha != expected_runtime_binding_sha:
+            raise ValueError("news_program_call_trace_incomplete")
+        request = {
+            "program_version": arm.program_version,
+            "program_sha256": arm.program_sha256,
+            "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
+            "context_sha256": context_sha,
+            "predictor": predictor_name,
+            "call_index": call_index,
+            "attempt": attempt,
+            "route": route,
+            "request_sha256": request_sha,
+            "input_sha256": input_sha,
+            "signature_sha256": signature_sha,
+            "instruction_sha256": instruction_sha,
+            "demos_sha256": demos_sha,
+            "model_binding": model_binding,
+            "runtime_provider": runtime_provider,
+            "runtime_model": runtime_model,
+            "runtime_model_sha256": runtime_model_sha,
+            "runtime_binding_sha256": runtime_binding_sha,
+            "upstream_sha256": call.get("upstream_sha256"),
+        }
+        validated_output = call.get("validated_output")
+        response = None
+        if isinstance(validated_output, Mapping):
+            output_field = "semantics" if predictor_name == "event_semantics" else "card"
+            response = {
+                "output": {output_field: dict(validated_output)},
+                "provider": call.get("provider"),
+                "model": call.get("model"),
+                "model_sha256": call.get("model_sha256"),
+                "latency_ms": int(call.get("latency_ms") or 0),
+                "input_tokens": int(call.get("input_tokens") or 0),
+                "output_tokens": int(call.get("output_tokens") or 0),
+                "cached_tokens": int(call.get("cached_tokens") or 0),
+                "total_tokens": int(call.get("total_tokens") or 0),
+                "provider_cost_microusd": call.get("provider_cost_microusd"),
+                "finish_reason": call.get("finish_reason"),
+                "runtime_binding_sha256": runtime_binding_sha,
+            }
+        if len(_json(request).encode()) > MODEL_RECORDING_BYTES_MAX or (
+            response is not None and len(_json(response).encode()) > MODEL_RECORDING_BYTES_MAX
         ):
             raise ValueError("news_model_recording_oversized")
-        response_sha = _sha(response)
-        recording_sha = _sha(
-            {"run_sha": run_sha, "case_id": case_id, "arm": arm_name, "trial": trial, "request": request}
+        response_sha = _sha(response) if response is not None else None
+        identity = {
+            "run_sha": run_sha,
+            "case_id": case_id,
+            "arm": arm_name,
+            "trial": trial,
+            "predictor_name": predictor_name,
+            "call_index": call_index,
+            "attempt": attempt,
+            "request_sha256": request_sha,
+        }
+        recording_sha = _sha(identity)
+        total_tokens = (
+            call.get("total_tokens")
+            if call.get("total_tokens") is not None
+            else int(call.get("input_tokens") or 0) + int(call.get("output_tokens") or 0)
         )
+        expected_recording = {
+            "recording_sha": recording_sha,
+            "run_sha": run_sha,
+            "case_id": case_id,
+            "arm": arm_name,
+            "trial": trial,
+            "predictor_name": predictor_name,
+            "call_index": call_index,
+            "attempt": attempt,
+            "route": route,
+            "request_sha256": request_sha,
+            "response_sha256": response_sha,
+            "request": request,
+            "response": response,
+            "provider": provider,
+            "model": model,
+            "model_sha": model_sha,
+            "execution_contract_sha": execution_sha,
+            "latency_ms": call.get("latency_ms"),
+            "input_tokens": call.get("input_tokens"),
+            "output_tokens": call.get("output_tokens"),
+            "cached_tokens": call.get("cached_tokens"),
+            "total_tokens": total_tokens,
+            "provider_cost_microusd": call.get("provider_cost_microusd"),
+            "finish_reason": call.get("finish_reason"),
+            "error_code": call.get("error_code"),
+        }
         self._conn.execute(
             """
             INSERT INTO news_model_recordings (
-              recording_sha, run_sha, case_id, arm, trial, request_sha256, response_sha256,
-              request, response, provider, model, model_sha, execution_contract_sha,
-              latency_ms, input_tokens, output_tokens, finish_reason, error_code, created_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (recording_sha) DO NOTHING
+              recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route,
+              request_sha256, response_sha256, request, response, provider, model, model_sha,
+              execution_contract_sha, latency_ms, input_tokens, output_tokens, cached_tokens, total_tokens,
+              provider_cost_microusd, finish_reason, error_code, created_at_ms
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s
+            ) ON CONFLICT DO NOTHING
             """,
             (
                 recording_sha,
@@ -1454,23 +1705,51 @@ class CandidateEvaluator:
                 case_id,
                 arm_name,
                 trial,
-                invocation.request_sha256,
+                predictor_name,
+                call_index,
+                attempt,
+                route,
+                request_sha,
                 response_sha,
                 _json(request),
-                _json(response),
-                arm.provider,
-                arm.model,
-                arm.model_sha256,
-                arm.execution_contract_sha256,
-                observation.latency_ms,
-                observation.input_tokens,
-                observation.output_tokens,
-                observation.finish_reason,
-                observation.error_code,
+                _json(response) if response is not None else None,
+                provider,
+                model,
+                model_sha,
+                execution_sha,
+                call.get("latency_ms"),
+                call.get("input_tokens"),
+                call.get("output_tokens"),
+                call.get("cached_tokens"),
+                total_tokens,
+                call.get("provider_cost_microusd"),
+                call.get("finish_reason"),
+                call.get("error_code"),
                 self._db_now_ms(),
             ),
         )
-        return observation
+        persisted = self._conn.execute(
+            """
+            SELECT recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route,
+                   request_sha256, response_sha256, request, response, provider, model, model_sha,
+                   execution_contract_sha, latency_ms, input_tokens, output_tokens, cached_tokens, total_tokens,
+                   provider_cost_microusd, finish_reason, error_code
+              FROM news_model_recordings
+             WHERE recording_sha = %s
+            """,
+            (recording_sha,),
+        ).fetchone()
+        if persisted is None:
+            # A different recording_sha can still collide with the composite
+            # run/case/arm/trial/Predictor identity.  Never expose the backend's
+            # unique-constraint name as the evaluator's behavioral contract.
+            raise ValueError("news_model_recording_conflict")
+        actual_recording = {key: persisted[key] for key in expected_recording}
+        actual_recording["request"] = dict(actual_recording["request"])
+        if actual_recording["response"] is not None:
+            actual_recording["response"] = dict(actual_recording["response"])
+        if actual_recording != expected_recording:
+            raise ValueError("news_model_recording_conflict")
 
     def _evaluate_evidence(
         self,
@@ -1518,11 +1797,19 @@ class CandidateEvaluator:
         stable_only_errors = 0
         stable_tokens: list[int] = []
         candidate_tokens: list[int] = []
+        stable_calls: list[int] = []
+        candidate_calls: list[int] = []
+        stable_trace_entries: list[int] = []
+        candidate_trace_entries: list[int] = []
+        stable_costs: list[int] = []
+        candidate_costs: list[int] = []
         stable_latencies: list[int] = []
         candidate_latencies: list[int] = []
         candidate_observed_n = 0
         candidate_bad_n = 0
         candidate_schema_errors = 0
+        provider_cost_observation_incomplete = False
+        program_call_provenance_incomplete = False
         stability: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
         for item in observations:
             review = reviews.get(str(item["case_ref"]["review_id"]), {})
@@ -1551,26 +1838,48 @@ class CandidateEvaluator:
                 candidate_only_errors += 1
             elif stable_out.get("error_code"):
                 stable_only_errors += 1
-            stable_tokens.extend(
-                int(model_obs["output_tokens"])
-                for model_obs in stable_out.get("model") or []
-                if model_obs.get("output_tokens") is not None
-            )
-            candidate_tokens.extend(
-                int(model_obs["output_tokens"])
-                for model_obs in candidate_out.get("model") or []
-                if model_obs.get("output_tokens") is not None
-            )
-            stable_latencies.extend(
-                int(model_obs["latency_ms"])
-                for model_obs in stable_out.get("model") or []
-                if model_obs.get("latency_ms") is not None
-            )
-            candidate_latencies.extend(
-                int(model_obs["latency_ms"])
-                for model_obs in candidate_out.get("model") or []
-                if model_obs.get("latency_ms") is not None
-            )
+            for output, tokens, calls, trace_entries, costs, latencies in (
+                (
+                    stable_out,
+                    stable_tokens,
+                    stable_calls,
+                    stable_trace_entries,
+                    stable_costs,
+                    stable_latencies,
+                ),
+                (
+                    candidate_out,
+                    candidate_tokens,
+                    candidate_calls,
+                    candidate_trace_entries,
+                    candidate_costs,
+                    candidate_latencies,
+                ),
+            ):
+                for program_obs in output.get("program") or []:
+                    metric = _program_metric(program_obs)
+                    if (
+                        candidate.target == "program"
+                        and request.stage in {"offline", "holdout"}
+                        and not _provider_cost_observation_complete(program_obs)
+                    ):
+                        provider_cost_observation_incomplete = True
+                    if (
+                        candidate.target == "program"
+                        and request.stage in {"offline", "holdout"}
+                        and not _program_call_provenance_complete(program_obs)
+                    ):
+                        program_call_provenance_incomplete = True
+                    if metric["total_tokens"] is not None:
+                        tokens.append(int(metric["total_tokens"]))
+                    if metric["call_count"] is not None:
+                        calls.append(int(metric["call_count"]))
+                    if metric["trace_entry_count"] is not None:
+                        trace_entries.append(int(metric["trace_entry_count"]))
+                    if metric["provider_cost_microusd"] is not None:
+                        costs.append(int(metric["provider_cost_microusd"]))
+                    if metric["latency_ms"] is not None:
+                        latencies.append(int(metric["latency_ms"]))
             if expected is not None:
                 correctness["scored"] += 1
                 correctness["stable"] += bool(stable_out.get("delivered")) == expected
@@ -1591,12 +1900,28 @@ class CandidateEvaluator:
         # regression evidence and remain FAIL above.
         if (stable_only_errors or common_errors) and request.stage in {"offline", "holdout"}:
             blockers.append("stable_or_common_execution_unavailable")
-        if (
-            stable_tokens
-            and candidate_tokens
-            and statistics.mean(candidate_tokens) > statistics.mean(stable_tokens) * 1.10
+        if provider_cost_observation_incomplete:
+            blockers.append("provider_cost_observation_incomplete")
+        if program_call_provenance_incomplete:
+            blockers.append("program_call_provenance_incomplete")
+        if _mean_regressed(
+            stable_tokens,
+            candidate_tokens,
+            growth_pct=float(_PROFILE["guardrails"]["mean_total_tokens_growth_pct"]),
         ):
             failures.append("candidate_token_cost_regression")
+        if _mean_regressed(
+            stable_calls,
+            candidate_calls,
+            growth_pct=float(_PROFILE["guardrails"]["mean_call_growth_pct"]),
+        ):
+            failures.append("candidate_call_cost_regression")
+        if _mean_regressed(
+            stable_costs,
+            candidate_costs,
+            growth_pct=float(_PROFILE["guardrails"]["mean_provider_cost_growth_pct"]),
+        ):
+            failures.append("candidate_provider_cost_regression")
         candidate_latency_p95 = _percentile95(candidate_latencies)
         if (
             request.stage in {"shadow", "canary"}
@@ -1623,7 +1948,7 @@ class CandidateEvaluator:
         # not fail merely because an hour happened to contain many real events.
 
         primary = self._primary_result(run_sha, candidate, observations)
-        if request.stage == "offline" and candidate.target == "prompt":
+        if request.stage == "offline" and candidate.target == "program":
             if int(primary.get("planned_cluster_n") or 0) == 0:
                 blockers.append("development_pairwise_review_empty")
             elif int(primary.get("resolved_cluster_n") or 0) < int(primary["planned_cluster_n"]):
@@ -1693,10 +2018,27 @@ class CandidateEvaluator:
             "candidate_only_error_n": candidate_only_errors,
             "stable_only_error_n": stable_only_errors,
             "execution_incomplete": bool(
-                request.stage in {"offline", "holdout"} and (stable_only_errors or common_errors)
+                request.stage in {"offline", "holdout"}
+                and (
+                    stable_only_errors
+                    or common_errors
+                    or provider_cost_observation_incomplete
+                    or program_call_provenance_incomplete
+                )
             ),
-            "stable_mean_output_tokens": statistics.mean(stable_tokens) if stable_tokens else None,
-            "candidate_mean_output_tokens": statistics.mean(candidate_tokens) if candidate_tokens else None,
+            "provider_cost_observation_complete": not provider_cost_observation_incomplete,
+            "program_call_provenance_complete": not program_call_provenance_incomplete,
+            "stable_mean_total_tokens": statistics.mean(stable_tokens) if stable_tokens else None,
+            "candidate_mean_total_tokens": statistics.mean(candidate_tokens) if candidate_tokens else None,
+            "stable_mean_call_count": statistics.mean(stable_calls) if stable_calls else None,
+            "candidate_mean_call_count": statistics.mean(candidate_calls) if candidate_calls else None,
+            "stable_mean_trace_entry_count": (statistics.mean(stable_trace_entries) if stable_trace_entries else None),
+            "candidate_mean_trace_entry_count": (
+                statistics.mean(candidate_trace_entries) if candidate_trace_entries else None
+            ),
+            "stable_mean_provider_cost_microusd": statistics.mean(stable_costs) if stable_costs else None,
+            "candidate_mean_provider_cost_microusd": statistics.mean(candidate_costs) if candidate_costs else None,
+            "program_cost_by_predictor": _program_cost_by_predictor(observations),
             "stable_latency_p95_ms": _percentile95(stable_latencies),
             "candidate_latency_p95_ms": candidate_latency_p95,
             "candidate_runtime_observation_n": candidate_observed_n,
@@ -1724,13 +2066,11 @@ class CandidateEvaluator:
     def _agent_cohort(self) -> dict[str, str]:
         return {
             "bundle_sha": self._stable.bundle_sha,
-            "prompt_sha256": self._stable.prompt_sha256,
-            "schema_sha256": self._stable.schema_sha256,
+            "learning_epoch": LEARNING_EPOCH,
+            "program_version": self._stable.program_version,
+            "program_sha256": self._stable.program_sha256,
+            "runtime_model_bindings_sha256": self._stable.runtime_model_bindings_sha256,
             "retrieval_sha256": self._stable.retrieval_sha256,
-            "model_sha256": self._stable.model_sha256,
-            "model_snapshot_kind": self._stable.model_snapshot_kind,
-            "model_revision": self._stable.model_revision or "unavailable",
-            "execution_contract_sha256": self._stable.execution_contract_sha256,
             "policy_sha256": self._stable.policy_sha256,
             "reader_contract_version": READER_CONTRACT_VERSION,
             "reader_contract_sha256": READER_CONTRACT_SHA256,
@@ -1816,7 +2156,7 @@ class CandidateEvaluator:
         ).fetchone()
         return {
             "endpoint": "paired_delivery_correctness" if candidate.target == "policy" else "blind_net_preference",
-            "planned_cluster_n": len(planned_cluster_ids) if candidate.target == "prompt" else len(cluster_values),
+            "planned_cluster_n": len(planned_cluster_ids) if candidate.target == "program" else len(cluster_values),
             "resolved_cluster_n": len(resolved_cluster_ids),
             "review_budget_used": int(review_budget["n"] or 0),
             "review_budget_max": int(_PROFILE["validation"]["max_review_budget"]),
@@ -1878,6 +2218,7 @@ class CandidateEvaluator:
             return {
                 "snapshot": dict(row["evidence_snapshot"] or {}),
                 "opened_at_ms": int(row["opened_at_ms"]),
+                "receipt_at_ms": int(row["settled_at_ms"]) if row.get("settled_at_ms") is not None else None,
                 "production_verdict": dict(row["verdict"] or {}) if row.get("verdict") else None,
                 "review": dict(review),
                 "watchlist": list((row.get("trace") or {}).get("watchlist") or []),
@@ -1894,6 +2235,9 @@ class CandidateEvaluator:
             "focus_fact": {"fact_id": case.case_id, "text": snapshot["title"], "context": snapshot.get("body", "")},
             "card": {
                 "event_id": case.case_id,
+                "evidence_version": 0,
+                "evidence_sha256": case.evidence_sha256,
+                "focus_fact_id": case.case_id,
                 "leader_title": snapshot["title"],
                 "leader_description": snapshot.get("body", ""),
                 "leader_url": snapshot["source_url"],
@@ -1911,6 +2255,7 @@ class CandidateEvaluator:
         return {
             "snapshot": synthetic,
             "opened_at_ms": case.opened_at_ms,
+            "receipt_at_ms": None,
             "production_verdict": None,
             "review": dict(review),
             "watchlist": [],
@@ -1997,7 +2342,12 @@ class CandidateEvaluator:
             "candidate_bundle_sha": candidate.candidate_arm.bundle_sha,
             "proposal_sha": proposal_sha,
             "manifest": candidate.model_dump(mode="json"),
-            "exact_diff": _arm_exact_diff(self._stable, candidate.candidate_arm, target=candidate.target),
+            "exact_diff": _arm_exact_diff(
+                self._stable,
+                candidate.candidate_arm,
+                target=candidate.target,
+                proposal=candidate.proposal_receipt,
+            ),
         }
         self._persist_artifact("candidate", payload, parent_sha=candidate.parent_stable_sha)
 
@@ -2046,7 +2396,19 @@ class CandidateEvaluator:
         ).fetchone()
         if row is None:
             raise ValueError("news_learning_dataset_not_found")
-        return DatasetManifest(artifact_sha=artifact_sha, **dict(row["payload"] or {}))
+        payload = dict(row["payload"] or {})
+        if payload.get("learning_epoch") != LEARNING_EPOCH:
+            raise ValueError("news_learning_epoch_mismatch")
+        epoch_started_at_ms = self._learning_epoch_started_at_ms()
+        if payload.get("learning_epoch_started_at_ms") != epoch_started_at_ms:
+            raise ValueError("news_learning_epoch_deployment_mismatch")
+        hashes = dict(payload.get("hashes") or {})
+        expected_epoch_sha = _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms})
+        if hashes.get("learning_epoch_sha") != expected_epoch_sha:
+            raise ValueError("news_learning_epoch_hash_mismatch")
+        if payload.get("profile_id") != LEARNING_PROFILE_ID:
+            raise ValueError("news_learning_profile_mismatch")
+        return DatasetManifest(artifact_sha=artifact_sha, **payload)
 
     def _load_production_observations(
         self,
@@ -2219,6 +2581,24 @@ class CandidateEvaluator:
         ).fetchall()
         return {str(row["review_id"]): dict(row) for row in rows}
 
+    def _learning_epoch_started_at_ms(self) -> int:
+        row = self._conn.execute(
+            "SELECT starts_at_ms, program_factory_id, artifact_schema_version, "
+            "prior_evidence_disposition, reset_reason "
+            "FROM news_learning_epochs WHERE epoch_id = %s",
+            (LEARNING_EPOCH,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("news_learning_epoch_not_deployed")
+        if (
+            str(row["program_factory_id"]) != "tracefold.news.semantic_program.factory_v1"
+            or str(row["artifact_schema_version"]) != "news_semantic_program_artifact_v1"
+            or str(row["prior_evidence_disposition"]) != "audit_only"
+            or str(row["reset_reason"]) != "zero_compatibility_reset_reaccrue_evidence"
+        ):
+            raise ValueError("news_learning_epoch_contract_mismatch")
+        return int(row["starts_at_ms"])
+
     def _db_now_ms(self) -> int:
         row = self._conn.execute(
             "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
@@ -2230,6 +2610,200 @@ class CandidateEvaluator:
         stable = outputs.get("stable") or {}
         candidate = outputs.get("candidate") or {}
         return int(case_id[:4], 16) % 10 == 0 or stable.get("verdict") != candidate.get("verdict")
+
+
+def _usage_from_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
+    calls = [dict(item) for item in trace.get("calls") or []]
+    physical_calls = [item for item in calls if item.get("physical_provider_call") is True]
+    costs = [cost for item in physical_calls if (cost := _call_cost_microusd(item)) is not None]
+    return {
+        "wall_latency_ms": trace.get("wall_latency_ms"),
+        "call_count": len(calls),
+        "physical_call_count": len(physical_calls),
+        "input_tokens": sum(int(item.get("input_tokens") or 0) for item in calls),
+        "output_tokens": sum(int(item.get("output_tokens") or 0) for item in calls),
+        "cached_tokens": sum(int(item.get("cached_tokens") or 0) for item in calls),
+        "total_tokens": sum(
+            int(item.get("total_tokens") or 0)
+            or (int(item.get("input_tokens") or 0) + int(item.get("output_tokens") or 0))
+            for item in calls
+        ),
+        "provider_cost_microusd": sum(costs) if len(costs) == len(physical_calls) else None,
+    }
+
+
+def _call_cost_microusd(call: Mapping[str, Any]) -> int | None:
+    if call.get("provider_cost_microusd") is not None:
+        return int(call["provider_cost_microusd"])
+    if call.get("provider_cost_usd") is not None:
+        return round(float(call["provider_cost_usd"]) * 1_000_000)
+    return None
+
+
+def _program_metric(observation: Mapping[str, Any]) -> dict[str, int | None]:
+    usage = dict(observation.get("usage") or {})
+    calls = list(observation.get("calls") or (observation.get("trace") or {}).get("calls") or [])
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None and (input_tokens is not None or output_tokens is not None):
+        total_tokens = int(input_tokens or 0) + int(output_tokens or 0)
+    cost_microusd = usage.get("provider_cost_microusd")
+    if cost_microusd is None and usage.get("provider_cost_usd") is not None:
+        cost_microusd = round(float(usage["provider_cost_usd"]) * 1_000_000)
+    trace_entry_count = usage.get("call_count")
+    physical_call_count = usage.get("physical_call_count")
+    if physical_call_count is None:
+        physical_call_count = sum(
+            isinstance(call, Mapping) and call.get("physical_provider_call") is True for call in calls
+        )
+    if cost_microusd is None and int(physical_call_count) == 0:
+        cost_microusd = 0
+    wall_latency_ms = usage.get("wall_latency_ms")
+    return {
+        "total_tokens": int(total_tokens) if total_tokens is not None else None,
+        "call_count": int(physical_call_count),
+        "trace_entry_count": int(trace_entry_count) if trace_entry_count is not None else len(calls),
+        "provider_cost_microusd": int(cost_microusd) if cost_microusd is not None else None,
+        "latency_ms": int(wall_latency_ms) if wall_latency_ms is not None else None,
+    }
+
+
+def _provider_cost_observation_complete(observation: Mapping[str, Any]) -> bool:
+    usage = dict(observation.get("usage") or {})
+    trace = observation.get("trace") or {}
+    calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
+    physical_calls = [dict(call) for call in calls if isinstance(call, Mapping) and call.get("physical_provider_call")]
+    if usage.get("physical_call_count") is None:
+        return False
+    if int(usage["physical_call_count"]) != len(physical_calls):
+        return False
+    if not physical_calls:
+        return usage.get("provider_cost_microusd") in {None, 0}
+    costs = [_call_cost_microusd(call) for call in physical_calls]
+    if any(cost is None for cost in costs) or usage.get("provider_cost_microusd") is None:
+        return False
+    return int(usage["provider_cost_microusd"]) == sum(int(cost) for cost in costs if cost is not None)
+
+
+def _program_call_provenance_complete(observation: Mapping[str, Any]) -> bool:
+    usage = dict(observation.get("usage") or {})
+    trace = observation.get("trace") or {}
+    calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
+    physical_calls = [call for call in calls if isinstance(call, Mapping) and call.get("physical_provider_call")]
+    return (
+        usage.get("physical_call_count") is not None
+        and int(usage["physical_call_count"]) == len(physical_calls)
+        and all(_program_call_identity_complete(call) for call in physical_calls)
+    )
+
+
+def _program_call_identity_complete(raw_call: Mapping[str, Any]) -> bool:
+    """Validate the request route and any observed response model identity."""
+
+    call = dict(raw_call)
+    if (
+        call.get("physical_provider_call") is not True
+        or call.get("predictor") not in {"event_semantics", "reader_card"}
+        or call.get("route") not in {"primary", "fallback"}
+        or type(call.get("attempt")) is not int
+        or not 1 <= int(call["attempt"]) <= 2
+        or not str(call.get("model_binding") or "").strip()
+    ):
+        return False
+    for field_name in (
+        "request_sha256",
+        "input_sha256",
+        "signature_sha256",
+        "instruction_sha256",
+        "demos_sha256",
+        "runtime_model_sha256",
+        "runtime_binding_sha256",
+    ):
+        value = str(call.get(field_name) or "")
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            return False
+    runtime_provider = str(call.get("runtime_provider") or "").strip()
+    runtime_model = str(call.get("runtime_model") or "").strip()
+    runtime_model_sha = str(call["runtime_model_sha256"])
+    runtime_binding_sha = str(call["runtime_binding_sha256"])
+    if (
+        not runtime_provider
+        or not runtime_model
+        or runtime_binding_sha
+        != _sha(
+            {
+                "provider": runtime_provider,
+                "model": runtime_model,
+                "model_sha256": runtime_model_sha,
+            }
+        )
+    ):
+        return False
+    response_provider = str(call.get("provider") or "").strip()
+    response_model = str(call.get("model") or "").strip()
+    response_model_sha = str(call.get("model_sha256") or "")
+    response_values = (response_provider, response_model, response_model_sha)
+    if any(response_values) and (
+        not all(response_values) or response_model_sha != _sha({"provider": response_provider, "model": response_model})
+    ):
+        return False
+    return not isinstance(call.get("validated_output"), Mapping) or all(response_values)
+
+
+def _mean_regressed(stable: Sequence[int], candidate: Sequence[int], *, growth_pct: float) -> bool:
+    if not stable or not candidate:
+        return False
+    stable_mean = statistics.mean(stable)
+    candidate_mean = statistics.mean(candidate)
+    if stable_mean == 0:
+        return candidate_mean > 0
+    return candidate_mean > stable_mean * (1 + float(growth_pct))
+
+
+def _program_cost_by_predictor(observations: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    result: dict[str, dict[str, dict[str, Any]]] = {"stable": {}, "candidate": {}}
+    for item in observations:
+        for arm in ("stable", "candidate"):
+            for program in (item.get(arm) or {}).get("program") or []:
+                for raw_call in program.get("calls") or (program.get("trace") or {}).get("calls") or []:
+                    call = dict(raw_call)
+                    predictor = str(call.get("predictor") or "unknown")
+                    route = str(call.get("route") or "unknown")
+                    name = f"{predictor}:{route}"
+                    bucket = result[arm].setdefault(
+                        name,
+                        {
+                            "call_n": 0,
+                            "trace_entry_n": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                            "provider_cost_microusd": 0,
+                            "provider_cost_observed_call_n": 0,
+                            "latencies_ms": [],
+                        },
+                    )
+                    bucket["trace_entry_n"] += 1
+                    if call.get("physical_provider_call") is not True:
+                        continue
+                    bucket["call_n"] += 1
+                    bucket["input_tokens"] += int(call.get("input_tokens") or 0)
+                    bucket["output_tokens"] += int(call.get("output_tokens") or 0)
+                    bucket["total_tokens"] += int(call.get("total_tokens") or 0) or (
+                        int(call.get("input_tokens") or 0) + int(call.get("output_tokens") or 0)
+                    )
+                    cost = _call_cost_microusd(call)
+                    if cost is not None:
+                        bucket["provider_cost_microusd"] += cost
+                        bucket["provider_cost_observed_call_n"] += 1
+                    if call.get("latency_ms") is not None:
+                        bucket["latencies_ms"].append(int(call["latency_ms"]))
+    for arm_buckets in result.values():
+        for bucket in arm_buckets.values():
+            latencies = bucket.pop("latencies_ms")
+            bucket["latency_p95_ms"] = _percentile95(latencies)
+    return result
 
 
 def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -2247,11 +2821,106 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
         delivery = "ambiguous"
     else:
         delivery = "observed_not_sent"
-    model = {
-        "latency_ms": trace.get("latency_ms"),
+    raw_program_trace = trace.get("program_trace")
+    if raw_program_trace is not None and not isinstance(raw_program_trace, Mapping):
+        raise ValueError("news_program_selected_execution_mismatch")
+    program_trace = dict(raw_program_trace or {})
+    raw_executions_value = trace.get("program_executions")
+    raw_executions = [] if raw_executions_value is None else raw_executions_value
+    if not isinstance(raw_executions, list) or any(not isinstance(item, Mapping) for item in raw_executions):
+        raise ValueError("news_program_execution_index_mismatch")
+    executions = [dict(item) for item in raw_executions]
+    execution_index_values = [item.get("execution_index") for item in executions]
+    if any(type(value) is not int for value in execution_index_values):
+        raise ValueError("news_program_execution_index_mismatch")
+    execution_indices = [cast(int, value) for value in execution_index_values]
+    if execution_indices != list(range(len(executions))):
+        raise ValueError("news_program_execution_index_mismatch")
+    if executions:
+        selected_index = trace.get("program_execution_index")
+        if selected_index is None:
+            if not (bool(row.get("degraded")) and row.get("verdict_error_code") and raw_program_trace is None):
+                raise ValueError("news_program_selected_execution_mismatch")
+        else:
+            if type(selected_index) is not int or not 0 <= int(selected_index) < len(executions):
+                raise ValueError("news_program_selected_execution_mismatch")
+            selected_execution = next(
+                execution for execution in executions if execution["execution_index"] == selected_index
+            )
+            selected_trace = selected_execution.get("trace")
+            if not isinstance(selected_trace, Mapping) or _sha(program_trace) != _sha(dict(selected_trace)):
+                raise ValueError("news_program_selected_execution_mismatch")
+            if verdict is None or str(program_trace.get("verdict_sha256") or "") != _sha(verdict):
+                raise ValueError("news_program_selected_verdict_mismatch")
+    calls: list[dict[str, Any]] = []
+    global_call_indices: list[int] = []
+    for execution in sorted(executions, key=lambda item: int(item.get("execution_index") or 0)):
+        execution_context = execution.get("context")
+        if not isinstance(execution_context, Mapping):
+            raise ValueError("news_program_execution_context_mismatch")
+        context_sha = _sha(dict(execution_context))
+        execution_context_sha = str(execution.get("context_sha256") or "")
+        if context_sha != execution_context_sha:
+            raise ValueError("news_program_execution_context_mismatch")
+        execution_trace = execution.get("trace")
+        if not isinstance(execution_trace, Mapping):
+            raise ValueError("news_program_execution_context_mismatch")
+        trace_context_sha = str(execution_trace.get("context_sha256") or "")
+        if (
+            len(execution_context_sha) != 64
+            or any(char not in "0123456789abcdef" for char in execution_context_sha)
+            or execution_context_sha != trace_context_sha
+        ):
+            raise ValueError("news_program_execution_context_mismatch")
+        raw_execution_calls_value = execution_trace.get("calls")
+        raw_execution_calls = [] if raw_execution_calls_value is None else raw_execution_calls_value
+        if not isinstance(raw_execution_calls, list) or any(
+            not isinstance(item, Mapping) for item in raw_execution_calls
+        ):
+            raise ValueError("news_program_execution_call_index_mismatch")
+        execution_calls = [dict(item) for item in raw_execution_calls]
+        raw_recording_indices_value = execution.get("recording_call_indices")
+        raw_recording_indices = [] if raw_recording_indices_value is None else raw_recording_indices_value
+        if not isinstance(raw_recording_indices, list):
+            raise ValueError("news_program_execution_call_index_mismatch")
+        if any(type(value) is not int for value in raw_recording_indices):
+            raise ValueError("news_program_execution_call_index_mismatch")
+        recording_indices = [int(value) for value in raw_recording_indices]
+        if len(recording_indices) != len(execution_calls):
+            raise ValueError("news_program_execution_call_index_mismatch")
+        global_call_indices.extend(recording_indices)
+        for local_index, call in enumerate(execution_calls):
+            call["execution_index"] = int(execution.get("execution_index") or 0)
+            call["execution_phase"] = str(execution.get("phase") or "unknown")
+            call["execution_status"] = str(execution.get("status") or "unknown")
+            call["execution_context_sha256"] = execution_context_sha
+            call["recording_call_index"] = recording_indices[local_index]
+            calls.append(call)
+    if global_call_indices != list(range(len(calls))):
+        raise ValueError("news_program_execution_call_index_mismatch")
+    if not executions:
+        calls = [dict(item) for item in program_trace.get("calls") or []]
+    provider_cost_microusd = trace.get("provider_cost_microusd")
+    if provider_cost_microusd is None and trace.get("provider_cost_usd") is not None:
+        # Historical prompt-era trace compatibility is read-only audit input.
+        provider_cost_microusd = round(float(trace["provider_cost_usd"]) * 1_000_000)
+    usage = {
+        "wall_latency_ms": trace.get("latency_ms"),
+        "call_count": trace.get("model_attempts"),
+        "physical_call_count": trace.get("physical_model_attempts"),
         "input_tokens": trace.get("input_tokens"),
         "output_tokens": trace.get("output_tokens"),
-        "finish_reason": trace.get("finish_reason"),
+        "cached_tokens": trace.get("cached_tokens"),
+        "total_tokens": trace.get("total_tokens"),
+        "provider_cost_microusd": provider_cost_microusd,
+    }
+    program = {
+        "program_version": row.get("program_version") or trace.get("program_version"),
+        "program_sha256": row.get("program_sha256") or trace.get("program_sha256"),
+        "trace": program_trace,
+        "calls": calls,
+        "executions": executions,
+        "usage": usage,
         "error_code": error_code,
     }
     return {
@@ -2262,7 +2931,7 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
         "delivery": delivery,
         "degraded": bool(row.get("degraded")),
         "error_code": error_code,
-        "model": [model],
+        "program": [program],
     }
 
 
@@ -2394,12 +3063,19 @@ def _text_sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _arm_exact_diff(stable: ArmManifest, candidate: ArmManifest, *, target: str) -> dict[str, Any]:
+def _arm_exact_diff(
+    stable: ArmManifest,
+    candidate: ArmManifest,
+    *,
+    target: str,
+    proposal: ProposalReceipt,
+) -> dict[str, Any]:
     """Return the exact, reviewable single-variable delta sealed with a candidate.
 
-    This is operator evidence, not an executable patch.  Prompt candidates carry
-    a unified text diff; policy candidates carry the exact changed values.  The
-    evaluator's static validator remains the authority that rejects mixed changes.
+    This is operator evidence, not an executable patch. Program candidates
+    carry the compiler's content-addressed Predictor diff; policy candidates
+    carry the exact changed values. The evaluator's static validator remains
+    the authority that rejects mixed changes.
     """
 
     stable_payload = stable.model_dump(mode="json")
@@ -2411,20 +3087,15 @@ def _arm_exact_diff(stable: ArmManifest, candidate: ArmManifest, *, target: str)
         "stable_bundle_sha": stable.bundle_sha,
         "candidate_bundle_sha": candidate.bundle_sha,
     }
-    if target == "prompt":
-        lines = difflib.unified_diff(
-            stable.prompt_text.splitlines(keepends=True),
-            candidate.prompt_text.splitlines(keepends=True),
-            fromfile=f"stable/{stable.prompt_version}",
-            tofile=f"candidate/{candidate.prompt_version}",
-        )
+    if target == "program":
         return {
             **common,
-            "stable_prompt_version": stable.prompt_version,
-            "candidate_prompt_version": candidate.prompt_version,
-            "stable_prompt_sha256": stable.prompt_sha256,
-            "candidate_prompt_sha256": candidate.prompt_sha256,
-            "unified_diff": "".join(lines),
+            "stable_program_version": stable.program_version,
+            "candidate_program_version": candidate.program_version,
+            "stable_program_sha256": stable.program_sha256,
+            "candidate_program_sha256": candidate.program_sha256,
+            "machine_diff": dict(proposal.program_machine_diff or {}),
+            "compile_provenance": dict(proposal.compile_provenance or {}),
         }
     changed_keys = sorted(
         key for key in set(stable.policy) | set(candidate.policy) if stable.policy.get(key) != candidate.policy.get(key)
@@ -2457,6 +3128,7 @@ def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "LEARNING_EPOCH",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "CandidateEvaluator",
@@ -2466,11 +3138,5 @@ __all__ = [
     "DatasetSpec",
     "EvaluationReport",
     "EvaluationRequest",
-    "LiveTriageModelAdapter",
-    "ModelInvocation",
-    "ModelObservation",
     "ProposalReceipt",
-    "RecordReplayMiss",
-    "RecordReplayModelAdapter",
-    "SemanticModelAdapter",
 ]

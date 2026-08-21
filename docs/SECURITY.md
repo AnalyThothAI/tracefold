@@ -10,12 +10,15 @@
   redacted config-path and configured-status diagnostics. Do not paste or copy
   provider keys from `~/.tracefold/config.yaml` into chat, docs, tests,
   shell history, or source files.
-- Frozen ReviewDesk datasets, candidate manifests, model recordings, shadow
+- Frozen ReviewDesk datasets, Program artifacts, candidate manifests, model recordings, shadow
   observations, evaluation reports, and deployment receipts carry no
   credentials, but may carry provider news content, prompts and reader-facing
   copy. Treat exported copies as business data: keep them outside the
   repository and do not commit them. The database copies are content-addressed
-  audit evidence and append-only. Automated proposal/optimizer paths may never
+  audit evidence and append-only. Program artifact exports are canonical JSON
+  but can contain proprietary instructions, demonstrations and reviewed News
+  examples, so “no credentials” does not make them public. Automated
+  proposal/optimizer paths may never
   write accepted reviews, holdout membership, reader contracts, release
   thresholds, stable pointers, or canary assignments.
 
@@ -53,17 +56,59 @@ environment variables, or move code-owned safety budgets into
 
 ## Model capability boundary
 
-`news_triage` is the only production product-model consumer. It is one
-structured call with a
-byte-frozen system prompt whose output never decides delivery by itself: the
-pure `decide()` rules own the final decision, model failure is fail-closed,
-and every verdict row stores the model intent next to the rule baseline. It
-has no tools, agent loop, filesystem, shell, network, subagent, or write
-capability, and one Event gets exactly one judgment and one card — the second
-model stage (the Analyst lane) was removed in #57. The card's Chinese text is
-the Triage verdict's `headline_zh` and `why_zh`; no separate title,
-translation, or follow-up provider exists. Item identity, Event identity, Gate
-admission, storyline keys, and feed ordering remain deterministic.
+`news_triage` is the only production product-model consumer. Its sole
+Interface is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The
+production Adapter executes the fixed DSPy graph
+`EventSemantics -> ReaderCard -> deterministic VerdictAssembler`; callers
+cannot supply instructions, demonstrations, topology, routes, retry policy or
+artifact paths. A normal judgment uses two serial provider calls. One fast
+retry is shared by a route (at most three calls); fallback restarts the full
+graph (at most six across the chain). The artifact owns the route deadline and
+call/token budgets. DSPy cache and hidden provider retries are disabled so the
+audit trace contains every provider attempt.
+
+The Program output never decides delivery by itself: pure `decide()` rules own
+the final decision, Program failure is fail-closed, and every verdict row stores
+model intent next to the rule baseline. The Predictors have no tools, agent
+loop, retrieval, filesystem, shell, subagent or write capability; their only
+outbound capability is the Adapter's configured model endpoint. One Event
+persists one final judgment and one card — the two internal calls do not restore the
+Analyst stage removed in #57. The card's Chinese text is the Triage verdict's
+`headline_zh` and `why_zh`; no separate title, translation, or follow-up
+provider exists. Item identity, Event identity, Gate admission, storyline keys,
+`decide()` and feed ordering remain deterministic.
+
+The only loadable semantic image is a canonical, content-addressed, state-only
+`ProgramArtifact` JSON manifest/state pair carried in the application image and
+selected by its code-owned registry. The loader verifies schema, Program/state
+hashes, fixed factory/topology/signatures, source and dependency-lock identity,
+Adapter/assembler/input contracts, exact files and safe path shape before use.
+The dependency-lock digest is a package-owned generated identity checked
+against `uv.lock` in development, so wheel loading never trusts or searches an
+ambient repository. Parsed demonstration JSON is recursively scanned and must
+match the exact model-visible input schema; audit `event_id`/fact ids, endpoints
+and secret keys cannot be smuggled through a JSON string. It fails closed on
+unknown or mismatched state. Pickle, cloudpickle, DSPy Flex,
+dynamic Python/classes, arbitrary callbacks/history, endpoints, credentials and
+secret-bearing headers are forbidden artifact state; a database candidate is
+not executable merely because it was persisted. Production candidate images
+must pass normal code review and be shipped in the registry.
+There is no legacy Prompt executor or dynamic compatibility loader to bypass
+these checks; Prompt-era database fields are audit-only.
+
+The DSPy GEPA compiler is a cold manual development command, not a runtime
+Worker. It receives accepted `program_v1` development episodes only and must be
+given explicit metric-call, total task/reflection-model-call,
+provider-cost-in-microusd limits and a seed. It has no authority to read
+validation/holdout, write accepted truth, register, deploy or promote. Its
+output remains an unaccepted candidate until the ordinary release chain and
+code review carry it into an image.
+
+Migration `0292` creates the append-only deployment-time `program_v1` learning
+epoch. Prompt-era reviews, datasets, recordings and release receipts are
+retained as audit history but are never training, validation, holdout or
+promotion evidence for this Program factory. The reset is an eligibility hard
+cut, not permission for an optimizer to relabel old evidence or delete it.
 
 PostgreSQL runtime roles are code-owned:
 `src/tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
@@ -104,9 +149,11 @@ The authenticated WSS automatically sends the account owner's
 `strategy.triggered` notifications. Tracefold sends no application subscription
 request and performs no Strategy CRUD, account-page scraping, cookie/session
 extraction, private webpage API call, or provider news-search replay. On Worker
-startup and WSS reconnect, the same token may call only the official bounded
-`/open/strategy_list` and `/open/strategy_hits` interfaces to verify the exact
-configured allowlist and repair audited coverage intervals. Strategy
+startup and WSS reconnect, recovery may call only the official bounded
+`/open/strategy_list` and `/open/strategy_hits` interfaces: it reads the
+account's enabled list fresh because the hits endpoint is per-Strategy, then
+repairs audited coverage intervals. It does not verify or maintain a local
+allowlist. Strategy
 definitions and provider-side enablement remain account authority. A successful
 handshake proves authentication/connectivity only; it does not prove Strategy
 existence, enablement, delivery completeness, or lossless history.
@@ -140,11 +187,13 @@ retry; a crash between send and ack terminalizes as `ambiguous_after_crash`.
 
 News Triage receives the Event title/content excerpt (wrapped as untrusted
 material), Gate facts, the storyline status bar, and the watchlist symbols. It
-never receives credentials, webhook material, or unrelated corpus context; the
-system prompt is the byte-frozen constant `TRIAGE_SYSTEM_PROMPT` (English
-instructions, Chinese reader text) whose SHA-256 is recorded in each verdict
-trace, and raw model responses are never persisted beyond the validated
-verdict payload and bounded trace.
+never receives credentials, webhook material, or unrelated corpus context.
+Each Predictor instruction and demonstration set is hash-bound in the Program
+artifact and every request is bound to the resolved runtime provider/model
+identity. The trace persists only validated semantic/card output plus bounded
+finish/usage/cost metadata; raw provider responses and hidden reasoning are not
+persisted. Exact record/replay refuses an unrecorded request or runtime-model
+identity mismatch and never falls through to live I/O.
 
 RabbitMQ credentials live only in `news.broker.url`; the compose service binds
 AMQP and management ports to `127.0.0.1` by default and uses a

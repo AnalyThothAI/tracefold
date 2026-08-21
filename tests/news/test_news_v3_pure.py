@@ -556,8 +556,8 @@ def test_storyline_status_carries_only_content_evidence() -> None:
     }
 
 
-def test_told_ledger_for_prompt_reserves_same_key_slots_and_keeps_cross_key_cards() -> None:
-    from tracefold.news.agents.triage_model import TOLD_MAX, TOLD_SAME_KEY_MAX, told_ledger_for_prompt
+def test_told_ledger_snapshot_reserves_same_key_slots_and_keeps_cross_key_cards() -> None:
+    from tracefold.news.agents.semantic_program import TOLD_MAX, TOLD_SAME_KEY_MAX, ToldLedgerSnapshot
 
     now = 1_800_000_000_000
     same = [
@@ -582,16 +582,16 @@ def test_told_ledger_for_prompt_reserves_same_key_slots_and_keeps_cross_key_card
         }
         for i in range(5)
     ]
-    told = told_ledger_for_prompt(same + other, now_ms=now, prefer_key="theme:rates")
+    told = ToldLedgerSnapshot.from_rows(same + other, now_ms=now, storyline_key="theme:rates").entries
     assert len(told) == TOLD_MAX
-    same_ids = [t["event_id"] for t in told if t["event_id"].startswith("s")]
-    other_ids = [t["event_id"] for t in told if t["event_id"].startswith("o")]
+    same_ids = [entry.event_id for entry in told if entry.event_id.startswith("s")]
+    other_ids = [entry.event_id for entry in told if entry.event_id.startswith("o")]
     # Six same-key slots reserved, all five cross-key cards kept, one more same-key card tops up to twelve.
     assert len(other_ids) == 5 and len(same_ids) == TOLD_MAX - 5 >= TOLD_SAME_KEY_MAX
-    assert [t["i"] for t in told] == list(range(TOLD_MAX))
-    assert told[0]["ago_min"] == 0 and told[0]["headline_zh"] == "同 0"
+    assert [entry.i for entry in told] == list(range(TOLD_MAX))
+    assert told[0].ago_min == 0 and told[0].headline_zh == "同 0"
     # Newest-first regardless of key.
-    assert [t["at_ms"] for t in told] == sorted((t["at_ms"] for t in told), reverse=True)
+    assert [entry.at_ms for entry in told] == sorted((entry.at_ms for entry in told), reverse=True)
 
 
 def test_storyline_status_carries_told_directions() -> None:

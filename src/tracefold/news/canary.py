@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from .agents.semantic_program import SemanticJudge
+
 CANARY_SELECTOR_VERSION = "news_canary_selector_v1"
 CANARY_EXPOSURE_BPS = 1_000
 CANARY_ELIGIBILITY_PROFILE: dict[str, Any] = {
@@ -53,13 +55,13 @@ class CanaryCommand:
 
 @dataclass(frozen=True, slots=True)
 class CanaryRuntimeArm:
-    """One image-carried arm already composed with its model and policy."""
+    """One image-carried arm already composed with its semantic Program and policy."""
 
     bundle_sha: str
-    model: Any
+    program: SemanticJudge
     policy: Any
-    prompt_version: str
-    prompt_sha256: str
+    program_version: str
+    program_sha256: str
 
 
 def select_canary_arm(
@@ -137,6 +139,21 @@ def apply_canary_control(
             now_ms=now_ms,
         )
         return dict(repos.news.canary_status())
+    if command.action == "resume":
+        status = dict(repos.news.canary_status())
+        activation = status.get("activation")
+        if activation is not None and str(activation["activation_id"]) == str(command.activation_id):
+            baseline_matches = str(activation["baseline_bundle_sha"]) == stable_bundle_sha
+            candidate_sha = str(activation["candidate_manifest_sha"])
+            candidate_matches = shipped_candidates.get(candidate_sha) == str(activation["candidate_bundle_sha"])
+            if not baseline_matches or not candidate_matches:
+                repos.news.transition_canary(
+                    activation_id=str(command.activation_id),
+                    target_state="tripped",
+                    reason=("baseline_bundle_mismatch" if not baseline_matches else "candidate_artifact_missing"),
+                    now_ms=now_ms,
+                )
+                return dict(repos.news.canary_status())
     target_state = {
         "hold": "armed",
         "resume": "active",

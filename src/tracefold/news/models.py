@@ -11,7 +11,6 @@ NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v5"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
-TRIAGE_PROMPT_VERSION = "news_triage_prompt_v9"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v7"
 DELIVERY_CARD_VERSION = "news_delivery_card_v10"
 
@@ -195,7 +194,6 @@ __all__ = [
     "OUTBOX_MAX_AGE_MS",
     "STORYLINE_POLICY_VERSION",
     "TRIAGE_POLICY_VERSION",
-    "TRIAGE_PROMPT_VERSION",
     "Admission",
     "AssetClass",
     "Audience",

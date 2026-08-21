@@ -1,8 +1,16 @@
 """Public News module interface (V3: broker-driven Event pipeline)."""
 
+from .agents.semantic_program import (
+    ProgramTrace,
+    ProgramUsage,
+    SemanticJudge,
+    SemanticJudgment,
+    TriageContext,
+)
 from .artifact_identity import canonical_sha
 from .canary import apply_canary_control, parse_canary_control
 from .candidate_evaluator import (
+    LEARNING_EPOCH,
     TRUSTED_ROOT_SHA,
     ArmManifest,
     CandidateEvaluator,
@@ -12,11 +20,7 @@ from .candidate_evaluator import (
     DatasetSpec,
     EvaluationReport,
     EvaluationRequest,
-    LiveTriageModelAdapter,
-    ModelInvocation,
-    ModelObservation,
     ProposalReceipt,
-    RecordReplayModelAdapter,
 )
 from .control import apply_control, parse_control
 from .facts import FACT_UNIT_VERSION, FactUnit, extract_fact_units
@@ -25,7 +29,6 @@ from .instruments import grounding_rollup
 from .models import (
     GATE_POLICY_VERSION,
     TRIAGE_POLICY_VERSION,
-    TRIAGE_PROMPT_VERSION,
     NewsFeedEntry,
     ReaderReceipt,
     TriageVerdict,
@@ -61,6 +64,7 @@ __all__ = [
     "DEFAULT_POLICY",
     "FACT_UNIT_VERSION",
     "GATE_POLICY_VERSION",
+    "LEARNING_EPOCH",
     "OPENNEWS_SOURCE_ID",
     "QUOTE_REQUEST_SYMBOL_MAX",
     "REACTION_METRIC_VERSION",
@@ -69,7 +73,6 @@ __all__ = [
     "REVIEW_MAX_HOURS",
     "REVIEW_RUBRIC_VERSION",
     "TRIAGE_POLICY_VERSION",
-    "TRIAGE_PROMPT_VERSION",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "BlindPairwiseSubmission",
@@ -85,9 +88,6 @@ __all__ = [
     "EventRubricSubmission",
     "ExternalMissSubmission",
     "FactUnit",
-    "LiveTriageModelAdapter",
-    "ModelInvocation",
-    "ModelObservation",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
@@ -95,12 +95,16 @@ __all__ = [
     "OpenNewsStrategyHistory",
     "Outcome",
     "Principal",
+    "ProgramTrace",
+    "ProgramUsage",
     "ProposalReceipt",
     "ReaderReceipt",
-    "RecordReplayModelAdapter",
     "ReviewDesk",
     "ReviewSubmission",
+    "SemanticJudge",
+    "SemanticJudgment",
     "TaskRef",
+    "TriageContext",
     "TriageVerdict",
     "apply_canary_control",
     "apply_control",
