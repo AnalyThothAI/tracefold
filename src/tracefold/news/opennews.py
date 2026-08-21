@@ -89,15 +89,23 @@ class OpenNewsStrategyHitPage:
 
 
 def parse_opennews_strategy_list(payload: object) -> tuple[dict[str, Any], ...]:
+    """Strict about the envelope, tolerant about a row.
+
+    A malformed response is a provider failure and raises. A single odd row is not: this list is now what
+    recovery enumerates and what the status surface counts, and discarding all of it because one entry has a
+    null `enabled` would blank the fact and, before the caller learns better, cost an outage window. Skip the
+    row, keep the rest — which is what the Receiver's own inline parse did before this became shared.
+    """
+
     data = _history_data(payload)
     strategies: list[dict[str, Any]] = []
     for value in data:
         if not isinstance(value, Mapping):
-            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+            continue
         strategy_id = _wire_strategy_id(value.get("id"))
         enabled = value.get("enabled")
         if not strategy_id or not isinstance(enabled, bool):
-            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+            continue
         strategies.append(
             {
                 "id": strategy_id,

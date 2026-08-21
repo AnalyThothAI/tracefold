@@ -202,6 +202,9 @@ class OpenNewsReceiver:
             try:
                 await self.ws_client.connect()
                 await self._connected()
+                # Re-read on every reconnect. Ingestion follows a dashboard switch immediately; without this
+                # the operator's only view of it would sit frozen at whatever was true when Workers booted.
+                await self.record_provider_strategies()
                 while not stop_event.is_set():
                     message = await _receive_or_stop(self.ws_client, stop_event=stop_event)
                     if message is None:
@@ -337,18 +340,22 @@ class RecoveryRunner:
 
         Live ingestion needs no list at all — the socket pushes what the account enabled. Recovery does, only
         because the provider's hits endpoint is per-strategy. Reading it per pass rather than caching it at
-        startup means a Strategy enabled mid-run is recovered too; a failure returns nothing and every pending
-        incident settles as `unavailable`, which is the same path an absent history client already takes.
+        startup means a Strategy enabled mid-run is recovered too.
+
+        A failed read raises rather than returning nothing, and that distinction is the whole point:
+        `complete_recovery` is terminal, `pending_recovery_incidents` only ever selects `pending`, so settling
+        an incident `unavailable` throws its outage window away for good. One 429 on this call would otherwise
+        discard the entire backlog. `TransientError` leaves every incident pending for `run()` to retry; an
+        empty tuple means the account really has no enabled Strategies and there is nothing to recover.
         """
 
         if self.history_client is None:
             return ()
         try:
             payload = await self.history_client.get_strategy_list(limit=100, page=1)
-            return tuple(sorted(enabled_strategy_ids(payload)))
         except Exception as exc:
-            log.warning("news recovery strategy list unavailable: %s", type(exc).__name__)
-            return ()
+            raise TransientError(f"opennews_strategy_list_unavailable:{type(exc).__name__}") from exc
+        return tuple(sorted(enabled_strategy_ids(payload)))
 
     async def _recover_pending(self) -> None:
         incidents = await self.db.read("news_recovery_pending", lambda repos: repos.news.pending_recovery_incidents())

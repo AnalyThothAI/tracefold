@@ -195,6 +195,27 @@ def test_gate_grounds_provider_grades_and_cashtags_without_a_name_table() -> Non
     )
 
 
+def test_market_telemetry_without_a_provider_score_is_held_back() -> None:
+    """#126: a missing score is `0.0`, and the old `and score` guard read that as "skip this rule".
+
+    It never mattered while an allowlist decided which Strategies reached the Gate. Without one, an unscored
+    market frame would otherwise be admitted, cost a Triage call, and could reach a reader.
+    """
+
+    base = dict(strategy_ids=("9999",), coins=(), ingest_mode="live", watchlist_symbols=frozenset())
+    unscored = evaluate_gate(
+        GateInput(title="BTC open interest +3.4% in 3 minutes", engine_type="market", provider_score=None, **base)
+    )
+    assert unscored.admission == "suppressed_low_signal"
+    assert "market_telemetry_below_min_score" in unscored.reasons
+
+    # A market frame the provider does rate highly is still ordinary work.
+    scored = evaluate_gate(
+        GateInput(title="BTC open interest +3.4% in 3 minutes", engine_type="market", provider_score=85.0, **base)
+    )
+    assert scored.admission == "candidate"
+
+
 def test_gate_admission_rules() -> None:
     base = dict(
         strategy_ids=("1018",), provider_score=75.0, coins=(), ingest_mode="live", watchlist_symbols=frozenset({"BTC"})

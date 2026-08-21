@@ -11,6 +11,7 @@ from tracefold.integrations.opennews import client as opennews_client
 from tracefold.news import OPENNEWS_SOURCE_ID, OpenNewsExpectedError, OpenNewsHistoryError
 from tracefold.news import consumers as news_consumers
 from tracefold.news.opennews import (
+    enabled_strategy_ids,
     parse_opennews_message,
     parse_opennews_strategy_hits,
     parse_opennews_strategy_list,
@@ -651,3 +652,34 @@ def test_opennews_receive_race_owns_child_tasks_during_cancellation() -> None:
         await asyncio.wait_for(client.cancelled.wait(), timeout=1.0)
 
     asyncio.run(scenario())
+
+
+def test_strategy_list_skips_an_odd_row_and_still_raises_on_a_bad_envelope() -> None:
+    """#126 made this list load-bearing: recovery enumerates it and the status surface counts it.
+
+    Discarding the whole list because one row has a null `enabled` would blank the fact and, worse, leave
+    recovery with nothing to enumerate. A malformed envelope is still a provider failure.
+    """
+
+    payload = {
+        "success": True,
+        "data": [
+            {"id": 1018, "name": "News Score >70", "enabled": True},
+            {"id": 1019, "name": "OI Event Monitor", "enabled": None},
+            {"name": "no id at all", "enabled": True},
+            "not even a mapping",
+            {"id": 1353, "name": "Listing", "enabled": False},
+        ],
+        "page": 1,
+        "limit": 100,
+        "total": 5,
+    }
+
+    assert parse_opennews_strategy_list(payload) == (
+        {"id": "1018", "name": "News Score >70", "enabled": True},
+        {"id": "1353", "name": "Listing", "enabled": False},
+    )
+    assert enabled_strategy_ids(payload) == ("1018",)
+
+    with pytest.raises(OpenNewsHistoryError):
+        parse_opennews_strategy_list({"success": False, "data": []})

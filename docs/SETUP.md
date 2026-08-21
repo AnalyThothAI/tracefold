@@ -33,6 +33,27 @@ the migration, Serve, and Workers containers so edits to the bind-mounted
 operator config take effect. An already running PostgreSQL container is not
 recreated; the operator files and named-volume data remain in place.
 
+### Upgrading across a removed config key
+
+`NewsSettings` and the other config models are `extra="forbid"`, so a key that a
+release deletes does not become inert — it fails startup. When release notes
+retire a key, remove it from `~/.tracefold/config.yaml` **between** `git pull`
+and `make up`, or Serve and Workers refuse to start with `extra_forbidden`.
+
+`news.opennews_strategy_ids` is retired in #126. Which Strategies feed News is
+now decided in the OpenNews account, so delete the key and its list:
+
+```bash
+python3 - <<'EOF'
+import re, pathlib
+p = pathlib.Path.home() / ".tracefold" / "config.yaml"
+s = p.read_text()
+p.with_suffix(".yaml.bak").write_text(s)
+print(p.write_text(re.sub(r"^  opennews_strategy_ids:\n(?:  - .*\n)*", "", s, flags=re.M)))
+EOF
+uv run tracefold config   # confirm it parses before make up
+```
+
 ### Initialization semantics
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode

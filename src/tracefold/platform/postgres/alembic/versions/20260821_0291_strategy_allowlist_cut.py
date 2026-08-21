@@ -10,6 +10,11 @@ and nothing to disagree with, so `configured_strategy_ids` and the
 `provider_enabled_strategy_ids` stays: it is the observed provider fact the
 status surface reports and recovery reads.
 
+Deploy note: `NewsSettings` is ``extra="forbid"``, so `~/.tracefold/config.yaml`
+must lose its `news.opennews_strategy_ids` key between `git pull` and `make up`
+or Serve and Workers refuse to start. See "Upgrading across a removed config
+key" in docs/SETUP.md.
+
 Revision ID: 20260821_0291
 Revises: 20260821_0290
 """

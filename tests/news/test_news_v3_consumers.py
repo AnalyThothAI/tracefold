@@ -18,12 +18,14 @@ from tracefold.news.bus import (
     BusMessage,
     DeferError,
     PermanentError,
+    TransientError,
 )
 from tracefold.news.canary import CanaryRuntimeArm
 from tracefold.news.consumers import (
     DeduperConsumer,
     DelivererConsumer,
     JanitorLoop,
+    RecoveryRunner,
     TriageConsumer,
 )
 from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
@@ -1230,3 +1232,70 @@ def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on(
     assert inserted["throttled_by"] == "storyline:asset:NVDA:seen"
     assert inserted["trace"]["seen_scope"] == "all"
     assert bus.published == []
+
+
+# ---------------------------------------------------------------- Recovery
+class _FailingStrategyList:
+    """A history client whose Strategy list is momentarily unavailable — a 429, a timeout, a bad gateway."""
+
+    def __init__(self) -> None:
+        self.hits_calls = 0
+
+    async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    async def get_strategy_hits(self, **_kwargs: Any) -> dict[str, Any]:
+        self.hits_calls += 1
+        return {"success": True, "data": [], "page": 1, "limit": 100, "total": 0}
+
+
+def test_recovery_leaves_incidents_pending_when_the_strategy_list_is_unavailable() -> None:
+    """#126 made recovery ask the provider which Strategies exist, which introduced a way to lose a backlog.
+
+    `complete_recovery` is terminal and `pending_recovery_incidents` only selects `pending`, so settling an
+    incident `unavailable` throws its outage window away for good. One failed Strategy-list read must not do
+    that — it has to raise and let `run()` retry.
+    """
+
+    news = RecordingNews(
+        pending_recovery_incidents=[
+            {
+                "incident_id": 1,
+                "cause_class": "socket_closed",
+                "opened_at_ms": 1_000,
+                "closed_at_ms": 2_000,
+                "recovery_from_at_ms": None,
+                "recovery_to_at_ms": None,
+            }
+        ]
+    )
+    client = _FailingStrategyList()
+    recovery = RecoveryRunner(bus=FakeBus(), db=FakeWorkerDatabase(news), history_client=client)
+
+    with pytest.raises(TransientError, match="opennews_strategy_list_unavailable"):
+        asyncio.run(recovery._recover_pending())
+
+    assert "complete_recovery" not in news.names()
+    assert client.hits_calls == 0
+
+
+def test_recovery_without_a_history_client_still_settles_unavailable() -> None:
+    """An absent client is permanent, not transient: there is nothing to wait for."""
+
+    news = RecordingNews(
+        pending_recovery_incidents=[
+            {
+                "incident_id": 7,
+                "cause_class": "socket_closed",
+                "opened_at_ms": 1_000,
+                "closed_at_ms": 2_000,
+                "recovery_from_at_ms": None,
+                "recovery_to_at_ms": None,
+            }
+        ]
+    )
+    recovery = RecoveryRunner(bus=FakeBus(), db=FakeWorkerDatabase(news), history_client=None)
+
+    asyncio.run(recovery._recover_pending())
+
+    assert news.kwargs_of("complete_recovery")["status"] == "unavailable"

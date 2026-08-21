@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v4"
-GATE_POLICY_VERSION = "news_gate_v4"
+GATE_POLICY_VERSION = "news_gate_v5"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
 TRIAGE_PROMPT_VERSION = "news_triage_prompt_v9"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v7"
