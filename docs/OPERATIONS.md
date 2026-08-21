@@ -361,7 +361,9 @@ first frame after deployment; there is no backfill of pre-V3 history.
   whose state has been `stale` for minutes is either rate-limited or blocked;
   the loop's last error names which (`venue_rate_limited`, `venue_blocked`,
   `venue_timeout`). One failing venue never clears another and never blanks a
-  price: the previous row stays and simply ages.
+  price: the previous row stays and simply ages. An error tagged `:change:` is
+  the separate 300 s day-change fetch (#109), not the price: prices are current
+  and only `change_pct` is ageing.
 - `reaction_partial_7d` / `reaction_complete_7d` / `reaction_unavailable_7d` —
   the Reaction backlog. A rising `partial` count with a flat `complete` count
   means the 4H leg is not landing; a rising `unavailable` count is a data

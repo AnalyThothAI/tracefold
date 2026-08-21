@@ -20,6 +20,7 @@ from tracefold.news.price_loops import EventReactionLoop, QuoteSnapshotLoop
 from tracefold.news.pricing import (
     CANDLE_INTERVAL_MS,
     HORIZON_MS,
+    QUOTE_CHANGE_PERIOD_SECONDS,
     QUOTE_SOURCE_GROUP_MAX,
     QUOTE_TARGET_MAX,
     REACTION_CANDLE_REQUESTS_MAX,
@@ -281,6 +282,138 @@ def test_a_source_with_no_adapter_is_skipped_rather_than_crashing_the_turn() -> 
 def test_quote_budgets_are_code_owned_constants() -> None:
     assert QUOTE_TARGET_MAX == 256
     assert QUOTE_SOURCE_GROUP_MAX == 12
+    assert QUOTE_CHANGE_PERIOD_SECONDS == 300.0
+
+
+# ---------------------------------------------------------------------------- the split change cadence (#109)
+def _split_loop(
+    price: _FakePrice,
+    *,
+    quotes: list[tuple[str, tuple[str, ...]]],
+    changes: list[tuple[str, tuple[str, ...]]],
+    change_result: Any = None,
+    change_period_seconds: float = QUOTE_CHANGE_PERIOD_SECONDS,
+) -> QuoteSnapshotLoop:
+    """A Binance-shaped source: price and day change come from two endpoints on two cadences."""
+
+    def fetcher_for(source: str):
+        async def fetch(symbols):
+            quotes.append((source, tuple(symbols)))
+            # Exactly what `ticker/price` can answer: a price, and the name of the window it cannot.
+            return [
+                ProviderQuote(venue_symbol=symbol, price=Decimal("68000"), change_basis="rolling_24h")
+                for symbol in symbols
+            ]
+
+        return fetch
+
+    def change_fetcher_for(source: str):
+        if not source.startswith("binance."):
+            return None
+
+        async def fetch(symbols):
+            changes.append((source, tuple(symbols)))
+            if isinstance(change_result, BaseException):
+                raise change_result
+            return {symbol: 1.5 for symbol in symbols} if change_result is None else change_result
+
+        return fetch
+
+    return QuoteSnapshotLoop(
+        db=_FakeColdDatabase(price),
+        fetcher_for=fetcher_for,
+        change_fetcher_for=change_fetcher_for,
+        change_period_seconds=change_period_seconds,
+    )
+
+
+def test_the_day_change_is_fetched_once_per_its_own_cadence_not_once_per_turn() -> None:
+    """#109: the price is asked every turn, the 24 h window every 300 s — one batch each, per source."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("hl.perp", "HYPE", "HYPE")])
+    quotes: list[tuple[str, tuple[str, ...]]] = []
+    changes: list[tuple[str, tuple[str, ...]]] = []
+    loop = _split_loop(price, quotes=quotes, changes=changes)
+
+    for _ in range(3):
+        asyncio.run(loop.turn())
+
+    assert [source for source, _ in quotes] == ["binance.perp", "hl.perp"] * 3
+    # Once, on the first turn, and only for the venue that publishes it separately.
+    assert changes == [("binance.perp", ("BTCUSDT",))]
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct == pytest.approx(1.5)
+
+
+def test_a_quote_written_before_the_first_change_fetch_carries_no_percentage_at_all() -> None:
+    """A price with no percentage beats a price wearing some other window's percentage."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    quotes: list[tuple[str, tuple[str, ...]]] = []
+    changes: list[tuple[str, tuple[str, ...]]] = []
+    loop = _split_loop(price, quotes=quotes, changes=changes, change_result=RuntimeError("venue_timeout"))
+
+    asyncio.run(loop.turn())
+
+    quote = price.snapshots["binance.perp"]["quotes"][0]
+    assert quote.price == Decimal("68000")  # the price write is never blocked by the change fetch
+    assert quote.change_pct is None
+    assert quote.change_basis == "rolling_24h"  # the window is still named
+    assert loop.last_error is not None and "change" in loop.last_error
+
+
+def test_a_failed_change_fetch_leaves_the_previous_percentage_in_place() -> None:
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    quotes: list[tuple[str, tuple[str, ...]]] = []
+    changes: list[tuple[str, tuple[str, ...]]] = []
+    loop = _split_loop(price, quotes=quotes, changes=changes, change_period_seconds=0.0)
+
+    asyncio.run(loop.turn())
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct == pytest.approx(1.5)
+
+    loop.change_fetcher_for = lambda _source: _raiser()
+    asyncio.run(loop.turn())
+
+    # Stale-not-blank, exactly like a failed quote source keeping its row.
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct == pytest.approx(1.5)
+    assert price.snapshots["binance.perp"]["quotes"][0].price == Decimal("68000")
+
+
+def test_an_empty_change_map_does_not_blank_every_percentage_on_the_source() -> None:
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    loop = _split_loop(price, quotes=[], changes=[], change_period_seconds=0.0)
+
+    asyncio.run(loop.turn())
+    loop.change_fetcher_for = lambda _source: _empty_changes()
+    asyncio.run(loop.turn())
+
+    assert price.snapshots["binance.perp"]["quotes"][0].change_pct == pytest.approx(1.5)
+    assert loop.last_error is not None and "change:venue_payload_empty" in loop.last_error
+
+
+def test_a_symbol_that_left_the_working_set_cannot_keep_a_change_value_alive() -> None:
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("hl.perp", "HYPE", "HYPE")])
+    loop = _split_loop(price, quotes=[], changes=[], change_period_seconds=0.0)
+    asyncio.run(loop.turn())
+    assert loop._changes == {"binance.perp": {"BTCUSDT": pytest.approx(1.5)}}
+
+    price._targets = [_instrument("hl.perp", "HYPE", "HYPE")]
+    asyncio.run(loop.turn())
+
+    assert loop._changes == {}
+
+
+def _raiser():
+    async def fetch(_symbols):
+        raise RuntimeError("venue_timeout")
+
+    return fetch
+
+
+def _empty_changes():
+    async def fetch(_symbols):
+        return {}
+
+    return fetch
 
 
 # ---------------------------------------------------------------------------- reaction turns

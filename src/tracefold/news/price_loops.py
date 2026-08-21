@@ -25,6 +25,7 @@ from .pricing import (
     CANDLE_INTERVAL_MS,
     EXTERNAL_CONCURRENCY,
     HORIZON_MS,
+    QUOTE_CHANGE_PERIOD_SECONDS,
     QUOTE_LOOKBACK_MS,
     QUOTE_PERIOD_SECONDS,
     QUOTE_TURN_DEADLINE_SECONDS,
@@ -43,8 +44,10 @@ from .pricing import (
 log = logging.getLogger("tracefold.news.price")
 
 QuoteFetcher = Callable[[Sequence[str]], Awaitable[Sequence[ProviderQuote]]]
+ChangeFetcher = Callable[[Sequence[str]], Awaitable[Mapping[str, float]]]
 CandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]
 QuoteFetcherFactory = Callable[[str], QuoteFetcher | None]
+ChangeFetcherFactory = Callable[[str], ChangeFetcher | None]
 CandleFetcherFactory = Callable[[str], CandleFetcher | None]
 
 # A backfill turn that filled its whole batch immediately asks for the next one; without a ceiling that is a
@@ -118,17 +121,25 @@ class QuoteSnapshotLoop:
         *,
         db: Any,
         fetcher_for: QuoteFetcherFactory,
+        change_fetcher_for: ChangeFetcherFactory | None = None,
         watchlist: Sequence[str] = (),
         period_seconds: float = QUOTE_PERIOD_SECONDS,
+        change_period_seconds: float = QUOTE_CHANGE_PERIOD_SECONDS,
         enabled: bool = True,
     ) -> None:
         self.db = _ColdDb(db)
         self.fetcher_for = fetcher_for
+        self.change_fetcher_for = change_fetcher_for
         self.watchlist = tuple(watchlist)
         self.period = float(period_seconds)
+        self.change_period_ms = max(0.0, float(change_period_seconds)) * 1000.0
         self.enabled = bool(enabled)
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
+        # Per source: the last change map that arrived, and when we last *asked* for one. Asking is what the
+        # cadence governs — a venue that failed keeps its previous figure and is not retried every 20 s.
+        self._changes: dict[str, dict[str, float]] = {}
+        self._change_asked_at_ms: dict[str, int] = {}
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if not self.enabled:
@@ -158,10 +169,13 @@ class QuoteSnapshotLoop:
             self.last_error = None
             self.last_result = {**_plan_stats(plan), "sources": 0, "written": 0, "quotes": 0}
             return self.last_result
+        self._forget_changes_except(groups)
+        calls = [("quote", source) for source in sorted(groups)]
+        calls += [("change", source) for source in sorted(groups) if self._change_due(source, stamp)]
         try:
             results = await asyncio.wait_for(
                 _gather_bounded(
-                    [self._source_call(source, members) for source, members in sorted(groups.items())],
+                    [self._call(kind, source, groups[source]) for kind, source in calls],
                     limit=EXTERNAL_CONCURRENCY,
                 ),
                 timeout=QUOTE_TURN_DEADLINE_SECONDS,
@@ -173,13 +187,20 @@ class QuoteSnapshotLoop:
         received_at_ms = now_ms()
         writes: list[tuple[str, list[Quote], int]] = []
         errors: list[str] = []
-        for (source, members), result in zip(sorted(groups.items()), results, strict=False):
+        # Changes first, so a map that arrived this turn is merged into this turn's prices.
+        for (kind, source), result in zip(calls, results, strict=False):
+            if kind == "change":
+                self._absorb_change(source, groups[source], result, errors)
+        for (kind, source), result in zip(calls, results, strict=False):
+            if kind != "quote":
+                continue
+            members = groups[source]
             if isinstance(result, BaseException):
                 code = getattr(result, "code", None) or type(result).__name__
                 errors.append(f"{source}:{code}")
                 log.warning("news quote source failed source=%s code=%s", source, code)
                 continue
-            quotes = _quotes_for(members, result)
+            quotes = _quotes_for(members, result, self._changes.get(source))
             if not quotes:
                 # A 200 carrying an error object parses to nothing. Replacing the row with an empty map would
                 # flip every symbol on the source from `fresh` to `unavailable` — the exact failure this
@@ -224,16 +245,59 @@ class QuoteSnapshotLoop:
         }
         return self.last_result
 
-    def _source_call(self, source: str, members: Sequence[PriceInstrument]) -> Callable[[], Awaitable[Any]]:
-        fetcher = self.fetcher_for(source)
+    def _call(self, kind: str, source: str, members: Sequence[PriceInstrument]) -> Callable[[], Awaitable[Any]]:
+        fetcher = self.fetcher_for(source) if kind == "quote" else self._change_fetcher(source)
         symbols = [instrument.venue_symbol for instrument in members]
 
-        async def _call() -> Sequence[ProviderQuote]:
+        async def _run() -> Any:
             if fetcher is None:
                 raise TransientError(f"quote_source_unavailable:{source}")
             return await fetcher(symbols)
 
-        return _call
+        return _run
+
+    def _change_fetcher(self, source: str) -> ChangeFetcher | None:
+        return None if self.change_fetcher_for is None else self.change_fetcher_for(source)
+
+    def _change_due(self, source: str, stamp: int) -> bool:
+        """Only sources that publish the change separately, and only once per its own cadence."""
+
+        if self._change_fetcher(source) is None:
+            return False
+        asked = self._change_asked_at_ms.get(source)
+        if asked is not None and stamp - asked < self.change_period_ms:
+            return False
+        self._change_asked_at_ms[source] = stamp
+        return True
+
+    def _absorb_change(self, source: str, members: Sequence[PriceInstrument], result: Any, errors: list[str]) -> None:
+        """A change map that did not arrive never blocks the price write — the previous figure just ages."""
+
+        if isinstance(result, BaseException):
+            code = getattr(result, "code", None) or type(result).__name__
+            errors.append(f"{source}:change:{code}")
+            log.warning("news quote change fetch failed source=%s code=%s", source, code)
+            return
+        symbols = {instrument.venue_symbol for instrument in members}
+        values = {
+            str(key): float(value)
+            for key, value in dict(result or {}).items()
+            if str(key) in symbols and value is not None
+        }
+        if not values:
+            # Same reasoning as an empty quote payload: replacing the map would turn every percentage on the
+            # source into a blank, which is a worse answer than a five-minute-old one.
+            errors.append(f"{source}:change:venue_payload_empty")
+            return
+        self._changes[source] = values
+
+    def _forget_changes_except(self, groups: Mapping[str, Any]) -> None:
+        """The cache is bounded by the working set: a source that rotated out cannot keep a value alive."""
+
+        for source in [key for key in self._changes if key not in groups]:
+            self._changes.pop(source, None)
+        for source in [key for key in self._change_asked_at_ms if key not in groups]:
+            self._change_asked_at_ms.pop(source, None)
 
 
 def _plan_stats(plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -247,8 +311,17 @@ def _plan_stats(plan: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _quotes_for(members: Sequence[PriceInstrument], provider: Sequence[ProviderQuote]) -> list[Quote]:
-    """Provider numbers keep provider identity; News identity comes from the resolved instrument."""
+def _quotes_for(
+    members: Sequence[PriceInstrument],
+    provider: Sequence[ProviderQuote],
+    changes: Mapping[str, float] | None = None,
+) -> list[Quote]:
+    """Provider numbers keep provider identity; News identity comes from the resolved instrument.
+
+    A venue that publishes the day change with the price (Hyperliquid) carries it on the quote; one that
+    publishes it separately (Binance, #109) leaves it unset and the loop's cached map fills it in. Before the
+    first change map arrives the percentage is simply absent — never a number from some other window.
+    """
 
     by_symbol = {quote.venue_symbol: quote for quote in provider}
     out: list[Quote] = []
@@ -256,6 +329,9 @@ def _quotes_for(members: Sequence[PriceInstrument], provider: Sequence[ProviderQ
         quote = by_symbol.get(instrument.venue_symbol)
         if quote is None:
             continue
+        change_pct = quote.change_pct
+        if change_pct is None and changes:
+            change_pct = changes.get(instrument.venue_symbol)
         out.append(
             Quote(
                 venue=instrument.venue,
@@ -265,7 +341,7 @@ def _quotes_for(members: Sequence[PriceInstrument], provider: Sequence[ProviderQ
                 price_kind=instrument.price_kind,
                 instrument_class=instrument.instrument_class,
                 quote_asset=instrument.quote_asset,
-                change_pct=quote.change_pct,
+                change_pct=change_pct,
                 change_basis=quote.change_basis,
                 source_at_ms=quote.source_at_ms,
             )

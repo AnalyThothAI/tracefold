@@ -281,8 +281,9 @@ and no state with it:
 recent live Events + watchlist -> exact-symbol-first resolution (alias only as fallback,
   reference tiers never candidates) -> unique Price Instruments deduplicated by
   (venue, venue_symbol, price_kind) -> grouped by provider source
-  -> one batch REST request per source (Binance spot/USD-M ticker, Hyperliquid
+  -> one batch REST request per source (Binance ticker/price, Hyperliquid
      metaAndAssetCtxs / spotMetaAndAssetCtxs / one per HIP-3 dex)
+  -> + one Binance ticker/24hr per source every 300 s, for change_pct alone (#109)
   -> one latest-only row per source in news_quote_snapshots
   -> GET /api/news/quotes (<=100 symbols, resolved server-side, fresh|stale|unavailable|unlisted)
 
@@ -306,6 +307,56 @@ transient provider failure writes no Reaction row at all, which leaves the work
 due; only a stable semantic reason (`instrument_unresolved`, `reference_only`,
 `history_expired`, `no_candle_within_gap`) terminalizes one. Price never enters
 the Gate, Triage, `decide()`, a card, a throttle key or a ranking signal.
+
+The price and the day change are two questions on two cadences (#109). Binance
+answers "what is it worth now" in 45.5 kB (`ticker/price`, whole USD-M market,
+weight 2) and "what has it done in 24 h" in 270 kB (`ticker/24hr`, weight 42) —
+92% of the bigger payload is fields we never display, for symbols nobody asked
+about. The price is fetched every turn; the change every 300 s, cached in the
+loop bounded by the same working set and merged into the quote it writes. A
+change fetch that fails or answers with nothing never blocks the price write:
+the previous percentage ages exactly like a stale row, and a symbol whose change
+has never arrived renders a price with no percentage rather than one borrowed
+from another window. Hyperliquid is untouched — its single request already
+carries `midPx` and `prevDayPx`, so there is nothing to split.
+
+### Why the quote source is REST and not a WebSocket
+
+Recorded so the question is answered by measurement rather than re-litigated
+(#109, measured 2026-08-21 from the deployment host):
+
+| transport | steady state | at 218 symbols |
+|---|---|---|
+| REST `fapi/v1/ticker/price` @ 20 s | 45.5 kB/turn | 0.20 GB/day |
+| REST `fapi/v1/ticker/24hr` @ 20 s | 270.1 kB/turn | 1.19 GB/day |
+| WSS `fstream` `!miniTicker@arr` | **0 frames in 22 s** | — |
+| WSS spot `<sym>@miniTicker` | 185 B/frame, ~1 fps | ~3.5 GB/day |
+| WSS Hyperliquid `allMids` | 3.0 kB/s | 0.27 GB/day |
+
+Three facts, each sufficient on its own. A subscription is cheaper than polling
+only when you consume *faster* than the venue pushes; the console polls over
+HTTP every 15 s, so a socket would multiply bandwidth 12–20× to move a number
+nobody reads faster. The real saving is in payload choice, not transport. And
+Binance's futures socket produced no frames at all from this host across all
+three documented URL forms while its REST worked throughout — "connected but
+silent" would be the *normal* state for 218 of 256 targets, which is the one
+failure mode a socket hides and REST cannot (a REST error becomes `stale`
+immediately; a silent socket freezes the last price and says nothing).
+
+A WSS Quote Source becomes right only when all four hold, each verified rather
+than assumed: (1) the browser is no longer an HTTP-polling reader, which is its
+own architecture decision; (2) a product requirement names a freshness SLO
+tighter than the collector cadence, and someone can say what a reader does with
+it; (3) the venue's socket is verified to deliver from the deployment host for a
+sustained window; (4) its steady-state bandwidth measures lower than the
+equivalent filtered REST payload at the accepted cadence. If it is ever built it
+must meet what the OpenNews receiver already meets — jittered reconnect with
+resubscription, forced reconnect before the venue's connection lifetime,
+ping/pong liveness, **a per-symbol staleness watchdog that degrades a
+silent-but-connected socket to `stale` instead of freezing the last value**,
+subscription diffing inside the venue's subscribe rate limit, one connection per
+venue with isolated failure, no socket in Serve, and REST as the source of truth
+on startup and after any gap.
 
 
 Ownership: `tracefold.integrations.rabbitmq` is the only module that imports

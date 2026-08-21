@@ -47,6 +47,11 @@ HORIZON_MS: Final[Mapping[str, int]] = {"1h": 3_600_000, "4h": 14_400_000}
 # and at 5 s that measured 6.8 MB/min ≈ 9.8 GB/day in production. Quartering the cadence quarters that while
 # leaving the console's actual refresh behaviour unchanged.
 QUOTE_PERIOD_SECONDS: Final = 20.0
+# The day change is a 24-hour window, so asking for it every turn moves the displayed number by ~0.02% and
+# costs six times the price payload: Binance answers the price question in 45.5 kB (`ticker/price`) where the
+# combined one needs 270 kB (`ticker/24hr`). Two questions, two cadences (#109). Five minutes of age on a
+# 24-hour figure is not a freshness loss; `change_basis` still names the window either way.
+QUOTE_CHANGE_PERIOD_SECONDS: Final = 300.0
 QUOTE_TURN_DEADLINE_SECONDS: Final = 10.0
 QUOTE_LOOKBACK_MS: Final = 72 * 3_600_000
 QUOTE_TARGET_MAX: Final = 256
@@ -353,6 +358,7 @@ __all__ = [
     "PRICE_KIND_ZH",
     "PRICE_SOURCE_ORDER",
     "QUOTE_ASSET_ORDER",
+    "QUOTE_CHANGE_PERIOD_SECONDS",
     "QUOTE_FRESH_MAX_AGE_MS",
     "QUOTE_LOOKBACK_MS",
     "QUOTE_PERIOD_SECONDS",

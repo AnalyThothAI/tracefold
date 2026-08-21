@@ -17,7 +17,9 @@ from tracefold.integrations.venues.candles import fetch_binance_candles, fetch_h
 from tracefold.integrations.venues.errors import VenueExpectedError
 from tracefold.integrations.venues.hyperliquid import fetch_hyperliquid_instruments
 from tracefold.integrations.venues.quotes import (
+    fetch_binance_futures_changes,
     fetch_binance_futures_quotes,
+    fetch_binance_spot_changes,
     fetch_binance_spot_quotes,
     fetch_hyperliquid_quotes,
 )
@@ -194,8 +196,10 @@ def test_metric_version_is_pinned() -> None:
 
 
 # ---------------------------------------------------------------------------- venue adapters
-def _json_transport(payloads: dict[str, object]) -> httpx.MockTransport:
+def _json_transport(payloads: dict[str, object], *, seen: list[str] | None = None) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(request.url.path)
         for path, payload in payloads.items():
             if path in request.url.path:
                 return httpx.Response(200, content=json.dumps(payload))
@@ -204,27 +208,86 @@ def _json_transport(payloads: dict[str, object]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-def test_binance_quote_adapter_filters_to_the_target_set_and_declares_its_basis() -> None:
+def test_binance_quote_adapter_reads_the_price_endpoint_and_filters_to_the_target_set() -> None:
+    """#109: `ticker/price` is 45.5 kB where the combined `ticker/24hr` is 270 kB for the same market."""
+
+    payload = [
+        {"symbol": "BTCUSDT", "price": "68123.4", "time": 10},
+        {"symbol": "ETHUSDT", "price": "3200.0", "time": 11},
+        {"symbol": "NOTWANTED", "price": "1.0"},
+    ]
+    seen: list[str] = []
+    quotes = asyncio.run(
+        fetch_binance_futures_quotes(
+            ["BTCUSDT"], transport=_json_transport({"/fapi/v1/ticker/price": payload}, seen=seen)
+        )
+    )
+    assert seen == ["/fapi/v1/ticker/price"]
+    assert [quote.venue_symbol for quote in quotes] == ["BTCUSDT"]
+    assert quotes[0].price == Decimal("68123.4")
+    assert quotes[0].source_at_ms == 10
+    # The window is still named even though this endpoint cannot answer it; the loop fills in the number.
+    assert quotes[0].change_basis == "rolling_24h"
+    assert quotes[0].change_pct is None
+
+
+def test_binance_change_adapter_returns_one_percentage_per_wanted_symbol() -> None:
     payload = [
         {"symbol": "BTCUSDT", "lastPrice": "68123.4", "priceChangePercent": "1.5", "closeTime": 10},
         {"symbol": "ETHUSDT", "lastPrice": "3200.0", "priceChangePercent": "-2.0", "closeTime": 11},
-        {"symbol": "NOTWANTED", "lastPrice": "1.0", "priceChangePercent": "0"},
+        {"symbol": "NOTWANTED", "lastPrice": "1.0", "priceChangePercent": "9"},
+        {"symbol": "BROKEN", "lastPrice": "1.0"},
     ]
-    quotes = asyncio.run(
-        fetch_binance_futures_quotes(["BTCUSDT"], transport=_json_transport({"/fapi/v1/ticker/24hr": payload}))
+    seen: list[str] = []
+    changes = asyncio.run(
+        fetch_binance_futures_changes(
+            ["BTCUSDT", "ETHUSDT", "BROKEN"],
+            transport=_json_transport({"/fapi/v1/ticker/24hr": payload}, seen=seen),
+        )
     )
-    assert [quote.venue_symbol for quote in quotes] == ["BTCUSDT"]
-    assert quotes[0].price == Decimal("68123.4")
-    assert quotes[0].change_basis == "rolling_24h"
-    assert quotes[0].source_at_ms == 10
+    assert seen == ["/fapi/v1/ticker/24hr"]
+    assert changes == {"BTCUSDT": pytest.approx(1.5), "ETHUSDT": pytest.approx(-2.0)}
+
+
+def test_binance_spot_asks_only_for_the_symbols_it_wants_on_both_endpoints() -> None:
+    """Spot takes a `symbols=` list; asking for the whole market when 3 symbols are wanted is pure waste."""
+
+    urls: list[httpx.URL] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(request.url)
+        if "24hr" in request.url.path:
+            return httpx.Response(200, content=json.dumps([{"symbol": "BTCUSDT", "priceChangePercent": "1.5"}]))
+        return httpx.Response(200, content=json.dumps([{"symbol": "BTCUSDT", "price": "68123.4"}]))
+
+    transport = httpx.MockTransport(handler)
+    asyncio.run(fetch_binance_spot_quotes(["BTCUSDT"], transport=transport))
+    asyncio.run(fetch_binance_spot_changes(["BTCUSDT"], transport=transport))
+
+    assert [url.path for url in urls] == ["/api/v3/ticker/price", "/api/v3/ticker/24hr"]
+    assert all(url.params.get("symbols") == '["BTCUSDT"]' for url in urls)
 
 
 def test_binance_quote_adapter_drops_a_nonsense_price_instead_of_publishing_zero() -> None:
-    payload = [{"symbol": "BTCUSDT", "lastPrice": "0", "priceChangePercent": "0"}]
+    payload = [{"symbol": "BTCUSDT", "price": "0"}]
     quotes = asyncio.run(
-        fetch_binance_spot_quotes(["BTCUSDT"], transport=_json_transport({"/api/v3/ticker/24hr": payload}))
+        fetch_binance_spot_quotes(["BTCUSDT"], transport=_json_transport({"/api/v3/ticker/price": payload}))
     )
     assert quotes == ()
+
+
+def test_binance_change_adapter_classifies_a_failure_like_every_other_venue_call() -> None:
+    """A change fetch fails the same way a quote fetch does; the loop is what decides it is survivable."""
+
+    transport = httpx.MockTransport(lambda _request: httpx.Response(429, content=b"{}"))
+    with pytest.raises(VenueExpectedError) as caught:
+        asyncio.run(fetch_binance_spot_changes(["BTCUSDT"], transport=transport))
+    assert caught.value.code == "venue_rate_limited"
+
+    changes = asyncio.run(
+        fetch_binance_futures_changes(["BTCUSDT"], transport=_json_transport({"/fapi/v1/ticker/24hr": "nonsense"}))
+    )
+    assert changes == {}
 
 
 def test_hyperliquid_perp_quotes_are_index_aligned_with_the_universe() -> None:

@@ -26,8 +26,10 @@ from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.integrations.venues import (
     fetch_binance_candles,
+    fetch_binance_futures_changes,
     fetch_binance_futures_quotes,
     fetch_binance_instruments,
+    fetch_binance_spot_changes,
     fetch_binance_spot_quotes,
     fetch_hyperliquid_candles,
     fetch_hyperliquid_instruments,
@@ -688,10 +690,21 @@ def _quote_snapshot_loop(settings: Any, *, db: Any, watchlist: Sequence[str]) ->
             return functools.partial(fetch_hyperliquid_quotes, venue=source_key)
         return None
 
+    def change_fetcher_for(source_key: str) -> Any | None:
+        """Only Binance splits the two questions; one Hyperliquid request already carries `prevDayPx`."""
+
+        if not _price_venue_enabled(settings, source_key):
+            return None
+        if source_key == "binance.spot":
+            return fetch_binance_spot_changes
+        if source_key == "binance.perp":
+            return fetch_binance_futures_changes
+        return None
+
     venues = settings.news.venues
     if not venues.enabled or not (venues.binance or venues.hyperliquid):
         return None
-    return QuoteSnapshotLoop(db=db, fetcher_for=fetcher_for, watchlist=watchlist)
+    return QuoteSnapshotLoop(db=db, fetcher_for=fetcher_for, change_fetcher_for=change_fetcher_for, watchlist=watchlist)
 
 
 def _event_reaction_loop(settings: Any, *, db: Any) -> EventReactionLoop | None:

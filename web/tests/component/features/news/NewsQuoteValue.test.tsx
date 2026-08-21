@@ -34,6 +34,16 @@ describe("NewsQuoteValue", () => {
     expect(screen.getByText("陈旧")).toBeInTheDocument();
   });
 
+  it("renders a price with no percentage when the change figure has not arrived yet", () => {
+    // #109 split the two Binance endpoints: a quote can carry a price before its 24 h change is known.
+    render(<NewsQuoteValue quote={newsQuoteFixture({ change_pct: null })} />);
+
+    expect(screen.getByText("68,123.40")).toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+    const title = screen.getByText("68,123.40").closest("span[title]")?.getAttribute("title") ?? "";
+    expect(title).toContain("binance.perp:BTCUSDT");
+  });
+
   it("says unavailable and unlisted in words, never as a price", () => {
     const { rerender } = render(
       <NewsQuoteValue
