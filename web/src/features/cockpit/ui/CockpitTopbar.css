@@ -84,15 +84,6 @@
     color: var(--text-subtle);
   }
 
-  .searchbar kbd {
-    flex: 0 0 auto;
-    padding: 1px 5px;
-    border: 1px solid var(--border-faint);
-    border-radius: var(--radius-xs);
-    color: var(--text-subtle);
-    font: 500 9.5px/1.5 var(--font-mono);
-  }
-
   .topbar-right {
     display: flex;
     gap: 12px;
@@ -186,8 +177,8 @@
 
   /*
    * Phone: search, the anomaly dot, and refresh. There is no sidebar trigger to place (#87) and the brand is
-   * not a control, so the row spends its width on the one input a thumb actually uses. The figures and the
-   * palette both go — ⌘K is not a phone gesture, and the same two numbers lead the feed's funnel card.
+   * not a control, so the row spends its width on the one input a thumb actually uses. The figures go too —
+   * the same two numbers lead the feed's funnel card.
    */
   @media (max-width: 767px) {
     .topbar {
@@ -199,8 +190,7 @@
     }
 
     .brand,
-    .topbar-figures,
-    .topbar-palette-button {
+    .topbar-figures {
       display: none;
     }
 
@@ -209,10 +199,6 @@
       max-width: none;
       height: 34px;
       background: var(--surface-raised);
-    }
-
-    .searchbar kbd {
-      display: none;
     }
 
     .topbar-right {

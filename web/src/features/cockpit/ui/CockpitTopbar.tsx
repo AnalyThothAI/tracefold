@@ -1,8 +1,7 @@
 import type { OpenApiStatusData } from "@lib/types";
-import { ActionButton } from "@shared/ui/ActionButton";
 import { IconButton } from "@shared/ui/IconButton";
 import { RefreshCw, Search, TriangleAlert } from "lucide-react";
-import { useEffect, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import "./CockpitTopbar.css";
 
@@ -32,10 +31,8 @@ export type CockpitTopbarFigure = {
 
 export type CockpitTopbarProps = {
   figures?: CockpitTopbarFigure[];
-  onOpenPalette?: () => void;
   onRefresh: () => void;
   search: {
-    inputRef: RefObject<HTMLInputElement | null>;
     onSubmitQuery: (query: string) => void;
     query?: string;
   };
@@ -52,7 +49,6 @@ export type CockpitTopbarProps = {
 export function CockpitTopbar({
   figures,
   navigationTrigger,
-  onOpenPalette,
   onRefresh,
   search,
   status,
@@ -68,7 +64,7 @@ export function CockpitTopbar({
         <span className="topbar-page-title">{title}</span>
       </div>
 
-      {/* Enter submits; the `/` hint is the discoverable half of the shell hotkey that focuses this box. */}
+      {/* Enter submits. The box is the whole search interaction — there is no hotkey that focuses it. */}
       <form
         className="searchbar"
         onSubmit={(event) => {
@@ -85,10 +81,8 @@ export function CockpitTopbar({
           id="news-search-input"
           onChange={(event) => setSearchDraft(event.target.value)}
           placeholder={NEWS_SEARCH_PLACEHOLDER}
-          ref={search.inputRef}
           value={searchDraft}
         />
-        <kbd aria-hidden>/</kbd>
       </form>
 
       <div className="topbar-right">
@@ -107,12 +101,6 @@ export function CockpitTopbar({
                 </span>
               ))}
           </span>
-        ) : null}
-        {onOpenPalette ? (
-          <ActionButton className="topbar-palette-button" onClick={onOpenPalette} size="sm">
-            命令面板
-            <kbd>⌘K</kbd>
-          </ActionButton>
         ) : null}
         {anomaly ? (
           <span className="topbar-anomaly" role="status" title={anomaly}>

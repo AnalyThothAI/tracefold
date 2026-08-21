@@ -1,7 +1,6 @@
 import { newsEventPath } from "@shared/routing/paths";
 import { ActionButton } from "@shared/ui/ActionButton";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useNewsFeedWithToken } from "../../api/newsQueries";
@@ -36,24 +35,6 @@ export function NewsEventPager({
   const go = (target: { event_id: string } | null) => {
     if (target) navigate(newsEventPath(target.event_id), { state: { feedSearch } });
   };
-  useEffect(() => {
-    if (index < 0) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
-      if (event.key === "j") {
-        event.preventDefault();
-        go(next);
-      } else if (event.key === "k") {
-        event.preventDefault();
-        go(previous);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  });
-
   if (index < 0) return null;
   return (
     <div className="news-detail-pager">
@@ -63,11 +44,9 @@ export function NewsEventPager({
       <ActionButton disabled={!previous} onClick={() => go(previous)} size="sm">
         <ChevronLeft aria-hidden />
         上一条
-        <kbd>K</kbd>
       </ActionButton>
       <ActionButton disabled={!next} onClick={() => go(next)} size="sm">
         下一条
-        <kbd>J</kbd>
         <ChevronRight aria-hidden />
       </ActionButton>
     </div>

@@ -33,14 +33,6 @@ import "./newsFeedToolbar.css";
 const OUTCOME_TABS: Array<NewsFeedOutcome | null> = [null, ...NEWS_FEED_OUTCOMES];
 const OUTCOME_TAB_TONE = { pushed: "done", held: "neutral", pending: "info" } as const;
 
-/** What the keyboard reaches for on this route. The panel behind `?` is the full list. */
-const KEY_HINTS: Array<[string, string]> = [
-  ["J K", "移动"],
-  ["↵", "打开"],
-  ["Space", "展开判定"],
-  ["X", "复制标注"],
-];
-
 /**
  * The feed's own controls, sticky under the topbar: which task you are on, how far back, and the advanced
  * filters folded into one disclosure. The shell owns navigation and search; this owns nothing else.
@@ -271,14 +263,6 @@ function FeedControls({
           </label>
         </div>
       </details>
-      <span aria-hidden className="news-key-hints">
-        {KEY_HINTS.map(([keys, what]) => (
-          <span key={keys}>
-            <kbd>{keys}</kbd>
-            {what}
-          </span>
-        ))}
-      </span>
     </div>
   );
 }

@@ -152,29 +152,6 @@
     font-size: 10.5px;
   }
 
-  .news-key-hints {
-    display: inline-flex;
-    gap: 10px;
-    align-items: center;
-    color: var(--text-subtle);
-    font-size: 10.5px;
-  }
-
-  .news-key-hints > span {
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-    white-space: nowrap;
-  }
-
-  .news-key-hints kbd {
-    padding: 1px 5px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xs);
-    background: var(--surface-panel);
-    font: 500 9.5px/1.5 var(--font-mono);
-  }
-
   /* ------------------------------------------------------------------ active filter chips */
   .news-active-filters {
     display: flex;
@@ -200,15 +177,8 @@
     height: 11px;
   }
 
-  @media (max-width: 1279px) {
-    .news-key-hints {
-      display: none;
-    }
-  }
-
   /*
-   * Phone: the tabs become one scrollable row of real targets and the selects sit beside them. No keyboard
-   * hints — there is no keyboard.
+   * Phone: the tabs become one scrollable row of real targets and the selects sit beside them.
    */
   @media (max-width: 767px) {
     .news-feed-toolbar {

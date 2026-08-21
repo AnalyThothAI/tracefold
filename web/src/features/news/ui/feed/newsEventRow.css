@@ -1,9 +1,8 @@
 @layer app.features {
   /*
-   * `54 / 1fr / 150` with a 3px rail. Three grounds and nothing else: white at rest, `#f8f9fb` under the
-   * pointer, `#e9edf2` under the keyboard cursor — one step apart so a reader mid-scan can tell which is
-   * which. Selection tints with the accent wash, which is the only place the pipeline's own colour lands on
-   * a whole row.
+   * `54 / 1fr / 150` with a 3px rail. Two grounds and nothing else: white at rest, `#f8f9fb` under the
+   * pointer. Selection tints with the accent wash, which is the only place the pipeline's own colour lands
+   * on a whole row.
    */
   .news-event-row {
     --rail: var(--border-strong);
@@ -62,17 +61,8 @@
     background: var(--surface-hover);
   }
 
-  .news-event-row[data-cursor] {
-    background: var(--surface-cursor);
-  }
-
   .news-event-row[data-selected] {
     background: rgba(42, 91, 215, 0.06);
-  }
-
-  .news-event-row:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: -2px;
   }
 
   /* A new Event landing at the top while the reader is already there: it arrives, and says so once. */
@@ -218,7 +208,6 @@
   }
 
   .news-event-row:hover .news-event-expand,
-  .news-event-row[data-cursor] .news-event-expand,
   .news-event-row[data-expanded] .news-event-expand,
   .news-event-expand:focus-visible {
     opacity: 1;

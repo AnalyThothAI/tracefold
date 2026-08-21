@@ -1,15 +1,13 @@
 import { useMediaQuery } from "@shared/hooks/useMediaQuery";
 import { newsFeedIdentity } from "@shared/query/queryKeys";
-import { newsEventPath } from "@shared/routing/paths";
 import { ActionButton } from "@shared/ui/ActionButton";
 import * as PageState from "@shared/ui/PageState";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 
 import {
   type NewsFeedEvent,
   type NewsFeedFilters,
-  type NewsFeedOutcome,
   useNewsFeedHistoryWithToken,
   useNewsFeedWithToken,
   useNewsQuotesWithToken,
@@ -30,7 +28,6 @@ import {
   hoursLabel,
 } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
-import { useFeedCursor } from "../../state/useFeedCursor";
 import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
 import { NewsHealthPill } from "../chrome/NewsHealthPill";
 import { NewsEventDrawer } from "../detail/NewsEventDrawer";
@@ -41,8 +38,6 @@ import { NewsFunnelCard } from "./NewsFunnelCard";
 
 import "./newsFeed.css";
 
-/** Tab order matches the digits 1–4 the shortcut panel advertises. */
-const TAB_ORDER: Array<NewsFeedOutcome | null> = [null, "pushed", "held", "pending"];
 /**
  * Where the Event drawer earns its place: wide enough that a 420px sheet still leaves the list readable
  * beside it. Below this, opening an Event is a page.
@@ -60,7 +55,6 @@ const DRAWER_QUERY = "(min-width: 1024px)";
  */
 export function NewsFeedPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
   const filters = parseFeedFilters(searchParams);
   const query = useNewsFeedWithToken(token, filters);
   const statusQuery = useNewsStatusWithToken(token);
@@ -95,7 +89,6 @@ export function NewsFeedPage({ token }: { token: string }) {
     feedIdentity,
   );
   const events = eventFeed.events;
-  const eventIds = events.map((event) => event.event_id);
   // One quote request for everything on screen (#88): the symbols the server already resolved, deduplicated
   // into a single query key. Prices never travel in the feed body — that would make its ETag useless.
   const quotesQuery = useNewsQuotesWithToken(
@@ -116,43 +109,6 @@ export function NewsFeedPage({ token }: { token: string }) {
 
   const toggleExpanded = (eventId: string) =>
     setExpandedId((current) => (current === eventId ? null : eventId));
-
-  // What the keyboard reaches for. These close over this render's filters, so they live behind a ref and the
-  // listeners register once instead of on every three-second poll.
-  const actions = useRef({ selectTab: (_index: number) => {} });
-  actions.current = {
-    selectTab: (index) => updateFeedParams({ outcome: TAB_ORDER[index] }),
-  };
-  const { cursor, focusEvent } = useFeedCursor({
-    enabled: events.length > 0,
-    eventIds,
-    listRef: eventListRef,
-    onActivate: (eventId) => {
-      // The drawer follows the cursor while it is open, so `Enter` on a later row simply moves it.
-      if (wideEnoughForDrawer) setDrawerId(eventId);
-      else navigate(newsEventPath(eventId), { state: { feedSearch } });
-    },
-    onExpand: toggleExpanded,
-  });
-  // J/K with the drawer open walks the list without closing it: the reader is reading through a queue.
-  useEffect(() => {
-    if (drawerId && cursor && cursor !== drawerId) setDrawerId(cursor);
-  }, [cursor, drawerId]);
-
-  // Digits pick a task tab from anywhere on the route; the feed cursor owns the rest of the keyboard.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
-      const index = "1234".indexOf(event.key);
-      if (index < 0) return;
-      event.preventDefault();
-      actions.current.selectTab(index);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
 
   const groups = groupByHour(events, filters.sort === "latest");
   return (
@@ -238,20 +194,12 @@ export function NewsFeedPage({ token }: { token: string }) {
                   ) : null}
                   {group.events.map((event) => (
                     <NewsEventRow
-                      cursor={event.event_id === cursor}
                       event={event}
                       expanded={expandedId === event.event_id}
                       fresh={eventFeed.freshIds.has(event.event_id)}
                       key={event.event_id}
                       onExpand={toggleExpanded}
-                      onOpen={
-                        wideEnoughForDrawer
-                          ? (eventId) => {
-                              focusEvent(eventId);
-                              setDrawerId(eventId);
-                            }
-                          : undefined
-                      }
+                      onOpen={wideEnoughForDrawer ? setDrawerId : undefined}
                       quotes={quotes}
                       searchState={feedSearch}
                       selectable={false}
