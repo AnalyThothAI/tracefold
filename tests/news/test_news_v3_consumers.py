@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from typing import Any
@@ -96,6 +97,22 @@ class RecordingInstruments:
         return dict(self.aliases)
 
 
+class RecordingPrice:
+    """The #88 quote plane as the Deliverer sees it: silent by default, so every pre-v10 expectation holds."""
+
+    def __init__(self, *, quotes: list[dict[str, Any]] | None = None, error: Exception | None = None) -> None:
+        self.quotes = quotes or []
+        self.error = error
+        self.requested: list[list[str]] = []
+
+    def quotes_for_symbols(self, symbols: Any, *, now_ms: int) -> list[dict[str, Any]]:
+        del now_ms
+        self.requested.append(list(symbols))
+        if self.error is not None:
+            raise self.error
+        return list(self.quotes)
+
+
 class FakeWorkerDatabase:
     """Only the News lane exists on the fake; a consumer that reaches for run_business is a wiring bug."""
 
@@ -105,16 +122,18 @@ class FakeWorkerDatabase:
         *,
         admission_timeout_for: set[str] | None = None,
         instruments: RecordingInstruments | None = None,
+        price: RecordingPrice | None = None,
     ) -> None:
         self.news = news
         self.instruments = instruments or RecordingInstruments()
+        self.price = price or RecordingPrice()
         self.operations: list[str] = []
         self.admission_timeout_for = admission_timeout_for or set()
 
     @contextmanager
     def worker_session(self, name: str, *_args: Any, **_kwargs: Any):
         del name
-        yield SimpleNamespace(news=self.news, instruments=self.instruments, transaction=nullcontext)
+        yield SimpleNamespace(news=self.news, instruments=self.instruments, price=self.price, transaction=nullcontext)
 
     async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
         del operation_timeout_seconds
@@ -583,11 +602,32 @@ def test_triage_rejects_missing_event_id_and_missing_event() -> None:
 
 
 # ---------------------------------------------------------------- Deliverer
-def _deliverer(news: RecordingNews, bus: FakeBus, *, hourly_cap: int = 20) -> DelivererConsumer:
+class RecordingSender:
+    """Captures the card the Deliverer would have sent, so a test can read what the reader would have seen."""
+
+    def __init__(self) -> None:
+        self.cards: list[dict[str, Any]] = []
+
+    async def send_card(self, card: dict[str, Any]) -> dict[str, Any]:
+        self.cards.append(card)
+        return {"status_code": 200, "code": 0}
+
+    async def close(self) -> None:
+        return None
+
+
+def _deliverer(
+    news: RecordingNews,
+    bus: FakeBus,
+    *,
+    hourly_cap: int = 20,
+    price: RecordingPrice | None = None,
+    sender: RecordingSender | None = None,
+) -> DelivererConsumer:
     return DelivererConsumer(
         bus=bus,
-        db=FakeWorkerDatabase(news),
-        sender=None,
+        db=FakeWorkerDatabase(news, price=price),
+        sender=sender,
         finite_operations=InlineFinite(),
         min_interval_seconds=0.0,
         hourly_cap=hourly_cap,
@@ -667,6 +707,100 @@ def test_deliverer_skips_dropped_first_cards() -> None:
         asyncio.run(
             _deliverer(_delivery_news(event_card=None), FakeBus()).handle(_message("verdict", {"event_id": "ghost"}))
         )
+
+
+def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
+    price = RecordingPrice(
+        quotes=[
+            {
+                "symbol": "NVDA",
+                "price": "217.32",
+                "change_pct": 1.5,
+                "change_basis": "rolling_24h",
+                "instrument_class": "equity",
+                "state": "fresh",
+            }
+        ]
+    )
+    news = _delivery_news(
+        latest_verdict=lambda *, event_id, stage: {
+            "final_decision": "push",
+            "verdict": {
+                "direction": "bullish",
+                "magnitude": 2,
+                "headline_zh": "英伟达",
+                "assets": [{"symbol": "NVDA", "role": "primary"}, {"symbol": "OPENAI", "role": "mentioned"}],
+            },
+        },
+    )
+    sender = RecordingSender()
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    # The quote request is `card_assets()` itself, so the facts line and the 行情 line cannot name different
+    # assets: the mentioned-only OPENAI tag is absent from both.
+    assert price.requested == [["NVDA"]]
+    assert sender.cards[0]["elements"][0]["content"].splitlines()[-1] == "行情 NVDA $217.32 24h +1.50%（永续）"
+
+
+def test_deliverer_delivers_the_card_when_the_price_plane_fails() -> None:
+    price = RecordingPrice(error=RuntimeError("quote lane on fire"))
+    news = _delivery_news()
+    sender = RecordingSender()
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    # A price is never worth losing a card over: the card goes out, it simply has no 行情 line.
+    assert news.kwargs_of("settle_delivery")["state"] == "sent"
+    assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
+
+
+def test_deliverer_delivers_the_card_when_the_quote_read_cannot_be_admitted() -> None:
+    """The quote read has its own session, so a lane that will not admit it must not touch the card.
+
+    Guarding inside the callback is not enough: admission and timeout are enforced one frame above it, and on
+    the shared `news_delivery_load` budget an overrun raises `TransientError`, which is counted and
+    dead-letters the card after three attempts.
+    """
+
+    news = _delivery_news()
+    sender = RecordingSender()
+    db = FakeWorkerDatabase(news, admission_timeout_for={"news_delivery_quotes"}, price=RecordingPrice())
+    deliverer = DelivererConsumer(
+        bus=FakeBus(), db=db, sender=sender, finite_operations=InlineFinite(), min_interval_seconds=0.0, hourly_cap=20
+    )
+
+    asyncio.run(deliverer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
+
+    assert "news_delivery_quotes" in db.operations
+    assert news.kwargs_of("settle_delivery")["state"] == "sent"
+    assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
+
+
+def test_deliverer_does_not_price_a_card_nobody_will_see() -> None:
+    """Two queries on the hot News lane for output every path below discards (#113 review)."""
+
+    for news in (
+        _delivery_news(latest_verdict=lambda *, event_id, stage: {"final_decision": "drop", "verdict": {}}),
+        _delivery_news(sent_count_since=20),
+    ):
+        price = RecordingPrice()
+        asyncio.run(_deliverer(news, FakeBus(), price=price).handle(_message("verdict", {"event_id": "ev-strong"})))
+        assert price.requested == []
+
+    paused = _delivery_news()
+    paused.control_state = {"paused": True, "mutes": []}
+    price = RecordingPrice()
+    asyncio.run(_deliverer(paused, FakeBus(), price=price).handle(_message("verdict", {"event_id": "ev-strong"})))
+    assert price.requested == []
 
 
 # ---------------------------------------------------------------- Janitor

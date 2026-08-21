@@ -13,7 +13,7 @@ GATE_POLICY_VERSION = "news_gate_v4"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
 TRIAGE_PROMPT_VERSION = "news_triage_prompt_v9"
 TRIAGE_POLICY_VERSION = "news_triage_policy_v6"
-DELIVERY_CARD_VERSION = "news_delivery_card_v9"
+DELIVERY_CARD_VERSION = "news_delivery_card_v10"
 
 Admission = Literal[
     "candidate",

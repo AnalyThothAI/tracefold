@@ -44,7 +44,7 @@ from .bus import (
     now_ms,
 )
 from .control import is_muted
-from .delivery import render_first_card
+from .delivery import card_assets, render_first_card
 from .events import admit_item
 from .models import (
     ADMITTED_ADMISSIONS,
@@ -1019,6 +1019,14 @@ class TriageConsumer:
 
 
 # ---------------------------------------------------------------------------- Deliverer
+# Its own budget, not a share of `news_delivery_load`'s. The quote read is two queries the other four are not
+# — `resolve_instruments` joins the universe per symbol, and `quote_snapshots` pulls every source's payload —
+# and a timeout is enforced by the lane one frame above any `try` inside the callback: an overrun there raises
+# `TransientError`, which is counted and dead-letters the card after three attempts. A price is never worth
+# losing a card over, so it gets a second, shorter session whose every failure mode is swallowed.
+_QUOTE_READ_TIMEOUT_SECONDS = 1.5
+
+
 class DelivererConsumer:
     """SAC consumer: one Feishu attempt per (event, kind); crash between send and ack never resends."""
 
@@ -1063,17 +1071,21 @@ class DelivererConsumer:
         if sent_last_hour >= self.hourly_cap and triage_row["final_decision"] != "escalate":
             await self._settle_direct(event_id, kind, "hourly_cap_reached", stamp)
             return
+        if control.get("paused"):
+            # News is perishable: a paused lane drops instead of holding an unacked message.
+            await self._settle_direct(event_id, kind, "delivery_paused", stamp)
+            return
+        # Priced only once the card is certainly going out: every return above discards the message, and the
+        # quote read is the one query in this handler nobody would have seen the result of.
+        quotes = await self._quotes(card, tv, stamp)
         card_payload = render_first_card(
             event=card,
             verdict=tv,
             decision=str(triage_row["final_decision"]),
             grounded_assets=list(card.get("grounded_assets") or []),
             degraded=bool(triage_row.get("degraded")),
+            quotes=quotes,
         )
-        if control.get("paused"):
-            # News is perishable: a paused lane drops instead of holding an unacked message.
-            await self._settle_direct(event_id, kind, "delivery_paused", stamp)
-            return
         if self.sender is None:
             await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
             return
@@ -1134,6 +1146,30 @@ class DelivererConsumer:
                 )
 
         await self.db.tx("news_delivery_settle_direct", _fn)
+
+    async def _quotes(self, card: Mapping[str, Any], verdict: Mapping[str, Any], stamp: int) -> list[Any]:
+        """Current prices for exactly the assets the card will name (#113).
+
+        `card_assets()` is the same function the renderer uses, so the facts line and the quote line can never
+        disagree about which assets this card is about. Resolution and venue precedence stay in
+        `PriceRepository.quotes_for_symbols` — there is deliberately no second copy of that ranking here.
+
+        Every failure is the same answer: no quote line. A broken, slow or admission-blocked price plane costs
+        the card its market number and nothing else, which is what a market we could not reach looks like too.
+        """
+
+        shown = card_assets(dict(verdict), list(card.get("grounded_assets") or []))
+        if not shown:
+            return []
+        try:
+            rows = await self.db.read(
+                "news_delivery_quotes",
+                lambda repos: repos.price.quotes_for_symbols(shown, now_ms=stamp),
+                timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
+            )
+        except Exception:  # incl. TransientError / DeferError — a price is never worth losing a card over
+            return []
+        return list(rows or [])
 
     @staticmethod
     def _load(repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
