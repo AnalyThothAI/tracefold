@@ -378,12 +378,21 @@ class PriceRepository:
         return [dict(row) for row in rows]
 
     def oldest_due_age_ms(self, *, now_ms: int, history_max_age_ms: int) -> int:
-        """Backlog SLO input: how far behind the oldest unfinished Event-asset is, in wall-clock terms."""
+        """Backlog SLO input: how late the latest-running due Event-asset is against *its own* horizon.
+
+        Lateness is measured per row against the horizon that row is waiting for — anchor+1H for one that has
+        no price points yet, anchor+4H for a partial one. Measuring everything against the 1H horizon made a
+        perfectly healthy system report ~180 min the moment any row became 4H-due, which would have pinned
+        the ≤5 min / 15 min SLO permanently at "warning" and taught the operator to ignore it.
+        """
 
         stamp = int(now_ms)
         row = self.conn.execute(
             """
-            SELECT min(a.opened_at_ms) AS oldest
+            SELECT max(
+                     CASE WHEN r.state = 'partial' THEN %s - (a.opened_at_ms + 14400000)
+                          ELSE %s - (a.opened_at_ms + 3600000) END
+                   ) AS lateness
               FROM news_event_assets a
               JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
               LEFT JOIN news_event_reactions r
@@ -396,10 +405,17 @@ class PriceRepository:
                  OR (a.opened_at_ms <= %s AND r.unavailable_reason IS NULL)
                )
             """,
-            (REACTION_METRIC_VERSION, stamp - 3_600_000, stamp - int(history_max_age_ms), stamp - 14_400_000),
+            (
+                stamp,
+                stamp,
+                REACTION_METRIC_VERSION,
+                stamp - 3_600_000,
+                stamp - int(history_max_age_ms),
+                stamp - 14_400_000,
+            ),
         ).fetchone()
-        oldest = (row or {}).get("oldest")
-        return 0 if oldest is None else max(0, stamp - 3_600_000 - int(oldest))
+        lateness = (row or {}).get("lateness")
+        return 0 if lateness is None else max(0, int(lateness))
 
     def upsert_reaction(self, row: Mapping[str, Any], *, now_ms: int) -> None:
         """Idempotent by `(event_id, symbol, metric_version)`; a replay writes the same row again."""
