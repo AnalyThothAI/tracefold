@@ -1,5 +1,5 @@
-"""Model-facing components: the Triage structured call (prompt + input builder + model wrapper)."""
+"""Program-native semantic generation for News V3."""
 
-from tracefold.news.models import TRIAGE_PROMPT_VERSION
+from .semantic_program import ProgramTrace, ProgramUsage, SemanticJudge, SemanticJudgment, TriageContext
 
-__all__ = ["TRIAGE_PROMPT_VERSION"]
+__all__ = ["ProgramTrace", "ProgramUsage", "SemanticJudge", "SemanticJudgment", "TriageContext"]

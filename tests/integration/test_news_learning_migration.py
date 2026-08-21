@@ -64,7 +64,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260821_0291"
+        assert revision["version_num"] == "20260822_0292"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -168,7 +168,95 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260821_0291"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0292"
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()
+
+
+def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_epoch() -> None:
+    """The hard cut adds call-path identity without rewriting append-only history."""
+
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260821_0291")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute(
+            """
+            INSERT INTO news_model_recordings (
+              recording_sha, run_sha, case_id, arm, trial, request_sha256,
+              response_sha256, request, response, provider, model, model_sha,
+              execution_contract_sha, latency_ms, input_tokens, output_tokens,
+              finish_reason, error_code, created_at_ms
+            ) VALUES (
+              %s, %s, 'legacy-case', 'stable', 1, %s,
+              %s, '{}'::jsonb, '{}'::jsonb, 'litellm', 'legacy-model', %s,
+              %s, 10, 11, 7, 'stop', NULL, 1787329286999
+            )
+            """,
+            ("1" * 64, "2" * 64, "3" * 64, "4" * 64, "5" * 64, "6" * 64),
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("head")
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0292"
+        epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
+        assert epoch is not None
+        assert epoch["starts_at_ms"] == 1_787_329_287_000
+        assert epoch["prior_evidence_disposition"] == "audit_only"
+        assert epoch["reset_reason"] == "zero_compatibility_reset_reaccrue_evidence"
+        assert epoch["program_factory_id"] == "tracefold.news.semantic_program.factory_v1"
+        assert epoch["artifact_schema_version"] == "news_semantic_program_artifact_v1"
+        assert epoch["baseline_program_version"] == "news_semantic_program_v1"
+        assert epoch["baseline_program_sha256"] == (
+            "373c3e07f1c97ab4dfae6528fd5e9517b429adba4e32d71e4d63321709449ccd"
+        )
+        legacy = conn.execute(
+            "SELECT predictor_name, call_index, attempt, route, cached_tokens, total_tokens, "
+            "provider_cost_microusd FROM news_model_recordings WHERE recording_sha = %s",
+            ("1" * 64,),
+        ).fetchone()
+        assert legacy == {
+            "predictor_name": "legacy_prompt",
+            "call_index": 0,
+            "attempt": 1,
+            "route": "legacy",
+            "cached_tokens": None,
+            "total_tokens": None,
+            "provider_cost_microusd": None,
+        }
+        verdict_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'news_verdicts'"
+            ).fetchall()
+        }
+        assert {"program_version", "program_sha256"} <= verdict_columns
+        privileges = conn.execute(
+            """
+            SELECT
+              has_table_privilege('tracefold_serve', 'news_learning_epochs', 'SELECT') AS serve_select,
+              has_table_privilege('tracefold_serve', 'news_learning_epochs', 'INSERT') AS serve_insert,
+              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'SELECT') AS workers_select,
+              has_table_privilege('tracefold_workers', 'news_learning_epochs', 'INSERT') AS workers_insert
+            """
+        ).fetchone()
+        assert privileges == {
+            "serve_select": True,
+            "serve_insert": False,
+            "workers_select": True,
+            "workers_insert": False,
+        }
     finally:
         if conn is not None:
             conn.close()

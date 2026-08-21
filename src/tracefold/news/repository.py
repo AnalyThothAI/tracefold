@@ -805,7 +805,8 @@ class NewsRepository:
         throttled_by: str | None,
         verdict: Mapping[str, Any],
         model: str | None,
-        prompt_version: str | None,
+        program_version: str,
+        program_sha256: str,
         degraded: bool,
         error_code: str | None,
         trace: Mapping[str, Any],
@@ -818,9 +819,9 @@ class NewsRepository:
             """
             INSERT INTO news_verdicts (
               event_id, stage, policy_version, model_decision, rule_baseline_decision, final_decision, override_rule,
-              throttled_by, verdict, model, prompt_version, degraded, error_code, trace, created_at_ms
+              throttled_by, verdict, model, program_version, program_sha256, degraded, error_code, trace, created_at_ms
               , evidence_version, evidence_sha256, focus_fact_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s,
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s,
                       %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
@@ -835,7 +836,8 @@ class NewsRepository:
                 throttled_by,
                 _dumps(dict(verdict)),
                 model,
-                prompt_version,
+                program_version,
+                program_sha256,
                 bool(degraded),
                 error_code,
                 _dumps(dict(trace)),
@@ -2121,6 +2123,10 @@ def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
         "throttled_by": row.get("throttled_by"),
         "verdict": dict(row.get("verdict") or {}),
         "model": row.get("model"),
+        "program_version": row.get("program_version"),
+        "program_sha256": row.get("program_sha256"),
+        # Prompt identity is historical audit data. New Program verdicts leave
+        # the legacy column null and never execute it.
         "prompt_version": row.get("prompt_version"),
         "degraded": bool(row.get("degraded")),
         "error_code": row.get("error_code"),

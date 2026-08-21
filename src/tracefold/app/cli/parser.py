@@ -87,7 +87,19 @@ def build_parser() -> argparse.ArgumentParser:
         "learning", help="freeze reviewed datasets and evaluate one-variable Agent candidates"
     )
     learning_subcommands = news_learning.add_subparsers(dest="learning_command", required=True)
-    learning_propose = learning_subcommands.add_parser("propose", help="seal a prompt or policy candidate manifest")
+    learning_compile = learning_subcommands.add_parser(
+        "compile", help="compile a bounded DSPy Program candidate from accepted development evidence"
+    )
+    learning_compile.add_argument("--development", required=True, help="development dataset artifact SHA")
+    learning_compile.add_argument(
+        "--artifact-root", required=True, help="write <program-sha>/manifest.json and state.json"
+    )
+    learning_compile.add_argument("--out", required=True, help="write compile receipt and proposal input JSON")
+    learning_compile.add_argument("--max-metric-calls", type=_positive_int, required=True)
+    learning_compile.add_argument("--max-task-model-calls", type=_positive_int, required=True)
+    learning_compile.add_argument("--max-cost-microusd", type=_positive_int, required=True)
+    learning_compile.add_argument("--seed", type=_nonnegative_int, default=129)
+    learning_propose = learning_subcommands.add_parser("propose", help="seal a Program or policy candidate manifest")
     learning_propose.add_argument("--development", required=True, help="development dataset artifact SHA")
     learning_propose.add_argument("--file", required=True, help="candidate proposal JSON/YAML")
     learning_propose.add_argument("--out", required=True, help="write the sealed candidate manifest")
@@ -110,7 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
                 help="evaluation evidence stage",
             )
             learning_eval.add_argument(
-                "--live-model", action="store_true", help="call the configured Triage model and append recordings"
+                "--live-program",
+                action="store_true",
+                help="run the assigned DSPy Program live and append per-Predictor recordings",
             )
             learning_eval.add_argument(
                 "--observation-manifest",
@@ -124,9 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
                 help="reuse a sealed shadow observation artifact instead of collecting one",
             )
             learning_eval.add_argument(
-                "--live-model",
+                "--live-program",
                 action="store_true",
-                help="cold-run the candidate over the closed validation window",
+                help="cold-run the candidate Program over the closed validation window",
             )
         learning_eval.add_argument("--out", required=True, help="write the sealed evaluation report")
     learning_canary = learning_subcommands.add_parser(

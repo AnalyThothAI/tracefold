@@ -173,9 +173,9 @@ def _case_and_recording(conn, *, label: str, run_sha: str, created_at_ms: int) -
     conn.execute(
         """
         INSERT INTO news_model_recordings(
-          recording_sha, run_sha, case_id, arm, trial, request_sha256,
+          recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route, request_sha256,
           request, provider, model, model_sha, execution_contract_sha, created_at_ms
-        ) VALUES (%s,%s,%s,'stable',1,%s,'{}'::jsonb,'test','test',%s,%s,%s)
+        ) VALUES (%s,%s,%s,'stable',1,'event_semantics',0,1,'primary',%s,'{}'::jsonb,'test','test',%s,%s,%s)
         """,
         (
             recording_sha,

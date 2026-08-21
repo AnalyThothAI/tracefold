@@ -1041,9 +1041,9 @@ class ReviewDesk:
             return None
         row = self._conn.execute(
             """
-            SELECT prompt_version, policy_version, model
+            SELECT program_version, policy_version, model
               FROM news_review_task_source_v1
-             WHERE prompt_version IS NOT NULL AND policy_version IS NOT NULL AND model IS NOT NULL
+             WHERE program_version IS NOT NULL AND policy_version IS NOT NULL AND model IS NOT NULL
                AND opened_at_ms >= %s AND opened_at_ms < %s
                AND COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') = %s
              ORDER BY verdict_created_at_ms DESC NULLS LAST
@@ -1053,7 +1053,7 @@ class ReviewDesk:
         ).fetchone()
         if row is None:
             return None
-        return str(row["prompt_version"]), str(row["policy_version"]), str(row["model"])
+        return str(row["program_version"]), str(row["policy_version"]), str(row["model"])
 
     def _event_task(self, event_id: str, *, evidence_version: int | None = None) -> _VirtualTask | None:
         statement = _event_task_statement(event_id, evidence_version=evidence_version)
@@ -1803,9 +1803,10 @@ def _review_public(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _cohort(row: Mapping[str, Any]) -> str:
+    generation_version = row.get("program_version") or row.get("prompt_version")
     return "/".join(
         [
-            str(row.get("prompt_version") or "no_prompt"),
+            str(generation_version or "no_generation"),
             str(row.get("policy_version") or "no_policy"),
             str(row.get("model") or "no_model"),
         ]
@@ -1826,6 +1827,9 @@ def _agent_identity(row: Mapping[str, Any]) -> dict[str, str]:
     policy = dict(trace.get("policy") or {})
     identity = {
         "bundle_sha": bundle_sha,
+        "program_version": str(row.get("program_version") or ""),
+        "program_sha256": str(row.get("program_sha256") or trace.get("program_sha256") or ""),
+        # Kept only when explaining immutable Prompt-era audit rows.
         "prompt_version": str(row.get("prompt_version") or ""),
         "prompt_sha256": str(trace.get("prompt_sha256") or ""),
         "schema_sha256": str(trace.get("schema_sha256") or ""),
@@ -2026,7 +2030,7 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
     market_sql, market_params, *_ = PriceRepository.review_statement(
         hours=24,
         now_ms=int(now_ms),
-        cohort=("news_triage_prompt_v9", "news_triage_policy_v7", "audit-model"),
+        cohort=("news_semantic_program_v1", "news_triage_policy_v7", "audit-model"),
     )
     return (
         _event_queue_statement(

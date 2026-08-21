@@ -171,6 +171,8 @@ def event_timeline(
                     "title_zh": display_title(verdict),
                     "why_zh": verdict.get("why_zh"),
                     "audience": verdict.get("audience"),
+                    "program_version": latest.get("program_version"),
+                    "program_sha256": latest.get("program_sha256"),
                     "prompt_version": latest.get("prompt_version"),
                     "policy_version": latest.get("policy_version"),
                     "latency_ms": (latest.get("trace") or {}).get("latency_ms"),

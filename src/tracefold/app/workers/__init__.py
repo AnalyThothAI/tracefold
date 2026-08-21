@@ -19,7 +19,7 @@ from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import WorkerDatabase
 from tracefold.app.learning_runtime import UNVERSIONED, active_arm_manifest, runtime_identity, runtime_manifest_sha
-from tracefold.app.llm import configured_chat_model
+from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
@@ -38,8 +38,14 @@ from tracefold.integrations.venues import (
     fetch_us_reference_instruments,
 )
 from tracefold.news import DecidePolicy
-from tracefold.news.agents.prompts.candidates import compiled_canary_candidates
-from tracefold.news.agents.triage_model import TriageModel
+from tracefold.news.agents.programs.candidates import compiled_canary_candidates
+from tracefold.news.agents.semantic_program import (
+    DspyNewsSemanticProgram,
+    DspyPredictorAdapter,
+    ProgramArtifact,
+    load_program_artifact,
+    load_stable_program_artifact,
+)
 from tracefold.news.canary import CanaryRuntimeArm
 from tracefold.news.consumers import (
     DeduperConsumer,
@@ -70,10 +76,51 @@ _HEARTBEAT_SECONDS = 5.0
 _CONTROL_TIMEOUT_SECONDS = 1.0
 _CONTROL_RETRY_SECONDS = 0.250
 _CONTROL_HEARTBEAT_STALE_SECONDS = 15.0
-# One TriageVerdict is ~250-300 output tokens (JSON + three Chinese reader strings); successful calls were hitting a
-# 300 cap and truncated tool calls surfaced as `news_triage_output_invalid`. Keep ~2x headroom.
-_TRIAGE_MAX_TOKENS = 700
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
+
+
+def _configured_semantic_program(
+    settings: Settings, artifact: ProgramArtifact, models: Any
+) -> DspyNewsSemanticProgram | None:
+    """Compose one arm-local Program from an image-carried artifact and operator-owned endpoints."""
+
+    if not models.triage_configured or not models.triage_model:
+        return None
+    route_timeout = float(artifact.execution.route_deadline_seconds)
+    max_tokens = max(artifact.event_semantics.max_tokens, artifact.reader_card.max_tokens)
+    primary = configured_lm_endpoint(
+        settings,
+        model_name=models.triage_model,
+    )
+    fallback_adapter: DspyPredictorAdapter | None = None
+    if models.triage_fallback_model:
+        endpoint = settings.llm.news_triage_fallback
+        fallback = configured_lm_endpoint(
+            settings,
+            model_name=models.triage_fallback_model,
+            api_key=endpoint.api_key,
+            base_url=endpoint.base_url,
+        )
+        fallback_adapter = DspyPredictorAdapter.from_runtime(
+            model_name=fallback.model_name,
+            api_key=fallback.api_key,
+            api_base=fallback.api_base,
+            timeout=route_timeout,
+            max_tokens=max_tokens,
+            model_kwargs=fallback.model_kwargs,
+        )
+    return DspyNewsSemanticProgram(
+        artifact,
+        primary_adapter=DspyPredictorAdapter.from_runtime(
+            model_name=primary.model_name,
+            api_key=primary.api_key,
+            api_base=primary.api_base,
+            timeout=route_timeout,
+            max_tokens=max_tokens,
+            model_kwargs=primary.model_kwargs,
+        ),
+        fallback_adapter=fallback_adapter,
+    )
 
 
 class _FreshRuntimeRowExists(RuntimeError):
@@ -584,40 +631,14 @@ async def _wire_news_pipeline(
     stable_arm = active_arm_manifest(settings)
     compiled_candidates = compiled_canary_candidates()
     canary_arms: dict[str, CanaryRuntimeArm] = {}
-    triage_model: TriageModel | None = None
-    if models.triage_configured and models.triage_model:
-        fallback_model: TriageModel | None = None
-        fallback_chat: Any | None = None
-        fallback_effective: str | None = None
-        if models.triage_fallback_model:
-            fallback_endpoint = settings.llm.news_triage_fallback
-            fallback_chat, fallback_effective = configured_chat_model(
-                settings,
-                model_name=models.triage_fallback_model,
-                request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
-                max_tokens=_TRIAGE_MAX_TOKENS,
-                api_key=fallback_endpoint.api_key,
-                base_url=fallback_endpoint.base_url,
-            )
-            fallback_model = TriageModel(
-                model=fallback_chat,
-                model_name=fallback_effective,
-                deadline_seconds=settings.news.triage.deadline_seconds,
-            )
-        chat_model, effective = configured_chat_model(
-            settings,
-            model_name=models.triage_model,
-            request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
-            max_tokens=_TRIAGE_MAX_TOKENS,
-        )
-        triage_model = TriageModel(
-            model=chat_model,
-            model_name=effective,
-            deadline_seconds=settings.news.triage.deadline_seconds,
-            fallback=fallback_model,
-            primary_breaker_failures=settings.news.triage.circuit_failures,
-            primary_breaker_open_seconds=settings.news.triage.circuit_open_seconds,
-        )
+    stable_artifact = load_stable_program_artifact()
+    if (
+        stable_artifact.program_version != stable_arm.program_version
+        or stable_artifact.program_sha256 != stable_arm.program_sha256
+    ):
+        raise RuntimeError("news_stable_program_manifest_mismatch")
+    semantic_judge = _configured_semantic_program(settings, stable_artifact, models)
+    if semantic_judge is not None:
         for candidate in compiled_candidates.values():
             if candidate.parent_stable_sha != stable_arm.bundle_sha:
                 logger.warning(
@@ -628,34 +649,33 @@ async def _wire_news_pipeline(
                 )
                 continue
             arm = candidate.candidate_arm
-            # Every arm owns its complete model chain and internal primary
-            # breaker. Sharing the stable TriageModel with a policy candidate
-            # would let one arm open the other's breaker; omitting fallback on
-            # a prompt candidate would change two variables at once.
-            candidate_fallback = (
-                TriageModel(
-                    model=fallback_chat,
-                    model_name=str(fallback_effective),
-                    deadline_seconds=settings.news.triage.deadline_seconds,
+            try:
+                candidate_artifact = load_program_artifact(arm.program_sha256)
+            except (OSError, ValueError) as exc:
+                # The persisted assignment remains authoritative.  Omitting this arm makes the consumer observe an
+                # artifact-missing candidate and trip the active canary instead of silently running stable.
+                logger.error("candidate Program artifact rejected program=%s error=%s", arm.program_sha256, exc)
+                continue
+            if (
+                candidate_artifact.program_version != arm.program_version
+                or candidate_artifact.parent_program_sha256 != stable_artifact.program_sha256
+            ):
+                logger.error(
+                    "candidate Program manifest rejected program=%s version=%s parent=%s",
+                    arm.program_sha256,
+                    arm.program_version,
+                    candidate_artifact.parent_program_sha256,
                 )
-                if fallback_chat is not None and fallback_effective is not None
-                else None
-            )
-            candidate_model = TriageModel(
-                model=chat_model,
-                model_name=effective,
-                deadline_seconds=settings.news.triage.deadline_seconds,
-                system_prompt=arm.prompt_text,
-                fallback=candidate_fallback,
-                primary_breaker_failures=settings.news.triage.circuit_failures,
-                primary_breaker_open_seconds=settings.news.triage.circuit_open_seconds,
-            )
+                continue
+            candidate_program = _configured_semantic_program(settings, candidate_artifact, models)
+            if candidate_program is None:  # guarded by semantic_judge, kept explicit for type narrowing
+                continue
             canary_arms[arm.bundle_sha] = CanaryRuntimeArm(
                 bundle_sha=arm.bundle_sha,
-                model=candidate_model,
+                program=candidate_program,
                 policy=DecidePolicy(**arm.policy),
-                prompt_version=arm.prompt_version,
-                prompt_sha256=arm.prompt_sha256,
+                program_version=arm.program_version,
+                program_sha256=arm.program_sha256,
             )
 
     push = news_push_availability(settings)
@@ -679,7 +699,9 @@ async def _wire_news_pipeline(
         triage=TriageConsumer(
             bus=bus,
             db=db,
-            model=triage_model,
+            judge=semantic_judge,
+            program_version=stable_artifact.program_version,
+            program_sha256=stable_artifact.program_sha256,
             watchlist_symbols=watchlist_symbols,
             watchlist=sorted(watchlist_symbols),
             concurrency=settings.news.triage.concurrency,

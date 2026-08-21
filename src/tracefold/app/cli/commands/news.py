@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 import uuid
 from argparse import Namespace
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from tracefold.platform.config.settings import load_settings
@@ -236,7 +236,6 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         DatasetSpec,
         EvaluationRequest,
         ProposalReceipt,
-        RecordReplayModelAdapter,
         canonical_sha,
     )
 
@@ -249,7 +248,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "canary":
             from tracefold.app.repositories import repositories
             from tracefold.news import apply_canary_control, parse_canary_control
-            from tracefold.news.agents.prompts.candidates import compiled_canary_candidates
+            from tracefold.news.agents.programs.candidates import compiled_canary_candidates
 
             subcommand = str(args.canary_command)
             payload = {
@@ -276,23 +275,112 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 )
             return 0, {"ok": True, "data": result}
 
+        if action == "compile":
+            from tracefold.app.llm import configured_lm_endpoint
+            from tracefold.news.agents.program_compiler import (
+                CompileBudget,
+                CompileRequest,
+                ProgramCompiler,
+                build_compile_lm,
+            )
+            from tracefold.news.agents.semantic_program import load_stable_program_artifact
+            from tracefold.platform.config.settings import news_model_availability
+
+            availability = news_model_availability(settings)
+            if not availability.triage_configured or not availability.triage_model:
+                raise ValueError("news_learning_compile_model_not_configured")
+            artifact = load_stable_program_artifact()
+            if artifact.program_sha256 != stable.program_sha256:
+                raise ValueError("news_learning_compile_stable_program_mismatch")
+            with postgres_connection(settings, role="workers") as conn:
+                evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+                episodes = evaluator.development_compile_episodes(str(args.development))
+            endpoint = configured_lm_endpoint(settings, model_name=availability.triage_model)
+            lm_kwargs = {
+                "model_name": endpoint.model_name,
+                "api_key": endpoint.api_key,
+                "api_base": endpoint.api_base,
+                "timeout": float(artifact.execution.route_deadline_seconds),
+                "max_tokens": max(artifact.event_semantics.max_tokens, artifact.reader_card.max_tokens),
+                "model_kwargs": endpoint.model_kwargs,
+            }
+            compiler = ProgramCompiler(
+                base_artifact=artifact,
+                task_lm=build_compile_lm(**lm_kwargs),
+                reflection_lm=build_compile_lm(**lm_kwargs),
+            )
+            result = compiler.compile(
+                CompileRequest(
+                    development_dataset_sha=str(args.development),
+                    episodes=episodes,
+                    budget=CompileBudget(
+                        max_metric_calls=int(args.max_metric_calls),
+                        max_task_model_calls=int(args.max_task_model_calls),
+                        max_cost_microusd=int(args.max_cost_microusd),
+                        seed=int(args.seed),
+                    ),
+                ),
+                artifact_root=Path(str(args.artifact_root)),
+            )
+            compile_result = result.model_dump(mode="json", exclude={"proposal_input"})
+            payload = {**result.proposal_input, "compile_result": compile_result}
+            _write_json(str(args.out), payload)
+            return 0, {
+                "ok": True,
+                "data": {
+                    "path": args.out,
+                    "program_sha256": result.artifact.program_sha256,
+                    "artifact_directory": result.artifact_directory,
+                    "compile_provenance_sha256": result.compile_provenance_sha256,
+                },
+            }
+
         if action == "propose":
+            from tracefold.news.agents.program_compiler import program_machine_diff
+            from tracefold.news.agents.semantic_program import CompileProvenance, ProgramArtifactCodec
+
             spec = _read_json_or_yaml(str(args.file))
             target = str(spec.get("target") or "")
             candidate_arm = stable
-            if target == "prompt":
-                prompt_text = str(spec.get("prompt_text") or "")
-                candidate_arm = stable.model_copy(
-                    update={
-                        "prompt_version": str(spec.get("prompt_version") or "candidate"),
-                        "prompt_text": prompt_text,
-                        "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest(),
-                    }
+            program_artifact_path: str | None = None
+            program_fields: dict[str, Any] = {}
+            if target == "program":
+                program_artifact_path = str(spec.get("program_artifact_path") or "")
+                artifact = ProgramArtifactCodec.load(program_artifact_path)
+                if artifact.parent_program_sha256 != stable.program_sha256:
+                    raise ValueError("news_learning_program_parent_mismatch")
+                if str(spec.get("program_sha256") or artifact.program_sha256) != artifact.program_sha256:
+                    raise ValueError("news_learning_program_artifact_identity_mismatch")
+                parent_artifact = ProgramArtifactCodec.load()
+                machine_diff = program_machine_diff(parent_artifact, artifact)
+                provided_diff = dict(spec.get("program_machine_diff") or {})
+                if provided_diff != machine_diff:
+                    raise ValueError("news_learning_program_machine_diff_mismatch")
+                manifest_provenance = CompileProvenance.model_validate(
+                    {name: getattr(artifact.compile_receipt, name) for name in CompileProvenance.model_fields}
                 )
-                candidate_arm = type(stable).model_validate(candidate_arm.model_dump(mode="json"))
+                compile_provenance = dict(spec.get("compile_provenance") or {})
+                if compile_provenance != manifest_provenance.model_dump(mode="json"):
+                    raise ValueError("news_learning_program_compile_provenance_mismatch")
+                arm_payload = stable.model_dump(mode="json")
+                arm_payload.update(
+                    program_version=artifact.program_version,
+                    program_sha256=artifact.program_sha256,
+                )
+                candidate_arm = type(stable).model_validate(arm_payload)
                 patch_payload: Mapping[str, Any] = {
-                    "prompt_version": candidate_arm.prompt_version,
-                    "prompt_sha256": candidate_arm.prompt_sha256,
+                    "parent_program_sha256": stable.program_sha256,
+                    "candidate_program_sha256": artifact.program_sha256,
+                    "machine_diff": machine_diff,
+                    "compile_provenance": compile_provenance,
+                }
+                if str(spec.get("candidate_patch_sha") or "") != canonical_sha(patch_payload):
+                    raise ValueError("news_learning_program_patch_sha_mismatch")
+                program_fields = {
+                    "program_parent_sha256": stable.program_sha256,
+                    "program_candidate_sha256": artifact.program_sha256,
+                    "program_machine_diff": machine_diff,
+                    "compile_provenance": compile_provenance,
                 }
             elif target == "policy":
                 policy = dict(stable.policy)
@@ -307,7 +395,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             with postgres_connection(settings, role="workers") as conn, conn.transaction():
                 development = conn.execute(
                     "SELECT artifact_sha FROM news_learning_artifacts "
-                    "WHERE artifact_sha = %s AND kind = 'dataset' AND payload->>'role' = 'development'",
+                    "WHERE artifact_sha = %s AND kind = 'dataset' "
+                    "AND payload->>'role' = 'development' AND payload->>'learning_epoch' = 'program_v1'",
                     (str(args.development),),
                 ).fetchone()
                 if development is None:
@@ -328,6 +417,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     candidate_patch_sha=canonical_sha(patch_payload),
                     declared_target_dimensions=dimensions,
                     guardrails=tuple(str(value) for value in spec.get("guardrails") or ()),
+                    **program_fields,
                 )
                 candidate = CandidateManifest(
                     target=target,
@@ -366,11 +456,19 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     parent_sha=stable.bundle_sha,
                     created_at_ms=registered_at_ms,
                 )
-            payload = {"candidate_sha": candidate.candidate_sha, "candidate": candidate.model_dump(mode="json")}
+            payload = {
+                "candidate_sha": candidate.candidate_sha,
+                "candidate": candidate.model_dump(mode="json"),
+                "program_artifacts": (
+                    {candidate.candidate_arm.program_sha256: str(Path(program_artifact_path).resolve())}
+                    if program_artifact_path is not None
+                    else {}
+                ),
+            }
             _write_json(str(args.out), payload)
             return 0, {"ok": True, "data": {"path": args.out, **payload}}
 
-        candidate = _load_candidate(str(getattr(args, "candidate", "") or ""))
+        candidate, artifact_paths = _load_candidate_bundle(str(getattr(args, "candidate", "") or ""))
         catalog = () if candidate is None else (candidate,)
         with postgres_connection(settings, role="workers") as conn:
             if action == "freeze":
@@ -379,7 +477,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 evaluator = CandidateEvaluator(
                     conn,
                     stable=stable,
-                    model_adapter=RecordReplayModelAdapter({}),
+                    judges={},
                     candidate_catalog=catalog,
                 )
                 manifest = asyncio.run(
@@ -398,13 +496,20 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if candidate is None:
                 raise ValueError("news_learning_candidate_required")
             observation_manifest = str(getattr(args, "observation_manifest", "") or "") or None
-            if action == "shadow" and observation_manifest is None and not bool(args.live_model):
-                raise ValueError("news_learning_shadow_live_model_confirmation_required")
-            adapter = _learning_model_adapter(conn, settings=settings, live=bool(getattr(args, "live_model", False)))
+            if action == "shadow" and observation_manifest is None and not bool(args.live_program):
+                raise ValueError("news_learning_shadow_live_program_confirmation_required")
+            judges = _learning_program_judges(
+                conn,
+                settings=settings,
+                stable=stable,
+                candidate=candidate,
+                artifact_paths=artifact_paths,
+                live=bool(getattr(args, "live_program", False)),
+            )
             evaluator = CandidateEvaluator(
                 conn,
                 stable=stable,
-                model_adapter=adapter,
+                judges=judges,
                 candidate_catalog=(candidate,),
             )
             stage = str(args.stage) if action == "evaluate" else action
@@ -423,61 +528,104 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             _write_json(str(args.out), payload)
             code = 0 if report.gate_outcome == "pass" else 1
             return code, {"ok": report.gate_outcome == "pass", "data": {"path": args.out, **payload}}
-    except (ValueError, PermissionError) as exc:
+    except (ValueError, PermissionError, RuntimeError) as exc:
         return 2, {"ok": False, "error": str(exc)}
 
 
-def _load_candidate(path: str) -> Any | None:
+def _load_candidate_bundle(path: str) -> tuple[Any | None, dict[str, str]]:
     if not path:
-        return None
+        return None, {}
     from tracefold.news import CandidateManifest
 
     document = _read_json_or_yaml(path)
-    return CandidateManifest.model_validate(document.get("candidate") or document)
+    candidate = CandidateManifest.model_validate(document.get("candidate") or document)
+    artifacts = {str(key): str(value) for key, value in dict(document.get("program_artifacts") or {}).items()}
+    return candidate, artifacts
 
 
-def _learning_model_adapter(conn: Any, *, settings: Any, live: bool) -> Any:
-    from tracefold.news import LiveTriageModelAdapter, RecordReplayModelAdapter
+def _learning_program_judges(
+    conn: Any,
+    *,
+    settings: Any,
+    stable: Any,
+    candidate: Any,
+    artifact_paths: Mapping[str, str],
+    live: bool,
+) -> dict[str, Any]:
+    from tracefold.news.agents.semantic_program import (
+        DspyNewsSemanticProgram,
+        DspyPredictorAdapter,
+        ProgramArtifactCodec,
+        RecordReplayPredictorAdapter,
+        load_program_artifact,
+        load_stable_program_artifact,
+    )
 
+    stable_artifact = load_stable_program_artifact()
+    if stable_artifact.program_sha256 != stable.program_sha256:
+        raise ValueError("news_learning_stable_program_mismatch")
+    artifacts = {stable_artifact.program_sha256: stable_artifact}
+    candidate_sha = candidate.candidate_arm.program_sha256
+    if candidate_sha not in artifacts:
+        path = artifact_paths.get(candidate_sha)
+        artifacts[candidate_sha] = ProgramArtifactCodec.load(path) if path else load_program_artifact(candidate_sha)
     if live:
-        from tracefold.app.llm import configured_chat_model
-        from tracefold.platform.config.settings import news_model_availability
-
-        availability = news_model_availability(settings)
-        if not availability.triage_configured or not availability.triage_model:
-            raise ValueError("news_learning_live_model_not_configured")
-        chat, _ = configured_chat_model(
-            settings,
-            model_name=availability.triage_model,
-            request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
-            max_tokens=700,
-        )
-        fallback_chat = None
-        fallback_effective = None
-        if availability.triage_fallback_model:
-            fallback_endpoint = settings.llm.news_triage_fallback
-            fallback_chat, fallback_effective = configured_chat_model(
-                settings,
-                model_name=availability.triage_fallback_model,
-                request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
-                max_tokens=700,
-                api_key=fallback_endpoint.api_key,
-                base_url=fallback_endpoint.base_url,
-            )
-        return LiveTriageModelAdapter(
-            chat_model=chat,
-            deadline_seconds=settings.news.triage.deadline_seconds,
-            fallback_chat_model=fallback_chat,
-            fallback_model_name=fallback_effective,
-            primary_breaker_failures=settings.news.triage.circuit_failures,
-            primary_breaker_open_seconds=settings.news.triage.circuit_open_seconds,
-        )
+        return {
+            sha: _configured_program_judge(settings, artifact, DspyNewsSemanticProgram, DspyPredictorAdapter)
+            for sha, artifact in artifacts.items()
+        }
     rows = conn.execute(
         "SELECT DISTINCT ON (request_sha256) request_sha256, response "
         "FROM news_model_recordings WHERE response IS NOT NULL "
         "ORDER BY request_sha256, created_at_ms DESC"
     ).fetchall()
-    return RecordReplayModelAdapter({str(row["request_sha256"]): row["response"] for row in rows})
+    recordings = {str(row["request_sha256"]): row["response"] for row in rows}
+    return {
+        sha: DspyNewsSemanticProgram(
+            artifact,
+            primary_adapter=RecordReplayPredictorAdapter(recordings),
+            fallback_adapter=RecordReplayPredictorAdapter(recordings),
+        )
+        for sha, artifact in artifacts.items()
+    }
+
+
+def _configured_program_judge(settings: Any, artifact: Any, program_type: Any, adapter_type: Any) -> Any:
+    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.platform.config.settings import news_model_availability
+
+    availability = news_model_availability(settings)
+    if not availability.triage_configured or not availability.triage_model:
+        raise ValueError("news_learning_live_program_not_configured")
+    max_tokens = max(artifact.event_semantics.max_tokens, artifact.reader_card.max_tokens)
+    timeout = float(artifact.execution.route_deadline_seconds)
+    primary = configured_lm_endpoint(settings, model_name=availability.triage_model)
+    primary_adapter = adapter_type.from_runtime(
+        model_name=primary.model_name,
+        api_key=primary.api_key,
+        api_base=primary.api_base,
+        timeout=timeout,
+        max_tokens=max_tokens,
+        model_kwargs=primary.model_kwargs,
+    )
+    fallback_adapter = None
+    if availability.triage_fallback_model:
+        endpoint = settings.llm.news_triage_fallback
+        fallback = configured_lm_endpoint(
+            settings,
+            model_name=availability.triage_fallback_model,
+            api_key=endpoint.api_key,
+            base_url=endpoint.base_url,
+        )
+        fallback_adapter = adapter_type.from_runtime(
+            model_name=fallback.model_name,
+            api_key=fallback.api_key,
+            api_base=fallback.api_base,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            model_kwargs=fallback.model_kwargs,
+        )
+    return program_type(artifact, primary_adapter=primary_adapter, fallback_adapter=fallback_adapter)
 
 
 def _insert_learning_artifact(

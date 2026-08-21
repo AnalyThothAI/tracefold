@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from .agents.semantic_program import SemanticJudge
+
 CANARY_SELECTOR_VERSION = "news_canary_selector_v1"
 CANARY_EXPOSURE_BPS = 1_000
 CANARY_ELIGIBILITY_PROFILE: dict[str, Any] = {
@@ -53,13 +55,13 @@ class CanaryCommand:
 
 @dataclass(frozen=True, slots=True)
 class CanaryRuntimeArm:
-    """One image-carried arm already composed with its model and policy."""
+    """One image-carried arm already composed with its semantic Program and policy."""
 
     bundle_sha: str
-    model: Any
+    program: SemanticJudge
     policy: Any
-    prompt_version: str
-    prompt_sha256: str
+    program_version: str
+    program_sha256: str
 
 
 def select_canary_arm(

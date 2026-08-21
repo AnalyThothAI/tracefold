@@ -111,7 +111,8 @@ def _open_event(
             throttled_by=None,
             verdict=verdict,
             model="test-model",
-            prompt_version="v9",
+            program_version="news_semantic_program_test",
+            program_sha256="d" * 64,
             degraded=False,
             error_code=None,
             trace={
@@ -650,9 +651,9 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
         ),
     )
     exact_diff = {
-        "target": "prompt",
-        "changed_fields": ["prompt_version", "prompt_text", "prompt_sha256"],
-        "unified_diff": "--- stable/v9\n+++ candidate/v10\n@@ changed\n",
+        "target": "program",
+        "changed_fields": ["program_version", "program_sha256"],
+        "unified_diff": "--- stable/program-v1\n+++ candidate/program-v2\n@@ changed\n",
     }
     conn.execute(
         "INSERT INTO news_learning_artifacts "
@@ -665,7 +666,7 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
             json.dumps(
                 {
                     "candidate_sha": candidate_sha,
-                    "manifest": {"target": "prompt", "hypothesis": "修复无证据的 priced-in 判断"},
+                    "manifest": {"target": "program", "hypothesis": "修复无证据的 priced-in 判断"},
                     "exact_diff": exact_diff,
                 }
             ),
@@ -717,7 +718,7 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
         "accepted_preference": "A",
         "preferred_arm": "candidate",
         "candidate_sha": candidate_sha,
-        "target": "prompt",
+        "target": "program",
         "hypothesis": "修复无证据的 priced-in 判断",
         "exact_diff": exact_diff,
     }

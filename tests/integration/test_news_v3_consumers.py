@@ -1,7 +1,7 @@
 """News V3 consumers against real PostgreSQL with a recording fake bus.
 
 Covers: Deduper raw -> event publication (+ idempotent redelivery), Triage fail-closed fallback with
-``model=None``, Deliverer settlement when no sender is configured, and Control state writes.
+an unconfigured semantic Program, Deliverer settlement when no sender is configured, and Control state writes.
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
+PROGRAM_VERSION = "news_semantic_program_test_v1"
+PROGRAM_SHA256 = "9" * 64
 EVENT_ROUTING_KEY = re.compile(r"^event\.[a-z_]+\.(high|normal)$")
 
 
@@ -115,7 +117,9 @@ def _triage(conn: Any, bus: FakeBus) -> TriageConsumer:
     return TriageConsumer(
         bus=bus,
         db=FakeWorkerDatabase(conn),
-        model=None,
+        judge=None,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
         watchlist_symbols=WATCHLIST,
         watchlist=sorted(WATCHLIST),
         concurrency=1,
@@ -312,7 +316,7 @@ def test_triage_without_model_is_fail_closed_and_only_rule_baseline_pushes(conn)
     for row in verdicts.values():
         assert row["stage"] == "triage" and row["policy_version"] == TRIAGE_POLICY_VERSION
         assert row["degraded"] is True
-        assert row["error_code"] == "news_triage_model_unconfigured"
+        assert row["error_code"] == "news_semantic_program_unconfigured"
         assert row["model_decision"] is None and row["model"] is None
         assert row["verdict"]["headline_zh"] and "模型不可用" not in row["verdict"]["headline_zh"]  # the wire headline
     strong_row = verdicts[strong["event_id"]]

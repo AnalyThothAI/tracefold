@@ -25,7 +25,8 @@ PUBLIC_NEWS_INTERFACE = {
     "REVIEW_MAX_HOURS",
     "REVIEW_RUBRIC_VERSION",
     "TRIAGE_POLICY_VERSION",
-    "TRIAGE_PROMPT_VERSION",
+    "LEARNING_EPOCH",
+    "LEARNING_EPOCH_STARTED_AT_MS",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "BlindPairwiseSubmission",
@@ -41,9 +42,6 @@ PUBLIC_NEWS_INTERFACE = {
     "EventRubricSubmission",
     "ExternalMissSubmission",
     "FactUnit",
-    "LiveTriageModelAdapter",
-    "ModelInvocation",
-    "ModelObservation",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
@@ -52,12 +50,16 @@ PUBLIC_NEWS_INTERFACE = {
     "Outcome",
     "Principal",
     "ProposalReceipt",
+    "ProgramTrace",
+    "ProgramUsage",
     "ReaderReceipt",
-    "RecordReplayModelAdapter",
     "ReviewDesk",
     "ReviewSubmission",
+    "SemanticJudge",
+    "SemanticJudgment",
     "TaskRef",
     "TriageVerdict",
+    "TriageContext",
     "apply_control",
     "apply_canary_control",
     "event_outcome",
@@ -228,8 +230,30 @@ def test_analyst_lane_is_retired() -> None:
     consumers = (NEWS_ROOT / "consumers.py").read_text(encoding="utf-8")
     assert "AnalystConsumer" not in consumers
     assert "news.deep" not in consumers and "render_followup_card" not in consumers
-    triage = NEWS_ROOT / "agents" / "triage_model.py"
-    assert "with_structured_output" in triage.read_text(encoding="utf-8")
+    assert not (NEWS_ROOT / "agents" / "triage_model.py").exists()
+    program = (NEWS_ROOT / "agents" / "semantic_program.py").read_text(encoding="utf-8")
+    assert "EventSemantics" in program and "ReaderCard" in program and "_assemble" in program
+
+
+def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> None:
+    """#129: callers depend on SemanticJudge; only Program/compiler implementation may import DSPy."""
+
+    allowed = {
+        NEWS_ROOT / "agents" / "semantic_program.py",
+        NEWS_ROOT / "agents" / "program_compiler.py",
+    }
+    dspy_offenders = sorted(
+        str(path.relative_to(ROOT))
+        for path in SRC.rglob("*.py")
+        if "dspy" in _imported_roots(path) and path not in allowed
+    )
+    assert dspy_offenders == []
+    langchain_offenders = sorted(
+        str(path.relative_to(ROOT))
+        for path in SRC.rglob("*.py")
+        if "langchain" in _imported_roots(path)
+    )
+    assert langchain_offenders == []
 
 
 def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:

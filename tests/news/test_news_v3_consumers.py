@@ -12,6 +12,13 @@ from typing import Any
 import pytest
 
 from tracefold.news import consumers as consumers_module
+from tracefold.news.agents.semantic_program import (
+    ProgramTrace,
+    ProgramUsage,
+    SemanticJudgment,
+    SemanticProgramError,
+    TriageContext,
+)
 from tracefold.news.bus import (
     RK_RAW_LIVE,
     RK_VERDICT_PUSH,
@@ -28,12 +35,14 @@ from tracefold.news.consumers import (
     RecoveryRunner,
     TriageConsumer,
 )
-from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
+from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION
 from tracefold.news.triage_rules import DEFAULT_POLICY
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
 WATCHLIST = frozenset({"BTC", "NVDA"})
+PROGRAM_VERSION = "news_semantic_program_test_v1"
+PROGRAM_SHA256 = "9" * 64
 
 
 class FakeBus:
@@ -334,7 +343,9 @@ def _triage(news: RecordingNews, bus: FakeBus) -> TriageConsumer:
     return TriageConsumer(
         bus=bus,
         db=FakeWorkerDatabase(news),
-        model=None,
+        judge=None,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
         watchlist_symbols=WATCHLIST,
         watchlist=sorted(WATCHLIST),
         concurrency=1,
@@ -356,14 +367,16 @@ def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degrad
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["stage"] == "triage" and inserted["policy_version"] == TRIAGE_POLICY_VERSION
-    assert inserted["degraded"] is True and inserted["error_code"] == "news_triage_model_unconfigured"
+    assert inserted["degraded"] is True and inserted["error_code"] == "news_semantic_program_unconfigured"
     assert inserted["model"] is None and inserted["model_decision"] is None
-    assert inserted["prompt_version"] == TRIAGE_PROMPT_VERSION
+    assert "prompt_version" not in inserted
+    assert inserted["program_version"] == PROGRAM_VERSION
+    assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "push"
     assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
     trace = inserted["trace"]
     assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
-    assert len(trace["prompt_sha256"]) == 64
+    assert trace["program_version"] == PROGRAM_VERSION and trace["program_sha256"] == PROGRAM_SHA256
     assert trace["status"] == {
         "storyline_key": "asset:NVDA",
         "preliminary": True,
@@ -461,24 +474,75 @@ def test_triage_without_model_never_pushes_while_muted_or_paused() -> None:
     assert bus.published == []
 
 
-class _FailingTriageModel:
-    """TriageModel double: raises the scripted TriageModelError per call, or returns a fixed verdict."""
+def _program_trace(*, fallback_from: str | None = None, novelty_defaulted: bool = False) -> ProgramTrace:
+    return ProgramTrace(
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        context_sha256="1" * 64,
+        factory_id="news_semantic_program_v1",
+        topology_sha256="2" * 64,
+        adapter_sha256="3" * 64,
+        assembler_sha256="4" * 64,
+        event_semantics_sha256="5" * 64,
+        reader_card_sha256="6" * 64,
+        verdict_sha256="7" * 64,
+        answering_route="fallback" if fallback_from else "primary",
+        fallback_from=fallback_from,
+        novelty_defaulted=novelty_defaulted,
+        calls=(),
+    )
 
-    model_name = "fake"
+
+def _judgment(verdict: Any, *, model: str = "fake", fallback_from: str | None = None) -> SemanticJudgment:
+    return SemanticJudgment(
+        verdict=verdict,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        trace=_program_trace(fallback_from=fallback_from),
+        usage=ProgramUsage(
+            wall_latency_ms=10,
+            call_count=2,
+            input_tokens=2,
+            output_tokens=2,
+            cached_tokens=0,
+            total_tokens=4,
+            provider_cost_microusd=None,
+        ),
+        answering_model=model,
+        fallback_from=fallback_from,
+    )
+
+
+def _program_error(code: str, *, retryable: bool = False, output_failure: bool = False) -> SemanticProgramError:
+    return SemanticProgramError(
+        code,
+        retryable=retryable,
+        output_failure=output_failure,
+        attempts=1,
+        partial_trace=None,
+    )
+
+
+class _ScriptedSemanticJudge:
+    """SemanticJudge double that records typed contexts and returns or raises scripted outcomes."""
 
     def __init__(self, outcomes: list[Any]) -> None:
         self.outcomes = list(outcomes)
+        self.inputs: list[TriageContext] = []
 
-    async def triage(self, _human: str) -> Any:
+    async def judge(self, context: TriageContext) -> SemanticJudgment:
+        self.inputs.append(context)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
-        return outcome
+        if isinstance(outcome, SemanticJudgment):
+            return outcome
+        return _judgment(outcome)
 
 
-def _triage_with_model(news: RecordingNews, bus: FakeBus, model: Any) -> TriageConsumer:
+def _triage_with_judge(news: RecordingNews, bus: FakeBus, judge: Any) -> TriageConsumer:
     triage = _triage(news, bus)
-    triage.model = model
+    triage.judge = judge
     return triage
 
 
@@ -486,31 +550,22 @@ def test_triage_output_failure_is_traced_and_never_opens_the_circuit() -> None:
     """max_tokens truncation / schema mismatch: degraded verdict with finish_reason + parsing_error in the trace, the
     transport circuit stays closed (no incident), and the next Event still reaches the model."""
 
-    from tracefold.news.agents.triage_model import TriageModelError
-
     card = _card()
     news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
     bus = FakeBus()
     truncated = [
-        TriageModelError(
-            "news_triage_output_truncated",
-            output_failure=True,
-            finish_reason="length",
-            output_tokens=300,
-            detail="ValidationError: 8 validation errors",
-        )
+        _program_error("news_program_output_truncated", output_failure=True)
         for _ in range(4)
     ]
-    triage = _triage_with_model(news, bus, _FailingTriageModel(truncated))
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(truncated))
 
     for index in range(4):
         asyncio.run(triage.handle(_message("event", {"event_id": f"ev-trunc-{index}"})))
 
     inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
     assert len(inserted) == 4
-    assert all(row["degraded"] is True and row["error_code"] == "news_triage_output_truncated" for row in inserted)
-    assert inserted[0]["trace"]["finish_reason"] == "length" and inserted[0]["trace"]["output_tokens"] == 300
-    assert inserted[0]["trace"]["parsing_error"] == "ValidationError: 8 validation errors"
+    assert all(row["degraded"] is True and row["error_code"] == "news_program_output_truncated" for row in inserted)
+    assert inserted[0]["trace"]["model_failure_retryable"] is False
     assert "open_incident" not in news.names()
     assert not triage.circuit.is_open(NOW_MS * 2)
     assert triage.circuit.failures == 0
@@ -530,7 +585,6 @@ def test_triage_consumer_start_closes_incidents_left_open_by_a_previous_process(
 
 
 def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_incident() -> None:
-    from tracefold.news.agents.triage_model import TriageCallResult, TriageModelError
     from tracefold.news.models import TriageVerdict
 
     card = _card()
@@ -542,8 +596,8 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
         close_open_incidents=1,
     )
     bus = FakeBus()
-    ok = TriageCallResult(
-        verdict=TriageVerdict(
+    ok = _judgment(
+        TriageVerdict(
             novelty="new_fact",
             event_type="partnership",
             assets=[],
@@ -554,15 +608,10 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
             confidence=0.6,
             decision="push",
             headline_zh="ok",
-        ),
-        latency_ms=10,
-        input_tokens=1,
-        output_tokens=1,
-        cached_tokens=None,
-        model="fake",
+        )
     )
-    outcomes: list[Any] = [TriageModelError("news_triage_timeout", retryable=True) for _ in range(3)] + [ok]
-    triage = _triage_with_model(news, bus, _FailingTriageModel(outcomes))
+    outcomes: list[Any] = [_program_error("news_program_timeout", retryable=True) for _ in range(3)] + [ok]
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(outcomes))
     triage.circuit.open_seconds = 0.0  # let the fourth call reach the model in the same test clock
 
     for index in range(4):
@@ -576,13 +625,12 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
 
 
 def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
-    from tracefold.news.agents.triage_model import TriageCallResult
     from tracefold.news.models import TriageVerdict
 
     news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
     bus = FakeBus()
-    answered_by_fallback = TriageCallResult(
-        verdict=TriageVerdict(
+    answered_by_fallback = _judgment(
+        TriageVerdict(
             novelty="new_fact",
             event_type="partnership",
             assets=[],
@@ -594,21 +642,16 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
             decision="push",
             headline_zh="ok",
         ),
-        latency_ms=10,
-        input_tokens=1,
-        output_tokens=1,
-        cached_tokens=None,
         model="deepseek-chat",
-        attempts=2,
-        fallback_from="news_triage_timeout",
+        fallback_from="news_program_timeout",
     )
-    triage = _triage_with_model(news, bus, _FailingTriageModel([answered_by_fallback]))
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([answered_by_fallback]))
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-fallback"})))
 
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["model"] == "deepseek-chat" and inserted["degraded"] is False
-    assert inserted["trace"]["model_fallback_from"] == "news_triage_timeout"
+    assert inserted["trace"]["model_fallback_from"] == "news_program_timeout"
     assert inserted["trace"]["model_attempts"] == 2
 
 
@@ -908,25 +951,6 @@ def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
     assert error["error_code"] == "learning_retention_failed:RuntimeError"
 
 
-class _ScriptedTriageModel:
-    """TriageModel double that records every human input and answers with scripted verdicts."""
-
-    model_name = "fake"
-
-    def __init__(self, verdicts: list[Any]) -> None:
-        self.verdicts = list(verdicts)
-        self.inputs: list[str] = []
-
-    async def triage(self, human: str) -> Any:
-        from tracefold.news.agents.triage_model import TriageCallResult
-
-        self.inputs.append(human)
-        verdict = self.verdicts.pop(0)
-        return TriageCallResult(
-            verdict=verdict, latency_ms=10, input_tokens=1, output_tokens=1, cached_tokens=None, model="fake"
-        )
-
-
 def _model_verdict(**overrides: Any) -> Any:
     from tracefold.news.models import TriageVerdict
 
@@ -948,8 +972,8 @@ def _model_verdict(**overrides: Any) -> Any:
 
 
 def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment() -> None:
-    stable_model = _ScriptedTriageModel([_model_verdict(headline_zh="稳定版不应被调用")])
-    candidate_model = _ScriptedTriageModel([_model_verdict(headline_zh="候选版真实输出")])
+    stable_judge = _ScriptedSemanticJudge([_model_verdict(headline_zh="稳定版不应被调用")])
+    candidate_judge = _ScriptedSemanticJudge([_model_verdict(headline_zh="候选版真实输出")])
     stable_bundle = "a" * 64
     candidate_bundle = "b" * 64
     activation_id = "c" * 32
@@ -969,7 +993,9 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     triage = TriageConsumer(
         bus=FakeBus(),
         db=FakeWorkerDatabase(news),
-        model=stable_model,
+        judge=stable_judge,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
         watchlist_symbols=WATCHLIST,
         watchlist=sorted(WATCHLIST),
         concurrency=1,
@@ -979,20 +1005,21 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
         canary_arms={
             candidate_bundle: CanaryRuntimeArm(
                 bundle_sha=candidate_bundle,
-                model=candidate_model,
+                program=candidate_judge,
                 policy=DEFAULT_POLICY,
-                prompt_version="candidate-v1",
-                prompt_sha256="d" * 64,
+                program_version=PROGRAM_VERSION,
+                program_sha256=PROGRAM_SHA256,
             )
         },
     )
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
-    assert stable_model.inputs == []
-    assert len(candidate_model.inputs) == 1
+    assert stable_judge.inputs == []
+    assert len(candidate_judge.inputs) == 1
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["prompt_version"] == "candidate-v1"
+    assert inserted["program_version"] == PROGRAM_VERSION
+    assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
     assert inserted["trace"]["agent_assignment"] == {
         "activation_id": activation_id,
@@ -1030,16 +1057,16 @@ def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restat
         told_ledger=ledger,
     )
     bus = FakeBus()
-    model = _ScriptedTriageModel([_model_verdict(novelty="restatement", restates=0, decision="drop")])
-    triage = _triage_with_model(news, bus, model)
+    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0, decision="drop")])
+    triage = _triage_with_judge(news, bus, model)
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
     assert len(model.inputs) == 1
-    human = model.inputs[0]
-    assert '"told": [{"ago_min": ' in human and "英伟达投资 OpenAI" in human and "ev-earlier" not in human
-    assert human.count('"headline_zh": "英伟达投资 OpenAI"') == 2
-    assert human.index("<event_status>") < human.index('"told"')
+    context = model.inputs[0]
+    assert [entry.event_id for entry in context.told.entries] == ["ev-earlier", "ev-other"]
+    assert context.told.entries[0].headline_zh == "英伟达投资 OpenAI"
+    assert context.evidence.title == "NVIDIA to invest $100bn in OpenAI data centre"
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "restatement"
     assert inserted["verdict"]["novelty"] == "restatement" and inserted["verdict"]["restates"] == 0
@@ -1079,18 +1106,19 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
         told_ledger=told_ledger,
     )
     bus = FakeBus()
-    model = _ScriptedTriageModel(
+    model = _ScriptedSemanticJudge(
         [
             _model_verdict(novelty="new_fact"),  # judged against the empty ledger
             _model_verdict(novelty="restatement", restates=0, decision="drop"),  # sees ev-just-pushed
         ]
     )
-    triage = _triage_with_model(news, bus, model)
+    triage = _triage_with_judge(news, bus, model)
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
-    assert len(model.inputs) == 2 and '"told": []' in model.inputs[0] and "ev-just-pushed" not in model.inputs[0]
-    assert '"headline_zh": "英伟达投资 OpenAI"' in model.inputs[1]
+    assert len(model.inputs) == 2 and model.inputs[0].told.entries == ()
+    assert model.inputs[1].told.entries[0].event_id == "ev-just-pushed"
+    assert model.inputs[1].told.entries[0].headline_zh == "英伟达投资 OpenAI"
     inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
     assert len(inserted) == 1  # the stale round wrote nothing
     row = inserted[0]
@@ -1108,8 +1136,6 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
 def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseline() -> None:
     """If the re-ask itself fails, the model's first (valid) judgment is persisted, not a degraded fallback."""
 
-    from tracefold.news.agents.triage_model import TriageModelError
-
     fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
     ledger_calls = {"n": 0}
 
@@ -1125,15 +1151,15 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     )
     bus = FakeBus()
 
-    class _FirstOkThenTimeout(_ScriptedTriageModel):
-        async def triage(self, human: str) -> Any:
+    class _FirstOkThenTimeout(_ScriptedSemanticJudge):
+        async def judge(self, context: TriageContext) -> SemanticJudgment:
             if self.inputs:
-                self.inputs.append(human)
-                raise TriageModelError("news_triage_timeout", retryable=True)
-            return await super().triage(human)
+                self.inputs.append(context)
+                raise _program_error("news_program_timeout", retryable=True)
+            return await super().judge(context)
 
     model = _FirstOkThenTimeout([_model_verdict(novelty="new_fact", magnitude=3, direction="bearish", scope="macro")])
-    triage = _triage_with_model(news, bus, model)
+    triage = _triage_with_judge(news, bus, model)
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
@@ -1141,7 +1167,7 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["degraded"] is False and inserted["error_code"] is None
     assert inserted["final_decision"] == "escalate" and inserted["verdict"]["magnitude"] == 3
-    assert inserted["trace"]["reask_failed"] == "news_triage_timeout"
+    assert inserted["trace"]["reask_failed"] == "news_program_timeout"
     assert inserted["trace"]["reasked_after_told_change"] is True
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
@@ -1181,7 +1207,7 @@ def test_triage_sends_a_distinct_card_and_traces_the_duplicate_measurement() -> 
 
     news = _duplicate_news(ledger_headline="美联储纪要显示官员对通胀存在分歧")
     bus = FakeBus()
-    triage = _triage_with_model(news, bus, _ScriptedTriageModel([_model_verdict()]))
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([_model_verdict()]))
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
@@ -1198,7 +1224,7 @@ def test_triage_withholds_a_card_the_reader_already_received() -> None:
 
     news = _duplicate_news(ledger_headline="英伟达投资 OpenAI 数据中心")
     bus = FakeBus()
-    triage = _triage_with_model(news, bus, _ScriptedTriageModel([_model_verdict(novelty="progression")]))
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([_model_verdict(novelty="progression")]))
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
@@ -1219,10 +1245,10 @@ def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on(
 
     news = _duplicate_news(ledger_headline="Ciena Corporation（$CIENx）出现在 OKX")
     bus = FakeBus()
-    triage = _triage_with_model(
+    triage = _triage_with_judge(
         news,
         bus,
-        _ScriptedTriageModel([_model_verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")]),
+        _ScriptedSemanticJudge([_model_verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")]),
     )
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))

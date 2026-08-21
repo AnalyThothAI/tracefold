@@ -617,7 +617,7 @@ class PriceRepository:
         cohort_filter = ""
         if cohort is not None:
             cohort_filter = (
-                "AND COALESCE(v.prompt_version, '') = %s "
+                "AND COALESCE(v.program_version, '') = %s "
                 "AND COALESCE(v.policy_version, '') = %s "
                 "AND COALESCE(v.model, '') = %s"
             )

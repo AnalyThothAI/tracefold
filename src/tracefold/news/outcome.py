@@ -93,6 +93,11 @@ ERROR_CODE_ZH: Final[dict[str, str]] = {
     "news_triage_output_invalid": "模型输出格式错误",
     "news_triage_circuit_open": "模型熔断中（连续失败后暂停调用）",
     "news_triage_model_unconfigured": "未配置模型",
+    "news_semantic_program_unconfigured": "未配置语义程序",
+    "news_semantic_program_identity_mismatch": "语义程序身份校验失败",
+    "news_canary_artifact_missing": "候选语义程序制品缺失",
+    "news_program_route_deadline": "语义程序超时",
+    "news_program_output_truncated": "语义程序输出被截断",
 }
 
 INCIDENT_CAUSE_ZH: Final[dict[str, str]] = {
@@ -199,6 +204,10 @@ def error_code_zh(code: str | None) -> str:
         return ERROR_CODE_ZH[text]
     if text.startswith("news_triage_model_failed:"):
         return f"模型调用失败（{text.split(':', 1)[1]}）"
+    if text.startswith("news_program_transport_"):
+        return f"语义程序调用失败（{text.removeprefix('news_program_transport_')}）"
+    if text.startswith("news_program_dspy_output_") or (text.startswith("news_program_") and text.endswith("_invalid")):
+        return "语义程序输出格式错误"
     if text.startswith("news_analyst_"):
         return "分析模型失败（已退役通道）"
     return text
