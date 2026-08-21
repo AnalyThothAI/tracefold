@@ -1619,6 +1619,146 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
     assert len(verification["recording_corpus_root"]) == 64
 
 
+@pytest.mark.parametrize(
+    ("missing_kind", "blocker"),
+    (
+        ("corpus", "news_learning_recording_replay_corpus_missing"),
+        ("call", "news_learning_recording_replay_call_missing"),
+    ),
+)
+def test_strict_recording_verification_reports_replay_misses_as_unknown_without_live_fallback(
+    conn,
+    missing_kind: str,
+    blocker: str,
+) -> None:
+    stable_artifact = load_stable_program_artifact()
+    stable = _arm(
+        program_version=stable_artifact.program_version,
+        program_sha256=stable_artifact.program_sha256,
+    )
+    with repositories_for_connection(conn).transaction():
+        repositories_for_connection(conn).news.register_agent_runtime_manifest(
+            manifest_sha=_sha({"stable": stable.bundle_sha, "runtime": "missing-replay-test"}),
+            stable_bundle_sha=stable.bundle_sha,
+            candidate_shas=(),
+            image_digest="sha256:missing-replay-test",
+            runtime_revision="missing-replay-test",
+            now_ms=NOW - 23 * 3_600_000,
+        )
+    _accepted_event(conn, stable=stable)
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    candidate_artifact, provenance = _compiled_candidate_artifact(development.artifact_sha)
+    candidate = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+        compile_provenance_override=provenance,
+        program_version=candidate_artifact.program_version,
+        program_sha256=candidate_artifact.program_sha256,
+    )
+    judges = _static_judges(stable, candidate.candidate_arm)
+    if missing_kind == "corpus":
+        judges = {
+            ("stable", stable.bundle_sha): _StaticJudge(stable),
+            ("candidate", candidate.candidate_arm.bundle_sha): _AlwaysUnavailableJudge(candidate.candidate_arm),
+        }
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=judges,
+        candidate_catalog=(candidate,),
+    )
+    request = EvaluationRequest(
+        development_dataset_sha=development.artifact_sha,
+        candidate_sha=candidate.candidate_sha,
+        stage="offline",
+    )
+    first = asyncio.run(evaluator.evaluate(request))
+    if missing_kind == "corpus":
+        assert first.gate_outcome == "fail"
+        assert "candidate_schema_or_provider_regression" in first.evidence["failures"]
+    calls_before_replay = _judge_call_count(judges)
+
+    replay_rows: list[Mapping[str, object]] = []
+    if missing_kind == "call":
+
+        def move_to_absent_case(row: Mapping[str, object]) -> dict[str, object]:
+            moved = {**dict(row), "case_id": f"absent-{row['case_id']}"}
+            moved["recording_sha"] = _sha(
+                {
+                    key: moved[key]
+                    for key in (
+                        "run_sha",
+                        "case_id",
+                        "arm",
+                        "trial",
+                        "predictor_name",
+                        "call_index",
+                        "attempt",
+                        "request_sha256",
+                    )
+                }
+            )
+            return moved
+
+        replay_rows = [
+            move_to_absent_case(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                  FROM news_model_recordings
+                 WHERE run_sha = %s
+                 ORDER BY case_id, arm, trial, call_index, attempt, recording_sha
+                """,
+                (first.run_sha,),
+            ).fetchall()
+        ]
+
+    class _ReplayCorpus:
+        def execute(self, query: str, params: tuple[str]) -> object:
+            assert "WHERE run_sha = %s" in query
+            assert params == (first.run_sha,)
+            return self
+
+        def fetchall(self) -> list[Mapping[str, object]]:
+            return replay_rows
+
+    capability = load_recording_replay_capability(
+        _ReplayCorpus(),
+        run_sha=first.run_sha,
+        arms=(
+            ReplayArmSpec(arm="stable", bundle_sha=stable.bundle_sha, artifact=stable_artifact),
+            ReplayArmSpec(
+                arm="candidate",
+                bundle_sha=candidate.candidate_arm.bundle_sha,
+                artifact=candidate_artifact,
+            ),
+        ),
+    )
+
+    report = asyncio.run(evaluator.evaluate(request, recording_replay=capability))
+
+    assert report.gate_outcome == "unknown"
+    assert report.run_state == "incomplete"
+    assert report.recommended_action == "hold"
+    assert report.next_stage == "none"
+    assert report.evidence["execution_incomplete"] is True
+    assert blocker in report.evidence["blockers"]
+    if missing_kind == "corpus":
+        assert "candidate_schema_or_provider_regression" in report.evidence["failures"]
+    assert "recording_verification" not in report.evidence
+    assert _judge_call_count(judges) == calls_before_replay
+
+
 def test_strict_recording_verification_rejects_an_unsealed_judge_map(conn) -> None:
     with pytest.raises(ValueError, match="news_learning_recording_replay_capability_invalid"):
         asyncio.run(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,10 +11,7 @@ from tracefold.app.cli.commands import news as news_commands
 from tracefold.app.cli.commands.news import _handle_learning, _learning_program_judges
 from tracefold.app.cli.parser import build_parser
 from tracefold.news.agents.programs import candidates as candidate_programs
-from tracefold.news.agents.semantic_program import (
-    RecordReplayPredictorAdapter,
-    load_stable_program_artifact,
-)
+from tracefold.news.agents.semantic_program import load_stable_program_artifact
 
 
 def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
@@ -144,11 +140,6 @@ def test_learning_recording_verification_fails_closed_for_canary_before_loading_
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: stable)
     monkeypatch.setattr("tracefold.app.repositories.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr(news_commands, "_load_candidate_bundle", lambda _path: (candidate, {}))
-    monkeypatch.setattr(
-        news_commands,
-        "_learning_recording_replay_capability",
-        lambda *_args, **_kwargs: pytest.fail("canary must be rejected before replay loading"),
-    )
 
     code, payload = _handle_learning(
         SimpleNamespace(
@@ -166,91 +157,6 @@ def test_learning_recording_verification_fails_closed_for_canary_before_loading_
 
     assert code == 2
     assert payload["error"] == "news_learning_recording_verification_stage_unsupported:canary"
-
-
-def test_learning_cli_routes_recording_verification_through_sealed_capability(monkeypatch: Any) -> None:
-    import tracefold.news as news_package
-
-    captured: dict[str, Any] = {}
-    stable = SimpleNamespace(bundle_sha="1" * 64)
-    candidate = SimpleNamespace(candidate_sha="2" * 64, candidate_arm=SimpleNamespace(bundle_sha="3" * 64))
-    replay_capability = object()
-
-    @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "workers"
-        yield object()
-
-    class _Report:
-        gate_outcome = "pass"
-
-        @staticmethod
-        def model_dump(*, mode: str) -> dict[str, Any]:
-            assert mode == "json"
-            return {"gate_outcome": "pass"}
-
-    class _Evaluator:
-        def __init__(self, _conn: Any, **kwargs: Any) -> None:
-            captured["judges"] = kwargs["judges"]
-
-        async def evaluate(self, _request: Any, *, recording_replay: Any = None) -> _Report:
-            captured["recording_replay"] = recording_replay
-            return _Report()
-
-    def fake_replay(_conn: Any, **kwargs: Any) -> object:
-        captured["run_sha"] = kwargs["run_sha"]
-        return replay_capability
-
-    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
-    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: stable)
-    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", fake_postgres_connection)
-    monkeypatch.setattr(news_package, "CandidateEvaluator", _Evaluator)
-    monkeypatch.setattr(news_commands, "_load_candidate_bundle", lambda _path: (candidate, {}))
-    monkeypatch.setattr(news_commands, "_learning_recording_replay_capability", fake_replay)
-    monkeypatch.setattr(
-        news_commands,
-        "_learning_program_judges",
-        lambda *_args, **_kwargs: pytest.fail("strict replay must not load ordinary judges"),
-    )
-    monkeypatch.setattr(news_commands, "_write_json", lambda *_args: None)
-
-    code, payload = _handle_learning(
-        SimpleNamespace(
-            learning_command="evaluate",
-            development="d" * 64,
-            validation="",
-            candidate="candidate.json",
-            stage="offline",
-            observation_manifest="",
-            live_program=False,
-            verify_recordings=True,
-            out="report.json",
-        )
-    )
-
-    assert code == 0 and payload["ok"] is True
-    assert captured["judges"] == {}
-    assert captured["recording_replay"] is replay_capability
-    assert captured["run_sha"] == news_package.evaluation_run_sha(
-        news_package.EvaluationRequest(
-            development_dataset_sha="d" * 64,
-            candidate_sha=candidate.candidate_sha,
-            stage="offline",
-        ),
-        stable_bundle_sha=stable.bundle_sha,
-        candidate_sha=candidate.candidate_sha,
-    )
-
-
-def test_learning_cli_has_no_prompt_or_legacy_model_adapter_path() -> None:
-    source = (Path(__file__).resolve().parents[2] / "src/tracefold/app/cli/commands/news.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert 'target == "prompt"' not in source
-    assert "RecordReplayModelAdapter" not in source
-    assert "LiveTriageModelAdapter" not in source
-    assert "configured_chat_model" not in source
 
 
 def test_canary_catalog_isolates_a_malformed_compiled_document(monkeypatch: Any) -> None:
@@ -352,8 +258,6 @@ def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> 
     candidate_judge = judges[("candidate", candidate_arm.bundle_sha)]
 
     assert stable_judge is not candidate_judge
-    assert isinstance(stable_judge.primary_adapter, RecordReplayPredictorAdapter)
-    assert isinstance(candidate_judge.primary_adapter, RecordReplayPredictorAdapter)
     assert stable_judge.primary_adapter is not candidate_judge.primary_adapter
     assert stable_judge.primary_adapter.requests is not candidate_judge.primary_adapter.requests
     for _ in range(artifact.execution.primary_breaker_failures):

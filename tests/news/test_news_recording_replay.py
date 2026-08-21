@@ -19,6 +19,7 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.recording_replay import RecordingReplayMiss
 
 RUN_SHA = "a" * 64
 STABLE_BUNDLE_SHA = "1" * 64
@@ -285,6 +286,45 @@ def test_sealed_replay_reexecutes_program_owned_novelty_default() -> None:
     capability.sealed_receipt()
 
 
+def test_sealed_replay_exposes_an_absent_run_corpus_as_unavailable() -> None:
+    capability, conn = _load([])
+
+    with pytest.raises(RecordingReplayMiss, match="news_learning_recording_replay_corpus_missing"):
+        capability.assert_for_run(RUN_SHA)
+
+    assert conn.requested_run_sha == RUN_SHA
+
+
+def test_sealed_replay_exposes_an_incomplete_arm_corpus_as_unavailable() -> None:
+    artifact = load_stable_program_artifact()
+    primary = ScriptedPredictorAdapter([_semantics(), _card()])
+    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    rows = [row for row in _recording_rows(judgment=original, adapters=(primary,)) if row["arm"] == "stable"]
+
+    capability, _ = _load(rows)
+
+    with pytest.raises(RecordingReplayMiss, match="news_learning_recording_replay_arms_missing"):
+        capability.assert_for_run(RUN_SHA)
+
+
+def test_sealed_replay_exposes_an_absent_case_call_as_unavailable() -> None:
+    artifact = load_stable_program_artifact()
+    primary = ScriptedPredictorAdapter([_semantics(), _card()])
+    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    capability, _ = _load(_recording_rows(judgment=original, adapters=(primary,)))
+
+    with pytest.raises(RecordingReplayMiss, match="news_learning_recording_replay_call_missing"):
+        asyncio.run(
+            capability.judge(
+                arm="stable",
+                bundle_sha=STABLE_BUNDLE_SHA,
+                case_id="case-without-recordings",
+                trial=1,
+                context=_context(),
+            )
+        )
+
+
 def test_sealed_replay_rejects_unreplayable_route_deadline_before_signing() -> None:
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
@@ -345,5 +385,52 @@ def test_sealed_replay_rejects_a_response_whose_content_does_not_match_its_ident
     with pytest.raises(
         RecordingReplayError,
         match="news_learning_recording_replay_response_identity_mismatch",
-    ):
+    ) as caught:
         _load(rows)
+
+    assert not isinstance(caught.value, RecordingReplayMiss)
+
+
+def test_sealed_replay_keeps_program_identity_mismatch_fail_closed() -> None:
+    artifact = load_stable_program_artifact()
+    primary = ScriptedPredictorAdapter([_semantics(), _card()])
+    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    rows = _recording_rows(judgment=original, adapters=(primary,))
+    rows[0] = {
+        **rows[0],
+        "request": {**rows[0]["request"], "program_sha256": "f" * 64},
+    }
+
+    with pytest.raises(
+        RecordingReplayError,
+        match="news_learning_recording_replay_program_identity_mismatch",
+    ) as caught:
+        _load(rows)
+
+    assert not isinstance(caught.value, RecordingReplayMiss)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        {"recording_sha": "f" * 64},
+        {"case_id": "tampered-case"},
+        {"trial": 2},
+    ),
+)
+def test_sealed_replay_keeps_canonical_recording_identity_tamper_fail_closed(
+    tamper: Mapping[str, object],
+) -> None:
+    artifact = load_stable_program_artifact()
+    primary = ScriptedPredictorAdapter([_semantics(), _card()])
+    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    rows = _recording_rows(judgment=original, adapters=(primary,))
+    rows[0] = {**rows[0], **tamper}
+
+    with pytest.raises(
+        RecordingReplayError,
+        match="news_learning_recording_replay_recording_identity_mismatch",
+    ) as caught:
+        _load(rows)
+
+    assert not isinstance(caught.value, RecordingReplayMiss)

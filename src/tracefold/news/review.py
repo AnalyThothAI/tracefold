@@ -120,6 +120,7 @@ _RELEASE_STAGE_ZH = {
 }
 _RELEASE_OUTCOME_ZH = {"pass": "通过", "fail": "失败", "unknown": "证据不足"}
 _PROPOSAL_STATUS_ZH = {
+    "audit_only": "仅供历史审计",
     "proposed": "已提案",
     "evaluating": "评估中",
     "review_required": "需要更多证据",
@@ -354,21 +355,47 @@ def _event_task_statement(event_id: str, *, evidence_version: int | None) -> Rev
     )
 
 
-def _coverage_statement(*, lower_ms: int, upper_ms: int) -> ReviewReadStatement:
+def _coverage_statement(*, lower_ms: int, upper_ms: int, learning_epoch: str) -> ReviewReadStatement:
     return ReviewReadStatement(
         name="news_review_coverage_source",
-        sql=(
-            "SELECT * FROM news_review_task_source_v1 "
-            "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live'"
-        ),
-        params=(int(lower_ms), int(upper_ms)),
+        sql="""
+            WITH current_epoch AS (
+              SELECT starts_at_ms
+                FROM news_learning_epochs
+               WHERE epoch_id = %s
+            ),
+            active_agent AS (
+              SELECT stable_sha
+                FROM news_review_active_agent_v1
+               ORDER BY created_at_ms DESC
+               LIMIT 1
+            )
+            SELECT source.*
+              FROM news_review_task_source_v1 source
+              JOIN current_epoch ON true
+              JOIN active_agent ON true
+             WHERE source.opened_at_ms >= greatest(%s, current_epoch.starts_at_ms)
+               AND source.opened_at_ms < %s
+               AND source.ingest_mode = 'live'
+               AND COALESCE(source.trace #>> '{agent_assignment,bundle_sha}', '') = active_agent.stable_sha
+        """,
+        params=(learning_epoch, int(lower_ms), int(upper_ms)),
     )
+
+
+def _current_learning_epoch() -> str:
+    # CandidateEvaluator imports the reader/rubric contract from this module,
+    # so resolve its epoch lazily rather than creating an import cycle.
+    from .candidate_evaluator import LEARNING_EPOCH
+
+    return LEARNING_EPOCH
 
 
 def _pairwise_queue_statement(
     *,
     proposal: str,
     status: str,
+    learning_epoch: str,
     cursor: tuple[int, int, str] | None,
     limit: int,
 ) -> ReviewReadStatement:
@@ -384,8 +411,12 @@ def _pairwise_queue_statement(
         params.extend(cursor)
     if status == "pending":
         filters.append("accepted_pair.review_id IS NULL")
+        filters.append("dataset.payload ->> 'learning_epoch' = %s")
+        params.append(learning_epoch)
     elif status == "accepted":
         filters.append("accepted_pair.review_id IS NOT NULL")
+        filters.append("dataset.payload ->> 'learning_epoch' = %s")
+        params.append(learning_epoch)
     elif status != "all":
         raise ValueError("news_review_status_invalid")
     params.append(int(limit) + 1)
@@ -400,8 +431,11 @@ def _pairwise_queue_statement(
                WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'pairwise'
                ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
             )
-            SELECT c.*, accepted_pair.review_id AS accepted_review_id
+            SELECT c.*, accepted_pair.review_id AS accepted_review_id,
+                   dataset.payload ->> 'learning_epoch' AS learning_epoch
               FROM news_review_pairwise_tasks_v1 c
+              LEFT JOIN news_learning_artifacts dataset
+                ON dataset.kind = 'dataset' AND dataset.artifact_sha = c.dataset_sha
               LEFT JOIN accepted_pair ON accepted_pair.pairwise_case_id = c.run_sha || ':' || c.case_id
              WHERE {" AND ".join(filters)}
              ORDER BY CASE WHEN c.dataset_role = 'validation' THEN 0 ELSE 1 END,
@@ -415,11 +449,17 @@ def _pairwise_queue_statement(
 def _proposal_candidates_statement(limit: int) -> ReviewReadStatement:
     return ReviewReadStatement(
         name="news_review_proposal_candidates",
-        sql=(
-            "SELECT artifact_sha, parent_sha, payload, created_at_ms "
-            "FROM news_learning_artifacts WHERE kind = 'candidate' "
-            "ORDER BY created_at_ms DESC LIMIT %s"
-        ),
+        sql="""
+            SELECT candidate.artifact_sha, candidate.parent_sha, candidate.payload,
+                   candidate.created_at_ms, dataset.payload ->> 'learning_epoch' AS learning_epoch
+              FROM news_learning_artifacts candidate
+              LEFT JOIN news_learning_artifacts dataset
+                ON dataset.kind = 'dataset'
+               AND dataset.artifact_sha = candidate.payload #>> '{manifest,development_dataset_sha}'
+             WHERE candidate.kind = 'candidate'
+             ORDER BY candidate.created_at_ms DESC
+             LIMIT %s
+        """,
         params=(int(limit),),
     )
 
@@ -657,6 +697,7 @@ class ReviewDesk:
         statement = _pairwise_queue_statement(
             proposal=query.proposal,
             status=query.status,
+            learning_epoch=_current_learning_epoch(),
             cursor=cursor,
             limit=query.limit,
         )
@@ -692,6 +733,7 @@ class ReviewDesk:
         }
 
     def _proposals(self, query: DeskQuery) -> dict[str, Any]:
+        current_epoch = _current_learning_epoch()
         candidate_statement = _proposal_candidates_statement(query.limit)
         candidates = self._conn.execute(candidate_statement.sql, candidate_statement.params).fetchall()
         release_statement = _proposal_releases_statement()
@@ -715,6 +757,8 @@ class ReviewDesk:
             manifest = dict(payload.get("manifest") or {})
             receipt = dict(manifest.get("proposal_receipt") or {})
             candidate_arm = dict(manifest.get("candidate_arm") or {})
+            learning_epoch = str(row.get("learning_epoch") or "") or None
+            evidence_disposition = "current" if learning_epoch == current_epoch else "audit_only"
             timeline: list[dict[str, Any]] = []
             for release_row in releases:
                 release = dict(release_row["payload"] or {})
@@ -731,6 +775,7 @@ class ReviewDesk:
                         "report_sha": release.get("report_sha"),
                         "run_sha": release.get("run_sha"),
                         "recommended_action": report_payload.get("recommended_action"),
+                        "evidence_disposition": evidence_disposition,
                         "blockers": (report_payload.get("evidence") or {}).get("blockers", []),
                         "blockers_zh": [
                             _release_code_zh(str(code))
@@ -745,7 +790,7 @@ class ReviewDesk:
                     }
                 )
             activation = activations.get(candidate_sha)
-            status = _proposal_status(timeline, activation)
+            status = _proposal_status(timeline, activation) if evidence_disposition == "current" else "audit_only"
             reveal_diff = self._candidate_diff_reveal_allowed(candidate_sha)
             public.append(
                 {
@@ -762,6 +807,8 @@ class ReviewDesk:
                     "failure_cluster_ids": receipt.get("failure_cluster_ids", []),
                     "guardrails": receipt.get("guardrails", []),
                     "development_dataset_sha": manifest.get("development_dataset_sha"),
+                    "learning_epoch": learning_epoch,
+                    "evidence_disposition": evidence_disposition,
                     "candidate_patch_sha": receipt.get("candidate_patch_sha"),
                     "exact_diff": payload.get("exact_diff") if reveal_diff else None,
                     "diff_withheld_reason": None if reveal_diff else "hidden_validation_in_progress",
@@ -901,7 +948,12 @@ class ReviewDesk:
 
     def _coverage(self, query: DeskQuery) -> dict[str, Any]:
         lower = self._now_ms - int(query.hours) * 3_600_000
-        statement = _coverage_statement(lower_ms=lower, upper_ms=self._now_ms)
+        current_epoch = _current_learning_epoch()
+        statement = _coverage_statement(
+            lower_ms=lower,
+            upper_ms=self._now_ms,
+            learning_epoch=current_epoch,
+        )
         rows = self._conn.execute(statement.sql, statement.params).fetchall()
         accepted_by_task = self._accepted_event_tasks([str(row["event_id"]) for row in rows])
         cohorts: dict[str, dict[str, Any]] = {}
@@ -947,9 +999,23 @@ class ReviewDesk:
             bucket["accepted_pct"] = _pct(k, n)
             bucket["accepted_interval_95"] = _wilson(k, n)
         external = self._conn.execute(
-            "SELECT count(*) AS n FROM news_review_external_source_v1 WHERE created_at_ms >= %s AND created_at_ms < %s",
-            (lower, self._now_ms),
+            """
+            WITH current_epoch AS (
+              SELECT greatest(%s, starts_at_ms) AS lower_ms
+                FROM news_learning_epochs
+               WHERE epoch_id = %s
+            )
+            SELECT count(source.snapshot_id) AS n, current_epoch.lower_ms
+              FROM current_epoch
+              LEFT JOIN news_review_external_source_v1 source
+                ON source.created_at_ms >= current_epoch.lower_ms
+               AND source.created_at_ms < %s
+             GROUP BY current_epoch.lower_ms
+            """,
+            (lower, current_epoch, self._now_ms),
         ).fetchone()
+        if external is None:
+            raise RuntimeError("news_review_learning_epoch_missing")
         blind = self._conn.execute(
             """
             WITH accepted_pair AS (
@@ -971,10 +1037,14 @@ class ReviewDesk:
                        AND COALESCE(accepted_pair.payload ->> 'preference', 'uncertain') <> 'uncertain'
                    ) AS accepted_cluster_n
               FROM news_review_pairwise_tasks_v1 c
+              JOIN news_learning_artifacts dataset
+                ON dataset.kind = 'dataset' AND dataset.artifact_sha = c.dataset_sha
               LEFT JOIN accepted_pair
                 ON accepted_pair.pairwise_case_id = c.run_sha || ':' || c.case_id
              WHERE c.dataset_role = 'validation'
-            """
+               AND dataset.payload ->> 'learning_epoch' = %s
+            """,
+            (_current_learning_epoch(),),
         ).fetchone()
         blind_case_n = int(blind["case_n"] or 0)
         blind_accepted_n = int(blind["accepted_case_n"] or 0)
@@ -984,7 +1054,7 @@ class ReviewDesk:
             "view": "coverage",
             "status": "ready" if evidence_ready else "insufficient_evidence",
             "message_zh": None if evidence_ready else "证据不足：需要真实 observed evidence 和已接受复盘",
-            "window": {"from_ms": lower, "to_ms": self._now_ms, "hours": query.hours},
+            "window": {"from_ms": int(external["lower_ms"]), "to_ms": self._now_ms, "hours": query.hours},
             "funnel": {
                 "received": received,
                 "replayable": release_eligible,
@@ -1070,7 +1140,11 @@ class ReviewDesk:
     def _pairwise_task(self, task_id: str) -> _VirtualTask | None:
         run_sha, case_id = _parse_pairwise_task_id(task_id)
         row = self._conn.execute(
-            "SELECT * FROM news_review_pairwise_tasks_v1 WHERE run_sha = %s AND case_id = %s",
+            "SELECT c.*, dataset.payload ->> 'learning_epoch' AS learning_epoch "
+            "FROM news_review_pairwise_tasks_v1 c "
+            "LEFT JOIN news_learning_artifacts dataset "
+            "ON dataset.kind = 'dataset' AND dataset.artifact_sha = c.dataset_sha "
+            "WHERE c.run_sha = %s AND c.case_id = %s",
             (run_sha, case_id),
         ).fetchone()
         return _pairwise_virtual(row) if row is not None else None
@@ -1194,6 +1268,8 @@ class ReviewDesk:
             raise ValueError("news_review_task_not_found")
         if task.task_version != task_ref.task_version:
             raise ValueError("news_review_task_version_conflict")
+        if _pairwise_evidence_disposition(task.row) != "current":
+            raise ValueError("news_review_pairwise_task_audit_only")
         run_sha, case_id = _parse_pairwise_task_id(task.task_id)
         pairwise_case_id = f"{run_sha}:{case_id}"
         previous = self._latest_accepted(task)
@@ -1587,12 +1663,18 @@ def _pairwise_virtual(row: Mapping[str, Any]) -> _VirtualTask:
 
 
 def _pairwise_task_public(task: _VirtualTask, *, accepted: Mapping[str, Any] | None) -> dict[str, Any]:
+    learning_epoch = str(task.row.get("learning_epoch") or "") or None
+    evidence_disposition = _pairwise_evidence_disposition(task.row)
     return {
         "task_id": task.task_id,
         "task_version": task.task_version,
         "mode": "pairwise",
+        "learning_epoch": learning_epoch,
+        "evidence_disposition": evidence_disposition,
         "selection": dict(task.selection),
-        "review_status": "accepted" if accepted is not None else "pending",
+        "review_status": ("accepted" if accepted is not None else "pending")
+        if evidence_disposition == "current"
+        else "audit_only",
         "accepted_review": accepted,
         "disclosure": {
             "outcome_revealed": False,
@@ -1602,6 +1684,10 @@ def _pairwise_task_public(task: _VirtualTask, *, accepted: Mapping[str, Any] | N
             ),
         },
     }
+
+
+def _pairwise_evidence_disposition(row: Mapping[str, Any]) -> str:
+    return "current" if row.get("learning_epoch") == _current_learning_epoch() else "audit_only"
 
 
 def _pairwise_evidence(
@@ -2055,8 +2141,18 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
         ),
         _event_task_statement("event", evidence_version=None),
         _event_task_statement("event", evidence_version=1),
-        _coverage_statement(lower_ms=lower, upper_ms=int(now_ms)),
-        _pairwise_queue_statement(proposal="", status="pending", cursor=None, limit=30),
+        _coverage_statement(
+            lower_ms=lower,
+            upper_ms=int(now_ms),
+            learning_epoch=_current_learning_epoch(),
+        ),
+        _pairwise_queue_statement(
+            proposal="",
+            status="pending",
+            learning_epoch=_current_learning_epoch(),
+            cursor=None,
+            limit=30,
+        ),
         _proposal_candidates_statement(100),
         _proposal_releases_statement(),
         _proposal_reports_statement(),

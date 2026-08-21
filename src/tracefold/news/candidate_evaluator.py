@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .agents.semantic_program import CompileProvenance, SemanticJudge, SemanticProgramError, TriageContext
 from .artifact_identity import canonical_json, canonical_sha
 from .models import TriageVerdict
-from .recording_replay import RecordingReplayCapability
+from .recording_replay import RecordingReplayCapability, RecordingReplayMiss
 from .review import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .storyline import final_storyline_key
 from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
@@ -517,20 +517,25 @@ class CandidateEvaluator:
         dataset = development if request.stage == "offline" else validation
         existing = self._load_run_cases(run_sha)
         execution_errors: list[str] = []
+        recording_replay_missed = False
         observation_dimensions: dict[str, Any] | None = None
         observation_manifest_sha = request.observation_manifest_sha
         recording_verification = None
         if recording_replay is not None:
-            recording_replay.assert_for_run(run_sha)
-            recording_verification = await self._verify_recorded_run(
-                request=request,
-                run_sha=run_sha,
-                dataset=dataset,
-                candidate=candidate,
-                existing=existing,
-                recording_replay=recording_replay,
-            )
-        if not existing:
+            try:
+                recording_replay.assert_for_run(run_sha)
+                recording_verification = await self._verify_recorded_run(
+                    request=request,
+                    run_sha=run_sha,
+                    dataset=dataset,
+                    candidate=candidate,
+                    existing=existing,
+                    recording_replay=recording_replay,
+                )
+            except RecordingReplayMiss as exc:
+                recording_replay_missed = True
+                execution_errors.append(str(exc))
+        if not existing and recording_replay is None:
             if request.stage in {"shadow", "canary"}:
                 if request.observation_manifest_sha:
                     observations, observation_dimensions = self._load_production_observations(
@@ -610,6 +615,9 @@ class CandidateEvaluator:
             evidence["observation_manifest_sha"] = observation_manifest_sha
         if recording_verification is not None:
             evidence["recording_verification"] = recording_verification
+        if recording_replay_missed:
+            evidence["execution_incomplete"] = True
+            evidence["gate_outcome"] = "unknown"
         outcome = str(evidence["gate_outcome"])
         active_sha = self._active_stable_sha()
         eligibility = "current" if active_sha == candidate.parent_stable_sha else "stale"
@@ -1133,7 +1141,7 @@ class CandidateEvaluator:
         """Re-execute an existing corpus through its supplied replay judges without appending model truth."""
 
         if not existing:
-            raise ValueError("news_learning_recording_verification_cases_missing")
+            raise RecordingReplayMiss("news_learning_recording_verification_cases_missing")
         try:
             replayed = await self._run_sequential(
                 run_sha=run_sha,
@@ -1142,7 +1150,7 @@ class CandidateEvaluator:
                 recording_replay=recording_replay,
             )
         except RecordReplayMiss as exc:
-            raise ValueError(f"news_learning_recording_verification_miss:{exc}") from exc
+            raise RecordingReplayMiss(f"news_learning_recording_verification_miss:{exc}") from exc
 
         expected_roots, expected_root = _recording_verification_roots(existing)
         actual_roots, actual_root = _recording_verification_roots(replayed)

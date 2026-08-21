@@ -141,6 +141,7 @@ tracefold.news
   facts.py            atomic fact units and immutable Event evidence snapshots
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
   candidate_evaluator.py content-addressed program_v2 datasets and stable/candidate evaluation workflow
+  recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   events.py           the Deduper transaction (admit_item)
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
@@ -476,17 +477,22 @@ A/A+ or cashtag asset; the final key is computed after Triage from the
 verdict's grounded primaries and scope, written back to `news_events`, and
 used by duplicate comparison, operator grouping, advisory locking, and mute.
 
-Triage is a deep semantic-judgment **Module**. Its only caller-facing
+Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
 consumer does not know DSPy signatures, instructions, demonstrations, model
 routing, retry state, or artifact layout. That **Interface** lives at the
-semantic-judgment **Seam**. `DspyNewsSemanticProgram` is the production
-**Adapter** at that Seam, while the strict record/replay Adapter supplies the
-same Interface to evaluation. This shape gives callers **Leverage** (one call
-owns graph execution, validation, fallback and audit) and maintainers
-**Locality** (Program behavior and its verification stay in the owning Module).
-Its **Depth** is the amount of those behaviors hidden behind the single
-`judge()` method, not the number of internal DSPy nodes.
+semantic-judgment **Seam**, and `DspyNewsSemanticProgram` is the production
+**Adapter** there. Cold strict replay is an evaluator-side sealed-corpus
+verification composition seam, not a second production generation Interface:
+it scopes one persisted run's physical calls to the requested arm/case/trial,
+then re-executes the real arm-scoped `DspyNewsSemanticProgram` graph. The graph
+still enters through `judge(TriageContext)`. A missing corpus or recording makes
+the verification evaluation `incomplete`/`UNKNOWN` without falling through to a
+live provider; an identity or tamper mismatch fails closed. This shape gives
+the hot-path caller **Leverage** (one call owns graph execution, validation,
+fallback and audit) while keeping replay authority outside production
+generation. Its **Depth** is the amount of behavior hidden behind the single
+hot-path `judge()` method, not the number of internal DSPy nodes.
 
 Inside the Module, the fixed Program graph is
 `EventSemantics -> ReaderCard -> deterministic VerdictAssembler`.

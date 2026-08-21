@@ -35,6 +35,10 @@ class RecordingReplayError(ValueError):
     """The requested recording corpus cannot prove an exact Program replay."""
 
 
+class RecordingReplayMiss(RecordingReplayError):
+    """The requested run has no replay corpus or lacks a required recorded call."""
+
+
 @dataclass(frozen=True, slots=True)
 class ReplayArmSpec:
     arm: ArmName
@@ -185,8 +189,14 @@ class _ScopedRecordingAdapter:
     def _next(self) -> _Recording:
         active = self._require_active()
         if self._position >= len(active):
-            self._fail("news_learning_recording_replay_call_missing")
+            self._miss("news_learning_recording_replay_call_missing")
         return active[self._position]
+
+    def _miss(self, code: str) -> NoReturn:
+        failure = RecordingReplayMiss(code)
+        if self._failure is None:
+            self._failure = failure
+        raise failure
 
     def _fail(self, code: str) -> NoReturn:
         failure = RecordingReplayError(code)
@@ -218,6 +228,7 @@ class RecordingReplayCapability:
         corpus_root: str,
         recording_shas: tuple[str, ...],
         arms: Mapping[ArmName, _ReplayArm],
+        missing_code: str | None = None,
     ) -> None:
         if issuer is not _CAPABILITY_ISSUER:
             raise RecordingReplayError("news_learning_recording_replay_capability_invalid")
@@ -226,10 +237,12 @@ class RecordingReplayCapability:
         self.corpus_root = corpus_root
         self.recording_shas = recording_shas
         self._arms = dict(arms)
+        self._missing_code = missing_code
 
     def assert_for_run(self, run_sha: str) -> None:
         if self._issuer is not _CAPABILITY_ISSUER or self.run_sha != run_sha:
             raise RecordingReplayError("news_learning_recording_replay_capability_invalid")
+        self._raise_if_missing()
 
     async def judge(
         self,
@@ -240,6 +253,7 @@ class RecordingReplayCapability:
         trial: int,
         context: TriageContext,
     ) -> SemanticJudgment:
+        self._raise_if_missing()
         selected = self._arms.get(arm)
         if selected is None or selected.bundle_sha != bundle_sha:
             raise RecordingReplayError("news_learning_recording_replay_arm_mismatch")
@@ -250,6 +264,7 @@ class RecordingReplayCapability:
             selected.adapter.end()
 
     def sealed_receipt(self) -> dict[str, Any]:
+        self._raise_if_missing()
         consumed: list[str] = []
         for selected in self._arms.values():
             consumed.extend(selected.adapter.consumed)
@@ -260,6 +275,10 @@ class RecordingReplayCapability:
             "recording_n": len(self.recording_shas),
             "recording_corpus_root": self.corpus_root,
         }
+
+    def _raise_if_missing(self) -> None:
+        if self._missing_code is not None:
+            raise RecordingReplayMiss(self._missing_code)
 
 
 def load_recording_replay_capability(
@@ -285,13 +304,24 @@ def load_recording_replay_capability(
         """,
         (run_sha,),
     ).fetchall()
-    if not rows:
-        raise RecordingReplayError("news_learning_recording_replay_corpus_missing")
+    missing_code = "news_learning_recording_replay_corpus_missing" if not rows else None
     parsed: list[_Recording] = []
     for row in rows:
         arm = str(row["arm"])
         if arm not in specs:
             raise RecordingReplayError("news_learning_recording_replay_arm_invalid")
+        recording_identity = {
+            "run_sha": str(row["run_sha"]),
+            "case_id": str(row["case_id"]),
+            "arm": arm,
+            "trial": int(row["trial"]),
+            "predictor_name": str(row["predictor_name"]),
+            "call_index": int(row["call_index"]),
+            "attempt": int(row["attempt"]),
+            "request_sha256": str(row["request_sha256"]),
+        }
+        if str(row["recording_sha"]) != canonical_sha(recording_identity):
+            raise RecordingReplayError("news_learning_recording_replay_recording_identity_mismatch")
         spec = specs[cast(ArmName, arm)]
         request = dict(row["request"] or {})
         if (
@@ -306,8 +336,8 @@ def load_recording_replay_capability(
         ):
             raise RecordingReplayError("news_learning_recording_replay_program_identity_mismatch")
         parsed.append(_parse_recording(row, arm=cast(ArmName, arm), request=request))
-    if {recording.arm for recording in parsed} != {"stable", "candidate"}:
-        raise RecordingReplayError("news_learning_recording_replay_arms_missing")
+    if parsed and {recording.arm for recording in parsed} != {"stable", "candidate"}:
+        missing_code = "news_learning_recording_replay_arms_missing"
     recording_shas = [recording.recording_sha for recording in parsed]
     if len(set(recording_shas)) != len(recording_shas):
         raise RecordingReplayError("news_learning_recording_replay_recording_identity_duplicate")
@@ -337,6 +367,7 @@ def load_recording_replay_capability(
         corpus_root=corpus_root,
         recording_shas=tuple(recording.recording_sha for recording in parsed),
         arms=replay_arms,
+        missing_code=missing_code,
     )
 
 
@@ -457,6 +488,7 @@ def _provider_observation(
 __all__ = [
     "RecordingReplayCapability",
     "RecordingReplayError",
+    "RecordingReplayMiss",
     "ReplayArmSpec",
     "load_recording_replay_capability",
 ]

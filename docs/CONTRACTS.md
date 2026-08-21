@@ -121,6 +121,20 @@ runtime readiness endpoint, or console HTML is missing or unhealthy.
 without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
 an unknown non-empty database.
 
+`make deploy-image IMAGE_ID=sha256:<64 lowercase hex>` is the explicit
+same-schema image redeployment/rollback contract. It accepts only a full local
+image ID supplied on the Make command line from a deployment-clean primary
+checkout whose `main` equals local `origin/main`; it refuses inherited Compose
+stack selectors, `.env`, Compose overrides, and untracked or ignored Alembic
+revisions. Before stopping Serve or Workers it requires source, image, and live
+database Alembic heads to match and requires the target image to parse the
+active config. It never builds, pulls, or downgrades. Success additionally
+requires the recreated migration, Serve, and Workers containers, Workers
+readiness identity, runtime manifest, and linked active/deployment receipt to
+prove that exact image. `make up` and `make deploy-image` share one
+process-lifetime deployment lock; concurrent mutation is refused and process
+exit releases the lock.
+
 ## HTTP
 
 The service exposes `/healthz`, `/readyz`, `/metrics`, static frontend assets
@@ -534,8 +548,14 @@ promote its output.
 `policy`) against a development dataset. `learning evaluate` runs the
 development/offline or validation/holdout release gate; validation calls both
 arms sequentially and `--live-program` can append exact per-Predictor
-recordings. `learning shadow --live-program` cold-runs the candidate over the
-closed validation window and seals the observations; an existing sealed shadow
+recordings. Its mutually exclusive `--verify-recordings` mode is limited to
+offline/holdout Program candidates: it loads the exact existing run corpus,
+re-executes both real arm-scoped Program graphs with no live provider fallback,
+and seals the matching corpus/observation roots into the evaluation report. A
+missing corpus or recording produces an `incomplete`/`UNKNOWN` evaluation with
+no live fallback; an identity or tamper mismatch fails closed.
+`learning shadow --live-program` cold-runs the candidate over the closed
+validation window and seals the observations; an existing sealed shadow
 observation manifest can be replayed instead.
 `learning canary arm|status|hold|resume|trip|close` owns the durable one-arm
 rollout. A candidate may advance only when the prior
