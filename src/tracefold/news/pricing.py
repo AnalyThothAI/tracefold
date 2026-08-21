@@ -41,12 +41,19 @@ HORIZONS: Final[tuple[str, ...]] = ("1h", "4h")
 HORIZON_MS: Final[Mapping[str, int]] = {"1h": 3_600_000, "4h": 14_400_000}
 
 # ---------------------------------------------------------------------------- code-owned budgets
-QUOTE_PERIOD_SECONDS: Final = 5.0
+# 20 s, not 5. The five-second cadence was written for a freshness SLO the product never had: the browser
+# reads over HTTP polling, so no price can reach a reader faster than that poll anyway. What it did buy was
+# bandwidth — Binance's USD-M ticker has no `symbols=` filter, so every turn pulls the whole market (277 kB),
+# and at 5 s that measured 6.8 MB/min ≈ 9.8 GB/day in production. Quartering the cadence quarters that while
+# leaving the console's actual refresh behaviour unchanged.
+QUOTE_PERIOD_SECONDS: Final = 20.0
 QUOTE_TURN_DEADLINE_SECONDS: Final = 10.0
 QUOTE_LOOKBACK_MS: Final = 72 * 3_600_000
 QUOTE_TARGET_MAX: Final = 256
 QUOTE_SOURCE_GROUP_MAX: Final = 12
-QUOTE_FRESH_MAX_AGE_MS: Final = 15_000
+# Three turns' worth of slack, so `stale` keeps meaning "the loop stopped keeping up" rather than "a turn
+# ran long". Freshness is a statement about the collector, not a promise of sub-second market data.
+QUOTE_FRESH_MAX_AGE_MS: Final = 60_000
 QUOTE_REQUEST_SYMBOL_MAX: Final = 100
 
 REACTION_PERIOD_SECONDS: Final = 60.0

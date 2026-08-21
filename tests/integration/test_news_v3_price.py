@@ -15,7 +15,12 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.news.instruments import Instrument
-from tracefold.news.pricing import HORIZON_MS, REACTION_METRIC_VERSION, Quote
+from tracefold.news.pricing import (
+    HORIZON_MS,
+    QUOTE_FRESH_MAX_AGE_MS,
+    REACTION_METRIC_VERSION,
+    Quote,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -275,7 +280,8 @@ def test_quote_results_name_their_own_state_and_never_fabricate_a_price(conn) ->
     assert fresh["HYPE"]["state"] == "unavailable" and fresh["HYPE"]["price"] is None
     assert fresh["NOPE"]["state"] == "unlisted" and fresh["NOPE"]["venue"] is None
 
-    stale = {row["requested_symbol"]: row for row in repos.price.quotes_for_symbols(["BTC"], now_ms=NOW + 60_000)}
+    aged = NOW + QUOTE_FRESH_MAX_AGE_MS + 1_000
+    stale = {row["requested_symbol"]: row for row in repos.price.quotes_for_symbols(["BTC"], now_ms=aged)}
     assert stale["BTC"]["state"] == "stale" and stale["BTC"]["price"] == "68000"  # stale keeps its number
 
 

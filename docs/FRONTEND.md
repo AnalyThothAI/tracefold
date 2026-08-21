@@ -104,7 +104,7 @@ only, so importing it does not pull the route components into the eager shell ch
   `复制「漏推」标注命令` button copies the existing `tracefold news label`
   command, exactly like the feed's `X` shortcut.
 
-  Current quotes are a separate 3 s query (`/api/news/quotes`) keyed by the
+  Current quotes are a separate 15 s query (`/api/news/quotes`) keyed by the
   sorted symbol batch, never a feed field: a price that changed must not
   invalidate the feed's ETag or re-run its count query. A quote renders its
   venue, price kind and age; a stale one stays on screen marked `陈旧` and an
