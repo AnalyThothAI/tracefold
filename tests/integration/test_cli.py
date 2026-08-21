@@ -352,6 +352,7 @@ class CliTests(unittest.TestCase):
                 validate_code,
             ],
             [0, 0, 0],
+            lines,
         )
         self.assertEqual(lines[0]["data"]["engine"], "postgresql")
         self.assertTrue(lines[0]["data"]["news_schema"]["exact"])

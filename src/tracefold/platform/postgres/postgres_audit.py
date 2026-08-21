@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
+from tracefold.platform.postgres.runtime_roles import runtime_role_contract
 from tracefold.platform.validation import require_nonnegative_int
 
 MAX_READ_RETURN_AMPLIFICATION = 20.0
@@ -105,14 +106,21 @@ class PostgresOperationalAudit:
         }
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
+        runtime_roles = runtime_role_contract(self.conn)
         return {
-            "ok": migration_ready and all(count >= 0 for count in counts.values()) and bool(news_schema["exact"]),
+            "ok": (
+                migration_ready
+                and all(count >= 0 for count in counts.values())
+                and bool(news_schema["exact"])
+                and bool(runtime_roles["ok"])
+            ),
             "engine": "postgresql",
             "migration_version": migration_version,
             "expected_migration_version": self.expected_migration_version,
             "migration_status": "ready" if migration_ready else "stale",
             "counts": counts,
             "news_schema": news_schema,
+            "runtime_roles": runtime_roles,
         }
 
     def _counts(self, table_names: tuple[str, ...]) -> dict[str, int]:

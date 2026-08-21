@@ -93,8 +93,43 @@ def runtime_role_contract(
               has_table_privilege(
                 'tracefold_workers',
                 'public.news_events',
-                'SELECT,INSERT,UPDATE,DELETE'
-              ) AS workers_dml,
+                'SELECT'
+              ) AS workers_select,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.news_events',
+                'INSERT'
+              ) AS workers_insert,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.news_events',
+                'UPDATE'
+              ) AS workers_update,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.news_events',
+                'DELETE'
+              ) AS workers_delete,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.news_event_evidence_snapshots',
+                'SELECT'
+              ) AS workers_evidence_select,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.news_event_evidence_snapshots',
+                'INSERT'
+              ) AS workers_evidence_insert,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.news_event_evidence_snapshots',
+                'UPDATE'
+              ) AS workers_evidence_update,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.news_event_evidence_snapshots',
+                'DELETE'
+              ) AS workers_evidence_delete,
               has_schema_privilege(
                 'tracefold_workers',
                 'public',
@@ -118,6 +153,10 @@ def runtime_role_contract(
             """
         ).fetchone()
     )
+    if expect_legacy_revoked:
+        legacy_login_state = legacy is None or not bool(legacy["rolcanlogin"])
+    else:
+        legacy_login_state = legacy is not None and bool(legacy["rolcanlogin"])
     checks = {
         "owner_no_login": owner is not None and not bool(owner["rolcanlogin"]),
         "serve_login": serve is not None and bool(serve["rolcanlogin"]),
@@ -126,11 +165,17 @@ def runtime_role_contract(
         "migrate_login_noinherit": (
             migrate is not None and bool(migrate["rolcanlogin"]) and not bool(migrate["rolinherit"])
         ),
-        "legacy_login_state": (legacy is not None and bool(legacy["rolcanlogin"]) == (not expect_legacy_revoked)),
+        "legacy_login_state": legacy_login_state,
         "schema_owner": bool(schema_owner_row) and str(schema_owner_row["owner"]) == "tracefold_owner",
         "serve_select": bool(privileges["serve_select"]),
         "serve_insert_denied": not bool(privileges["serve_insert"]),
-        "workers_dml": bool(privileges["workers_dml"]),
+        "workers_dml": all(
+            bool(privileges[name]) for name in ("workers_select", "workers_insert", "workers_update", "workers_delete")
+        ),
+        "workers_evidence_append": bool(privileges["workers_evidence_select"])
+        and bool(privileges["workers_evidence_insert"]),
+        "workers_evidence_rewrite_denied": not bool(privileges["workers_evidence_update"])
+        and not bool(privileges["workers_evidence_delete"]),
         "workers_create_denied": not bool(privileges["workers_create"]),
         "serve_review_append": bool(privileges["serve_review_insert"])
         and bool(privileges["serve_external_miss_insert"]),

@@ -361,9 +361,10 @@ provider circuit, and News market-mark tables), and
 general market observation tables, `queue_terminal_events`, and the
 `reject_macro_fact_mutation()` trigger function). Revisions `0279` through
 `0283` add listing admission, instruments and Price Review. The #112 chain is
-`0284` through `0288`: immutable fact/evidence snapshots, ReviewDesk v2 and
+`0284` through `0289`: immutable fact/evidence snapshots, ReviewDesk v2 and
 verified label-v1 removal, content-addressed learning artifacts/recordings,
-durable canary control, and bounded 90/365-day learning retention. A database at an earlier revision upgrades with
+durable canary control, bounded 90/365-day learning retention, and a
+role-authentic Workers evidence-append grant repair. A database at an earlier revision upgrades with
 `tracefold db migrate`; a fresh database runs the complete chain. The exact
 24 News base tables plus four security-barrier review views are asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
@@ -449,8 +450,9 @@ maintenance lock, so operators can inspect the running singleton without
 interrupting it.
 
 `db audit` reports the migration revision, row `counts` for every table in the
-code-owned `NEWS_TABLES` contract, and `news_schema` exactness over that same
-set (24 tables at migration `20260821_0288`).
+code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
+and the runtime-role contract including Workers evidence append without
+rewrite access (24 tables at migration `20260821_0289`).
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and

@@ -111,7 +111,7 @@ Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. There are no historical migration-path tests: the Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
-`20260821_0288`, and schema tests run against that
+`20260821_0289`, and schema tests run against that
 migrated head. The e2e lane (`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
