@@ -70,7 +70,7 @@ def _open_event(
         "coins": [],
         "strategy": {"id": 1018, "name": "News Score > 70", "engine_type": "news", "source_type": "news"},
     }
-    event = parse_opennews_message({"method": "strategy.triggered", "params": wire}, strategy_ids=frozenset({"1018"}))
+    event = parse_opennews_message({"method": "strategy.triggered", "params": wire})
     assert event is not None
     with repos.transaction():
         opened = admit_item(

@@ -560,23 +560,19 @@ async def _wire_news_pipeline(
     )
     await bus.connect()
 
-    strategy_ids = tuple(settings.news.opennews_strategy_ids)
     watchlist_symbols = settings.news.watchlist_symbols
     ws_client = OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
     history_client = (
         OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
     )
 
-    recovery = (
-        RecoveryRunner(bus=bus, db=db, history_client=history_client, strategy_ids=strategy_ids) if ws_client else None
-    )
+    recovery = RecoveryRunner(bus=bus, db=db, history_client=history_client) if ws_client else None
     receiver = (
         OpenNewsReceiver(
             bus=bus,
             db=db,
             ws_client=ws_client,
             history_client=history_client,
-            strategy_ids=strategy_ids,
             recovery=recovery,
         )
         if ws_client
@@ -677,7 +673,6 @@ async def _wire_news_pipeline(
         deduper=DeduperConsumer(
             bus=bus,
             db=db,
-            strategy_ids=strategy_ids,
             watchlist_symbols=watchlist_symbols,
             suppress_low_signal=settings.news.gate.suppress_low_signal,
         ),

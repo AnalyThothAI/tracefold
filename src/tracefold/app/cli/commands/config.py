@@ -71,8 +71,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                 "news": {
                     "enabled": settings.news.enabled,
                     "opennews_token_configured": bool(settings.news.opennews_token),
-                    "opennews_strategy_ids_configured": bool(settings.news.opennews_strategy_ids),
-                    "opennews_strategy_count": len(settings.news.opennews_strategy_ids),
                     "broker": {
                         "url_configured": bool(settings.news.broker.url),
                         "name_prefix": settings.news.broker.name_prefix,

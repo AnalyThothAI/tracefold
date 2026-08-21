@@ -112,7 +112,6 @@ def test_workers_role_appends_evidence_without_table_rewrite_privilege() -> None
                     },
                 },
             },
-            strategy_ids=frozenset({"1018"}),
         )
         assert event is not None
         repos = repositories_for_connection(conn)

@@ -50,9 +50,6 @@ class NewsRepository:
         last_publish_at_ms: int | None = None,
         last_error_code: str | None = None,
         clear_error: bool = False,
-        configured_strategy_ids: Sequence[str] | None = None,
-        provider_enabled_strategy_ids: Sequence[str] | None = None,
-        strategy_warnings: Sequence[str] | None = None,
     ) -> None:
         self.conn.execute(
             """
@@ -61,9 +58,6 @@ class NewsRepository:
                    last_frame_at_ms = COALESCE(%s, last_frame_at_ms),
                    last_publish_at_ms = COALESCE(%s, last_publish_at_ms),
                    last_error_code = CASE WHEN %s THEN NULL ELSE COALESCE(%s, last_error_code) END,
-                   configured_strategy_ids = COALESCE(%s::jsonb, configured_strategy_ids),
-                   provider_enabled_strategy_ids = COALESCE(%s::jsonb, provider_enabled_strategy_ids),
-                   strategy_warnings = COALESCE(%s::jsonb, strategy_warnings),
                    updated_at_ms = GREATEST(updated_at_ms, %s)
              WHERE singleton_key = 'opennews'
             """,
@@ -73,9 +67,6 @@ class NewsRepository:
                 last_publish_at_ms,
                 bool(clear_error),
                 last_error_code,
-                _dumps(list(configured_strategy_ids)) if configured_strategy_ids is not None else None,
-                _dumps(list(provider_enabled_strategy_ids)) if provider_enabled_strategy_ids is not None else None,
-                _dumps(list(strategy_warnings)) if strategy_warnings is not None else None,
                 int(now_ms),
             ),
         )
@@ -1775,13 +1766,6 @@ class NewsRepository:
                 "last_frame_at_ms": ingest["last_frame_at_ms"] if ingest else None,
                 "last_publish_at_ms": ingest["last_publish_at_ms"] if ingest else None,
                 "last_error_code": ingest["last_error_code"] if ingest else None,
-                "configured_strategy_ids": list(ingest["configured_strategy_ids"] or []) if ingest else [],
-                "provider_enabled_strategy_ids": (
-                    list(ingest["provider_enabled_strategy_ids"])
-                    if ingest and ingest["provider_enabled_strategy_ids"] is not None
-                    else None
-                ),
-                "strategy_warnings": list(ingest["strategy_warnings"] or []) if ingest else [],
                 "open_incidents": [
                     {
                         "incident_id": int(r["incident_id"]),

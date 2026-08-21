@@ -211,9 +211,6 @@
 | `last_frame_at_ms` | `BIGINT` | True | `None` |
 | `last_publish_at_ms` | `BIGINT` | True | `None` |
 | `last_error_code` | `TEXT` | True | `None` |
-| `configured_strategy_ids` | `JSONB` | False | `'[]'::jsonb` |
-| `provider_enabled_strategy_ids` | `JSONB` | True | `None` |
-| `strategy_warnings` | `JSONB` | False | `'[]'::jsonb` |
 | `broker_snapshot` | `JSONB` | False | `'{}'::jsonb` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 

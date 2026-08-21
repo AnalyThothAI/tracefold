@@ -65,13 +65,11 @@ def conn():
     connection.close()
 
 
-def _events(strategy_ids=("1018", "1352", "1353")):
+def _events():
     hits = json.loads(FIXTURE.read_text(encoding="utf-8"))
     out = []
     for hit in sorted(hits, key=lambda h: str(h.get("ts") or "")):
-        event = parse_opennews_message(
-            {"method": "strategy.triggered", "params": hit}, strategy_ids=frozenset(strategy_ids)
-        )
+        event = parse_opennews_message({"method": "strategy.triggered", "params": hit})
         if event is not None:
             out.append(event)
     return out
@@ -494,7 +492,6 @@ def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> No
                 ts="2026-08-18T21:00:00+08:00",
             ),
         },
-        strategy_ids=frozenset({"1018"}),
     )
     assert event is not None
     stamp = int(event.entry.published_at_ms or 0) + 1000
@@ -548,7 +545,6 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
                 ts="2026-08-18T20:00:00+08:00",
             ),
         },
-        strategy_ids=frozenset({"1018"}),
     )
     second = parse_opennews_message(
         {
@@ -563,7 +559,6 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
                 ts="2026-08-18T20:01:00+08:00",
             ),
         },
-        strategy_ids=frozenset({"1018"}),
     )
     assert first is not None and second is not None
     now_ms = int(second.entry.published_at_ms or 0) + 1000
@@ -638,7 +633,6 @@ def test_evidence_snapshots_are_append_only_and_outlive_event_retention(conn) ->
                 ts="2026-08-18T21:00:00+08:00",
             ),
         },
-        strategy_ids=frozenset({"1018"}),
     )
     assert event is not None
     now_ms = int(event.entry.published_at_ms or 0) + 1000

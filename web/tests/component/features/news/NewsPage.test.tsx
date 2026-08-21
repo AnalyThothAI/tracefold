@@ -586,11 +586,12 @@ describe("NewsPage", () => {
     expect(within(control).getByText("推送已暂停")).toBeInTheDocument();
     expect(within(control).getByRole("cell", { name: "DOGE" })).toBeInTheDocument();
     expect(within(control).queryByText(/until_ms/)).not.toBeInTheDocument();
-    const watch = screen.getByRole("region", { name: "关注列表与策略" });
+    const watch = screen.getByRole("region", { name: "关注列表" });
     expect(within(watch).getByText("BTC")).toBeInTheDocument();
-    // Strategy IDs are private: the console shows counts only.
-    expect(within(watch).getByText(/\/ 2 已配置/)).toBeInTheDocument();
-    expect(within(watch).queryByText("1018")).not.toBeInTheDocument();
+    // #126: which Strategies feed News is provider account configuration. The console says nothing about
+    // them — no IDs, no count, no section — because Tracefold neither chooses nor filters them.
+    expect(screen.queryByRole("region", { name: /策略/ })).toBeNull();
+    expect(document.body.textContent).not.toContain("Strategy");
     expect(document.body.textContent).not.toContain("1018");
     // Raw metrics stay available, but folded away.
     const technical = screen.getByText(/技术指标/).closest("details")!;

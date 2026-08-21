@@ -60,6 +60,7 @@ from .models import (
 from .opennews import (
     OpenNewsExpectedError,
     OpenNewsHistoryError,
+    enabled_strategy_ids,
     parse_opennews_message,
     parse_opennews_strategy_hits,
 )
@@ -156,60 +157,19 @@ class OpenNewsReceiver:
         db: Any,
         ws_client: Any | None,
         history_client: Any | None,
-        strategy_ids: Sequence[str],
         recovery: RecoveryRunner | None,
     ) -> None:
         self.bus = bus
         self.db = _Db(db)
         self.ws_client = ws_client
         self.history_client = history_client
-        self.strategy_ids = frozenset(strategy_ids)
         self.recovery = recovery
         self._backpressure_open = False
-
-    async def validate_strategies(self) -> None:
-        """Compare the configured allowlist with provider-enabled strategies; warn, never fail."""
-
-        warnings: list[str] = []
-        enabled: list[str] | None = None
-        if self.history_client is not None and self.strategy_ids:
-            try:
-                payload = await self.history_client.get_strategy_list(limit=100, page=1)
-                data = payload.get("data") if isinstance(payload, Mapping) else None
-                if not isinstance(data, list):
-                    raise OpenNewsHistoryError("opennews_history_payload_invalid")
-                enabled = sorted(
-                    str(row.get("id")).strip()
-                    for row in data
-                    if isinstance(row, Mapping) and row.get("enabled") is True and row.get("id") is not None
-                )
-                configured_disabled = sorted(self.strategy_ids - set(enabled))
-                enabled_unconfigured = sorted(set(enabled) - self.strategy_ids)
-                if configured_disabled:
-                    warnings.append("configured_but_provider_disabled:" + ",".join(configured_disabled))
-                if enabled_unconfigured:
-                    warnings.append("provider_enabled_but_not_configured:" + ",".join(enabled_unconfigured))
-            except (OpenNewsHistoryError, Exception) as exc:
-                warnings.append(f"strategy_list_unavailable:{type(exc).__name__}")
-        stamp = now_ms()
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx(
-                "news_ingest_validate",
-                lambda repos: repos.news.update_ingest_state(
-                    now_ms=stamp,
-                    configured_strategy_ids=sorted(self.strategy_ids),
-                    provider_enabled_strategy_ids=enabled,
-                    strategy_warnings=warnings,
-                ),
-            )
-        for warning in warnings:
-            log.warning("news strategy allowlist: %s", warning)
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if self.ws_client is None:
             await stop_event.wait()
             return
-        await self.validate_strategies()
         while not stop_event.is_set():
             try:
                 await self.ws_client.connect()
@@ -218,7 +178,7 @@ class OpenNewsReceiver:
                     message = await _receive_or_stop(self.ws_client, stop_event=stop_event)
                     if message is None:
                         break
-                    event = parse_opennews_message(message, strategy_ids=self.strategy_ids)
+                    event = parse_opennews_message(message)
                     if event is None:
                         continue
                     await self._publish_frame(message, strategy_id=str(event.provider_metadata["strategies"][0]["id"]))
@@ -315,11 +275,10 @@ class OpenNewsReceiver:
 class RecoveryRunner:
     """Closed incidents -> official Strategy hits -> raw.recovery.* messages (never delivered)."""
 
-    def __init__(self, *, bus: Any, db: Any, history_client: Any | None, strategy_ids: Sequence[str]) -> None:
+    def __init__(self, *, bus: Any, db: Any, history_client: Any | None) -> None:
         self.bus = bus
         self.db = _Db(db)
         self.history_client = history_client
-        self.strategy_ids = frozenset(strategy_ids)
         self._requested = asyncio.Event()
 
     def request(self) -> None:
@@ -345,12 +304,37 @@ class RecoveryRunner:
                 await _sleep_or_stop(stop_event, 5.0)
                 self._requested.set()
 
+    async def _provider_strategy_ids(self) -> tuple[str, ...]:
+        """Which Strategies to pull history for: the provider's own enabled list, read fresh.
+
+        Live ingestion needs no list at all — the socket pushes what the account enabled. Recovery does, only
+        because the provider's hits endpoint is per-strategy. Reading it per pass rather than caching it at
+        startup means a Strategy enabled mid-run is recovered too.
+
+        A failed read raises rather than returning nothing, and that distinction is the whole point:
+        `complete_recovery` is terminal, `pending_recovery_incidents` only ever selects `pending`, so settling
+        an incident `unavailable` throws its outage window away for good. One 429 on this call would otherwise
+        discard the entire backlog. `TransientError` leaves every incident pending for `run()` to retry; an
+        empty tuple means the account really has no enabled Strategies and there is nothing to recover.
+        """
+
+        if self.history_client is None:
+            return ()
+        try:
+            payload = await self.history_client.get_strategy_list(limit=100, page=1)
+        except Exception as exc:
+            raise TransientError(f"opennews_strategy_list_unavailable:{type(exc).__name__}") from exc
+        return tuple(sorted(enabled_strategy_ids(payload)))
+
     async def _recover_pending(self) -> None:
         incidents = await self.db.read("news_recovery_pending", lambda repos: repos.news.pending_recovery_incidents())
+        if not incidents:
+            return
+        strategy_ids = await self._provider_strategy_ids()
         for incident in incidents:
             incident_id = int(incident["incident_id"])
             stamp = now_ms()
-            if self.history_client is None or not self.strategy_ids:
+            if not strategy_ids:
 
                 def _unavailable(repos: Any, i: int = incident_id, s: int = stamp) -> None:
                     repos.news.complete_recovery(
@@ -371,7 +355,7 @@ class RecoveryRunner:
             to_ms = int(incident.get("recovery_to_at_ms") or incident.get("closed_at_ms") or stamp)
             complete, count, error = True, 0, None
             try:
-                for strategy_id in sorted(self.strategy_ids):
+                for strategy_id in strategy_ids:
                     strategy_complete, strategy_count = await self._recover_strategy(
                         strategy_id, from_ms=from_ms, to_ms=to_ms
                     )
@@ -413,7 +397,7 @@ class RecoveryRunner:
             payload = await client.get_strategy_hits(
                 strategy_id=strategy_id, limit=_HISTORY_PAGE_SIZE, page=page_number
             )
-            page = parse_opennews_strategy_hits(payload, strategy_ids=self.strategy_ids)
+            page = parse_opennews_strategy_hits(payload)
             for event in page.events:
                 published = event.entry.published_at_ms
                 if published is None or not (from_ms <= int(published) < to_ms):
@@ -485,13 +469,11 @@ class DeduperConsumer:
         *,
         bus: Any,
         db: Any,
-        strategy_ids: Sequence[str],
         watchlist_symbols: frozenset[str],
         suppress_low_signal: bool = False,
     ) -> None:
         self.bus = bus
         self.db = _Db(db)
-        self.strategy_ids = frozenset(strategy_ids)
         self.watchlist_symbols = watchlist_symbols
         self.suppress_low_signal = bool(suppress_low_signal)
         # #89: symbol -> instrument_class, which is how the Gate tells a stock headline from a coin headline. The
@@ -517,11 +499,9 @@ class DeduperConsumer:
         params = message.payload.get("params")
         if not isinstance(params, Mapping):
             raise PermanentError("news_raw_params_missing")
-        event = parse_opennews_message(
-            {"method": "strategy.triggered", "params": dict(params)}, strategy_ids=self.strategy_ids
-        )
+        event = parse_opennews_message({"method": "strategy.triggered", "params": dict(params)})
         if event is None:
-            return  # unconfigured strategy or malformed frame: settle silently
+            return  # malformed frame: settle silently
         ingest_mode = "recovery" if str(message.payload.get("ingest_mode")) == "recovery" else "live"
         observed = int(message.payload.get("observed_at_ms") or message.occurred_at_ms or now_ms())
         stamp = now_ms()

@@ -658,9 +658,6 @@ class NewsIngestStatusData(ExactApiSchema):
     last_frame_at_ms: int | None = None
     last_publish_at_ms: int | None = None
     last_error_code: str | None = None
-    configured_strategy_ids: list[str] = Field(default_factory=list)
-    provider_enabled_strategy_ids: list[str] | None = None
-    strategy_warnings: list[str] = Field(default_factory=list)
     open_incidents: list[NewsIncidentData] = Field(default_factory=list)
     token_configured: bool
 

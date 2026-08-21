@@ -392,14 +392,11 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       terminal_24h: 1,
     },
     ingest: {
-      configured_strategy_ids: ["1018", "1019"],
       connected: true,
       last_error_code: null,
       last_frame_at_ms: NEWS_NOW_MS - 5_000,
       last_publish_at_ms: NEWS_NOW_MS - 6_000,
       open_incidents: [],
-      provider_enabled_strategy_ids: ["1018", "1019"],
-      strategy_warnings: [],
       token_configured: true,
     },
     learning_retention: {

@@ -195,7 +195,11 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     elif pr_strong or (pr_template and not grounded):
         admission = "suppressed_pr_template"
         reasons.append("law_firm_template" if pr_strong else "law_firm_template_without_asset")
-    elif inp.engine_type == "market" and score and score < _MARKET_TELEMETRY_MIN_SCORE:
+    # A missing provider score is `0.0`, so the old `and score` guard skipped this rule for exactly the frames
+    # it exists to hold back. It never mattered while an allowlist decided which Strategies could reach the
+    # Gate at all; #126 removed that, so an unscored market frame would otherwise cost a Triage call and could
+    # reach a reader. No score is not evidence of signal.
+    elif inp.engine_type == "market" and score < _MARKET_TELEMETRY_MIN_SCORE:
         admission = "suppressed_low_signal"
         reasons.append("market_telemetry_below_min_score")
     elif (

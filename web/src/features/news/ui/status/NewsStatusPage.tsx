@@ -3,7 +3,6 @@ import { Bar } from "@shared/ui/Bar";
 import { Card } from "@shared/ui/Card";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import * as PageState from "@shared/ui/PageState";
-import { TriangleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import {
@@ -102,8 +101,8 @@ export function NewsStatusPage({ token }: { token: string }) {
               <Card aria-label="控制状态" hint="用 tracefold news control 修改" title="控制">
                 <ControlView status={status} />
               </Card>
-              <Card aria-label="关注列表与策略" title="关注列表与策略">
-                <WatchAndStrategies status={status} />
+              <Card aria-label="关注列表" title="关注列表">
+                <WatchPanel status={status} />
               </Card>
             </div>
 
@@ -373,21 +372,13 @@ function ControlView({ status }: { status: NewsStatus }) {
   );
 }
 
-function WatchAndStrategies({ status }: { status: NewsStatus }) {
-  const warnings = status.ingest.strategy_warnings ?? [];
-  const watchlist = status.watchlist ?? [];
-  const configuredIds = status.ingest.configured_strategy_ids ?? [];
-  const providerIds = status.ingest.provider_enabled_strategy_ids;
-  const configured = configuredIds.length;
+function WatchPanel({ status }: { status: NewsStatus }) {
   /*
-   * Counts only: the Strategy IDs are private account configuration and never reach the browser as rendered
-   * values. The matched figure has to be a real intersection — comparing the two lengths would report a full
-   * match for three configured IDs the provider has never heard of, contradicting `strategy_warnings` right
-   * below it. When the provider list is unavailable there is nothing to match against, so no ratio is shown.
+   * Just the watchlist. The Strategy panel went with #126: which Strategies feed News is decided in the
+   * OpenNews account, Tracefold sends no subscription frame and filters nothing, so a figure here would only
+   * restate the provider's dashboard — one more thing to keep in step, for a number nobody acts on.
    */
-  const matched = providerIds
-    ? configuredIds.filter((id) => providerIds.includes(id)).length
-    : null;
+  const watchlist = status.watchlist ?? [];
   return (
     <div className="news-watch">
       <h3 className="news-control-heading">关注列表 {formatCount(watchlist.length)}</h3>
@@ -398,26 +389,6 @@ function WatchAndStrategies({ status }: { status: NewsStatus }) {
           <em>未配置</em>
         )}
       </div>
-      <h3 className="news-control-heading">Strategy</h3>
-      <p className="news-strategy-count">
-        {formatCount(matched ?? configured)}
-        <small> / {formatCount(configured)} 已配置</small>
-      </p>
-      {matched == null ? (
-        <p className="news-strategy-note">provider 列表暂不可用，无法核对</p>
-      ) : (
-        <Bar share={configured ? (matched / configured) * 100 : 0} tone="accent" />
-      )}
-      {warnings.length ? (
-        <div className="news-warning-block news-toned" data-tone="caution">
-          <TriangleAlert aria-hidden />
-          <ul>
-            {warnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -477,14 +448,6 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="last_frame_at_ms" v={optionalTime(status.ingest.last_frame_at_ms)} />
           <KeyValueRow k="last_publish_at_ms" v={optionalTime(status.ingest.last_publish_at_ms)} />
           <KeyValueRow k="last_error_code" v={status.ingest.last_error_code ?? "—"} />
-          <KeyValueRow
-            k="provider_enabled_strategy_count"
-            v={String(status.ingest.provider_enabled_strategy_ids?.length ?? "—")}
-          />
-          <KeyValueRow
-            k="configured_strategy_count"
-            v={String((status.ingest.configured_strategy_ids ?? []).length)}
-          />
           <KeyValueRow
             k="open_incidents"
             v={

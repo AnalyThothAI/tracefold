@@ -195,6 +195,27 @@ def test_gate_grounds_provider_grades_and_cashtags_without_a_name_table() -> Non
     )
 
 
+def test_market_telemetry_without_a_provider_score_is_held_back() -> None:
+    """#126: a missing score is `0.0`, and the old `and score` guard read that as "skip this rule".
+
+    It never mattered while an allowlist decided which Strategies reached the Gate. Without one, an unscored
+    market frame would otherwise be admitted, cost a Triage call, and could reach a reader.
+    """
+
+    base = dict(strategy_ids=("9999",), coins=(), ingest_mode="live", watchlist_symbols=frozenset())
+    unscored = evaluate_gate(
+        GateInput(title="BTC open interest +3.4% in 3 minutes", engine_type="market", provider_score=None, **base)
+    )
+    assert unscored.admission == "suppressed_low_signal"
+    assert "market_telemetry_below_min_score" in unscored.reasons
+
+    # A market frame the provider does rate highly is still ordinary work.
+    scored = evaluate_gate(
+        GateInput(title="BTC open interest +3.4% in 3 minutes", engine_type="market", provider_score=85.0, **base)
+    )
+    assert scored.admission == "candidate"
+
+
 def test_gate_admission_rules() -> None:
     base = dict(
         strategy_ids=("1018",), provider_score=75.0, coins=(), ingest_mode="live", watchlist_symbols=frozenset({"BTC"})
@@ -912,9 +933,7 @@ def test_bus_envelope_roundtrip() -> None:
 # ---------------------------------------------------------------- golden replay
 def test_golden_replay_on_real_sample() -> None:
     hits = _hits()
-    report = replay_hits(
-        hits, strategy_ids=("1018", "1352", "1353"), watchlist_symbols=frozenset({"BTC", "ETH", "NVDA"})
-    )
+    report = replay_hits(hits, watchlist_symbols=frozenset({"BTC", "ETH", "NVDA"}))
     counts = report["counts"]
     assert counts["items"] == len({h["id"] for h in hits})
     # Levi & Korsinsky template PRs must not merge (ticker veto) and are vetoed at the Gate
@@ -925,11 +944,11 @@ def test_golden_replay_on_real_sample() -> None:
     # 'reply <url>' items with distinct slugs must not collapse into one event
     replies = [h for h in hits if str(h.get("text", "")).lower().startswith("reply http")]
     assert len(replies) >= 2
-    reply_report = replay_hits(replies, strategy_ids=("1018",), watchlist_symbols=frozenset())
+    reply_report = replay_hits(replies, watchlist_symbols=frozenset())
     assert reply_report["counts"]["events"] == len(replies)
     # Binance CFX announcement burst collapses into one shared event
     cfx = [h for h in hits if "Conflux Network (CFX)" in str(h.get("text"))]
-    cfx_report = replay_hits(cfx, strategy_ids=("1018",), watchlist_symbols=frozenset())
+    cfx_report = replay_hits(cfx, watchlist_symbols=frozenset())
     assert cfx_report["counts"]["events"] == 1 and cfx_report["counts"]["exact_members"] == len(cfx) - 1
     # The Gate no longer decides relevance: most items reach Triage (the model is the semantic filter)
     assert report["candidate_share_of_items"] >= 0.65
@@ -944,7 +963,7 @@ def test_gate_expectations_over_the_recall_corpus() -> None:
     """Trajectory-prefix regression: every case names a real headline and the acceptable Gate outcome set."""
 
     hits = _hits() + json.loads(RECALL_FIXTURE.read_text(encoding="utf-8"))
-    report = replay_hits(hits, strategy_ids=("1018", "1352", "1353"), watchlist_symbols=frozenset())
+    report = replay_hits(hits, watchlist_symbols=frozenset())
     events = report["events"]
     failures: list[str] = []
     for case in json.loads(EXPECTATIONS.read_text(encoding="utf-8"))["cases"]:

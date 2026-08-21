@@ -33,7 +33,6 @@ from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION
 pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
-STRATEGY_IDS = ("1018", "1352", "1353")
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
 EVENT_ROUTING_KEY = re.compile(r"^event\.[a-z_]+\.(high|normal)$")
 
@@ -109,7 +108,7 @@ def _raw_messages() -> list[BusMessage]:
 
 
 def _deduper(conn: Any, bus: FakeBus) -> DeduperConsumer:
-    return DeduperConsumer(bus=bus, db=FakeWorkerDatabase(conn), strategy_ids=STRATEGY_IDS, watchlist_symbols=WATCHLIST)
+    return DeduperConsumer(bus=bus, db=FakeWorkerDatabase(conn), watchlist_symbols=WATCHLIST)
 
 
 def _triage(conn: Any, bus: FakeBus) -> TriageConsumer:
@@ -193,7 +192,9 @@ def test_deduper_publishes_each_new_candidate_once_and_marks_published(conn) -> 
     assert len(bus.published) == published_before
 
 
-def test_deduper_settles_unconfigured_strategy_and_rejects_missing_params(conn) -> None:
+def test_deduper_admits_an_unknown_strategy_and_rejects_missing_params(conn) -> None:
+    """#126: no allowlist. A Strategy Tracefold has never seen is stored and gated like any other."""
+
     bus = FakeBus()
     deduper = _deduper(conn, bus)
     stamp = now_ms()
@@ -207,7 +208,7 @@ def test_deduper_settles_unconfigured_strategy_and_rejects_missing_params(conn) 
                 "engineType": "news",
                 "text": "Some unconfigured strategy frame",
                 "ts": stamp,
-                "strategy": {"id": 9999, "name": "not allowlisted"},
+                "strategy": {"id": 9999, "name": "a Strategy the operator enabled provider-side"},
             },
             "strategy_id": "9999",
             "ingest_mode": "live",
@@ -232,8 +233,12 @@ def test_deduper_settles_unconfigured_strategy_and_rejects_missing_params(conn) 
 
     asyncio.run(scenario())
     conn.commit()
-    assert bus.published == []
-    assert conn.execute("SELECT count(*) AS n FROM news_items WHERE source_item_key = '999999999'").fetchone()["n"] == 0
+    # The frame became a real Item; the Gate, not a config list, decides what happens to it next.
+    assert conn.execute("SELECT count(*) AS n FROM news_items WHERE source_item_key = '999999999'").fetchone()["n"] == 1
+    strategies = conn.execute(
+        "SELECT provider_metadata AS m FROM news_items WHERE source_item_key = '999999999'"
+    ).fetchone()["m"]["strategies"]
+    assert [row["id"] for row in strategies] == ["9999"]
 
 
 def _candidate_event(conn: Any, *, priority: str, grounded: bool) -> dict[str, Any] | None:

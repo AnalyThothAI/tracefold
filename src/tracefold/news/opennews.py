@@ -88,21 +88,23 @@ class OpenNewsStrategyHitPage:
     has_more: bool
 
 
-def parse_opennews_strategy_list(
-    payload: object,
-    *,
-    strategy_ids: frozenset[str],
-) -> tuple[dict[str, Any], ...]:
+def parse_opennews_strategy_list(payload: object) -> tuple[dict[str, Any], ...]:
+    """Strict about the envelope, tolerant about a row.
+
+    A malformed response is a provider failure and raises. A single odd row is not: this list is now what
+    recovery enumerates and what the status surface counts, and discarding all of it because one entry has a
+    null `enabled` would blank the fact and, before the caller learns better, cost an outage window. Skip the
+    row, keep the rest — which is what the Receiver's own inline parse did before this became shared.
+    """
+
     data = _history_data(payload)
     strategies: list[dict[str, Any]] = []
     for value in data:
         if not isinstance(value, Mapping):
-            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+            continue
         strategy_id = _wire_strategy_id(value.get("id"))
         enabled = value.get("enabled")
         if not strategy_id or not isinstance(enabled, bool):
-            raise OpenNewsHistoryError("opennews_history_payload_invalid")
-        if strategy_id not in strategy_ids:
             continue
         strategies.append(
             {
@@ -114,11 +116,17 @@ def parse_opennews_strategy_list(
     return tuple(sorted(strategies, key=lambda row: row["id"]))
 
 
-def parse_opennews_strategy_hits(
-    payload: object,
-    *,
-    strategy_ids: frozenset[str],
-) -> OpenNewsStrategyHitPage:
+def enabled_strategy_ids(payload: object) -> tuple[str, ...]:
+    """The account's enabled Strategy IDs.
+
+    This is the only list that decides anything: the socket pushes what the account has enabled, and Tracefold
+    sends no subscription frame. Recovery reads it because the provider's hits endpoint is per-strategy.
+    """
+
+    return tuple(row["id"] for row in parse_opennews_strategy_list(payload) if row["enabled"])
+
+
+def parse_opennews_strategy_hits(payload: object) -> OpenNewsStrategyHitPage:
     if not isinstance(payload, Mapping):
         raise OpenNewsHistoryError("opennews_history_payload_invalid")
     data = _history_data(payload)
@@ -129,10 +137,7 @@ def parse_opennews_strategy_hits(
     for value in data:
         if not isinstance(value, Mapping):
             raise OpenNewsHistoryError("opennews_history_payload_invalid")
-        event = parse_opennews_message(
-            {"method": "strategy.triggered", "params": value},
-            strategy_ids=strategy_ids,
-        )
+        event = parse_opennews_message({"method": "strategy.triggered", "params": value})
         if event is None:
             raise OpenNewsHistoryError("opennews_history_payload_invalid")
         events.append(event)
@@ -159,11 +164,7 @@ def _history_nonnegative_int(value: object, *, minimum: int) -> int:
     return int(value)
 
 
-def parse_opennews_message(
-    message: object,
-    *,
-    strategy_ids: frozenset[str],
-) -> OpenNewsEvent | None:
+def parse_opennews_message(message: object) -> OpenNewsEvent | None:
     if message == "ping" or not isinstance(message, Mapping):
         return None
     if _text(message.get("method")) != "strategy.triggered":
@@ -175,7 +176,7 @@ def parse_opennews_message(
     if not isinstance(strategy, Mapping):
         return None
     strategy_id = _wire_strategy_id(strategy.get("id"))
-    if not strategy_id or strategy_id not in strategy_ids:
+    if not strategy_id:
         return None
     provider_record_id = _wire_strategy_id(params.get("id"))
     if not provider_record_id:
@@ -413,6 +414,7 @@ __all__ = [
     "OpenNewsHistoryError",
     "OpenNewsStrategyHistory",
     "OpenNewsStrategyHitPage",
+    "enabled_strategy_ids",
     "parse_opennews_message",
     "parse_opennews_strategy_hits",
     "parse_opennews_strategy_list",

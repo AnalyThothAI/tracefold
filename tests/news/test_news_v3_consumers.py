@@ -18,12 +18,14 @@ from tracefold.news.bus import (
     BusMessage,
     DeferError,
     PermanentError,
+    TransientError,
 )
 from tracefold.news.canary import CanaryRuntimeArm
 from tracefold.news.consumers import (
     DeduperConsumer,
     DelivererConsumer,
     JanitorLoop,
+    RecoveryRunner,
     TriageConsumer,
 )
 from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
@@ -242,6 +244,15 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 family="listing",
                 gate=SimpleNamespace(priority="high", amqp_priority=5),
             ),
+            # #126: a Strategy Tracefold has no local knowledge of. There is no allowlist to consult — the
+            # provider account enabled it and the socket pushed it, so the Gate judges it like any other.
+            SimpleNamespace(
+                event_created=True,
+                admission="candidate",
+                event_id="ev-4",
+                family="general",
+                gate=SimpleNamespace(priority="normal", amqp_priority=0),
+            ),
         ]
     )
     seen: list[dict[str, Any]] = []
@@ -253,9 +264,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(consumers_module, "admit_frame", fake_admit)
     news = RecordingNews()
     bus = FakeBus()
-    deduper = DeduperConsumer(
-        bus=bus, db=FakeWorkerDatabase(news), strategy_ids=("1018",), watchlist_symbols=frozenset({"BTC"})
-    )
+    deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset({"BTC"}))
     params = {
         "id": 3_568_501,
         "engineType": "news",
@@ -275,6 +284,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
         await deduper.handle(raw)  # redelivery: admit_frame reports nothing new
         await deduper.handle(raw)  # a suppressed admission never reaches Triage
         await deduper.handle(raw)  # a listing admission does
+        # An unknown Strategy is ordinary work now, not a frame to drop.
         foreign = _message(
             "raw",
             {"params": {**params, "strategy": {"id": 4242, "name": "other"}}, "strategy_id": "4242"},
@@ -286,15 +296,15 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
     asyncio.run(scenario())
 
-    assert len(seen) == 4
+    assert len(seen) == 5
     assert seen[0]["ingest_mode"] == "live" and seen[0]["observed_at_ms"] == NOW_MS - 5
     assert seen[0]["trace_id"] == "trace-1" and seen[0]["watchlist_symbols"] == frozenset({"BTC"})
     assert seen[0]["event"].provider_record_id == "3568501"
-    assert bus.routing_keys() == ["event.macro.high", "event.listing.high"]
+    assert bus.routing_keys() == ["event.macro.high", "event.listing.high", "event.general.normal"]
     assert bus.published[0].payload == {"event_id": "ev-1"}
     assert bus.published[0].priority == 5 and bus.published[0].message_id == "event:ev-1"
     assert bus.published[1].payload == {"event_id": "ev-3"}
-    assert news.names() == ["mark_event_published", "mark_event_published"]
+    assert news.names() == ["mark_event_published"] * 3
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-1"
 
 
@@ -305,7 +315,6 @@ def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkey
     deduper = DeduperConsumer(
         bus=bus,
         db=FakeWorkerDatabase(news, admission_timeout_for={"news_deduper_admit"}),
-        strategy_ids=("1018",),
         watchlist_symbols=frozenset(),
     )
     raw = _message(
@@ -1223,3 +1232,70 @@ def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on(
     assert inserted["throttled_by"] == "storyline:asset:NVDA:seen"
     assert inserted["trace"]["seen_scope"] == "all"
     assert bus.published == []
+
+
+# ---------------------------------------------------------------- Recovery
+class _FailingStrategyList:
+    """A history client whose Strategy list is momentarily unavailable — a 429, a timeout, a bad gateway."""
+
+    def __init__(self) -> None:
+        self.hits_calls = 0
+
+    async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    async def get_strategy_hits(self, **_kwargs: Any) -> dict[str, Any]:
+        self.hits_calls += 1
+        return {"success": True, "data": [], "page": 1, "limit": 100, "total": 0}
+
+
+def test_recovery_leaves_incidents_pending_when_the_strategy_list_is_unavailable() -> None:
+    """#126 made recovery ask the provider which Strategies exist, which introduced a way to lose a backlog.
+
+    `complete_recovery` is terminal and `pending_recovery_incidents` only selects `pending`, so settling an
+    incident `unavailable` throws its outage window away for good. One failed Strategy-list read must not do
+    that — it has to raise and let `run()` retry.
+    """
+
+    news = RecordingNews(
+        pending_recovery_incidents=[
+            {
+                "incident_id": 1,
+                "cause_class": "socket_closed",
+                "opened_at_ms": 1_000,
+                "closed_at_ms": 2_000,
+                "recovery_from_at_ms": None,
+                "recovery_to_at_ms": None,
+            }
+        ]
+    )
+    client = _FailingStrategyList()
+    recovery = RecoveryRunner(bus=FakeBus(), db=FakeWorkerDatabase(news), history_client=client)
+
+    with pytest.raises(TransientError, match="opennews_strategy_list_unavailable"):
+        asyncio.run(recovery._recover_pending())
+
+    assert "complete_recovery" not in news.names()
+    assert client.hits_calls == 0
+
+
+def test_recovery_without_a_history_client_still_settles_unavailable() -> None:
+    """An absent client is permanent, not transient: there is nothing to wait for."""
+
+    news = RecordingNews(
+        pending_recovery_incidents=[
+            {
+                "incident_id": 7,
+                "cause_class": "socket_closed",
+                "opened_at_ms": 1_000,
+                "closed_at_ms": 2_000,
+                "recovery_from_at_ms": None,
+                "recovery_to_at_ms": None,
+            }
+        ]
+    )
+    recovery = RecoveryRunner(bus=FakeBus(), db=FakeWorkerDatabase(news), history_client=None)
+
+    asyncio.run(recovery._recover_pending())
+
+    assert news.kwargs_of("complete_recovery")["status"] == "unavailable"
