@@ -422,7 +422,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260821_0288_learning_retention`. The #112 chain
+the linear revisions through `20260821_0289_learning_runtime_grants`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -433,7 +433,7 @@ chained revision
 Workers hold the steady lock).
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
-Before its first 0284–0288 upgrade, take a restorable volume backup, stop Serve
+Before its first 0284–0289 upgrade, take a restorable volume backup, stop Serve
 and Workers, run the normal migration, then deploy the matching image. The
 migration owns the narrow ReviewDesk grants; the existing Serve credential is
 unchanged.
@@ -477,15 +477,18 @@ the two review fact tables in addition to its read access. 0286 adds content-add
 candidate/evaluation/deployment artifacts, pairwise cases and exact model
 recordings. 0287 adds durable canary activations, one assignment per Event and
 runtime manifests. 0288 adds the bounded retention function, cold-Janitor
-state, and indexes used by its ordered batches. Migration never calls the
-model or derives a release PASS.
+state, and indexes used by its ordered batches. 0289 reasserts the exact
+Workers `SELECT`/`INSERT` evidence-snapshot grant and revokes rewrite access;
+`db audit` now verifies that role contract so a missing runtime grant fails the
+rollout check before a live Event discovers it. Migration never calls the model
+or derives a release PASS.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
 settings schema rejects them and Serve/Workers fail to start with them
 present. Verify after restart: `tracefold db audit` reports
-`migration_status` `ready`, current News table counts, and
-`news_schema.exact`; `tracefold news bus-check` shows one consumer on
+`migration_status` `ready`, current News table counts, `news_schema.exact`, and
+`runtime_roles.ok`; `tracefold news bus-check` shows one consumer on
 `news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` once
 the WSS connects; `/api/macro/overview` answers `404`; and the first candidate
 Event receives a Triage verdict within seconds.

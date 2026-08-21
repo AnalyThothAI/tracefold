@@ -1116,7 +1116,9 @@ class ReviewDesk:
             }
         )
         accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
-        release_eligible = str(task.selection.get("stratum")) != "high_reaction"
+        release_eligible = (
+            bool(task.row.get("evidence_release_eligible")) and str(task.selection.get("stratum")) != "high_reaction"
+        )
         self._conn.execute(
             """
             INSERT INTO news_reviews (

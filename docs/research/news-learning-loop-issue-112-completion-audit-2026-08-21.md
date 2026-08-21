@@ -1,29 +1,35 @@
 # Issue #112 落地审计：代码完成不等于生产闭环完成
 
 日期：2026-08-21（Asia/Taipei）
-审计对象：`AnalyThothAI/tracefold#112`、当前工作树、生产库只读状态
-结论：**可以按 #112 继续上线；现在不能关闭 #112，也不能声称 Agent 已经学会。**
+审计对象：`AnalyThothAI/tracefold#112`、当前工作树、生产部署与受控写入验证
+结论：**#112 的生产机制可以在迁移、真实写入和回滚证据完成后关闭；Agent
+是否真的变好必须由独立的生产实证票 [#121](https://github.com/AnalyThothAI/tracefold/issues/121)
+证明，不能借关闭架构票偷换结论。**
 
 ## 1. 最短答案
 
-这套系统现在已经有了“学习闭环的机器”，但还没有跑完“第一次真实学习”。
+这套系统已经有了“学习闭环的机器”，但还没有跑完“第一次真实学习”。
 
 - 代码层：FactUnit、不可变证据、真实 sent receipt、ReviewDesk、CandidateEvaluator、双臂顺序 replay、未来留出集、shadow、单臂 canary、回滚凭证与复盘页 hard cut 已经落到工作树。
 - 本轮补齐的发布门：固定 Agent cohort、显式标记 mutable model alias、50-cluster 预注册盲测、100 次人工预算耗尽返回 `UNKNOWN`、候选新增 critical error 直接 `FAIL`、前序阶段未 PASS 时禁止花下一阶段模型预算；0288 还实现了 90/365 天 bounded retention、当前/上一 stable pin、冷 Janitor 与状态指标（[#118](https://github.com/AnalyThothAI/tracefold/issues/118)）。
-- 生产层：数据库仍为 `0283`，代码目标为 `0288`；生产没有 accepted review、eventless miss、未来 holdout、shadow、canary 或 rollback drill。这里没有任何数据可以诚实证明 precision、recall 或读者价值提高。
+- 生产层：#120 已把机制迁到 `0288` 并完成第一条真实 DRAM ReviewDesk
+  提交；上线同时暴露出 Workers evidence INSERT 缺权与 historical evidence
+  eligibility 两个 correctness 问题。`0289` 负责正式修复并把逐项角色权限纳入
+  `db audit`。这证明闭环开始接触真实生产，但仍没有数据可诚实证明 precision、
+  recall 或读者价值提高。
 
-因此，正确状态不是“完成”或“失败”，而是：
+因此要把两个完成条件分开：
 
 ```text
-机制代码基本就绪
-  -> 等待受控迁移
-  -> 收真实人工证据
+机制代码 + 0289 生产验证 -> 关闭架构实施票 #112
+
+收真实人工证据
   -> 跑第一个 DRAM Prompt candidate
   -> 未来留出集
   -> 24h shadow
   -> 24h 10% canary
   -> 人工 promotion 或 rollback
-  -> 把完整 receipt chain 回填 #112 后才能关闭
+  -> 把完整 receipt chain 回填 #121，才能声称真实质量提升
 ```
 
 ## 2. 高中生版本：生产闭环怎样跑
@@ -108,9 +114,9 @@
 | content-addressed receipts | 已实现 | dataset/candidate/report/release/deployment/rollback artifacts |
 | previous image + 24h rollback | 已实现 | runtime manifest 变更追加 deployment receipt |
 
-### 3.5 不能由代码测试替代的真实证据
+### 3.5 不能由代码测试替代的真实效果证据
 
-下面全部仍未完成，因此 #112 必须保持打开：
+下面全部仍未完成，由 #121 继续承载；它们不应伪装成 #112 的迁移验收：
 
 - 30 boundary、100 retention、50 negative 独立事实簇和完整 safety set；
 - 页面真实 POST → coverage → freeze → evaluator 的生产证据链；
@@ -179,7 +185,7 @@
 ### Phase 0：迁移前
 
 1. 固定 Git SHA、镜像 digest、当前 `0283` schema head、备份与回滚命令。
-2. 在生产快照的隔离数据库演练 `0283 → 0288`，核对 legacy label count/hash、role grants、query plans 与 learning-retention backlog。
+2. 在生产快照的隔离数据库演练 `0283 → 0289`，核对 legacy label count/hash、role grants、query plans 与 learning-retention backlog。
 3. 明确 review bearer；沿用现有 Serve 凭据及其两张表的最小 INSERT grant，不向 HTTP 进程暴露 Workers/Migrate 凭据。
 
 ### Phase 1：只上证据与 ReviewDesk
@@ -239,23 +245,30 @@
 
 ## 11. 最终代码验证（仍不是生产效果证明）
 
-本工作树在目标 schema `20260821_0288` 上完成了以下回归；这些数字证明实现没有破坏既有合同，不能替代未来真实 holdout 与 canary：
+本工作树在目标 schema `20260821_0289` 上完成回归；这些数字证明实现没有破坏既有合同，不能替代未来真实 holdout 与 canary：
 
-- 后端全量（含 integration/e2e/golden/slow real-process 与 `0283 → 0288` 有数据迁移演练）：`580 passed`；
+- 后端全量（含 integration/e2e/golden/slow real-process 与 `0283 → 0289` 有数据迁移演练）：`581 passed`；
 - 前端 Vitest：`162 passed`；ESLint + 前端架构：`76 passed`；production build 与 Prettier：PASS；
 - Playwright 四种视口：`63 passed`、`53 skipped`（按 project/viewport 条件跳过），四张 golden snapshot 复核通过；
-- Ruff check/format、MyPy `118 source files`、compileall、CLI help/OpenAPI/generated-schema drift 与 `git diff --check`：PASS；
+- Ruff check/format、MyPy `119 source files`、compileall、CLI help/OpenAPI/generated-schema drift 与 `git diff --check`：PASS；
 - `#118` retention 测试覆盖 90/365 天边界、当前/上一 distinct stable pin、active canary/release chain、stale rejected 清理、rollback receipt、worker-only 权限、每表 bounded batch、cold-lane 10 秒 deadline 与错误隔离。
 
-生产数据库仍为 `0283`。2026-08-21 的 KISS 决策删除了独立
+2026-08-21 的 KISS 决策删除了独立
 `tracefold_review` 登录、密码、Compose mount、连接池和离线 bootstrap；
-0283 可在备份、停止 Serve/Workers 后直接迁移。上面这些验证本身仍没有
-迁移生产、写 review、切 shadow/canary 或改变 stable pointer。
+生产沿用 Serve 账号，并只对两张 append-only Review 表开放 INSERT。
+`0289` 还把 Workers evidence append 的真实权限加入 `db audit`，避免容器
+ready 却在第一条 Event 上失败。shadow/canary 和 stable pointer 仍未改变。
 
 ## 12. 完成定义
 
-只有下面一句话能关闭 #112：
+关闭 #112 的完成定义是：
+
+> 固定 Git/image/schema 后完成生产 `0289` 迁移；`db audit` 的逐项角色合同、
+> 热链路新 evidence snapshot、ReviewDesk 真写、DLQ 与回滚凭证全部可验证；
+> 独立 Review 密码与账号不再存在。
+
+只有下面一句话能关闭 #121 并声称 Agent 真的学得更好：
 
 > 在固定 Git/image/schema/Agent hashes 下，真实 accepted reviews 形成 development 集；一个只改 Prompt 的 DRAM candidate 在 candidate-unseen temporal holdout 上达到预注册 primary interval，且无 critical regression；随后完成 24h shadow、24h 10% canary 和可验证 promotion/rollback，所有 content-addressed receipts 已回填 Issue。
 
-在那之前，最准确的项目状态是：**代码机制可上线取证，生产学习闭环尚未完成第一次闭环。**
+在那之前，最准确的项目状态是：**学习机制可以在生产取证，质量学习闭环尚未完成第一次闭环。**

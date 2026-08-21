@@ -314,6 +314,54 @@ def test_high_reaction_held_case_is_discovery_only_and_not_release_truth(conn) -
     }
 
 
+def test_legacy_reconstructed_evidence_stays_discovery_only_after_review(conn) -> None:
+    event_id = _open_event(conn)
+    conn.execute(
+        """
+        INSERT INTO news_event_evidence_snapshots (
+          event_id, evidence_version, focus_fact_id, evidence_sha256,
+          provenance, release_eligible, snapshot, created_at_ms
+        )
+        SELECT event_id, evidence_version + 1, focus_fact_id, %s,
+               'legacy_reconstructed', false,
+               snapshot || '{"provenance":"legacy_reconstructed"}'::jsonb,
+               %s
+          FROM news_event_evidence_snapshots
+         WHERE event_id = %s
+         ORDER BY evidence_version DESC
+         LIMIT 1
+        """,
+        ("f" * 64, NOW, event_id),
+    )
+    conn.commit()
+
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    assert task["evidence_ready"] is False
+    evidence = desk.evidence(
+        TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+        principal=PRINCIPAL,
+    )
+    assert evidence["evidence"]["provenance"] == "legacy_reconstructed"
+    with repositories_for_connection(conn).transaction():
+        receipt = desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            _rubric(),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    rows = conn.execute(
+        "SELECT review_kind, release_eligible FROM news_reviews "
+        "WHERE review_id = %s OR accepts_review_id = %s ORDER BY review_kind",
+        (receipt["receipt"]["review_id"], receipt["receipt"]["review_id"]),
+    ).fetchall()
+    assert {row["review_kind"]: row["release_eligible"] for row in rows} == {
+        "acceptance": False,
+        "judgment": False,
+    }
+
+
 def test_task_version_conflicts_when_delivery_truth_changes(conn) -> None:
     event_id = _open_event(conn, delivered=False)
     desk = ReviewDesk(conn, now_ms=NOW)

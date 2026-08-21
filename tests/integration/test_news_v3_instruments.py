@@ -291,15 +291,20 @@ def test_both_runtime_roles_have_the_expected_privileges(conn) -> None:
         """
         SELECT has_table_privilege('tracefold_serve', 'public.news_market_instruments', 'SELECT') AS serve_select,
                has_table_privilege('tracefold_serve', 'public.news_market_instruments', 'INSERT') AS serve_insert,
-               has_table_privilege(
-                 'tracefold_workers', 'public.news_market_instruments', 'SELECT,INSERT,UPDATE,DELETE'
-               ) AS workers_dml,
+               has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'SELECT')
+                 AS workers_select,
+               has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'INSERT')
+                 AS workers_insert,
+               has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'UPDATE')
+                 AS workers_update,
+               has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'DELETE')
+                 AS workers_delete,
                has_table_privilege('tracefold_workers', 'public.news_symbol_aliases', 'INSERT') AS workers_alias
         """
     ).fetchone()
     assert row["serve_select"] is True
     assert row["serve_insert"] is False
-    assert row["workers_dml"] is True
+    assert all(row[key] is True for key in ("workers_select", "workers_insert", "workers_update", "workers_delete"))
     assert row["workers_alias"] is True
 
 

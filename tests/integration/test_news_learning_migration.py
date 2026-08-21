@@ -64,7 +64,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260821_0288"
+        assert revision["version_num"] == "20260821_0289"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -105,7 +105,15 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
               has_table_privilege('tracefold_serve', 'news_reviews', 'SELECT') AS review_select,
               has_table_privilege('tracefold_serve', 'news_reviews', 'INSERT') AS review_insert,
               has_table_privilege('tracefold_serve', 'news_reviews', 'UPDATE,DELETE') AS review_rewrite,
-              has_table_privilege('tracefold_serve', 'news_events', 'INSERT') AS news_insert
+              has_table_privilege('tracefold_serve', 'news_events', 'INSERT') AS news_insert,
+              has_table_privilege('tracefold_workers', 'news_event_evidence_snapshots', 'SELECT')
+                AS workers_evidence_select,
+              has_table_privilege('tracefold_workers', 'news_event_evidence_snapshots', 'INSERT')
+                AS workers_evidence_insert,
+              has_table_privilege('tracefold_workers', 'news_event_evidence_snapshots', 'UPDATE')
+                AS workers_evidence_update,
+              has_table_privilege('tracefold_workers', 'news_event_evidence_snapshots', 'DELETE')
+                AS workers_evidence_delete
             """
         ).fetchone()
         assert privileges == {
@@ -113,7 +121,54 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
             "review_insert": True,
             "review_rewrite": False,
             "news_insert": False,
+            "workers_evidence_select": True,
+            "workers_evidence_insert": True,
+            "workers_evidence_update": False,
+            "workers_evidence_delete": False,
         }
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()
+
+
+def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260821_0288")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("REVOKE ALL ON news_event_evidence_snapshots FROM tracefold_workers")
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("head")
+
+        conn = connect_postgres_test(read_only=False)
+        privileges = conn.execute(
+            """
+            SELECT
+              has_table_privilege('tracefold_workers', 'news_event_evidence_snapshots', 'SELECT')
+                AS select_allowed,
+              has_table_privilege('tracefold_workers', 'news_event_evidence_snapshots', 'INSERT')
+                AS insert_allowed,
+              has_table_privilege('tracefold_workers', 'news_event_evidence_snapshots', 'UPDATE')
+                AS update_allowed,
+              has_table_privilege('tracefold_workers', 'news_event_evidence_snapshots', 'DELETE')
+                AS delete_allowed
+            """
+        ).fetchone()
+        assert privileges == {
+            "select_allowed": True,
+            "insert_allowed": True,
+            "update_allowed": False,
+            "delete_allowed": False,
+        }
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260821_0289"
     finally:
         if conn is not None:
             conn.close()
