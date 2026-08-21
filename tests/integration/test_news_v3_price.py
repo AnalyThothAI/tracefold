@@ -214,6 +214,29 @@ def test_quote_snapshots_are_latest_only_and_one_row_per_source(conn) -> None:
     assert len(rows) == 1 and int(rows[0]["received_at_ms"]) == NOW + 2  # last value wins, no history
 
 
+def test_forgetting_a_source_leaves_every_planned_one_alone(conn) -> None:
+    """#88 follow-up: a source whose targets rotated out must not linger as a permanently stale row."""
+
+    repos = repositories_for_connection(conn)
+    quote = Quote(venue="hl.mkts", venue_symbol="mkts:X", base_symbol="X", price=Decimal("1"), price_kind="mid")
+    with repos.transaction():
+        for source in ("binance.perp", "hl.mkts"):
+            repos.price.replace_source_snapshot(
+                source_key=source,
+                quotes=[quote],
+                target_count=1,
+                source_at_ms=NOW,
+                received_at_ms=NOW,
+                now_ms=NOW,
+            )
+        dropped = repos.price.forget_sources_except(["binance.perp"])
+
+    assert dropped == 1
+    assert set(repos.price.quote_snapshots()) == {"binance.perp"}
+    with repos.transaction():
+        assert repos.price.forget_sources_except([]) == 0  # an empty plan never wipes the table
+
+
 def test_quote_results_name_their_own_state_and_never_fabricate_a_price(conn) -> None:
     _universe(
         conn,

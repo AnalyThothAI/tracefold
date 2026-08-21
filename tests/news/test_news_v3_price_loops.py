@@ -38,6 +38,7 @@ class _FakePrice:
         self._targets = targets or []
         self._due = due or []
         self.snapshots: dict[str, dict[str, Any]] = {}
+        self.forgotten: list[str] = []
         self.reactions: list[dict[str, Any]] = []
         self.instruments: dict[str, PriceInstrument] = {}
 
@@ -54,6 +55,14 @@ class _FakePrice:
 
     def replace_source_snapshot(self, *, source_key: str, quotes: Any, **kwargs: Any) -> None:
         self.snapshots[source_key] = {"quotes": list(quotes), **kwargs}
+
+    def forget_sources_except(self, source_keys: Any) -> int:
+        kept = set(source_keys)
+        dropped = [key for key in self.snapshots if key not in kept]
+        for key in dropped:
+            del self.snapshots[key]
+        self.forgotten.extend(dropped)
+        return len(dropped)
 
     def due_reactions(self, *, now_ms: int, limit: int) -> list[dict[str, Any]]:
         del now_ms
@@ -200,6 +209,46 @@ def test_no_provider_call_happens_inside_a_database_transaction() -> None:
     asyncio.run(QuoteSnapshotLoop(db=db, fetcher_for=fetcher_for).turn())
 
     assert observed == [False]  # network latency never occupies a database slot
+
+
+def test_a_source_that_left_the_working_set_does_not_linger_as_a_stale_row() -> None:
+    """A source with no targets has no reader; its row would otherwise age forever and report as stale."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC")])
+    price.snapshots["hl.mkts"] = {"quotes": [], "stale": True}
+    db = _FakeColdDatabase(price)
+
+    def fetcher_for(_source: str):
+        async def fetch(symbols):
+            return [ProviderQuote(venue_symbol=symbol, price=Decimal("1")) for symbol in symbols]
+
+        return fetch
+
+    asyncio.run(QuoteSnapshotLoop(db=db, fetcher_for=fetcher_for).turn())
+
+    assert price.forgotten == ["hl.mkts"]
+    assert set(price.snapshots) == {"binance.perp"}
+
+
+def test_a_planned_source_that_failed_keeps_its_row_through_the_prune() -> None:
+    """Stale-not-blank still wins: only sources absent from the plan are dropped."""
+
+    price = _FakePrice(targets=[_instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("hl.perp", "HYPE", "HYPE")])
+    price.snapshots["hl.perp"] = {"quotes": ["previous"]}
+    db = _FakeColdDatabase(price)
+
+    def fetcher_for(source: str):
+        async def fetch(symbols):
+            if source == "hl.perp":
+                raise RuntimeError("venue_timeout")
+            return [ProviderQuote(venue_symbol=symbol, price=Decimal("1")) for symbol in symbols]
+
+        return fetch
+
+    asyncio.run(QuoteSnapshotLoop(db=db, fetcher_for=fetcher_for).turn())
+
+    assert price.forgotten == []
+    assert price.snapshots["hl.perp"] == {"quotes": ["previous"]}
 
 
 def test_a_source_that_answers_with_nothing_usable_keeps_its_previous_row() -> None:
@@ -370,6 +419,66 @@ def test_an_immature_event_asks_only_for_the_first_horizon() -> None:
     assert end_ms < fresh_anchor + HORIZON_MS["4h"]  # 4H has not matured; nothing asks for it yet
     assert price.reactions[0]["state"] == "partial"
     assert price.reactions[0].get("unavailable_reason") is None  # still due for its 4H leg
+
+
+def test_a_market_that_has_never_traded_is_named_once_instead_of_asked_forever() -> None:
+    """Hyperliquid lists spot pairs with no trades at all and answers `[]` for them, permanently.
+
+    Treating that as a transient failure left the row unwritten and therefore permanently due: in production
+    31 such rows sat at the head of the oldest-first scan, pinning the backlog SLO at 52 h and re-requesting
+    dead markets every turn.
+    """
+
+    price = _FakePrice(due=[_due_row("e1")])
+    price.instruments["BTC"] = _instrument("hl.spot", "@293", "BTC")
+    result = asyncio.run(_reaction_loop(price, []).turn())
+
+    assert result["written"] == 1
+    assert price.reactions[0]["state"] == "unavailable"
+    assert price.reactions[0]["unavailable_reason"] == "no_candle_within_gap"
+
+
+def test_no_answer_at_all_still_leaves_the_work_due() -> None:
+    """The other half of the same rule: a failed request is loop health and must stay retryable."""
+
+    price = _FakePrice(due=[_due_row("e1")])
+    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
+
+    def fetcher_for(_venue: str):
+        async def fetch(*_args: Any):
+            raise RuntimeError("venue_timeout")
+
+        return fetch
+
+    loop = EventReactionLoop(db=_FakeColdDatabase(price), fetcher_for=fetcher_for)
+    asyncio.run(loop.turn())
+
+    assert price.reactions == []
+
+
+def test_a_partial_row_keeps_its_first_horizon_when_the_second_window_is_empty() -> None:
+    matured = now_ms() - HORIZON_MS["4h"] - 60_000
+    price = _FakePrice(
+        due=[
+            _due_row(
+                "e1",
+                state="partial",
+                venue="hl.spot",
+                venue_symbol="@293",
+                p0=Decimal("100"),
+                p0_at_ms=matured,
+                p1=Decimal("101"),
+                p1_at_ms=matured + HORIZON_MS["1h"],
+                anchor_at_ms=matured,
+            )
+        ]
+    )
+    asyncio.run(_reaction_loop(price, []).turn())
+
+    written = price.reactions[0]
+    assert written["state"] == "partial"  # the 1H measurement survives
+    assert written["p0"] == Decimal("100")
+    assert written["unavailable_reason"] == "no_candle_within_gap"
 
 
 def test_a_hole_at_the_horizon_is_named_rather_than_forward_filled() -> None:

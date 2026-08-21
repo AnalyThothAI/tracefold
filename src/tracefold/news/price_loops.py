@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from typing import Any
 
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
@@ -192,7 +192,14 @@ class QuoteSnapshotLoop:
         if not writes:
             return {**_plan_stats(plan), "sources": len(groups), "written": 0, "quotes": 0}
 
+        planned_sources = sorted(groups)
+
         def _store(repos: Any, rows: list[tuple[str, list[Quote], int]] = writes) -> int:
+            # A source whose targets rotated out of the working set has no reader left, and its row would
+            # otherwise sit there ageing forever — reporting one permanently stale source and serving a
+            # month-old price to anything that still resolved to it. Sources that were planned but *failed*
+            # are not touched: keeping their previous value is the whole stale-not-blank invariant.
+            repos.price.forget_sources_except(planned_sources)
             for source, quotes, target_count in rows:
                 repos.price.replace_source_snapshot(
                     source_key=source,
@@ -361,6 +368,12 @@ class EventReactionLoop:
             [self._candle_call(request) for request in requests], limit=EXTERNAL_CONCURRENCY
         )
         candles: dict[tuple[str, str], list[Candle]] = {}
+        # Which instruments the provider actually answered for. An answer carrying no bars is a fact about
+        # the market — Hyperliquid lists spot pairs that have never traded and returns `[]` for them
+        # forever — while no answer at all is loop health. Conflating the two left those rows unwritten and
+        # therefore permanently due: 31 of them sat at the head of the oldest-first scan pinning the backlog
+        # SLO at 52 h and re-requesting dead markets every turn.
+        answered: set[tuple[str, str]] = set()
         errors: list[str] = []
         for request, result in zip(requests, results, strict=False):
             key = (request["venue"], request["venue_symbol"])
@@ -368,12 +381,13 @@ class EventReactionLoop:
                 code = getattr(result, "code", None) or type(result).__name__
                 errors.append(f"{request['venue']}:{code}")
                 continue
+            answered.add(key)
             candles.setdefault(key, []).extend(result)
         self.last_error = ",".join(sorted(set(errors))) or None
 
         writes = [*terminal]
         for row in pending:
-            computed = _reaction_row(row, candles=candles, now_ms=stamp)
+            computed = _reaction_row(row, candles=candles, answered=answered, now_ms=stamp)
             if computed is not None:
                 writes.append(computed)
         if not writes:
@@ -484,12 +498,18 @@ def _merge_ranges(windows: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def _reaction_row(
-    row: Mapping[str, Any], *, candles: Mapping[tuple[str, str], Sequence[Candle]], now_ms: int
+    row: Mapping[str, Any],
+    *,
+    candles: Mapping[tuple[str, str], Sequence[Candle]],
+    answered: Collection[tuple[str, str]],
+    now_ms: int,
 ) -> dict[str, Any] | None:
-    """One Event-asset's row, or None when the provider call failed and the work stays retryable.
+    """One Event-asset's row, or None when the provider never answered and the work stays retryable.
 
     A transient provider failure is loop health, never a semantic reason: leaving the row untouched keeps it
-    in the due scan instead of terminalizing an Event as unpriceable because a request timed out once.
+    in the due scan instead of terminalizing an Event as unpriceable because a request timed out once. An
+    empty answer is the opposite — the venue is telling us this contract has no trades in that window, which
+    is exactly `no_candle_within_gap` and is terminal.
     """
 
     instrument: PriceInstrument = row["instrument"]
@@ -512,9 +532,15 @@ def _reaction_row(
     }
     if window is None:
         return None
-    bars = candles.get((instrument.venue, instrument.venue_symbol))
+    key = (instrument.venue, instrument.venue_symbol)
+    bars = candles.get(key)
     if not bars:
-        return None
+        if key not in answered:
+            return None  # no answer (failed, or the request cap deferred it): stay due
+        # The horizon is already due — the due scan is what put this row here — so an empty window is a
+        # hole the provider has no bar for, not a "not yet".
+        state = "partial" if base["p0"] is not None else "unavailable"
+        return {**base, "state": state, "unavailable_reason": "no_candle_within_gap"}
     if base["p0"] is None:
         p0 = select_candle(bars, target_ms=anchor)
         p1 = select_candle(bars, target_ms=anchor + HORIZON_MS["1h"])
