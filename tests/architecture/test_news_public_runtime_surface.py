@@ -75,6 +75,7 @@ RETIRED_NEWS_MODULES = (
     "translation.py",
 )
 WRITE_REPOSITORY_METHODS = (
+    "forget_sources_except",
     "replace_source_snapshot",
     "upsert_reaction",
     "insert_event",

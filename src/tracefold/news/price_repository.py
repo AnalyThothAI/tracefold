@@ -255,6 +255,16 @@ class PriceRepository:
             ),
         )
 
+    def forget_sources_except(self, source_keys: Sequence[str]) -> int:
+        """Drop snapshot rows for sources the planner no longer targets; keep every planned one."""
+
+        if not source_keys:
+            return 0
+        cursor = self.conn.execute(
+            "DELETE FROM news_quote_snapshots WHERE NOT (source_key = ANY(%s))", (list(source_keys),)
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0)
+
     def quote_snapshots(self) -> dict[str, dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT source_key, quotes, target_count, source_at_ms, received_at_ms, updated_at_ms"
