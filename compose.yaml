@@ -8,6 +8,11 @@ x-tracefold-app: &tracefold-app
       TRACEFOLD_BUILD_REVISION: ${TRACEFOLD_BUILD_REVISION:-}
     secrets:
       - github_token
+  # The image cannot hash itself at build time, so the digest arrives at start time.
+  # `make up` computes it from the image it just built; an empty value is read back
+  # as "unversioned" rather than as an identity the receipt cannot prove.
+  environment:
+    TRACEFOLD_IMAGE_DIGEST: ${TRACEFOLD_IMAGE_DIGEST:-}
 
 services:
   postgres:
