@@ -509,6 +509,51 @@ def test_an_event_with_no_priceable_primary_has_no_aggregate_but_stays_visible(c
     assert "no_candle_within_gap" in reasons
 
 
+def test_backlog_lateness_is_measured_against_each_row_own_horizon(conn) -> None:
+    """A row waiting for 4H is not three hours late just because 4H is three hours after 1H."""
+
+    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
+    repos = repositories_for_connection(conn)
+
+    # On time: 1H matured a minute ago and nothing has measured it yet.
+    _event(conn, "fresh", symbols=("BTC",), opened_at_ms=NOW - HOUR - 60_000)
+    assert repos.price.oldest_due_age_ms(now_ms=NOW, history_max_age_ms=30 * 24 * HOUR) == pytest.approx(
+        60_000, abs=1_000
+    )
+
+    # Also on time: a partial row whose 4H matured a minute ago. Under the old definition this reported
+    # three hours and would have sat permanently above the 15-minute warning threshold.
+    _event(conn, "partial", symbols=("BTC",), opened_at_ms=NOW - 4 * HOUR - 60_000)
+    with repos.transaction():
+        repos.price.upsert_reaction(
+            {
+                "event_id": "partial",
+                "symbol": "BTC",
+                "anchor_at_ms": NOW - 4 * HOUR - 60_000,
+                "venue": "binance.perp",
+                "venue_symbol": "BTCUSDT",
+                "p0": Decimal("100"),
+                "p0_at_ms": NOW - 4 * HOUR,
+                "p1": Decimal("101"),
+                "p1_at_ms": NOW - 3 * HOUR,
+                "return_1h_bps": 100,
+                "is_primary": True,
+                "state": "partial",
+            },
+            now_ms=NOW,
+        )
+
+    assert repos.price.oldest_due_age_ms(now_ms=NOW, history_max_age_ms=30 * 24 * HOUR) == pytest.approx(
+        60_000, abs=1_000
+    )
+
+    # Genuinely behind: an unmeasured row whose 1H matured two hours ago.
+    _event(conn, "late", symbols=("BTC",), opened_at_ms=NOW - 3 * HOUR)
+    assert repos.price.oldest_due_age_ms(now_ms=NOW, history_max_age_ms=30 * 24 * HOUR) == pytest.approx(
+        2 * HOUR, abs=1_000
+    )
+
+
 def test_price_status_reports_source_freshness_and_backlog(conn) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():
