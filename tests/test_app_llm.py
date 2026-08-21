@@ -3,8 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from tracefold.app import workers
+from tracefold.app import learning_runtime, workers
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
+from tracefold.news import canonical_sha
+from tracefold.news.agents.semantic_program import RuntimeModelIdentity
 
 
 def test_deepseek_v4_disables_thinking_for_structured_tool_calls() -> None:
@@ -58,6 +60,42 @@ def test_endpoint_override_targets_the_fallback_gateway() -> None:
     assert endpoint.api_key == "remote-key"
 
 
+def test_active_arm_hashes_the_exact_secret_free_runtime_bindings(monkeypatch: Any) -> None:
+    artifact = SimpleNamespace(program_version="program-v1", program_sha256="a" * 64)
+    availability = SimpleNamespace(
+        triage_model="primary-model",
+        triage_fallback_model="fallback-model",
+    )
+    monkeypatch.setattr(learning_runtime, "load_stable_program_artifact", lambda: artifact)
+    monkeypatch.setattr(learning_runtime, "news_model_availability", lambda _settings: availability)
+    settings = SimpleNamespace(
+        llm=SimpleNamespace(
+            api_key="primary-key",
+            base_url="https://primary.test/v1",
+            news_triage_model="primary-model",
+            news_triage_fallback=SimpleNamespace(
+                api_key="fallback-key",
+                base_url="https://fallback.test/v1",
+            ),
+        ),
+        news=SimpleNamespace(policy=SimpleNamespace(model_dump=lambda **_kwargs: {"similarity_max": 0.6})),
+    )
+
+    arm = learning_runtime.active_arm_manifest(settings)
+
+    primary = RuntimeModelIdentity.issue(provider="openai", model="openai/primary-model").model_dump(mode="json")
+    fallback = RuntimeModelIdentity.issue(provider="openai", model="openai/fallback-model").model_dump(mode="json")
+    assert arm.runtime_model_bindings_sha256 == canonical_sha(
+        {
+            "identity_schema": "configured_runtime_binding_v1",
+            "event_semantics.primary": primary,
+            "reader_card.primary": primary,
+            "event_semantics.fallback": fallback,
+            "reader_card.fallback": fallback,
+        }
+    )
+
+
 def test_worker_composes_an_arm_local_program_with_primary_and_fallback_adapters(monkeypatch: Any) -> None:
     configured: list[dict[str, Any]] = []
 
@@ -87,7 +125,6 @@ def test_worker_composes_an_arm_local_program_with_primary_and_fallback_adapters
     monkeypatch.setattr(workers, "DspyPredictorAdapter", FakeAdapter)
     monkeypatch.setattr(workers, "DspyNewsSemanticProgram", FakeProgram)
     settings = SimpleNamespace(
-        news=SimpleNamespace(triage=SimpleNamespace(deadline_seconds=20)),
         llm=SimpleNamespace(
             news_triage_fallback=SimpleNamespace(api_key="fallback-key", base_url="https://fallback.test/v1")
         ),
@@ -133,3 +170,18 @@ def test_worker_composes_an_arm_local_program_with_primary_and_fallback_adapters
             "base_url": "https://fallback.test/v1",
         },
     ]
+
+
+def test_policy_canary_reuses_stable_artifact_without_becoming_a_program_candidate(monkeypatch: Any) -> None:
+    stable = SimpleNamespace(program_version="program-v1", program_sha256="a" * 64)
+    candidate = SimpleNamespace(
+        target="policy",
+        candidate_arm=SimpleNamespace(program_version="program-v1", program_sha256="a" * 64),
+    )
+
+    def unexpected_load(_sha: str) -> Any:
+        raise AssertionError("policy candidate must not load a child artifact")
+
+    monkeypatch.setattr(workers, "load_program_artifact", unexpected_load)
+
+    assert workers._candidate_program_artifact(candidate, stable) is stable

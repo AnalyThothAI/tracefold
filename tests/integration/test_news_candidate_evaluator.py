@@ -8,13 +8,13 @@ from datetime import UTC, datetime
 
 import pytest
 
+import tracefold.news.candidate_evaluator as candidate_evaluator_module
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
 from tracefold.news import (
     LEARNING_EPOCH,
-    LEARNING_EPOCH_STARTED_AT_MS,
     ArmManifest,
     BlindPairwiseSubmission,
     CandidateManifest,
@@ -26,7 +26,6 @@ from tracefold.news import (
     ProgramTrace,
     ProgramUsage,
     ProposalReceipt,
-    ReviewDesk,
     SemanticJudgment,
     TaskRef,
     TriageContext,
@@ -34,6 +33,7 @@ from tracefold.news import (
 from tracefold.news import (
     CandidateEvaluator as _CandidateEvaluator,
 )
+from tracefold.news import ReviewDesk as _ReviewDesk
 from tracefold.news.agents.semantic_program import ProgramCallTrace, SemanticProgramError
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
@@ -41,7 +41,7 @@ from tracefold.news.triage_rules import DEFAULT_POLICY
 
 pytestmark = pytest.mark.integration
 
-NOW = LEARNING_EPOCH_STARTED_AT_MS + 8 * 3_600_000
+NOW = 1_800_000_000_000
 
 
 class CandidateEvaluator(_CandidateEvaluator):
@@ -49,6 +49,13 @@ class CandidateEvaluator(_CandidateEvaluator):
 
     def _db_now_ms(self) -> int:
         return NOW + 20 * 60_000
+
+
+class ReviewDesk(_ReviewDesk):
+    """Place accepted fixture evidence inside the simulated future window."""
+
+    def _db_now_ms(self) -> int:
+        return NOW
 
 
 def test_arm_manifest_identity_is_program_native() -> None:
@@ -73,6 +80,183 @@ def test_arm_manifest_identity_is_program_native() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("executions", "error_code"),
+    [
+        (
+            [
+                {"execution_index": 0, "trace": None, "recording_call_indices": []},
+                {"execution_index": 2, "trace": None, "recording_call_indices": []},
+            ],
+            "news_program_execution_index_mismatch",
+        ),
+        (
+            [
+                {"execution_index": 1, "trace": None, "recording_call_indices": []},
+                {"execution_index": 0, "trace": None, "recording_call_indices": []},
+            ],
+            "news_program_execution_index_mismatch",
+        ),
+        (
+            [
+                {
+                    "execution_index": 0,
+                    "context_sha256": "a" * 64,
+                    "context": {"marker": "context-mismatch"},
+                    "trace": {"context_sha256": "b" * 64, "calls": []},
+                    "recording_call_indices": [],
+                }
+            ],
+            "news_program_execution_context_mismatch",
+        ),
+        (
+            [
+                {
+                    "execution_index": 0,
+                    "context_sha256": "a" * 64,
+                    "context": {"marker": "call-index"},
+                    "trace": {"context_sha256": "a" * 64, "calls": [{}]},
+                    "recording_call_indices": [1],
+                }
+            ],
+            "news_program_execution_call_index_mismatch",
+        ),
+        (
+            [
+                {
+                    "execution_index": 0,
+                    "context_sha256": "a" * 64,
+                    "context": [],
+                    "trace": {"context_sha256": "a" * 64, "calls": []},
+                    "recording_call_indices": [],
+                }
+            ],
+            "news_program_execution_context_mismatch",
+        ),
+    ],
+)
+def test_observed_program_execution_identity_fails_closed(executions: list[dict[str, object]], error_code: str) -> None:
+    if error_code == "news_program_execution_call_index_mismatch":
+        context = dict(executions[0]["context"])  # type: ignore[arg-type]
+        context_sha = _sha(context)
+        executions[0]["context_sha256"] = context_sha
+        executions[0]["trace"]["context_sha256"] = context_sha  # type: ignore[index]
+    row: dict[str, object] = {"trace": {"program_executions": executions}}
+    if error_code != "news_program_execution_index_mismatch":
+        verdict = {"decision": "push"}
+        selected_trace = dict(executions[0]["trace"])  # type: ignore[arg-type]
+        selected_trace["verdict_sha256"] = _sha(verdict)
+        executions[0]["trace"] = selected_trace
+        row = {
+            "verdict": verdict,
+            "trace": {
+                "program_execution_index": 0,
+                "program_trace": selected_trace,
+                "program_executions": executions,
+            },
+        }
+    with pytest.raises(ValueError, match=error_code):
+        candidate_evaluator_module._observed_production_output(row)
+
+
+def test_partial_provider_cost_and_incomplete_call_identity_are_not_complete() -> None:
+    assert (
+        candidate_evaluator_module._usage_from_trace(
+            {"calls": [{"provider_cost_microusd": 10}, {"provider_cost_microusd": None}]}
+        )["provider_cost_microusd"]
+        is None
+    )
+    assert (
+        candidate_evaluator_module._usage_from_trace(
+            {"calls": [{"provider_cost_microusd": 10}, {"provider_cost_microusd": 20}]}
+        )["provider_cost_microusd"]
+        == 30
+    )
+    assert (
+        candidate_evaluator_module._usage_from_trace(
+            {
+                "calls": [
+                    {"physical_provider_call": True},
+                    {"physical_provider_call": False},
+                    {"physical_provider_call": True},
+                ]
+            }
+        )["physical_call_count"]
+        == 2
+    )
+
+    runtime_model_sha = _sha({"provider": "fixture-provider", "model": "configured-model"})
+    runtime_binding_sha = _sha(
+        {
+            "provider": "fixture-provider",
+            "model": "configured-model",
+            "model_sha256": runtime_model_sha,
+        }
+    )
+    call = {
+        "predictor": "event_semantics",
+        "route": "primary",
+        "attempt": 1,
+        "request_sha256": "1" * 64,
+        "input_sha256": "2" * 64,
+        "signature_sha256": "3" * 64,
+        "instruction_sha256": "4" * 64,
+        "demos_sha256": "5" * 64,
+        "model_binding": "news_triage_primary",
+        "runtime_provider": "fixture-provider",
+        "runtime_model": "configured-model",
+        "runtime_model_sha256": runtime_model_sha,
+        "runtime_binding_sha256": runtime_binding_sha,
+        "provider": "fixture-provider",
+        "model": "resolved-model",
+        "model_sha256": _sha({"provider": "fixture-provider", "model": "resolved-model"}),
+        "validated_output": {"decision": "push"},
+    }
+    assert candidate_evaluator_module._program_call_provenance_complete({"calls": [call]})
+    assert not candidate_evaluator_module._program_call_provenance_complete(
+        {"calls": [{key: value for key, value in call.items() if key != "runtime_binding_sha256"}]}
+    )
+
+
+def test_observed_program_selected_trace_and_verdict_fail_closed() -> None:
+    verdict = {"decision": "push"}
+    selected_trace = {
+        "context_sha256": "a" * 64,
+        "verdict_sha256": _sha(verdict),
+        "calls": [],
+    }
+    execution = {
+        "execution_index": 0,
+        "context_sha256": "a" * 64,
+        "trace": selected_trace,
+        "recording_call_indices": [],
+    }
+    with pytest.raises(ValueError, match="news_program_selected_execution_mismatch"):
+        candidate_evaluator_module._observed_production_output(
+            {
+                "verdict": verdict,
+                "trace": {
+                    "program_execution_index": 0,
+                    "program_trace": {**selected_trace, "answering_route": "fallback"},
+                    "program_executions": [execution],
+                },
+            }
+        )
+
+    mismatched_verdict_trace = {**selected_trace, "verdict_sha256": "f" * 64}
+    with pytest.raises(ValueError, match="news_program_selected_verdict_mismatch"):
+        candidate_evaluator_module._observed_production_output(
+            {
+                "verdict": verdict,
+                "trace": {
+                    "program_execution_index": 0,
+                    "program_trace": mismatched_verdict_trace,
+                    "program_executions": [{**execution, "trace": mismatched_verdict_trace}],
+                },
+            }
+        )
+
+
 @pytest.fixture()
 def conn():
     connection = connect_postgres_test(read_only=False)
@@ -94,6 +278,88 @@ def conn():
 def _sha(value: object) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def test_observed_degraded_program_keeps_unselected_failed_execution_audit() -> None:
+    context = {"event_id": "event-degraded", "phase": "stale_reask"}
+    context_sha = _sha(context)
+    failed_call = {
+        "predictor": "event_semantics",
+        "route": "primary",
+        "attempt": 1,
+        "physical_provider_call": True,
+        "error_code": "provider_unavailable",
+    }
+    execution = {
+        "execution_index": 0,
+        "phase": "stale_reask",
+        "status": "failed",
+        "context_sha256": context_sha,
+        "context": context,
+        "trace": {"context_sha256": context_sha, "calls": [failed_call]},
+        "usage": {"call_count": 1, "physical_call_count": 1},
+        "recording_call_indices": [0],
+    }
+    row = {
+        "verdict": _verdict(),
+        "degraded": True,
+        "verdict_error_code": "provider_unavailable",
+        "trace": {
+            "program_executions": [execution],
+            "model_attempts": 1,
+            "physical_model_attempts": 1,
+        },
+    }
+
+    observed = candidate_evaluator_module._observed_production_output(row)
+
+    program = observed["program"][0]
+    assert program["trace"] == {}
+    assert program["executions"] == [execution]
+    assert program["usage"]["call_count"] == 1
+    assert program["usage"]["physical_call_count"] == 1
+    assert program["calls"] == [
+        {
+            **failed_call,
+            "execution_index": 0,
+            "execution_phase": "stale_reask",
+            "execution_status": "failed",
+            "execution_context_sha256": context_sha,
+            "recording_call_index": 0,
+        }
+    ]
+
+
+def test_observed_non_degraded_program_requires_a_selected_execution() -> None:
+    context = {"event_id": "event-nondegraded", "phase": "initial"}
+    context_sha = _sha(context)
+    execution = {
+        "execution_index": 0,
+        "phase": "initial",
+        "status": "completed",
+        "context_sha256": context_sha,
+        "context": context,
+        "trace": {"context_sha256": context_sha, "calls": []},
+        "usage": {"call_count": 0, "physical_call_count": 0},
+        "recording_call_indices": [],
+    }
+
+    with pytest.raises(ValueError, match="news_program_selected_execution_mismatch"):
+        candidate_evaluator_module._observed_production_output(
+            {
+                "verdict": _verdict(),
+                "degraded": False,
+                "verdict_error_code": "provider_unavailable",
+                "trace": {"program_executions": [execution]},
+            }
+        )
+
+
+def _epoch_started_at_ms(conn: object) -> int:
+    row = conn.execute(  # type: ignore[attr-defined]
+        "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = 'program_v1'"
+    ).fetchone()
+    return int(row["starts_at_ms"])
 
 
 def _arm(
@@ -152,6 +418,14 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
     context_sha = _sha(context.model_dump(mode="json"))
     semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "title_zh", "why_zh"}}
     card = {key: verdict[key] for key in ("headline_zh", "title_zh", "why_zh")}
+    runtime_model_sha = _sha({"provider": "fixture-provider", "model": "fixture-model"})
+    runtime_binding_sha = _sha(
+        {
+            "provider": "fixture-provider",
+            "model": "fixture-model",
+            "model_sha256": runtime_model_sha,
+        }
+    )
     calls = tuple(
         ProgramCallTrace(
             predictor=predictor,
@@ -162,6 +436,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
                     "program_sha256": arm.program_sha256,
                     "context_sha256": context_sha,
                     "predictor": predictor,
+                    "runtime_binding_sha256": runtime_binding_sha,
                 }
             ),
             input_sha256=_sha({"context_sha256": context_sha, "predictor": predictor}),
@@ -169,12 +444,17 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
             instruction_sha256=_sha({"instruction": predictor, "program": arm.program_sha256}),
             demos_sha256=_sha({"demos": predictor, "program": arm.program_sha256}),
             model_binding="news_triage_primary",
+            physical_provider_call=True,
+            runtime_provider="fixture-provider",
+            runtime_model="fixture-model",
+            runtime_model_sha256=runtime_model_sha,
+            runtime_binding_sha256=runtime_binding_sha,
             upstream_sha256=None if predictor == "event_semantics" else _sha(semantics),
             output_sha256=_sha(output),
             validated_output=output,
             provider="fixture-provider",
             model="fixture-model",
-            model_sha256=_sha({"model": "fixture-model"}),
+            model_sha256=runtime_model_sha,
             latency_ms=450,
             input_tokens=250,
             output_tokens=45,
@@ -224,6 +504,32 @@ class _StaticJudge:
             usage=ProgramUsage(
                 wall_latency_ms=900,
                 call_count=2,
+                physical_call_count=2,
+                input_tokens=500,
+                output_tokens=90,
+                cached_tokens=40,
+                total_tokens=590,
+                provider_cost_microusd=200,
+            ),
+            answering_model="fixture-model",
+        )
+
+
+class _NondeterministicJudge(_StaticJudge):
+    async def judge(self, context: TriageContext) -> SemanticJudgment:
+        self.calls.append(context)
+        verdict = _verdict()
+        if len(self.calls) > 1:
+            verdict["headline_zh"] = "同一请求返回了不同标题"
+        return SemanticJudgment(
+            verdict=verdict,
+            program_version=self.arm.program_version,
+            program_sha256=self.arm.program_sha256,
+            trace=_trace(self.arm, context, verdict),
+            usage=ProgramUsage(
+                wall_latency_ms=900,
+                call_count=2,
+                physical_call_count=2,
                 input_tokens=500,
                 output_tokens=90,
                 cached_tokens=40,
@@ -290,6 +596,8 @@ def _program_candidate(
     development_sha: str,
     cluster_id: str,
     persist_receipt: bool = True,
+    compile_provenance_override: dict[str, object] | None = None,
+    generator_kind: str = "model",
 ) -> CandidateManifest:
     arm_payload = stable.model_dump(mode="json")
     arm_payload.update(
@@ -304,11 +612,26 @@ def _program_candidate(
             "demo_order_sha256": {"stable": "3" * 64, "candidate": "4" * 64},
         }
     }
-    compile_provenance = {
+    compile_provenance = compile_provenance_override or {
+        "mode": "optimizer_candidate",
         "development_dataset_sha": development_sha,
-        "optimizer": "fixture-gepa",
+        "learning_epoch": LEARNING_EPOCH,
+        "optimizer": "dspy.GEPA@3.3.0/gepa@0.1.1",
+        "dspy_version": "3.3.0",
+        "gepa_version": "0.1.1",
         "metric_sha256": "5" * 64,
+        "optimizer_config_sha256": "6" * 64,
         "seed": 129,
+        "max_metric_calls": 20,
+        "max_task_model_calls": 40,
+        "max_cost_microusd": 1_000_000,
+        "metric_calls": 12,
+        "task_model_calls": 20,
+        "reflection_model_calls": 10,
+        "actual_cost_microusd": 500_000,
+        "trajectory_sha256": "7" * 64,
+        "checkpoint_sha256": "8" * 64,
+        "holdout_access_attestation": False,
     }
     patch_sha = _sha(
         {
@@ -321,7 +644,10 @@ def _program_candidate(
     receipt_values = {
         "development_dataset_sha": development_sha,
         "failure_cluster_ids": (cluster_id,),
-        "generator_kind": "human",
+        "generator_kind": generator_kind,
+        "generator_prompt_sha": "9" * 64,
+        "generator_model_sha": "a" * 64,
+        "generator_execution_sha": "b" * 64,
         "registered_at_ms": registered_at_ms,
         "candidate_patch_sha": patch_sha,
         "declared_target_dimensions": ("why_support",),
@@ -349,6 +675,7 @@ def _insert_validation_dataset(conn, *, development, candidate: CandidateManifes
         "role": "validation",
         "profile_id": "news_learning_release_v1",
         "learning_epoch": LEARNING_EPOCH,
+        "learning_epoch_started_at_ms": development.learning_epoch_started_at_ms,
         "window": {"from_ms": NOW - 6 * 3_600_000, "to_ms": NOW},
         "freeze_as_of_ms": NOW + 10_000,
         "settlement_grace_ms": 10 * 60_000,
@@ -399,9 +726,14 @@ def _open_event(
     hit_id: int = 112001,
     title: str = "Micron says DRAM contract prices rose again in August",
     bundle_sha: str | None = None,
+    program_version: str | None = None,
+    program_sha256: str | None = None,
+    stale_reask: bool = False,
 ) -> str:
     stable = _arm()
     effective_bundle = bundle_sha or stable.bundle_sha
+    effective_program_version = program_version or stable.program_version
+    effective_program_sha = program_sha256 or stable.program_sha256
     repos = repositories_for_connection(conn)
     published_at_ms = NOW - 3_600_000
     wire = {
@@ -416,10 +748,7 @@ def _open_event(
         "coins": [],
         "strategy": {"id": 1018, "name": "News Score > 70", "engine_type": "news", "source_type": "news"},
     }
-    event = parse_opennews_message(
-        {"method": "strategy.triggered", "params": wire},
-        strategy_ids=frozenset({"1018"}),
-    )
+    event = parse_opennews_message({"method": "strategy.triggered", "params": wire})
     assert event is not None
     with repos.transaction():
         opened = admit_item(
@@ -434,6 +763,127 @@ def _open_event(
         evidence = repos.news.latest_evidence_snapshot(opened.event_id)
         assert evidence is not None
         verdict = _verdict()
+        semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "title_zh", "why_zh"}}
+        card = {key: verdict[key] for key in ("headline_zh", "title_zh", "why_zh")}
+        runtime_model_sha = _sha({"provider": "fixture-provider", "model": "fixture-model"})
+        runtime_binding_sha = _sha(
+            {
+                "provider": "fixture-provider",
+                "model": "fixture-model",
+                "model_sha256": runtime_model_sha,
+            }
+        )
+
+        def program_call(predictor: str, marker: str) -> dict[str, object]:
+            output = semantics if predictor == "event_semantics" else card
+            return {
+                "predictor": predictor,
+                "route": "primary",
+                "attempt": 1,
+                "request_sha256": _sha(
+                    {
+                        "event_id": opened.event_id,
+                        "predictor": predictor,
+                        "marker": marker,
+                        "runtime_binding_sha256": runtime_binding_sha,
+                    }
+                ),
+                "input_sha256": _sha({"event_id": opened.event_id, "predictor": predictor, "marker": marker}),
+                "signature_sha256": _sha({"signature": predictor}),
+                "instruction_sha256": _sha({"instruction": predictor, "program": effective_program_sha}),
+                "demos_sha256": _sha({"demos": predictor, "program": effective_program_sha}),
+                "model_binding": "news_triage_primary",
+                "physical_provider_call": True,
+                "runtime_provider": "fixture-provider",
+                "runtime_model": "fixture-model",
+                "runtime_model_sha256": runtime_model_sha,
+                "runtime_binding_sha256": runtime_binding_sha,
+                "upstream_sha256": None if predictor == "event_semantics" else _sha(semantics),
+                "output_sha256": _sha(output),
+                "validated_output": output,
+                "provider": "fixture-provider",
+                "model": "fixture-model",
+                "model_sha256": runtime_model_sha,
+                "latency_ms": 450,
+                "input_tokens": 250,
+                "output_tokens": 45,
+                "cached_tokens": 20,
+                "total_tokens": 295,
+                "provider_cost_microusd": 100,
+                "finish_reason": "stop",
+            }
+
+        def program_trace(context: dict[str, object], marker: str) -> dict[str, object]:
+            calls = [program_call(predictor, marker) for predictor in ("event_semantics", "reader_card")]
+            return {
+                "program_version": effective_program_version,
+                "program_sha256": effective_program_sha,
+                "context_sha256": _sha(context),
+                "factory_id": "news_semantic_program_v1",
+                "topology_sha256": _sha("topology"),
+                "adapter_sha256": _sha("adapter"),
+                "assembler_sha256": _sha("assembler"),
+                "event_semantics_sha256": _sha(semantics),
+                "reader_card_sha256": _sha(card),
+                "verdict_sha256": _sha(verdict),
+                "answering_route": "primary",
+                "calls": calls,
+            }
+
+        initial_context: dict[str, object] = {
+            "event_id": opened.event_id,
+            "phase": "initial",
+            "evidence_sha256": str(evidence["evidence_sha256"]),
+        }
+        selected_context = (
+            {
+                "event_id": opened.event_id,
+                "phase": "stale_reask",
+                "evidence_sha256": str(evidence["evidence_sha256"]),
+            }
+            if stale_reask
+            else initial_context
+        )
+        execution_usage = {
+            "wall_latency_ms": 900,
+            "call_count": 2,
+            "physical_call_count": 2,
+            "input_tokens": 500,
+            "output_tokens": 90,
+            "cached_tokens": 40,
+            "total_tokens": 590,
+            "provider_cost_microusd": 200,
+        }
+        initial_trace = program_trace(initial_context, "initial")
+        selected_trace = program_trace(selected_context, "reask" if stale_reask else "initial")
+        executions = [
+            {
+                "execution_index": 0,
+                "phase": "initial",
+                "status": "superseded_stale_ledger" if stale_reask else "accepted",
+                "context_sha256": initial_trace["context_sha256"],
+                "context": initial_context,
+                "trace": initial_trace,
+                "usage": execution_usage,
+                "recording_call_indices": [0, 1],
+            }
+        ]
+        if stale_reask:
+            executions.append(
+                {
+                    "execution_index": 1,
+                    "phase": "stale_reask",
+                    "status": "accepted",
+                    "context_sha256": selected_trace["context_sha256"],
+                    "context": selected_context,
+                    "trace": selected_trace,
+                    "usage": execution_usage,
+                    "recording_call_indices": [2, 3],
+                }
+            )
+        else:
+            selected_trace = initial_trace
+        model_attempts = 4 if stale_reask else 2
         assert repos.news.insert_verdict(
             event_id=opened.event_id,
             stage="triage",
@@ -445,14 +895,25 @@ def _open_event(
             throttled_by=None,
             verdict=verdict,
             model="fixture-model",
-            program_version=stable.program_version,
-            program_sha256=stable.program_sha256,
+            program_version=effective_program_version,
+            program_sha256=effective_program_sha,
             degraded=False,
             error_code=None,
             trace={
-                "program_version": stable.program_version,
-                "program_sha256": stable.program_sha256,
+                "program_version": effective_program_version,
+                "program_sha256": effective_program_sha,
                 "agent_assignment": {"arm": "stable", "bundle_sha": effective_bundle},
+                "program_execution_index": 1 if stale_reask else 0,
+                "program_trace": selected_trace,
+                "program_executions": executions,
+                "latency_ms": 450 * model_attempts,
+                "model_attempts": model_attempts,
+                "physical_model_attempts": model_attempts,
+                "input_tokens": 250 * model_attempts,
+                "output_tokens": 45 * model_attempts,
+                "cached_tokens": 20 * model_attempts,
+                "total_tokens": 295 * model_attempts,
+                "provider_cost_microusd": 100 * model_attempts,
             },
             evidence_version=int(evidence["evidence_version"]),
             evidence_sha256=str(evidence["evidence_sha256"]),
@@ -480,8 +941,8 @@ def _open_event(
     return opened.event_id
 
 
-def _accepted_event(conn, *, why: str = "fail") -> str:
-    event_id = _open_event(conn)
+def _accepted_event(conn, *, why: str = "fail", stale_reask: bool = False) -> str:
+    event_id = _open_event(conn, stale_reask=stale_reask)
     stable = _arm()
     conn.execute(
         "UPDATE news_verdicts SET trace = trace || %s::jsonb WHERE event_id = %s AND stage = 'triage'",
@@ -592,14 +1053,15 @@ def test_policy_candidate_freezes_accepted_evidence_and_uses_zero_model_calls(co
 def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit_json(conn) -> None:
     stable = _arm()
     evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+    epoch_started_at_ms = _epoch_started_at_ms(conn)
     with pytest.raises(ValueError, match="news_learning_window_precedes_program_epoch"):
         asyncio.run(
             evaluator.freeze_dataset(
                 DatasetSpec(
                     role="development",
                     window=ClosedWindow(
-                        from_ms=LEARNING_EPOCH_STARTED_AT_MS - 1,
-                        to_ms=LEARNING_EPOCH_STARTED_AT_MS + 1,
+                        from_ms=epoch_started_at_ms - 1,
+                        to_ms=epoch_started_at_ms + 1,
                     ),
                 )
             )
@@ -625,7 +1087,7 @@ def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit
         "INSERT INTO news_learning_artifacts "
         "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
         "VALUES (%s, 'dataset', NULL, %s::jsonb, 'legacy-audit', %s)",
-        (old_sha, json.dumps(old_payload, sort_keys=True), LEARNING_EPOCH_STARTED_AT_MS - 1),
+        (old_sha, json.dumps(old_payload, sort_keys=True), epoch_started_at_ms - 1),
     )
     with pytest.raises(ValueError, match="news_learning_epoch_mismatch"):
         evaluator.development_compile_episodes(old_sha)
@@ -676,6 +1138,63 @@ def test_active_stable_is_checked_before_freeze_or_model_work(conn) -> None:
                 DatasetSpec(
                     role="development",
                     window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+                )
+            )
+        )
+    assert _judge_call_count(judges) == 0
+
+
+def test_program_candidate_requires_bounded_optimizer_provenance(conn) -> None:
+    _accepted_event(conn)
+    stable = _arm()
+    bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
+    development = asyncio.run(
+        bootstrap.freeze_dataset(
+            DatasetSpec(
+                role="development",
+                window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW),
+            )
+        )
+    )
+    invalid_provenance = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+        compile_provenance_override={"development_dataset_sha": development.artifact_sha},
+    )
+    human_program = _program_candidate(
+        conn,
+        stable=stable,
+        development_sha=development.artifact_sha,
+        cluster_id=development.cases[0].cluster_id,
+        generator_kind="human",
+    )
+    judges = _static_judges(stable, invalid_provenance.candidate_arm)
+    evaluator = CandidateEvaluator(
+        conn,
+        stable=stable,
+        judges=judges,
+        candidate_catalog=(invalid_provenance, human_program),
+    )
+
+    with pytest.raises(ValueError, match="news_learning_program_compile_provenance_invalid"):
+        asyncio.run(
+            evaluator.evaluate(
+                EvaluationRequest(
+                    development_dataset_sha=development.artifact_sha,
+                    candidate_sha=invalid_provenance.candidate_sha,
+                    stage="offline",
+                )
+            )
+        )
+    with pytest.raises(ValueError, match="news_learning_program_generator_must_be_model"):
+        asyncio.run(
+            evaluator.evaluate(
+                EvaluationRequest(
+                    development_dataset_sha=development.artifact_sha,
+                    candidate_sha=human_program.candidate_sha,
+                    stage="offline",
                 )
             )
         )
@@ -804,6 +1323,56 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
         "machine_diff": candidate.proposal_receipt.program_machine_diff,
         "compile_provenance": candidate.proposal_receipt.compile_provenance,
     }
+
+
+def test_model_recording_conflict_rejects_nondeterministic_response(conn) -> None:
+    stable = _arm()
+    judge = _NondeterministicJudge(stable)
+    evaluator = CandidateEvaluator(conn, stable=stable, judges={stable.program_sha256: judge})
+    context = TriageContext.from_card(
+        {
+            "event_id": "ev-recording-conflict",
+            "evidence_version": 1,
+            "evidence_sha256": "a" * 64,
+            "focus_fact_id": "fact-recording-conflict",
+            "reporting_origin": "Reuters",
+            "leader_title": "Micron says DRAM contract prices rose again",
+            "leader_description": "Contract prices rose in August.",
+            "opened_at_ms": NOW - 3_600_000,
+            "member_count": 1,
+            "family": "earnings",
+            "priority": "normal",
+            "asset_class": "equity",
+            "storyline_key": "asset:MU",
+        },
+        watchlist=(),
+        told_rows=(),
+        now_ms=NOW,
+        queue_lag_ms=0,
+    )
+    invocation = {
+        "run_sha": _sha("nondeterministic-recording-run"),
+        "case_id": _sha("nondeterministic-recording-case"),
+        "arm_name": "stable",
+        "arm": stable,
+        "context": context,
+        "trial": 1,
+    }
+
+    asyncio.run(evaluator._invoke_and_record(**invocation))
+    with pytest.raises(ValueError, match="news_model_recording_conflict"):
+        asyncio.run(evaluator._invoke_and_record(**invocation))
+    composite_identity_conflict = {**invocation, "context": context.model_copy(update={"queue_lag_ms": 1})}
+    with pytest.raises(ValueError, match="news_model_recording_conflict"):
+        asyncio.run(evaluator._invoke_and_record(**composite_identity_conflict))
+
+    recordings = conn.execute(
+        "SELECT predictor_name, response FROM news_model_recordings WHERE run_sha = %s ORDER BY call_index",
+        (invocation["run_sha"],),
+    ).fetchall()
+    assert [row["predictor_name"] for row in recordings] == ["event_semantics", "reader_card"]
+    assert recordings[1]["response"]["output"]["card"]["headline_zh"] == "DRAM 合约价续涨"
+    assert conn.execute("SELECT count(*) AS n FROM news_learning_cases").fetchone()["n"] == 0
 
 
 def test_exact_one_variable_is_rejected_before_any_model_call(conn) -> None:
@@ -1071,6 +1640,16 @@ def test_hidden_holdout_review_budget_exhaustion_is_unknown(conn) -> None:
         )
     )
     assert development.counts["independent_cluster_n"] == 30
+    cases_by_id = {case.case_id: case for case in development.cases}
+    episodes = bootstrap.development_compile_episodes(development.artifact_sha)
+    assert len(episodes) == 30
+    for episode in episodes:
+        case = cases_by_id[episode["case_id"]]
+        evidence = episode["context"]["evidence"]
+        assert evidence["event_id"] == case.case_id
+        assert evidence["evidence_version"] == 0
+        assert evidence["evidence_sha256"] == case.evidence_sha256
+        assert evidence["focus_fact_id"] == case.case_id
     candidate = _program_candidate(
         conn,
         stable=stable,
@@ -1230,8 +1809,21 @@ def test_holdout_cannot_spend_model_budget_before_offline_pass(conn) -> None:
 
 
 def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -> None:
-    _accepted_event(conn)
+    event_id = _accepted_event(conn, stale_reask=True)
     stable = _arm()
+    _open_event(
+        conn,
+        hit_id=112002,
+        title="An event produced by a different deployed bundle",
+        bundle_sha=_sha("other-bundle"),
+    )
+    _open_event(
+        conn,
+        hit_id=112003,
+        title="An event produced by an older semantic program",
+        program_version="news_semantic_program_retired",
+        program_sha256=_sha("retired-program"),
+    )
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
         bootstrap.freeze_dataset(
@@ -1280,13 +1872,52 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     assert report.evidence["evidence_dimensions"]["observation_scope"] == "all_live_triage_eligible"
     assert report.evidence["observation_manifest_sha"]
     stored = conn.execute(
-        "SELECT evaluation_stage, stable_observation, candidate_observation "
+        "SELECT event_id, evaluation_stage, stable_observation, candidate_observation "
         "FROM news_learning_cases WHERE run_sha = %s",
         (report.run_sha,),
     ).fetchone()
+    assert stored["event_id"] == event_id
     assert stored["evaluation_stage"] == "shadow"
     assert stored["stable_observation"]["delivery"] == "observed_sent"
     assert stored["candidate_observation"]["delivery"] == "simulated"
+    observed_program = stored["stable_observation"]["program"][0]
+    execution_context_shas = [execution["context_sha256"] for execution in observed_program["executions"]]
+    assert execution_context_shas == [_sha(execution["context"]) for execution in observed_program["executions"]]
+    assert observed_program["trace"]["context_sha256"] == execution_context_shas[1]
+    assert [call["execution_index"] for call in observed_program["calls"]] == [0, 0, 1, 1]
+    assert [call["execution_phase"] for call in observed_program["calls"]] == [
+        "initial",
+        "initial",
+        "stale_reask",
+        "stale_reask",
+    ]
+    assert [call["execution_status"] for call in observed_program["calls"]] == [
+        "superseded_stale_ledger",
+        "superseded_stale_ledger",
+        "accepted",
+        "accepted",
+    ]
+    assert [call["recording_call_index"] for call in observed_program["calls"]] == [0, 1, 2, 3]
+    assert [call["execution_context_sha256"] for call in observed_program["calls"]] == [
+        execution_context_shas[0],
+        execution_context_shas[0],
+        execution_context_shas[1],
+        execution_context_shas[1],
+    ]
+    assert observed_program["usage"]["call_count"] == 4
+    assert observed_program["usage"]["physical_call_count"] == 4
+    assert [execution["status"] for execution in observed_program["executions"]] == [
+        "superseded_stale_ledger",
+        "accepted",
+    ]
+    recordings = conn.execute(
+        "SELECT arm, predictor_name FROM news_model_recordings WHERE run_sha = %s ORDER BY call_index",
+        (report.run_sha,),
+    ).fetchall()
+    assert [(row["arm"], row["predictor_name"]) for row in recordings] == [
+        ("candidate", "event_semantics"),
+        ("candidate", "reader_card"),
+    ]
     manifest = conn.execute(
         "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s",
         (report.evidence["observation_manifest_sha"],),
@@ -1295,7 +1926,8 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
     assert "observations" not in manifest
 
 
-def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn) -> None:
+@pytest.mark.parametrize("program_matches_assignment", [True, False])
+def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, program_matches_assignment: bool) -> None:
     event_id = _accepted_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
@@ -1337,9 +1969,36 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn) -> None:
             now_ms=NOW - 3_500_000,
         )
     assert assignment["arm"] == "candidate"
+    verdict_agent = candidate.candidate_arm if program_matches_assignment else stable
+    verdict_trace = dict(
+        conn.execute(
+            "SELECT trace FROM news_verdicts WHERE event_id = %s AND stage = 'triage'",
+            (event_id,),
+        ).fetchone()["trace"]
+    )
+    verdict_trace.update(
+        agent_assignment=assignment,
+        program_version=verdict_agent.program_version,
+        program_sha256=verdict_agent.program_sha256,
+    )
+    selected_trace = dict(verdict_trace["program_trace"])
+    selected_trace.update(
+        program_version=verdict_agent.program_version,
+        program_sha256=verdict_agent.program_sha256,
+    )
+    verdict_trace["program_trace"] = selected_trace
+    for execution in verdict_trace["program_executions"]:
+        execution["trace"]["program_version"] = verdict_agent.program_version
+        execution["trace"]["program_sha256"] = verdict_agent.program_sha256
     conn.execute(
-        "UPDATE news_verdicts SET trace = trace || %s::jsonb WHERE event_id = %s AND stage = 'triage'",
-        (json.dumps({"agent_assignment": assignment}), event_id),
+        "UPDATE news_verdicts SET trace = %s::jsonb, program_version = %s, program_sha256 = %s "
+        "WHERE event_id = %s AND stage = 'triage'",
+        (
+            json.dumps(verdict_trace),
+            verdict_agent.program_version,
+            verdict_agent.program_sha256,
+            event_id,
+        ),
     )
 
     evaluator = CandidateEvaluator(
@@ -1359,11 +2018,17 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn) -> None:
         )
     )
 
-    assert report.gate_outcome == "unknown"
+    assert report.gate_outcome == ("unknown" if program_matches_assignment else "fail")
     assert "canary_duration_insufficient" in report.evidence["blockers"]
     assert "canary_candidate_assignment_n_insufficient" in report.evidence["blockers"]
     assert report.evidence["candidate_runtime_observation_n"] == 1
     assert report.evidence["evidence_dimensions"]["candidate_assignment_n"] == 1
+    assert report.evidence["evidence_dimensions"]["assignment_invariant_breach_event_ids"] == (
+        [] if program_matches_assignment else [event_id]
+    )
+    assert ("canary_one_arm_assignment_invariant_breach" in report.evidence["failures"]) is (
+        not program_matches_assignment
+    )
     case = conn.execute(
         "SELECT evaluation_stage, stable_observation, candidate_observation "
         "FROM news_learning_cases WHERE run_sha = %s",

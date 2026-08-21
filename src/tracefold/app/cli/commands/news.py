@@ -392,6 +392,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             else:
                 raise ValueError("candidate_kind_unsupported")
             dimensions = tuple(str(value) for value in spec.get("target_dimensions") or ())
+            generator_kind = str(spec.get("generator_kind") or ("model" if target == "program" else "human"))
+            if target == "program" and generator_kind != "model":
+                raise ValueError("news_learning_program_generator_must_be_model")
             with postgres_connection(settings, role="workers") as conn, conn.transaction():
                 development = conn.execute(
                     "SELECT artifact_sha FROM news_learning_artifacts "
@@ -409,7 +412,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 receipt = ProposalReceipt.issue(
                     development_dataset_sha=str(args.development),
                     failure_cluster_ids=tuple(str(value) for value in spec.get("failure_cluster_ids") or ()),
-                    generator_kind=str(spec.get("generator_kind") or "human"),
+                    generator_kind=generator_kind,
                     generator_prompt_sha=spec.get("generator_prompt_sha"),
                     generator_model_sha=spec.get("generator_model_sha"),
                     generator_execution_sha=spec.get("generator_execution_sha"),
@@ -575,19 +578,30 @@ def _learning_program_judges(
             for sha, artifact in artifacts.items()
         }
     rows = conn.execute(
-        "SELECT DISTINCT ON (request_sha256) request_sha256, response "
+        "SELECT DISTINCT ON (request_sha256) request_sha256, request, response "
         "FROM news_model_recordings WHERE response IS NOT NULL "
+        "AND request ? 'program_sha256' AND request ? 'runtime_binding_sha256' "
         "ORDER BY request_sha256, created_at_ms DESC"
     ).fetchall()
-    recordings = {str(row["request_sha256"]): row["response"] for row in rows}
-    return {
-        sha: DspyNewsSemanticProgram(
+    recordings_by_program: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        recorded_request = dict(row["request"] or {})
+        program_sha = str(recorded_request.get("program_sha256") or "")
+        if not program_sha:
+            raise ValueError("news_learning_recording_program_identity_missing")
+        recordings_by_program.setdefault(program_sha, {})[str(row["request_sha256"])] = {
+            "request": recorded_request,
+            "response": row["response"],
+        }
+    judges: dict[str, Any] = {}
+    for sha, artifact in artifacts.items():
+        replay = RecordReplayPredictorAdapter(recordings_by_program.get(sha, {}))
+        judges[sha] = DspyNewsSemanticProgram(
             artifact,
-            primary_adapter=RecordReplayPredictorAdapter(recordings),
-            fallback_adapter=RecordReplayPredictorAdapter(recordings),
+            primary_adapter=replay,
+            fallback_adapter=replay,
         )
-        for sha, artifact in artifacts.items()
-    }
+    return judges
 
 
 def _configured_program_judge(settings: Any, artifact: Any, program_type: Any, adapter_type: Any) -> Any:

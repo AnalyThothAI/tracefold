@@ -11,7 +11,6 @@ from .artifact_identity import canonical_sha
 from .canary import apply_canary_control, parse_canary_control
 from .candidate_evaluator import (
     LEARNING_EPOCH,
-    LEARNING_EPOCH_STARTED_AT_MS,
     TRUSTED_ROOT_SHA,
     ArmManifest,
     CandidateEvaluator,
@@ -66,7 +65,6 @@ __all__ = [
     "FACT_UNIT_VERSION",
     "GATE_POLICY_VERSION",
     "LEARNING_EPOCH",
-    "LEARNING_EPOCH_STARTED_AT_MS",
     "OPENNEWS_SOURCE_ID",
     "QUOTE_REQUEST_SYMBOL_MAX",
     "REACTION_METRIC_VERSION",

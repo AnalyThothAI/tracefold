@@ -16,6 +16,10 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
+Before deploying #129, remove the retired
+`news.triage.deadline_seconds` key from the operator config. The typed schema
+rejects it; the content-addressed Program artifact now owns each route deadline.
+
 ## Operator lifecycle
 
 The canonical complete-product lifecycle is:
@@ -210,8 +214,9 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
   -> Receiver publishes each accepted frame to RabbitMQ (confirms)
   -> q:news.raw [SAC] Deduper: Item upsert -> title/identity -> Event new|member
      -> Gate -> storyline key -> publish event.<family>.<priority> for candidates
-  -> q:news.triage Triage (prefetch news.triage.concurrency): one structured
-     DeepSeek call (headline_zh, why_zh, ...) + decide() -> news_verdicts
+  -> q:news.triage Triage (prefetch news.triage.concurrency):
+     SemanticJudge.judge(TriageContext) -> EventSemantics -> ReaderCard
+     -> deterministic assembler -> decide() -> news_verdicts
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
   -> q:news.deliver [SAC] Deliverer: one Feishu attempt per Event (kind first);
      paused control settles terminal/delivery_paused
@@ -256,36 +261,51 @@ holding an unacked message; `resume_delivery` clears it. `mute_theme --key
 `decide()` drop matching events; `unmute --key <key>` removes a mute. State
 is visible in `/api/news/status.control`.
 
-Model failure: with a configured `llm.news_triage_fallback` the fallback model
-answers first (below); the degraded path applies when the whole chain fails.
-Triage timeouts/5xx produce degraded verdicts that are never silent (the rule baseline still pushes watchlist primaries and provider score
->= 80 with a grounded asset; everything else drops with `degraded=true` and
-is counted in `triage_degraded_24h`);
-a retryable failure (timeout, rate limit, connection) gets one more attempt
-inside `deadline_seconds`, and three consecutive transport failures open a
-60-second circuit and a `triage_circuit_open` incident (closed again by the
-next successful call). An *output* failure — the model answered but the tool
-call was cut by `max_tokens` (`news_triage_output_truncated`,
-`finish_reason=length`) or failed the schema (`news_triage_output_invalid`) —
-is degraded the same way but never counts toward the circuit; its trace
-carries `finish_reason`, `output_tokens`, and the `parsing_error` text, and
-the worker logs one warning per Event. Triage output is capped at
-`_TRIAGE_MAX_TOKENS` (700, code-owned): a full verdict is ~250-300 tokens, so
-a rising `news_triage_output_truncated` count means the prompt grew and the
-cap must follow. The verdict trace records `prompt_sha256`, `input_sha256`,
-the `event_status` snapshot, `model_attempts`, and `model_failure_retryable`.
-With `llm.news_triage_fallback` configured (issue #65) a primary failure is
-answered by the fallback model instead: `news_verdicts.model` names the model
-that answered, the trace carries `model_fallback_from`, and the worker logs
-one `news triage fallback answered` warning per Event; only a chain where both
-links fail is degraded, and `primary_error` in the trace keeps the primary's
-code. A LAN llama.cpp server is single-slot: at consumer concurrency 4 a
-4-5 s call queues to ~18 s, so pair a local primary with `concurrency: 2`
-and `deadline_seconds: 25` (a cold prompt cache after idle costs ~20 s on
-the first call; the fallback covers a timeout). There is no second model
-stage behind Triage — one Event gets one judgment and one card — so
-`triage_24h` next to `triage_degraded_24h` in status is the first place to
-look when pushes stop.
+Model failure: Triage's sole Interface is
+`SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The production
+Adapter runs the code-owned DSPy Program
+`EventSemantics -> ReaderCard -> deterministic assembler`. A successful
+primary route normally makes two serial provider calls. One fast retry is
+shared across both Predictors, so one route makes at most three calls; the
+artifact's current 20-second deadline covers the whole route. If primary
+fails, a configured `llm.news_triage_fallback` restarts the full graph with its
+own retry/deadline budget, making one Program execution's maximum six. DSPy
+cache and hidden provider retries are disabled, so every billable attempt is
+visible. There is still one persisted final semantic judgment and one card,
+not a restored Analyst stage. Capacity planning must account for the normal
+1 -> 2 call increase and serial latency. A stale-ledger re-ask is a second full
+Program execution:
+normally four calls total for that Event, with the same per-execution six-call
+ceiling and all superseded/failed work included in telemetry.
+
+A fast-retryable timeout, rate limit, connection error, or non-truncated
+schema/output failure can spend the route's one retry. A `max_tokens`
+truncation (`news_program_output_truncated`, `finish_reason=length`) does not
+retry. The artifact's primary-route breaker defaults to three retryable
+transport failures and 60 seconds; while open it routes directly to fallback.
+Separately, the consumer's configured circuit opens a
+`triage_circuit_open` incident after the whole primary+fallback chain fails
+retryably for `news.triage.circuit_failures` consecutive Events, and remains
+open for `news.triage.circuit_open_seconds`. Output failures do not count
+toward either transport circuit. When fallback answers,
+`news_verdicts.model` names its resolved runtime model, the trace
+carries `model_fallback_from`, and the worker logs one warning per Event; only
+a chain where both routes fail degrades, with `primary_error` retaining the
+first route's code.
+
+The degraded path is never silent: the rule baseline still pushes watchlist
+primaries, score >= 80 with a grounded asset, high-priority Events, and
+deterministic exchange notices; everything else drops with `degraded=true` and
+is counted in `triage_degraded_24h`. Each Program call records Predictor,
+route/attempt, resolved provider/model identity, request/input/instruction/demo/
+output hashes, finish reason, latency, input/output/cached/total tokens and
+provider cost in microusd when the provider reports it. `program_executions`
+preserves initial and stale-ledger re-ask executions, including
+failed/superseded work, while
+`program_trace` always names the execution whose verdict was persisted;
+top-level usage aggregates all of them. A rising Program output-error count
+means inspect the failing Predictor and its artifact token cap, not edit an
+operator deadline—the route deadline and token budgets are artifact state.
 
 `/api/news/status.health` (and the console's status page) applies code-owned
 thresholds from `tracefold.news.health`: ingest is `warn` after 10 min and
@@ -339,28 +359,44 @@ Diagnose News in this order:
    Before starting an evidence run, confirm Workers `/readyz` reports a real
    `image_digest` and `runtime_revision` — an `unversioned` deployment still
    serves News correctly but cannot close a promotion.
-7. A change is a sealed candidate, not an edited production prompt. Freeze a
-   development dataset, `learning propose` exactly one variable, and run
-   `learning evaluate`. Production promotion additionally requires a future
-   temporal validation dataset, blind pairwise review, a sealed 24 h shadow
+7. A change is a sealed candidate, not an edited production artifact. Freeze a
+   post-epoch development dataset; for a Program candidate optionally run the
+   manual `learning compile` with explicit metric-call, total model-call,
+   provider-cost limits and a seed; then `learning propose` exactly one
+   `program` or `policy` variable and run `learning evaluate`. The compiler may
+   read accepted development episodes only and cannot inspect holdout, register,
+   accept, deploy or promote. Production promotion additionally requires a
+   future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
    observation, and then `learning canary arm`; inspect with `canary status`
    and use `canary trip` immediately on a schema/artifact/quality guardrail
-   breach. One Event belongs to one arm and gets one model call. A canary is
-   not an excuse to skip the earlier evidence stages: the evaluator rejects a
-   holdout/shadow/canary request before any model call unless the preceding
+   breach. One Event belongs to one arm and runs one assigned Program (normally
+   two serial Predictor calls, plus only the traced retry/fallback budget). A
+   canary is not an excuse to skip the earlier evidence stages: the evaluator rejects a
+   holdout/shadow/canary request before any Program call unless the preceding
    stage has a sealed PASS. Validation fixes at most 50 independent cluster
    tasks before execution; 100 unresolved human judgments, an empty required
    set, or a common provider outage is `UNKNOWN`, while a candidate-only
    critical error is `FAIL`.
    `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
-   duplicates the reader was spared; `pipeline.reasked_24h` counts Events the
-   model was asked twice because a card landed while it was thinking (expect
-   a handful per day; a surge means same-key floods); `pipeline.novelty_defaulted_24h`
+   duplicates the reader was spared; `pipeline.reasked_24h` counts Events whose
+   full Program was executed again because a card landed while it was thinking
+   (expect a handful per day; a surge means same-key floods);
+   `pipeline.novelty_defaulted_24h`
    counts verdicts the model returned without the `novelty` field (accepted as
    `new_fact` after the retry — a rising count means the schema stopped
    landing and novelty is silently off).
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
+
+Issue #129 starts evidence eligibility from zero at the deployment timestamp
+stored in `news_learning_epochs(program_v1)`. Prompt-era rows remain readable
+audit history but cannot enter a dataset or satisfy a release stage. Do not
+interpret a successful migration, a valid Program artifact, or the new
+two-Predictor trace as proof of higher quality; that claim begins only after
+post-epoch accepted reviews and future holdout/shadow/canary evidence exist.
+The immediate cost is the normal 1 -> 2 provider-call increase. The intended
+future benefit is per-Predictor feedback, demonstrations, routing and
+fine-tuning without widening the consumer's `SemanticJudge.judge()` Interface.
 
 Retention: unjudged `news_items`/`news_events` older than 30 days are purged by
 the Janitor; judged evidence is retained under the configured 365-day tier and
@@ -430,7 +466,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260821_0290_evidence_append_lock_contract`. The #112 chain
+the linear revisions through `20260822_0292_dspy_program_epoch`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -441,7 +477,7 @@ chained revision
 Workers hold the steady lock).
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
-Before its first 0284–0290 upgrade, take a restorable volume backup, stop Serve
+Before its first 0284–0292 upgrade, take a restorable volume backup, stop Serve
 and Workers, run the normal migration, then deploy the matching image. The
 migration owns the narrow ReviewDesk grants; the existing Serve credential is
 unchanged.
@@ -491,7 +527,13 @@ Workers `SELECT`/`INSERT` evidence-snapshot grant and revokes rewrite access;
 rollout check before a live Event discovers it. 0290 removes an ineffective
 `FOR SHARE` from the append read: PostgreSQL otherwise requires UPDATE for the
 locking SELECT even though the immutable table rejects UPDATE. Migration never
-calls the model or derives a release PASS.
+calls the model or derives a release PASS. 0291 removes the local OpenNews
+Strategy allowlist. 0292 adds Program version/SHA to verdicts, Predictor/call/
+attempt/route usage and cost fields to model recordings, and the append-only
+`news_learning_epochs` row whose database deployment timestamp starts
+`program_v1`; its explicit disposition makes all Prompt-era learning evidence
+audit-only and promotion-ineligible. It does not delete that history or claim
+a release PASS.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
@@ -531,6 +573,10 @@ Learning evidence follows #118's separate deterministic policy:
 - the newest manifest for each of the current and previous distinct stable
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
+- `news_learning_epochs` is append-only permanent audit truth. The
+  `program_v1` reset changes eligibility, not retention: Prompt-era evidence
+  remains auditable until the existing deterministic retention policy makes an
+  otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;
 - every purge call deletes at most 500 recordings, 500 cases and 500 artifacts.
   Eligible counters are capped at 501: `501` means “at least one more full

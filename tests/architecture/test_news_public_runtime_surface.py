@@ -26,7 +26,6 @@ PUBLIC_NEWS_INTERFACE = {
     "REVIEW_RUBRIC_VERSION",
     "TRIAGE_POLICY_VERSION",
     "LEARNING_EPOCH",
-    "LEARNING_EPOCH_STARTED_AT_MS",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "BlindPairwiseSubmission",
@@ -249,9 +248,7 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
     )
     assert dspy_offenders == []
     langchain_offenders = sorted(
-        str(path.relative_to(ROOT))
-        for path in SRC.rglob("*.py")
-        if "langchain" in _imported_roots(path)
+        str(path.relative_to(ROOT)) for path in SRC.rglob("*.py") if "langchain" in _imported_roots(path)
     )
     assert langchain_offenders == []
 

@@ -19,7 +19,14 @@ from pathlib import Path
 from typing import Any
 
 from ..artifact_identity import canonical_json, canonical_sha
-from .semantic_program import ProgramArtifactCodec, load_program_artifact
+from .semantic_program import (
+    PROGRAM_ADAPTER_SHA256,
+    PROGRAM_ASSEMBLER_SHA256,
+    PROGRAM_INPUT_CONTRACT_SHA256,
+    PROGRAM_TOPOLOGY_SHA256,
+    ProgramArtifactCodec,
+    load_program_artifact,
+)
 
 _BASELINE_PROVENANCE: dict[str, Any] = {
     "mode": "code_owned_baseline",
@@ -119,6 +126,10 @@ def regenerate_stable_program_artifact(
         raise ValueError("news_program_stable_receipt_not_baseline")
     manifest["factory_source_sha256"] = _sha_file(factory_source)
     manifest["dependency_lock_sha256"] = _sha_file(dependency_lock)
+    manifest["topology_sha256"] = PROGRAM_TOPOLOGY_SHA256
+    manifest["input_contract_sha256"] = PROGRAM_INPUT_CONTRACT_SHA256
+    manifest["adapter_sha256"] = PROGRAM_ADAPTER_SHA256
+    manifest["assembler_sha256"] = PROGRAM_ASSEMBLER_SHA256
     manifest["state_sha256"] = canonical_sha(state)
     manifest_without_identity = {key: value for key, value in manifest.items() if key != "program_sha256"}
     new_sha = canonical_sha(manifest_without_identity)

@@ -111,7 +111,7 @@ Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. There are no historical migration-path tests: the Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
-`20260821_0290`, and schema tests run against that
+`20260822_0292`, and schema tests run against that
 migrated head. The e2e lane (`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
@@ -124,9 +124,10 @@ from the HTTP e2e fixture.
 
 News V3 has three public evaluation seams: `tracefold.news.eval.replay` for
 deterministic Deduper+Gate regression, pure `triage_rules.decide()` unit tests,
-and the #112 `CandidateEvaluator` for a whole semantic Agent candidate. The
-first two are code correctness tests; only the third can compare prompt,
-policy, or model behavior against accepted production evidence.
+and the #112/#129 `CandidateEvaluator` for a whole semantic Program candidate.
+The first two are code correctness tests; only the third can compare Program or
+policy behavior against accepted production evidence. Runtime model identity
+is part of the cohort and recording contract, not a supported candidate target.
 
 Work from evidence, never directly from a complaint:
 
@@ -139,10 +140,14 @@ uv run tracefold news review submit TASK --version TASK_VERSION \
 
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out /tmp/development.json
+uv run tracefold news learning compile --development DATASET_SHA \
+  --artifact-root /tmp/programs --out /tmp/program-proposal.json \
+  --max-metric-calls 100 --max-task-model-calls 150 \
+  --max-cost-microusd 500000 --seed 112
 uv run tracefold news learning propose --development DATASET_SHA \
-  --file /tmp/one-variable-candidate.yaml --out /tmp/candidate.json
+  --file /tmp/program-proposal.json --out /tmp/candidate.json
 uv run tracefold news learning evaluate --development DATASET_SHA \
-  --candidate /tmp/candidate.json --stage offline --live-model \
+  --candidate /tmp/candidate.json --stage offline --live-program \
   --out /tmp/offline-report.json
 ```
 
@@ -150,11 +155,28 @@ The trusted root is the reader contract, rubric, accepted reviews, temporal
 holdout membership, release thresholds, stable bundle/image and production
 receipts. No optimizer or candidate path may write any of them. Validation and
 holdout run stable and candidate sequentially because a different earlier
-decision changes each arm's later would-reach-reader ledger. Prompt candidates
-fix the model and inference config; model candidates fix the prompt/input and
-inference config; policy candidates reuse recorded semantic verdicts for the
-cheap development screen but still pass the later semantic and production
-stages. Model record/replay is exact and fails on an unrecorded request.
+decision changes each arm's later would-reach-reader ledger. A candidate changes
+exactly one target: the content-addressed Program or `decide()` policy. Program
+candidates keep policy fixed; policy candidates reuse recorded semantic
+judgments for the cheap development screen but still pass the later semantic
+and production stages. Record/replay is exact at each Predictor request and
+fails on an unrecorded request or runtime-model identity mismatch.
+
+Issue #129 deliberately resets learning eligibility. Migration `0292` records
+the `program_v1` epoch start from the database deployment clock. Prompt-era
+reviews, datasets, recordings and release receipts remain immutable audit
+history but are not training, validation, holdout or promotion evidence. New
+datasets require post-epoch reviews and acceptance receipts bound to the exact
+stable Program bundle, so quality evidence begins at zero.
+
+`learning compile` is a cold, operator-invoked DSPy GEPA compiler, not a Worker
+and not a release gate. It can read only accepted development episodes and the
+fixed `EventSemantics -> ReaderCard` factory. Every invocation must state
+metric-call, total task/reflection-model-call and provider-cost-in-microusd
+limits plus an explicit seed. The result is canonical state-only JSON plus
+provenance and a
+machine diff. The compiler cannot see validation/holdout, write accepted truth,
+register a candidate, alter the Python topology, accept, deploy or promote.
 
 Promotion requires sealed PASS artifacts in order: development, future
 temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,
@@ -162,6 +184,10 @@ then stable deployment. `learning canary trip` is the fail-closed rollback
 control. The migration and tests establish this mechanism; they do not prove a
 candidate is better. Production proof begins only after the minimum reviewed
 boundary/retention/negative clusters and future observation windows exist.
+The initial hard cut therefore makes no quality-uplift claim. Its immediate
+tradeoff is one normal provider call becoming two serial Predictor calls; its
+future leverage is separable semantic/copy feedback, demonstrations, routing
+and fine-tuning, all behind the unchanged `SemanticJudge.judge()` Interface.
 Broker behavior is covered by `tests/integration/test_news_bus_rabbitmq.py`
 against the compose RabbitMQ (`TRACEFOLD_TEST_AMQP_URL`, default
 `amqp://tracefold:tracefold@127.0.0.1:5672/`; skipped when unreachable); every

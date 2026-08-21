@@ -123,6 +123,32 @@ def _configured_semantic_program(
     )
 
 
+def _candidate_program_artifact(candidate: Any, stable_artifact: ProgramArtifact) -> ProgramArtifact:
+    """Resolve the Program half of an exact-one-variable canary arm.
+
+    A policy candidate reuses the stable artifact identity but still receives
+    its own Program instance below, keeping breaker and Adapter state arm-local.
+    A Program candidate must name an image-carried child of the current stable
+    Program.
+    """
+
+    arm = candidate.candidate_arm
+    if candidate.target == "policy":
+        if (
+            arm.program_version != stable_artifact.program_version
+            or arm.program_sha256 != stable_artifact.program_sha256
+        ):
+            raise ValueError("news_policy_candidate_program_identity_changed")
+        return stable_artifact
+    candidate_artifact = load_program_artifact(arm.program_sha256)
+    if (
+        candidate_artifact.program_version != arm.program_version
+        or candidate_artifact.parent_program_sha256 != stable_artifact.program_sha256
+    ):
+        raise ValueError("news_candidate_program_parent_mismatch")
+    return candidate_artifact
+
+
 class _FreshRuntimeRowExists(RuntimeError):
     pass
 
@@ -650,22 +676,11 @@ async def _wire_news_pipeline(
                 continue
             arm = candidate.candidate_arm
             try:
-                candidate_artifact = load_program_artifact(arm.program_sha256)
+                candidate_artifact = _candidate_program_artifact(candidate, stable_artifact)
             except (OSError, ValueError) as exc:
-                # The persisted assignment remains authoritative.  Omitting this arm makes the consumer observe an
+                # The persisted assignment remains authoritative. Omitting this arm makes the consumer observe an
                 # artifact-missing candidate and trip the active canary instead of silently running stable.
                 logger.error("candidate Program artifact rejected program=%s error=%s", arm.program_sha256, exc)
-                continue
-            if (
-                candidate_artifact.program_version != arm.program_version
-                or candidate_artifact.parent_program_sha256 != stable_artifact.program_sha256
-            ):
-                logger.error(
-                    "candidate Program manifest rejected program=%s version=%s parent=%s",
-                    arm.program_sha256,
-                    arm.program_version,
-                    candidate_artifact.parent_program_sha256,
-                )
                 continue
             candidate_program = _configured_semantic_program(settings, candidate_artifact, models)
             if candidate_program is None:  # guarded by semantic_judge, kept explicit for type narrowing

@@ -33,6 +33,7 @@ NEWS_TABLES = {
     "news_reviews",
     "news_external_miss_snapshots",
     "news_learning_artifacts",
+    "news_learning_epochs",
     "news_learning_cases",
     "news_model_recordings",
     "news_canary_activations",

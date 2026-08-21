@@ -18,14 +18,26 @@ import hashlib
 import importlib.metadata
 import importlib.resources
 import json
+import math
+import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, TypeVar, cast, runtime_checkable
 
 import dspy  # type: ignore[import-untyped]
 from dspy.adapters.chat_adapter import ChatAdapter  # type: ignore[import-untyped]
 from dspy.adapters.json_adapter import _get_structured_outputs_response_format  # type: ignore[import-untyped]
+from dspy.clients.openai_format import (  # type: ignore[import-untyped]
+    completion_to_lm_response,
+    cost_from_response,
+    responses_to_lm_response,
+    usage_from_response,
+)
+from dspy.core.types import LMRequest, LMResponse  # type: ignore[import-untyped]
 from dspy.utils.exceptions import AdapterParseError  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -35,6 +47,12 @@ from ..models import TriageAsset, TriageVerdict
 TOLD_WINDOW_MS: Final[int] = 4 * 3_600_000
 TOLD_MAX: Final[int] = 12
 TOLD_SAME_KEY_MAX: Final[int] = 6
+WATCHLIST_MAX: Final[int] = 64
+GROUNDED_ASSETS_MAX: Final[int] = 16
+STRATEGIES_MAX: Final[int] = 16
+PROGRAM_DEMOS_MAX: Final[int] = 32
+PROGRAM_DEMO_JSON_MAX_BYTES: Final[int] = 32_768
+PROGRAM_INSTRUCTION_MAX_BYTES: Final[int] = 32_768
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_semantic_program_artifact_v1"
 PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.semantic_program.factory_v1"
@@ -42,7 +60,14 @@ PROGRAM_TOPOLOGY_SHA256: Final[str] = canonical_sha(
     {"nodes": ["event_semantics", "reader_card", "verdict_assembler"], "edges": [[0, 1], [1, 2]]}
 )
 PROGRAM_ADAPTER_SHA256: Final[str] = canonical_sha(
-    {"adapter": "predictor_adapter_v1", "cache": False, "hidden_retry": False}
+    {
+        "adapter": "predictor_adapter_v2",
+        "cache": False,
+        "history": False,
+        "hidden_retry": False,
+        "metadata": "exact_provider_response",
+        "request_identity": "runtime_model_binding",
+    }
 )
 PROGRAM_ASSEMBLER_SHA256: Final[str] = canonical_sha(
     {
@@ -69,9 +94,29 @@ READER_CARD_SIGNATURE_SHA256: Final[str] = canonical_sha(
     }
 )
 
-_FORBIDDEN_STATE_KEYS: Final[frozenset[str]] = frozenset(
-    {"api_key", "api_base", "base_url", "endpoint", "model_list", "password", "secret", "token"}
+_FORBIDDEN_STATE_KEY_PARTS: Final[frozenset[tuple[str, ...]]] = frozenset(
+    {
+        ("api",),
+        ("auth",),
+        ("authorization",),
+        ("base", "url"),
+        ("callback",),
+        ("credential",),
+        ("credentials",),
+        ("endpoint",),
+        ("header",),
+        ("headers",),
+        ("history",),
+        ("model", "list"),
+        ("password",),
+        ("secret",),
+        ("token",),
+    }
 )
+_DEMO_FIELDS: Final[dict[str, frozenset[str]]] = {
+    "event_semantics": frozenset({"evidence_json", "semantics"}),
+    "reader_card": frozenset({"evidence_json", "semantics_json", "card"}),
+}
 _RETRYABLE_MARKERS: Final[tuple[str, ...]] = (
     "timeout",
     "connection",
@@ -107,6 +152,163 @@ class _ExactModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class RuntimeModelIdentity(_ExactModel):
+    """Secret-free identity of the concrete model route used for one request."""
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    model_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @classmethod
+    def issue(
+        cls,
+        *,
+        provider: str,
+        model: str,
+        model_sha256: str | None = None,
+    ) -> RuntimeModelIdentity:
+        normalized_provider = str(provider or "unknown").strip() or "unknown"
+        normalized_model = str(model).strip()
+        if not normalized_model:
+            raise ValueError("news_program_runtime_model_empty")
+        identity_sha = model_sha256 or canonical_sha({"provider": normalized_provider, "model": normalized_model})
+        return cls(
+            provider=normalized_provider,
+            model=normalized_model,
+            model_sha256=identity_sha,
+            binding_sha256=canonical_sha(
+                {
+                    "provider": normalized_provider,
+                    "model": normalized_model,
+                    "model_sha256": identity_sha,
+                }
+            ),
+        )
+
+    @model_validator(mode="after")
+    def _binding_matches_fields(self) -> RuntimeModelIdentity:
+        expected = canonical_sha({"provider": self.provider, "model": self.model, "model_sha256": self.model_sha256})
+        if self.binding_sha256 != expected:
+            raise ValueError("news_program_runtime_binding_identity_mismatch")
+        return self
+
+
+class ExactProviderMetadata(_ExactModel):
+    """Metadata normalized from exactly one DSPy 3.3 provider response."""
+
+    response_model: str | None = None
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cached_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    provider_cost_microusd: int | None = Field(default=None, ge=0)
+    finish_reason: str | None = None
+
+
+class ExactProviderCallCapture:
+    """Task-local capture owned by one logical DSPy Predictor invocation."""
+
+    def __init__(self) -> None:
+        self._metadata: list[ExactProviderMetadata] = []
+        self._errors: list[Exception] = []
+
+    def record(self, lm: dspy.LM, response: Any) -> None:
+        try:
+            self._metadata.append(_exact_provider_metadata(lm, response))
+        except Exception as exc:
+            self._errors.append(exc)
+
+    def record_metadata(self, metadata: ExactProviderMetadata) -> None:
+        self._metadata.append(metadata)
+
+    def require_exactly_one(self) -> ExactProviderMetadata:
+        if self._errors or len(self._metadata) != 1:
+            raise PredictorAdapterError("news_program_provider_metadata_unavailable")
+        return self._metadata[0]
+
+
+_ACTIVE_PROVIDER_CAPTURE: ContextVar[ExactProviderCallCapture | None] = ContextVar(
+    "tracefold_news_provider_capture", default=None
+)
+
+
+class ExactMetadataDspyLM(dspy.LM):  # type: ignore[misc]
+    """DSPy LM that exposes per-call provider metadata without shared-history lookup."""
+
+    def _process_lm_response(
+        self,
+        response: Any,
+        prompt: str | None,
+        messages: list[dict[str, Any]] | None,
+        **kwargs: Any,
+    ) -> Any:
+        capture = _ACTIVE_PROVIDER_CAPTURE.get()
+        if capture is not None:
+            capture.record(self, response)
+        return super()._process_lm_response(response, prompt, messages, **kwargs)
+
+    @contextmanager
+    def observe_exact_call(self) -> Iterator[ExactProviderCallCapture]:
+        capture = ExactProviderCallCapture()
+        token = _ACTIVE_PROVIDER_CAPTURE.set(capture)
+        try:
+            yield capture
+        finally:
+            _ACTIVE_PROVIDER_CAPTURE.reset(token)
+
+
+def _exact_provider_metadata(lm: dspy.LM, response: Any) -> ExactProviderMetadata:
+    if isinstance(response, LMResponse):
+        normalized = response
+    else:
+        request = LMRequest(model=str(lm.model), messages=[])
+        if str(getattr(lm, "model_type", "chat")) == "responses":
+            normalized = responses_to_lm_response(response, request)
+        else:
+            normalized = completion_to_lm_response(response, request)
+        normalized = normalized.model_copy(
+            update={
+                "model": getattr(response, "model", None) or normalized.model,
+                "usage": usage_from_response(response),
+                "cost": cost_from_response(response),
+                "provider_response": response,
+            }
+        )
+    usage = normalized.usage_as_dict()
+    input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or input_tokens + output_tokens)
+    cached_tokens = int(usage.get("cache_read_tokens") or usage.get("cache_read_input_tokens") or 0)
+    for detail_key in ("prompt_tokens_details", "input_tokens_details"):
+        detail = usage.get(detail_key)
+        if isinstance(detail, BaseModel):
+            detail = detail.model_dump()
+        if isinstance(detail, Mapping):
+            cached_tokens = max(cached_tokens, int(detail.get("cached_tokens") or 0))
+    details = usage.get("details")
+    if isinstance(details, Mapping):
+        cached_tokens = max(cached_tokens, int(details.get("cached_tokens") or details.get("cache_read_tokens") or 0))
+    cost_microusd = None
+    if normalized.cost is not None:
+        cost = Decimal(str(normalized.cost))
+        if not cost.is_finite() or cost < 0:
+            raise ValueError("news_program_provider_cost_invalid")
+        cost_microusd = int((cost * Decimal(1_000_000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    finish_reason = normalized.output.finish_reason
+    if finish_reason is None and normalized.output.truncated:
+        finish_reason = "length"
+    return ExactProviderMetadata(
+        response_model=normalized.model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
+        total_tokens=total_tokens,
+        provider_cost_microusd=cost_microusd,
+        finish_reason=str(finish_reason).casefold() if finish_reason is not None else None,
+    )
+
+
 class FrozenEventEvidence(_ExactModel):
     """Immutable evidence identity plus the bounded evidence visible to the Program."""
 
@@ -115,7 +317,7 @@ class FrozenEventEvidence(_ExactModel):
     evidence_sha256: str
     focus_fact_id: str
     source: str = ""
-    strategies: tuple[str, ...] = ()
+    strategies: tuple[str, ...] = Field(default=(), max_length=STRATEGIES_MAX)
     engine_type: str = "unknown"
     title: str = Field(max_length=600)
     raw_first_line: str = Field(default="", max_length=300)
@@ -130,7 +332,7 @@ class FrozenEventEvidence(_ExactModel):
 
 class SemanticGateContext(_ExactModel):
     asset_class: str = "none"
-    grounded_assets: tuple[str, ...] = ()
+    grounded_assets: tuple[str, ...] = Field(default=(), max_length=GROUNDED_ASSETS_MAX)
     macro_lexicon: bool = False
     pr_template: bool = False
 
@@ -199,7 +401,7 @@ class TriageContext(_ExactModel):
 
     evidence: FrozenEventEvidence
     gate: SemanticGateContext
-    watchlist: tuple[str, ...] = ()
+    watchlist: tuple[str, ...] = Field(default=(), max_length=WATCHLIST_MAX)
     told: ToldLedgerSnapshot
     now_ms: int = Field(ge=0)
     queue_lag_ms: int = Field(default=0, ge=0)
@@ -220,7 +422,7 @@ class TriageContext(_ExactModel):
             for coin in metadata.get("coins") or ()
             if isinstance(coin, Mapping) and coin.get("symbol")
         )[:10]
-        strategies = tuple(str(value) for value in card.get("provenance") or ())
+        strategies = tuple(str(value) for value in card.get("provenance") or ())[:STRATEGIES_MAX]
         storyline_key = str(card.get("storyline_key") or "")
         evidence = FrozenEventEvidence(
             event_id=str(card.get("event_id") or ""),
@@ -242,14 +444,14 @@ class TriageContext(_ExactModel):
         )
         gate = SemanticGateContext(
             asset_class=str(card.get("asset_class") or "none"),
-            grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ()),
+            grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ())[:GROUNDED_ASSETS_MAX],
             macro_lexicon=bool(card.get("macro_lexicon")),
             pr_template=bool(card.get("pr_template")) or str(card.get("admission") or "").startswith("suppressed_pr"),
         )
         return cls(
             evidence=evidence,
             gate=gate,
-            watchlist=tuple(str(value) for value in watchlist),
+            watchlist=tuple(str(value) for value in watchlist)[:WATCHLIST_MAX],
             told=ToldLedgerSnapshot.from_rows(told_rows, now_ms=now_ms, storyline_key=storyline_key),
             now_ms=int(now_ms),
             queue_lag_ms=max(0, int(queue_lag_ms)),
@@ -372,19 +574,22 @@ class PredictorState(_ExactModel):
     name: Literal["event_semantics", "reader_card"]
     signature_id: str
     signature_sha256: str
-    instruction: str = Field(min_length=1)
+    instruction: str = Field(min_length=1, max_length=PROGRAM_INSTRUCTION_MAX_BYTES)
     instruction_sha256: str
-    demos: tuple[dict[str, Any], ...] = ()
+    demos: tuple[dict[str, Any], ...] = Field(default=(), max_length=PROGRAM_DEMOS_MAX)
     demos_sha256: str
     model_bindings: PredictorModelBindings
     max_tokens: int = Field(ge=64, le=4096)
 
     @model_validator(mode="after")
     def _validate_hashes(self) -> PredictorState:
+        if len(self.instruction.encode("utf-8")) > PROGRAM_INSTRUCTION_MAX_BYTES:
+            raise ValueError(f"news_program_{self.name}_instruction_too_large")
         if self.instruction_sha256 != canonical_sha(self.instruction):
             raise ValueError(f"news_program_{self.name}_instruction_hash_mismatch")
         if self.demos_sha256 != canonical_sha(list(self.demos)):
             raise ValueError(f"news_program_{self.name}_demos_hash_mismatch")
+        _validate_predictor_demos(self.name, self.demos)
         return self
 
 
@@ -534,6 +739,14 @@ class ProgramArtifact(_ExactModel):
         for state in (self.event_semantics, self.reader_card):
             if state.model_bindings.model_dump() != expected_bindings[state.name]:
                 raise ValueError(f"news_program_{state.name}_model_bindings_invalid")
+        if self.parent_program_sha256 is None:
+            if self.compile_receipt.mode != "code_owned_baseline" or self.compile_receipt.accepted_by != "code_owner":
+                raise ValueError("news_program_baseline_parent_receipt_invalid")
+        elif (
+            self.compile_receipt.mode != "optimizer_candidate"
+            or self.compile_receipt.accepted_by != "unaccepted_candidate"
+        ):
+            raise ValueError("news_program_candidate_parent_receipt_invalid")
         if self.state_sha256 != self.computed_state_sha256():
             raise ValueError("news_program_state_hash_mismatch")
         return self
@@ -589,16 +802,100 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"news_program_json_nonfinite:{value}")
+
+
+def _reject_nonfinite_json(value: Any, *, path: str = "artifact") -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"news_program_json_nonfinite:{path}")
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            _reject_nonfinite_json(child, path=f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _reject_nonfinite_json(child, path=f"{path}[{index}]")
+
+
+def _state_key_parts(raw_key: object) -> tuple[str, ...]:
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(raw_key))
+    return tuple(part for part in re.split(r"[^a-z0-9]+", separated.casefold()) if part)
+
+
+def _unsafe_state_key(raw_key: object) -> bool:
+    parts = _state_key_parts(raw_key)
+    for forbidden in _FORBIDDEN_STATE_KEY_PARTS:
+        width = len(forbidden)
+        if any(parts[index : index + width] == forbidden for index in range(len(parts) - width + 1)):
+            return True
+    return False
+
+
 def _reject_unsafe_state(value: Any, *, path: str = "artifact") -> None:
     if isinstance(value, Mapping):
         for raw_key, child in value.items():
-            key = str(raw_key).casefold()
-            if key in _FORBIDDEN_STATE_KEYS:
+            if _unsafe_state_key(raw_key):
                 raise ValueError(f"news_program_unsafe_state_key:{path}.{raw_key}")
             _reject_unsafe_state(child, path=f"{path}.{raw_key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _reject_unsafe_state(child, path=f"{path}[{index}]")
+
+
+def _validate_predictor_demos(name: str, demos: Sequence[Mapping[str, Any]]) -> None:
+    expected = _DEMO_FIELDS.get(name)
+    if expected is None:
+        raise ValueError("news_program_demo_predictor_unknown")
+    for index, demo in enumerate(demos):
+        if set(demo) != expected:
+            raise ValueError(f"news_program_{name}_demo_fields_invalid:{index}")
+        _reject_unsafe_state(demo, path=f"state.{name}.demos[{index}]")
+        evidence = _canonical_demo_json(
+            demo["evidence_json"],
+            predictor=name,
+            field="evidence_json",
+            index=index,
+        )
+        del evidence
+        try:
+            if name == "event_semantics":
+                EventSemantics.model_validate(demo["semantics"])
+            else:
+                semantics = _canonical_demo_json(
+                    demo["semantics_json"],
+                    predictor=name,
+                    field="semantics_json",
+                    index=index,
+                )
+                validated_semantics = EventSemantics.model_validate(semantics)
+                if canonical_json(validated_semantics.model_dump(mode="json")) != demo["semantics_json"]:
+                    raise ValueError("semantics_json_not_typed_canonical")
+                ReaderCard.model_validate(demo["card"])
+        except (TypeError, ValidationError, ValueError) as exc:
+            raise ValueError(f"news_program_{name}_demo_value_invalid:{index}") from exc
+
+
+def _canonical_demo_json(
+    value: Any,
+    *,
+    predictor: str,
+    field: str,
+    index: int,
+) -> dict[str, Any]:
+    if not isinstance(value, str) or len(value.encode("utf-8")) > PROGRAM_DEMO_JSON_MAX_BYTES:
+        raise ValueError(f"news_program_{predictor}_demo_{field}_size_invalid:{index}")
+    try:
+        parsed = json.loads(
+            value,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"news_program_{predictor}_demo_{field}_json_invalid:{index}") from exc
+    if not isinstance(parsed, dict) or canonical_json(parsed) != value:
+        raise ValueError(f"news_program_{predictor}_demo_{field}_json_noncanonical:{index}")
+    _reject_nonfinite_json(parsed, path=f"state.{predictor}.demos[{index}].{field}")
+    return parsed
 
 
 class ProgramArtifactCodec:
@@ -607,11 +904,20 @@ class ProgramArtifactCodec:
     @classmethod
     def _json_object(cls, document: str | bytes, *, kind: str) -> dict[str, Any]:
         try:
-            raw = json.loads(document, object_pairs_hook=_reject_duplicate_keys)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            text = document.decode("utf-8") if isinstance(document, bytes) else document
+            raw = json.loads(
+                text,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_json_constant,
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
             raise ValueError(f"news_program_{kind}_json_invalid") from exc
         if not isinstance(raw, dict):
             raise ValueError(f"news_program_{kind}_must_be_object")
+        canonical_document = canonical_json(raw)
+        if text not in {canonical_document, canonical_document + "\n"}:
+            raise ValueError(f"news_program_{kind}_json_noncanonical")
+        _reject_nonfinite_json(raw)
         _reject_unsafe_state(raw)
         return raw
 
@@ -635,6 +941,7 @@ class ProgramArtifactCodec:
 
     @staticmethod
     def encode(artifact: ProgramArtifact) -> tuple[str, str]:
+        _reject_nonfinite_json(artifact.model_dump(mode="json"))
         if artifact.state_sha256 != artifact.computed_state_sha256():
             raise ValueError("news_program_state_hash_mismatch")
         if artifact.program_sha256 != artifact.computed_sha256():
@@ -721,9 +1028,47 @@ def load_stable_program_artifact() -> ProgramArtifact:
     return load_program_artifact(str(registry["stable"]))
 
 
-def _load_program_registry() -> dict[str, Any]:
+def _programs_resource_root() -> Any:
     root = importlib.resources.files("tracefold.news.agents").joinpath("programs")
-    raw = ProgramArtifactCodec._json_object(root.joinpath("registry.json").read_text(encoding="utf-8"), kind="registry")
+    if not isinstance(root, Path):
+        # Zip/importlib Traversables have no filesystem symlink surface.  Their
+        # bytes still pass the same strict registry and artifact codec below.
+        return root
+    try:
+        resolved = root.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("news_program_registry_path_invalid") from exc
+    if root.is_symlink() or root.absolute() != resolved or not resolved.is_dir():
+        raise ValueError("news_program_registry_path_invalid")
+    return resolved
+
+
+def _verified_resource_child(root: Any, name: str, *, kind: Literal["file", "directory"]) -> Any:
+    child = root.joinpath(name)
+    if not isinstance(root, Path) or not isinstance(child, Path):
+        return child
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_child = child.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("news_program_artifact_path_invalid") from exc
+    valid_kind = resolved_child.is_file() if kind == "file" else resolved_child.is_dir()
+    if (
+        child.is_symlink()
+        or child.absolute() != resolved_child
+        or resolved_child.parent != resolved_root
+        or not valid_kind
+    ):
+        raise ValueError("news_program_artifact_path_invalid")
+    return resolved_child
+
+
+def _load_program_registry() -> dict[str, Any]:
+    root = _programs_resource_root()
+    registry_resource = _verified_resource_child(root, "registry.json", kind="file")
+    if not registry_resource.is_file():
+        raise ValueError("news_program_registry_path_invalid")
+    raw = ProgramArtifactCodec._json_object(registry_resource.read_text(encoding="utf-8"), kind="registry")
     if set(raw) != {"stable", "images"} or not isinstance(raw["images"], list):
         raise ValueError("news_program_registry_schema_invalid")
     images = [str(value) for value in raw["images"]]
@@ -741,13 +1086,18 @@ def load_program_artifact(program_sha256: str) -> ProgramArtifact:
     registry = _load_program_registry()
     if identity not in registry["images"]:
         raise ValueError("news_program_artifact_not_registered")
-    root = importlib.resources.files("tracefold.news.agents").joinpath("programs")
-    image = root.joinpath(identity)
+    root = _programs_resource_root()
+    image = _verified_resource_child(root, identity, kind="directory")
+    if not image.is_dir():
+        raise ValueError("news_program_artifact_path_invalid")
     children = {child.name for child in image.iterdir()}
     if children != {"manifest.json", "state.json"}:
         raise ValueError("news_program_artifact_files_invalid")
     manifest_resource = image.joinpath("manifest.json")
     state_resource = image.joinpath("state.json")
+    if isinstance(image, Path):
+        manifest_resource = _verified_resource_child(image, "manifest.json", kind="file")
+        state_resource = _verified_resource_child(image, "state.json", kind="file")
     if not manifest_resource.is_file() or not state_resource.is_file():
         raise ValueError("news_program_artifact_files_invalid")
     if (
@@ -777,8 +1127,22 @@ class PredictorRequest(_ExactModel):
     demos_sha256: str
     adapter_sha256: str
     model_binding: str
+    runtime_provider: str = Field(min_length=1)
+    runtime_model: str = Field(min_length=1)
+    runtime_model_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_binding_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     upstream_sha256: str | None = None
     inputs: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _runtime_identity_matches(self) -> PredictorRequest:
+        RuntimeModelIdentity(
+            provider=self.runtime_provider,
+            model=self.runtime_model,
+            model_sha256=self.runtime_model_sha256,
+            binding_sha256=self.runtime_binding_sha256,
+        )
+        return self
 
     @property
     def request_sha256(self) -> str:
@@ -797,10 +1161,34 @@ class PredictorResponse(_ExactModel):
     total_tokens: int = Field(default=0, ge=0)
     provider_cost_microusd: int | None = Field(default=None, ge=0)
     finish_reason: str | None = None
+    runtime_binding_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @property
     def provider_cost_usd(self) -> float | None:
         return None if self.provider_cost_microusd is None else self.provider_cost_microusd / 1_000_000
+
+
+class ProviderCallObservation(_ExactModel):
+    """Safe metadata from one provider response whose output could not parse."""
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    model_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    latency_ms: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    provider_cost_microusd: int | None = Field(default=None, ge=0)
+    finish_reason: str | None = None
+    runtime_binding_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _model_identity_matches(self) -> ProviderCallObservation:
+        expected = canonical_sha({"provider": self.provider, "model": self.model})
+        if self.model_sha256 != expected:
+            raise ValueError("news_program_provider_observation_model_identity_mismatch")
+        return self
 
 
 class PredictorAdapterError(Exception):
@@ -811,16 +1199,22 @@ class PredictorAdapterError(Exception):
         retryable: bool = False,
         output_failure: bool = False,
         finish_reason: str | None = None,
+        provider_observation: ProviderCallObservation | None = None,
+        partial_output: Mapping[str, Any] | None = None,
     ) -> None:
         self.code = code
         self.retryable = retryable
         self.output_failure = output_failure
         self.finish_reason = finish_reason
+        self.provider_observation = provider_observation
+        self.partial_output = dict(partial_output) if partial_output is not None else None
         super().__init__(code)
 
 
 @runtime_checkable
 class PredictorAdapter(Protocol):
+    def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity: ...
+
     async def invoke(self, request: PredictorRequest, predictor: dspy.Predict) -> PredictorResponse: ...
 
 
@@ -918,11 +1312,23 @@ class DspyPredictorAdapter:
             raise ValueError("news_program_lm_cache_must_be_disabled")
         if int(getattr(lm, "num_retries", -1)) != 0:
             raise ValueError("news_program_lm_hidden_retries_must_be_zero")
+        if not callable(getattr(lm, "observe_exact_call", None)):
+            raise ValueError("news_program_lm_exact_metadata_seam_required")
         self._lm = lm
         self._model_name = str(model_name)
-        self._model_sha256 = model_sha256 or canonical_sha({"model": self._model_name})
-        self._provider = provider or (self._model_name.split("/", maxsplit=1)[0] if "/" in self._model_name else None)
+        self._provider = provider or (
+            self._model_name.split("/", maxsplit=1)[0] if "/" in self._model_name else "unknown"
+        )
+        self._runtime = RuntimeModelIdentity.issue(
+            provider=self._provider,
+            model=self._model_name,
+            model_sha256=model_sha256,
+        )
         self._adapter = adapter or DspyStrictJSONAdapter(use_native_function_calling=False)
+
+    def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity:
+        del model_binding
+        return self._runtime
 
     @classmethod
     def from_runtime(
@@ -944,7 +1350,7 @@ class DspyPredictorAdapter:
         overlap = owned.intersection(extras)
         if overlap:
             raise ValueError(f"news_program_runtime_model_kwargs_owned:{','.join(sorted(overlap))}")
-        lm = dspy.LM(
+        lm = ExactMetadataDspyLM(
             str(model_name),
             api_key=str(api_key),
             api_base=str(api_base),
@@ -958,53 +1364,63 @@ class DspyPredictorAdapter:
         return cls(lm, model_name=str(model_name), model_sha256=model_sha256, provider=provider)
 
     async def invoke(self, request: PredictorRequest, predictor: dspy.Predict) -> PredictorResponse:
+        if request.runtime_binding_sha256 != self._runtime.binding_sha256:
+            raise PredictorAdapterError("news_program_runtime_binding_mismatch")
         started = time.perf_counter()
+        capture: ExactProviderCallCapture
         try:
-            with dspy.context(lm=self._lm, adapter=self._adapter, track_usage=True):
+            with (
+                self._lm.observe_exact_call() as capture,
+                dspy.context(lm=self._lm, adapter=self._adapter, track_usage=True, disable_history=True),
+            ):
                 prediction = await predictor.acall(**request.inputs)
         except (AdapterParseError, ValidationError) as exc:
+            metadata = capture.require_exactly_one()
+            finish_reason = metadata.finish_reason
+            elapsed = max(0, round((time.perf_counter() - started) * 1000))
+            response_model = metadata.response_model or self._model_name
+            observation = ProviderCallObservation(
+                provider=self._provider,
+                model=response_model,
+                model_sha256=canonical_sha({"provider": self._provider, "model": response_model}),
+                latency_ms=elapsed,
+                input_tokens=metadata.input_tokens,
+                output_tokens=metadata.output_tokens,
+                cached_tokens=metadata.cached_tokens,
+                total_tokens=metadata.total_tokens,
+                provider_cost_microusd=metadata.provider_cost_microusd,
+                finish_reason=finish_reason,
+                runtime_binding_sha256=self._runtime.binding_sha256,
+            )
+            code = (
+                "news_program_output_truncated"
+                if finish_reason in _TRUNCATED_FINISH_REASONS
+                else f"news_program_dspy_output_{type(exc).__name__.casefold()}"
+            )
             raise PredictorAdapterError(
-                f"news_program_dspy_output_{type(exc).__name__.casefold()}",
+                code,
                 output_failure=True,
+                finish_reason=finish_reason,
+                provider_observation=observation,
+                partial_output=_safe_adapter_partial_output(exc, predictor=request.predictor),
             ) from exc
+        metadata = capture.require_exactly_one()
         elapsed = max(0, round((time.perf_counter() - started) * 1000))
         output = prediction.toDict()
-        usage = prediction.get_lm_usage() or {}
-        totals: dict[str, Any] = {}
-        cached_tokens = 0
-        for model_usage in usage.values():
-            if isinstance(model_usage, Mapping):
-                cached_detail = model_usage.get("prompt_tokens_details") or model_usage.get("input_tokens_details")
-                if isinstance(cached_detail, BaseModel):
-                    cached_detail = cached_detail.model_dump()
-                if isinstance(cached_detail, Mapping):
-                    cached_tokens += int(cached_detail.get("cached_tokens") or 0)
-                for key, value in model_usage.items():
-                    if isinstance(value, (int, float)):
-                        totals[key] = totals.get(key, 0) + value
-        input_tokens = int(totals.get("prompt_tokens") or totals.get("input_tokens") or 0)
-        output_tokens = int(totals.get("completion_tokens") or totals.get("output_tokens") or 0)
-        total_tokens = int(totals.get("total_tokens") or input_tokens + output_tokens)
-        microusd_cost = totals.get("provider_cost_microusd") or totals.get("cost_microusd")
-        usd_cost = totals.get("response_cost") or totals.get("cost")
-        cost_microusd: int | None
-        if microusd_cost is not None:
-            cost_microusd = max(0, int(microusd_cost))
-        elif usd_cost is None:
-            cost_microusd = None
-        else:
-            cost_microusd = max(0, round(float(usd_cost) * 1_000_000))
+        response_model = metadata.response_model or self._model_name
         return PredictorResponse(
             output=output,
             provider=self._provider,
-            model=self._model_name,
-            model_sha256=self._model_sha256,
+            model=response_model,
+            model_sha256=canonical_sha({"provider": self._provider, "model": response_model}),
             latency_ms=elapsed,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached_tokens,
-            total_tokens=total_tokens,
-            provider_cost_microusd=cost_microusd,
+            input_tokens=metadata.input_tokens,
+            output_tokens=metadata.output_tokens,
+            cached_tokens=metadata.cached_tokens,
+            total_tokens=metadata.total_tokens,
+            provider_cost_microusd=metadata.provider_cost_microusd,
+            finish_reason=metadata.finish_reason,
+            runtime_binding_sha256=self._runtime.binding_sha256,
         )
 
 
@@ -1024,7 +1440,12 @@ class ScriptedPredictorAdapter:
         self._steps = list(steps)
         self.model_name = model_name
         self.provider = provider
+        self._runtime = RuntimeModelIdentity.issue(provider=provider, model=model_name)
         self.requests: list[PredictorRequest] = []
+
+    def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity:
+        del model_binding
+        return self._runtime
 
     async def invoke(self, request: PredictorRequest, predictor: dspy.Predict) -> PredictorResponse:
         del predictor
@@ -1037,32 +1458,108 @@ class ScriptedPredictorAdapter:
         if isinstance(step, BaseException):
             raise step
         if isinstance(step, PredictorResponse):
-            return step
+            if step.runtime_binding_sha256 not in {None, request.runtime_binding_sha256}:
+                raise PredictorAdapterError("news_program_runtime_binding_mismatch")
+            return step.model_copy(
+                update={
+                    "provider": step.provider or self.provider,
+                    "model": step.model or self.model_name,
+                    "model_sha256": step.model_sha256
+                    or canonical_sha({"provider": self.provider, "model": step.model or self.model_name}),
+                    "runtime_binding_sha256": request.runtime_binding_sha256,
+                }
+            )
         return PredictorResponse(
             output=dict(step),
             provider=self.provider,
             model=self.model_name,
-            model_sha256=canonical_sha(self.model_name),
+            model_sha256=self._runtime.model_sha256,
+            runtime_binding_sha256=request.runtime_binding_sha256,
         )
+
+
+class PredictorRecording(_ExactModel):
+    request: dict[str, Any]
+    response: PredictorResponse
+
+    @model_validator(mode="after")
+    def _identity_is_exact(self) -> PredictorRecording:
+        runtime_binding_sha = str(self.request.get("runtime_binding_sha256") or "")
+        if len(runtime_binding_sha) != 64:
+            raise ValueError("news_program_recording_model_identity_missing")
+        if self.response.runtime_binding_sha256 != runtime_binding_sha:
+            raise ValueError("news_program_recording_model_identity_mismatch")
+        return self
 
 
 class RecordReplayPredictorAdapter:
     """Strict request-addressed replay; a miss can never fall through to live I/O."""
 
-    def __init__(self, recordings: Mapping[str, PredictorResponse | Mapping[str, Any]]) -> None:
-        self._recordings = {
-            str(key): value if isinstance(value, PredictorResponse) else PredictorResponse.model_validate(value)
-            for key, value in recordings.items()
-        }
+    def __init__(self, recordings: Mapping[str, PredictorRecording | Mapping[str, Any]]) -> None:
+        parsed: dict[str, PredictorRecording] = {}
+        identities: dict[str, RuntimeModelIdentity] = {}
+        for raw_sha, raw_recording in recordings.items():
+            request_sha = str(raw_sha)
+            recording = (
+                raw_recording
+                if isinstance(raw_recording, PredictorRecording)
+                else PredictorRecording.model_validate(raw_recording)
+            )
+            recorded_sha = str(recording.request.get("request_sha256") or "")
+            if request_sha != recorded_sha:
+                raise ValueError("news_program_recording_request_identity_mismatch")
+            identity = RuntimeModelIdentity(
+                provider=str(recording.request.get("runtime_provider") or ""),
+                model=str(recording.request.get("runtime_model") or ""),
+                model_sha256=str(recording.request.get("runtime_model_sha256") or ""),
+                binding_sha256=str(recording.request.get("runtime_binding_sha256") or ""),
+            )
+            model_binding = str(recording.request.get("model_binding") or "")
+            if not model_binding:
+                raise ValueError("news_program_recording_model_binding_missing")
+            previous = identities.setdefault(model_binding, identity)
+            if previous != identity:
+                raise ValueError("news_program_recording_model_binding_ambiguous")
+            parsed[request_sha] = recording
+        self._recordings = parsed
+        self._identities = identities
         self.requests: list[PredictorRequest] = []
+
+    def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity:
+        identity = self._identities.get(model_binding)
+        if identity is None:
+            raise PredictorAdapterError("news_program_recording_missing")
+        return identity
 
     async def invoke(self, request: PredictorRequest, predictor: dspy.Predict) -> PredictorResponse:
         del predictor
         self.requests.append(request)
-        response = self._recordings.get(request.request_sha256)
-        if response is None:
+        recording = self._recordings.get(request.request_sha256)
+        if recording is None:
             raise PredictorAdapterError("news_program_recording_missing")
-        return response
+        expected = {
+            "program_version": request.program_version,
+            "program_sha256": request.program_sha256,
+            "context_sha256": request.context_sha256,
+            "predictor": request.predictor,
+            "attempt": request.attempt,
+            "route": request.route,
+            "request_sha256": request.request_sha256,
+            "signature_sha256": request.signature_sha256,
+            "instruction_sha256": request.instruction_sha256,
+            "demos_sha256": request.demos_sha256,
+            "model_binding": request.model_binding,
+            "runtime_provider": request.runtime_provider,
+            "runtime_model": request.runtime_model,
+            "runtime_model_sha256": request.runtime_model_sha256,
+            "runtime_binding_sha256": request.runtime_binding_sha256,
+            "upstream_sha256": request.upstream_sha256,
+        }
+        if any(recording.request.get(key) != value for key, value in expected.items()):
+            raise PredictorAdapterError("news_program_recording_request_identity_mismatch")
+        if recording.response.runtime_binding_sha256 != request.runtime_binding_sha256:
+            raise PredictorAdapterError("news_program_recording_model_identity_mismatch")
+        return recording.response
 
 
 class ProgramCallTrace(_ExactModel):
@@ -1075,6 +1572,11 @@ class ProgramCallTrace(_ExactModel):
     instruction_sha256: str
     demos_sha256: str
     model_binding: str
+    physical_provider_call: bool = False
+    runtime_provider: str | None = None
+    runtime_model: str | None = None
+    runtime_model_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    runtime_binding_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     upstream_sha256: str | None = None
     output_sha256: str | None = None
     validated_output: dict[str, Any] | None = None
@@ -1109,8 +1611,11 @@ class ProgramTrace(_ExactModel):
 
 
 class ProgramUsage(_ExactModel):
+    """Aggregates trace entries and distinguishes real provider attempts."""
+
     wall_latency_ms: int = Field(ge=0)
     call_count: int = Field(ge=0, le=6)
+    physical_call_count: int = Field(default=0, ge=0, le=6)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)
@@ -1122,6 +1627,22 @@ class ProgramUsage(_ExactModel):
         return None if self.provider_cost_microusd is None else self.provider_cost_microusd / 1_000_000
 
 
+def _aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]:
+    physical_calls = [call for call in calls if call.physical_provider_call]
+    complete_cost = bool(physical_calls) and all(call.provider_cost_microusd is not None for call in physical_calls)
+    return {
+        "call_count": len(calls),
+        "physical_call_count": len(physical_calls),
+        "input_tokens": sum(call.input_tokens for call in calls),
+        "output_tokens": sum(call.output_tokens for call in calls),
+        "cached_tokens": sum(call.cached_tokens for call in calls),
+        "total_tokens": sum(call.total_tokens for call in calls),
+        "provider_cost_microusd": (
+            sum(cast(int, call.provider_cost_microusd) for call in physical_calls) if complete_cost else None
+        ),
+    }
+
+
 class SemanticJudgment(_ExactModel):
     verdict: TriageVerdict
     program_version: str
@@ -1130,6 +1651,21 @@ class SemanticJudgment(_ExactModel):
     usage: ProgramUsage
     answering_model: str | None = None
     fallback_from: str | None = None
+
+    @model_validator(mode="after")
+    def _trace_and_usage_match_judgment(self) -> SemanticJudgment:
+        if (
+            self.program_version != self.trace.program_version
+            or self.program_sha256 != self.trace.program_sha256
+            or self.fallback_from != self.trace.fallback_from
+            or self.trace.verdict_sha256 != canonical_sha(self.verdict.model_dump(mode="json"))
+        ):
+            raise ValueError("news_program_judgment_trace_identity_mismatch")
+        expected_usage = _aggregate_program_usage(self.trace.calls)
+        actual_usage = self.usage.model_dump(mode="json", exclude={"wall_latency_ms"})
+        if actual_usage != expected_usage:
+            raise ValueError("news_program_judgment_usage_mismatch")
+        return self
 
 
 class SemanticProgramError(Exception):
@@ -1194,6 +1730,25 @@ def _safe_json_state(value: Any) -> Any:
     raise TypeError(f"news_program_compiled_state_type_invalid:{type(value).__name__}")
 
 
+def _safe_adapter_partial_output(
+    exc: AdapterParseError | ValidationError,
+    *,
+    predictor: Literal["event_semantics", "reader_card"],
+) -> dict[str, Any] | None:
+    if not isinstance(exc, AdapterParseError):
+        return None
+    parsed = getattr(exc, "parsed_result", None)
+    output_field = "semantics" if predictor == "event_semantics" else "card"
+    if not isinstance(parsed, Mapping) or set(parsed) != {output_field}:
+        return None
+    try:
+        safe = _safe_json_state(parsed)
+        _reject_unsafe_state(safe, path="provider_partial_output")
+    except (TypeError, ValueError):
+        return None
+    return cast(dict[str, Any], safe)
+
+
 def _compiled_predictor_state(base: PredictorState, predictor: dspy.Predict) -> PredictorState:
     instructions = str(predictor.signature.instructions)
     demos = tuple(_safe_json_state(demo.toDict()) for demo in predictor.demos)
@@ -1209,8 +1764,27 @@ def _compiled_predictor_state(base: PredictorState, predictor: dspy.Predict) -> 
 
 
 def _is_retryable_exception(exc: BaseException) -> bool:
-    if isinstance(exc, (TimeoutError, ConnectionError)):
+    if isinstance(
+        exc,
+        (
+            TimeoutError,
+            ConnectionError,
+            dspy.LMTransportError,
+            dspy.LMServerError,
+            dspy.LMTimeoutError,
+            dspy.LMRateLimitError,
+        ),
+    ):
         return True
+    if isinstance(
+        exc,
+        (
+            dspy.LMAuthError,
+            dspy.LMInvalidRequestError,
+            dspy.ContextWindowExceededError,
+        ),
+    ):
+        return False
     name = type(exc).__name__.casefold()
     return any(marker in name for marker in _RETRYABLE_MARKERS)
 
@@ -1563,7 +2137,12 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     retry_available = False
                     semantics_attempt += 1
                     continue
-                if exc.output_failure and exc.raw_output is not None and "novelty" not in exc.raw_output:
+                if (
+                    exc.output_failure
+                    and exc.raw_output is not None
+                    and "novelty" not in exc.raw_output
+                    and (exc.finish_reason or "").casefold() not in _TRUNCATED_FINISH_REASONS
+                ):
                     patched = dict(exc.raw_output)
                     patched.update({"novelty": "new_fact", "restates": -1})
                     try:
@@ -1645,6 +2224,50 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         output_model: type[T],
         calls: list[ProgramCallTrace],
     ) -> T:
+        model_binding = getattr(state.model_bindings, route)
+        try:
+            runtime_identity = adapter.runtime_identity(model_binding)
+        except PredictorAdapterError as exc:
+            input_sha = canonical_sha(inputs)
+            request_sha = canonical_sha(
+                {
+                    "program_version": self.artifact.program_version,
+                    "program_sha256": self.artifact.program_sha256,
+                    "context_sha256": context_sha,
+                    "predictor": state.name,
+                    "route": route,
+                    "attempt": attempt,
+                    "signature_sha256": state.signature_sha256,
+                    "instruction_sha256": state.instruction_sha256,
+                    "demos_sha256": state.demos_sha256,
+                    "adapter_sha256": self.artifact.adapter_sha256,
+                    "model_binding": model_binding,
+                    "runtime_identity": "unavailable",
+                    "upstream_sha256": upstream_sha,
+                    "inputs": inputs,
+                }
+            )
+            call = ProgramCallTrace(
+                predictor=state.name,
+                route=route,
+                attempt=attempt,
+                request_sha256=request_sha,
+                input_sha256=input_sha,
+                signature_sha256=state.signature_sha256,
+                instruction_sha256=state.instruction_sha256,
+                demos_sha256=state.demos_sha256,
+                model_binding=model_binding,
+                upstream_sha256=upstream_sha,
+                error_code=exc.code,
+            )
+            calls.append(call)
+            raise _CallFailure(
+                code=exc.code,
+                retryable=exc.retryable,
+                output_failure=exc.output_failure,
+                finish_reason=exc.finish_reason,
+                trace=call,
+            ) from exc
         request = PredictorRequest(
             program_version=self.artifact.program_version,
             program_sha256=self.artifact.program_sha256,
@@ -1656,14 +2279,20 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             instruction_sha256=state.instruction_sha256,
             demos_sha256=state.demos_sha256,
             adapter_sha256=self.artifact.adapter_sha256,
-            model_binding=getattr(state.model_bindings, route),
+            model_binding=model_binding,
+            runtime_provider=runtime_identity.provider,
+            runtime_model=runtime_identity.model,
+            runtime_model_sha256=runtime_identity.model_sha256,
+            runtime_binding_sha256=runtime_identity.binding_sha256,
             upstream_sha256=upstream_sha,
             inputs=inputs,
         )
         input_sha = canonical_sha(inputs)
+        adapter_started = time.perf_counter()
         try:
             response = await adapter.invoke(request, predictor)
         except asyncio.CancelledError:
+            elapsed = max(0, round((time.perf_counter() - adapter_started) * 1000))
             call = ProgramCallTrace(
                 predictor=state.name,
                 route=route,
@@ -1674,12 +2303,25 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 instruction_sha256=state.instruction_sha256,
                 demos_sha256=state.demos_sha256,
                 model_binding=request.model_binding,
+                physical_provider_call=True,
+                runtime_provider=request.runtime_provider,
+                runtime_model=request.runtime_model,
+                runtime_model_sha256=request.runtime_model_sha256,
+                runtime_binding_sha256=request.runtime_binding_sha256,
                 upstream_sha256=upstream_sha,
+                latency_ms=elapsed,
                 error_code="news_program_route_deadline",
             )
             calls.append(call)
             raise
         except PredictorAdapterError as exc:
+            elapsed = max(0, round((time.perf_counter() - adapter_started) * 1000))
+            observation = exc.provider_observation
+            if observation is not None and (
+                observation.runtime_binding_sha256 != request.runtime_binding_sha256
+                or observation.provider != request.runtime_provider
+            ):
+                observation = None
             call = ProgramCallTrace(
                 predictor=state.name,
                 route=route,
@@ -1690,19 +2332,43 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 instruction_sha256=state.instruction_sha256,
                 demos_sha256=state.demos_sha256,
                 model_binding=request.model_binding,
+                physical_provider_call=True,
+                runtime_provider=request.runtime_provider,
+                runtime_model=request.runtime_model,
+                runtime_model_sha256=request.runtime_model_sha256,
+                runtime_binding_sha256=request.runtime_binding_sha256,
                 upstream_sha256=upstream_sha,
-                finish_reason=exc.finish_reason,
+                provider=observation.provider if observation is not None else None,
+                model=observation.model if observation is not None else None,
+                model_sha256=observation.model_sha256 if observation is not None else None,
+                latency_ms=observation.latency_ms if observation is not None else elapsed,
+                input_tokens=observation.input_tokens if observation is not None else 0,
+                output_tokens=observation.output_tokens if observation is not None else 0,
+                cached_tokens=observation.cached_tokens if observation is not None else 0,
+                total_tokens=observation.total_tokens if observation is not None else 0,
+                provider_cost_microusd=(observation.provider_cost_microusd if observation is not None else None),
+                finish_reason=(observation.finish_reason if observation is not None else exc.finish_reason),
                 error_code=exc.code,
             )
             calls.append(call)
+            partial_raw_output: Mapping[str, Any] | None = None
+            if exc.partial_output is not None:
+                try:
+                    partial = _unwrap_output(exc.partial_output, output_field)
+                except ValueError:
+                    partial = None
+                if isinstance(partial, Mapping):
+                    partial_raw_output = dict(partial)
             raise _CallFailure(
                 code=exc.code,
                 retryable=exc.retryable,
                 output_failure=exc.output_failure,
                 finish_reason=exc.finish_reason,
                 trace=call,
+                raw_output=partial_raw_output,
             ) from exc
         except Exception as exc:
+            elapsed = max(0, round((time.perf_counter() - adapter_started) * 1000))
             code = f"news_program_transport_{type(exc).__name__.casefold()}"
             call = ProgramCallTrace(
                 predictor=state.name,
@@ -1714,7 +2380,13 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 instruction_sha256=state.instruction_sha256,
                 demos_sha256=state.demos_sha256,
                 model_binding=request.model_binding,
+                physical_provider_call=True,
+                runtime_provider=request.runtime_provider,
+                runtime_model=request.runtime_model,
+                runtime_model_sha256=request.runtime_model_sha256,
+                runtime_binding_sha256=request.runtime_binding_sha256,
                 upstream_sha256=upstream_sha,
+                latency_ms=elapsed,
                 error_code=code,
             )
             calls.append(call)
@@ -1725,6 +2397,44 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                 finish_reason=None,
                 trace=call,
             ) from exc
+        if response.runtime_binding_sha256 != request.runtime_binding_sha256:
+            code = "news_program_runtime_binding_mismatch"
+            call = ProgramCallTrace(
+                predictor=state.name,
+                route=route,
+                attempt=attempt,
+                request_sha256=request.request_sha256,
+                input_sha256=input_sha,
+                signature_sha256=state.signature_sha256,
+                instruction_sha256=state.instruction_sha256,
+                demos_sha256=state.demos_sha256,
+                model_binding=request.model_binding,
+                physical_provider_call=True,
+                runtime_provider=request.runtime_provider,
+                runtime_model=request.runtime_model,
+                runtime_model_sha256=request.runtime_model_sha256,
+                runtime_binding_sha256=request.runtime_binding_sha256,
+                upstream_sha256=upstream_sha,
+                provider=response.provider,
+                model=response.model,
+                model_sha256=response.model_sha256,
+                latency_ms=response.latency_ms,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                cached_tokens=response.cached_tokens,
+                total_tokens=response.total_tokens,
+                provider_cost_microusd=response.provider_cost_microusd,
+                finish_reason=response.finish_reason,
+                error_code=code,
+            )
+            calls.append(call)
+            raise _CallFailure(
+                code=code,
+                retryable=False,
+                output_failure=False,
+                finish_reason=response.finish_reason,
+                trace=call,
+            )
         raw_output: Mapping[str, Any] | None = None
         output_sha = canonical_sha(response.output)
         finish_reason = response.finish_reason.casefold() if response.finish_reason else None
@@ -1738,6 +2448,11 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             instruction_sha256=state.instruction_sha256,
             demos_sha256=state.demos_sha256,
             model_binding=request.model_binding,
+            physical_provider_call=True,
+            runtime_provider=request.runtime_provider,
+            runtime_model=request.runtime_model,
+            runtime_model_sha256=request.runtime_model_sha256,
+            runtime_binding_sha256=request.runtime_binding_sha256,
             upstream_sha256=upstream_sha,
             output_sha256=output_sha,
             provider=response.provider,
@@ -1848,15 +2563,9 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
 
     @staticmethod
     def _usage(calls: Sequence[ProgramCallTrace], *, started: float) -> ProgramUsage:
-        costs = [call.provider_cost_microusd for call in calls if call.provider_cost_microusd is not None]
         return ProgramUsage(
             wall_latency_ms=max(0, round((time.perf_counter() - started) * 1000)),
-            call_count=len(calls),
-            input_tokens=sum(call.input_tokens for call in calls),
-            output_tokens=sum(call.output_tokens for call in calls),
-            cached_tokens=sum(call.cached_tokens for call in calls),
-            total_tokens=sum(call.total_tokens for call in calls),
-            provider_cost_microusd=sum(costs) if costs else None,
+            **_aggregate_program_usage(calls),
         )
 
 
@@ -1871,11 +2580,15 @@ __all__ = [
     "DspyPredictorAdapter",
     "DspyStrictJSONAdapter",
     "EventSemantics",
+    "ExactMetadataDspyLM",
+    "ExactProviderCallCapture",
+    "ExactProviderMetadata",
     "ExecutionContract",
     "FrozenEventEvidence",
     "PredictorAdapter",
     "PredictorAdapterError",
     "PredictorModelBindings",
+    "PredictorRecording",
     "PredictorRequest",
     "PredictorResponse",
     "PredictorState",
@@ -1884,8 +2597,10 @@ __all__ = [
     "ProgramCallTrace",
     "ProgramTrace",
     "ProgramUsage",
+    "ProviderCallObservation",
     "ReaderCard",
     "RecordReplayPredictorAdapter",
+    "RuntimeModelIdentity",
     "ScriptedPredictorAdapter",
     "SemanticGateContext",
     "SemanticJudge",

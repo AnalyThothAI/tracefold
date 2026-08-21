@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any, NamedTuple
 
+from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
 from tracefold.news import ArmManifest, canonical_sha
-from tracefold.news.agents.semantic_program import load_stable_program_artifact
+from tracefold.news.agents.semantic_program import RuntimeModelIdentity, load_stable_program_artifact
 from tracefold.platform.config.settings import news_model_availability
 
 
@@ -16,18 +17,29 @@ def active_arm_manifest(settings: Any) -> ArmManifest:
     availability = news_model_availability(settings)
     artifact = load_stable_program_artifact()
     primary_model = str(availability.triage_model or settings.llm.news_triage_model or "unconfigured")
-    fallback_model = str(availability.triage_fallback_model or "unconfigured")
+    primary = configured_lm_endpoint(settings, model_name=primary_model)
+    primary_identity = _endpoint_identity(primary)
+    fallback_identity = None
+    if availability.triage_fallback_model:
+        fallback_settings = settings.llm.news_triage_fallback
+        fallback = configured_lm_endpoint(
+            settings,
+            model_name=availability.triage_fallback_model,
+            api_key=fallback_settings.api_key,
+            base_url=fallback_settings.base_url,
+        )
+        fallback_identity = _endpoint_identity(fallback)
     policy = settings.news.policy.model_dump(mode="json")
     return ArmManifest(
         program_version=artifact.program_version,
         program_sha256=artifact.program_sha256,
         runtime_model_bindings_sha256=canonical_sha(
             {
-                "event_semantics.primary": {"provider": "litellm", "model": primary_model},
-                "reader_card.primary": {"provider": "litellm", "model": primary_model},
-                "event_semantics.fallback": {"provider": "litellm", "model": fallback_model},
-                "reader_card.fallback": {"provider": "litellm", "model": fallback_model},
-                "snapshot_kind": "mutable_alias",
+                "identity_schema": "configured_runtime_binding_v1",
+                "event_semantics.primary": primary_identity,
+                "reader_card.primary": primary_identity,
+                "event_semantics.fallback": fallback_identity,
+                "reader_card.fallback": fallback_identity,
             }
         ),
         retrieval_sha256=canonical_sha(
@@ -36,6 +48,14 @@ def active_arm_manifest(settings: Any) -> ArmManifest:
         policy=policy,
         policy_sha256=canonical_sha(policy),
     )
+
+
+def _endpoint_identity(endpoint: ConfiguredLMEndpoint) -> dict[str, str]:
+    """Use the same secret-free identity that each live Predictor request carries."""
+
+    model = str(endpoint.model_name)
+    provider = model.split("/", maxsplit=1)[0] if "/" in model else "unknown"
+    return RuntimeModelIdentity.issue(provider=provider, model=model).model_dump(mode="json")
 
 
 IMAGE_DIGEST_ENV = "TRACEFOLD_IMAGE_DIGEST"

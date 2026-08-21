@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from alembic import command
@@ -205,21 +206,22 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         conn.close()
         conn = None
 
+        deployed_after_ms = int(time.time() * 1000) - 5_000
         _upgrade("head")
+        deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0292"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
-        assert epoch["starts_at_ms"] == 1_787_329_287_000
+        assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
+        assert epoch["created_at_ms"] == epoch["starts_at_ms"]
         assert epoch["prior_evidence_disposition"] == "audit_only"
         assert epoch["reset_reason"] == "zero_compatibility_reset_reaccrue_evidence"
         assert epoch["program_factory_id"] == "tracefold.news.semantic_program.factory_v1"
         assert epoch["artifact_schema_version"] == "news_semantic_program_artifact_v1"
         assert epoch["baseline_program_version"] == "news_semantic_program_v1"
-        assert epoch["baseline_program_sha256"] == (
-            "373c3e07f1c97ab4dfae6528fd5e9517b429adba4e32d71e4d63321709449ccd"
-        )
+        assert epoch["baseline_program_sha256"] == ("00993fa0d127573d13d1c4cf38f43b03e159f8b385a25d1ff0694a8196cbef09")
         legacy = conn.execute(
             "SELECT predictor_name, call_index, attempt, route, cached_tokens, total_tokens, "
             "provider_cost_microusd FROM news_model_recordings WHERE recording_sha = %s",

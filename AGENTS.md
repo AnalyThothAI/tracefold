@@ -45,13 +45,19 @@ exchange listing/delisting frames take the `listing_deterministic` admission,
 which is admitted and goes to Triage like a candidate (#72 — it used to be
 stored and then silently dropped), and a stronger later member re-gates a
 suppressed Event — and computes a theme-first preliminary storyline key. Triage
-is one structured LangChain call with a byte-frozen English system prompt that
-requires Chinese reader text (`headline_zh`, `why_zh`, console-only `title_zh`
-whose empty value means "same as `headline_zh`", #101) and an end-of-message
-status bar — the told ledger, the cards the reader received in the last 4 h
-(issue #61), but no push-count quota signal — (a fast retryable model failure or an unusable
-non-truncated answer earns one more attempt inside the deadline) and is the only
-semantic filter; the verdict carries `novelty`
+is one Program-native `SemanticJudge.judge(TriageContext)` Interface backed by
+a code-owned two-Predictor DSPy Module: `EventSemantics` interprets the Event,
+Gate facts and 4 h told ledger, then `ReaderCard` receives the original evidence
+plus frozen semantics and writes Chinese reader text (`headline_zh`, `why_zh`,
+console-only `title_zh` whose empty value means "same as `headline_zh`", #101);
+a deterministic assembler produces the exact `TriageVerdict`. A normal route is
+exactly two serial structured calls. The content-addressed, state-only
+`ProgramArtifact` pins topology, signatures, instructions, demos, Adapter,
+model slots, execution contract and dependency lock; DSPy cache and hidden
+provider retries are disabled. One shared route deadline owns one fast retry;
+fallback restarts the whole graph, and the full primary+fallback chain can make
+at most six physical requests. This Program is the only semantic filter; the
+verdict carries `novelty`
 (`new_fact`/`progression`/`restatement` + `restates` index against the ledger);
 the final storyline key is computed from the verdict's grounded primaries, then
 a theme, then the model's own primaries even when the provider did not tag them,
@@ -75,9 +81,10 @@ degraded but never silent (rule baseline: watchlist, score >= 80 with a grounded
 asset, or a high-priority Event or deterministic exchange notice, which fail
 open onto the wire headline instead of dropping a missile strike because it has
 no ticker) with a circuit breaker, and the verdict carries `title_zh` and
-`audience` (no separate translation lane) plus a replayable trace (prompt sha,
-input sha, preliminary key, preliminary and final status-bar snapshots, the told
-ledger as shown, final storyline key). There is no Analyst lane: one Event gets
+`audience` (no separate translation lane) plus a replayable trace (Program and
+runtime-model identity, per-Predictor request/output/usage/cost, every stale
+re-ask execution, preliminary and final ledger snapshots, and final storyline
+key). There is no Analyst lane: one Event gets
 one structured judgment and one card (issue #57); `escalate` is a
 high-importance push (⚡ header, AMQP priority), not a second model call, and
 since policy v4 (#77) it is magnitude-driven only — the Gate's `priority` still
@@ -121,12 +128,17 @@ removed real equities with no crypto perp, and listing/delisting facts arrive as
 provider frames (#72) that the snapshot diff could only have duplicated for the
 two venues we poll. The learning plane is immutable `EventEvidenceSnapshot`
 plus append-only multi-dimensional reviews/external misses and one
-`CandidateEvaluator`: it freezes accepted evidence, runs stable and exactly one
-declared prompt/policy/model variable sequentially, then requires sealed future
-holdout, blind pairwise, shadow and deterministic one-arm canary evidence before
-promotion. Automated optimizers may propose but never accept, deploy, or edit
-the trusted root. `news.retention` keeps raw Items 30 days and judged/reviewed
-ones 365. `/api/news/status.pipeline` reports where the last 24 h went
+`CandidateEvaluator`. The deployment-time `program_v1` epoch makes all earlier
+Prompt-era evidence audit-only and reaccrues release evidence from zero. It
+freezes accepted evidence, runs stable and exactly one declared `program` or
+`policy` variable sequentially, then requires sealed future holdout, blind
+pairwise, shadow and deterministic one-arm canary evidence before promotion. A
+cold, manually invoked DSPy GEPA compiler reads only accepted development
+episodes under explicit metric-call, model-call, cost and seed budgets, emits a
+canonical state-only Program candidate, and can never read holdout evidence,
+accept, deploy, promote, or edit the trusted root. `news.retention` keeps raw
+Items 30 days and judged/reviewed ones 365. `/api/news/status.pipeline` reports
+where the last 24 h went
 (`suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
 `pushed_by_rule`, `reviewed_should_push_24h`, `reviewed_external_miss_24h`,
 `candidate_share_24h`), `status.health`/`funnel_24h`/`reasons_24h` are the
@@ -175,8 +187,9 @@ failure writes nothing so the work stays due. `/api/news/quotes` (≤100 symbols
 `fresh|stale|unavailable|unlisted`) is deliberately not a feed field — a price
 that changed must not invalidate the Feed ETag every 3 s — while
 `/api/news/review` serves ReviewDesk; its market view defaults to one exact
-prompt/policy/model cohort, uses mature denominators, clusters held Events at
-fact grain, and cannot promote a candidate. Movement proves no causality and is
+Program/policy/runtime-model cohort, uses mature denominators, clusters held
+Events at fact grain, and cannot promote a candidate. Movement proves no
+causality and is
 never reward or `should_push` truth. Price never reaches the
 Gate, Triage, `decide()`, a duplicate key or a ranking signal; card v10 may
 render a fresh quote as display-only reader context. The loops

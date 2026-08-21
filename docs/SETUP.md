@@ -54,6 +54,12 @@ EOF
 uv run tracefold config   # confirm it parses before make up
 ```
 
+`news.triage.deadline_seconds` is retired in #129. Remove that line from an
+existing `news.triage` mapping before `make up`; keep `concurrency` and the
+optional whole-chain `circuit_failures` / `circuit_open_seconds`. The Program
+artifact now owns its primary and fallback route deadline, so carrying the old
+key fails `extra="forbid"` rather than silently overriding the artifact.
+
 ### Initialization semantics
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
@@ -108,16 +114,17 @@ lanes report explicit degradation or unavailable evidence:
   which Strategies push is decided in the OpenNews account (#126);
 - absent or unreachable `news.broker.url` makes Workers fail startup while News
   is enabled (the broker is the News transport plane);
-- an absent direct DeepSeek triple (`llm.api_key`, `llm.base_url`,
-  `llm.news_triage_model`) makes Triage fall back to fail-closed rules
+- an absent direct model triple (`llm.api_key`, `llm.base_url`,
+  `llm.news_triage_model`) leaves the semantic Program unconfigured and makes
+  Triage fall back to fail-closed rules
   (`triage_degraded_24h` grows); a degraded verdict carries no Chinese text, so
   the feed and card fall back to the original title;
 - News push remains off until `news.push.enabled: true` and a supported
   `news.push.feishu_webhook_url` are both configured.
 
 `tracefold config` reports the effective file paths, configured booleans,
-`opennews_strategy_count`, broker `url_configured`, model names, and watchlist
-symbols; it never prints provider tokens, the broker URL, webhook URLs,
+broker `url_configured`, model names, and watchlist symbols; it never prints
+Strategy IDs/counts, provider tokens, the broker URL, webhook URLs,
 signing secrets, or model keys.
 
 `news.push.feishu_signing_secret` is optional. When present, the Adapter adds
@@ -160,7 +167,7 @@ news:
     raw_days: 30                # an Item nobody judged is storage
     judged_days: 365            # an Item behind a verdict or accepted review is retained as learning evidence
   gate:
-    suppress_low_signal: false  # true = drop ungrounded, non-macro social posts under score 70 without a model call
+    suppress_low_signal: false  # true = drop ungrounded, non-macro social posts under score 70 before Program execution
   venues:                       # instrument-universe snapshot; public catalogues, no credentials
     enabled: true
     binance: true
@@ -179,12 +186,25 @@ news:
 `news.policy` and `news.gate` are the operator's recall/precision knobs: the
 Gate admits nearly every Item (only recovery replays, law-firm templates,
 and — behind `suppress_low_signal` — low-score ungrounded social posts skip
-the model; exchange listing/delisting frames are admitted and judged like any
+Program execution; exchange listing/delisting frames are admitted and judged like any
 candidate), Triage is the semantic filter, and
-`decide()` applies these thresholds. Changes are one-variable candidates:
+`decide()` applies these thresholds. Semantic generation is the code-owned
+`EventSemantics -> ReaderCard -> deterministic assembler` Program behind
+`SemanticJudge.judge(TriageContext)`. A normal judgment makes two serial
+provider calls; the Program artifact owns the route deadline and retry/call
+budget, so `deadline_seconds` is not an operator setting. Changes are
+exact-one-variable `program` or `policy` candidates:
 record accepted cases with `tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
 offline, holdout, shadow and canary gates under `tracefold news learning`.
+The optional `learning compile` command cold-runs bounded DSPy GEPA over
+accepted development episodes only; it requires explicit metric-call,
+model-call and provider-cost limits plus a seed, and cannot inspect holdout,
+accept, deploy or promote. The `program_v1` epoch begins when migration `0292` is
+deployed: older Prompt-era evidence remains audit-only, and quality evidence
+restarts from zero. The hard cut itself does not prove a quality uplift; it
+creates future per-Predictor feedback, demo, routing and fine-tuning leverage
+at the immediate cost of the normal call count increasing from one to two.
 `tracefold config` prints the effective values. Policy v7 has no 1 h/2 h/4 h
 reader-count veto: every distinct fact that passes the semantic contract moves
 to delivery; the sent-reader ledger remains only for same-fact suppression.
@@ -249,13 +269,13 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 The Alembic chain starts at the `20260818_0275` current-schema baseline and is
-linear through `20260821_0290_evidence_append_lock_contract`. A new empty database applies
+linear through `20260822_0292_dspy_program_epoch`. A new empty database applies
 the complete chain without replaying retired runtime tables. A database
 stamped at an earlier revision migrates forward with `tracefold db migrate`;
 all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers
 before applying them and start Workers only after the migration is current.
 An existing 0283 volume uses the backup/stop/migrate/redeploy sequence
-documented in `OPERATIONS.md`; #112 adds no login role or password.
+documented in `OPERATIONS.md`; #112/#129 add no login role or password.
 
 Retired routes return `404`; there is no compatibility alias.
 

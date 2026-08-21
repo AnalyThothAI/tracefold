@@ -46,6 +46,10 @@ equivalent retired key fails validation; there is no alias, merge, or
 generated-source fallback. Remove them from an existing operator config before
 upgrading.
 
+Issue #129 also retires `news.triage.deadline_seconds`; the content-addressed
+Program artifact owns the route deadline. Existing configs must remove the key
+before startup.
+
 `llm.api_key`, `llm.base_url`, and `llm.news_triage_model` are one direct
 OpenAI-compatible configuration (DeepSeek, or a LAN llama.cpp / vLLM server).
 They are all absent or all present; a partial triple fails validation, and
@@ -55,12 +59,14 @@ otherwise spends the Triage token budget on reasoning before the tool call.
 `llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
 only valid next to a complete primary triple; issue #65) is a second direct
 endpoint used only when the primary Triage call fails — timeout, transport
-error, truncated or invalid output — or while the primary breaker
-(`news.triage.circuit_failures` consecutive primary failures open it for
-`news.triage.circuit_open_seconds`) is open. Each link gets its own
-`news.triage.deadline_seconds`; `news_verdicts.model` records the model that
+error, truncated or invalid output — or while the Program artifact's primary-
+route breaker is open. The shipped artifact owns that breaker plus each
+route's deadline and retry/call budget; `deadline_seconds` is not a
+configuration field. The separate `news.triage.circuit_failures` /
+`circuit_open_seconds` settings govern the consumer's whole-chain breaker after
+both routes fail retryably. `news_verdicts.model` records the runtime model that
 answered and the trace carries `model_fallback_from` (the primary's error code
-or `primary_circuit_open`) or, when both links failed, `primary_error`.
+or `primary_circuit_open`) or, when both routes failed, `primary_error`.
 `/api/news/status.pipeline` and `tracefold config` report both
 `triage_model` and `triage_fallback_model`. The card's Chinese text is the Triage verdict's
 `headline_zh` and `why_zh` (with `title_zh` for the console); no other model
@@ -81,13 +87,13 @@ dashboard.
 `news.broker.url` (`amqp://` or `amqps://`, a secret) is required for News to
 run; `news.broker.name_prefix` prefixes every exchange and queue name and
 `news.broker.connect_timeout_seconds` bounds the connect. `news.triage.*`
-(`deadline_seconds`, `concurrency`, `circuit_failures`,
-`circuit_open_seconds`), `news.push.*` (`enabled`, `feishu_webhook_url`,
+(`concurrency`, `circuit_failures`, `circuit_open_seconds`), `news.push.*`
+(`enabled`, `feishu_webhook_url`,
 optional `feishu_signing_secret`, `min_interval_seconds`), and
 `news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
 `news.triage.concurrency` (default 4) is the real consumer width of its queue.
-Lexicons, prefix tables, LSH geometry, prompt texts, and policy versions are
-code constants. `tracefold config` exposes only redacted booleans, counts,
+Lexicons, prefix tables, LSH geometry, the code-owned Program registry, and
+policy versions are image state. `tracefold config` exposes only redacted booleans, counts,
 model names, and watchlist symbols; it never prints the token, broker URL,
 keys, or webhook.
 
@@ -128,8 +134,8 @@ There is no WebSocket endpoint.
 - Read endpoints do not call providers, execute models, or mutate facts.
 
 Status contains no provider/model credentials, base URLs, request policy,
-capacity counters, prompt contents, or raw model responses. Code-owned
-prompt/policy versions may accompany bounded verdict telemetry; they are
+capacity counters, Program instructions/demonstrations, or raw model responses.
+Code-owned Program/policy versions may accompany bounded verdict telemetry; they are
 not operator configuration.
 
 API responses use a typed envelope:
@@ -209,8 +215,9 @@ templates:
   `facts` it was built from), its member Items (title, URL, origin,
   publication time, match kind, Jaccard estimate, provenance, description),
   every Triage verdict (model decision, rule baseline, final decision,
-  override rule, throttle reason, verdict payload, model, prompt version,
-  degraded flag, trace), deliveries, and `normalization[]` — the alias
+  override rule, throttle reason, verdict payload, runtime model, Program
+  version/SHA, degraded flag and trace; nullable `prompt_version` is Prompt-era
+  audit history only), deliveries, and `normalization[]` — the alias
   groups this Event's assets fall into (`base_symbol`, every `alias` that
   resolves into it including the base itself, and the alias `sources`). Only
   the code-owned seed aliases count (`source = 'seed'`, reconciled from
@@ -229,8 +236,8 @@ templates:
   `received_1h`/`delivered_1h`),
   `reasons_24h` (`stage` `gate|drop|throttle|push|degraded|ungrounded`, raw
   `key`, `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
-  connected, last frame/publish, error, configured and provider-enabled
-  Strategy IDs, strategy warnings, open incidents, token configured), `broker`
+  connected, last frame/publish, error, open incidents, token configured; no
+  Strategy IDs/counts), `broker`
   (configured, connected, per-queue message/consumer counts when observed,
   error code), `pipeline` (events and candidates per hour/day, Triage counts,
   degraded counts incl. `triage_degraded_by_code_24h`, decided pushes,
@@ -290,32 +297,62 @@ for pre-v7 rows), `restates` (told-ledger index a restatement points at, -1
 otherwise), `event_type`, `assets[{symbol, market_type?, role}]`, `direction`,
 `scope`, `magnitude 0..3`, `actionable`, `confidence`, `decision` (model
 intent), `audience`, `headline_zh` (the card header: a complete headline that
-keeps the decisive number / condition / consequence clause, prompt target 15–45
-characters, at most 60), `title_zh` (the console's full Chinese title, at most
-160 characters; empty means "same as `headline_zh`" — prompt v9 asks for the
-sentinel, and `models.display_title` fills it in for every console and API
-surface, so the model only spends tokens on it when `headline_zh` actually
-condensed something), `why_zh` (one plain sentence adding mechanism and who is
-exposed, prompt target <= 70 characters, at most 140); the stored row adds
+keeps the decisive number / condition / consequence clause, at most 60
+characters), `title_zh` (the console's full Chinese title, at most 160
+characters; empty means "same as `headline_zh`" — the deterministic assembler
+enforces the sentinel, and `models.display_title` fills it in for every console
+and API surface), `why_zh` (at most one plain sentence adding mechanism and who
+is exposed, at most 140 characters); the stored row adds
 `model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`
 (policy v3 added `restatement`), `throttled_by`
 (`storyline:<key>:seen` only for deterministic duplicate evidence; historical
-cap keys remain readable on old rows), `degraded`, `error_code`, `trace` (`prompt_sha256`,
-`policy` — every `DecidePolicy` value that produced the decision —
-`schema_sha256` (the tool schema half of the same contract, #101),
-`gate_policy_version`, `input_sha256`, `storyline_key_preliminary`, `status`,
+cap keys remain readable on old rows), `degraded`, `error_code`, and `trace`.
+The trace binds the Program version/SHA, every `DecidePolicy` value,
+`gate_policy_version`, selected `input_sha256`, `storyline_key_preliminary`, `status`,
 `status_final`, `storyline_key`, `told[{i, event_id, at_ms, m, dir,
 headline_zh}]`, `told_count`, `seen_count`, `seen_similarity`, `seen_against
 {event_id, headline_zh}`, `restates_event_id`, `reasked_after_told_change`,
-`first_verdict`, `first_input_sha256`, `reask_failed`, `novelty_defaulted`,
-model telemetry). `triage` is the only
+`first_verdict`, `first_input_sha256`, `reask_failed`, and
+`novelty_defaulted`. `program_executions[]` preserves every initial/re-ask
+execution with phase, status, context, usage, error and global recording call
+indices; `program_trace` is always the selected execution that owns the
+persisted verdict. Its per-Predictor calls bind request/input/signature/
+instruction/demo/upstream/output hashes, route and attempt, resolved runtime
+provider/model identity, validated output, finish reason, latency, input/
+output/cached/total tokens and optional provider cost in microusd. Aggregate
+latency, call count and tokens include superseded and failed re-ask executions;
+aggregate cost is unknown unless every billable call reported it.
+`triage` is the only
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_triage_prompt_v9`, `news_triage_policy_v7`, and `news_delivery_card_v10`.
-Every shipped prompt version and the sha256 of the text it shipped with are
-pinned in `TRIAGE_PROMPT_SHA256_BY_VERSION`; editing the prompt without bumping
-`TRIAGE_PROMPT_VERSION` fails `tests/news/test_news_v3_prompt_pin.py`.
+`news_semantic_program_v1`, `news_triage_policy_v7`, and
+`news_delivery_card_v10`. The exact Program identity is its content SHA, not
+the display version alone.
+
+`ProgramArtifact` is the only executable semantic configuration. It is a
+canonical, content-addressed, state-only JSON pair (`manifest.json` and
+`state.json`) carried in the application image and selected by the code-owned
+registry. The manifest binds the fixed factory/topology, DSPy and dependency
+lock, input/Adapter/assembler contracts, execution budget, Predictor state
+hashes and compile receipt; state is limited to the two validated Predictor
+records (name/signature identity, instruction, demonstrations, model-binding
+slots, token cap and their hashes). Loading fails closed on an
+unknown hash/version/factory/lock, a path or symlink violation, extra file, or
+unsafe state. Pickle, cloudpickle, DSPy Flex state, dynamic Python/classes,
+endpoints and credentials are not artifact formats. DSPy cache and hidden
+provider retries are disabled; every provider attempt must appear in the trace.
+There is no legacy Prompt runtime, dual stack, compatibility Adapter or
+production operator-selected artifact path. Nullable Prompt-era fields remain
+audit-only.
+The current execution contract is `EventSemantics -> ReaderCard ->`
+deterministic assembler: normally two serial calls; one fast retry shared by
+the whole route, so at most three calls per route; fallback restarts the full
+graph, so primary plus fallback is at most six. The artifact's 20-second
+deadline covers one whole route. One Event still persists one final
+SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
+ledger re-ask is a separate execution with the same ceiling (normally another
+two calls), and both executions remain in the verdict audit.
 `news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
 `min_watchlist_magnitude`, `unclear_push_min_magnitude`,
 `unclear_push_event_types`, `restatement_drop`, `similarity_max`, and
@@ -364,9 +401,13 @@ general market observation tables, `queue_terminal_events`, and the
 `0284` through `0290`: immutable fact/evidence snapshots, ReviewDesk v2 and
 verified label-v1 removal, content-addressed learning artifacts/recordings,
 durable canary control, bounded 90/365-day learning retention, and a
-role-authentic Workers evidence-append grant repair. A database at an earlier revision upgrades with
+role-authentic Workers evidence-append grant repair. `0291` removes the local
+Strategy allowlist. The irreversible `20260822_0292` hard cut adds Program
+identity to verdicts, per-Predictor call identity/usage/cost to recordings, and
+the append-only deployment-time `program_v1` epoch; all earlier Prompt-era
+learning rows are audit-only and promotion-ineligible. A database at an earlier revision upgrades with
 `tracefold db migrate`; a fresh database runs the complete chain. The exact
-24 News base tables plus four security-barrier review views are asserted by
+News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
 reader/writer.
@@ -394,7 +435,8 @@ reader/writer.
   `cursor`. Queue tasks are deterministic and carry `task_id` plus an ETag-like
   `task_version`; coverage separates received, replayable, reviewed, accepted,
   external-miss and holdout-ready counts. `view=market` is explicitly
-  non-causal, defaults to the latest homogeneous prompt/policy/model cohort in
+  non-causal, defaults to the latest homogeneous
+  Program/policy/runtime-model cohort in
   the requested window, uses mature denominators, hides the unreliable v1
   event taxonomy, leaves the retired direction/magnitude/event-type price
   rankings empty, and clusters similar withheld Events from at most the latest
@@ -402,7 +444,8 @@ reader/writer.
   evidence-coverage view retains the 720-hour option.
 - `GET /api/news/review/tasks/{task_id}/evidence` requires `If-Match` and
   returns only the evidence scoped to that task: immutable source/fact
-  snapshot, exact Agent cohort/input/told ledger, policy trace, real sent
+  snapshot, exact Program/policy/runtime-model cohort, input/told ledger,
+  policy trace, real sent
   receipt, and verifier flags. Market reactions are hidden until a judgment is
   accepted so they cannot anchor `should_push` review.
 - `POST /api/news/review/tasks/{task_id}/responses` requires `If-Match`, a
@@ -452,7 +495,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (24 tables at migration `20260821_0290`).
+append without rewrite access (current at migration `20260822_0292`).
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and
@@ -466,17 +509,28 @@ ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.
 
 `news learning freeze` seals accepted reviews into a content-addressed
-development or future temporal validation dataset. `learning propose` seals
-exactly one candidate variable (`prompt` or `policy`) against a
-development dataset. `learning evaluate` runs the development/offline or
-validation/holdout release gate; validation calls both arms sequentially and
-can append exact model recordings. `learning shadow --live-model` cold-runs the
-candidate over the closed validation window and seals the observations; an
-existing sealed shadow observation manifest can be replayed instead.
+development or future temporal validation dataset. Every dataset is in the
+deployment-time `program_v1` epoch; Prompt-era evidence is audit-only, and
+reviews plus acceptance receipts before the epoch cannot enter a dataset.
+`learning compile --development SHA --artifact-root DIR --out FILE
+--max-metric-calls N --max-task-model-calls N --max-cost-microusd N [--seed
+N]` is the manual cold DSPy GEPA compiler. It consumes accepted development
+episodes only, runs the fixed two-Predictor factory under three explicit limits
+plus the declared seed, and emits a content-addressed state-only Program artifact plus compile
+receipt/proposal input. It cannot read holdout, register, accept, deploy or
+promote its output.
+
+`learning propose` seals exactly one candidate variable (`program` or
+`policy`) against a development dataset. `learning evaluate` runs the
+development/offline or validation/holdout release gate; validation calls both
+arms sequentially and `--live-program` can append exact per-Predictor
+recordings. `learning shadow --live-program` cold-runs the candidate over the
+closed validation window and seals the observations; an existing sealed shadow
+observation manifest can be replayed instead.
 `learning canary arm|status|hold|resume|trip|close` owns the durable one-arm
 rollout. A candidate may advance only when the prior
-stage has a sealed PASS; a tool or optimizer may propose but cannot accept or
-deploy. `news replay <hits.json> [--gate-policy config|open|strict]` runs
+stage has a sealed PASS; a tool or optimizer may propose but cannot accept,
+deploy or promote. `news replay <hits.json> [--gate-policy config|open|strict]` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
 Event with admission, grounded assets, and preliminary storyline. `news why
 <event_id>` prints the Event's chain (item, gate, triage, decide, delivery)

@@ -176,7 +176,7 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
     ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
     evidence = desk.evidence(ref, principal=PRINCIPAL)
     assert evidence["evidence"]["focus_fact"]["text"].startswith("Micron")
-    assert evidence["agent"]["cohort"] == "v9/v6/test-model"
+    assert evidence["agent"]["cohort"] == "news_semantic_program_test/v6/test-model"
     assert evidence["agent"]["agent_cohort"]["cohort_sha256"] == task["agent_cohort"]["cohort_sha256"]
     cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
     repeated_cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
@@ -249,7 +249,7 @@ def test_coverage_keeps_exact_agent_bundles_separate(conn) -> None:
     assert set(by_cohort) == {first_bundle, second_bundle}
     assert by_cohort[first_bundle]["agent"]["bundle_sha"] == first_bundle
     assert by_cohort[second_bundle]["agent"]["bundle_sha"] == second_bundle
-    assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {"v9/v6/test-model"}
+    assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {"news_semantic_program_test/v6/test-model"}
     default_queue = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(), principal=PRINCIPAL)
     assert {task["event_id"] for task in default_queue["tasks"]} == {first_event}
     second_queue = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(cohort=second_bundle), principal=PRINCIPAL)
@@ -270,7 +270,7 @@ def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_bad_taxonom
     _open_event(conn)
     market = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="market"), principal=PRINCIPAL)
     assert market["status"] == "ready"
-    assert market["reaction"]["meta"]["cohort"] == "v9/v6/test-model"
+    assert market["reaction"]["meta"]["cohort"] == "news_semantic_program_test/v6/test-model"
     assert market["reaction"]["event_types"] == []
     assert "不是新闻因果" in market["disclaimer_zh"]
     with pytest.raises(ValueError, match="news_review_market_hours_too_large"):

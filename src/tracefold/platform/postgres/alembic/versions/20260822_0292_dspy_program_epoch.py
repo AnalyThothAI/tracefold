@@ -1,10 +1,10 @@
 """Hard-cut News generation to the content-addressed DSPy Program epoch.
 
 Prompt-era learning rows remain immutable audit history, but the code-owned
-``program_v1`` epoch starts at Issue #129's creation time and is the earliest
-evidence eligible for new datasets. Verdicts name the Program that generated
-them and recordings become Predictor/call/attempt facts rather than one opaque
-row per final verdict.
+``program_v1`` epoch starts when this hard-cut migration is deployed and is the
+earliest evidence eligible for new datasets. Verdicts name the Program that
+generated them and recordings become Predictor/call/attempt facts rather than
+one opaque row per final verdict.
 
 Revision ID: 20260822_0292
 Revises: 20260821_0291
@@ -40,9 +40,7 @@ def upgrade() -> None:
     # New code always supplies the real call path.
     # The table is append-only, so legacy identity is installed as a temporary
     # DDL default rather than mutating historical rows through UPDATE.
-    op.execute(
-        "ALTER TABLE news_model_recordings ADD COLUMN predictor_name text NOT NULL DEFAULT 'legacy_prompt'"
-    )
+    op.execute("ALTER TABLE news_model_recordings ADD COLUMN predictor_name text NOT NULL DEFAULT 'legacy_prompt'")
     op.execute("ALTER TABLE news_model_recordings ADD COLUMN call_index integer NOT NULL DEFAULT 0")
     op.execute("ALTER TABLE news_model_recordings ADD COLUMN attempt integer NOT NULL DEFAULT 1")
     op.execute("ALTER TABLE news_model_recordings ADD COLUMN route text NOT NULL DEFAULT 'legacy'")
@@ -112,18 +110,21 @@ def upgrade() -> None:
     )
     op.execute(
         """
+        WITH deployed AS (
+          SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS at_ms
+        )
         INSERT INTO news_learning_epochs (
           epoch_id, starts_at_ms, source_issue, program_factory_id, artifact_schema_version,
           baseline_program_version, baseline_program_sha256, prior_evidence_disposition,
           reset_reason, created_at_ms
-        ) VALUES (
-          'program_v1', 1787329287000,
-          'https://github.com/AnalyThothAI/tracefold/issues/129',
-          'tracefold.news.semantic_program.factory_v1',
-          'news_semantic_program_artifact_v1', 'news_semantic_program_v1',
-          '373c3e07f1c97ab4dfae6528fd5e9517b429adba4e32d71e4d63321709449ccd',
-          'audit_only', 'zero_compatibility_reset_reaccrue_evidence', 1787329287000
         )
+        SELECT 'program_v1', at_ms,
+               'https://github.com/AnalyThothAI/tracefold/issues/129',
+               'tracefold.news.semantic_program.factory_v1',
+               'news_semantic_program_artifact_v1', 'news_semantic_program_v1',
+               '00993fa0d127573d13d1c4cf38f43b03e159f8b385a25d1ff0694a8196cbef09',
+               'audit_only', 'zero_compatibility_reset_reaccrue_evidence', at_ms
+          FROM deployed
         """
     )
     op.execute(

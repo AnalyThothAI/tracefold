@@ -10,8 +10,9 @@ promote a Program, or change Python topology.
 from __future__ import annotations
 
 import importlib.metadata
+import inspect
+import math
 from collections.abc import Callable, Mapping, Sequence
-from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -24,8 +25,13 @@ from .semantic_program import (
     CompileProvenance,
     DspyCompileProgram,
     DspyStrictJSONAdapter,
+    ExactMetadataDspyLM,
+    ExactProviderCallCapture,
+    ExactProviderMetadata,
+    PredictorAdapterError,
     ProgramArtifact,
     ProgramArtifactCodec,
+    RuntimeModelIdentity,
     TriageContext,
 )
 
@@ -72,11 +78,27 @@ class CompileRequest(_ExactModel):
     budget: CompileBudget
 
 
+class CompileReceiptPayloads(_ExactModel):
+    """Canonical, secret-free evidence behind every compile provenance hash."""
+
+    metric: dict[str, Any]
+    optimizer_config: dict[str, Any]
+    trajectory: dict[str, Any]
+    checkpoint: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _all_payloads_are_finite_json(self) -> CompileReceiptPayloads:
+        for payload in (self.metric, self.optimizer_config, self.trajectory, self.checkpoint):
+            _json_safe(payload)
+        return self
+
+
 class ProgramCompileResult(_ExactModel):
     artifact: ProgramArtifact
     artifact_directory: str
     compile_provenance: CompileProvenance
     compile_provenance_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receipt_payloads: CompileReceiptPayloads
     machine_diff: dict[str, Any]
     proposal_input: dict[str, Any]
 
@@ -84,6 +106,16 @@ class ProgramCompileResult(_ExactModel):
     def _provenance_identity_matches(self) -> ProgramCompileResult:
         if self.compile_provenance_sha256 != canonical_sha(self.compile_provenance.model_dump(mode="json")):
             raise ValueError("news_program_compile_provenance_hash_mismatch")
+        hashes = {
+            "metric": self.compile_provenance.metric_sha256,
+            "optimizer_config": self.compile_provenance.optimizer_config_sha256,
+            "trajectory": self.compile_provenance.trajectory_sha256,
+            "checkpoint": self.compile_provenance.checkpoint_sha256,
+        }
+        payloads = self.receipt_payloads.model_dump(mode="json")
+        for name, expected in hashes.items():
+            if expected != canonical_sha(payloads[name]):
+                raise ValueError(f"news_program_compile_{name}_receipt_hash_mismatch")
         return self
 
 
@@ -126,14 +158,10 @@ class _BudgetMeter:
         else:
             self.reflection_model_calls += 1
 
-    def after(self, history_entry: Mapping[str, Any] | None) -> None:
-        if history_entry is None or history_entry.get("cost") is None:
+    def after(self, metadata: ExactProviderMetadata) -> None:
+        if metadata.provider_cost_microusd is None:
             raise CompileBudgetExceeded("news_program_compile_provider_cost_unavailable")
-        cost = Decimal(str(history_entry["cost"]))
-        microusd = int((cost * Decimal(1_000_000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-        if microusd < 0:
-            raise CompileBudgetExceeded("news_program_compile_provider_cost_invalid")
-        self.actual_cost_microusd += microusd
+        self.actual_cost_microusd += metadata.provider_cost_microusd
         if self.actual_cost_microusd > self.budget.max_cost_microusd:
             raise CompileBudgetExceeded("news_program_compile_cost_budget_exceeded")
 
@@ -146,6 +174,8 @@ class _BudgetedLM:
             raise ValueError("news_program_compile_lm_cache_must_be_disabled")
         if int(getattr(lm, "num_retries", -1)) != 0:
             raise ValueError("news_program_compile_lm_hidden_retries_must_be_zero")
+        if not callable(getattr(lm, "observe_exact_call", None)):
+            raise ValueError("news_program_compile_lm_exact_metadata_seam_required")
         self._lm = lm
         self._role = role
         self._meter = meter
@@ -155,30 +185,32 @@ class _BudgetedLM:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         self._meter.before(self._role)
-        previous = _latest_history_id(self._lm)
-        output = self._lm(*args, **kwargs)
-        self._meter.after(_new_history_entry(self._lm, previous))
+        with self._lm.observe_exact_call() as capture:
+            try:
+                output = self._lm(*args, **kwargs)
+            except BaseException:
+                self._meter.after(_require_compile_metadata(capture))
+                raise
+        self._meter.after(_require_compile_metadata(capture))
         return output
 
     async def acall(self, *args: Any, **kwargs: Any) -> Any:
         self._meter.before(self._role)
-        previous = _latest_history_id(self._lm)
-        output = await self._lm.acall(*args, **kwargs)
-        self._meter.after(_new_history_entry(self._lm, previous))
+        with self._lm.observe_exact_call() as capture:
+            try:
+                output = await self._lm.acall(*args, **kwargs)
+            except BaseException:
+                self._meter.after(_require_compile_metadata(capture))
+                raise
+        self._meter.after(_require_compile_metadata(capture))
         return output
 
 
-def _latest_history_id(lm: dspy.LM) -> str | None:
-    history = list(getattr(lm, "history", ()) or ())
-    return str(history[-1].get("uuid")) if history else None
-
-
-def _new_history_entry(lm: dspy.LM, previous: str | None) -> Mapping[str, Any] | None:
-    history = list(getattr(lm, "history", ()) or ())
-    if not history:
-        return None
-    latest = history[-1]
-    return latest if str(latest.get("uuid")) != previous else None
+def _require_compile_metadata(capture: ExactProviderCallCapture) -> ExactProviderMetadata:
+    try:
+        return capture.require_exactly_one()
+    except PredictorAdapterError as exc:
+        raise CompileBudgetExceeded("news_program_compile_provider_metadata_unavailable") from exc
 
 
 def build_compile_lm(
@@ -197,7 +229,7 @@ def build_compile_lm(
     overlap = owned.intersection(extras)
     if overlap:
         raise ValueError(f"news_program_compile_model_kwargs_owned:{','.join(sorted(overlap))}")
-    return dspy.LM(
+    return ExactMetadataDspyLM(
         str(model_name),
         api_key=str(api_key),
         api_base=str(api_base),
@@ -306,16 +338,65 @@ def accepted_review_metric(
     )
 
 
-def _metric_sha256() -> str:
-    return canonical_sha(
-        {
-            "metric": METRIC_ID,
-            "contract": "accepted_review_only",
-            "retention_fields": ["assets", "direction", "magnitude", "headline_zh", "why_zh"],
-            "decision": "push_intent",
-            "novelty": "accepted_exact",
-        }
-    )
+def _metric_receipt(metric: Callable[..., Any]) -> dict[str, Any]:
+    try:
+        source = inspect.getsource(metric).replace("\r\n", "\n")
+    except (OSError, TypeError) as exc:
+        raise ValueError("news_program_compile_metric_source_unavailable") from exc
+    return {
+        "schema": "tracefold.news.compile_metric_receipt.v1",
+        "metric_id": METRIC_ID,
+        "implementation": {
+            "module": str(metric.__module__),
+            "qualname": str(metric.__qualname__),
+            "source": source,
+        },
+        "dspy_version": importlib.metadata.version("dspy"),
+    }
+
+
+def _compiler_model_identity(lm: dspy.LM) -> dict[str, Any]:
+    model = str(getattr(lm, "model", "")).strip()
+    if not model:
+        raise ValueError("news_program_compile_model_identity_unavailable")
+    provider = model.split("/", maxsplit=1)[0] if "/" in model else "unknown"
+    return RuntimeModelIdentity.issue(provider=provider, model=model).model_dump(mode="json")
+
+
+def _optimizer_config_receipt(
+    *,
+    constructor: Mapping[str, Any],
+    task_lm: dspy.LM,
+    reflection_lm: dspy.LM,
+    optimizer_factory: OptimizerFactory,
+    metric_sha256: str,
+    example_count: int,
+) -> dict[str, Any]:
+    return {
+        "schema": "tracefold.news.compile_optimizer_config_receipt.v1",
+        "optimizer": {
+            "implementation": f"{optimizer_factory.__module__}.{optimizer_factory.__qualname__}",
+            "dspy_version": importlib.metadata.version("dspy"),
+            "gepa_version": importlib.metadata.version("gepa"),
+        },
+        "metric_sha256": metric_sha256,
+        "constructor_scalar_arguments": _json_safe(dict(constructor)),
+        "model_identities": {
+            "task": _compiler_model_identity(task_lm),
+            "reflection": _compiler_model_identity(reflection_lm),
+        },
+        "dspy_context": {
+            "adapter": "DspyStrictJSONAdapter/native_function_calling_false",
+            "track_usage": True,
+            "disable_history": True,
+        },
+        "compile_call": {
+            "teacher": None,
+            "trainset_count": example_count,
+            "valset_count": example_count,
+            "valset_identity": "same_object_as_trainset",
+        },
+    }
 
 
 class ProgramCompiler:
@@ -348,8 +429,9 @@ class ProgramCompiler:
         if tuple(name for name, _ in student.named_predictors()) != ("event_semantics", "reader_card"):
             raise ValueError("news_program_compile_factory_topology_mismatch")
 
-        optimizer_config = {
-            "optimizer": "dspy.GEPA",
+        metric_receipt = _metric_receipt(accepted_review_metric)
+        metric_sha = canonical_sha(metric_receipt)
+        optimizer_constructor = {
             "auto": None,
             "max_full_evals": None,
             "max_metric_calls": request.budget.max_metric_calls,
@@ -357,40 +439,43 @@ class ProgramCompiler:
             "candidate_selection_strategy": "pareto",
             "skip_perfect_score": True,
             "add_format_failure_as_feedback": True,
+            "instruction_proposer": None,
             "component_selector": "round_robin",
             "use_merge": True,
             "max_merge_invocations": 5,
             "num_threads": 1,
+            "failure_score": 0.0,
+            "perfect_score": 1.0,
             "track_stats": True,
             "track_best_outputs": False,
             "log_dir": None,
+            "use_wandb": False,
+            "wandb_api_key": None,
+            "wandb_init_kwargs": None,
+            "warn_on_score_mismatch": True,
+            "use_mlflow": False,
             "seed": request.budget.seed,
+            "gepa_kwargs": None,
         }
-        optimizer_config_sha = canonical_sha(optimizer_config)
+        optimizer_config_receipt = _optimizer_config_receipt(
+            constructor=optimizer_constructor,
+            task_lm=self._task_lm,
+            reflection_lm=self._reflection_lm,
+            optimizer_factory=self._optimizer_factory,
+            metric_sha256=metric_sha,
+            example_count=len(examples),
+        )
+        optimizer_config_sha = canonical_sha(optimizer_config_receipt)
         optimizer = self._optimizer_factory(
             accepted_review_metric,
-            max_metric_calls=request.budget.max_metric_calls,
-            reflection_minibatch_size=min(3, len(examples)),
-            candidate_selection_strategy="pareto",
             reflection_lm=reflection_lm,
-            skip_perfect_score=True,
-            add_format_failure_as_feedback=True,
-            component_selector="round_robin",
-            use_merge=True,
-            max_merge_invocations=5,
-            num_threads=1,
-            log_dir=None,
-            track_stats=True,
-            track_best_outputs=False,
-            use_wandb=False,
-            use_mlflow=False,
-            seed=request.budget.seed,
+            **optimizer_constructor,
         )
         with dspy.context(
             lm=task_lm,
             adapter=DspyStrictJSONAdapter(use_native_function_calling=False),
             track_usage=True,
-            disable_history=False,
+            disable_history=True,
         ):
             compiled = optimizer.compile(student, trainset=examples, teacher=None, valset=examples)
         if not isinstance(compiled, DspyCompileProgram):
@@ -399,8 +484,10 @@ class ProgramCompiler:
         metric_calls = int(getattr(details, "total_metric_calls", -1))
         if metric_calls < 0 or metric_calls > request.budget.max_metric_calls:
             raise ValueError("news_program_compile_metric_budget_unverifiable")
-        trajectory_sha = canonical_sha(_trajectory_receipt(details))
-        checkpoint_sha = canonical_sha(_checkpoint_receipt(compiled))
+        trajectory_receipt = _trajectory_receipt(details)
+        checkpoint_receipt = _checkpoint_receipt(compiled)
+        trajectory_sha = canonical_sha(trajectory_receipt)
+        checkpoint_sha = canonical_sha(checkpoint_receipt)
         provenance = CompileProvenance(
             mode="optimizer_candidate",
             development_dataset_sha=request.development_dataset_sha,
@@ -408,7 +495,7 @@ class ProgramCompiler:
             optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",
             dspy_version=importlib.metadata.version("dspy"),
             gepa_version=importlib.metadata.version("gepa"),
-            metric_sha256=_metric_sha256(),
+            metric_sha256=metric_sha,
             optimizer_config_sha256=optimizer_config_sha,
             seed=request.budget.seed,
             max_metric_calls=request.budget.max_metric_calls,
@@ -434,6 +521,13 @@ class ProgramCompiler:
         artifact_directory = _write_program_artifact(artifact, root=artifact_root)
         machine_diff = program_machine_diff(self._base, artifact)
         provenance_payload = provenance.model_dump(mode="json")
+        receipt_payloads = CompileReceiptPayloads(
+            metric=metric_receipt,
+            optimizer_config=optimizer_config_receipt,
+            trajectory=trajectory_receipt,
+            checkpoint=checkpoint_receipt,
+        )
+        receipt_payload = receipt_payloads.model_dump(mode="json")
         patch_payload = {
             "parent_program_sha256": self._base.program_sha256,
             "candidate_program_sha256": artifact.program_sha256,
@@ -453,7 +547,7 @@ class ProgramCompiler:
             "failure_cluster_ids": list(failure_clusters),
             "guardrails": list(_PROPOSAL_GUARDRAILS),
             "generator_kind": "model",
-            "generator_prompt_sha": _metric_sha256(),
+            "generator_prompt_sha": metric_sha,
             "generator_model_sha": model_identity_sha,
             "generator_execution_sha": canonical_sha(provenance_payload),
             "program_version": artifact.program_version,
@@ -463,6 +557,7 @@ class ProgramCompiler:
             "program_artifact_path": str(artifact_directory),
             "program_machine_diff": machine_diff,
             "compile_provenance": provenance_payload,
+            "compile_receipt_payloads": receipt_payload,
             "candidate_patch_sha": canonical_sha(patch_payload),
         }
         return ProgramCompileResult(
@@ -470,6 +565,7 @@ class ProgramCompiler:
             artifact_directory=str(artifact_directory),
             compile_provenance=provenance,
             compile_provenance_sha256=canonical_sha(provenance_payload),
+            receipt_payloads=receipt_payloads,
             machine_diff=machine_diff,
             proposal_input=proposal_input,
         )
@@ -518,9 +614,12 @@ def _trajectory_receipt(details: Any) -> dict[str, Any]:
     if details is None:
         raise ValueError("news_program_compile_trajectory_missing")
     scores = [float(value) for value in list(getattr(details, "val_aggregate_scores", ()) or ())]
+    if any(not math.isfinite(score) for score in scores):
+        raise TypeError("news_program_compile_nonfinite_receipt_value")
     parents = _json_safe(list(getattr(details, "parents", ()) or ()))
     discovery = [int(value) for value in list(getattr(details, "discovery_eval_counts", ()) or ())]
     return {
+        "schema": "tracefold.news.compile_trajectory_receipt.v1",
         "parents": parents,
         "val_aggregate_scores": scores,
         "discovery_eval_counts": discovery,
@@ -538,7 +637,11 @@ def _checkpoint_receipt(program: DspyCompileProgram) -> dict[str, Any]:
             "instruction_sha256": canonical_sha(str(predictor.signature.instructions)),
             "demos_sha256": canonical_sha([_json_safe(demo.toDict()) for demo in predictor.demos]),
         }
-    return {"factory": program.artifact.factory_id, "predictors": predictors}
+    return {
+        "schema": "tracefold.news.compile_checkpoint_receipt.v1",
+        "factory": program.artifact.factory_id,
+        "predictors": predictors,
+    }
 
 
 def program_machine_diff(parent: ProgramArtifact, candidate: ProgramArtifact) -> dict[str, Any]:
@@ -562,6 +665,8 @@ def _json_safe(value: Any) -> Any:
         return {key: _json_safe(child) for key, child in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(child) for child in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        raise TypeError("news_program_compile_nonfinite_receipt_value")
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError(f"news_program_compile_non_json_receipt_value:{type(value).__name__}")
@@ -606,6 +711,7 @@ __all__ = [
     "METRIC_ID",
     "CompileBudget",
     "CompileBudgetExceeded",
+    "CompileReceiptPayloads",
     "CompileRequest",
     "DevelopmentEpisode",
     "ProgramCompileResult",

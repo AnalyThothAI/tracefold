@@ -16,11 +16,11 @@ import statistics
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .agents.semantic_program import SemanticJudge, SemanticProgramError, TriageContext
+from .agents.semantic_program import CompileProvenance, SemanticJudge, SemanticProgramError, TriageContext
 from .artifact_identity import canonical_json, canonical_sha
 from .models import TriageVerdict
 from .review import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
@@ -31,16 +31,12 @@ LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_releas
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
 LEARNING_EPOCH: Literal["program_v1"] = "program_v1"
-# Issue #129 creation time. Prompt-era evidence remains immutable audit data but
-# cannot enter the Program-native release denominator.
-LEARNING_EPOCH_STARTED_AT_MS = 1_787_329_287_000
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
     "learning_epoch": LEARNING_EPOCH,
-    "learning_epoch_started_at_ms": LEARNING_EPOCH_STARTED_AT_MS,
     "development": {
         "boundary_clusters_min": 30,
         "retention_clusters_min": 100,
@@ -131,6 +127,7 @@ class DatasetManifest(BaseModel):
     role: Literal["development", "validation"]
     profile_id: str
     learning_epoch: Literal["program_v1"]
+    learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
     settlement_grace_ms: int
@@ -329,7 +326,8 @@ class CandidateEvaluator:
         self._assert_active_stable()
         if spec.learning_epoch != LEARNING_EPOCH:
             raise ValueError("news_learning_epoch_mismatch")
-        if spec.window.from_ms < LEARNING_EPOCH_STARTED_AT_MS:
+        epoch_started_at_ms = self._learning_epoch_started_at_ms()
+        if spec.window.from_ms < epoch_started_at_ms:
             raise ValueError("news_learning_window_precedes_program_epoch")
         freeze_as_of_ms = self._db_now_ms()
         if spec.window.to_ms > freeze_as_of_ms - SETTLEMENT_GRACE_MS:
@@ -349,14 +347,19 @@ class CandidateEvaluator:
         elif spec.observation_ref is not None:
             raise ValueError("news_learning_development_observation_ref_not_allowed")
 
-        cases = self._accepted_cases(spec.window, freeze_as_of_ms=freeze_as_of_ms)
-        seed = self._seed_receipts(spec.window.from_ms)
+        cases = self._accepted_cases(
+            spec.window,
+            freeze_as_of_ms=freeze_as_of_ms,
+            epoch_started_at_ms=epoch_started_at_ms,
+        )
+        seed = self._seed_receipts(spec.window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
         counts = self._dataset_counts(spec, cases)
         payload = {
             "dataset_version": DATASET_VERSION,
             "role": spec.role,
             "profile_id": spec.profile_id,
             "learning_epoch": spec.learning_epoch,
+            "learning_epoch_started_at_ms": epoch_started_at_ms,
             "window": spec.window.model_dump(mode="json"),
             "freeze_as_of_ms": freeze_as_of_ms,
             "settlement_grace_ms": SETTLEMENT_GRACE_MS,
@@ -368,7 +371,7 @@ class CandidateEvaluator:
             "counts": counts,
             "hashes": {
                 "trusted_root_sha": self._trusted_root_sha,
-                "learning_epoch_sha": _sha({"epoch": LEARNING_EPOCH, "started_at_ms": LEARNING_EPOCH_STARTED_AT_MS}),
+                "learning_epoch_sha": _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms}),
                 "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
                 "reader_contract_sha": READER_CONTRACT_SHA256,
                 "agent_bundle_sha": self._stable.bundle_sha,
@@ -623,6 +626,8 @@ class CandidateEvaluator:
             raise ValueError(f"news_learning_exact_one_variable_violation:{','.join(sorted(changed))}")
         receipt = candidate.proposal_receipt
         if candidate.target == "program":
+            if receipt.generator_kind != "model":
+                raise ValueError("news_learning_program_generator_must_be_model")
             if candidate.candidate_arm.program_sha256 == self._stable.program_sha256:
                 raise ValueError("news_learning_program_sha_unchanged")
             if receipt.program_parent_sha256 != self._stable.program_sha256:
@@ -632,6 +637,17 @@ class CandidateEvaluator:
             if not receipt.program_machine_diff:
                 raise ValueError("news_learning_program_machine_diff_required")
             provenance = dict(receipt.compile_provenance or {})
+            try:
+                parsed_provenance = CompileProvenance.model_validate(provenance)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("news_learning_program_compile_provenance_invalid") from exc
+            canonical_provenance = parsed_provenance.model_dump(mode="json")
+            if (
+                parsed_provenance.mode != "optimizer_candidate"
+                or canonical_provenance != provenance
+                or parsed_provenance.holdout_access_attestation is not False
+            ):
+                raise ValueError("news_learning_program_compile_provenance_invalid")
             if provenance.get("development_dataset_sha") != candidate.development_dataset_sha:
                 raise ValueError("news_learning_program_compile_dataset_mismatch")
             expected_patch_sha = _sha(
@@ -677,7 +693,13 @@ class CandidateEvaluator:
             raise ValueError(f"news_learning_proposal_failure_cluster_unverified:{unknown}")
         self._verify_registration_receipt(candidate.proposal_receipt)
 
-    def _accepted_cases(self, window: ClosedWindow, *, freeze_as_of_ms: int) -> tuple[DatasetCaseRef, ...]:
+    def _accepted_cases(
+        self,
+        window: ClosedWindow,
+        *,
+        freeze_as_of_ms: int,
+        epoch_started_at_ms: int,
+    ) -> tuple[DatasetCaseRef, ...]:
         rows = self._conn.execute(
             """
             WITH accepted AS (
@@ -701,6 +723,7 @@ class CandidateEvaluator:
              WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s
                AND source.ingest_mode = 'live' AND source.evidence_release_eligible
                AND source.trace #>> '{agent_assignment,bundle_sha}' = %s
+               AND source.program_version = %s AND source.program_sha256 = %s
                AND NOT (
                  source.final_decision IN ('push', 'escalate')
                  AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
@@ -711,14 +734,16 @@ class CandidateEvaluator:
                )
             """,
             (
-                LEARNING_EPOCH_STARTED_AT_MS,
-                LEARNING_EPOCH_STARTED_AT_MS,
+                epoch_started_at_ms,
+                epoch_started_at_ms,
                 freeze_as_of_ms,
                 REVIEW_RUBRIC_VERSION,
                 READER_CONTRACT_VERSION,
                 window.from_ms,
                 window.to_ms,
                 self._stable.bundle_sha,
+                self._stable.program_version,
+                self._stable.program_sha256,
             ),
         ).fetchall()
         external = self._conn.execute(
@@ -732,15 +757,17 @@ class CandidateEvaluator:
                AND a.created_at_ms >= %s AND j.created_at_ms >= %s
                AND a.created_at_ms <= %s AND j.rubric_version = %s
                AND j.reader_contract_version = %s
+               AND x.created_at_ms >= %s
                AND x.occurred_at_ms >= %s AND x.occurred_at_ms < %s
              ORDER BY j.external_snapshot_id, a.created_at_ms DESC, a.review_id DESC
             """,
             (
-                LEARNING_EPOCH_STARTED_AT_MS,
-                LEARNING_EPOCH_STARTED_AT_MS,
+                epoch_started_at_ms,
+                epoch_started_at_ms,
                 freeze_as_of_ms,
                 REVIEW_RUBRIC_VERSION,
                 READER_CONTRACT_VERSION,
+                epoch_started_at_ms,
                 window.from_ms,
                 window.to_ms,
             ),
@@ -832,8 +859,15 @@ class CandidateEvaluator:
         eligible = self._conn.execute(
             "SELECT count(*) AS n FROM news_review_task_source_v1 "
             "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
-            "AND trace #>> '{agent_assignment,bundle_sha}' = %s",
-            (spec.window.from_ms, spec.window.to_ms, self._stable.bundle_sha),
+            "AND trace #>> '{agent_assignment,bundle_sha}' = %s "
+            "AND program_version = %s AND program_sha256 = %s",
+            (
+                spec.window.from_ms,
+                spec.window.to_ms,
+                self._stable.bundle_sha,
+                self._stable.program_version,
+                self._stable.program_sha256,
+            ),
         ).fetchone()
         return {
             "case_n": len(cases),
@@ -849,7 +883,7 @@ class CandidateEvaluator:
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }
 
-    def _seed_receipts(self, from_ms: int) -> tuple[dict[str, Any], ...]:
+    def _seed_receipts(self, from_ms: int, *, epoch_started_at_ms: int) -> tuple[dict[str, Any], ...]:
         rows = self._conn.execute(
             """
             SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
@@ -862,9 +896,17 @@ class CandidateEvaluator:
               JOIN news_events e ON e.event_id = d.event_id
              WHERE d.kind = 'first' AND d.state = 'sent'
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
+               AND v.program_version = %s AND v.program_sha256 = %s
+               AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
              ORDER BY d.settled_at_ms, v.event_id
             """,
-            (from_ms - 4 * 3_600_000, from_ms),
+            (
+                max(epoch_started_at_ms, from_ms - 4 * 3_600_000),
+                from_ms,
+                self._stable.program_version,
+                self._stable.program_sha256,
+                self._stable.bundle_sha,
+            ),
         ).fetchall()
         return tuple(dict(row) for row in rows)
 
@@ -1087,9 +1129,18 @@ class CandidateEvaluator:
                AND admission IN ('candidate', 'listing_deterministic')
                AND evidence_release_eligible
                AND verdict IS NOT NULL
+               AND trace #>> '{agent_assignment,arm}' = 'stable'
+               AND trace #>> '{agent_assignment,bundle_sha}' = %s
+               AND program_version = %s AND program_sha256 = %s
              ORDER BY opened_at_ms, event_id, evidence_version
             """,
-            (dataset.window.from_ms, dataset.window.to_ms),
+            (
+                dataset.window.from_ms,
+                dataset.window.to_ms,
+                self._stable.bundle_sha,
+                self._stable.program_version,
+                self._stable.program_sha256,
+            ),
         ).fetchall()
         state = _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts))
         observations: list[dict[str, Any]] = []
@@ -1240,14 +1291,21 @@ class CandidateEvaluator:
         candidate_n = 0
         for row in rows:
             arm = str(row["arm"])
-            expected_bundle = candidate.candidate_arm.bundle_sha if arm == "candidate" else self._stable.bundle_sha
+            expected_agent = candidate.candidate_arm if arm == "candidate" else self._stable
+            expected_bundle = expected_agent.bundle_sha
             trace = dict(row.get("trace") or {})
             assignment_trace = dict(trace.get("agent_assignment") or {})
-            if str(row["bundle_sha"]) != expected_bundle or (
-                assignment_trace
-                and (
-                    str(assignment_trace.get("arm") or "") != arm
-                    or str(assignment_trace.get("bundle_sha") or "") != expected_bundle
+            if (
+                arm not in {"stable", "candidate"}
+                or str(row["bundle_sha"]) != expected_bundle
+                or str(row.get("program_version") or "") != expected_agent.program_version
+                or str(row.get("program_sha256") or "") != expected_agent.program_sha256
+                or (
+                    assignment_trace
+                    and (
+                        str(assignment_trace.get("arm") or "") != arm
+                        or str(assignment_trace.get("bundle_sha") or "") != expected_bundle
+                    )
                 )
             ):
                 invariant_breaches.append(str(row["event_id"]))
@@ -1491,25 +1549,33 @@ class CandidateEvaluator:
         raw_call: Mapping[str, Any],
     ) -> None:
         call = dict(raw_call)
+        if call_index < 0 or not _program_call_identity_complete(call):
+            raise ValueError("news_program_call_trace_incomplete")
         predictor_name = str(call.get("predictor") or "")
         attempt = int(call.get("attempt") or 0)
         route = str(call.get("route") or "")
         model_binding = str(call.get("model_binding") or "")
-        provider = str(call.get("provider") or "unknown")
+        runtime_provider = str(call.get("runtime_provider") or "")
+        runtime_model = str(call.get("runtime_model") or "")
+        runtime_model_sha = str(call.get("runtime_model_sha256") or "")
+        runtime_binding_sha = str(call.get("runtime_binding_sha256") or "")
+        response_provider = str(call.get("provider") or "")
+        response_model = str(call.get("model") or "")
+        response_model_sha = str(call.get("model_sha256") or "")
+        provider = response_provider or "unobserved"
         request_sha = str(call.get("request_sha256") or "")
         input_sha = str(call.get("input_sha256") or "")
         signature_sha = str(call.get("signature_sha256") or "")
         instruction_sha = str(call.get("instruction_sha256") or "")
         demos_sha = str(call.get("demos_sha256") or "")
-        model = str(call.get("model") or model_binding)
-        model_sha = str(
-            call.get("model_sha256")
-            or _sha(
-                {
-                    "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
-                    "model_binding": model_binding,
-                }
-            )
+        model = response_model or "unobserved"
+        model_sha = response_model_sha or _sha({"provider": provider, "model": model})
+        expected_runtime_binding_sha = _sha(
+            {
+                "provider": runtime_provider,
+                "model": runtime_model,
+                "model_sha256": runtime_model_sha,
+            }
         )
         execution_sha = _sha(
             {
@@ -1522,23 +1588,11 @@ class CandidateEvaluator:
                 "signature_sha256": signature_sha,
                 "instruction_sha256": instruction_sha,
                 "demos_sha256": demos_sha,
+                "runtime_binding_sha256": runtime_binding_sha,
                 "provider": provider,
             }
         )
-        if (
-            predictor_name not in {"event_semantics", "reader_card"}
-            or call_index < 0
-            or attempt < 1
-            or route not in {"primary", "fallback"}
-            or not model_binding
-            or not model
-            or len(request_sha) != 64
-            or len(input_sha) != 64
-            or len(signature_sha) != 64
-            or len(instruction_sha) != 64
-            or len(demos_sha) != 64
-            or len(model_sha) != 64
-        ):
+        if not model or runtime_binding_sha != expected_runtime_binding_sha:
             raise ValueError("news_program_call_trace_incomplete")
         request = {
             "program_version": arm.program_version,
@@ -1555,7 +1609,10 @@ class CandidateEvaluator:
             "instruction_sha256": instruction_sha,
             "demos_sha256": demos_sha,
             "model_binding": model_binding,
-            "provider": provider,
+            "runtime_provider": runtime_provider,
+            "runtime_model": runtime_model,
+            "runtime_model_sha256": runtime_model_sha,
+            "runtime_binding_sha256": runtime_binding_sha,
             "upstream_sha256": call.get("upstream_sha256"),
         }
         validated_output = call.get("validated_output")
@@ -1574,6 +1631,7 @@ class CandidateEvaluator:
                 "total_tokens": int(call.get("total_tokens") or 0),
                 "provider_cost_microusd": call.get("provider_cost_microusd"),
                 "finish_reason": call.get("finish_reason"),
+                "runtime_binding_sha256": runtime_binding_sha,
             }
         if len(_json(request).encode()) > MODEL_RECORDING_BYTES_MAX or (
             response is not None and len(_json(response).encode()) > MODEL_RECORDING_BYTES_MAX
@@ -1590,6 +1648,39 @@ class CandidateEvaluator:
             "attempt": attempt,
             "request_sha256": request_sha,
         }
+        recording_sha = _sha(identity)
+        total_tokens = (
+            call.get("total_tokens")
+            if call.get("total_tokens") is not None
+            else int(call.get("input_tokens") or 0) + int(call.get("output_tokens") or 0)
+        )
+        expected_recording = {
+            "recording_sha": recording_sha,
+            "run_sha": run_sha,
+            "case_id": case_id,
+            "arm": arm_name,
+            "trial": trial,
+            "predictor_name": predictor_name,
+            "call_index": call_index,
+            "attempt": attempt,
+            "route": route,
+            "request_sha256": request_sha,
+            "response_sha256": response_sha,
+            "request": request,
+            "response": response,
+            "provider": provider,
+            "model": model,
+            "model_sha": model_sha,
+            "execution_contract_sha": execution_sha,
+            "latency_ms": call.get("latency_ms"),
+            "input_tokens": call.get("input_tokens"),
+            "output_tokens": call.get("output_tokens"),
+            "cached_tokens": call.get("cached_tokens"),
+            "total_tokens": total_tokens,
+            "provider_cost_microusd": call.get("provider_cost_microusd"),
+            "finish_reason": call.get("finish_reason"),
+            "error_code": call.get("error_code"),
+        }
         self._conn.execute(
             """
             INSERT INTO news_model_recordings (
@@ -1602,10 +1693,10 @@ class CandidateEvaluator:
               %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s,
               %s, %s, %s, %s, %s, %s,
               %s, %s, %s, %s
-            ) ON CONFLICT (recording_sha) DO NOTHING
+            ) ON CONFLICT DO NOTHING
             """,
             (
-                _sha(identity),
+                recording_sha,
                 run_sha,
                 case_id,
                 arm_name,
@@ -1626,15 +1717,35 @@ class CandidateEvaluator:
                 call.get("input_tokens"),
                 call.get("output_tokens"),
                 call.get("cached_tokens"),
-                call.get("total_tokens")
-                if call.get("total_tokens") is not None
-                else int(call.get("input_tokens") or 0) + int(call.get("output_tokens") or 0),
+                total_tokens,
                 call.get("provider_cost_microusd"),
                 call.get("finish_reason"),
                 call.get("error_code"),
                 self._db_now_ms(),
             ),
         )
+        persisted = self._conn.execute(
+            """
+            SELECT recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route,
+                   request_sha256, response_sha256, request, response, provider, model, model_sha,
+                   execution_contract_sha, latency_ms, input_tokens, output_tokens, cached_tokens, total_tokens,
+                   provider_cost_microusd, finish_reason, error_code
+              FROM news_model_recordings
+             WHERE recording_sha = %s
+            """,
+            (recording_sha,),
+        ).fetchone()
+        if persisted is None:
+            # A different recording_sha can still collide with the composite
+            # run/case/arm/trial/Predictor identity.  Never expose the backend's
+            # unique-constraint name as the evaluator's behavioral contract.
+            raise ValueError("news_model_recording_conflict")
+        actual_recording = {key: persisted[key] for key in expected_recording}
+        actual_recording["request"] = dict(actual_recording["request"])
+        if actual_recording["response"] is not None:
+            actual_recording["response"] = dict(actual_recording["response"])
+        if actual_recording != expected_recording:
+            raise ValueError("news_model_recording_conflict")
 
     def _evaluate_evidence(
         self,
@@ -2098,6 +2209,9 @@ class CandidateEvaluator:
             "focus_fact": {"fact_id": case.case_id, "text": snapshot["title"], "context": snapshot.get("body", "")},
             "card": {
                 "event_id": case.case_id,
+                "evidence_version": 0,
+                "evidence_sha256": case.evidence_sha256,
+                "focus_fact_id": case.case_id,
                 "leader_title": snapshot["title"],
                 "leader_description": snapshot.get("body", ""),
                 "leader_url": snapshot["source_url"],
@@ -2259,6 +2373,13 @@ class CandidateEvaluator:
         payload = dict(row["payload"] or {})
         if payload.get("learning_epoch") != LEARNING_EPOCH:
             raise ValueError("news_learning_epoch_mismatch")
+        epoch_started_at_ms = self._learning_epoch_started_at_ms()
+        if payload.get("learning_epoch_started_at_ms") != epoch_started_at_ms:
+            raise ValueError("news_learning_epoch_deployment_mismatch")
+        hashes = dict(payload.get("hashes") or {})
+        expected_epoch_sha = _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms})
+        if hashes.get("learning_epoch_sha") != expected_epoch_sha:
+            raise ValueError("news_learning_epoch_hash_mismatch")
         if payload.get("profile_id") != LEARNING_PROFILE_ID:
             raise ValueError("news_learning_profile_mismatch")
         return DatasetManifest(artifact_sha=artifact_sha, **payload)
@@ -2434,6 +2555,24 @@ class CandidateEvaluator:
         ).fetchall()
         return {str(row["review_id"]): dict(row) for row in rows}
 
+    def _learning_epoch_started_at_ms(self) -> int:
+        row = self._conn.execute(
+            "SELECT starts_at_ms, program_factory_id, artifact_schema_version, "
+            "prior_evidence_disposition, reset_reason "
+            "FROM news_learning_epochs WHERE epoch_id = %s",
+            (LEARNING_EPOCH,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("news_learning_epoch_not_deployed")
+        if (
+            str(row["program_factory_id"]) != "tracefold.news.semantic_program.factory_v1"
+            or str(row["artifact_schema_version"]) != "news_semantic_program_artifact_v1"
+            or str(row["prior_evidence_disposition"]) != "audit_only"
+            or str(row["reset_reason"]) != "zero_compatibility_reset_reaccrue_evidence"
+        ):
+            raise ValueError("news_learning_epoch_contract_mismatch")
+        return int(row["starts_at_ms"])
+
     def _db_now_ms(self) -> int:
         row = self._conn.execute(
             "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
@@ -2453,6 +2592,7 @@ def _usage_from_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "wall_latency_ms": trace.get("wall_latency_ms"),
         "call_count": len(calls),
+        "physical_call_count": sum(bool(item.get("physical_provider_call")) for item in calls),
         "input_tokens": sum(int(item.get("input_tokens") or 0) for item in calls),
         "output_tokens": sum(int(item.get("output_tokens") or 0) for item in calls),
         "cached_tokens": sum(int(item.get("cached_tokens") or 0) for item in calls),
@@ -2461,7 +2601,7 @@ def _usage_from_trace(trace: Mapping[str, Any]) -> dict[str, Any]:
             or (int(item.get("input_tokens") or 0) + int(item.get("output_tokens") or 0))
             for item in calls
         ),
-        "provider_cost_microusd": sum(costs) if costs else None,
+        "provider_cost_microusd": sum(costs) if calls and len(costs) == len(calls) else None,
     }
 
 
@@ -2508,7 +2648,59 @@ def _provider_cost_observation_complete(observation: Mapping[str, Any]) -> bool:
 def _program_call_provenance_complete(observation: Mapping[str, Any]) -> bool:
     trace = observation.get("trace") or {}
     calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
-    return bool(calls) and all(str(dict(call).get("provider") or "").strip() for call in calls)
+    return bool(calls) and all(isinstance(call, Mapping) and _program_call_identity_complete(call) for call in calls)
+
+
+def _program_call_identity_complete(raw_call: Mapping[str, Any]) -> bool:
+    """Validate the request route and any observed response model identity."""
+
+    call = dict(raw_call)
+    if (
+        call.get("predictor") not in {"event_semantics", "reader_card"}
+        or call.get("route") not in {"primary", "fallback"}
+        or type(call.get("attempt")) is not int
+        or not 1 <= int(call["attempt"]) <= 2
+        or not str(call.get("model_binding") or "").strip()
+    ):
+        return False
+    for field_name in (
+        "request_sha256",
+        "input_sha256",
+        "signature_sha256",
+        "instruction_sha256",
+        "demos_sha256",
+        "runtime_model_sha256",
+        "runtime_binding_sha256",
+    ):
+        value = str(call.get(field_name) or "")
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            return False
+    runtime_provider = str(call.get("runtime_provider") or "").strip()
+    runtime_model = str(call.get("runtime_model") or "").strip()
+    runtime_model_sha = str(call["runtime_model_sha256"])
+    runtime_binding_sha = str(call["runtime_binding_sha256"])
+    if (
+        not runtime_provider
+        or not runtime_model
+        or runtime_binding_sha
+        != _sha(
+            {
+                "provider": runtime_provider,
+                "model": runtime_model,
+                "model_sha256": runtime_model_sha,
+            }
+        )
+    ):
+        return False
+    response_provider = str(call.get("provider") or "").strip()
+    response_model = str(call.get("model") or "").strip()
+    response_model_sha = str(call.get("model_sha256") or "")
+    response_values = (response_provider, response_model, response_model_sha)
+    if any(response_values) and (
+        not all(response_values) or response_model_sha != _sha({"provider": response_provider, "model": response_model})
+    ):
+        return False
+    return not isinstance(call.get("validated_output"), Mapping) or all(response_values)
 
 
 def _mean_regressed(stable: Sequence[int], candidate: Sequence[int], *, growth_pct: float) -> bool:
@@ -2577,7 +2769,85 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
         delivery = "ambiguous"
     else:
         delivery = "observed_not_sent"
-    program_trace = dict(trace.get("program_trace") or {})
+    raw_program_trace = trace.get("program_trace")
+    if raw_program_trace is not None and not isinstance(raw_program_trace, Mapping):
+        raise ValueError("news_program_selected_execution_mismatch")
+    program_trace = dict(raw_program_trace or {})
+    raw_executions_value = trace.get("program_executions")
+    raw_executions = [] if raw_executions_value is None else raw_executions_value
+    if not isinstance(raw_executions, list) or any(not isinstance(item, Mapping) for item in raw_executions):
+        raise ValueError("news_program_execution_index_mismatch")
+    executions = [dict(item) for item in raw_executions]
+    execution_index_values = [item.get("execution_index") for item in executions]
+    if any(type(value) is not int for value in execution_index_values):
+        raise ValueError("news_program_execution_index_mismatch")
+    execution_indices = [cast(int, value) for value in execution_index_values]
+    if execution_indices != list(range(len(executions))):
+        raise ValueError("news_program_execution_index_mismatch")
+    if executions:
+        selected_index = trace.get("program_execution_index")
+        if selected_index is None:
+            if not (bool(row.get("degraded")) and row.get("verdict_error_code") and raw_program_trace is None):
+                raise ValueError("news_program_selected_execution_mismatch")
+        else:
+            if type(selected_index) is not int or not 0 <= int(selected_index) < len(executions):
+                raise ValueError("news_program_selected_execution_mismatch")
+            selected_execution = next(
+                execution for execution in executions if execution["execution_index"] == selected_index
+            )
+            selected_trace = selected_execution.get("trace")
+            if not isinstance(selected_trace, Mapping) or _sha(program_trace) != _sha(dict(selected_trace)):
+                raise ValueError("news_program_selected_execution_mismatch")
+            if verdict is None or str(program_trace.get("verdict_sha256") or "") != _sha(verdict):
+                raise ValueError("news_program_selected_verdict_mismatch")
+    calls: list[dict[str, Any]] = []
+    global_call_indices: list[int] = []
+    for execution in sorted(executions, key=lambda item: int(item.get("execution_index") or 0)):
+        execution_context = execution.get("context")
+        if not isinstance(execution_context, Mapping):
+            raise ValueError("news_program_execution_context_mismatch")
+        context_sha = _sha(dict(execution_context))
+        execution_context_sha = str(execution.get("context_sha256") or "")
+        if context_sha != execution_context_sha:
+            raise ValueError("news_program_execution_context_mismatch")
+        execution_trace = execution.get("trace")
+        if not isinstance(execution_trace, Mapping):
+            raise ValueError("news_program_execution_context_mismatch")
+        trace_context_sha = str(execution_trace.get("context_sha256") or "")
+        if (
+            len(execution_context_sha) != 64
+            or any(char not in "0123456789abcdef" for char in execution_context_sha)
+            or execution_context_sha != trace_context_sha
+        ):
+            raise ValueError("news_program_execution_context_mismatch")
+        raw_execution_calls_value = execution_trace.get("calls")
+        raw_execution_calls = [] if raw_execution_calls_value is None else raw_execution_calls_value
+        if not isinstance(raw_execution_calls, list) or any(
+            not isinstance(item, Mapping) for item in raw_execution_calls
+        ):
+            raise ValueError("news_program_execution_call_index_mismatch")
+        execution_calls = [dict(item) for item in raw_execution_calls]
+        raw_recording_indices_value = execution.get("recording_call_indices")
+        raw_recording_indices = [] if raw_recording_indices_value is None else raw_recording_indices_value
+        if not isinstance(raw_recording_indices, list):
+            raise ValueError("news_program_execution_call_index_mismatch")
+        if any(type(value) is not int for value in raw_recording_indices):
+            raise ValueError("news_program_execution_call_index_mismatch")
+        recording_indices = [int(value) for value in raw_recording_indices]
+        if len(recording_indices) != len(execution_calls):
+            raise ValueError("news_program_execution_call_index_mismatch")
+        global_call_indices.extend(recording_indices)
+        for local_index, call in enumerate(execution_calls):
+            call["execution_index"] = int(execution.get("execution_index") or 0)
+            call["execution_phase"] = str(execution.get("phase") or "unknown")
+            call["execution_status"] = str(execution.get("status") or "unknown")
+            call["execution_context_sha256"] = execution_context_sha
+            call["recording_call_index"] = recording_indices[local_index]
+            calls.append(call)
+    if global_call_indices != list(range(len(calls))):
+        raise ValueError("news_program_execution_call_index_mismatch")
+    if not executions:
+        calls = [dict(item) for item in program_trace.get("calls") or []]
     provider_cost_microusd = trace.get("provider_cost_microusd")
     if provider_cost_microusd is None and trace.get("provider_cost_usd") is not None:
         # Historical prompt-era trace compatibility is read-only audit input.
@@ -2585,6 +2855,7 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
     usage = {
         "wall_latency_ms": trace.get("latency_ms"),
         "call_count": trace.get("model_attempts"),
+        "physical_call_count": trace.get("physical_model_attempts"),
         "input_tokens": trace.get("input_tokens"),
         "output_tokens": trace.get("output_tokens"),
         "cached_tokens": trace.get("cached_tokens"),
@@ -2595,7 +2866,8 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
         "program_version": row.get("program_version") or trace.get("program_version"),
         "program_sha256": row.get("program_sha256") or trace.get("program_sha256"),
         "trace": program_trace,
-        "calls": list(program_trace.get("calls") or []),
+        "calls": calls,
+        "executions": executions,
         "usage": usage,
         "error_code": error_code,
     }
@@ -2805,7 +3077,6 @@ def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "LEARNING_EPOCH",
-    "LEARNING_EPOCH_STARTED_AT_MS",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
     "CandidateEvaluator",
