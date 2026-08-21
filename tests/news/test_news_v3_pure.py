@@ -11,11 +11,18 @@ import pytest
 
 from tracefold.news import bus
 from tracefold.news.control import apply_control, is_muted, parse_control
-from tracefold.news.delivery import _quote_line, card_assets, render_first_card, sanitize_ai_text
+from tracefold.news.delivery import (
+    _CHANGE_BASIS_LABEL,
+    _quote_line,
+    card_assets,
+    render_first_card,
+    sanitize_ai_text,
+)
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
 from tracefold.news.models import TriageAsset, TriageVerdict
+from tracefold.news.pricing import CHANGE_BASIS_ZH
 from tracefold.news.similarity import similarity
 from tracefold.news.storyline import (
     _symbol_in_text,
@@ -818,8 +825,15 @@ def test_card_market_line_is_display_only() -> None:
         assert _quote_line([_quote("BTC", "74757.60", 7.914, state=absent)]) == ""
         assert _market_lines(quotes=[_quote("CL", "86.43", 2.3, state=absent)]) == ["利空 · 影响重大 · CL · jin10"]
     assert _quote_line([_quote("X", "0", 1.0)]) == "" and _quote_line([_quote("X", "not-a-price", 1.0)]) == ""
+    # `parse_price` bounds a price to finite-and-positive, not to a magnitude, and quantizing 1e40 raises.
+    # `_quote_line` runs in the renderer, outside the consumer's guard, so it must lose the entry, not the card.
+    assert _quote_line([_quote("HUGE", "1e40", 1.0)]) == ""
+    assert (
+        _quote_line([_quote("HUGE", "1e40", 1.0), _quote("BTC", "74757.60", 7.914)]) == "行情 BTC $74,757.60 24h +7.91%"
+    )
     assert _quote_line([]) == "" and _market_lines() == ["利空 · 影响重大 · CL · jin10"]
-    # The perpetual mark is said once when every asset is one, and per asset when the card mixes the two.
+    # The mark is attached per asset, never once for the line: a trailing mark on a mixed line cannot say
+    # whether it covers the last asset or all of them.
     equities = [
         _quote(s, p, c, instrument_class="equity")
         for s, p, c in (
@@ -830,8 +844,8 @@ def test_card_market_line_is_display_only() -> None:
         )
     ]
     assert _quote_line(equities) == (
-        "行情 AAPL $312.56 24h -1.25% · AMZN $260.77 24h +1.10% · META $547.11 24h +0.40%"
-        " · MSFT $481.85 24h -0.80%（永续）"
+        "行情 AAPL $312.56 24h -1.25%（永续） · AMZN $260.77 24h +1.10%（永续）"
+        " · META $547.11 24h +0.40%（永续） · MSFT $481.85 24h -0.80%（永续）"
     )
     mixed = _quote_line(
         [_quote("BTC", "74757.60", 7.914), _quote("SAMSUNG", "201.70", 3.916, instrument_class="equity")]
@@ -849,6 +863,12 @@ def test_card_market_line_is_display_only() -> None:
     )
     assert degraded["elements"][0]["content"].splitlines()[-1] == "行情 ETH $2,348.14 24h +4.25%"
     assert "新进展" not in json.dumps(degraded, ensure_ascii=False)
+
+
+def test_card_change_basis_labels_cover_the_price_domain() -> None:
+    """A basis `pricing` knows and the card cannot name would drop that venue's percentage in silence."""
+
+    assert set(_CHANGE_BASIS_LABEL) == set(CHANGE_BASIS_ZH)
 
 
 def test_card_marks_a_progression() -> None:

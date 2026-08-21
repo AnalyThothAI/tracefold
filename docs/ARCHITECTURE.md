@@ -584,9 +584,14 @@ market's own number for those same tickers — `行情 CL $86.43 24h +2.30%（�
 a `stale`, `unavailable` or `unlisted` quote leaves no line, no placeholder and
 no zero. The change window is named from `change_basis` rather than assumed
 (`rolling_24h` -> `24h`, `provider_day` -> `日内`, unknown -> the price without a
-percentage), `（永续）` marks assets priced on a perpetual rather than their own
-market (51.9% of a week's card assets are equity/commodity/index on a Binance
-TradFi perp or a Hyperliquid builder-DEX), and the price/percentage formatting
+percentage), `（永续）` marks each asset whose number comes from a proxy
+market rather than its own — an equity/commodity/index on a Binance TradFi perp
+or a Hyperliquid builder-DEX, 51.9% of a week's card assets. It is keyed on
+`instrument_class`, not on the contract type: BTC also prices on a perpetual,
+but for a crypto asset that *is* its own market, so it carries no mark. The mark
+is repeated per asset rather than said once for the line, because a trailing
+mark on a mixed line cannot say whether it covers the last asset or all of them.
+The price/percentage formatting
 mirrors the console's `web/src/features/news/model/newsPrice.ts` character for
 character. The quotes are read inside the one existing `news_delivery_load`
 session over exactly `card_assets()`, so the two lines cannot name different

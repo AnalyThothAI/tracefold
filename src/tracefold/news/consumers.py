@@ -1019,22 +1019,12 @@ class TriageConsumer:
 
 
 # ---------------------------------------------------------------------------- Deliverer
-def _card_quotes(repos: Any, card: Mapping[str, Any], triage: Mapping[str, Any], stamp: int) -> list[Any]:
-    """Current prices for exactly the assets the card will name, read inside the delivery load (#113).
-
-    `card_assets()` is the same function the renderer uses, so the facts line and the quote line can never
-    disagree about which assets this card is about. Resolution and venue precedence stay in
-    `PriceRepository.quotes_for_symbols` — there is deliberately no second copy of that ranking here.
-
-    The price plane must never be able to hold up a card: any failure degrades to no quote line at all, which
-    is the same output as a market we could not reach. Delivery does not depend on #88 being healthy.
-    """
-
-    try:
-        shown = card_assets(dict(triage.get("verdict") or {}), list(card.get("grounded_assets") or []))
-        return list(repos.price.quotes_for_symbols(shown, now_ms=stamp)) if shown else []
-    except Exception:  # a price is never worth losing a card over
-        return []
+# Its own budget, not a share of `news_delivery_load`'s. The quote read is two queries the other four are not
+# — `resolve_instruments` joins the universe per symbol, and `quote_snapshots` pulls every source's payload —
+# and a timeout is enforced by the lane one frame above any `try` inside the callback: an overrun there raises
+# `TransientError`, which is counted and dead-letters the card after three attempts. A price is never worth
+# losing a card over, so it gets a second, shorter session whose every failure mode is swallowed.
+_QUOTE_READ_TIMEOUT_SECONDS = 1.5
 
 
 class DelivererConsumer:
@@ -1074,13 +1064,20 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, control, sent_last_hour, quotes = bundle
+        card, triage_row, control, sent_last_hour = bundle
         tv = dict(triage_row.get("verdict") or {})
         if triage_row["final_decision"] not in {"push", "escalate"}:
             return
         if sent_last_hour >= self.hourly_cap and triage_row["final_decision"] != "escalate":
             await self._settle_direct(event_id, kind, "hourly_cap_reached", stamp)
             return
+        if control.get("paused"):
+            # News is perishable: a paused lane drops instead of holding an unacked message.
+            await self._settle_direct(event_id, kind, "delivery_paused", stamp)
+            return
+        # Priced only once the card is certainly going out: every return above discards the message, and the
+        # quote read is the one query in this handler nobody would have seen the result of.
+        quotes = await self._quotes(card, tv, stamp)
         card_payload = render_first_card(
             event=card,
             verdict=tv,
@@ -1089,10 +1086,6 @@ class DelivererConsumer:
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
-        if control.get("paused"):
-            # News is perishable: a paused lane drops instead of holding an unacked message.
-            await self._settle_direct(event_id, kind, "delivery_paused", stamp)
-            return
         if self.sender is None:
             await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
             return
@@ -1154,6 +1147,30 @@ class DelivererConsumer:
 
         await self.db.tx("news_delivery_settle_direct", _fn)
 
+    async def _quotes(self, card: Mapping[str, Any], verdict: Mapping[str, Any], stamp: int) -> list[Any]:
+        """Current prices for exactly the assets the card will name (#113).
+
+        `card_assets()` is the same function the renderer uses, so the facts line and the quote line can never
+        disagree about which assets this card is about. Resolution and venue precedence stay in
+        `PriceRepository.quotes_for_symbols` — there is deliberately no second copy of that ranking here.
+
+        Every failure is the same answer: no quote line. A broken, slow or admission-blocked price plane costs
+        the card its market number and nothing else, which is what a market we could not reach looks like too.
+        """
+
+        shown = card_assets(dict(verdict), list(card.get("grounded_assets") or []))
+        if not shown:
+            return []
+        try:
+            rows = await self.db.read(
+                "news_delivery_quotes",
+                lambda repos: repos.price.quotes_for_symbols(shown, now_ms=stamp),
+                timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
+            )
+        except Exception:  # incl. TransientError / DeferError — a price is never worth losing a card over
+            return []
+        return list(rows or [])
+
     @staticmethod
     def _load(repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
         card = repos.news.event_card(event_id)
@@ -1162,7 +1179,7 @@ class DelivererConsumer:
             return None
         control = repos.news.read_control(now_ms=stamp)
         sent = repos.news.sent_count_since(since_ms=stamp - 3600_000)
-        return card, triage, control, sent, _card_quotes(repos, card, triage, stamp)
+        return card, triage, control, sent
 
     async def close(self) -> None:
         if self.sender is not None:

@@ -33,6 +33,7 @@ from math import isfinite
 from typing import Any
 
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
+from .pricing import parse_price
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"(?<!\w)@[\w]{1,32}")
@@ -49,10 +50,14 @@ _CARD_TZ_OFFSET_S = 8 * 3600  # the reader's clock (Asia/Shanghai); the source t
 # assets price on Hyperliquid. A basis we cannot name means the percentage is dropped, not guessed — the price
 # still renders.
 _CHANGE_BASIS_LABEL = {"rolling_24h": "24h", "provider_day": "日内"}
-# `crypto` is the only class whose venue price is the asset's own market. An `equity` / `commodity` / `index`
-# tag prices on a Binance TradFi perp or a Hyperliquid builder-DEX — a real traded contract (95% of a week's
-# reactions found candles for them) but not the exchange's official quote, and the card says so.
-_SPOT_CLASS = "crypto"
+# A basis `pricing` knows and this map does not would drop every percentage for that venue in silence, so the
+# two key sets are pinned together in `test_card_change_basis_labels_cover_the_price_domain`.
+# The mark is about whose market this number comes from, not about the contract type — BTC also prices on a
+# Binance perpetual, and for a crypto asset that *is* its own market, so it carries no mark. An `equity` /
+# `commodity` / `index` tag prices on a Binance TradFi perp or a Hyperliquid builder-DEX: a real traded
+# contract (95% of a week's reactions found candles for them) but a proxy for a market that closes at 16:00
+# somewhere else, and the reader is told which of the two they are looking at.
+_NATIVE_MARKET_CLASS = "crypto"
 _PERP_MARK = "（永续）"
 _QUOTE_LINE_PREFIX = "行情 "
 
@@ -88,19 +93,23 @@ def _format_price(value: object) -> str:
     card and 74,553.1 in the console has been given a reason to doubt both. Editing one without the other is
     the drift this comment exists to prevent.
 
-    A price that rounds away to zero is not rendered at all; `""` means the caller drops the whole entry.
+    A price that rounds away to zero is not rendered at all; `""` means the caller drops the whole entry. So
+    does a number too large to quantize: `parse_price` bounds a price to "finite and positive", not to a
+    magnitude, and `Decimal("1e40").quantize(...)` raises rather than returning characters. This function is
+    called from the renderer, outside `_card_quotes`'s guard, so it must never raise — an unrenderable price
+    costs its own entry, never the card.
     """
 
+    price = parse_price(value)
+    if price is None:
+        return ""
     try:
-        price = Decimal(str(value))
+        if price >= 1000:
+            return f"{price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}"
+        places = Decimal("0.0001") if price >= 1 else Decimal("0.000001")
+        text = f"{price.quantize(places, rounding=ROUND_HALF_UP):,f}"
     except (InvalidOperation, ValueError):
         return ""
-    if not price.is_finite() or price <= 0:
-        return ""
-    if price >= 1000:
-        return f"{price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,f}"
-    places = Decimal("0.0001") if price >= 1 else Decimal("0.000001")
-    text = f"{price.quantize(places, rounding=ROUND_HALF_UP):,f}"
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return "" if text == "0" else text
@@ -125,13 +134,13 @@ def _format_change(value: object, basis: object) -> str:
 def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
     """The market's own number for the assets already named on the facts line, or nothing at all.
 
-    Only `fresh` quotes render (the freshness rule lives in `PriceRepository.quote_state`, not here). A
-    `stale`, `unavailable` or `unlisted` answer leaves no line, no placeholder and no zero — #88's whole point
-    is that "we have not managed to quote this" and "this is worth nothing" are different sentences.
+    Only `fresh` quotes render (the freshness rule is `pricing.quote_state`, not this module's). A `stale`,
+    `unavailable` or `unlisted` answer leaves no line, no placeholder and no zero — #88's whole point is that
+    "we have not managed to quote this" and "this is worth nothing" are different sentences.
 
-    The perpetual mark flags assets whose price is a perpetual contract, not the asset's own market. When
-    every rendered asset is one — the common case for an all-equity card — the mark is said once at the end of
-    the line instead of four times.
+    The mark is attached to each proxy-priced asset rather than said once for the line. Saying it once reads
+    as ambiguous the moment a line mixes the two: a trailing mark after `BTC ... · SAMSUNG ...` could belong
+    to SAMSUNG or to both, and the reader has no way to tell. Repetition is the cheaper mistake.
     """
 
     parts: list[str] = []
@@ -155,12 +164,10 @@ def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
         classes.append(str(quote.get("instrument_class") or ""))
     if not parts:
         return ""
-    perps = [index for index, klass in enumerate(classes) if klass != _SPOT_CLASS]
-    if perps and len(perps) < len(parts):
-        for index in perps:
+    for index, klass in enumerate(classes):
+        if klass != _NATIVE_MARKET_CLASS:
             parts[index] += _PERP_MARK
-    line = _QUOTE_LINE_PREFIX + " · ".join(parts)
-    return line + _PERP_MARK if perps and len(perps) == len(parts) else line
+    return _QUOTE_LINE_PREFIX + " · ".join(parts)
 
 
 def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> list[str]:

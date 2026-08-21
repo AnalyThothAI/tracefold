@@ -763,6 +763,46 @@ def test_deliverer_delivers_the_card_when_the_price_plane_fails() -> None:
     assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
 
 
+def test_deliverer_delivers_the_card_when_the_quote_read_cannot_be_admitted() -> None:
+    """The quote read has its own session, so a lane that will not admit it must not touch the card.
+
+    Guarding inside the callback is not enough: admission and timeout are enforced one frame above it, and on
+    the shared `news_delivery_load` budget an overrun raises `TransientError`, which is counted and
+    dead-letters the card after three attempts.
+    """
+
+    news = _delivery_news()
+    sender = RecordingSender()
+    db = FakeWorkerDatabase(news, admission_timeout_for={"news_delivery_quotes"}, price=RecordingPrice())
+    deliverer = DelivererConsumer(
+        bus=FakeBus(), db=db, sender=sender, finite_operations=InlineFinite(), min_interval_seconds=0.0, hourly_cap=20
+    )
+
+    asyncio.run(deliverer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
+
+    assert "news_delivery_quotes" in db.operations
+    assert news.kwargs_of("settle_delivery")["state"] == "sent"
+    assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
+
+
+def test_deliverer_does_not_price_a_card_nobody_will_see() -> None:
+    """Two queries on the hot News lane for output every path below discards (#113 review)."""
+
+    for news in (
+        _delivery_news(latest_verdict=lambda *, event_id, stage: {"final_decision": "drop", "verdict": {}}),
+        _delivery_news(sent_count_since=20),
+    ):
+        price = RecordingPrice()
+        asyncio.run(_deliverer(news, FakeBus(), price=price).handle(_message("verdict", {"event_id": "ev-strong"})))
+        assert price.requested == []
+
+    paused = _delivery_news()
+    paused.control_state = {"paused": True, "mutes": []}
+    price = RecordingPrice()
+    asyncio.run(_deliverer(paused, FakeBus(), price=price).handle(_message("verdict", {"event_id": "ev-strong"})))
+    assert price.requested == []
+
+
 # ---------------------------------------------------------------- Janitor
 def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
     news = RecordingNews(
