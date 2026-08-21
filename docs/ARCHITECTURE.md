@@ -715,11 +715,11 @@ Macro repository and the projection frontier), and the
 `reject_macro_fact_mutation()` trigger function. Revisions `0279` through
 `0283` add listing admission, the consolidated instrument universe, the
 retired label-v1 foundation, and Price Review. The #112 hard cut is `0284`
-through `0289`: atomic fact/evidence snapshots, ReviewDesk v2 (including
+through `0290`: atomic fact/evidence snapshots, ReviewDesk v2 (including
 verified migration and removal of `news_event_labels`), content-addressed
 learning artifacts/recordings, durable canary control, and bounded
 learning-evidence retention with release-chain pinning, plus the production
-Workers evidence-append grant repair and role-authentic audit. No
+Workers evidence-append grant/lock repair and role-authentic audit. No
 chained revision has a downgrade. Earlier hard cuts live only in git history;
 a fresh database and a database upgraded through the chain reach
 byte-identical schemas.
