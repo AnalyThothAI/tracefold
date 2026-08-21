@@ -35,6 +35,7 @@ def test_query_audit_requires_an_explicit_catalog_and_explains_only_its_queries(
     assert payload["route_coverage"] == {
         "query_routes": {"/owned": ("owned_read",)},
         "no_sql_routes": [],
+        "write_routes": [],
         "missing_query_names": [],
     }
 
@@ -66,13 +67,24 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_reaction_attach",
     )
     assert catalog.query_routes["/api/news/quotes"] == ("news_quote_snapshot_read",)
-    assert catalog.query_routes["/api/news/review"] == ("news_review_window",)
+    assert catalog.query_routes["/api/news/review"] == (
+        "news_review_task_queue",
+        "news_review_pairwise_queue",
+        "news_review_proposals",
+        "news_review_window",
+    )
+    assert catalog.query_routes["/api/news/review/tasks/{task_id}/evidence"] == ("news_review_task_evidence",)
+    assert catalog.write_routes == {
+        "/api/news/review/tasks/{task_id}/responses",
+        "/api/news/review/external-misses",
+    }
     assert catalog.query_routes["/api/news/status"] == (
         "workers_runtime",
         "news_status_ingest",
         "news_status_incidents_open",
         "news_status_pipeline_24h",
         "news_status_delivery_1h",
+        "news_status_learning_retention",
         "news_control_state",
     )
     assert not any(
@@ -119,12 +131,17 @@ _NEWS_QUERY_NAMES = (
     "news_status_incidents_open",
     "news_status_pipeline_24h",
     "news_status_delivery_1h",
+    "news_status_learning_retention",
     "news_control_state",
     # #88 price plane reads.
     "news_quote_snapshot_read",
     "news_reaction_due_scan",
     "news_reaction_attach",
     "news_review_window",
+    "news_review_task_queue",
+    "news_review_pairwise_queue",
+    "news_review_task_evidence",
+    "news_review_proposals",
 )
 
 
@@ -160,7 +177,6 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert len(payload["news_schema"]["actual_tables"]) == 15
     retired = {"news_stories", "news_brief_current", "news_push_state", "news_sources", "news_event_market_marks"}
     assert retired.isdisjoint(payload["news_schema"]["actual_tables"])
     assert "projection_schema" not in payload
@@ -240,7 +256,7 @@ def test_query_audit_covers_every_public_openapi_route():
     catalog = _composed_catalog()
 
     assert "/ws" not in catalog.query_routes
-    assert set(catalog.query_routes) | set(catalog.no_sql_routes) == openapi_paths
+    assert set(catalog.query_routes) | set(catalog.no_sql_routes) | set(catalog.write_routes) == openapi_paths
     query_names = {item.name for item in catalog.queries}
     assert all(
         query_name in query_names for route_queries in catalog.query_routes.values() for query_name in route_queries

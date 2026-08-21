@@ -17,7 +17,8 @@ def handle_init(args: object) -> tuple[int, dict[str, Any]]:
     existed = config_path().exists()
     path = write_default_config(force=args.force)
     password_paths = {
-        role: _ensure_postgres_password_file(path.parent, role=role) for role in ("serve", "workers", "migrate")
+        role: _ensure_postgres_password_file(path.parent, role=role)
+        for role in ("serve", "review", "workers", "migrate")
     }
     bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
     return (
@@ -62,9 +63,10 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                                 else None
                             ),
                         }
-                        for role in ("serve", "workers", "migrate")
+                        for role in ("serve", "review", "workers", "migrate")
                     },
                     "serve_pool_max_size": 7,
+                    "review_pool_max_size": 1,
                     "workers_pool_max_size": 8,
                     "log_file": str(settings.log_file),
                 },
@@ -93,7 +95,6 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                         "reason": push_availability.reason,
                         "feishu_webhook_url_configured": (push_availability.feishu_webhook_url_configured),
                         "feishu_signing_secret_configured": (push_availability.feishu_signing_secret_configured),
-                        "hourly_cap": settings.news.push.hourly_cap,
                         "min_interval_seconds": settings.news.push.min_interval_seconds,
                     },
                 },

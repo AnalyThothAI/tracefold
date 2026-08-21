@@ -52,7 +52,7 @@ def _triage(final: str, **over: object) -> dict[str, object]:
             _triage("throttled", override_rule="model_push_actionable", throttled_by="storyline:asset:BTC"),
             None,
             "throttled",
-            "未推送（限流）",
+            "未推送（历史限流）",
         ),
         (
             "candidate",
@@ -110,6 +110,13 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
         delivery=None,
     )
     assert throttled.reason_zh == "「贸易与关税」话题 4 小时内已推 3 条"
+    duplicate = event_outcome(
+        admission="candidate",
+        published_at_ms=NOW,
+        triage=_triage("throttled", throttled_by="storyline:asset:BTC:seen"),
+        delivery=None,
+    )
+    assert duplicate.text_zh == "未推送（重复）"
     paused = event_outcome(
         admission="candidate", published_at_ms=NOW, triage=_triage("drop", override_rule="muted"), delivery=None
     )
@@ -163,7 +170,6 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
         "below_threshold",
         "fail_closed_fallback",
         "restatement",
-        "distinct_bypass",
     }
     missing = sorted(rule for rule in emitted if rule not in OVERRIDE_RULE_ZH)
     assert missing == []
@@ -180,15 +186,14 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
     # Policy v3 (issue #61): the novelty vocabulary, still on historical rows.
     assert override_rule_zh("restatement") == "重复：读者已收到同一事实"
     assert override_rule_zh("novel_bypass").endswith("（旧规则）")
-    # Policy v5 (issue #81): the content judgment and the flood ceiling it is bounded by.
+    # Historical v5/v6 rules remain readable after policy v7 removed quotas.
     assert override_rule_zh("distinct_bypass") == "与读者刚收到的卡片都不同，放行"
     assert throttled_by_zh("storyline:asset:BTC:hard6") == "BTC 2 小时内已推 6 条，达到防洪上限"
     assert throttled_by_zh("storyline:theme:rates:hard18") == "「利率与央行」话题 4 小时内已推 18 条，达到防洪上限"
     assert throttled_by_zh("storyline:asset:BTC:seen") == "重复：读者刚收到过内容高度相近的卡片"
     assert throttled_by_zh("storyline:macro:general:cap3:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    # Policy v6 (issue #100): the every-push path emits `storyline:<key>:seen` on a storyline the count throttle
-    # never touched, so the key carries no `cap`/`hard` segment. `:seen` short-circuits ahead of the shape
-    # regexes, which is why v6 needed no new vocabulary — pin that so a future edit cannot reorder it away.
+    # Policy v7 emits only this content-based shape. `:seen` short-circuits
+    # ahead of historical cap/hard regexes.
     assert throttled_by_zh("storyline:asset:KLAC:seen") == "重复：读者刚收到过内容高度相近的卡片"
     assert throttled_by_zh("storyline:theme:mideast_energy:seen") == "重复：读者刚收到过内容高度相近的卡片"
     assert throttled_by_zh("storyline:macro:general:seen") == "重复：读者刚收到过内容高度相近的卡片"

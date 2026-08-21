@@ -34,5 +34,5 @@ export const queryKeys = {
   newsStatus: () => ["news-status"] as const,
   // #88: the quote key is the sorted symbol batch, so the feed and an open Event share one poll.
   newsQuotes: (symbols: readonly string[]) => ["news-quotes", symbols.join(",")] as const,
-  newsReview: (hours: number) => ["news-review", hours] as const,
+  newsReview: (identity: string) => ["news-review", identity] as const,
 };

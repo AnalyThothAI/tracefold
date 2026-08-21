@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import functools
 import hashlib
+import json
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -43,9 +44,10 @@ from .bus import (
     new_trace_id,
     now_ms,
 )
+from .canary import CanaryRuntimeArm
 from .control import is_muted
 from .delivery import card_assets, render_first_card
-from .events import admit_item
+from .events import admit_frame
 from .models import (
     ADMITTED_ADMISSIONS,
     GATE_POLICY_VERSION,
@@ -71,7 +73,7 @@ from .triage_rules import (
     decide,
     fallback_verdict,
     grounded_restatement,
-    storyline_status_from_row,
+    storyline_status,
 )
 
 log = logging.getLogger("tracefold.news")
@@ -83,10 +85,10 @@ _WS_RECONNECT_SECONDS = 3.0
 _OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
 _DAY_MS = 24 * 3600_000
-# The prompt's status bar shows the reader's last TOLD_MAX cards; decide() measures a throttled card against the
-# *whole* window, which at the live cap (30 cards/h over 4 h) is ~120 rows. Replaying the stored corpus, widening
-# the comparison set from the 12-entry status bar to the full window caught 14 more duplicate pairs and 11 more
-# facts the reader never received (#81). One indexed query, same round trip.
+# The prompt's status bar shows the reader's last TOLD_MAX cards; decide() measures a duplicate candidate against
+# a wider, bounded sent ledger. Replaying the stored corpus, widening the comparison set from the 12-entry status
+# bar caught 14 more duplicate pairs and 11 more facts the reader never received (#81). This is a memory bound,
+# not a reader quota: a ledger filled with distinct facts never blocks the next distinct fact.
 _SEEN_LEDGER_MAX = 128
 # Instrument universe (#75): the Gate's cached copy, and how often the snapshot loop asks the venues.
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
@@ -114,8 +116,9 @@ def _cause_for(code: str | None) -> str:
 class _Db:
     """Thin adapter over WorkerDatabase's News lane: run a sync repository function inside one session."""
 
-    def __init__(self, db: Any) -> None:
+    def __init__(self, db: Any, *, cold: bool = False) -> None:
         self._db = db
+        self._lane = db.heavy_business() if cold else None
 
     async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
         def _run() -> Any:
@@ -133,6 +136,8 @@ class _Db:
 
     async def _run(self, name: str, fn: Callable[[], Any], timeout_seconds: float) -> Any:
         try:
+            if self._lane is not None:
+                return await self._lane.run_business(name, fn, operation_timeout_seconds=timeout_seconds)
             return await self._db.run_news(name, fn, operation_timeout_seconds=timeout_seconds)
         except ResourceAdmissionTimeout as exc:
             raise DeferError(f"db_admission_timeout:{name}") from exc
@@ -520,9 +525,9 @@ class DeduperConsumer:
         ingest_mode = "recovery" if str(message.payload.get("ingest_mode")) == "recovery" else "live"
         observed = int(message.payload.get("observed_at_ms") or message.occurred_at_ms or now_ms())
         stamp = now_ms()
-        result = await self.db.tx(
+        batch = await self.db.tx(
             "news_deduper_admit",
-            lambda repos: admit_item(
+            lambda repos: admit_frame(
                 repos,
                 event=event,
                 ingest_mode=ingest_mode,
@@ -535,15 +540,16 @@ class DeduperConsumer:
             ),
             timeout_seconds=5.0,
         )
-        if result.event_created and result.admission in ADMITTED_ADMISSIONS:
-            await publish_event(
-                self.bus,
-                self.db,
-                event_id=result.event_id,
-                family=result.family,
-                priority=result.gate.priority if result.gate else "normal",
-                trace_id=message.trace_id,
-            )
+        for result in batch.results:
+            if result.event_created and result.admission in ADMITTED_ADMISSIONS:
+                await publish_event(
+                    self.bus,
+                    self.db,
+                    event_id=result.event_id,
+                    family=result.family,
+                    priority=result.gate.priority if result.gate else "normal",
+                    trace_id=message.trace_id,
+                )
 
 
 # ---------------------------------------------------------------------------- Triage
@@ -574,6 +580,9 @@ class _TriageSettle:
     """Everything the in-transaction decide-and-persist step needs (built after the model call)."""
 
     event_id: str
+    evidence_version: int
+    evidence_sha256: str
+    focus_fact_id: str
     verdict: TriageVerdict
     facts: GateFacts
     final_key: str
@@ -581,10 +590,11 @@ class _TriageSettle:
     seen: Sequence[Mapping[str, Any]]
     told_seen: frozenset[str]
     control: Mapping[str, Any]
-    cap_reached: bool
     degraded: bool
     error_code: str | None
     model_name: str | None
+    prompt_version: str
+    policy: DecidePolicy
     trace: dict[str, Any]
     stamp: int
     allow_stale: bool
@@ -622,6 +632,10 @@ def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _evaluate_canary_rolling_slo(repos: Any, *, activation_id: str, now_ms: int) -> dict[str, Any]:
+    return dict(repos.news.evaluate_canary_rolling_slo(activation_id=activation_id, now_ms=now_ms))
+
+
 class TriageConsumer:
     def __init__(
         self,
@@ -631,22 +645,39 @@ class TriageConsumer:
         model: TriageModel | None,
         watchlist_symbols: frozenset[str],
         watchlist: Sequence[str],
-        hourly_cap: int,
         concurrency: int,
         circuit_failures: int,
         circuit_open_seconds: float,
         policy: DecidePolicy = DEFAULT_POLICY,
+        stable_bundle_sha: str | None = None,
+        canary_arms: Mapping[str, CanaryRuntimeArm] | None = None,
+        runtime_manifest: Mapping[str, Any] | None = None,
     ) -> None:
         self.bus = bus
         self.db = _Db(db)
         self.model = model
         self.watchlist_symbols = watchlist_symbols
         self.watchlist = list(watchlist)
-        self.hourly_cap = int(hourly_cap)
         self.concurrency = int(concurrency)
         self.circuit = _Circuit(threshold=circuit_failures, open_seconds=circuit_open_seconds)
+        self._circuit_failures = int(circuit_failures)
+        self._circuit_open_seconds = float(circuit_open_seconds)
+        self._candidate_circuits: dict[str, _Circuit] = {}
         self._circuit_incident_open = False
         self.policy = policy
+        self._canary_enabled = stable_bundle_sha is not None
+        self.stable_bundle_sha = (
+            stable_bundle_sha
+            or hashlib.sha256(
+                json.dumps(
+                    {"prompt": TRIAGE_PROMPT_SHA256, "policy": policy.as_dict()},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+        )
+        self.canary_arms = dict(canary_arms or {})
+        self.runtime_manifest = dict(runtime_manifest or {})
         # #75: symbol aliases collapse one issuer's several contracts into one storyline bucket. Loaded lazily
         # from the universe snapshot and refreshed on the same TTL as the Gate's copy; `None` uses the seeds.
         self._aliases: dict[str, str] | None = None
@@ -660,6 +691,12 @@ class TriageConsumer:
         self._aliases = table or None
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
+        if self.runtime_manifest:
+            with contextlib.suppress(TransientError, DeferError):
+                await self.db.tx(
+                    "news_agent_runtime_manifest",
+                    lambda repos: repos.news.register_agent_runtime_manifest(**self.runtime_manifest),
+                )
         # A fresh process starts with a closed circuit: an incident left open by a previous process is over.
         with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
@@ -688,7 +725,7 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, status_row, control, sent_last_hour, ledger_rows = bundle
+        card, control, ledger_rows = bundle
         facts = GateFacts(
             grounded_assets=tuple(card.get("grounded_assets") or []),
             watchlist_symbols=self.watchlist_symbols,
@@ -696,49 +733,104 @@ class TriageConsumer:
             priority=str(card.get("priority") or "normal"),
             admission=str(card.get("admission") or ""),
         )
+        assignment = (
+            await self.db.tx(
+                "news_canary_assign",
+                lambda repos: repos.news.assign_agent_arm(
+                    event_id=event_id,
+                    stable_bundle_sha=self.stable_bundle_sha,
+                    admission=str(card.get("admission") or ""),
+                    priority=str(card.get("priority") or "normal"),
+                    ingest_mode=str(card.get("ingest_mode") or "live"),
+                    now_ms=stamp,
+                ),
+            )
+            if self._canary_enabled
+            else {
+                "activation_id": None,
+                "arm": "stable",
+                "bundle_sha": self.stable_bundle_sha,
+                "selector_version": "test_stable_only_v1",
+                "eligibility_reason": "canary_not_composed",
+            }
+        )
+        selected_bundle_sha = str(assignment["bundle_sha"])
+        selected_arm = str(assignment["arm"])
+        runtime_arm = self.canary_arms.get(selected_bundle_sha) if selected_arm == "candidate" else None
+        artifact_missing = selected_arm == "candidate" and runtime_arm is None
+        if artifact_missing and assignment.get("activation_id"):
+            await self._trip_canary(str(assignment["activation_id"]), "candidate_artifact_missing", stamp)
+        active_model = runtime_arm.model if runtime_arm is not None else (None if artifact_missing else self.model)
+        active_policy = runtime_arm.policy if runtime_arm is not None else self.policy
+        active_prompt_version = runtime_arm.prompt_version if runtime_arm is not None else TRIAGE_PROMPT_VERSION
+        active_prompt_sha = runtime_arm.prompt_sha256 if runtime_arm is not None else TRIAGE_PROMPT_SHA256
+        active_circuit = (
+            self._candidate_circuits.setdefault(
+                selected_bundle_sha,
+                _Circuit(threshold=self._circuit_failures, open_seconds=self._circuit_open_seconds),
+            )
+            if selected_arm == "candidate"
+            else self.circuit
+        )
         prelim_key = str(card.get("storyline_key") or "")
         # The told ledger: what the reader already received (newest first, same preliminary storyline first). The
         # model judges novelty against it; ``told_seen`` (event ids) is the snapshot the persist step compares against
         # — ids, not clocks, because verdict rows carry their handler's start stamp, not commit time.
         told = told_ledger_for_prompt(ledger_rows, now_ms=stamp, prefer_key=prelim_key)
         told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
-        cap_reached = sent_last_hour >= self.hourly_cap
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         trace: dict[str, Any] = {
             "queue_lag_ms": queue_lag_ms,
             "attempt": message.attempt,
-            "prompt_sha256": TRIAGE_PROMPT_SHA256,
+            "prompt_sha256": active_prompt_sha,
             # The other half of the contract the model read (#101): a reworded field description changes
             # behaviour without touching the prompt text.
             "schema_sha256": TRIAGE_SCHEMA_SHA256,
             # The policy numbers and the Gate version that produced this decision, not just the rule name: a
             # verdict has to be replayable against the thresholds it actually ran under (#81).
-            "policy": self.policy.as_dict(),
+            "policy": active_policy.as_dict(),
             "gate_policy_version": GATE_POLICY_VERSION,
+            "evidence_version": int(card.get("evidence_version") or 0),
+            "evidence_sha256": str(card.get("evidence_sha256") or ""),
+            "focus_fact_id": str(card.get("focus_fact_id") or ""),
             "storyline_key_preliminary": prelim_key,
-            "status": json_ready(dict(status_row or {})),
+            "status": {
+                "storyline_key": prelim_key,
+                "preliminary": True,
+                "queue_lag_ms": queue_lag_ms,
+            },
             "told": _told_trace(told),
             "told_count": len(told),
+            "agent_assignment": {
+                "activation_id": assignment.get("activation_id"),
+                "arm": selected_arm,
+                "bundle_sha": selected_bundle_sha,
+                "selector_version": assignment.get("selector_version"),
+                "eligibility_reason": assignment.get("eligibility_reason"),
+            },
         }
-        model_name = self.model.model_name if self.model else None
+        model_name = active_model.model_name if active_model else None
         wire_title = str(card.get("leader_title") or "")
         reasked = False
         first_verdict: TriageVerdict | None = None
         while True:
             degraded = False
             error_code = None
-            if self.model is None:
-                verdict, _ = fallback_verdict(facts, error_code="news_triage_model_unconfigured", title=wire_title)
-                degraded, error_code = True, "news_triage_model_unconfigured"
-            elif self.circuit.is_open(stamp) and first_verdict is None:
-                verdict, _ = fallback_verdict(facts, error_code="news_triage_circuit_open", title=wire_title)
-                degraded, error_code = True, "news_triage_circuit_open"
-            elif self.circuit.is_open(stamp) and first_verdict is not None:
+            if active_model is None:
+                code = "news_canary_artifact_missing" if artifact_missing else "news_triage_model_unconfigured"
+                verdict, _ = fallback_verdict(facts, error_code=code, title=wire_title)
+                degraded, error_code = True, code
+            elif active_circuit.is_open(stamp) and first_verdict is None:
+                code = "news_canary_circuit_open" if selected_arm == "candidate" else "news_triage_circuit_open"
+                verdict, _ = fallback_verdict(facts, error_code=code, title=wire_title)
+                degraded, error_code = True, code
+            elif active_circuit.is_open(stamp) and first_verdict is not None:
                 verdict = first_verdict  # the re-ask cannot run; the model's own judgment beats the rule baseline
-                trace["reask_failed"] = "news_triage_circuit_open"
+                trace["reask_failed"] = (
+                    "news_canary_circuit_open" if selected_arm == "candidate" else "news_triage_circuit_open"
+                )
             else:
                 status_payload = {
-                    **dict(status_row or {}),
                     "storyline_key": prelim_key,
                     "preliminary": True,
                     "queue_lag_ms": queue_lag_ms,
@@ -756,8 +848,10 @@ class TriageConsumer:
                     told=told,
                 )
                 trace["input_sha256"] = hashlib.sha256(human.encode("utf-8")).hexdigest()
+                trace["input_text"] = human
+                trace["watchlist"] = list(self.watchlist)
                 try:
-                    call = await self.model.triage(human)
+                    call = await active_model.triage(human)
                 except TriageModelError as exc:
                     trace.update({"model_attempts": exc.attempts, "model_failure_retryable": exc.retryable})
                     if exc.primary_code:
@@ -781,13 +875,18 @@ class TriageConsumer:
                             exc.output_tokens,
                             exc.detail,
                         )
-                    elif self.circuit.record_failure(stamp):
-                        self._circuit_incident_open = True
-                        with contextlib.suppress(TransientError, DeferError):
-                            await self.db.tx(
-                                "news_triage_circuit",
-                                functools.partial(_open_circuit_incident, now_ms=stamp),
+                        if selected_arm == "candidate" and assignment.get("activation_id"):
+                            await self._trip_canary(
+                                str(assignment["activation_id"]), "candidate_schema_contract_breach", stamp
                             )
+                    elif active_circuit.record_failure(stamp):
+                        if selected_arm != "candidate":
+                            self._circuit_incident_open = True
+                            with contextlib.suppress(TransientError, DeferError):
+                                await self.db.tx(
+                                    "news_triage_circuit",
+                                    functools.partial(_open_circuit_incident, now_ms=stamp),
+                                )
                     if first_verdict is not None:
                         # The re-ask failed: keep the model's first, valid judgment (its novelty was judged against
                         # the older ledger, so the restatement rule may miss the newest card) rather than the baseline.
@@ -797,8 +896,8 @@ class TriageConsumer:
                         verdict, _ = fallback_verdict(facts, error_code=exc.code, title=wire_title)
                         degraded, error_code = True, exc.code
                 else:
-                    self.circuit.record_success()
-                    if self._circuit_incident_open:
+                    active_circuit.record_success()
+                    if selected_arm == "stable" and self._circuit_incident_open:
                         self._circuit_incident_open = False
                         with contextlib.suppress(TransientError, DeferError):
                             await self.db.tx(
@@ -826,7 +925,7 @@ class TriageConsumer:
                             call.model,
                             call.fallback_from,
                         )
-            # The final storyline key comes from the verdict (primaries/scope); the throttle windows must use it.
+            # The final storyline key comes from the verdict (primaries/scope); duplicate evidence is traced on it.
             final_key = final_storyline_key(
                 title=str(card.get("leader_title") or ""),
                 headline_zh=verdict.headline_zh,
@@ -839,6 +938,9 @@ class TriageConsumer:
             )
             settle = _TriageSettle(
                 event_id=event_id,
+                evidence_version=int(card.get("evidence_version") or 0),
+                evidence_sha256=str(card.get("evidence_sha256") or ""),
+                focus_fact_id=str(card.get("focus_fact_id") or ""),
                 verdict=verdict,
                 facts=facts,
                 final_key=final_key,
@@ -846,10 +948,11 @@ class TriageConsumer:
                 seen=ledger_rows,
                 told_seen=told_seen,
                 control=control,
-                cap_reached=cap_reached,
                 degraded=degraded,
                 error_code=error_code,
                 model_name=model_name,
+                prompt_version=active_prompt_version,
+                policy=active_policy,
                 trace=trace,
                 stamp=stamp,
                 allow_stale=not reasked and not degraded,
@@ -877,14 +980,30 @@ class TriageConsumer:
                 )
                 if bundle is None:
                     raise PermanentError("news_event_missing")
-                card, status_row, control, sent_last_hour, ledger_rows = bundle
+                card, control, ledger_rows = bundle
+                trace["evidence_version"] = int(card.get("evidence_version") or 0)
+                trace["evidence_sha256"] = str(card.get("evidence_sha256") or "")
+                trace["focus_fact_id"] = str(card.get("focus_fact_id") or "")
                 told = told_ledger_for_prompt(ledger_rows, now_ms=stamp, prefer_key=prelim_key)
                 told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
-                cap_reached = sent_last_hour >= self.hourly_cap
-                trace["status"] = json_ready(dict(status_row or {}))
+                trace["status"] = {
+                    "storyline_key": prelim_key,
+                    "preliminary": True,
+                    "queue_lag_ms": queue_lag_ms,
+                }
                 trace["told"] = _told_trace(told)
                 trace["told_count"] = len(told)
                 continue
+            if selected_arm == "candidate" and assignment.get("activation_id"):
+                with contextlib.suppress(ValueError, TransientError, DeferError):
+                    await self.db.tx(
+                        "news_canary_rolling_slo",
+                        functools.partial(
+                            _evaluate_canary_rolling_slo,
+                            activation_id=str(assignment["activation_id"]),
+                            now_ms=stamp,
+                        ),
+                    )
             break
         if outcome.final in {"push", "escalate"}:
             await self._publish_decision(
@@ -892,42 +1011,57 @@ class TriageConsumer:
             )
 
     def _decide_and_persist(self, repos: Any, s: _TriageSettle) -> _TriageOutcome:
-        """Inside one transaction, under the storyline's advisory lock: re-read the window facts and the newest
+        """Inside one transaction, under the storyline's advisory lock: re-read the newest reader evidence and
         told entry, decide, and insert the verdict. Reports ``stale`` (no write) when a card landed after the model
         saw the ledger and the caller may still re-ask."""
 
         repos.news.lock_storyline(s.final_key)
+        latest_evidence = repos.news.latest_evidence_snapshot(s.event_id)
+        if latest_evidence is None:
+            raise PermanentError("news_event_evidence_missing")
+        evidence_changed = (
+            int(latest_evidence["evidence_version"]) != s.evidence_version
+            or str(latest_evidence["evidence_sha256"]) != s.evidence_sha256
+        )
+        if evidence_changed:
+            if s.allow_stale:
+                return _TriageOutcome(stale=True, final="drop", decision=None)
+            # A second concurrent evidence change is not safe to bind to the
+            # already-produced verdict.  Reconsume after the durable retry lane
+            # rather than publishing a judgment over evidence it did not read.
+            raise TransientError("news_event_evidence_changed")
         if s.allow_stale:
             fresh = repos.news.told_ledger(now_ms=s.stamp, window_ms=TOLD_WINDOW_MS, limit=TOLD_MAX * 2)
             if any(str(r.get("event_id") or "") not in s.told_seen for r in fresh):
                 return _TriageOutcome(stale=True, final="drop", decision=None)
-        final_row = repos.news.event_status(storyline_key=s.final_key, now_ms=s.stamp)
-        status = storyline_status_from_row(final_row, s.final_key, told=s.told, seen=s.seen)
+        status = storyline_status(s.final_key, told=s.told, seen=s.seen)
         muted = bool(s.control.get("paused")) or is_muted(
             s.control, storyline_key=s.final_key, grounded_assets=s.facts.grounded_assets, now_ms=s.stamp
         )
+        trace = s.trace
+        trace["control"] = {
+            "paused": bool(s.control.get("paused")),
+            "muted": muted,
+        }
         decision = decide(
             s.verdict,
             s.facts,
             status,
-            hourly_cap_reached=s.cap_reached,
             muted=muted,
             degraded=s.degraded,
-            policy=self.policy,
+            policy=s.policy,
         )
         if s.degraded and decision.final in {"push", "escalate"} and decision.rule_baseline == "drop":
             decision = DecisionResult(
                 "drop", "fail_closed_fallback", None, decision.rule_baseline, decision.watchlist_hits
             )
-        trace = s.trace
-        trace["status_final"] = json_ready(dict(final_row or {}))
+        trace["status_final"] = {"storyline_key": s.final_key}
         trace["storyline_key"] = s.final_key
         trace["seen_count"] = len(status.seen_headlines)
         if decision.seen_similarity is not None:
             # What the throttle actually measured, so `news why` can name the card this one resembled instead of
-            # reporting a bare rule (#81). ``seen_scope`` says which path measured it — the count throttle
-            # (``throttled``, the v5 path) or every-push measurement (``all``, #100) — so the effect of policy v6
-            # is countable without re-parsing `throttled_by`.
+            # reporting a bare rule (#81). ``seen_scope=all`` means the normal
+            # push path was compared with the received-card ledger.
             trace["seen_similarity"] = round(float(decision.seen_similarity), 4)
             trace["seen_scope"] = decision.seen_scope
             if 0 <= decision.seen_against < len(s.seen):
@@ -959,19 +1093,34 @@ class TriageConsumer:
             throttled_by=decision.throttled_by,
             verdict=json_ready(s.verdict),
             model=s.model_name,
-            prompt_version=TRIAGE_PROMPT_VERSION,
+            prompt_version=s.prompt_version,
             degraded=s.degraded,
             error_code=s.error_code,
             trace=trace,
+            evidence_version=s.evidence_version,
+            evidence_sha256=s.evidence_sha256,
+            focus_fact_id=s.focus_fact_id,
             now_ms=s.stamp,
         )
         repos.news.set_storyline_key(event_id=s.event_id, storyline_key=s.final_key, now_ms=s.stamp)
         repos.news.set_context_line(event_id=s.event_id, context_line=context_line, followup_of=None, now_ms=s.stamp)
         return _TriageOutcome(stale=False, final=final, decision=decision)
 
+    async def _trip_canary(self, activation_id: str, reason: str, stamp: int) -> None:
+        with contextlib.suppress(ValueError, TransientError, DeferError):
+            await self.db.tx(
+                "news_canary_trip",
+                lambda repos: repos.news.transition_canary(
+                    activation_id=activation_id,
+                    target_state="tripped",
+                    reason=reason,
+                    now_ms=stamp,
+                ),
+            )
+
     def _load_with_aliases(
         self, repos: Any, event_id: str, stamp: int
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int, list[dict[str, Any]]] | None:
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]] | None:
         """The Triage bundle plus a refreshed alias table, both from the one session (#75)."""
 
         self._refresh_aliases(repos, now=stamp)
@@ -980,20 +1129,18 @@ class TriageConsumer:
     @staticmethod
     def _load(
         repos: Any, event_id: str, stamp: int
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int, list[dict[str, Any]]] | None:
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]] | None:
         card = repos.news.event_card(event_id)
         if card is None:
             return None
-        status_row = repos.news.event_status(storyline_key=str(card.get("storyline_key") or ""), now_ms=stamp)
         control = repos.news.read_control(now_ms=stamp)
-        sent = repos.news.sent_count_since(since_ms=stamp - 3600_000)
         ledger = repos.news.told_ledger(
             now_ms=stamp,
             window_ms=TOLD_WINDOW_MS,
             limit=_SEEN_LEDGER_MAX,
             prefer_key=str(card.get("storyline_key") or "") or None,
         )
-        return card, status_row, control, sent, ledger
+        return card, control, ledger
 
     async def _publish_decision(self, event_id: str, final: str, *, trace_id: str, amqp_priority: int) -> None:
         stamp = now_ms()
@@ -1019,11 +1166,9 @@ class TriageConsumer:
 
 
 # ---------------------------------------------------------------------------- Deliverer
-# Its own budget, not a share of `news_delivery_load`'s. The quote read is two queries the other four are not
-# — `resolve_instruments` joins the universe per symbol, and `quote_snapshots` pulls every source's payload —
-# and a timeout is enforced by the lane one frame above any `try` inside the callback: an overrun there raises
-# `TransientError`, which is counted and dead-letters the card after three attempts. A price is never worth
-# losing a card over, so it gets a second, shorter session whose every failure mode is swallowed.
+# The quote read gets its own short session. A price is display-only and must
+# never delay, retry, or suppress a delivery; every failure degrades to no
+# market line while the card proceeds normally (#113).
 _QUOTE_READ_TIMEOUT_SECONDS = 1.5
 
 
@@ -1038,14 +1183,12 @@ class DelivererConsumer:
         sender: Any | None,
         finite_operations: Any,
         min_interval_seconds: float,
-        hourly_cap: int,
     ) -> None:
         self.bus = bus
         self.db = _Db(db)
         self.sender = sender
         self.finite = finite_operations
         self.min_interval = float(min_interval_seconds)
-        self.hourly_cap = int(hourly_cap)
         self._last_send_at = 0.0
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
@@ -1064,19 +1207,19 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, control, sent_last_hour = bundle
+        card, triage_row, control = bundle
         tv = dict(triage_row.get("verdict") or {})
         if triage_row["final_decision"] not in {"push", "escalate"}:
-            return
-        if sent_last_hour >= self.hourly_cap and triage_row["final_decision"] != "escalate":
-            await self._settle_direct(event_id, kind, "hourly_cap_reached", stamp)
             return
         if control.get("paused"):
             # News is perishable: a paused lane drops instead of holding an unacked message.
             await self._settle_direct(event_id, kind, "delivery_paused", stamp)
             return
-        # Priced only once the card is certainly going out: every return above discards the message, and the
-        # quote read is the one query in this handler nobody would have seen the result of.
+        if self.sender is None:
+            await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
+            return
+        # Only query a quote after every policy/control return above. A quote
+        # failure never changes the delivery decision.
         quotes = await self._quotes(card, tv, stamp)
         card_payload = render_first_card(
             event=card,
@@ -1086,9 +1229,6 @@ class DelivererConsumer:
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
-        if self.sender is None:
-            await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
-            return
         state = await self.db.tx(
             "news_delivery_begin",
             lambda repos: repos.news.begin_delivery(event_id=event_id, kind=kind, card=card_payload, now_ms=stamp),
@@ -1148,14 +1288,12 @@ class DelivererConsumer:
         await self.db.tx("news_delivery_settle_direct", _fn)
 
     async def _quotes(self, card: Mapping[str, Any], verdict: Mapping[str, Any], stamp: int) -> list[Any]:
-        """Current prices for exactly the assets the card will name (#113).
+        """Fresh prices for exactly the assets rendered on the card.
 
-        `card_assets()` is the same function the renderer uses, so the facts line and the quote line can never
-        disagree about which assets this card is about. Resolution and venue precedence stay in
-        `PriceRepository.quotes_for_symbols` — there is deliberately no second copy of that ranking here.
-
-        Every failure is the same answer: no quote line. A broken, slow or admission-blocked price plane costs
-        the card its market number and nothing else, which is what a market we could not reach looks like too.
+        `card_assets()` is shared with the renderer, so the facts and quote
+        lines cannot describe different symbols. Resolution remains owned by
+        PriceRepository. Every price-plane failure returns an empty display
+        value and leaves the already-made send decision untouched.
         """
 
         shown = card_assets(dict(verdict), list(card.get("grounded_assets") or []))
@@ -1167,7 +1305,7 @@ class DelivererConsumer:
                 lambda repos: repos.price.quotes_for_symbols(shown, now_ms=stamp),
                 timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
             )
-        except Exception:  # incl. TransientError / DeferError — a price is never worth losing a card over
+        except Exception:  # price is display-only; all failures degrade to no line
             return []
         return list(rows or [])
 
@@ -1178,8 +1316,7 @@ class DelivererConsumer:
         if card is None or triage is None:
             return None
         control = repos.news.read_control(now_ms=stamp)
-        sent = repos.news.sent_count_since(since_ms=stamp - 3600_000)
-        return card, triage, control, sent
+        return card, triage, control
 
     async def close(self) -> None:
         if self.sender is not None:
@@ -1281,6 +1418,7 @@ class JanitorLoop:
         retention_judged_days: int = 365,
     ) -> None:
         self.db = _Db(db)
+        self.cold_db = _Db(db, cold=True)
         self.bus = bus
         self.period = float(period_seconds)
         # Two tiers (#81): a raw Item nobody judged is storage, an Item behind a judged or labelled Event is the
@@ -1298,15 +1436,30 @@ class JanitorLoop:
         if self.bus is not None:
             with contextlib.suppress(TransientError, DeferError, Exception):
                 await self.republish_unpublished()
-        with contextlib.suppress(TransientError, DeferError):
+        try:
 
-            def _janitor(repos: Any, s: int = stamp) -> None:
+            def _janitor(repos: Any, s: int = stamp) -> dict[str, Any]:
                 repos.news.expire_bands(now_ms=s)
                 repos.news.purge_before(
                     cutoff_ms=s - self.retention_raw_ms, judged_cutoff_ms=s - self.retention_judged_ms
                 )
+                return dict(repos.news.purge_learning_retention(batch_size=500))
 
-            await self.db.tx("news_janitor", _janitor, timeout_seconds=10.0)
+            retention = await self.cold_db.tx("news_janitor", _janitor, timeout_seconds=10.0)
+            deleted = sum(
+                int(retention.get(field) or 0) for field in ("deleted_recordings", "deleted_cases", "deleted_artifacts")
+            )
+            if deleted:
+                log.info("news learning retention deleted=%d detail=%s", deleted, retention)
+        except Exception as exc:
+            error_code = f"learning_retention_failed:{type(exc).__name__}"
+            log.warning("news learning retention failed code=%s", error_code)
+            with contextlib.suppress(Exception):
+
+                def _retention_error(repos: Any, s: int = stamp, code: str = error_code) -> None:
+                    repos.news.record_learning_retention_error(error_code=code, now_ms=s)
+
+                await self.cold_db.tx("news_learning_retention_error", _retention_error, timeout_seconds=2.0)
         if self.bus is not None:
             snapshot: dict[str, Any] = {"configured": True, "connected": False, "queues": {}, "error_code": None}
             try:

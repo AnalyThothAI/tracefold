@@ -119,7 +119,6 @@ def _triage(conn: Any, bus: FakeBus) -> TriageConsumer:
         model=None,
         watchlist_symbols=WATCHLIST,
         watchlist=sorted(WATCHLIST),
-        hourly_cap=20,
         concurrency=1,
         circuit_failures=3,
         circuit_open_seconds=60.0,
@@ -133,7 +132,6 @@ def _deliverer(conn: Any, bus: FakeBus) -> DelivererConsumer:
         sender=None,
         finite_operations=InlineFiniteOperations(),
         min_interval_seconds=0.0,
-        hourly_cap=20,
     )
     return deliverer
 
@@ -386,7 +384,6 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) ->
     assert deliveries[0]["settled_at_ms"] is not None
     assert bus.published == []
     repos = repositories_for_connection(conn)
-    assert repos.news.sent_count_since(since_ms=0) == 0
     detail = repos.news.event_detail(event_id)
     assert detail is not None and detail["deliveries"][0]["state"] == "terminal"
 

@@ -297,6 +297,13 @@
     overflow-wrap: anywhere;
   }
 
+  .news-detail-reaction-caveat {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
   /* ------------------------------------------------------------------ evidence band */
   .news-detail-grid {
     display: grid;

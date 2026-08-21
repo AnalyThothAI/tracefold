@@ -49,7 +49,7 @@ export const DECISION_FILTER_LABELS: Record<NewsFeedDecision, string> = {
   push: "推送",
   escalate: "重点推送",
   drop: "不推",
-  throttled: "限流",
+  throttled: "重复拦截",
   degraded: "降级",
 };
 

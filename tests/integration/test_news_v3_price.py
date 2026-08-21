@@ -92,14 +92,16 @@ def _event(
         """
         INSERT INTO news_events (
           event_id, leader_item_id, family, comparison_fingerprint, comparison_title, leader_title,
+          focus_fact_id,
           opened_at_ms, last_member_at_ms, expires_at_ms, admission, storyline_key, ingest_mode,
           created_at_ms, updated_at_ms
-        ) VALUES (%s, %s, 'general', %s, 'c', 'leader headline', %s, %s, %s, 'candidate', %s, %s, %s, %s)
+        ) VALUES (%s, %s, 'general', %s, 'c', 'leader headline', %s, %s, %s, %s, 'candidate', %s, %s, %s, %s)
         """,
         (
             event_id,
             f"i-{event_id}",
             event_id,
+            f"fact:{event_id}",
             opened_at_ms,
             opened_at_ms,
             opened_at_ms + HOUR,
@@ -167,7 +169,7 @@ def test_resolution_is_exact_symbol_first_and_never_reference_only(conn) -> None
 
     resolved = repos.price.resolve_instruments(["SKHX", "SKHY", "BTC", "UWMC", "NOPE"])
 
-    # The storyline throttle collapses SKHX into SKHY; pricing keeps the contract the Event actually named.
+    # Storyline identity collapses SKHX into SKHY; pricing keeps the contract the Event actually named.
     assert resolved["SKHX"].venue_symbol == "xyz:SKHX"
     assert resolved["SKHY"].venue_symbol == "xyz:SKHY"
     # Venue precedence: the perp outranks spot, and USDT outranks USDC inside a venue.
@@ -360,6 +362,7 @@ def test_reaction_writes_are_idempotent_and_never_lose_a_persisted_price_point(c
     assert rows[0]["return_1h_bps"] == 100 and rows[0]["return_4h_bps"] == 1000
     assert rows[0]["p0"].startswith("100")  # the raw close is retained beside the return, for audit
     assert rows[0]["metric_version"] == REACTION_METRIC_VERSION
+    assert rows[0]["is_primary"] is False
 
 
 def test_reactions_cascade_with_the_event_under_existing_retention(conn) -> None:
@@ -408,7 +411,7 @@ def _complete(conn, event_id: str, symbol: str, *, anchor: int, bps_1h: int, bps
         )
 
 
-def test_review_reports_coverage_direction_and_potential_misses(conn) -> None:
+def test_review_reports_coverage_and_potential_misses(conn) -> None:
     _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("binance.perp", "ETHUSDT", "ETH"))
     anchor = NOW - 6 * HOUR
     _event(conn, "hit", symbols=("BTC",), opened_at_ms=anchor, direction="bullish")
@@ -416,22 +419,20 @@ def test_review_reports_coverage_direction_and_potential_misses(conn) -> None:
         conn, "miss", symbols=("ETH",), opened_at_ms=anchor, direction="bearish", decision="throttled", delivered=False
     )
     _event(conn, "nocover", symbols=("BTC",), opened_at_ms=anchor, direction="bullish")
+    _event(conn, "not-mature", symbols=("BTC",), opened_at_ms=NOW - 60_000, direction="bullish")
     _complete(conn, "hit", "BTC", anchor=anchor, bps_1h=150, bps_4h=300)
     _complete(conn, "miss", "ETH", anchor=anchor, bps_1h=900, bps_4h=1200)
 
     review = repositories_for_connection(conn).price.review(hours=168, now_ms=NOW)
 
     coverage = {row["horizon"]: row for row in review["coverage"]}
-    assert coverage["1h"]["eligible_n"] == 3
+    assert coverage["1h"]["eligible_n"] == 3  # the one-minute-old Event is not yet in the denominator
     assert coverage["1h"]["priced_n"] == 2
     assert coverage["1h"]["coverage_pct"] == pytest.approx(66.7, abs=0.1)
 
-    directions = {(row["direction"], row["horizon"]): row for row in review["directions"]}
-    assert directions[("bullish", "1h")]["hits"] == 1
-    assert directions[("bullish", "1h")]["priced_n"] == 1
-    assert directions[("bearish", "1h")]["hits"] == 0  # a bearish call that rose is not a hit
-    assert review["summary"]["hit_1h_n"] == 2
-    assert review["summary"]["hit_1h_pct"] == pytest.approx(50.0)
+    assert review["directions"] == []
+    assert review["summary"]["hit_1h_n"] == 0
+    assert review["summary"]["hit_1h_pct"] is None
 
     misses = review["potential_misses"]
     assert [row["event_id"] for row in misses] == ["miss"]  # only what never reached the reader
@@ -439,11 +440,36 @@ def test_review_reports_coverage_direction_and_potential_misses(conn) -> None:
     assert misses[0]["return_1h_bps"] == 900
     assert misses[0]["assets"][0]["venue_symbol"] == "ETHUSDT"
 
-    magnitudes = {row["magnitude"]: row for row in review["magnitudes"]}
-    assert magnitudes[2]["eligible_n"] == 3
-    assert magnitudes[2]["median_abs_1h_bps"] in {150, 900}
-    types = {row["event_type"]: row for row in review["event_types"]}
-    assert types["listing"]["eligible_n"] == 3 and types["listing"]["pushed_n"] == 2
+    # #112 retires direction, magnitude, and taxonomy rankings: none is causal quality evidence.
+    assert review["magnitudes"] == []
+    assert review["event_types"] == []
+
+
+def test_market_miss_queue_clusters_duplicate_events_into_one_fact(conn) -> None:
+    _universe(conn, _instrument("binance.perp", "WMTUSDT", "WMT"))
+    anchor = NOW - 6 * HOUR
+    for index, event_id in enumerate(("wmt-a", "wmt-b")):
+        _event(
+            conn,
+            event_id,
+            symbols=("WMT",),
+            opened_at_ms=anchor + index * 60_000,
+            decision="drop",
+            delivered=False,
+        )
+        conn.execute(
+            "UPDATE news_events SET leader_title = %s WHERE event_id = %s",
+            ("沃尔玛下调全年业绩指引，股价盘前下跌", event_id),
+        )
+        _complete(conn, event_id, "WMT", anchor=anchor + index * 60_000, bps_1h=-692, bps_4h=-500)
+    conn.commit()
+
+    misses = repositories_for_connection(conn).price.review(hours=168, now_ms=NOW)["potential_misses"]
+
+    assert len(misses) == 1
+    assert misses[0]["fact_cluster_n"] == 2
+    assert misses[0]["related_event_ids"] == ["wmt-a", "wmt-b"]
+    assert len(misses[0]["fact_cluster_key"]) == 64
 
 
 def test_degraded_and_recovery_events_stay_out_of_the_scored_denominators(conn) -> None:

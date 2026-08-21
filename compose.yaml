@@ -45,6 +45,7 @@ services:
       - postgres_password
       - postgres_serve_password
       - postgres_workers_password
+      - postgres_review_password
       - postgres_migrate_password
     ports:
       - "${TRACEFOLD_POSTGRES_HOST:-127.0.0.1}:${TRACEFOLD_POSTGRES_PORT:-56532}:5432"
@@ -113,6 +114,7 @@ services:
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
       - ${HOME}/.tracefold/postgres_serve_password:/root/.tracefold/postgres_serve_password:ro
+      - ${HOME}/.tracefold/postgres_review_password:/root/.tracefold/postgres_review_password:ro
       - ${HOME}/.tracefold/cache:/root/.tracefold/cache:ro
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "serve"]
@@ -184,6 +186,8 @@ secrets:
     file: ${HOME}/.tracefold/postgres_serve_password
   postgres_workers_password:
     file: ${HOME}/.tracefold/postgres_workers_password
+  postgres_review_password:
+    file: ${HOME}/.tracefold/postgres_review_password
   postgres_migrate_password:
     file: ${HOME}/.tracefold/postgres_migrate_password
   github_token:

@@ -19,7 +19,7 @@ describe("AppBottomNav", () => {
     );
     expect(links.map((link) => link.textContent?.trim())).toEqual([
       "事件流",
-      "命中复盘",
+      "学习复盘",
       "流水线状态",
     ]);
   });

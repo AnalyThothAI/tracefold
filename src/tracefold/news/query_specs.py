@@ -106,6 +106,10 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=(hour_ago,),
         ),
         ReadQuerySpec(
+            name="news_status_learning_retention",
+            sql="SELECT * FROM news_learning_retention_state WHERE singleton",
+        ),
+        ReadQuerySpec(
             name="news_control_state",
             sql="SELECT paused, mutes FROM news_control_state WHERE singleton_key = 'current'",
         ),
@@ -137,6 +141,48 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 " WHERE event_id = ANY(%s) AND metric_version = %s"
             ),
             params=(["event"], REACTION_METRIC_VERSION),
+        ),
+        ReadQuerySpec(
+            name="news_review_task_queue",
+            sql="""
+                SELECT event_id, evidence_version, opened_at_ms, delivery_state
+                  FROM news_review_task_source_v1
+                 WHERE opened_at_ms >= %s AND opened_at_ms < %s
+                 ORDER BY opened_at_ms DESC, event_id DESC
+                 LIMIT 30
+            """,
+            params=(day_ago, now_ms),
+        ),
+        ReadQuerySpec(
+            name="news_review_task_evidence",
+            sql="""
+                SELECT event_id, evidence_version, evidence_snapshot, verdict, trace, delivery_state
+                  FROM news_review_task_source_v1
+                 WHERE event_id = %s
+                 ORDER BY evidence_version DESC
+                 LIMIT 1
+            """,
+            params=("event",),
+        ),
+        ReadQuerySpec(
+            name="news_review_pairwise_queue",
+            sql="""
+                SELECT run_sha, case_id, dataset_role, created_at_ms
+                  FROM news_review_pairwise_tasks_v1
+                 ORDER BY CASE WHEN dataset_role = 'validation' THEN 0 ELSE 1 END,
+                          created_at_ms, case_id
+                 LIMIT 30
+            """,
+        ),
+        ReadQuerySpec(
+            name="news_review_proposals",
+            sql="""
+                SELECT artifact_sha, kind, parent_sha, created_at_ms
+                  FROM news_learning_artifacts
+                 WHERE kind IN ('candidate', 'evaluation_report', 'deployment_receipt', 'rollback_receipt')
+                 ORDER BY created_at_ms DESC
+                 LIMIT 100
+            """,
         ),
         ReadQuerySpec(
             name="news_review_window",

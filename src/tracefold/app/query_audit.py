@@ -27,7 +27,13 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_reaction_attach",
     ),
     "/api/news/quotes": ("news_quote_snapshot_read",),
-    "/api/news/review": ("news_review_window",),
+    "/api/news/review": (
+        "news_review_task_queue",
+        "news_review_pairwise_queue",
+        "news_review_proposals",
+        "news_review_window",
+    ),
+    "/api/news/review/tasks/{task_id}/evidence": ("news_review_task_evidence",),
     "/api/news/events/{event_id}": (
         "news_event_detail",
         "news_event_members",
@@ -40,6 +46,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_incidents_open",
         "news_status_pipeline_24h",
         "news_status_delivery_1h",
+        "news_status_learning_retention",
         "news_control_state",
     ),
 }
@@ -49,6 +56,13 @@ PUBLIC_NO_SQL_ROUTES = frozenset(
         "/healthz",
         "/metrics",
         "/api/bootstrap",
+    }
+)
+
+PUBLIC_WRITE_ROUTES = frozenset(
+    {
+        "/api/news/review/tasks/{task_id}/responses",
+        "/api/news/review/external-misses",
     }
 )
 
@@ -71,6 +85,7 @@ def query_audit_catalog(
         queries=queries,
         query_routes=dict(PUBLIC_ROUTE_QUERY_COVERAGE),
         no_sql_routes=PUBLIC_NO_SQL_ROUTES,
+        write_routes=PUBLIC_WRITE_ROUTES,
     )
 
 
@@ -99,6 +114,7 @@ def _default_news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 __all__ = [
     "PUBLIC_NO_SQL_ROUTES",
     "PUBLIC_ROUTE_QUERY_COVERAGE",
+    "PUBLIC_WRITE_ROUTES",
     "NewsQuerySpecsProvider",
     "query_audit_catalog",
     "query_audit_for_connection",

@@ -175,10 +175,8 @@ DECISION_ZH: Final[dict[str, str]] = {
     "degraded": "降级",
 }
 
-# Asset windows are 2 h for a push and 4 h for an escalate (triage_rules._storyline_throttle) and the key does not
-# say which applied, so the copy names the window generically instead of guessing.
-# `:seen` (policy v5, #81) is appended when the card was measured against the reader's window and found to be
-# something they already have — the only reason v5 withholds a card for being a duplicate.
+# Policy v7 only writes `:seen`; cap/hard shapes remain here so historical
+# verdicts stay intelligible after the hard cut.
 _SEEN_SUFFIX: Final = ":seen"
 _THROTTLE_ASSET_RE = re.compile(r"^storyline:asset:(?P<symbol>[^:]+)(?::hard(?P<hard>\d+))?$")
 _THROTTLE_THEME_RE = re.compile(r"^storyline:theme:(?P<theme>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
@@ -334,7 +332,9 @@ def event_outcome(
     degraded = bool(triage.get("degraded"))
     error_zh = error_code_zh(triage.get("error_code")) if degraded else ""
     if final == "throttled":
-        return _outcome("throttled", "未推送（限流）", throttled_by_zh(triage.get("throttled_by")))
+        throttled_by = str(triage.get("throttled_by") or "")
+        text = "未推送（重复）" if throttled_by.endswith(_SEEN_SUFFIX) else "未推送（历史限流）"
+        return _outcome("throttled", text, throttled_by_zh(throttled_by))
     if final in _HELD_DECISIONS:
         if degraded:
             reason = "模型不可用，按规则兜底不推" + (f"：{error_zh}" if error_zh else "")

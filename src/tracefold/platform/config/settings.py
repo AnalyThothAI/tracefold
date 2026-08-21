@@ -27,14 +27,16 @@ class PostgresConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     serve_dsn: str = "postgresql://tracefold_serve@postgres:5432/tracefold"
+    review_dsn: str = "postgresql://tracefold_review@postgres:5432/tracefold"
     workers_dsn: str = "postgresql://tracefold_workers@postgres:5432/tracefold"
     migrate_dsn: str = "postgresql://tracefold_migrate@postgres:5432/tracefold"
     serve_password_file: str | None = "postgres_serve_password"
+    review_password_file: str | None = "postgres_review_password"
     workers_password_file: str | None = "postgres_workers_password"
     migrate_password_file: str | None = "postgres_migrate_password"
     connect_timeout_seconds: float = 5.0
 
-    @field_validator("serve_dsn", "workers_dsn", "migrate_dsn", mode="before")
+    @field_validator("serve_dsn", "review_dsn", "workers_dsn", "migrate_dsn", mode="before")
     @classmethod
     def parse_dsn(cls, value: Any) -> str:
         normalized = str(value or "").strip()
@@ -44,6 +46,7 @@ class PostgresConfig(BaseModel):
 
     @field_validator(
         "serve_password_file",
+        "review_password_file",
         "workers_password_file",
         "migrate_password_file",
         mode="before",
@@ -136,7 +139,6 @@ class NewsPushSettings(BaseModel):
     feishu_webhook_url: str | None = None
     feishu_signing_secret: str | None = None
     min_interval_seconds: float = 0.6
-    hourly_cap: int = 30
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
     @classmethod
@@ -148,8 +150,6 @@ class NewsPushSettings(BaseModel):
     def validate_limits(self) -> NewsPushSettings:
         if self.min_interval_seconds < 0 or self.min_interval_seconds > 60:
             raise ValueError("news_push_min_interval_invalid")
-        if self.hourly_cap < 1 or self.hourly_cap > 1000:
-            raise ValueError("news_push_hourly_cap_invalid")
         return self
 
 
@@ -216,19 +216,10 @@ class NewsPolicySettings(BaseModel):
         "partnership",
         "filing",
     )
-    theme_cap_4h: int = 3
-    storyline_throttle: bool = True
-    hourly_cap_enabled: bool = True
     restatement_drop: bool = True
-    # Policy v5 (issue #81): the storyline throttle releases a card whose headline resembles nothing the reader
-    # received in the window, and the counts survive only as a flood ceiling. `similarity_max = 0` switches the
-    # content judgment off and restores the pre-v5 count cap; towards 1 it releases all but exact repeats.
+    # This is duplicate evidence, not a reader quota. Zero disables the
+    # deterministic similarity check.
     similarity_max: float = 0.25
-    distinct_hard_cap_4h: int = 18
-    distinct_asset_cap_2h: int = 6
-    # Policy v6 (#100): measure every push candidate against the reader's window, not only the ones the count
-    # throttle already stopped. Set false to restore the v5 behaviour (measure only what the throttle stopped).
-    similarity_all_pushes: bool = True
     # #77: the Gate's AMQP priority no longer decides the ⚡ header. Set true to restore the pre-v4 behaviour.
     high_priority_escalates: bool = False
 
@@ -247,17 +238,8 @@ class NewsPolicySettings(BaseModel):
         for name in bounded:
             if not 0 <= int(getattr(self, name)) <= 3:
                 raise ValueError(f"news_policy_{name}_invalid")
-        if not 1 <= self.theme_cap_4h <= 100:
-            raise ValueError("news_policy_theme_cap_invalid")
         if not 0.0 <= float(self.similarity_max) <= 1.0:
             raise ValueError("news_policy_similarity_max_invalid")
-        if "distinct_hard_cap_4h" not in self.model_fields_set:
-            # An operator who only raised the soft cap keeps a valid config: the ceiling follows it.
-            self.distinct_hard_cap_4h = max(self.distinct_hard_cap_4h, self.theme_cap_4h)
-        if not self.theme_cap_4h <= self.distinct_hard_cap_4h <= 100:
-            raise ValueError("news_policy_distinct_hard_cap_invalid")
-        if not 1 <= self.distinct_asset_cap_2h <= 100:
-            raise ValueError("news_policy_distinct_asset_cap_invalid")
         return self
 
 
@@ -409,12 +391,12 @@ class Settings(BaseModel):
     def app_home(self) -> Path:
         return self._config_dir
 
-    def postgres_dsn(self, role: Literal["serve", "workers", "migrate"]) -> str:
+    def postgres_dsn(self, role: Literal["serve", "review", "workers", "migrate"]) -> str:
         return cast(str, getattr(self.storage.postgres, f"{role}_dsn"))
 
     def postgres_password_file(
         self,
-        role: Literal["serve", "workers", "migrate"],
+        role: Literal["serve", "review", "workers", "migrate"],
     ) -> Path | None:
         value = cast(str | None, getattr(self.storage.postgres, f"{role}_password_file"))
         if not value:
@@ -565,9 +547,11 @@ api:
 storage:
   postgres:
     serve_dsn: "postgresql://tracefold_serve@postgres:5432/tracefold"
+    review_dsn: "postgresql://tracefold_review@postgres:5432/tracefold"
     workers_dsn: "postgresql://tracefold_workers@postgres:5432/tracefold"
     migrate_dsn: "postgresql://tracefold_migrate@postgres:5432/tracefold"
     serve_password_file: "postgres_serve_password"
+    review_password_file: "postgres_review_password"
     workers_password_file: "postgres_workers_password"
     migrate_password_file: "postgres_migrate_password"
     connect_timeout_seconds: 5
@@ -596,21 +580,14 @@ news:
     feishu_webhook_url:
     feishu_signing_secret:
     min_interval_seconds: 0.6
-    hourly_cap: 30
   policy:
     escalate_magnitude: 3
     min_push_magnitude: 1
     min_watchlist_magnitude: 1
     unclear_push_min_magnitude: 2
     unclear_push_event_types: [product, listing, delisting, regulation, hack, exploit, partnership, filing]
-    theme_cap_4h: 3
-    storyline_throttle: true
-    hourly_cap_enabled: true
     restatement_drop: true
     similarity_max: 0.25
-    distinct_hard_cap_4h: 18
-    distinct_asset_cap_2h: 6
-    similarity_all_pushes: true
     high_priority_escalates: false
   retention:
     raw_days: 30

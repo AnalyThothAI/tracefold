@@ -2,21 +2,29 @@ from __future__ import annotations
 
 import time
 from typing import Annotated, Any
+from uuid import UUID
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from tracefold.app.http import schemas as api_schemas
 from tracefold.app.http import schemas_news
 from tracefold.app.http.dependencies import _authenticated_runtime
-from tracefold.app.http.exceptions import ApiBadRequest
+from tracefold.app.http.exceptions import ApiBadRequest, ApiConflict
 from tracefold.app.http.responses import _json, _validated_etag_json
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.news import (
     QUOTE_REQUEST_SYMBOL_MAX,
     REVIEW_DEFAULT_HOURS,
     REVIEW_MAX_HOURS,
+    BlindPairwiseSubmission,
+    DeskQuery,
+    EventRubricSubmission,
+    ExternalMissSubmission,
+    Principal,
+    ReviewDesk,
+    TaskRef,
     grounding_rollup,
     status_health,
 )
@@ -28,6 +36,8 @@ _EventEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsEventDetailData]
 _StatusEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsStatusData]
 _QuotesEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsQuotesData]
 _ReviewEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsReviewData]
+_ReviewEvidenceEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsReviewEvidenceData]
+_ReviewSubmitEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsReviewSubmitData]
 
 _ADMISSIONS = {
     "candidate",
@@ -37,6 +47,15 @@ _ADMISSIONS = {
     "recovery",
 }
 _DECISIONS = {"push", "escalate", "drop", "throttled", "degraded"}
+
+
+def _review_mutation_runtime(request: Request) -> Any:
+    """Reject an invalid mutation envelope before FastAPI parses its body."""
+
+    _validate_query_params(request, supported=set())
+    _validate_review_content_type(request)
+    _validate_review_body_size(request)
+    return _authenticated_runtime(request, allow_query_token=False)
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)
@@ -143,22 +162,125 @@ def get_news_quotes(
 @router.get("/news/review", response_model=_ReviewEnvelope)
 def get_news_review(
     request: Request,
+    view: Annotated[str, Query(pattern="^(queue|coverage|proposals|market)$")] = "queue",
+    mode: Annotated[str, Query(pattern="^(event|pairwise)$")] = "event",
+    cohort: Annotated[str, Query(max_length=160)] = "",
+    stratum: Annotated[str, Query(max_length=64)] = "",
+    proposal: Annotated[str, Query(max_length=128)] = "",
+    task: Annotated[str, Query(max_length=300)] = "",
+    event: Annotated[str, Query(max_length=128)] = "",
+    status: Annotated[str, Query(pattern="^(pending|accepted|all)$")] = "pending",
     hours: Annotated[int, Query(ge=1, le=REVIEW_MAX_HOURS)] = REVIEW_DEFAULT_HOURS,
+    limit: Annotated[int, Query(ge=1, le=100)] = 30,
+    cursor: Annotated[str, Query(max_length=300)] = "",
 ) -> Response:
-    """命中复盘: coverage, direction accuracy, magnitude calibration, event types, and potential misses."""
+    """Learning ReviewDesk: actionable queue, evidence coverage, proposals, or market observations."""
 
-    _validate_query_params(request, supported={"hours", "token"})
-    runtime = _authenticated_runtime(request)
-    with runtime.repositories() as repos:
-        data = repos.price.review(hours=int(hours), now_ms=int(time.time() * 1000))
-    return _validated_etag_json(
-        _ReviewEnvelope,
-        {"ok": True, "data": data},
-        data=data,
-        etag_data=_review_etag_basis(data),
-        request=request,
-        weak=True,
+    _validate_query_params(
+        request,
+        supported={
+            "view",
+            "mode",
+            "cohort",
+            "stratum",
+            "proposal",
+            "task",
+            "event",
+            "status",
+            "hours",
+            "limit",
+            "cursor",
+            "token",
+        },
     )
+    runtime = _authenticated_runtime(request)
+    query = DeskQuery(
+        view=view,
+        mode=mode,
+        cohort=cohort,
+        stratum=stratum,
+        proposal=proposal,
+        task=task,
+        event=event,
+        status=status,
+        hours=hours,
+        limit=limit,
+        cursor=cursor,
+    )
+    with runtime.repositories() as repos:
+        try:
+            data = ReviewDesk(repos.conn).open(query, principal=_review_principal())
+        except ValueError as exc:
+            raise ApiBadRequest(str(exc)) from exc
+    return _etagged(data, request, envelope=_ReviewEnvelope)
+
+
+@router.get("/news/review/tasks/{task_id}/evidence", response_model=_ReviewEvidenceEnvelope)
+def get_news_review_evidence(
+    request: Request,
+    task_id: str,
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> Response:
+    _validate_query_params(request, supported={"token"})
+    runtime = _authenticated_runtime(request)
+    task_ref = TaskRef(task_id=task_id, task_version=_required_match(if_match))
+    with runtime.repositories() as repos:
+        try:
+            data = ReviewDesk(repos.conn).evidence(task_ref, principal=_review_principal())
+        except ValueError as exc:
+            if str(exc) == "news_review_task_version_conflict":
+                raise ApiConflict(str(exc)) from exc
+            raise ApiBadRequest(str(exc)) from exc
+    return _etagged(data, request, envelope=_ReviewEvidenceEnvelope)
+
+
+@router.post("/news/review/tasks/{task_id}/responses", response_model=_ReviewSubmitEnvelope)
+def submit_news_review(
+    request: Request,
+    task_id: str,
+    body: EventRubricSubmission | BlindPairwiseSubmission,
+    runtime: Annotated[Any, Depends(_review_mutation_runtime)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> Response:
+    task_ref = TaskRef(task_id=task_id, task_version=_required_match(if_match))
+    key = _required_idempotency_key(idempotency_key)
+    try:
+        with runtime.review_transaction() as conn:
+            data = ReviewDesk(conn).submit(
+                task_ref,
+                body,
+                principal=_review_principal(),
+                idempotency_key=key,
+            )
+    except ValueError as exc:
+        if str(exc) in {"news_review_task_version_conflict", "news_review_idempotency_conflict"}:
+            raise ApiConflict(str(exc)) from exc
+        raise ApiBadRequest(str(exc)) from exc
+    return _validated_etag_json(_ReviewSubmitEnvelope, {"ok": True, "data": data}, data=data, request=request)
+
+
+@router.post("/news/review/external-misses", response_model=_ReviewSubmitEnvelope)
+def submit_news_external_miss(
+    request: Request,
+    body: ExternalMissSubmission,
+    runtime: Annotated[Any, Depends(_review_mutation_runtime)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> Response:
+    key = _required_idempotency_key(idempotency_key)
+    try:
+        with runtime.review_transaction() as conn:
+            data = ReviewDesk(conn).submit(
+                None,
+                body,
+                principal=_review_principal(),
+                idempotency_key=key,
+            )
+    except ValueError as exc:
+        if str(exc) == "news_review_idempotency_conflict":
+            raise ApiConflict(str(exc)) from exc
+        raise ApiBadRequest(str(exc)) from exc
+    return _validated_etag_json(_ReviewSubmitEnvelope, {"ok": True, "data": data}, data=data, request=request)
 
 
 @router.get("/news/status", response_model=_StatusEnvelope)
@@ -199,7 +321,6 @@ def get_news_status(request: Request) -> Response:
     delivery = {
         **snapshot["delivery"],
         "delivery_available": push.delivery_available,
-        "hourly_cap": int(settings.news.push.hourly_cap),
     }
     state = _derive_state(ingest=ingest, broker=broker_data, workers_state=workers_state, settings=settings)
     control = {
@@ -225,6 +346,7 @@ def get_news_status(request: Request) -> Response:
         "broker": broker_data,
         "pipeline": pipeline,
         "delivery": delivery,
+        "learning_retention": snapshot["learning_retention"],
         "control": control,
         "watchlist": sorted(settings.news.watchlist_symbols),
         "instruments": instruments,
@@ -288,11 +410,46 @@ def _requested_symbols(raw: str) -> list[str]:
     return out
 
 
-def _review_etag_basis(data: dict[str, Any]) -> dict[str, Any]:
-    """The window's measurement, without the clock that measured it, so a 60 s poll can revalidate."""
+def _review_principal() -> Principal:
+    # V1 has one authenticated operator.  We keep that honest instead of
+    # inventing reviewer independence from a shared bearer token.
+    return Principal(subject="operator")
 
-    meta = {key: value for key, value in (data.get("meta") or {}).items() if key not in {"measured_at_ms"}}
-    return {**data, "meta": meta}
+
+def _required_match(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if len(raw) != 66 or not raw.startswith('"') or not raw.endswith('"'):
+        raise ApiBadRequest("news_review_if_match_required", field="If-Match")
+    version = raw[1:-1]
+    if len(version) != 64 or any(char not in "0123456789abcdef" for char in version):
+        raise ApiBadRequest("news_review_if_match_invalid", field="If-Match")
+    return version
+
+
+def _required_idempotency_key(value: str | None) -> str:
+    raw = str(value or "").strip()
+    try:
+        return str(UUID(raw))
+    except ValueError as exc:
+        raise ApiBadRequest("news_review_idempotency_key_invalid", field="Idempotency-Key") from exc
+
+
+def _validate_review_body_size(request: Request) -> None:
+    raw = request.headers.get("content-length")
+    if raw is None:
+        raise ApiBadRequest("news_review_content_length_required")
+    try:
+        size = int(raw)
+    except ValueError as exc:
+        raise ApiBadRequest("news_review_content_length_invalid") from exc
+    if size < 0 or size > 32_768:
+        raise ApiBadRequest("news_review_body_too_large")
+
+
+def _validate_review_content_type(request: Request) -> None:
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        raise ApiBadRequest("news_review_content_type_invalid", field="Content-Type")
 
 
 def _attach_reactions(events: list[dict[str, Any]], price: Any, *, now_ms: int) -> None:

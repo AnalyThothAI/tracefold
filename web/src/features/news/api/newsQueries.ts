@@ -1,7 +1,7 @@
-import { getApi } from "@lib/api/client";
+import { getApi, postApi } from "@lib/api/client";
 import type { components } from "@lib/types/openapi";
 import { queryKeys } from "@shared/query/queryKeys";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 type NewsSchemas = components["schemas"];
 
@@ -17,7 +17,6 @@ export type NewsEventMember = NewsSchemas["NewsEventMemberData"];
 export type NewsVerdict = NewsSchemas["NewsVerdictData"];
 export type NewsDelivery = NewsSchemas["NewsDeliveryData"];
 export type NewsDeliverySummary = NewsSchemas["NewsDeliverySummaryData"];
-export type NewsLabel = NewsSchemas["NewsLabelData"];
 export type NewsTriageSummary = NewsSchemas["NewsTriageSummaryData"];
 export type NewsStatus = NewsSchemas["NewsStatusData"];
 export type NewsIncident = NewsSchemas["NewsIncidentData"];
@@ -37,6 +36,13 @@ export type NewsReaction = NewsSchemas["NewsReactionSummaryData"];
 export type NewsReactionState = NewsReaction["state"];
 export type NewsEventReaction = NewsSchemas["NewsEventReactionData"];
 export type NewsReview = NewsSchemas["NewsReviewData"];
+export type NewsReviewEvidence = NewsSchemas["NewsReviewEvidenceData"];
+export type NewsReviewSubmit = NewsSchemas["NewsReviewSubmitData"];
+export type NewsReviewTask = NewsSchemas["NewsReviewTaskData"];
+export type NewsEventRubricSubmission = NewsSchemas["EventRubricSubmission"];
+export type NewsBlindPairwiseSubmission = NewsSchemas["BlindPairwiseSubmission"];
+export type NewsExternalMissSubmission = NewsSchemas["ExternalMissSubmission"];
+export type NewsReviewResponseSubmission = NewsEventRubricSubmission | NewsBlindPairwiseSubmission;
 export type NewsReviewCoverage = NewsSchemas["NewsReviewCoverageData"];
 export type NewsReviewDirection = NewsSchemas["NewsReviewDirectionData"];
 export type NewsReviewMagnitude = NewsSchemas["NewsReviewMagnitudeData"];
@@ -203,18 +209,97 @@ export const useNewsQuotesWithToken = (token: string, symbols: readonly string[]
   });
 };
 
-export const useNewsReviewWithToken = (token: string, hours: number) =>
+export type NewsReviewQuery = {
+  view: "queue" | "coverage" | "proposals" | "market";
+  mode?: "event" | "pairwise";
+  status?: "pending" | "accepted" | "all";
+  hours: number;
+  event?: string;
+  task?: string;
+  proposal?: string;
+  cohort?: string;
+  stratum?: string;
+  cursor?: string;
+};
+
+export const useNewsReviewWithToken = (token: string, query: NewsReviewQuery) =>
   useQuery({
     enabled: Boolean(token),
-    queryKey: queryKeys.newsReview(hours),
+    queryKey: queryKeys.newsReview(JSON.stringify(query)),
     queryFn: async () =>
       (
         await getApi<NewsReview>("/api/news/review", {
-          etagKey: `news-review:${hours}`,
-          params: { hours },
+          etagKey: `news-review:${JSON.stringify(query)}`,
+          params: query,
           token,
         })
       ).data,
     refetchInterval: NEWS_REVIEW_REFETCH_MS,
     staleTime: 30_000,
   });
+
+export const useNewsReviewEvidenceWithToken = (token: string, task: NewsReviewTask | null) =>
+  useQuery({
+    enabled: Boolean(token && task),
+    queryKey: ["news-review-evidence", task?.task_id, task?.task_version],
+    queryFn: async () =>
+      (
+        await getApi<NewsReviewEvidence>(
+          `/api/news/review/tasks/${encodeURIComponent(task?.task_id ?? "")}/evidence`,
+          {
+            headers: { "If-Match": `"${task?.task_version ?? ""}"` },
+            token,
+          },
+        )
+      ).data,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+
+export const useSubmitNewsReview = (token: string) => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      task,
+      body,
+    }: {
+      task: NewsReviewTask;
+      body: NewsReviewResponseSubmission;
+    }) =>
+      (
+        await postApi<NewsReviewSubmit>(
+          `/api/news/review/tasks/${encodeURIComponent(task.task_id)}/responses`,
+          {
+            body,
+            headers: {
+              "Idempotency-Key": crypto.randomUUID(),
+              "If-Match": `"${task.task_version}"`,
+            },
+            token,
+          },
+        )
+      ).data,
+    onSuccess: (_receipt, { task }) => {
+      void queryClient.invalidateQueries({ queryKey: ["news-review"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["news-review-evidence", task.task_id, task.task_version],
+      });
+      if (task.event_id)
+        void queryClient.invalidateQueries({ queryKey: queryKeys.newsEvent(task.event_id) });
+    },
+  });
+};
+
+export const useSubmitExternalMiss = (token: string) => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: NewsExternalMissSubmission) =>
+      (
+        await postApi<NewsReviewSubmit>("/api/news/review/external-misses", {
+          body,
+          headers: { "Idempotency-Key": crypto.randomUUID() },
+          token,
+        })
+      ).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["news-review"] }),
+  });
+};

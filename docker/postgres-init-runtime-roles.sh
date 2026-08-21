@@ -37,12 +37,16 @@ read_role_password() {
 
 serve_password=$(read_role_password postgres_serve_password)
 workers_password=$(read_role_password postgres_workers_password)
+review_password=$(read_role_password postgres_review_password)
 migrate_password=$(read_role_password postgres_migrate_password)
-trap 'unset serve_password workers_password migrate_password' EXIT
+trap 'unset serve_password workers_password review_password migrate_password' EXIT
 
 if [ "$serve_password" = "$workers_password" ] \
   || [ "$serve_password" = "$migrate_password" ] \
-  || [ "$workers_password" = "$migrate_password" ]; then
+  || [ "$serve_password" = "$review_password" ] \
+  || [ "$workers_password" = "$migrate_password" ] \
+  || [ "$workers_password" = "$review_password" ] \
+  || [ "$migrate_password" = "$review_password" ]; then
   echo "Tracefold PostgreSQL runtime role passwords must be distinct" >&2
   exit 1
 fi
@@ -70,6 +74,9 @@ psql --quiet --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGR
 	CREATE ROLE tracefold_workers
 	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 	  PASSWORD '${workers_password}';
+	CREATE ROLE tracefold_review
+	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+	  PASSWORD '${review_password}';
 	CREATE ROLE tracefold_migrate
 	  LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 	  PASSWORD '${migrate_password}';

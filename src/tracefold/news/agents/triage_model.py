@@ -131,6 +131,7 @@ def build_triage_input(
     """Fixed order: <event> (untrusted material) -> <gate> facts -> <event_status> last (status bar, incl. told)."""
 
     event_block = {
+        "focus_fact_id": str(event.get("focus_fact_id") or ""),
         "source": event.get("reporting_origin") or "",
         "strategies": list(event.get("provenance") or []),
         "engine_type": event.get("engine_type"),
@@ -158,17 +159,6 @@ def build_triage_input(
     status_block = {
         "storyline_key": event_status.get("storyline_key"),
         "preliminary": bool(event_status.get("preliminary", True)),
-        "same_key_2h": {
-            "events": int(event_status.get("events_2h") or 0),
-            "pushed": int(event_status.get("pushed_2h") or 0),
-            "max_magnitude": int(event_status.get("max_magnitude_2h") or 0),
-            "directions": list(event_status.get("directions_2h") or []),
-            "last_push_ago_s": (
-                int(event_status["last_push_ago_ms"]) // 1000
-                if event_status.get("last_push_ago_ms") is not None
-                else None
-            ),
-        },
         "queue_lag_s": int(event_status.get("queue_lag_ms") or 0) // 1000,
         "told": [
             {
@@ -222,11 +212,13 @@ class TriageModel:
         model: BaseChatModel,
         model_name: str,
         deadline_seconds: float,
+        system_prompt: str = TRIAGE_SYSTEM_PROMPT,
         fallback: TriageModel | None = None,
         primary_breaker_failures: int = 3,
         primary_breaker_open_seconds: float = 60.0,
     ) -> None:
         self._structured = model.with_structured_output(TriageVerdict, method="function_calling", include_raw=True)
+        self.system_prompt = str(system_prompt)
         self.model_name = model_name
         self.deadline_seconds = float(deadline_seconds)
         self.fallback = fallback
@@ -271,7 +263,7 @@ class TriageModel:
 
         started = time.perf_counter()
         deadline = started + self.deadline_seconds
-        messages = [SystemMessage(TRIAGE_SYSTEM_PROMPT), HumanMessage(human_text)]
+        messages = [SystemMessage(self.system_prompt), HumanMessage(human_text)]
         attempts = 0
         while True:
             attempts += 1

@@ -15,14 +15,19 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # product callers or compatibility interfaces; every new edge must be named.
 ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/app/cli/commands/news.py": {
+        "tracefold.news.agents.prompts.candidates",
         "tracefold.news.bus",
-        "tracefold.news.eval.harness",
-        "tracefold.news.eval.offline",
+        "tracefold.news.candidate_evaluator",
+        "tracefold.news.review",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
     },
     "src/tracefold/app/query_audit.py": {
         "tracefold.news.query_specs",
+    },
+    "src/tracefold/app/learning_runtime.py": {
+        "tracefold.news.agents.prompts",
+        "tracefold.news.models",
     },
     "src/tracefold/app/repositories.py": {
         "tracefold.news.instruments_repository",
@@ -30,7 +35,9 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         "tracefold.news.repository",
     },
     "src/tracefold/app/workers/__init__.py": {
+        "tracefold.news.agents.prompts.candidates",
         "tracefold.news.agents.triage_model",
+        "tracefold.news.canary",
         "tracefold.news.consumers",
     },
     "src/tracefold/integrations/opennews/client.py": {"tracefold.news.opennews"},

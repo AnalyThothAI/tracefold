@@ -58,6 +58,7 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+extend-exclude = ["docs/research/*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "S", "ASYNC", "RUF", "PERF", "PL"]

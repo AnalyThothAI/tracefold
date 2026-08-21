@@ -186,14 +186,13 @@ test("a News row is one link and one conclusion, with no competing controls", as
   /*
    * #87 removed copy-title, copy-label and open-original from the row: three hover-only targets that led
    * somewhere better one tap away and meant nothing under a thumb. The row is still exactly one *link* — the
-   * stretched headline — and the two controls that came back at pointer widths (select for bulk labelling,
-   * expand for the judgment in place) each carry their own name and neither competes with it. Both are
-   * absent below 768px, where hover does not exist.
+   * stretched headline — and the one expand control carries its own name without competing with it. Bulk
+   * labelling moved to ReviewDesk, so the old row-selection control is gone.
    */
   const row = page.locator(".news-event-row").first();
   await expect(row.getByRole("link")).toHaveCount(1);
-  await expect(row.getByRole("button")).toHaveCount(2);
-  await expect(row.locator(".news-event-select")).toHaveCount(1);
+  await expect(row.getByRole("button")).toHaveCount(1);
+  await expect(row.locator(".news-event-select")).toHaveCount(0);
   await expect(row.locator(".news-event-expand")).toHaveCount(1);
 
   await expect(page.locator(".news-direction")).toContainText("利空");

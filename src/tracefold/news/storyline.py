@@ -22,7 +22,7 @@ THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     (
         "mideast_energy",
         re.compile(
-            r"hormuz|霍尔木兹|strait|\biran|伊朗|irgc|khamenei|\boman|阿曼|\boil\b|crude|brent|wti|油价|原油|opec"
+            r"hormuz|霍尔木兹|\bstrait\b|\biran|伊朗|irgc|khamenei|\boman|阿曼|opec"
             r"|israel|hezbollah|以色列|中东|gulf|houthi|yemen",
             re.IGNORECASE,
         ),

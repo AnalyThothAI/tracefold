@@ -231,6 +231,98 @@
         "title": "ApiEnvelope[NewsReviewData]",
         "type": "object"
       },
+      "ApiEnvelope_NewsReviewEvidenceData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewEvidenceData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsReviewEvidenceData]",
+        "type": "object"
+      },
+      "ApiEnvelope_NewsReviewSubmitData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewSubmitData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[NewsReviewSubmitData]",
+        "type": "object"
+      },
       "ApiEnvelope_NewsStatusData_": {
         "additionalProperties": false,
         "properties": {
@@ -323,6 +415,71 @@
         "title": "ApiEnvelope[StatusData]",
         "type": "object"
       },
+      "BlindPairwiseSubmission": {
+        "additionalProperties": false,
+        "properties": {
+          "critical_errors": {
+            "items": {
+              "enum": [
+                "A:unsupported_fact",
+                "A:wrong_entity",
+                "A:wrong_direction",
+                "A:missed_key_fact",
+                "A:near_duplicate",
+                "A:injection_obedience",
+                "B:unsupported_fact",
+                "B:wrong_entity",
+                "B:wrong_direction",
+                "B:missed_key_fact",
+                "B:near_duplicate",
+                "B:injection_obedience"
+              ],
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Critical Errors",
+            "type": "array"
+          },
+          "evidence_refs": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "kind": {
+            "const": "blind_pairwise",
+            "default": "blind_pairwise",
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Note",
+            "type": "string"
+          },
+          "preference": {
+            "enum": [
+              "A",
+              "B",
+              "tie",
+              "both_bad",
+              "uncertain"
+            ],
+            "title": "Preference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preference"
+        ],
+        "title": "BlindPairwiseSubmission",
+        "type": "object"
+      },
       "BootstrapData": {
         "additionalProperties": false,
         "properties": {
@@ -337,6 +494,143 @@
         "title": "BootstrapData",
         "type": "object"
       },
+      "EventRubricSubmission": {
+        "additionalProperties": false,
+        "properties": {
+          "dimensions": {
+            "additionalProperties": {
+              "enum": [
+                "pass",
+                "fail",
+                "uncertain",
+                "not_applicable"
+              ],
+              "type": "string"
+            },
+            "title": "Dimensions",
+            "type": "object"
+          },
+          "evidence_refs": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "expected_correction": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Expected Correction",
+            "type": "string"
+          },
+          "first_bad_owner": {
+            "anyOf": [
+              {
+                "enum": [
+                  "receiver",
+                  "deduper",
+                  "event_evidence",
+                  "gate",
+                  "retrieval",
+                  "storyline",
+                  "triage_prompt",
+                  "model",
+                  "policy",
+                  "delivery",
+                  "taxonomy",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Bad Owner"
+          },
+          "kind": {
+            "const": "event_rubric",
+            "default": "event_rubric",
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Note",
+            "type": "string"
+          },
+          "novelty": {
+            "$ref": "#/components/schemas/NoveltyJudgment"
+          },
+          "should_push": {
+            "enum": [
+              "must_push",
+              "should_push",
+              "should_hold",
+              "must_hold",
+              "uncertain"
+            ],
+            "title": "Should Push",
+            "type": "string"
+          }
+        },
+        "required": [
+          "should_push",
+          "dimensions",
+          "novelty"
+        ],
+        "title": "EventRubricSubmission",
+        "type": "object"
+      },
+      "ExternalMissSubmission": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "default": "",
+            "maxLength": 20000,
+            "title": "Body",
+            "type": "string"
+          },
+          "kind": {
+            "const": "external_miss",
+            "default": "external_miss",
+            "title": "Kind",
+            "type": "string"
+          },
+          "occurred_at_ms": {
+            "minimum": 0.0,
+            "title": "Occurred At Ms",
+            "type": "integer"
+          },
+          "rubric": {
+            "$ref": "#/components/schemas/EventRubricSubmission"
+          },
+          "source_url": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Source Url",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_url",
+          "title",
+          "occurred_at_ms",
+          "rubric"
+        ],
+        "title": "ExternalMissSubmission",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -348,6 +642,114 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "NewsAcceptedReviewData": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at_ms": {
+            "title": "Created At Ms",
+            "type": "integer"
+          },
+          "dimensions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Dimensions",
+            "type": "object"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "expected_correction": {
+            "default": "",
+            "title": "Expected Correction",
+            "type": "string"
+          },
+          "first_bad_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Bad Owner"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "novelty": {
+            "additionalProperties": true,
+            "title": "Novelty",
+            "type": "object"
+          },
+          "pairwise_case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pairwise Case Id"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "reader_contract_version": {
+            "title": "Reader Contract Version",
+            "type": "string"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          },
+          "reviewer": {
+            "title": "Reviewer",
+            "type": "string"
+          },
+          "rubric_version": {
+            "title": "Rubric Version",
+            "type": "string"
+          },
+          "should_push": {
+            "anyOf": [
+              {
+                "enum": [
+                  "must_push",
+                  "should_push",
+                  "should_hold",
+                  "must_hold",
+                  "uncertain"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Should Push"
+          }
+        },
+        "required": [
+          "review_id",
+          "reviewer",
+          "created_at_ms",
+          "rubric_version",
+          "reader_contract_version"
+        ],
+        "title": "NewsAcceptedReviewData",
         "type": "object"
       },
       "NewsAssetRefData": {
@@ -486,6 +888,11 @@
             "title": "Attempted At Ms",
             "type": "integer"
           },
+          "card": {
+            "additionalProperties": true,
+            "title": "Card",
+            "type": "object"
+          },
           "error_code": {
             "anyOf": [
               {
@@ -555,10 +962,6 @@
             ],
             "title": "E2E P95 Ms"
           },
-          "hourly_cap": {
-            "title": "Hourly Cap",
-            "type": "integer"
-          },
           "last_error_code": {
             "anyOf": [
               {
@@ -587,8 +990,7 @@
           }
         },
         "required": [
-          "delivery_available",
-          "hourly_cap"
+          "delivery_available"
         ],
         "title": "NewsDeliveryStatusData",
         "type": "object"
@@ -663,6 +1065,36 @@
           "family": {
             "title": "Family",
             "type": "string"
+          },
+          "focus_fact_context": {
+            "default": "",
+            "title": "Focus Fact Context",
+            "type": "string"
+          },
+          "focus_fact_id": {
+            "default": "",
+            "title": "Focus Fact Id",
+            "type": "string"
+          },
+          "focus_fact_method": {
+            "default": "",
+            "title": "Focus Fact Method",
+            "type": "string"
+          },
+          "focus_fact_text": {
+            "default": "",
+            "title": "Focus Fact Text",
+            "type": "string"
+          },
+          "focus_span_end": {
+            "default": 0,
+            "title": "Focus Span End",
+            "type": "integer"
+          },
+          "focus_span_start": {
+            "default": 0,
+            "title": "Focus Span Start",
+            "type": "integer"
           },
           "grounded_assets": {
             "items": {
@@ -792,11 +1224,11 @@
           "event": {
             "$ref": "#/components/schemas/NewsEventData"
           },
-          "labels": {
+          "evidence_snapshots": {
             "items": {
-              "$ref": "#/components/schemas/NewsLabelData"
+              "$ref": "#/components/schemas/NewsEvidenceSnapshotData"
             },
-            "title": "Labels",
+            "title": "Evidence Snapshots",
             "type": "array"
           },
           "members": {
@@ -833,6 +1265,12 @@
             "title": "Reactions",
             "type": "array"
           },
+          "reader_receipt": {
+            "$ref": "#/components/schemas/NewsReaderReceiptData"
+          },
+          "review": {
+            "$ref": "#/components/schemas/NewsEventReviewSummaryData"
+          },
           "timeline": {
             "items": {
               "$ref": "#/components/schemas/NewsTimelineStepData"
@@ -863,7 +1301,9 @@
           "outcome",
           "members",
           "verdicts",
-          "deliveries"
+          "deliveries",
+          "review",
+          "reader_receipt"
         ],
         "title": "NewsEventDetailData",
         "type": "object"
@@ -874,6 +1314,16 @@
           "description": {
             "default": "",
             "title": "Description",
+            "type": "string"
+          },
+          "fact_id": {
+            "default": "",
+            "title": "Fact Id",
+            "type": "string"
+          },
+          "fact_text": {
+            "default": "",
+            "title": "Fact Text",
             "type": "string"
           },
           "item_id": {
@@ -953,6 +1403,10 @@
             "default": "unknown",
             "title": "Instrument Class",
             "type": "string"
+          },
+          "is_primary": {
+            "title": "Is Primary",
+            "type": "boolean"
           },
           "metric_version": {
             "title": "Metric Version",
@@ -1119,9 +1573,90 @@
           "symbol",
           "metric_version",
           "anchor_at_ms",
+          "is_primary",
           "state"
         ],
         "title": "NewsEventReactionData",
+        "type": "object"
+      },
+      "NewsEventReviewSummaryData": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsAcceptedReviewData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "judgment_n": {
+            "default": 0,
+            "title": "Judgment N",
+            "type": "integer"
+          },
+          "uncertain": {
+            "default": false,
+            "title": "Uncertain",
+            "type": "boolean"
+          }
+        },
+        "title": "NewsEventReviewSummaryData",
+        "type": "object"
+      },
+      "NewsEvidenceSnapshotData": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at_ms": {
+            "title": "Created At Ms",
+            "type": "integer"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "evidence_sha256": {
+            "title": "Evidence Sha256",
+            "type": "string"
+          },
+          "evidence_version": {
+            "title": "Evidence Version",
+            "type": "integer"
+          },
+          "focus_fact_id": {
+            "title": "Focus Fact Id",
+            "type": "string"
+          },
+          "provenance": {
+            "enum": [
+              "observed",
+              "legacy_reconstructed"
+            ],
+            "title": "Provenance",
+            "type": "string"
+          },
+          "release_eligible": {
+            "title": "Release Eligible",
+            "type": "boolean"
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "title": "Snapshot",
+            "type": "object"
+          }
+        },
+        "required": [
+          "event_id",
+          "evidence_version",
+          "focus_fact_id",
+          "evidence_sha256",
+          "provenance",
+          "release_eligible",
+          "created_at_ms"
+        ],
+        "title": "NewsEvidenceSnapshotData",
         "type": "object"
       },
       "NewsFeedCountsData": {
@@ -1240,6 +1775,36 @@
           "family": {
             "title": "Family",
             "type": "string"
+          },
+          "focus_fact_context": {
+            "default": "",
+            "title": "Focus Fact Context",
+            "type": "string"
+          },
+          "focus_fact_id": {
+            "default": "",
+            "title": "Focus Fact Id",
+            "type": "string"
+          },
+          "focus_fact_method": {
+            "default": "",
+            "title": "Focus Fact Method",
+            "type": "string"
+          },
+          "focus_fact_text": {
+            "default": "",
+            "title": "Focus Fact Text",
+            "type": "string"
+          },
+          "focus_span_end": {
+            "default": 0,
+            "title": "Focus Span End",
+            "type": "integer"
+          },
+          "focus_span_start": {
+            "default": 0,
+            "title": "Focus Span Start",
+            "type": "integer"
           },
           "grounded_assets": {
             "items": {
@@ -1804,43 +2369,159 @@
         "title": "NewsInstrumentUniverse",
         "type": "object"
       },
-      "NewsLabelData": {
+      "NewsLearningRetentionStatusData": {
         "additionalProperties": false,
         "properties": {
-          "created_at_ms": {
-            "title": "Created At Ms",
+          "deleted_artifacts": {
+            "default": 0,
+            "title": "Deleted Artifacts",
             "type": "integer"
           },
-          "label": {
-            "additionalProperties": true,
-            "title": "Label",
-            "type": "object"
+          "deleted_cases": {
+            "default": 0,
+            "title": "Deleted Cases",
+            "type": "integer"
           },
-          "label_version": {
-            "title": "Label Version",
-            "type": "string"
+          "deleted_recordings": {
+            "default": 0,
+            "title": "Deleted Recordings",
+            "type": "integer"
           },
-          "labeled_by": {
-            "default": "operator",
-            "title": "Labeled By",
-            "type": "string"
+          "eligible_artifacts": {
+            "default": 0,
+            "title": "Eligible Artifacts",
+            "type": "integer"
           },
-          "source": {
-            "title": "Source",
-            "type": "string"
+          "eligible_cases": {
+            "default": 0,
+            "title": "Eligible Cases",
+            "type": "integer"
           },
-          "subject": {
-            "default": "",
-            "title": "Subject",
-            "type": "string"
+          "eligible_recordings": {
+            "default": 0,
+            "title": "Eligible Recordings",
+            "type": "integer"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "last_run_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At Ms"
+          },
+          "oldest_artifact_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Artifact Age Ms"
+          },
+          "oldest_case_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Case Age Ms"
+          },
+          "oldest_recording_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Recording Age Ms"
+          },
+          "updated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At Ms"
+          }
+        },
+        "title": "NewsLearningRetentionStatusData",
+        "type": "object"
+      },
+      "NewsMarketReviewData": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewCoverageData"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
+          "directions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewDirectionData"
+            },
+            "title": "Directions",
+            "type": "array"
+          },
+          "event_types": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewEventTypeData"
+            },
+            "title": "Event Types",
+            "type": "array"
+          },
+          "magnitudes": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewMagnitudeData"
+            },
+            "title": "Magnitudes",
+            "type": "array"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/NewsReviewMetaData"
+          },
+          "potential_misses": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewMissData"
+            },
+            "title": "Potential Misses",
+            "type": "array"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/NewsReviewSummaryData"
           }
         },
         "required": [
-          "label_version",
-          "source",
-          "created_at_ms"
+          "meta",
+          "summary"
         ],
-        "title": "NewsLabelData",
+        "title": "NewsMarketReviewData",
         "type": "object"
       },
       "NewsOutcomeData": {
@@ -1943,16 +2624,6 @@
             "title": "Grounded 24H",
             "type": "integer"
           },
-          "labeled_missed_24h": {
-            "default": 0,
-            "title": "Labeled Missed 24H",
-            "type": "integer"
-          },
-          "labeled_missed_without_event_24h": {
-            "default": 0,
-            "title": "Labeled Missed Without Event 24H",
-            "type": "integer"
-          },
           "novelty_defaulted_24h": {
             "default": 0,
             "title": "Novelty Defaulted 24H",
@@ -1979,6 +2650,16 @@
           "reasked_24h": {
             "default": 0,
             "title": "Reasked 24H",
+            "type": "integer"
+          },
+          "reviewed_external_miss_24h": {
+            "default": 0,
+            "title": "Reviewed External Miss 24H",
+            "type": "integer"
+          },
+          "reviewed_should_push_24h": {
+            "default": 0,
+            "title": "Reviewed Should Push 24H",
             "type": "integer"
           },
           "suppressed_by_reason": {
@@ -2449,6 +3130,70 @@
         "title": "NewsReactionSummaryData",
         "type": "object"
       },
+      "NewsReaderReceiptData": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery State"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "received_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At Ms"
+          },
+          "rendered_card": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rendered Card"
+          },
+          "state": {
+            "enum": [
+              "received",
+              "not_received",
+              "unknown"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "NewsReaderReceiptData",
+        "type": "object"
+      },
       "NewsReasonCountData": {
         "additionalProperties": false,
         "properties": {
@@ -2484,6 +3229,115 @@
           "count"
         ],
         "title": "NewsReasonCountData",
+        "type": "object"
+      },
+      "NewsReviewCoverageBucketData": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "accepted_interval_95": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewCoverageIntervalData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accepted_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Pct"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "cohort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cohort"
+          },
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          },
+          "legacy_cohort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legacy Cohort"
+          },
+          "received": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received"
+          },
+          "reviewed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed"
+          },
+          "stratum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stratum"
+          }
+        },
+        "required": [
+          "events",
+          "accepted"
+        ],
+        "title": "NewsReviewCoverageBucketData",
         "type": "object"
       },
       "NewsReviewCoverageData": {
@@ -2548,54 +3402,236 @@
         "title": "NewsReviewCoverageData",
         "type": "object"
       },
-      "NewsReviewData": {
+      "NewsReviewCoverageIntervalData": {
         "additionalProperties": false,
         "properties": {
-          "coverage": {
-            "items": {
-              "$ref": "#/components/schemas/NewsReviewCoverageData"
-            },
-            "title": "Coverage",
-            "type": "array"
+          "lower_pct": {
+            "title": "Lower Pct",
+            "type": "number"
           },
-          "directions": {
-            "items": {
-              "$ref": "#/components/schemas/NewsReviewDirectionData"
-            },
-            "title": "Directions",
-            "type": "array"
-          },
-          "event_types": {
-            "items": {
-              "$ref": "#/components/schemas/NewsReviewEventTypeData"
-            },
-            "title": "Event Types",
-            "type": "array"
-          },
-          "magnitudes": {
-            "items": {
-              "$ref": "#/components/schemas/NewsReviewMagnitudeData"
-            },
-            "title": "Magnitudes",
-            "type": "array"
-          },
-          "meta": {
-            "$ref": "#/components/schemas/NewsReviewMetaData"
-          },
-          "potential_misses": {
-            "items": {
-              "$ref": "#/components/schemas/NewsReviewMissData"
-            },
-            "title": "Potential Misses",
-            "type": "array"
-          },
-          "summary": {
-            "$ref": "#/components/schemas/NewsReviewSummaryData"
+          "upper_pct": {
+            "title": "Upper Pct",
+            "type": "number"
           }
         },
         "required": [
-          "meta",
-          "summary"
+          "lower_pct",
+          "upper_pct"
+        ],
+        "title": "NewsReviewCoverageIntervalData",
+        "type": "object"
+      },
+      "NewsReviewData": {
+        "additionalProperties": false,
+        "properties": {
+          "cohorts": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewCoverageBucketData"
+            },
+            "title": "Cohorts",
+            "type": "array"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "disclaimer_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclaimer Zh"
+          },
+          "disclosure": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclosure"
+          },
+          "funnel": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewFunnelV2Data"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "holdout": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewHoldoutData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Zh"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "event",
+                  "pairwise"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "proposals": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Proposals",
+            "type": "array"
+          },
+          "reaction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsMarketReviewData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reader_contract_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Contract Sha256"
+          },
+          "reader_contract_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Contract Version"
+          },
+          "rubric_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rubric Version"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "strata": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewCoverageBucketData"
+            },
+            "title": "Strata",
+            "type": "array"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/NewsReviewTaskData"
+            },
+            "title": "Tasks",
+            "type": "array"
+          },
+          "title_zh": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Zh"
+          },
+          "view": {
+            "enum": [
+              "queue",
+              "coverage",
+              "proposals",
+              "market"
+            ],
+            "title": "View",
+            "type": "string"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          }
+        },
+        "required": [
+          "view"
         ],
         "title": "NewsReviewData",
         "type": "object"
@@ -2792,6 +3828,237 @@
         "title": "NewsReviewEventTypeData",
         "type": "object"
       },
+      "NewsReviewEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsAcceptedReviewData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "disclosure": {
+            "additionalProperties": true,
+            "title": "Disclosure",
+            "type": "object"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "market_reactions": {
+            "items": {
+              "$ref": "#/components/schemas/NewsEventReactionData"
+            },
+            "title": "Market Reactions",
+            "type": "array"
+          },
+          "output_A": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output A"
+          },
+          "output_B": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output B"
+          },
+          "reader_receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewReceiptTruthData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reveal": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reveal"
+          },
+          "rubric": {
+            "additionalProperties": true,
+            "title": "Rubric",
+            "type": "object"
+          },
+          "source_evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Evidence"
+          },
+          "task": {
+            "$ref": "#/components/schemas/NewsReviewTaskData"
+          },
+          "versions": {
+            "additionalProperties": true,
+            "title": "Versions",
+            "type": "object"
+          }
+        },
+        "required": [
+          "task",
+          "disclosure"
+        ],
+        "title": "NewsReviewEvidenceData",
+        "type": "object"
+      },
+      "NewsReviewFunnelV2Data": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "external_misses": {
+            "title": "External Misses",
+            "type": "integer"
+          },
+          "holdout_ready": {
+            "title": "Holdout Ready",
+            "type": "integer"
+          },
+          "received": {
+            "title": "Received",
+            "type": "integer"
+          },
+          "replayable": {
+            "title": "Replayable",
+            "type": "integer"
+          },
+          "reviewed": {
+            "title": "Reviewed",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "received",
+          "replayable",
+          "reviewed",
+          "accepted",
+          "holdout_ready",
+          "total",
+          "external_misses"
+        ],
+        "title": "NewsReviewFunnelV2Data",
+        "type": "object"
+      },
+      "NewsReviewHoldoutData": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_case_n": {
+            "title": "Accepted Case N",
+            "type": "integer"
+          },
+          "accepted_cluster_n": {
+            "title": "Accepted Cluster N",
+            "type": "integer"
+          },
+          "case_n": {
+            "title": "Case N",
+            "type": "integer"
+          },
+          "cluster_n": {
+            "title": "Cluster N",
+            "type": "integer"
+          },
+          "coverage_interval_95": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewCoverageIntervalData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "coverage_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Pct"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "insufficient_evidence"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "case_n",
+          "cluster_n",
+          "accepted_case_n",
+          "accepted_cluster_n"
+        ],
+        "title": "NewsReviewHoldoutData",
+        "type": "object"
+      },
       "NewsReviewMagnitudeData": {
         "additionalProperties": false,
         "properties": {
@@ -2895,6 +4162,21 @@
       "NewsReviewMetaData": {
         "additionalProperties": false,
         "properties": {
+          "cohort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cohort"
+          },
+          "discovery_window_start_ms": {
+            "title": "Discovery Window Start Ms",
+            "type": "integer"
+          },
           "hours": {
             "title": "Hours",
             "type": "integer"
@@ -2920,6 +4202,7 @@
           "hours",
           "window_start_ms",
           "window_end_ms",
+          "discovery_window_start_ms",
           "metric_version",
           "measured_at_ms"
         ],
@@ -2983,6 +4266,16 @@
             "title": "Event Type Zh",
             "type": "string"
           },
+          "fact_cluster_key": {
+            "default": "",
+            "title": "Fact Cluster Key",
+            "type": "string"
+          },
+          "fact_cluster_n": {
+            "default": 1,
+            "title": "Fact Cluster N",
+            "type": "integer"
+          },
           "final_decision": {
             "title": "Final Decision",
             "type": "string"
@@ -3039,6 +4332,13 @@
             "title": "Override Rule Zh",
             "type": "string"
           },
+          "related_event_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Related Event Ids",
+            "type": "array"
+          },
           "return_1h_bps": {
             "anyOf": [
               {
@@ -3091,6 +4391,197 @@
         "title": "NewsReviewMissData",
         "type": "object"
       },
+      "NewsReviewReceiptTruthData": {
+        "additionalProperties": false,
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "rendered_card": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rendered Card"
+          },
+          "settled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At Ms"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "truth": {
+            "enum": [
+              "received",
+              "not_received",
+              "unknown"
+            ],
+            "title": "Truth",
+            "type": "string"
+          }
+        },
+        "required": [
+          "truth"
+        ],
+        "title": "NewsReviewReceiptTruthData",
+        "type": "object"
+      },
+      "NewsReviewSelectionData": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "sampling_probability": {
+            "title": "Sampling Probability",
+            "type": "number"
+          },
+          "selection_version": {
+            "title": "Selection Version",
+            "type": "string"
+          },
+          "stratum": {
+            "title": "Stratum",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stratum",
+          "sampling_probability",
+          "selection_version"
+        ],
+        "title": "NewsReviewSelectionData",
+        "type": "object"
+      },
+      "NewsReviewSubmissionReceiptData": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acceptance Id"
+          },
+          "created_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At Ms"
+          },
+          "external_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Snapshot Id"
+          },
+          "review_id": {
+            "title": "Review Id",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_version": {
+            "title": "Task Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "task_id",
+          "task_version"
+        ],
+        "title": "NewsReviewSubmissionReceiptData",
+        "type": "object"
+      },
+      "NewsReviewSubmitData": {
+        "additionalProperties": false,
+        "properties": {
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "next_task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewTaskData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/NewsReviewSubmissionReceiptData"
+          },
+          "updated_queue_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Updated Queue Counts",
+            "type": "object"
+          }
+        },
+        "required": [
+          "idempotent",
+          "receipt"
+        ],
+        "title": "NewsReviewSubmitData",
+        "type": "object"
+      },
       "NewsReviewSummaryData": {
         "additionalProperties": false,
         "description": "The topbar figure. A percentage without a priced denominator is not shown at all.",
@@ -3124,6 +4615,192 @@
           }
         },
         "title": "NewsReviewSummaryData",
+        "type": "object"
+      },
+      "NewsReviewTaskData": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsAcceptedReviewData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent_cohort": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Cohort"
+          },
+          "agent_headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Headline"
+          },
+          "agent_why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Why"
+          },
+          "cohort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cohort"
+          },
+          "disclosure": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclosure"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "evidence_ready": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Ready"
+          },
+          "evidence_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Version"
+          },
+          "final_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Decision"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "mode": {
+            "enum": [
+              "event",
+              "pairwise"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "opened_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opened At Ms"
+          },
+          "reader_receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsReviewReceiptTruthData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review_status": {
+            "enum": [
+              "pending",
+              "accepted"
+            ],
+            "title": "Review Status",
+            "type": "string"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/NewsReviewSelectionData"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_version": {
+            "title": "Task Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "task_version",
+          "mode",
+          "selection",
+          "review_status"
+        ],
+        "title": "NewsReviewTaskData",
         "type": "object"
       },
       "NewsReviewUnavailableData": {
@@ -3173,6 +4850,9 @@
           },
           "instruments": {
             "$ref": "#/components/schemas/NewsInstrumentUniverse"
+          },
+          "learning_retention": {
+            "$ref": "#/components/schemas/NewsLearningRetentionStatusData"
           },
           "measured_at_ms": {
             "title": "Measured At Ms",
@@ -3228,6 +4908,7 @@
           "broker",
           "pipeline",
           "delivery",
+          "learning_retention",
           "control",
           "measured_at_ms"
         ],
@@ -3236,7 +4917,7 @@
       },
       "NewsSymbolNormalizationData": {
         "additionalProperties": false,
-        "description": "#87: the several names one issuer trades under, collapsed to the base the storyline throttle buckets by.",
+        "description": "#87: the several names one issuer trades under, collapsed to one stable storyline identity.",
         "properties": {
           "aliases": {
             "items": {
@@ -3578,9 +5259,42 @@
             ],
             "title": "Error Code"
           },
+          "evidence_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Sha256"
+          },
+          "evidence_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Version"
+          },
           "final_decision": {
             "title": "Final Decision",
             "type": "string"
+          },
+          "focus_fact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focus Fact Id"
           },
           "model": {
             "anyOf": [
@@ -3679,6 +5393,32 @@
           "created_at_ms"
         ],
         "title": "NewsVerdictData",
+        "type": "object"
+      },
+      "NoveltyJudgment": {
+        "additionalProperties": false,
+        "properties": {
+          "duplicate_of": {
+            "default": "",
+            "maxLength": 128,
+            "title": "Duplicate Of",
+            "type": "string"
+          },
+          "judgment": {
+            "enum": [
+              "new_fact",
+              "progression",
+              "restatement",
+              "uncertain"
+            ],
+            "title": "Judgment",
+            "type": "string"
+          }
+        },
+        "required": [
+          "judgment"
+        ],
+        "title": "NoveltyJudgment",
         "type": "object"
       },
       "ReadinessData": {
@@ -4266,9 +6006,97 @@
     },
     "/api/news/review": {
       "get": {
-        "description": "\u547d\u4e2d\u590d\u76d8: coverage, direction accuracy, magnitude calibration, event types, and potential misses.",
+        "description": "Learning ReviewDesk: actionable queue, evidence coverage, proposals, or market observations.",
         "operationId": "get_news_review_api_news_review_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "queue",
+              "pattern": "^(queue|coverage|proposals|market)$",
+              "title": "View",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mode",
+            "required": false,
+            "schema": {
+              "default": "event",
+              "pattern": "^(event|pairwise)$",
+              "title": "Mode",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cohort",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 160,
+              "title": "Cohort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stratum",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Stratum",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proposal",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Proposal",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 300,
+              "title": "Task",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "event",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Event",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "pending",
+              "pattern": "^(pending|accepted|all)$",
+              "title": "Status",
+              "type": "string"
+            }
+          },
           {
             "in": "query",
             "name": "hours",
@@ -4279,6 +6107,29 @@
               "minimum": 1,
               "title": "Hours",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 300,
+              "title": "Cursor",
+              "type": "string"
             }
           }
         ],
@@ -4305,6 +6156,215 @@
           }
         },
         "summary": "Get News Review",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/review/external-misses": {
+      "post": {
+        "operationId": "submit_news_external_miss_api_news_review_external_misses_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternalMissSubmission"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsReviewSubmitData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit News External Miss",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/review/tasks/{task_id}/evidence": {
+      "get": {
+        "operationId": "get_news_review_evidence_api_news_review_tasks__task_id__evidence_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsReviewEvidenceData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get News Review Evidence",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/news/review/tasks/{task_id}/responses": {
+      "post": {
+        "operationId": "submit_news_review_api_news_review_tasks__task_id__responses_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EventRubricSubmission"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BlindPairwiseSubmission"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_NewsReviewSubmitData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit News Review",
         "tags": [
           "api"
         ]

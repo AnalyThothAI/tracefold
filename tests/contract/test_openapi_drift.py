@@ -108,7 +108,7 @@ def test_public_api_is_status_news_and_macro_only() -> None:
     ):
         assert retired not in schema["paths"], retired
     assert all(
-        not name.startswith(("TokenRadar", "StocksRadar", "LiveMarket", "Search", "TokenCase", "Event", "Provider"))
+        not name.startswith(("TokenRadar", "StocksRadar", "LiveMarket", "Search", "TokenCase", "Provider"))
         for name in components
     ), sorted(components)
     assert set(components["StatusData"]["properties"]) == {"measured_at_ms", "runtime"}
@@ -122,21 +122,24 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     expected = {
-        "/api/news/feed": "ApiEnvelope_NewsFeedData_",
-        "/api/news/events/{event_id}": "ApiEnvelope_NewsEventDetailData_",
-        "/api/news/status": "ApiEnvelope_NewsStatusData_",
+        "/api/news/feed": ("get", "ApiEnvelope_NewsFeedData_"),
+        "/api/news/events/{event_id}": ("get", "ApiEnvelope_NewsEventDetailData_"),
+        "/api/news/status": ("get", "ApiEnvelope_NewsStatusData_"),
         # #88: current quotes and 命中复盘 are separate response types on purpose — a current rolling change
         # and a fixed post-Event return must never arrive in a field the browser could mistake for the other.
-        "/api/news/quotes": "ApiEnvelope_NewsQuotesData_",
-        "/api/news/review": "ApiEnvelope_NewsReviewData_",
+        "/api/news/quotes": ("get", "ApiEnvelope_NewsQuotesData_"),
+        "/api/news/review": ("get", "ApiEnvelope_NewsReviewData_"),
+        "/api/news/review/tasks/{task_id}/evidence": ("get", "ApiEnvelope_NewsReviewEvidenceData_"),
+        "/api/news/review/tasks/{task_id}/responses": ("post", "ApiEnvelope_NewsReviewSubmitData_"),
+        "/api/news/review/external-misses": ("post", "ApiEnvelope_NewsReviewSubmitData_"),
     }
 
     assert {path for path in schema["paths"] if path.startswith("/api/news/")} == set(expected)
 
-    for path, envelope in expected.items():
+    for path, (method, envelope) in expected.items():
         operation = schema["paths"][path]
-        assert set(operation) == {"get"}
-        response_schema = operation["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        assert set(operation) == {method}
+        response_schema = operation[method]["responses"]["200"]["content"]["application/json"]["schema"]
         assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
 
     components = schema["components"]["schemas"]
@@ -153,6 +156,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsBrokerStatusData",
         "NewsPipelineStatusData",
         "NewsDeliveryStatusData",
+        "NewsLearningRetentionStatusData",
         "NewsControlStateData",
         "NewsOutcomeData",
         "NewsTimelineStepData",
@@ -173,7 +177,9 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "members",
         "verdicts",
         "deliveries",
-        "labels",
+        "review",
+        "evidence_snapshots",
+        "reader_receipt",
         "normalization",
         # #88: the event-level aggregate and every per-asset Reaction with the closes behind it.
         "reaction",
@@ -190,6 +196,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "broker",
         "pipeline",
         "delivery",
+        "learning_retention",
         "control",
         "watchlist",
         "instruments",

@@ -14,7 +14,7 @@ positional arguments:
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
-    news                News V3 broker, control, label, and evaluation
+    news                News V3 broker, control, ReviewDesk, and learning
                         commands
     ops                 maintenance commands
 
@@ -126,24 +126,18 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,control,instruments,label,eval,replay-decisions,corpus,validate-candidate,replay,why,dlq} ...
+                      {bus-check,control,instruments,review,learning,replay,why,dlq} ...
 
 positional arguments:
-  {bus-check,control,instruments,label,eval,replay-decisions,corpus,validate-candidate,replay,why,dlq}
+  {bus-check,control,instruments,review,learning,replay,why,dlq}
     bus-check           connect to RabbitMQ, declare the News topology, and
                         print queue depths
     control             write a delivery control command to news_control_state
     instruments         instrument universe: snapshot the venues, or inspect
                         what is stored
-    label               record an operator label for one Event (learning
-                        plane)
-    eval                offline evaluation of Triage decisions against labels
-    replay-decisions    re-run decide() over stored verdicts with a candidate
-                        policy (no model)
-    corpus              freeze the stored Triage decisions into a replayable,
-                        self-hashing corpus
-    validate-candidate  replay a candidate policy against a frozen corpus and
-                        decide whether it may ship (exit 1 = FAIL)
+    review              ReviewDesk queue, evidence, and append-only judgments
+    learning            freeze reviewed datasets and evaluate one-variable
+                        Agent candidates
     replay              replay a JSON file of provider hits through
                         Deduper+Gate (no model, no broker)
     why                 print one Event's chain: item, gate, triage, decide,
@@ -200,123 +194,294 @@ options:
 
 ```
 
-## `news label`
+## `news review`
 
 ```
-usage: tracefold news label [-h] [--note NOTE] [--subject SUBJECT] [--by BY]
-                            [event_id]
-                            {good,noise,late,wrong_direction,dup,missed,must_push}
+usage: tracefold news review [-h] {queue,evidence,submit,external-miss} ...
 
 positional arguments:
-  event_id              Event to label; omit together with --subject to record
-                        a miss the pipeline never created an Event for
-  {good,noise,late,wrong_direction,dup,missed,must_push}
+  {queue,evidence,submit,external-miss}
+    queue               open the deterministic operator review queue
+    evidence            show the task-scoped evidence view
+    submit              append and accept one rubric or pairwise judgment
+    external-miss       append an external miss and its rubric
 
 options:
   -h, --help            show this help message and exit
-  --note NOTE           free-text note (<=200 chars)
-  --subject SUBJECT     what was labelled, in words; required when no
-                        event_id, and denormalised so the label outlives the
-                        Event
-  --by BY               who is labelling (labels are correctable per person)
 
 ```
 
-## `news eval`
+## `news review queue`
 
 ```
-usage: tracefold news eval [-h] [--hours HOURS]
-                           [--policy-version POLICY_VERSION]
+usage: tracefold news review queue [-h]
+                                   [--view {queue,coverage,proposals,market}]
+                                   [--mode {event,pairwise}] [--cohort COHORT]
+                                   [--stratum STRATUM] [--proposal PROPOSAL]
+                                   [--task TASK] [--event EVENT]
+                                   [--status {pending,accepted,all}]
+                                   [--hours HOURS] [--limit LIMIT]
+                                   [--cursor CURSOR]
 
 options:
   -h, --help            show this help message and exit
-  --hours HOURS         look-back window
-  --policy-version POLICY_VERSION
-                        restrict to one triage policy version
+  --view {queue,coverage,proposals,market}
+  --mode {event,pairwise}
+  --cohort COHORT
+  --stratum STRATUM
+  --proposal PROPOSAL
+  --task TASK
+  --event EVENT
+  --status {pending,accepted,all}
+  --hours HOURS
+  --limit LIMIT
+  --cursor CURSOR
 
 ```
 
-## `news replay-decisions`
+## `news review evidence`
 
 ```
-usage: tracefold news replay-decisions [-h] [--hours HOURS]
-                                       [--escalate-magnitude ESCALATE_MAGNITUDE]
-                                       [--min-push-magnitude MIN_PUSH_MAGNITUDE]
-                                       [--min-watchlist-magnitude MIN_WATCHLIST_MAGNITUDE]
-                                       [--theme-cap-4h THEME_CAP_4H]
-                                       [--distinct-hard-cap-4h DISTINCT_HARD_CAP_4H]
-                                       [--distinct-asset-cap-2h DISTINCT_ASSET_CAP_2H]
-                                       [--similarity-max SIMILARITY_MAX]
-                                       [--high-priority-escalates]
-                                       [--no-restatement-drop]
-                                       [--no-storyline-throttle]
-                                       [--no-unclear-push]
-
-options:
-  -h, --help            show this help message and exit
-  --hours HOURS         look-back window
-  --escalate-magnitude ESCALATE_MAGNITUDE
-                        default: news.policy
-  --min-push-magnitude MIN_PUSH_MAGNITUDE
-                        default: news.policy
-  --min-watchlist-magnitude MIN_WATCHLIST_MAGNITUDE
-                        default: news.policy
-  --theme-cap-4h THEME_CAP_4H
-                        default: news.policy
-  --distinct-hard-cap-4h DISTINCT_HARD_CAP_4H
-                        flood ceiling per theme / 4 h; default: news.policy
-  --distinct-asset-cap-2h DISTINCT_ASSET_CAP_2H
-                        flood ceiling per asset / 2 h; default: news.policy
-  --similarity-max SIMILARITY_MAX
-                        release a throttled card below this resemblance to the
-                        reader's window (0 = pre-v5 count cap)
-  --high-priority-escalates
-                        replay with the pre-v4 behaviour: a high-priority push
-                        becomes an escalate (#77)
-  --no-restatement-drop
-                        replay without dropping grounded restatements
-  --no-storyline-throttle
-                        replay with storyline throttling switched off
-  --no-unclear-push     replay without the unclear-but-clear-event push rule
-
-```
-
-## `news corpus`
-
-```
-usage: tracefold news corpus [-h] [--hours HOURS] [--out OUT] [{freeze}]
+usage: tracefold news review evidence [-h] --version VERSION task
 
 positional arguments:
-  {freeze}
+  task
 
 options:
-  -h, --help     show this help message and exit
-  --hours HOURS  look-back window
-  --out OUT      file to write (default: stdout)
+  -h, --help         show this help message and exit
+  --version VERSION
 
 ```
 
-## `news validate-candidate`
+## `news review submit`
 
 ```
-usage: tracefold news validate-candidate [-h] --corpus CORPUS
-                                         [--candidate CANDIDATE]
-                                         [--set KEY=VALUE]
-                                         [--expectations EXPECTATIONS]
-                                         [--evidence EVIDENCE]
+usage: tracefold news review submit [-h] --version VERSION --file FILE
+                                    [--idempotency-key IDEMPOTENCY_KEY]
+                                    task
+
+positional arguments:
+  task
 
 options:
   -h, --help            show this help message and exit
-  --corpus CORPUS       corpus file from `news corpus freeze`
+  --version VERSION
+  --file FILE
+  --idempotency-key IDEMPOTENCY_KEY
+
+```
+
+## `news review external-miss`
+
+```
+usage: tracefold news review external-miss [-h] --file FILE
+                                           [--idempotency-key IDEMPOTENCY_KEY]
+
+options:
+  -h, --help            show this help message and exit
+  --file FILE
+  --idempotency-key IDEMPOTENCY_KEY
+
+```
+
+## `news learning`
+
+```
+usage: tracefold news learning [-h]
+                               {propose,freeze,evaluate,shadow,canary} ...
+
+positional arguments:
+  {propose,freeze,evaluate,shadow,canary}
+    propose             seal a prompt or policy candidate manifest
+    freeze              freeze accepted reviews into a dataset
+    evaluate            run the evaluate release-evidence gate
+    shadow              run the shadow release-evidence gate
+    canary              arm, inspect, or stop the durable one-arm production
+                        canary
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `news learning propose`
+
+```
+usage: tracefold news learning propose [-h] --development DEVELOPMENT
+                                       --file FILE --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --development DEVELOPMENT
+                        development dataset artifact SHA
+  --file FILE           candidate proposal JSON/YAML
+  --out OUT             write the sealed candidate manifest
+
+```
+
+## `news learning freeze`
+
+```
+usage: tracefold news learning freeze [-h] --role {development,validation}
+                                      --from-ms FROM_MS --to-ms TO_MS
+                                      [--candidate CANDIDATE] --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --role {development,validation}
+  --from-ms FROM_MS
+  --to-ms TO_MS
   --candidate CANDIDATE
-                        YAML/JSON file with a `policy` mapping of overrides;
-                        --set wins over it
-  --set KEY=VALUE       policy override, repeatable (e.g. --set
-                        similarity_max=0.3)
-  --expectations EXPECTATIONS
-                        JSON file of {event_id: must_push|may_push|may_drop} —
-                        the reviewed boundary/retention judgments
-  --evidence EVIDENCE   file to write the immutable evidence document to
+                        candidate manifest; required for validation
+  --out OUT             write the dataset manifest
+
+```
+
+## `news learning evaluate`
+
+```
+usage: tracefold news learning evaluate [-h] --development DEVELOPMENT
+                                        [--validation VALIDATION]
+                                        --candidate CANDIDATE
+                                        [--stage {offline,holdout,canary}]
+                                        [--live-model]
+                                        [--observation-manifest OBSERVATION_MANIFEST]
+                                        --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --development DEVELOPMENT
+                        development dataset artifact SHA
+  --validation VALIDATION
+                        validation dataset SHA
+  --candidate CANDIDATE
+                        candidate manifest JSON/YAML
+  --stage {offline,holdout,canary}
+                        evaluation evidence stage
+  --live-model          call the configured Triage model and append recordings
+  --observation-manifest OBSERVATION_MANIFEST
+                        optional sealed canary observation artifact SHA
+  --out OUT             write the sealed evaluation report
+
+```
+
+## `news learning shadow`
+
+```
+usage: tracefold news learning shadow [-h] --development DEVELOPMENT
+                                      [--validation VALIDATION]
+                                      --candidate CANDIDATE
+                                      [--observation-manifest OBSERVATION_MANIFEST]
+                                      [--live-model] --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --development DEVELOPMENT
+                        development dataset artifact SHA
+  --validation VALIDATION
+                        validation dataset SHA
+  --candidate CANDIDATE
+                        candidate manifest JSON/YAML
+  --observation-manifest OBSERVATION_MANIFEST
+                        reuse a sealed shadow observation artifact instead of
+                        collecting one
+  --live-model          cold-run the candidate over the closed validation
+                        window
+  --out OUT             write the sealed evaluation report
+
+```
+
+## `news learning canary`
+
+```
+usage: tracefold news learning canary [-h]
+                                      {arm,status,hold,resume,trip,close} ...
+
+positional arguments:
+  {arm,status,hold,resume,trip,close}
+    arm                 arm the image-carried candidate at code-owned exposure
+    status              show activation, revision, and assignment counts
+    hold                hold one activation
+    resume              resume one activation
+    trip                trip one activation
+    close               close one activation
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `news learning canary arm`
+
+```
+usage: tracefold news learning canary arm [-h] --candidate CANDIDATE
+
+options:
+  -h, --help            show this help message and exit
+  --candidate CANDIDATE
+                        sealed CandidateManifest SHA carried by this image
+
+```
+
+## `news learning canary status`
+
+```
+usage: tracefold news learning canary status [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `news learning canary hold`
+
+```
+usage: tracefold news learning canary hold [-h] --activation ACTIVATION
+                                           --reason REASON
+
+options:
+  -h, --help            show this help message and exit
+  --activation ACTIVATION
+  --reason REASON
+
+```
+
+## `news learning canary resume`
+
+```
+usage: tracefold news learning canary resume [-h] --activation ACTIVATION
+                                             --reason REASON
+
+options:
+  -h, --help            show this help message and exit
+  --activation ACTIVATION
+  --reason REASON
+
+```
+
+## `news learning canary trip`
+
+```
+usage: tracefold news learning canary trip [-h] --activation ACTIVATION
+                                           --reason REASON
+
+options:
+  -h, --help            show this help message and exit
+  --activation ACTIVATION
+  --reason REASON
+
+```
+
+## `news learning canary close`
+
+```
+usage: tracefold news learning canary close [-h] --activation ACTIVATION
+                                            --reason REASON
+
+options:
+  -h, --help            show this help message and exit
+  --activation ACTIVATION
+  --reason REASON
 
 ```
 

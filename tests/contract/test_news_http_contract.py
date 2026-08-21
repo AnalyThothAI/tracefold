@@ -1,4 +1,4 @@
-"""News V3 HTTP contract: five read-only routes, exact schemas, bounded 400/404 behaviour."""
+"""News V3 HTTP contract: read surfaces plus the narrow ReviewDesk mutation adapter."""
 
 from __future__ import annotations
 
@@ -93,7 +93,15 @@ class _FakeNewsRepository:
             "members": [],
             "verdicts": [],
             "deliveries": [],
-            "labels": [],
+            "review": {"judgment_n": 0, "accepted": None, "uncertain": False},
+            "evidence_snapshots": [],
+            "reader_receipt": {
+                "state": "not_received",
+                "delivery_state": None,
+                "error_code": None,
+                "received_at_ms": None,
+                "rendered_card": None,
+            },
         }
 
     def asset_usage_24h(self, *, now_ms: int) -> dict[str, list[str]]:
@@ -115,6 +123,20 @@ class _FakeNewsRepository:
             },
             "pipeline": {"events_1h": 0, "events_24h": 0},
             "delivery": {"sent_24h": 0, "sent_1h": 0, "terminal_24h": 0, "last_error_code": None, "e2e_p95_ms": None},
+            "learning_retention": {
+                "last_run_at_ms": None,
+                "eligible_recordings": 0,
+                "eligible_cases": 0,
+                "eligible_artifacts": 0,
+                "deleted_recordings": 0,
+                "deleted_cases": 0,
+                "deleted_artifacts": 0,
+                "oldest_recording_age_ms": None,
+                "oldest_case_age_ms": None,
+                "oldest_artifact_age_ms": None,
+                "last_error_code": None,
+                "updated_at_ms": None,
+            },
             "control": {"paused": False, "mutes": []},
         }
 
@@ -226,6 +248,7 @@ class _FakePriceRepository:
                 "hours": int(kwargs.get("hours") or 168),
                 "window_start_ms": 0,
                 "window_end_ms": 1,
+                "discovery_window_start_ms": 0,
                 "metric_version": "reaction_v1",
                 "measured_at_ms": 1,
             },
@@ -268,17 +291,47 @@ class _FakeRuntime:
     def repositories(self):
         yield _FakeRepositories(self._news)
 
+    @contextmanager
+    def review_transaction(self):
+        yield _FakeConnection()
+
+
+class _FakeReviewDesk:
+    def __init__(self, _conn: Any) -> None:
+        pass
+
+    def open(self, query: Any, *, principal: Any) -> dict[str, Any]:
+        del principal
+        if query.view == "market":
+            return {
+                "view": "market",
+                "title_zh": "事后市场观察",
+                "disclaimer_zh": "价格变化不是因果或真值。",
+                "reaction": _FakePriceRepository().review(hours=query.hours),
+            }
+        return {
+            "view": query.view,
+            "mode": query.mode,
+            "status": "insufficient_evidence",
+            "reader_contract_version": "reader_contract_v2",
+            "rubric_version": "news_review_v2",
+            "tasks": [],
+            "next_cursor": None,
+            "counts": {},
+        }
+
 
 @pytest.fixture
-def client() -> tuple[TestClient, _FakeNewsRepository]:
+def client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _FakeNewsRepository]:
     settings = Settings(ws_token=TOKEN)
     app = create_app(settings=settings)
     news = _FakeNewsRepository()
+    monkeypatch.setattr(routes_news, "ReviewDesk", _FakeReviewDesk)
     app.state.service = _FakeRuntime(settings, news)
     return TestClient(app), news
 
 
-def test_news_exposes_exactly_five_read_only_routes() -> None:
+def test_news_exposes_read_routes_and_only_the_two_review_mutations() -> None:
     routes = {
         (method, route.path)
         for route in routes_news.router.routes
@@ -294,6 +347,9 @@ def test_news_exposes_exactly_five_read_only_routes() -> None:
         # price tick cannot invalidate the feed's ETag every three seconds.
         ("GET", "/news/quotes"),
         ("GET", "/news/review"),
+        ("GET", "/news/review/tasks/{task_id}/evidence"),
+        ("POST", "/news/review/tasks/{task_id}/responses"),
+        ("POST", "/news/review/external-misses"),
     }
 
 
@@ -328,7 +384,9 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "members",
         "verdicts",
         "deliveries",
-        "labels",
+        "review",
+        "evidence_snapshots",
+        "reader_receipt",
         "normalization",
         # #88: the event-level aggregate plus every per-asset Reaction, with the closes they came from.
         "reaction",
@@ -347,6 +405,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "broker",
         "pipeline",
         "delivery",
+        "learning_retention",
         "control",
         "watchlist",
         "instruments",
@@ -372,7 +431,20 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "last_error_code",
         "e2e_p95_ms",
         "delivery_available",
-        "hourly_cap",
+    }
+    assert set(schemas_news.NewsLearningRetentionStatusData.model_fields) == {
+        "last_run_at_ms",
+        "eligible_recordings",
+        "eligible_cases",
+        "eligible_artifacts",
+        "deleted_recordings",
+        "deleted_cases",
+        "deleted_artifacts",
+        "oldest_recording_age_ms",
+        "oldest_case_age_ms",
+        "oldest_artifact_age_ms",
+        "last_error_code",
+        "updated_at_ms",
     }
     for name in dir(schemas_news):
         assert not any(marker in name for marker in ("Story", "Brief", "Rss", "TitleTranslation", "Notification")), name
@@ -528,7 +600,7 @@ def test_status_reports_unavailable_without_broker_or_token(client) -> None:
         "observed_at_ms": None,
     }
     assert data["delivery"]["delivery_available"] is False
-    assert data["delivery"]["hourly_cap"] >= 1
+    assert "hourly_cap" not in data["delivery"]
     assert data["control"] == {"paused": False, "mutes": []}
     assert isinstance(data["watchlist"], list)
 
@@ -571,16 +643,17 @@ def test_quotes_rejects_an_oversized_or_malformed_symbol_batch(client) -> None:
     assert unknown.json()["error"] == "unsupported_query_param"
 
 
-def test_review_is_bounded_by_hours_and_publishes_its_metric_version(client) -> None:
+def test_review_defaults_to_learning_queue_and_market_is_explicit(client) -> None:
     api, _ = client
     response = api.get("/api/news/review", params={"hours": 168, "token": TOKEN})
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["meta"]["hours"] == 168
-    assert data["meta"]["metric_version"] == "reaction_v1"
-    # A hit rate with no priced denominator is absent, never rendered as zero.
-    assert data["summary"]["hit_1h_pct"] is None and data["summary"]["hit_1h_n"] == 0
+    assert data["view"] == "queue"
+    assert data["status"] == "insufficient_evidence"
+    market = api.get("/api/news/review", params={"view": "market", "hours": 168, "token": TOKEN}).json()["data"]
+    assert market["view"] == "market"
+    assert market["reaction"]["meta"]["metric_version"] == "reaction_v1"
 
     assert api.get("/api/news/review", params={"hours": 721, "token": TOKEN}).status_code == 422
     assert api.get("/api/news/review", params={"hours": 0, "token": TOKEN}).status_code == 422

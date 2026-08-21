@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,7 @@ from tracefold.news.bus import (
     DeferError,
     PermanentError,
 )
+from tracefold.news.canary import CanaryRuntimeArm
 from tracefold.news.consumers import (
     DeduperConsumer,
     DelivererConsumer,
@@ -25,6 +27,7 @@ from tracefold.news.consumers import (
     TriageConsumer,
 )
 from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION, TRIAGE_PROMPT_VERSION
+from tracefold.news.triage_rules import DEFAULT_POLICY
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
@@ -67,6 +70,13 @@ class RecordingNews:
                 return None
             if name == "told_ledger" and name not in self.responses:
                 return []  # nothing pushed yet: an empty told ledger
+            if name == "latest_evidence_snapshot" and name not in self.responses:
+                card = self.responses.get("event_card") or {}
+                return {
+                    "evidence_version": int(card.get("evidence_version") or 1),
+                    "evidence_sha256": str(card.get("evidence_sha256") or "e" * 64),
+                    "focus_fact_id": str(card.get("focus_fact_id") or "fact-1"),
+                }
             if name == "outbox_scan" and name not in self.responses:
                 # #76: the Janitor turn is one read — rows to rescue plus how many the ceiling gave up on.
                 return (self.responses.get("unpublished_candidates") or [], self.responses.get("expired_count", 0))
@@ -98,7 +108,7 @@ class RecordingInstruments:
 
 
 class RecordingPrice:
-    """The #88 quote plane as the Deliverer sees it: silent by default, so every pre-v10 expectation holds."""
+    """Quote-plane double; silent by default so non-price tests keep their contract."""
 
     def __init__(self, *, quotes: list[dict[str, Any]] | None = None, error: Exception | None = None) -> None:
         self.quotes = quotes or []
@@ -128,16 +138,32 @@ class FakeWorkerDatabase:
         self.instruments = instruments or RecordingInstruments()
         self.price = price or RecordingPrice()
         self.operations: list[str] = []
+        self.heavy_operations: list[str] = []
         self.admission_timeout_for = admission_timeout_for or set()
 
     @contextmanager
     def worker_session(self, name: str, *_args: Any, **_kwargs: Any):
         del name
-        yield SimpleNamespace(news=self.news, instruments=self.instruments, price=self.price, transaction=nullcontext)
+        yield SimpleNamespace(
+            news=self.news,
+            instruments=self.instruments,
+            price=self.price,
+            transaction=nullcontext,
+        )
 
     async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
         del operation_timeout_seconds
         self.operations.append(name)
+        if name in self.admission_timeout_for:
+            raise ResourceAdmissionTimeout(f"worker_database_admission_timeout:{name}")
+        return fn(*args, **kwargs)
+
+    def heavy_business(self) -> FakeWorkerDatabase:
+        return self
+
+    async def run_business(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
+        del operation_timeout_seconds
+        self.heavy_operations.append(name)
         if name in self.admission_timeout_for:
             raise ResourceAdmissionTimeout(f"worker_database_admission_timeout:{name}")
         return fn(*args, **kwargs)
@@ -168,6 +194,9 @@ def _card(**overrides: Any) -> dict[str, Any]:
         "storyline_key": "asset:NVDA",
         "comparison_fingerprint": "f" * 64,
         "trace_id": "trace-1",
+        "evidence_version": 1,
+        "evidence_sha256": "e" * 64,
+        "focus_fact_id": "fact-1",
     }
     card.update(overrides)
     return card
@@ -219,9 +248,9 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
     def fake_admit(repos: Any, **kwargs: Any) -> Any:
         seen.append(kwargs)
-        return next(admissions)
+        return SimpleNamespace(results=(next(admissions),))
 
-    monkeypatch.setattr(consumers_module, "admit_item", fake_admit)
+    monkeypatch.setattr(consumers_module, "admit_frame", fake_admit)
     news = RecordingNews()
     bus = FakeBus()
     deduper = DeduperConsumer(
@@ -243,7 +272,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
     async def scenario() -> None:
         await deduper.handle(raw)
-        await deduper.handle(raw)  # redelivery: admit_item reports nothing new
+        await deduper.handle(raw)  # redelivery: admit_frame reports nothing new
         await deduper.handle(raw)  # a suppressed admission never reaches Triage
         await deduper.handle(raw)  # a listing admission does
         foreign = _message(
@@ -270,7 +299,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
 
 def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consumers_module, "admit_item", lambda *_a, **_k: pytest.fail("db never admitted"))
+    monkeypatch.setattr(consumers_module, "admit_frame", lambda *_a, **_k: pytest.fail("db never admitted"))
     news = RecordingNews()
     bus = FakeBus()
     deduper = DeduperConsumer(
@@ -292,14 +321,13 @@ def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkey
 
 
 # ---------------------------------------------------------------- Triage
-def _triage(news: RecordingNews, bus: FakeBus, *, hourly_cap: int = 20) -> TriageConsumer:
+def _triage(news: RecordingNews, bus: FakeBus) -> TriageConsumer:
     return TriageConsumer(
         bus=bus,
         db=FakeWorkerDatabase(news),
         model=None,
         watchlist_symbols=WATCHLIST,
         watchlist=sorted(WATCHLIST),
-        hourly_cap=hourly_cap,
         concurrency=1,
         circuit_failures=3,
         circuit_open_seconds=60.0,
@@ -309,10 +337,7 @@ def _triage(news: RecordingNews, bus: FakeBus, *, hourly_cap: int = 20) -> Triag
 def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degraded_verdict() -> None:
     """A degraded card carries no model judgment, so it pushes but never wears the ⚡ header (#77)."""
 
-    status_row = {"pushed_2h": 0, "pushed_4h": 0, "max_magnitude_2h": 0, "max_magnitude_4h": 0}
-    news = RecordingNews(
-        get_verdict=None, event_card=_card(), event_status=status_row, sent_count_since=0, insert_verdict=True
-    )
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
     bus = FakeBus()
     triage = _triage(news, bus)
 
@@ -329,7 +354,12 @@ def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degrad
     assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
     trace = inserted["trace"]
     assert trace["attempt"] == 1 and trace["queue_lag_ms"] >= 0
-    assert len(trace["prompt_sha256"]) == 64 and trace["status"] == status_row  # replayable snapshot
+    assert len(trace["prompt_sha256"]) == 64
+    assert trace["status"] == {
+        "storyline_key": "asset:NVDA",
+        "preliminary": True,
+        "queue_lag_ms": trace["queue_lag_ms"],
+    }  # replayable, quota-free input snapshot
     assert "latency_ms" not in trace and "input_sha256" not in trace  # no model call happened
     assert "NVIDIA to invest $100bn" in news.kwargs_of("set_context_line")["context_line"]
     # escalate is a high-importance push (⚡ + priority); there is no second lane to notify
@@ -350,7 +380,7 @@ def test_triage_without_model_pushes_watchlist_or_high_score_and_persists_degrad
     ],
 )
 def test_triage_without_model_drops_when_rule_baseline_drops(card: dict[str, Any]) -> None:
-    news = RecordingNews(get_verdict=None, event_card=card, event_status={}, sent_count_since=0, insert_verdict=True)
+    news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
     bus = FakeBus()
 
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
@@ -380,7 +410,7 @@ def test_triage_without_model_fails_open_on_high_priority_and_listing(card: dict
     """#81: a model outage used to drop every high-priority Event that had no grounded asset — which is what a
     missile strike, a rate decision or a delisting notice looks like. It now sends the wire headline."""
 
-    news = RecordingNews(get_verdict=None, event_card=card, event_status={}, sent_count_since=0, insert_verdict=True)
+    news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
     bus = FakeBus()
 
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
@@ -398,7 +428,7 @@ def test_triage_without_model_pushes_a_grounded_score_80_event() -> None:
     card = _card(
         event_id="ev-strong-80", priority="normal", provider_score_max=85.0, grounded_assets=["AMD"], watchlist_hits=[]
     )
-    news = RecordingNews(get_verdict=None, event_card=card, event_status={}, sent_count_since=0, insert_verdict=True)
+    news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
     bus = FakeBus()
 
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": card["event_id"]})))
@@ -410,7 +440,7 @@ def test_triage_without_model_pushes_a_grounded_score_80_event() -> None:
 
 
 def test_triage_without_model_never_pushes_while_muted_or_paused() -> None:
-    news = RecordingNews(get_verdict=None, event_card=_card(), event_status={}, sent_count_since=0, insert_verdict=True)
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
     news.control_state = {"paused": False, "mutes": [{"kind": "symbol", "key": "NVDA", "until_ms": NOW_MS * 2}]}
     bus = FakeBus()
 
@@ -450,7 +480,7 @@ def test_triage_output_failure_is_traced_and_never_opens_the_circuit() -> None:
     from tracefold.news.agents.triage_model import TriageModelError
 
     card = _card()
-    news = RecordingNews(get_verdict=None, event_card=card, event_status={}, sent_count_since=0, insert_verdict=True)
+    news = RecordingNews(get_verdict=None, event_card=card, insert_verdict=True)
     bus = FakeBus()
     truncated = [
         TriageModelError(
@@ -498,8 +528,6 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
     news = RecordingNews(
         get_verdict=None,
         event_card=card,
-        event_status={},
-        sent_count_since=0,
         insert_verdict=True,
         open_incident=1,
         close_open_incidents=1,
@@ -542,7 +570,7 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
     from tracefold.news.agents.triage_model import TriageCallResult
     from tracefold.news.models import TriageVerdict
 
-    news = RecordingNews(get_verdict=None, event_card=_card(), event_status={}, sent_count_since=0, insert_verdict=True)
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
     bus = FakeBus()
     answered_by_fallback = TriageCallResult(
         verdict=TriageVerdict(
@@ -603,8 +631,6 @@ def test_triage_rejects_missing_event_id_and_missing_event() -> None:
 
 # ---------------------------------------------------------------- Deliverer
 class RecordingSender:
-    """Captures the card the Deliverer would have sent, so a test can read what the reader would have seen."""
-
     def __init__(self) -> None:
         self.cards: list[dict[str, Any]] = []
 
@@ -620,7 +646,6 @@ def _deliverer(
     news: RecordingNews,
     bus: FakeBus,
     *,
-    hourly_cap: int = 20,
     price: RecordingPrice | None = None,
     sender: RecordingSender | None = None,
 ) -> DelivererConsumer:
@@ -630,7 +655,6 @@ def _deliverer(
         sender=sender,
         finite_operations=InlineFinite(),
         min_interval_seconds=0.0,
-        hourly_cap=hourly_cap,
     )
 
 
@@ -646,7 +670,6 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
             if stage == "triage"
             else None
         ),
-        "sent_count_since": 0,
         "begin_delivery": lambda **_k: next(states),
         "settle_delivery": True,
     }
@@ -687,13 +710,14 @@ def test_deliverer_without_sender_leaves_existing_delivery_untouched() -> None:
     assert "begin_delivery" in news.names() and "settle_delivery" not in news.names()
 
 
-def test_deliverer_hourly_cap_settles_first_card_terminal_before_any_send() -> None:
-    news = _delivery_news(sent_count_since=20)
+def test_deliverer_has_no_reader_count_input() -> None:
+    news = _delivery_news()
 
-    asyncio.run(_deliverer(news, FakeBus(), hourly_cap=20).handle(_message("verdict", {"event_id": "ev-strong"})))
+    asyncio.run(_deliverer(news, FakeBus()).handle(_message("verdict", {"event_id": "ev-strong"})))
 
+    assert "sent_count_since" not in news.names()
     settle = news.kwargs_of("settle_delivery")
-    assert settle["state"] == "terminal" and settle["error_code"] == "hourly_cap_reached"
+    assert settle["state"] == "terminal" and settle["error_code"] == "delivery_unavailable"
 
 
 def test_deliverer_skips_dropped_first_cards() -> None:
@@ -731,7 +755,7 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
                 "headline_zh": "英伟达",
                 "assets": [{"symbol": "NVDA", "role": "primary"}, {"symbol": "OPENAI", "role": "mentioned"}],
             },
-        },
+        }
     )
     sender = RecordingSender()
 
@@ -741,41 +765,30 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
         )
     )
 
-    # The quote request is `card_assets()` itself, so the facts line and the 行情 line cannot name different
-    # assets: the mentioned-only OPENAI tag is absent from both.
     assert price.requested == [["NVDA"]]
     assert sender.cards[0]["elements"][0]["content"].splitlines()[-1] == "行情 NVDA $217.32 24h +1.50%（永续）"
 
 
-def test_deliverer_delivers_the_card_when_the_price_plane_fails() -> None:
-    price = RecordingPrice(error=RuntimeError("quote lane on fire"))
+def test_deliverer_delivers_when_the_price_plane_fails() -> None:
     news = _delivery_news()
     sender = RecordingSender()
 
     asyncio.run(
-        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
-            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
-        )
+        _deliverer(
+            news, FakeBus(), price=RecordingPrice(error=RuntimeError("quote lane on fire")), sender=sender
+        ).handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
     )
 
-    # A price is never worth losing a card over: the card goes out, it simply has no 行情 line.
     assert news.kwargs_of("settle_delivery")["state"] == "sent"
     assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
 
 
-def test_deliverer_delivers_the_card_when_the_quote_read_cannot_be_admitted() -> None:
-    """The quote read has its own session, so a lane that will not admit it must not touch the card.
-
-    Guarding inside the callback is not enough: admission and timeout are enforced one frame above it, and on
-    the shared `news_delivery_load` budget an overrun raises `TransientError`, which is counted and
-    dead-letters the card after three attempts.
-    """
-
+def test_deliverer_delivers_when_quote_read_cannot_be_admitted() -> None:
     news = _delivery_news()
     sender = RecordingSender()
     db = FakeWorkerDatabase(news, admission_timeout_for={"news_delivery_quotes"}, price=RecordingPrice())
     deliverer = DelivererConsumer(
-        bus=FakeBus(), db=db, sender=sender, finite_operations=InlineFinite(), min_interval_seconds=0.0, hourly_cap=20
+        bus=FakeBus(), db=db, sender=sender, finite_operations=InlineFinite(), min_interval_seconds=0.0
     )
 
     asyncio.run(deliverer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
@@ -785,22 +798,33 @@ def test_deliverer_delivers_the_card_when_the_quote_read_cannot_be_admitted() ->
     assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
 
 
-def test_deliverer_does_not_price_a_card_nobody_will_see() -> None:
-    """Two queries on the hot News lane for output every path below discards (#113 review)."""
-
-    for news in (
-        _delivery_news(latest_verdict=lambda *, event_id, stage: {"final_decision": "drop", "verdict": {}}),
-        _delivery_news(sent_count_since=20),
-    ):
-        price = RecordingPrice()
-        asyncio.run(_deliverer(news, FakeBus(), price=price).handle(_message("verdict", {"event_id": "ev-strong"})))
-        assert price.requested == []
+def test_deliverer_does_not_read_quotes_for_a_card_it_will_not_send() -> None:
+    dropped = _delivery_news(latest_verdict=lambda *, event_id, stage: {"final_decision": "drop", "verdict": {}})
+    dropped_price = RecordingPrice()
+    asyncio.run(
+        _deliverer(dropped, FakeBus(), price=dropped_price, sender=RecordingSender()).handle(
+            _message("verdict", {"event_id": "ev-strong"})
+        )
+    )
+    assert dropped_price.requested == []
 
     paused = _delivery_news()
     paused.control_state = {"paused": True, "mutes": []}
-    price = RecordingPrice()
-    asyncio.run(_deliverer(paused, FakeBus(), price=price).handle(_message("verdict", {"event_id": "ev-strong"})))
-    assert price.requested == []
+    paused_price = RecordingPrice()
+    asyncio.run(
+        _deliverer(paused, FakeBus(), price=paused_price, sender=RecordingSender()).handle(
+            _message("verdict", {"event_id": "ev-strong"})
+        )
+    )
+    assert paused_price.requested == []
+
+    unavailable_price = RecordingPrice()
+    asyncio.run(
+        _deliverer(_delivery_news(), FakeBus(), price=unavailable_price).handle(
+            _message("verdict", {"event_id": "ev-strong"})
+        )
+    )
+    assert unavailable_price.requested == []
 
 
 # ---------------------------------------------------------------- Janitor
@@ -826,10 +850,12 @@ def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
     assert scan["older_than_ms"] - scan["newer_than_ms"] == OUTBOX_MAX_AGE_MS - 15_000
 
 
-def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog) -> None:
+def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog, monkeypatch) -> None:
     """The ceiling drops work on the floor; that has to be visible or it is just a quieter version of #72."""
 
     news = RecordingNews(unpublished_candidates=[], expired_count=3)
+    # Some earlier real-runtime tests reconfigure logging. This unit owns its logger state and restores it.
+    monkeypatch.setattr(logging.getLogger("tracefold.news"), "disabled", False)
     with caplog.at_level("WARNING", logger="tracefold.news"):
         asyncio.run(JanitorLoop(db=FakeWorkerDatabase(news), bus=FakeBus()).republish_unpublished())
     assert any("gave up on 3 stranded event" in r.getMessage() for r in caplog.records)
@@ -839,6 +865,38 @@ def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog) -> None:
         caplog.clear()
         asyncio.run(JanitorLoop(db=FakeWorkerDatabase(quiet), bus=FakeBus()).republish_unpublished())
     assert not [r for r in caplog.records if "gave up" in r.getMessage()]
+
+
+def test_janitor_runs_learning_retention_on_the_one_slot_cold_lane() -> None:
+    news = RecordingNews(
+        purge_learning_retention={
+            "deleted_recordings": 2,
+            "deleted_cases": 1,
+            "deleted_artifacts": 0,
+        }
+    )
+    db = FakeWorkerDatabase(news)
+
+    asyncio.run(JanitorLoop(db=db).turn())
+
+    assert db.heavy_operations == ["news_janitor"]
+    assert db.operations == []
+    assert news.kwargs_of("purge_learning_retention") == {"batch_size": 500}
+    assert "expire_bands" in news.names() and "purge_before" in news.names()
+
+
+def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
+    def _fail(**_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("broken retention function")
+
+    news = RecordingNews(purge_learning_retention=_fail)
+    db = FakeWorkerDatabase(news)
+
+    asyncio.run(JanitorLoop(db=db).turn())
+
+    assert db.heavy_operations == ["news_janitor", "news_learning_retention_error"]
+    error = news.kwargs_of("record_learning_retention_error")
+    assert error["error_code"] == "learning_retention_failed:RuntimeError"
 
 
 class _ScriptedTriageModel:
@@ -880,6 +938,64 @@ def _model_verdict(**overrides: Any) -> Any:
     return TriageVerdict(**base)
 
 
+def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment() -> None:
+    stable_model = _ScriptedTriageModel([_model_verdict(headline_zh="稳定版不应被调用")])
+    candidate_model = _ScriptedTriageModel([_model_verdict(headline_zh="候选版真实输出")])
+    stable_bundle = "a" * 64
+    candidate_bundle = "b" * 64
+    activation_id = "c" * 32
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(priority="normal"),
+        insert_verdict=True,
+        assign_agent_arm={
+            "activation_id": activation_id,
+            "arm": "candidate",
+            "bundle_sha": candidate_bundle,
+            "selector_version": "news_canary_selector_v1",
+            "eligibility_reason": "eligible_bucket",
+        },
+        evaluate_canary_rolling_slo={"evaluated": True, "tripped": False},
+    )
+    triage = TriageConsumer(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        model=stable_model,
+        watchlist_symbols=WATCHLIST,
+        watchlist=sorted(WATCHLIST),
+        concurrency=1,
+        circuit_failures=3,
+        circuit_open_seconds=60.0,
+        stable_bundle_sha=stable_bundle,
+        canary_arms={
+            candidate_bundle: CanaryRuntimeArm(
+                bundle_sha=candidate_bundle,
+                model=candidate_model,
+                policy=DEFAULT_POLICY,
+                prompt_version="candidate-v1",
+                prompt_sha256="d" * 64,
+            )
+        },
+    )
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert stable_model.inputs == []
+    assert len(candidate_model.inputs) == 1
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["prompt_version"] == "candidate-v1"
+    assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
+    assert inserted["trace"]["agent_assignment"] == {
+        "activation_id": activation_id,
+        "arm": "candidate",
+        "bundle_sha": candidate_bundle,
+        "selector_version": "news_canary_selector_v1",
+        "eligibility_reason": "eligible_bucket",
+    }
+    assert news.names().index("assign_agent_arm") < news.names().index("insert_verdict")
+    assert "evaluate_canary_rolling_slo" in news.names()
+
+
 def _ledger_row(
     event_id: str, at_ms: int, *, key: str = "asset:NVDA", headline: str = "英伟达投资 OpenAI"
 ) -> dict[str, Any]:
@@ -901,8 +1017,6 @@ def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restat
     news = RecordingNews(
         get_verdict=None,
         event_card=_card(),
-        event_status={"pushed_2h": 1, "pushed_4h": 1, "max_magnitude_2h": 2, "max_magnitude_4h": 2},
-        sent_count_since=0,
         insert_verdict=True,
         told_ledger=ledger,
     )
@@ -952,8 +1066,6 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     news = RecordingNews(
         get_verdict=None,
         event_card=_card(),
-        event_status={},
-        sent_count_since=0,
         insert_verdict=True,
         told_ledger=told_ledger,
     )
@@ -979,7 +1091,7 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     assert trace["first_verdict"]["novelty"] == "new_fact" and trace["first_verdict"]["decision"] == "push"
     assert trace["told_count"] == 1 and trace["restates_event_id"] == "ev-just-pushed"
     assert news.names().count("lock_storyline") == 2
-    # The re-ask reloads everything the model and decide() look at (card, window facts, control, hourly count).
+    # The re-ask reloads everything the model and decide() look at: card, sent ledger, and control state.
     assert news.names().count("event_card") == 2 and news.names().count("read_control") == 2
     assert bus.published == []
 
@@ -999,8 +1111,6 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     news = RecordingNews(
         get_verdict=None,
         event_card=_card(priority="normal", provider_score_max=70.0),
-        event_status={},
-        sent_count_since=0,
         insert_verdict=True,
         told_ledger=told_ledger,
     )
@@ -1027,21 +1137,12 @@ def test_triage_reask_failure_keeps_the_first_verdict_instead_of_the_rule_baseli
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
-def test_triage_degraded_fallback_never_earns_the_novelty_bypass() -> None:
-    """A rule-baseline placeholder verdict (no model judgment) is soft-throttled like before policy v3."""
+def test_triage_degraded_fallback_is_not_blocked_by_prior_reader_volume() -> None:
+    """A rule-baseline fallback follows its safety rule; no reader quota vetoes it."""
 
     news = RecordingNews(
         get_verdict=None,
         event_card=_card(),  # watchlist NVDA -> rule baseline pushes
-        event_status={
-            "pushed_2h": 1,
-            "pushed_4h": 1,
-            "max_magnitude_2h": 2,
-            "max_magnitude_4h": 2,
-            "directions_2h": ["neutral"],
-            "directions_4h": ["neutral"],
-        },
-        sent_count_since=0,
         insert_verdict=True,
     )
     bus = FakeBus()
@@ -1050,42 +1151,33 @@ def test_triage_degraded_fallback_never_earns_the_novelty_bypass() -> None:
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["degraded"] is True and inserted["final_decision"] == "throttled"
-    assert inserted["throttled_by"] == "storyline:asset:NVDA" and inserted["override_rule"] != "novel_bypass"
-    assert bus.published == []
+    assert inserted["degraded"] is True and inserted["final_decision"] == "push"
+    assert inserted["throttled_by"] is None and inserted["override_rule"] == "high_priority_push"
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
-def _throttling_news(*, ledger_headline: str) -> RecordingNews:
-    """A storyline the soft throttle stops (one m2 push already in the window) with one card in the ledger."""
+def _duplicate_news(*, ledger_headline: str) -> RecordingNews:
+    """One actually-sent card in the duplicate-evidence ledger."""
 
     return RecordingNews(
         get_verdict=None,
         event_card=_card(priority="normal", provider_score_max=75.0),
-        event_status={
-            "pushed_2h": 1,
-            "pushed_4h": 1,
-            "max_magnitude_2h": 2,
-            "max_magnitude_4h": 2,
-            "directions_2h": ["bullish"],
-            "directions_4h": ["bullish"],
-        },
-        sent_count_since=0,
         insert_verdict=True,
         told_ledger=[_ledger_row("ev-earlier", NOW_MS - 300_000, headline=ledger_headline)],
     )
 
 
-def test_triage_releases_a_card_the_reader_has_not_seen_and_traces_the_measurement() -> None:
-    """#81: the soft throttle releases on measured distinctness, and the trace records what it measured."""
+def test_triage_sends_a_distinct_card_and_traces_the_duplicate_measurement() -> None:
+    """Prior counts never block the card; the sent ledger is measured only for duplicate evidence."""
 
-    news = _throttling_news(ledger_headline="美联储纪要显示官员对通胀存在分歧")
+    news = _duplicate_news(ledger_headline="美联储纪要显示官员对通胀存在分歧")
     bus = FakeBus()
     triage = _triage_with_model(news, bus, _ScriptedTriageModel([_model_verdict()]))
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
 
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "distinct_bypass"
+    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "model_push_actionable"
     assert inserted["throttled_by"] is None
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
     assert inserted["trace"]["seen_similarity"] < 0.25 and inserted["trace"]["seen_count"] == 1
@@ -1095,7 +1187,7 @@ def test_triage_releases_a_card_the_reader_has_not_seen_and_traces_the_measureme
 def test_triage_withholds_a_card_the_reader_already_received() -> None:
     """The model calling its own event new buys nothing: the measurement against the reader's window decides."""
 
-    news = _throttling_news(ledger_headline="英伟达投资 OpenAI 数据中心")
+    news = _duplicate_news(ledger_headline="英伟达投资 OpenAI 数据中心")
     bus = FakeBus()
     triage = _triage_with_model(news, bus, _ScriptedTriageModel([_model_verdict(novelty="progression")]))
 
@@ -1110,23 +1202,13 @@ def test_triage_withholds_a_card_the_reader_already_received() -> None:
     assert seen_against["event_id"] == "ev-earlier"
     assert seen_against["headline_zh"] == "英伟达投资 OpenAI 数据中心"
     assert seen_against["at_ms"] == NOW_MS - 300_000  # `news why` can say how long ago the reader got it
-    # #100: which path measured it, so `status.pipeline.duplicates_withheld_24h` can separate the two.
-    assert inserted["trace"]["seen_scope"] == "throttled"
+    assert inserted["trace"]["seen_scope"] == "all"
 
 
 def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on() -> None:
-    """#100: the OKX batch. Each frame opens its own `asset:` key, so the count throttle never fires and policy
-    v5 never measured the card at all — even with the reader's ledger already loaded."""
+    """The OKX batch is caught by duplicate evidence even though every asset key is fresh."""
 
-    news = _throttling_news(ledger_headline="Ciena Corporation（$CIENx）出现在 OKX")
-    news.responses["event_status"] = {  # a storyline nobody has pushed on: the v5 throttle cannot see this card
-        "pushed_2h": 0,
-        "pushed_4h": 0,
-        "max_magnitude_2h": 0,
-        "max_magnitude_4h": 0,
-        "directions_2h": [],
-        "directions_4h": [],
-    }
+    news = _duplicate_news(ledger_headline="Ciena Corporation（$CIENx）出现在 OKX")
     bus = FakeBus()
     triage = _triage_with_model(
         news,

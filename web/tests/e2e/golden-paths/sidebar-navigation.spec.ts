@@ -48,8 +48,7 @@ test.describe("desktop sidebar navigation", () => {
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "状态" })).toBeVisible();
-    // #88 added 命中复盘 as the third destination; the tree stays flat.
-    await expect(primaryNavigation.getByRole("link", { name: "命中复盘" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);

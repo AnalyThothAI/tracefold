@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     query_audit = db_subcommands.add_parser("query-audit", help="explain PostgreSQL hot read paths")
     query_audit.add_argument("--analyze", action="store_true", help="run EXPLAIN ANALYZE with buffers")
 
-    news = subcommands.add_parser("news", help="News V3 broker, control, label, and evaluation commands")
+    news = subcommands.add_parser("news", help="News V3 broker, control, ReviewDesk, and learning commands")
     news_subcommands = news.add_subparsers(dest="news_command", required=True)
     news_subcommands.add_parser(
         "bus-check", help="connect to RabbitMQ, declare the News topology, and print queue depths"
@@ -58,92 +58,88 @@ def build_parser() -> argparse.ArgumentParser:
     news_instruments.add_argument("--symbol", default="", help="symbol to resolve (action=resolve)")
     news_instruments.add_argument("--days", type=_positive_int, default=7, help="look-back (action=unmatched)")
     news_instruments.add_argument("--limit", type=_positive_int, default=50, help="max rows (action=unmatched)")
-    news_label = news_subcommands.add_parser("label", help="record an operator label for one Event (learning plane)")
-    news_label.add_argument(
-        "event_id",
-        nargs="?",
-        default="",
-        help="Event to label; omit together with --subject to record a miss the pipeline never created an Event for",
+    news_review = news_subcommands.add_parser("review", help="ReviewDesk queue, evidence, and append-only judgments")
+    review_subcommands = news_review.add_subparsers(dest="review_command", required=True)
+    review_queue = review_subcommands.add_parser("queue", help="open the deterministic operator review queue")
+    review_queue.add_argument("--view", choices=("queue", "coverage", "proposals", "market"), default="queue")
+    review_queue.add_argument("--mode", choices=("event", "pairwise"), default="event")
+    review_queue.add_argument("--cohort", default="")
+    review_queue.add_argument("--stratum", default="")
+    review_queue.add_argument("--proposal", default="")
+    review_queue.add_argument("--task", default="")
+    review_queue.add_argument("--event", default="")
+    review_queue.add_argument("--status", choices=("pending", "accepted", "all"), default="pending")
+    review_queue.add_argument("--hours", type=_positive_int, default=24)
+    review_queue.add_argument("--limit", type=_positive_int, default=30)
+    review_queue.add_argument("--cursor", default="")
+    review_evidence = review_subcommands.add_parser("evidence", help="show the task-scoped evidence view")
+    review_evidence.add_argument("task")
+    review_evidence.add_argument("--version", required=True)
+    review_submit = review_subcommands.add_parser("submit", help="append and accept one rubric or pairwise judgment")
+    review_submit.add_argument("task")
+    review_submit.add_argument("--version", required=True)
+    review_submit.add_argument("--file", required=True)
+    review_submit.add_argument("--idempotency-key", default="")
+    review_external = review_subcommands.add_parser("external-miss", help="append an external miss and its rubric")
+    review_external.add_argument("--file", required=True)
+    review_external.add_argument("--idempotency-key", default="")
+    news_learning = news_subcommands.add_parser(
+        "learning", help="freeze reviewed datasets and evaluate one-variable Agent candidates"
     )
-    news_label.add_argument("label", choices=("good", "noise", "late", "wrong_direction", "dup", "missed", "must_push"))
-    news_label.add_argument("--note", default="", help="free-text note (<=200 chars)")
-    news_label.add_argument(
-        "--subject",
-        default="",
-        help="what was labelled, in words; required when no event_id, and denormalised so the label outlives the Event",
+    learning_subcommands = news_learning.add_subparsers(dest="learning_command", required=True)
+    learning_propose = learning_subcommands.add_parser("propose", help="seal a prompt or policy candidate manifest")
+    learning_propose.add_argument("--development", required=True, help="development dataset artifact SHA")
+    learning_propose.add_argument("--file", required=True, help="candidate proposal JSON/YAML")
+    learning_propose.add_argument("--out", required=True, help="write the sealed candidate manifest")
+    learning_freeze = learning_subcommands.add_parser("freeze", help="freeze accepted reviews into a dataset")
+    learning_freeze.add_argument("--role", choices=("development", "validation"), required=True)
+    learning_freeze.add_argument("--from-ms", type=_nonnegative_int, required=True)
+    learning_freeze.add_argument("--to-ms", type=_positive_int, required=True)
+    learning_freeze.add_argument("--candidate", default="", help="candidate manifest; required for validation")
+    learning_freeze.add_argument("--out", required=True, help="write the dataset manifest")
+    for action, stage in (("evaluate", None), ("shadow", "shadow")):
+        learning_eval = learning_subcommands.add_parser(action, help=f"run the {action} release-evidence gate")
+        learning_eval.add_argument("--development", required=True, help="development dataset artifact SHA")
+        learning_eval.add_argument("--validation", default="", help="validation dataset SHA")
+        learning_eval.add_argument("--candidate", required=True, help="candidate manifest JSON/YAML")
+        if stage is None:
+            learning_eval.add_argument(
+                "--stage",
+                choices=("offline", "holdout", "canary"),
+                default="offline",
+                help="evaluation evidence stage",
+            )
+            learning_eval.add_argument(
+                "--live-model", action="store_true", help="call the configured Triage model and append recordings"
+            )
+            learning_eval.add_argument(
+                "--observation-manifest",
+                default="",
+                help="optional sealed canary observation artifact SHA",
+            )
+        else:
+            learning_eval.add_argument(
+                "--observation-manifest",
+                default="",
+                help="reuse a sealed shadow observation artifact instead of collecting one",
+            )
+            learning_eval.add_argument(
+                "--live-model",
+                action="store_true",
+                help="cold-run the candidate over the closed validation window",
+            )
+        learning_eval.add_argument("--out", required=True, help="write the sealed evaluation report")
+    learning_canary = learning_subcommands.add_parser(
+        "canary", help="arm, inspect, or stop the durable one-arm production canary"
     )
-    news_label.add_argument("--by", default="operator", help="who is labelling (labels are correctable per person)")
-    news_eval = news_subcommands.add_parser("eval", help="offline evaluation of Triage decisions against labels")
-    news_eval.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
-    news_eval.add_argument("--policy-version", default="", help="restrict to one triage policy version")
-    news_replay_decisions = news_subcommands.add_parser(
-        "replay-decisions", help="re-run decide() over stored verdicts with a candidate policy (no model)"
-    )
-    news_replay_decisions.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
-    news_replay_decisions.add_argument("--escalate-magnitude", type=int, default=None, help="default: news.policy")
-    news_replay_decisions.add_argument("--min-push-magnitude", type=int, default=None, help="default: news.policy")
-    news_replay_decisions.add_argument("--min-watchlist-magnitude", type=int, default=None, help="default: news.policy")
-    news_replay_decisions.add_argument("--theme-cap-4h", type=_positive_int, default=None, help="default: news.policy")
-    news_replay_decisions.add_argument(
-        "--distinct-hard-cap-4h",
-        type=_positive_int,
-        default=None,
-        help="flood ceiling per theme / 4 h; default: news.policy",
-    )
-    news_replay_decisions.add_argument(
-        "--distinct-asset-cap-2h",
-        type=_positive_int,
-        default=None,
-        help="flood ceiling per asset / 2 h; default: news.policy",
-    )
-    news_replay_decisions.add_argument(
-        "--similarity-max",
-        type=float,
-        default=None,
-        help="release a throttled card below this resemblance to the reader's window (0 = pre-v5 count cap)",
-    )
-    news_replay_decisions.add_argument(
-        "--high-priority-escalates",
-        action="store_true",
-        help="replay with the pre-v4 behaviour: a high-priority push becomes an escalate (#77)",
-    )
-    news_replay_decisions.add_argument(
-        "--no-restatement-drop", action="store_true", help="replay without dropping grounded restatements"
-    )
-    news_replay_decisions.add_argument(
-        "--no-storyline-throttle", action="store_true", help="replay with storyline throttling switched off"
-    )
-    news_replay_decisions.add_argument(
-        "--no-unclear-push", action="store_true", help="replay without the unclear-but-clear-event push rule"
-    )
-    news_corpus = news_subcommands.add_parser(
-        "corpus", help="freeze the stored Triage decisions into a replayable, self-hashing corpus"
-    )
-    news_corpus.add_argument("action", choices=("freeze",), nargs="?", default="freeze")
-    news_corpus.add_argument("--hours", type=_positive_int, default=168, help="look-back window")
-    news_corpus.add_argument("--out", default="", help="file to write (default: stdout)")
-    news_validate = news_subcommands.add_parser(
-        "validate-candidate",
-        help="replay a candidate policy against a frozen corpus and decide whether it may ship (exit 1 = FAIL)",
-    )
-    news_validate.add_argument("--corpus", required=True, help="corpus file from `news corpus freeze`")
-    news_validate.add_argument(
-        "--candidate", default="", help="YAML/JSON file with a `policy` mapping of overrides; --set wins over it"
-    )
-    news_validate.add_argument(
-        "--set",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        dest="overrides",
-        help="policy override, repeatable (e.g. --set similarity_max=0.3)",
-    )
-    news_validate.add_argument(
-        "--expectations",
-        default="",
-        help="JSON file of {event_id: must_push|may_push|may_drop} — the reviewed boundary/retention judgments",
-    )
-    news_validate.add_argument("--evidence", default="", help="file to write the immutable evidence document to")
+    canary_subcommands = learning_canary.add_subparsers(dest="canary_command", required=True)
+    canary_arm = canary_subcommands.add_parser("arm", help="arm the image-carried candidate at code-owned exposure")
+    canary_arm.add_argument("--candidate", required=True, help="sealed CandidateManifest SHA carried by this image")
+    canary_subcommands.add_parser("status", help="show activation, revision, and assignment counts")
+    for transition in ("hold", "resume", "trip", "close"):
+        canary_transition = canary_subcommands.add_parser(transition, help=f"{transition} one activation")
+        canary_transition.add_argument("--activation", required=True)
+        canary_transition.add_argument("--reason", required=True)
     news_replay = news_subcommands.add_parser(
         "replay", help="replay a JSON file of provider hits through Deduper+Gate (no model, no broker)"
     )

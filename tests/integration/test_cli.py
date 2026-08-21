@@ -106,9 +106,9 @@ class CliTests(unittest.TestCase):
             ["db", "query-audit"],
             ["db", "query-audit", "--analyze"],
             ["ops", "validate-projections", "--sample", "5"],
-            ["news", "label", "ev-1", "noise", "--note", "template"],
+            ["news", "review", "queue", "--event", "ev-1", "--limit", "5"],
             ["news", "dlq", "inspect", "--limit", "5"],
-            ["news", "replay-decisions", "--hours", "24", "--min-push-magnitude", "3"],
+            ["news", "review", "evidence", "evt.ev-1.1.0123456789abcdef", "--version", "a" * 64],
         ]
 
         parsed = [parser.parse_args(command) for command in commands]
@@ -119,11 +119,11 @@ class CliTests(unittest.TestCase):
         self.assertTrue(parsed[2].analyze)
         self.assertEqual(parsed[3].ops_command, "validate-projections")
         self.assertEqual(parsed[3].sample, 5)
-        self.assertEqual(parsed[4].news_command, "label")
-        self.assertEqual((parsed[4].event_id, parsed[4].label, parsed[4].note), ("ev-1", "noise", "template"))
+        self.assertEqual((parsed[4].news_command, parsed[4].review_command), ("review", "queue"))
+        self.assertEqual((parsed[4].event, parsed[4].limit), ("ev-1", 5))
         self.assertEqual((parsed[5].news_command, parsed[5].dlq_action, parsed[5].limit), ("dlq", "inspect", 5))
-        self.assertEqual(parsed[6].news_command, "replay-decisions")
-        self.assertEqual((parsed[6].hours, parsed[6].min_push_magnitude), (24, 3))
+        self.assertEqual((parsed[6].news_command, parsed[6].review_command), ("review", "evidence"))
+        self.assertEqual((parsed[6].task, parsed[6].version), ("evt.ev-1.1.0123456789abcdef", "a" * 64))
 
     def test_cli_rejects_retired_hard_cut_commands(self):
         parser = build_parser()
@@ -139,6 +139,15 @@ class CliTests(unittest.TestCase):
             )
         with self.assertRaises(SystemExit):
             parser.parse_args(["ops", "hard-cut-rebuild", "--execute"])
+        for command in (
+            ["news", "label", "ev-1", "noise"],
+            ["news", "eval"],
+            ["news", "replay-decisions"],
+            ["news", "corpus", "freeze"],
+            ["news", "validate-candidate"],
+        ):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(command)
 
     def test_cli_rejects_retired_projection_queue_commands(self):
         parser = build_parser()
@@ -234,10 +243,10 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(set(news["broker"]), {"url_configured", "name_prefix"})
         self.assertEqual(news["policy"]["min_push_magnitude"], 1)
-        self.assertEqual(news["policy"]["theme_cap_4h"], 3)
         self.assertEqual(news["policy"]["similarity_max"], 0.25)
-        self.assertEqual(news["policy"]["distinct_hard_cap_4h"], 18)
-        self.assertEqual(news["policy"]["distinct_asset_cap_2h"], 6)
+        self.assertNotIn("theme_cap_4h", news["policy"])
+        self.assertNotIn("distinct_hard_cap_4h", news["policy"])
+        self.assertNotIn("distinct_asset_cap_2h", news["policy"])
         self.assertIs(news["policy"]["restatement_drop"], True)
         self.assertEqual(news["retention"], {"raw_days": 30, "judged_days": 365})
         self.assertIs(news["gate"]["suppress_low_signal"], False)
@@ -245,7 +254,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue(news["models"]["triage_configured"])
         self.assertEqual(news["models"]["triage_model"], "deepseek-chat")
         self.assertIsInstance(news["watchlist"], list)
-        self.assertGreaterEqual(news["push"]["hourly_cap"], 1)
+        self.assertNotIn("hourly_cap", news["push"])
         self.assertNotIn("rss_enabled", news)
         self.assertNotIn("brief", news)
         self.assertNotIn("title_presentation", news)
@@ -254,7 +263,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")
         self.assertEqual(
             set(payload["data"]["store"]["postgres_roles"]),
-            {"serve", "workers", "migrate"},
+            {"serve", "review", "workers", "migrate"},
         )
         self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 7)
         self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 8)
@@ -419,6 +428,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
+        "postgres_review_password",
         "postgres_migrate_password",
     ):
         path = app_home / name
@@ -438,6 +448,7 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
+        "postgres_review_password",
         "postgres_migrate_password",
     )
     before = {name: (app_home / name).read_bytes() for name in tracked_names}

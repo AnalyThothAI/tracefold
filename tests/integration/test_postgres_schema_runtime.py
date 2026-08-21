@@ -183,7 +183,11 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert RETIRED_BACKEND_TABLES.isdisjoint(tables)
     assert RETIRED_MACRO_RESEARCH_TABLES.isdisjoint(tables)
     assert LEGACY_NEWS_TABLES.isdisjoint(tables)
-    assert {"news_strategy_provenance_valid"} <= functions
+    assert {
+        "news_strategy_provenance_valid",
+        "reject_news_event_evidence_mutation",
+        "reject_news_review_mutation",
+    } <= functions
     assert {"forbid_market_fact_update", "reject_macro_fact_mutation"}.isdisjoint(functions)
     assert {
         "event_id",
@@ -198,6 +202,12 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "published_at_ms",
         "ingest_mode",
         "search_doc",
+        "focus_fact_id",
+        "focus_fact_text",
+        "focus_fact_context",
+        "focus_fact_method",
+        "focus_span_start",
+        "focus_span_end",
     } <= news_event_columns
     assert news_delivery_columns == {
         "event_id",
@@ -242,6 +252,10 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_verdicts_final",
         "ix_news_deliveries_state",
         "ix_news_deliveries_sent",
+        "ix_news_event_evidence_created",
+        "ix_news_external_miss_created",
+        "ix_news_reviews_event_created",
+        "ix_news_reviews_task_created",
     } <= set(news_v3_indexes)
     assert "ix_news_marks_due" not in news_v3_indexes
     assert "state = 'sent'" in news_v3_indexes["ix_news_deliveries_sent"]
@@ -251,7 +265,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     unpublished_index = news_v3_indexes["ix_news_events_unpublished"]
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260820_0283"
+    assert version == latest_migration_version() == "20260821_0288"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -276,4 +290,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260820_0283"
+    assert version == latest_migration_version() == "20260821_0288"

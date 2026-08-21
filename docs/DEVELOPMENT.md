@@ -110,58 +110,58 @@ service and corpus lanes, and `make test-all` everything (~6.5 minutes).
 Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. There are no historical migration-path tests: the Alembic chain is the
-`20260818_0275` current-schema baseline plus `20260818_0276`,
-`20260818_0277`, and `20260819_0278`, and schema tests run against that
+`20260818_0275` current-schema baseline plus the linear revisions through
+`20260821_0288`, and schema tests run against that
 migrated head. The e2e lane (`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
 that the retired GMGN-lane and Macro routes answer `404`; it runs no Workers
-subprocess. There is no
-acceptance-bundle, collector, or sealing workflow; runtime evidence comes from
-the maintained lanes above.
+subprocess. ReviewDesk and CandidateEvaluator have their own integration lanes;
+production shadow/canary evidence is sealed in PostgreSQL rather than inferred
+from the HTTP e2e fixture.
 
 ### News V3 evaluation seams
 
-News V3 is evaluated through public seams: `tracefold.news.eval.replay`
-(`tracefold news replay <hits.json>` runs Deduper+Gate in memory over provider
-hits; `tests/fixtures/news_v3_hits_sample.json` is the real, redacted golden
-corpus), `tracefold.news.triage_rules.decide()` (pure post-rules with an
-optional `DecidePolicy`, golden-tested in `tests/news/test_news_v3_pure.py`),
-and `tracefold.news.eval.offline` (`tracefold news eval` scores stored verdicts
-against `news_event_labels` only; `tracefold news replay-decisions` re-runs
-`decide()` with a candidate policy and no model).
+News V3 has three public evaluation seams: `tracefold.news.eval.replay` for
+deterministic Deduper+Gate regression, pure `triage_rules.decide()` unit tests,
+and the #112 `CandidateEvaluator` for a whole semantic Agent candidate. The
+first two are code correctness tests; only the third can compare prompt,
+policy, or model behavior against accepted production evidence.
 
-**Changing `decide()` or `news.policy` goes through the release gate** (issue
-#81). `replay-decisions` reuses each verdict's stored window snapshot, so it
-answers "which cards flip", not "what does flipping them do to every later
-card". `tracefold.news.eval.harness` answers the second question: freeze a
-corpus once, then replay the deployed policy and the candidate over it
-sequentially, rebuilding the storyline windows and the reader's ledger as
-decisions change.
+Work from evidence, never directly from a complaint:
 
 ```bash
-uv run tracefold news corpus freeze --hours 168 --out /tmp/corpus.json
-uv run tracefold news validate-candidate --corpus /tmp/corpus.json \
-  --expectations tests/fixtures/news_recall_boundary_v1.json \
-  --set distinct_hard_cap_4h=24 --set distinct_asset_cap_2h=8 \
-  --evidence /tmp/evidence.json          # exit 1 = reject, and it names the check
+uv run tracefold news review queue --view coverage --hours 168
+uv run tracefold news review queue --stratum model_drop --hours 168
+uv run tracefold news review evidence TASK --version TASK_VERSION
+uv run tracefold news review submit TASK --version TASK_VERSION \
+  --file /tmp/rubric.json --idempotency-key UUID
+
+uv run tracefold news learning freeze --role development \
+  --from-ms START --to-ms END --out /tmp/development.json
+uv run tracefold news learning propose --development DATASET_SHA \
+  --file /tmp/one-variable-candidate.yaml --out /tmp/candidate.json
+uv run tracefold news learning evaluate --development DATASET_SHA \
+  --candidate /tmp/candidate.json --stage offline --live-model \
+  --out /tmp/offline-report.json
 ```
 
-The gate is recall-first and deliberately asymmetric: a case marked `must_push`
-that the deployed policy delivers can never be lost, misses can never grow, and
-near-duplicate pairs may only grow against at least three times as many facts
-the candidate stops losing. Duplicates are scored with a metric `decide()`
-never reads — scoring a rule with the rule is a tautology, not evidence. The
-reviewed expectations overlay is part of the trusted root: it, `tests/golden/`,
-`tests/fixtures/news_v3_expectations.json`, `decide()` itself, the gate, and
-`~/.tracefold/config.yaml` are human-owned and no automated proposal path may
-write them.
+The trusted root is the reader contract, rubric, accepted reviews, temporal
+holdout membership, release thresholds, stable bundle/image and production
+receipts. No optimizer or candidate path may write any of them. Validation and
+holdout run stable and candidate sequentially because a different earlier
+decision changes each arm's later would-reach-reader ledger. Prompt candidates
+fix the model and inference config; model candidates fix the prompt/input and
+inference config; policy candidates reuse recorded semantic verdicts for the
+cheap development screen but still pass the later semantic and production
+stages. Model record/replay is exact and fails on an unrecorded request.
 
-The `must_push` set is filled from the console or the CLI (`tracefold news
-label <event_id> must_push`, or `--subject "…"` with no Event for a miss the
-pipeline never saw). Only mark a case the pipeline *decided to send* and a rule
-withheld: a card the model itself called noise is unrecoverable by any policy,
-so marking it would only deadlock the gate.
+Promotion requires sealed PASS artifacts in order: development, future
+temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,
+then stable deployment. `learning canary trip` is the fail-closed rollback
+control. The migration and tests establish this mechanism; they do not prove a
+candidate is better. Production proof begins only after the minimum reviewed
+boundary/retention/negative clusters and future observation windows exist.
 Broker behavior is covered by `tests/integration/test_news_bus_rabbitmq.py`
 against the compose RabbitMQ (`TRACEFOLD_TEST_AMQP_URL`, default
 `amqp://tracefold:tracefold@127.0.0.1:5672/`; skipped when unreachable); every

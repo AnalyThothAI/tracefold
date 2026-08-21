@@ -52,6 +52,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
+        "postgres_review_password",
         "postgres_migrate_password",
     ]
 
@@ -85,6 +86,7 @@ def test_compose_declares_host_role_password_files_as_postgres_init_secrets() ->
 
     assert compose["secrets"]["postgres_serve_password"]["file"] == "${HOME}/.tracefold/postgres_serve_password"
     assert compose["secrets"]["postgres_workers_password"]["file"] == "${HOME}/.tracefold/postgres_workers_password"
+    assert compose["secrets"]["postgres_review_password"]["file"] == "${HOME}/.tracefold/postgres_review_password"
     assert compose["secrets"]["postgres_migrate_password"]["file"] == "${HOME}/.tracefold/postgres_migrate_password"
 
 
@@ -94,7 +96,8 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     passwords = {
         "postgres_serve_password": "A" * 43,
         "postgres_workers_password": "B" * 43,
-        "postgres_migrate_password": "C" * 43,
+        "postgres_review_password": "C" * 43,
+        "postgres_migrate_password": "D" * 43,
     }
     for name, password in passwords.items():
         path = secrets_dir / name
@@ -133,6 +136,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     assert "CREATE ROLE tracefold_owner" in sql
     assert "CREATE ROLE tracefold_serve" in sql
     assert "CREATE ROLE tracefold_workers" in sql
+    assert "CREATE ROLE tracefold_review" in sql
     assert "CREATE ROLE tracefold_migrate" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE" in sql
@@ -153,7 +157,8 @@ def test_postgres_init_script_rejects_invalid_password_charset_without_echoing_v
     passwords = {
         "postgres_serve_password": invalid_password,
         "postgres_workers_password": "B" * 43,
-        "postgres_migrate_password": "C" * 43,
+        "postgres_review_password": "C" * 43,
+        "postgres_migrate_password": "D" * 43,
     }
     for name, password in passwords.items():
         path = secrets_dir / name
@@ -183,6 +188,7 @@ def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_
         "tracefold_owner",
         "tracefold_serve",
         "tracefold_workers",
+        "tracefold_review",
         "tracefold_migrate",
         "tracefold_migrate_owner_membership",
         "public_schema_owner",
@@ -202,12 +208,16 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     worker_volumes = compose["services"]["workers"].get("volumes", [])
 
     assert any("postgres_serve_password" in volume for volume in serve_volumes)
+    assert any("postgres_review_password" in volume for volume in serve_volumes)
     assert not any(
         "postgres_workers_password" in volume or "postgres_migrate_password" in volume for volume in serve_volumes
     )
     assert any("postgres_workers_password" in volume for volume in worker_volumes)
     assert not any(
-        "postgres_serve_password" in volume or "postgres_migrate_password" in volume for volume in worker_volumes
+        "postgres_serve_password" in volume
+        or "postgres_review_password" in volume
+        or "postgres_migrate_password" in volume
+        for volume in worker_volumes
     )
     assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes])
     assert "tracefold-postgres" in compose["volumes"]

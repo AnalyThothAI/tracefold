@@ -20,7 +20,7 @@ export type AppNavigationGroup = {
 
 /**
  * The console's whole route tree. News is the only product (#68), so its three surfaces are the navigation:
- * the Event feed, 命中复盘 — what the market actually did after the Events the pipeline judged (#88) — and the
+ * the Event feed, 学习复盘 — immutable human evidence and candidate evaluation — and the
  * pipeline status behind both. Event detail lives under the feed and highlights it.
  *
  * One model, three presentations: the desktop sidebar, the tablet drawer and the phone tab bar all read this
@@ -40,7 +40,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
       {
         icon: Target,
         isActive: (pathname) => pathname === "/news/review",
-        label: "命中复盘",
+        label: "学习复盘",
         to: "/news/review",
       },
       {

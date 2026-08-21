@@ -9,6 +9,7 @@ from psycopg import sql
 RUNTIME_LOGIN_ROLES = (
     "tracefold_serve",
     "tracefold_workers",
+    "tracefold_review",
     "tracefold_migrate",
 )
 LEGACY_RUNTIME_ROLE = "tracefold_app"
@@ -66,6 +67,7 @@ def runtime_role_contract(
     owner = by_name.get("tracefold_owner")
     serve = by_name.get("tracefold_serve")
     workers = by_name.get("tracefold_workers")
+    review = by_name.get("tracefold_review")
     migrate = by_name.get("tracefold_migrate")
     legacy = by_name.get(LEGACY_RUNTIME_ROLE)
     schema_owner_row = conn.execute(
@@ -100,6 +102,11 @@ def runtime_role_contract(
                 'public',
                 'CREATE'
               ) AS workers_create,
+              has_table_privilege(
+                'tracefold_review',
+                'public.news_events',
+                'SELECT'
+              ) AS review_events_select,
               pg_has_role(
                 'tracefold_migrate',
                 'tracefold_owner',
@@ -113,6 +120,7 @@ def runtime_role_contract(
         "serve_login": serve is not None and bool(serve["rolcanlogin"]),
         "serve_read_only": serve is not None and str(serve["read_only_setting"]).endswith("=on"),
         "workers_login": workers is not None and bool(workers["rolcanlogin"]),
+        "review_login": review is not None and bool(review["rolcanlogin"]),
         "migrate_login_noinherit": (
             migrate is not None and bool(migrate["rolcanlogin"]) and not bool(migrate["rolinherit"])
         ),
@@ -122,6 +130,7 @@ def runtime_role_contract(
         "serve_insert_denied": not bool(privileges["serve_insert"]),
         "workers_dml": bool(privileges["workers_dml"]),
         "workers_create_denied": not bool(privileges["workers_create"]),
+        "review_base_select_denied": not bool(privileges["review_events_select"]),
         "migrate_owner_member": bool(privileges["migrate_owner_member"]),
     }
     failures = [name for name, passed in checks.items() if not passed]

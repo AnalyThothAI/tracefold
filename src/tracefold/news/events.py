@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .exact_atom_identity import event_family, event_window_ms
+from .facts import FactUnit, extract_fact_units
 from .gate import GateInput, GateVerdict, evaluate_gate
 from .minhash import band_keys, minhash_signature
 from .models import EVENT_IDENTITY_VERSION
@@ -38,10 +39,70 @@ class AdmitResult:
     storyline_key: str
     comparison_fingerprint: str
     title: str
+    evidence_focus_changed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AdmitBatchResult:
+    """All deterministic FactUnits admitted from one provider Item."""
+
+    item_id: str
+    item_inserted: bool
+    results: tuple[AdmitResult, ...]
 
 
 def item_identity(*, source_id: str, source_item_key: str) -> str:
     return hashlib.sha256(f"{source_id}\x1f{source_item_key}".encode()).hexdigest()
+
+
+def _event_identity(*, item_id: str, fact: FactUnit) -> str:
+    # Preserve the established one-Item/one-Event identity for ordinary Items.
+    # Explicit digest bullets need distinct stable identities.
+    if fact.method == "whole_item":
+        return item_id
+    return hashlib.sha256(f"{item_id}\x1f{fact.fact_id}".encode()).hexdigest()
+
+
+def admit_frame(
+    repos: Any,
+    *,
+    event: OpenNewsEvent,
+    ingest_mode: str,
+    observed_at_ms: int,
+    trace_id: str,
+    watchlist_symbols: frozenset[str],
+    now_ms: int,
+    text_override: str | None = None,
+    suppress_low_signal: bool = False,
+    instrument_classes: Mapping[str, str] | None = None,
+) -> AdmitBatchResult:
+    """Admit every high-confidence FactUnit in one provider Item."""
+
+    raw_text = text_override if text_override is not None else (event.raw_text or _reconstruct_text(event))
+    parent = extract_title(raw_text)
+    item_id = item_identity(source_id=OPENNEWS_SOURCE_ID, source_item_key=event.provider_record_id)
+    units = extract_fact_units(
+        item_id=item_id,
+        raw_text=raw_text,
+        fallback_title=parent.title or (event.entry.title or "")[:500],
+    )
+    results = tuple(
+        admit_item(
+            repos,
+            event=event,
+            ingest_mode=ingest_mode,
+            observed_at_ms=observed_at_ms,
+            trace_id=trace_id,
+            watchlist_symbols=watchlist_symbols,
+            now_ms=now_ms,
+            text_override=text_override,
+            suppress_low_signal=suppress_low_signal,
+            instrument_classes=instrument_classes,
+            _fact_unit=unit,
+        )
+        for unit in units
+    )
+    return AdmitBatchResult(item_id=item_id, item_inserted=any(r.item_inserted for r in results), results=results)
 
 
 def _strong_facts(title: str, grounded: Sequence[str]) -> tuple[set[str], set[str]]:
@@ -80,6 +141,7 @@ def admit_item(
     text_override: str | None = None,
     suppress_low_signal: bool = False,
     instrument_classes: Mapping[str, str] | None = None,
+    _fact_unit: FactUnit | None = None,
 ) -> AdmitResult:
     """Idempotent by Item identity. Returns the Event assignment for the (possibly pre-existing) Item.
 
@@ -93,19 +155,28 @@ def admit_item(
         str(s.get("id")) for s in (metadata.get("strategies") or []) if isinstance(s, Mapping) and s.get("id")
     )
     raw_text = text_override if text_override is not None else (event.raw_text or _reconstruct_text(event))
-    extracted = extract_title(raw_text)
-    title = extracted.title or (event.entry.title or "")[:500]
+    parent_extracted = extract_title(raw_text)
+    item_id = item_identity(source_id=OPENNEWS_SOURCE_ID, source_item_key=event.provider_record_id)
+    fact = (
+        _fact_unit
+        or extract_fact_units(
+            item_id=item_id,
+            raw_text=raw_text,
+            fallback_title=parent_extracted.title or (event.entry.title or "")[:500],
+        )[0]
+    )
+    extracted = extract_title(fact.text)
+    title = extracted.title or fact.text[:500]
     comparison = extracted.comparison
     family = event_family(comparison)
     fingerprint = hashlib.sha256(comparison.encode("utf-8")).hexdigest()
-    item_id = item_identity(source_id=OPENNEWS_SOURCE_ID, source_item_key=event.provider_record_id)
     published_at_ms = int(event.entry.published_at_ms or observed_at_ms)
     inserted = news.upsert_item(
         item_id=item_id,
         source_id=OPENNEWS_SOURCE_ID,
         source_item_key=event.provider_record_id,
-        title=title or "(untitled)",
-        raw_first_line=extracted.first_line[:500],
+        title=parent_extracted.title or title or "(untitled)",
+        raw_first_line=parent_extracted.first_line[:500],
         description=description_after_title(raw_text) or event.entry.description or "",
         canonical_url=event.entry.link,
         reporting_origin=event.entry.reporting_origin or "opennews",
@@ -118,7 +189,14 @@ def admit_item(
         now_ms=now_ms,
     )
     existing_membership = repos.conn.execute(
-        "SELECT event_id, match_kind FROM news_event_members WHERE item_id = %s LIMIT 1", (item_id,)
+        """
+        SELECT m.event_id, m.match_kind
+          FROM news_event_members m
+          JOIN news_events e ON e.event_id = m.event_id
+         WHERE m.item_id = %s AND m.fact_id = %s
+         ORDER BY e.opened_at_ms LIMIT 1
+        """,
+        (item_id, fact.fact_id),
     ).fetchone()
     if existing_membership is not None:
         ev = repos.conn.execute(
@@ -149,7 +227,7 @@ def admit_item(
             coins=coins,
             ingest_mode=ingest_mode,
             watchlist_symbols=watchlist_symbols,
-            raw_first_line=extracted.first_line,
+            raw_first_line=parent_extracted.first_line,
             suppress_low_signal=suppress_low_signal,
             instrument_classes=instrument_classes,
         )
@@ -168,9 +246,11 @@ def admit_item(
                 match_kind="exact",
                 jaccard_estimate=1.0,
                 provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
+                fact_id=fact.fact_id,
+                fact_text=fact.text,
                 now_ms=now_ms,
             )
-            return _member_result(
+            result = _member_result(
                 repos,
                 event_id=str(exact["event_id"]),
                 item_id=item_id,
@@ -183,6 +263,13 @@ def admit_item(
                 reporting_origin=event.entry.reporting_origin or "opennews",
                 now_ms=now_ms,
             )
+            news.append_evidence_snapshot(
+                event_id=result.event_id,
+                now_ms=now_ms,
+                focus_item_id=item_id if result.evidence_focus_changed else None,
+                focus_fact=fact if result.evidence_focus_changed else None,
+            )
+            return result
         signature = minhash_signature(tokens)
         keys = band_keys(signature)
         mine = _strong_facts(title, gate.grounded_assets)
@@ -202,9 +289,11 @@ def admit_item(
                 match_kind="near",
                 jaccard_estimate=round(best_j, 4),
                 provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
+                fact_id=fact.fact_id,
+                fact_text=fact.text,
                 now_ms=now_ms,
             )
-            return _member_result(
+            result = _member_result(
                 repos,
                 event_id=best_id,
                 item_id=item_id,
@@ -217,6 +306,13 @@ def admit_item(
                 reporting_origin=event.entry.reporting_origin or "opennews",
                 now_ms=now_ms,
             )
+            news.append_evidence_snapshot(
+                event_id=result.event_id,
+                now_ms=now_ms,
+                focus_item_id=item_id if result.evidence_focus_changed else None,
+                focus_fact=fact if result.evidence_focus_changed else None,
+            )
+            return result
     else:
         keys = ()
 
@@ -224,13 +320,20 @@ def admit_item(
         title=title, grounded_assets=gate.strong_assets, asset_class=gate.asset_class, family=family
     )
     context_line = f"[{gate.asset_class}/{family}/{_engine_type(metadata)}] " + " ".join(gate.grounded_assets)
+    event_id = _event_identity(item_id=item_id, fact=fact)
     news.insert_event(
-        event_id=item_id,
+        event_id=event_id,
         leader_item_id=item_id,
         family=family,
         comparison_fingerprint=fingerprint,
         comparison_title=comparison,
         leader_title=title or "(untitled)",
+        focus_fact_id=fact.fact_id,
+        focus_fact_text=fact.text,
+        focus_fact_context=fact.context,
+        focus_fact_method=fact.method,
+        focus_span_start=fact.span_start,
+        focus_span_end=fact.span_end,
         opened_at_ms=published_at_ms,
         expires_at_ms=published_at_ms + window_ms,
         admission=gate.admission,
@@ -248,8 +351,9 @@ def admit_item(
         band_keys=keys if shareable else (),
         now_ms=now_ms,
     )
+    news.append_evidence_snapshot(event_id=event_id, now_ms=now_ms)
     return AdmitResult(
-        item_id, inserted, item_id, True, gate.admission, "leader", gate, family, storyline, fingerprint, title
+        item_id, inserted, event_id, True, gate.admission, "leader", gate, family, storyline, fingerprint, title
     )
 
 
@@ -275,7 +379,8 @@ def _member_result(
 
     row = repos.conn.execute(
         """
-        SELECT e.admission, e.storyline_key, e.priority, e.published_at_ms, i.reporting_origin AS leader_origin
+        SELECT e.admission, e.storyline_key, e.priority, e.published_at_ms,
+               i.reporting_origin AS leader_origin, i.provider_metadata AS leader_provider_metadata
           FROM news_events e JOIN news_items i ON i.item_id = e.leader_item_id
          WHERE e.event_id = %s
         """,
@@ -283,24 +388,32 @@ def _member_result(
     ).fetchone()
     admission = str(row["admission"]) if row else "candidate"
     upgraded = False
-    if row and admission not in _REGATE_ADMISSIONS and gate.admission == "candidate":
+    stronger = False
+    if row:
+        leader_metadata = dict(row["leader_provider_metadata"] or {})
+        try:
+            leader_score = float(leader_metadata.get("score") or 0)
+        except (TypeError, ValueError):
+            leader_score = 0.0
+        member_score = _member_score(repos, item_id)
         stronger = (
-            (gate.grounded_assets and _strong_tag(gate))
-            or _member_score(repos, item_id) >= _STRONG_MEMBER_SCORE
-            or (reporting_origin and reporting_origin != str(row["leader_origin"] or ""))
+            member_score > leader_score
+            or (bool(gate.grounded_assets) and _strong_tag(gate))
+            or member_score >= _STRONG_MEMBER_SCORE
+            or (bool(reporting_origin) and reporting_origin != str(row["leader_origin"] or ""))
         )
-        if stronger:
-            repos.news.upgrade_event_admission(
-                event_id=event_id,
-                admission="candidate",
-                priority=gate.priority,
-                asset_class=gate.asset_class,
-                grounded_assets=gate.grounded_assets,
-                watchlist_hits=gate.watchlist_hits,
-                macro_lexicon=gate.macro_lexicon,
-                now_ms=now_ms,
-            )
-            admission, upgraded = "candidate", True
+    if row and admission not in _REGATE_ADMISSIONS and gate.admission == "candidate" and stronger:
+        repos.news.upgrade_event_admission(
+            event_id=event_id,
+            admission="candidate",
+            priority=gate.priority,
+            asset_class=gate.asset_class,
+            grounded_assets=gate.grounded_assets,
+            watchlist_hits=gate.watchlist_hits,
+            macro_lexicon=gate.macro_lexicon,
+            now_ms=now_ms,
+        )
+        admission, upgraded = "candidate", True
     return AdmitResult(
         item_id,
         inserted,
@@ -313,6 +426,7 @@ def _member_result(
         str(row["storyline_key"]) if row else "",
         fingerprint,
         title,
+        stronger,
     )
 
 
@@ -341,4 +455,12 @@ def _reconstruct_text(event: OpenNewsEvent) -> str:
     return "<br/>".join(p for p in parts if p)
 
 
-__all__ = ["EVENT_IDENTITY_VERSION", "NEAR_DUPLICATE_THRESHOLD", "AdmitResult", "admit_item", "item_identity"]
+__all__ = [
+    "EVENT_IDENTITY_VERSION",
+    "NEAR_DUPLICATE_THRESHOLD",
+    "AdmitBatchResult",
+    "AdmitResult",
+    "admit_frame",
+    "admit_item",
+    "item_identity",
+]

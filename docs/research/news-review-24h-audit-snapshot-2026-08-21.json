@@ -1,0 +1,82 @@
+{
+  "artifact": "tracefold_news_review_24h_audit_v1",
+  "generated_at_utc": "2026-08-21T02:30:09.757Z",
+  "event_window": {
+    "field": "news_events.opened_at_ms",
+    "start_inclusive_ms": 1787193009757,
+    "end_exclusive_ms": 1787279409757,
+    "start_taipei": "2026-08-20T10:30:09.757+08:00",
+    "end_taipei": "2026-08-21T10:30:09.757+08:00"
+  },
+  "provenance": {
+    "audit_start_git_sha": "4593ba6c12d0be2c67a2a758452030697a4fdd29",
+    "handoff_git_sha": "dedd869f93502bdad4bb219100e56dbb57568f11",
+    "git_delta_note": "The repository advanced during the audit. The intervening commits changed Price Review quote cadence/backlog telemetry, tests and docs; they did not change Triage prompt/policy, ledger, storyline, labels or evaluation harness findings.",
+    "database_migration": "20260820_0283",
+    "triage_prompt_version": "news_triage_prompt_v9",
+    "triage_prompt_sha256": "71c42e60c40b2033c20a2f8f068ef70f5f93718e7fe87575afe55e778b9b48ed",
+    "triage_schema_sha256": "714f1f524bc2c1f51d0107b8e69e2b6996bac4485d3b4b71e6d8fdd283f31f7b",
+    "triage_policy_version": "news_triage_policy_v6",
+    "reaction_metric_version": "reaction_v1",
+    "query_file": "news-review-24h-audit-2026-08-21.sql"
+  },
+  "funnel": {
+    "events": 1628,
+    "live": 1608,
+    "recovery": 20,
+    "triaged": 1572,
+    "push": 391,
+    "escalate": 28,
+    "drop": 1065,
+    "throttled": 88,
+    "degraded": 1,
+    "opened_window_events_with_final_first_delivery_sent": 419,
+    "terminal_first_deliveries": 0
+  },
+  "admission": {
+    "candidate": 1551,
+    "suppressed_pr_template": 36,
+    "listing_deterministic": 21,
+    "recovery": 20
+  },
+  "cohorts": [
+    {"policy": "news_triage_policy_v4", "prompt": "news_triage_prompt_v8", "events": 220, "pushed": 57, "throttled": 19},
+    {"policy": "news_triage_policy_v5", "prompt": "news_triage_prompt_v8", "events": 702, "pushed": 181, "throttled": 42},
+    {"policy": "news_triage_policy_v6", "prompt": "news_triage_prompt_v8", "events": 34, "pushed": 8, "throttled": 1},
+    {"policy": "news_triage_policy_v6", "prompt": "news_triage_prompt_v9", "events": 616, "pushed": 173, "throttled": 26}
+  ],
+  "audience": [
+    {"audience": "crypto", "triaged": 427, "pushed": 174, "throttled": 30},
+    {"audience": "macro", "triaged": 475, "pushed": 147, "throttled": 45},
+    {"audience": "us_equity", "triaged": 191, "pushed": 98, "throttled": 13},
+    {"audience": "none", "triaged": 479, "pushed": 0, "throttled": 0}
+  ],
+  "top_storylines": [
+    {"storyline": "theme:mideast_energy", "events": 310, "pushed": 74, "throttled": 36},
+    {"storyline": "macro:general", "events": 418, "pushed": 48, "throttled": 10},
+    {"storyline": "theme:rates", "events": 80, "pushed": 33, "throttled": 8},
+    {"storyline": "asset:BTC", "events": 100, "pushed": 30, "throttled": 10}
+  ],
+  "one_hour_reaction": {
+    "maturity_cutoff_opened_at_ms": 1787275809757,
+    "delivered": {"window_events": 419, "eligible": 402, "priced": 253, "directional": 241, "hit": 121},
+    "held": {"window_events": 1153, "eligible": 1109, "priced": 247, "directional": 185, "hit": 93},
+    "warning": "Direction-sign hit is a low-coverage observational proxy, not a causal or should-push label."
+  },
+  "feedback": {
+    "operator_labels_all_time": 0,
+    "eventless_missed_labels_all_time": 0,
+    "precision_recall_status": "not_identifiable"
+  },
+  "independent_text_proxies": {
+    "normalization": "remove all whitespace; unique character trigrams",
+    "containment": "intersection_size / min(set_a_size, set_b_size)",
+    "threshold": 0.35,
+    "time_window_ms": 14400000,
+    "delivered_near_pairs": 94,
+    "delivered_pairs_at_0_55": 5,
+    "throttled_without_delivered_match": 42,
+    "throttled_uncovered_sequential_clusters": 41,
+    "warning": "Pair/event proxies are not unique-fact counts or missed-news labels; OKX ticker templates create material false positives."
+  }
+}

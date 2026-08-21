@@ -16,7 +16,6 @@ export function useFeedCursor({
   listRef,
   onActivate,
   onExpand,
-  onLabel,
 }: {
   enabled: boolean;
   eventIds: string[];
@@ -24,7 +23,6 @@ export function useFeedCursor({
   onActivate: (eventId: string) => void;
   /** `Space` on the cursor row: the judgment opens in place instead of costing the reader their position. */
   onExpand?: (eventId: string) => void;
-  onLabel: (eventId: string) => void;
 }) {
   const [cursor, setCursor] = useState<string | null>(null);
   const cursorRef = useRef(cursor);
@@ -33,8 +31,8 @@ export function useFeedCursor({
   idsRef.current = eventIds;
   // The callbacks close over the caller's current event list, which changes on every poll; behind a ref the
   // key listener below is installed once.
-  const handlers = useRef({ onActivate, onExpand, onLabel });
-  handlers.current = { onActivate, onExpand, onLabel };
+  const handlers = useRef({ onActivate, onExpand });
+  handlers.current = { onActivate, onExpand };
 
   // An Event that left the feed (a filter change, a narrower window) takes the cursor with it.
   useEffect(() => {
@@ -90,13 +88,6 @@ export function useFeedCursor({
           if (cursorId && handlers.current.onExpand && !isActivatable(event.target)) {
             event.preventDefault();
             handlers.current.onExpand(cursorId);
-          }
-          return;
-        case "x":
-        case "X":
-          if (cursorId) {
-            event.preventDefault();
-            handlers.current.onLabel(cursorId);
           }
           return;
         default:

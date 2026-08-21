@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -13,9 +13,11 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from tracefold.app.http.exceptions import (
     ApiBadRequest,
+    ApiConflict,
     ApiUnauthorized,
     ApiUnavailable,
     api_bad_request_response,
+    api_conflict_response,
     api_unauthorized_response,
     api_unavailable_response,
 )
@@ -27,6 +29,7 @@ from tracefold.platform.config.settings import Settings, load_settings
 from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
 
 FRONTEND_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate"
+REVIEW_MUTATION_BODY_MAX_BYTES = 32_768
 
 
 class FrontendStaticFiles(StaticFiles):
@@ -66,8 +69,42 @@ def create_app(
 
     app = FastAPI(title="Tracefold", lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1_024, compresslevel=5)
+
+    @app.middleware("http")
+    async def review_mutation_envelope_guard(request: Request, call_next: Any) -> Response:
+        """Bound the two ReviewDesk writes before FastAPI reads JSON.
+
+        Review bodies are tiny operator judgments, so requiring a truthful
+        Content-Length is simpler and safer than accepting an unbounded
+        chunked stream and trying to interrupt Pydantic after allocation.
+        """
+
+        path = request.url.path
+        is_review_write = request.method == "POST" and (
+            path == "/api/news/review/external-misses"
+            or (path.startswith("/api/news/review/tasks/") and path.endswith("/responses"))
+        )
+        if is_review_write:
+            media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                return api_bad_request_response(
+                    request,
+                    ApiBadRequest("news_review_content_type_invalid", field="Content-Type"),
+                )
+            raw_length = request.headers.get("content-length")
+            if raw_length is None:
+                return api_bad_request_response(request, ApiBadRequest("news_review_content_length_required"))
+            try:
+                body_size = int(raw_length)
+            except ValueError:
+                return api_bad_request_response(request, ApiBadRequest("news_review_content_length_invalid"))
+            if body_size < 0 or body_size > REVIEW_MUTATION_BODY_MAX_BYTES:
+                return api_bad_request_response(request, ApiBadRequest("news_review_body_too_large"))
+        return await call_next(request)
+
     app.add_exception_handler(ApiUnauthorized, api_unauthorized_response)
     app.add_exception_handler(ApiBadRequest, api_bad_request_response)
+    app.add_exception_handler(ApiConflict, api_conflict_response)
     app.add_exception_handler(ApiUnavailable, api_unavailable_response)
     app.include_router(create_api_router(_status_payload))
 

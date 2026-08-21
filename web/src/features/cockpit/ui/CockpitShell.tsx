@@ -3,7 +3,6 @@ import { CommandPalette, type Command } from "@shared/ui/CommandPalette";
 import { Drawer } from "@shared/ui/Drawer";
 import { IconButton } from "@shared/ui/IconButton";
 import { ShortcutsDialog, type Shortcut } from "@shared/ui/ShortcutsDialog";
-import { Toast } from "@shared/ui/Toast";
 import { PanelLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
@@ -37,8 +36,6 @@ export type CockpitShellProps = {
     onOpenChange: (open: boolean) => void;
     open: boolean;
   };
-  /** The console's single copy confirmation. Routes push through `ShellRouteContext.copy`, never their own. */
-  toast?: string | null;
   topbar: CockpitTopbarProps;
 };
 
@@ -58,7 +55,6 @@ export function CockpitShell({
   outletContext,
   palette,
   shortcuts,
-  toast,
   topbar,
 }: CockpitShellProps) {
   useShellHotkeys(onHotkey);
@@ -138,7 +134,6 @@ export function CockpitShell({
           open={palette.open}
         />
       ) : null}
-      <Toast message={toast ?? null} />
     </div>
   );
 }

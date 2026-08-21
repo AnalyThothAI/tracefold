@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from tracefold.app.database import ServeDatabase, ServeDatabaseBusy
+from tracefold.app.database import ReviewDatabase, ReviewDatabaseBusy, ServeDatabase, ServeDatabaseBusy
 from tracefold.app.http.exceptions import ApiUnavailable
 from tracefold.app.repositories import RepositorySession
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
@@ -23,6 +23,8 @@ class ServeRuntime:
     settings: Settings
     db: ServeDatabase
     telemetry: TelemetryRegistry
+    review_db: ReviewDatabase | None = None
+    review_error_code: str | None = None
 
     @contextmanager
     def repositories(self, *, lane: str = "ordinary") -> Iterator[RepositorySession]:
@@ -37,6 +39,16 @@ class ServeRuntime:
         runtime = self._runtime_status_payload(now_ms=measured_at_ms)
         return {"measured_at_ms": measured_at_ms, "runtime": runtime}
 
+    @contextmanager
+    def review_transaction(self) -> Iterator[Any]:
+        if self.review_db is None:
+            raise ApiUnavailable("review_write_unavailable")
+        try:
+            with self.review_db.transaction() as conn:
+                yield conn
+        except ReviewDatabaseBusy as exc:
+            raise ApiUnavailable("review_write_busy") from exc
+
     def readiness_payload(self, *, now_ms: int | None = None) -> dict[str, Any]:
         measured_at_ms = int(time.time() * 1_000) if now_ms is None else int(now_ms)
         runtime = self._runtime_status_payload(now_ms=measured_at_ms)
@@ -49,7 +61,13 @@ class ServeRuntime:
             "reasons": reasons,
             "store": "postgresql",
             "db": db_status,
-            "composition": {"workers_runtime": runtime["workers_runtime"]},
+            "composition": {
+                "workers_runtime": runtime["workers_runtime"],
+                "review_write": {
+                    "available": self.review_db is not None,
+                    "error_code": self.review_error_code,
+                },
+            },
         }
 
     def _runtime_status_payload(self, *, now_ms: int) -> dict[str, Any]:
@@ -108,6 +126,8 @@ class ServeRuntime:
 
     async def aclose(self) -> None:
         await self.db.aclose()
+        if self.review_db is not None:
+            await self.review_db.aclose()
 
 
 def bootstrap_serve(settings: Settings) -> ServeRuntime:
@@ -115,14 +135,28 @@ def bootstrap_serve(settings: Settings) -> ServeRuntime:
         raise ValueError("ws_token is required in config.yaml")
     telemetry = TelemetryRegistry()
     db = ServeDatabase.create(settings, telemetry=telemetry)
+    review_db: ReviewDatabase | None = None
+    review_error_code: str | None = None
     try:
-        runtime = ServeRuntime(settings=settings, db=db, telemetry=telemetry)
+        review_db = ReviewDatabase.create(settings)
+    except Exception as exc:
+        review_error_code = type(exc).__name__
+    try:
+        runtime = ServeRuntime(
+            settings=settings,
+            db=db,
+            telemetry=telemetry,
+            review_db=review_db,
+            review_error_code=review_error_code,
+        )
         readiness = runtime.readiness_payload()
         if readiness["db"]["error_code"] == "database_unavailable":
             raise RuntimeError("postgres health check failed")
         return runtime
     except Exception:
         db.api_pool.close()
+        if review_db is not None:
+            review_db.pool.close()
         raise
 
 

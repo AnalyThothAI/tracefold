@@ -129,21 +129,14 @@ news:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
     feishu_signing_secret:
-    hourly_cap: 30
   policy:                     # decide() thresholds and switches (all optional; these are the defaults)
     min_push_magnitude: 1
     min_watchlist_magnitude: 1
     escalate_magnitude: 3
     unclear_push_min_magnitude: 2
     unclear_push_event_types: [product, listing, delisting, regulation, hack, exploit, partnership, filing]
-    theme_cap_4h: 3
-    storyline_throttle: true
-    hourly_cap_enabled: true
     restatement_drop: true      # a restatement of a card the reader already received never pushes
-    similarity_max: 0.25        # a throttled card is released when it resembles the reader's window less than this
-    distinct_hard_cap_4h: 18    # flood ceiling: pushes per theme / 4 h whatever they say (>= theme_cap_4h)
-    similarity_all_pushes: true # measure every push candidate against the reader's window, not only throttled ones
-    distinct_asset_cap_2h: 6    # flood ceiling: pushes per asset / 2 h
+    similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
     high_priority_escalates: false  # true = the Gate's AMQP priority also earns the ⚡ header (pre-v4, #77)
   retention:
     raw_days: 30                # an Item nobody judged is storage
@@ -170,9 +163,13 @@ Gate admits nearly every Item (only recovery replays, law-firm templates,
 and — behind `suppress_low_signal` — low-score ungrounded social posts skip
 the model; exchange listing/delisting frames are admitted and judged like any
 candidate), Triage is the semantic filter, and
-`decide()` applies these thresholds. Change them after `tracefold news
-replay-decisions` and operator labels agree; `tracefold config` prints the
-effective values.
+`decide()` applies these thresholds. Changes are one-variable candidates:
+record accepted cases with `tracefold news review`, freeze development and
+future validation windows with `tracefold news learning freeze`, then run the
+offline, holdout, shadow and canary gates under `tracefold news learning`.
+`tracefold config` prints the effective values. Policy v7 has no 1 h/2 h/4 h
+reader-count veto: every distinct fact that passes the semantic contract moves
+to delivery; the sent-reader ledger remains only for same-fact suppression.
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. Missing or invalid delivery

@@ -135,7 +135,7 @@ export function healthItemEyebrow(key: HealthItemKey): string {
 const REASON_STAGE_TITLES: Record<string, string> = {
   gate: "未送审",
   drop: "模型/规则不推",
-  throttle: "限流",
+  throttle: "重复拦截",
   push: "推送依据",
   degraded: "模型降级",
   ungrounded: "符号未落标的表",
@@ -256,27 +256,6 @@ export function displayAssetRefs(
   return displayAssets(grounded).map(
     (symbol) => bySymbol.get(symbol) ?? { base_symbol: symbol, listed: false, symbol, venue: null },
   );
-}
-
-/** The six values `tracefold news label` accepts as its positional argument (cli/parser.py), plus `must_push`. */
-export type NewsLabelAction =
-  | "good"
-  | "noise"
-  | "late"
-  | "wrong_direction"
-  | "dup"
-  | "missed"
-  | "must_push";
-
-/**
- * The CLI the operator would type to label this Event; the console copies it rather than writing it.
- *
- * This used to emit `--label good|bad|missed`: a flag the CLI does not have, and `bad` is not one of its
- * choices — so every copied command failed and `news_event_labels` stayed empty (#81). The label is a
- * positional argument.
- */
-export function labelCommand(eventId: string, label: NewsLabelAction): string {
-  return `tracefold news label ${eventId} ${label}`;
 }
 
 export function percent(numerator: number, denominator: number): string {

@@ -103,8 +103,8 @@ describe("News console contract", () => {
     expect(shellRule).toContain("grid-template-rows: none");
     expect(shellRule).toContain("grid-auto-rows: max-content");
 
-    // Labelling is the learning plane and the News API is read-only: the console hands over the CLI command.
-    expect(detail).toContain("labelCommand(eventId, action.key)");
+    // Review writes belong to ReviewDesk, not the Event detail read model.
+    expect(detail).not.toContain("labelCommand");
     expect(detail).not.toMatch(/useMutation|postApi/);
     for (const retired of [
       "src/features/news/NewsVerdictPanel.tsx",
