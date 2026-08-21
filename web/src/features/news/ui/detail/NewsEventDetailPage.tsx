@@ -1,19 +1,17 @@
-import { newsPath } from "@shared/routing/paths";
-import { ActionButton } from "@shared/ui/ActionButton";
+import { newsPath, newsReviewPath } from "@shared/routing/paths";
 import { Card } from "@shared/ui/Card";
 import { FactGrid } from "@shared/ui/FactGrid";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
 import { ArrowRight, ExternalLink } from "lucide-react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import {
   type NewsDelivery,
   type NewsEventDetail,
   type NewsEventMember,
   type NewsEventReaction,
-  type NewsLabel,
   type NewsQuote,
   type NewsReaction,
   type NewsSymbolNormalization,
@@ -26,7 +24,6 @@ import {
   absoluteTime,
   clockTime,
   displayAssetRefs,
-  labelCommand,
   optionalTime,
   timelineEndToEnd,
   validExternalUrl,
@@ -43,29 +40,7 @@ import { NewsTimeline } from "./NewsTimeline";
 
 import "./newsDetail.css";
 
-// Every key here is a value `tracefold news label` accepts as its positional argument; `must_push` is the one
-// that fills the release gate's boundary set (#81).
-const LABEL_ACTIONS = [
-  { key: "good", label: "判得对", note: "已复制「判得对」标注命令", variant: "positive" },
-  { key: "noise", label: "不该推", note: "已复制「不该推」标注命令", variant: "negative" },
-  { key: "missed", label: "漏推", note: "已复制「漏推」标注命令", variant: "secondary" },
-  {
-    key: "must_push",
-    label: "必须推",
-    note: "已复制「必须推」标注命令（发布门边界集）",
-    variant: "secondary",
-  },
-] as const;
-
-export function NewsEventDetailPage({
-  copy,
-  eventId,
-  token,
-}: {
-  copy: (text: string, note: string) => void;
-  eventId: string;
-  token: string;
-}) {
+export function NewsEventDetailPage({ eventId, token }: { eventId: string; token: string }) {
   const query = useNewsEventWithToken(token, eventId);
   const detail = query.data;
   // The feed the reader came from, so 上一条/下一条 walk the list they were actually looking at. A cold URL
@@ -96,17 +71,15 @@ export function NewsEventDetailPage({
       {query.isError && !detail ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
-      {detail ? <EventDocument copy={copy} detail={detail} quotes={quotes} /> : null}
+      {detail ? <EventDocument detail={detail} quotes={quotes} /> : null}
     </NewsPageShell>
   );
 }
 
 function EventDocument({
-  copy,
   detail,
   quotes,
 }: {
-  copy: (text: string, note: string) => void;
   detail: NewsEventDetail;
   quotes: Record<string, NewsQuote>;
 }) {
@@ -186,6 +159,8 @@ function EventDocument({
         <EventReactions aggregate={detail.reaction} reactions={detail.reactions ?? []} />
       </Card>
 
+      <ReviewSummary detail={detail} />
+
       <div className="news-detail-grid">
         <Card
           aria-label="处理时间线"
@@ -197,9 +172,6 @@ function EventDocument({
         </Card>
 
         <div className="news-detail-side">
-          <Card aria-label="运营标注" hint="按钮复制 CLI 命令，不走写接口" title="这条判得对吗">
-            <LabelBlock copy={copy} eventId={event.event_id} labels={detail.labels ?? []} />
-          </Card>
           <Card
             aria-label="同类报道"
             hint={`${detail.members.length} 条，按到达时间`}
@@ -212,6 +184,42 @@ function EventDocument({
 
       <TechnicalDetails detail={detail} />
     </>
+  );
+}
+
+const SHOULD_PUSH_LABELS: Record<string, string> = {
+  must_push: "必须推送",
+  should_push: "应该推送",
+  should_hold: "应该保留",
+  must_hold: "必须拦下",
+  uncertain: "证据不足",
+};
+
+function ReviewSummary({ detail }: { detail: NewsEventDetail }) {
+  const accepted = detail.review.accepted;
+  const reviewUrl = `${newsReviewPath()}?view=queue&mode=event&event=${encodeURIComponent(detail.event.event_id)}`;
+  return (
+    <Card
+      aria-label="学习复盘"
+      hint={`${detail.review.judgment_n} 条不可变判断${detail.review.uncertain ? " · 尚有分歧" : ""}`}
+      title="学习复盘"
+    >
+      {accepted ? (
+        <div className="news-detail-review-summary">
+          <p>
+            最新接受结论：
+            <b>{SHOULD_PUSH_LABELS[accepted.should_push || "uncertain"] || accepted.should_push}</b>
+          </p>
+          {accepted.first_bad_owner ? <small>第一处错误：{accepted.first_bad_owner}</small> : null}
+          {accepted.note ? <small>{accepted.note}</small> : null}
+        </div>
+      ) : (
+        <NewsEmptyNote>还没有经过接受的人工复盘；这里不会用 1H 涨跌代替判断。</NewsEmptyNote>
+      )}
+      <Link className="news-detail-review-link" to={reviewUrl}>
+        在学习复盘中打开
+      </Link>
+    </Card>
   );
 }
 
@@ -229,6 +237,8 @@ function EventReactions({
   aggregate: NewsReaction | null | undefined;
   reactions: NewsEventReaction[];
 }) {
+  const primaryReactions = reactions.filter((reaction) => reaction.is_primary);
+  const nonPrimaryCount = reactions.length - primaryReactions.length;
   if (!reactions.length && !aggregate) {
     return <NewsEmptyNote>还没有可用的事件后反应。</NewsEmptyNote>;
   }
@@ -244,9 +254,9 @@ function EventReactions({
           </small>
         </p>
       ) : null}
-      {reactions.length ? (
+      {primaryReactions.length ? (
         <ul className="news-detail-reaction-list">
-          {reactions.map((reaction) => (
+          {primaryReactions.map((reaction) => (
             <li key={reaction.symbol}>
               <span className="news-detail-quote-symbol">
                 <code>{reaction.symbol}</code>
@@ -267,6 +277,11 @@ function EventReactions({
             </li>
           ))}
         </ul>
+      ) : null}
+      {nonPrimaryCount ? (
+        <p className="news-detail-reaction-caveat">
+          已隐藏 {nonPrimaryCount} 个同名但非主标的的价格候选；它们不参与事件级评价。
+        </p>
       ) : null}
     </div>
   );
@@ -405,54 +420,6 @@ function MemberList({ members }: { members: NewsEventMember[] }) {
         );
       })}
     </ol>
-  );
-}
-
-/**
- * Labels are the whole learning plane, and they are written by `tracefold news label` — the API is read-only
- * by design. So each button hands the operator the exact command instead of pretending to write one.
- */
-function LabelBlock({
-  copy,
-  eventId,
-  labels,
-}: {
-  copy: (text: string, note: string) => void;
-  eventId: string;
-  labels: NewsLabel[];
-}) {
-  return (
-    <div className="news-label-block">
-      <div className="news-label-actions">
-        {LABEL_ACTIONS.map((action) => (
-          <ActionButton
-            key={action.key}
-            onClick={() => copy(labelCommand(eventId, action.key), action.note)}
-            variant={action.variant}
-          >
-            {action.label}
-          </ActionButton>
-        ))}
-      </div>
-      <p className="news-label-hint">
-        点一下复制命令，在终端里执行即可写入标注。快捷键 <kbd>X</kbd> 复制「不该推」。
-      </p>
-      {labels.length ? (
-        <ul className="news-label-list">
-          {labels.map((label, index) => (
-            <li key={`${label.created_at_ms}-${index}`}>
-              <b>{String(label.label?.label ?? "")}</b>
-              {label.label?.note ? <span>{String(label.label.note)}</span> : null}
-              <small>
-                {label.source} · {absoluteTime(label.created_at_ms)}
-              </small>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <NewsEmptyNote>尚无标注。</NewsEmptyNote>
-      )}
-    </div>
   );
 }
 

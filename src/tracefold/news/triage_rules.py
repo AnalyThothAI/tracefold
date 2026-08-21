@@ -9,8 +9,6 @@ from typing import Any, Final
 from .models import Decision, TriageVerdict
 from .similarity import max_similarity
 
-PUSH_WINDOW_MS = 2 * 60 * 60_000
-ESCALATE_WINDOW_MS = 4 * 60 * 60_000
 _DIRECTIONAL = frozenset({"bullish", "bearish"})
 _MODEL_WANTS_PUSH = frozenset({"push", "escalate"})
 
@@ -37,28 +35,12 @@ class DecidePolicy:
     min_watchlist_magnitude: int = 1
     unclear_push_event_types: tuple[str, ...] = _UNCLEAR_PUSH_EVENT_TYPES
     unclear_push_min_magnitude: int = 2
-    theme_cap_4h: int = 3
-    storyline_throttle: bool = True
-    hourly_cap_enabled: bool = True
     restatement_drop: bool = True
-    # Policy v5 (issue #81): the storyline throttle stops counting and starts reading. A card the soft throttle
-    # stopped is released when its Chinese headline resembles nothing the reader received in the window; the
-    # counts survive only as a flood ceiling. Replayed over 2185 stored verdicts this cuts facts the reader never
-    # received by 63% *and* near-duplicate pairs by 46% — the two used to trade against each other because the
-    # only release was `novel_bypass`, the model's own unverified claim that its event was new.
+    # Duplicate protection is content-based, never a reader quota. A value of
+    # zero disables the deterministic similarity check; it does not restore a
+    # count cap. Escalations remain exempt because a false-positive similarity
+    # match is least affordable for the most important cards.
     similarity_max: float = 0.25
-    distinct_hard_cap_4h: int = 18
-    distinct_asset_cap_2h: int = 6
-    # Policy v6 (issue #100): measure *every* push candidate against the reader's window, not only the ones the
-    # count throttle already stopped. v5 read the ledger, but only on a storyline that was already hot: a fresh
-    # key has `pushed_2h = 0`, so `_storyline_throttle` returned None and `max_similarity` never ran — 55% of the
-    # v5 slice's pushes were never compared with the 78-row ledger sitting in memory. One provider batch that
-    # fans out across N keys (19 tokenised-equity listings in 7 minutes, one `asset:` key each) was therefore
-    # invisible to the whole duplicate defence, and it ate the hourly cap that eight real cards needed.
-    # `escalate` is exempt: character bigrams over a fixed topic vocabulary mistake "Trump is considering buying
-    # a lot of Bitcoin" for "Trump says the war on crypto is over", and a magnitude-3 card is the one place that
-    # mistake is not affordable. Set false to restore the v5 behaviour.
-    similarity_all_pushes: bool = True
     # Policy v4 (issue #77): the Gate's `priority` is an AMQP transport hint (score >= 90, watchlist, listing
     # frames, rate/yield macro), not a reader-facing importance judgment — it decides queue order, not the ⚡
     # header. It used to promote every high-priority push to `escalate`, which made every exchange listing notice
@@ -92,27 +74,23 @@ class GateFacts:
 
 @dataclass(frozen=True, slots=True)
 class StorylineStatus:
-    """Window facts computed by SQL for the event's storyline key (see repository.event_status), plus the direction
-    of every told-ledger entry the model saw (index = the ``i`` it cites in ``restates``; empty when no ledger)."""
+    """Content evidence from cards proven to have reached the reader.
+
+    The small ``told`` subset grounds the model's restatement citation.  The
+    wider ``seen`` subset supports deterministic same-fact comparison.  It
+    intentionally carries no delivery counts or capacity state.
+    """
 
     key: str
-    pushed_2h: int = 0
-    pushed_4h: int = 0
-    max_magnitude_2h: int = 0
-    max_magnitude_4h: int = 0
-    directions_2h: tuple[str, ...] = ()
-    directions_4h: tuple[str, ...] = ()
-    last_push_ago_ms: int | None = None
     told_directions: tuple[str, ...] = ()
-    # Every card the reader actually received in the throttle window, newest first — not the <= 12 entries the
+    # Every card the reader actually received in the comparison window, newest first — not the <= 12 entries the
     # status bar showed the model. The two differ by design: the model gets a readable ledger, ``decide()`` gets
     # the whole window, and the wider set measurably catches more repeats (#81).
     seen_headlines: tuple[str, ...] = ()
     seen_event_ids: tuple[str, ...] = ()
     # The direction of each ``seen_headlines`` entry, same order. A reversal of a fact the reader just received
     # shares almost every character bigram with it ("SEC 批准…" vs "SEC 拒绝…" scores 0.60), so the duplicate
-    # defence has to be able to tell the two apart — and the storyline windows cannot help: on a fresh key
-    # ``directions_2h/4h`` are empty while the card it resembles lives in the *global* ledger.
+    # defence has to be able to tell the two apart.
     seen_directions: tuple[str, ...] = ()
 
     @property
@@ -131,9 +109,8 @@ class DecisionResult:
     # ``status.seen_*`` it came closest to (-1 = nothing to compare against).
     seen_similarity: float | None = None
     seen_against: int = -1
-    # Which path measured it (#100): ``throttled`` = the count throttle stopped it first (the v5 path),
-    # ``all`` = every-push measurement, ``""`` = not measured. The trace and ``status.pipeline`` keep the two
-    # apart so the effect of policy v6 is observable without re-reading `throttled_by`.
+    # ``all`` means the ordinary push path was compared with the sent ledger;
+    # empty means no comparison was made.
     seen_scope: str = ""
 
 
@@ -175,13 +152,6 @@ def _seen_flip(direction: str, seen_directions: Sequence[str], index: int) -> bo
     return told in _DIRECTIONAL and told != direction
 
 
-def _direction_flip(direction: str, seen: Sequence[str]) -> bool:
-    if direction not in _DIRECTIONAL:
-        return False
-    opposite = "bullish" if direction == "bearish" else "bearish"
-    return opposite in seen and direction not in seen
-
-
 def grounded_restatement(verdict: TriageVerdict, status: StorylineStatus | None) -> bool:
     """True when the model called this a restatement *of a ledger entry it was actually shown* and the direction did
     not flip against that entry. An out-of-range ``restates`` (or an empty ledger) is ignored: novelty then counts as
@@ -203,24 +173,16 @@ def decide(
     facts: GateFacts,
     status: StorylineStatus | None,
     *,
-    hourly_cap_reached: bool = False,
     muted: bool = False,
     degraded: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
     """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently.
 
-    ``degraded`` marks a rule-baseline fallback verdict (no model judgment): its headline is a placeholder, so it
-    is never released from the storyline throttle — a placeholder is not evidence that a fact is new.
-
-    Policy v5 (#81) removed the last path where the model's own unverified claim about itself opened a gate:
-    ``novelty`` is still read, but only in the direction that *withholds* a card (a restatement of a ledger entry
-    the model was actually shown, direction unflipped), never to promote one. Whether a card gets past the
-    storyline throttle is decided by measuring it against what the reader received.
-
-    Policy v6 (#100) moved that measurement out from under the count throttle. v5 only measured a card whose own
-    storyline was already hot, so a burst that fans out across many keys was never compared with the ledger at
-    all; the count cap is now what its own docstring already called it — a flood ceiling.
+    Runtime policy has no hourly, 2-hour, or 4-hour reader quota.  Once the
+    semantic conditions resolve to push/escalate, only explicit control state
+    and duplicate evidence may withhold it. ``degraded`` fallback cards skip
+    similarity because their wire headline is not a semantic judgment.
     """
 
     baseline = rule_baseline(facts)
@@ -270,95 +232,25 @@ def decide(
     seen_similarity: float | None = None
     seen_against = -1
     seen_scope = ""
-    if final in {"push", "escalate"} and status is not None and policy.storyline_throttle:
-        throttled_by = _storyline_throttle(verdict, status, final, policy)
-        # A rule-baseline card carries the wire headline as a placeholder, not a judged statement of what is new;
-        # and `similarity_max = 0` is the operator switching the content judgment off, which leaves the pre-v5
-        # count cap. Either way the card is never measured, and never released by content.
-        measurable = not degraded and policy.similarity_max > 0.0
-        # v5 measured only what the count throttle stopped; v6 measures every push (#100). `escalate` stays on the
-        # v5 path — it is only ever withheld once its own storyline is already hot.
-        if measurable and (throttled_by is not None or (policy.similarity_all_pushes and final == "push")):
-            seen_scope = "throttled" if throttled_by is not None else "all"
-            seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
-            # Nothing comparable in the window (an empty ledger, or a headline too short to bigram) is not
-            # evidence of a repeat: the reader received nothing, so nothing can be a repeat of it. Neither is a
-            # reversal: character bigrams are blind to negation, and the card that flips a fact the reader
-            # already has is the most valuable one in the system. `_storyline_throttle` has always exempted a
-            # direction flip; once similarity can withhold a card on its own it needs the same exemption, against
-            # the ledger entry it actually matched.
-            if (
-                seen_against >= 0
-                and seen_similarity >= policy.similarity_max
-                and not _seen_flip(verdict.direction, status.seen_directions, seen_against)
-            ):
-                # The reader has this. This is the whole duplicate defence: everything else is a ceiling.
-                # The key keeps the `storyline:<key>:seen` shape on both paths so `outcome.throttled_by_zh`
-                # (which short-circuits on the `:seen` suffix) needs no new vocabulary.
-                return DecisionResult(
-                    "throttled",
-                    rule,
-                    f"{throttled_by or f'storyline:{status.key}'}:seen",
-                    baseline,
-                    watch_hits,
-                    seen_similarity,
-                    seen_against,
-                    seen_scope,
-                )
-        if throttled_by is not None:
-            if not measurable:
-                return DecisionResult("throttled", rule, throttled_by, baseline, watch_hits)
-            ceiling = _flood_ceiling(status, policy)
-            if ceiling is not None:
-                return DecisionResult(
-                    "throttled", rule, ceiling, baseline, watch_hits, seen_similarity, seen_against, seen_scope
-                )
-            rule = "distinct_bypass"
-
-    if final == "push" and hourly_cap_reached and policy.hourly_cap_enabled:
-        return DecisionResult(
-            "throttled", rule, "hourly_cap", baseline, watch_hits, seen_similarity, seen_against, seen_scope
-        )
+    if final == "push" and status is not None and not degraded and policy.similarity_max > 0.0:
+        seen_scope = "all"
+        seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
+        if (
+            seen_against >= 0
+            and seen_similarity >= policy.similarity_max
+            and not _seen_flip(verdict.direction, status.seen_directions, seen_against)
+        ):
+            return DecisionResult(
+                "throttled",
+                rule,
+                f"storyline:{status.key}:seen",
+                baseline,
+                watch_hits,
+                seen_similarity,
+                seen_against,
+                seen_scope,
+            )
     return DecisionResult(final, rule, None, baseline, watch_hits, seen_similarity, seen_against, seen_scope)
-
-
-def _flood_ceiling(status: StorylineStatus, policy: DecidePolicy) -> str | None:
-    """The absolute number of cards one storyline may spend in its window, whatever they say.
-
-    This is not a relevance judgment — a distinct card is only stopped here because the reader cannot read an
-    unbounded stream about one topic. It is deliberately far above the soft cap (18 per theme per 4 h, 6 per
-    asset per 2 h) so that it fires on a genuine flood and not on an ordinary busy hour.
-    """
-
-    if status.key.startswith("asset:"):
-        if status.pushed_2h >= policy.distinct_asset_cap_2h:
-            return f"storyline:{status.key}:hard{policy.distinct_asset_cap_2h}"
-        return None
-    if status.pushed_4h >= policy.distinct_hard_cap_4h:
-        return f"storyline:{status.key}:hard{policy.distinct_hard_cap_4h}"
-    return None
-
-
-def _storyline_throttle(
-    verdict: TriageVerdict, status: StorylineStatus, final: Decision, policy: DecidePolicy
-) -> str | None:
-    """Asset storylines: window-max plus direction flip. Theme/family storylines: at most ``theme_cap_4h`` pushes
-    per 4 h, so a flood (a war, a rate shock) still lets its important progressions through."""
-
-    if status.key.startswith("asset:"):
-        window_max = status.max_magnitude_2h if final == "push" else status.max_magnitude_4h
-        pushed = status.pushed_2h if final == "push" else status.pushed_4h
-        seen = status.directions_2h if final == "push" else status.directions_4h
-        if pushed > 0 and verdict.magnitude <= window_max and not _direction_flip(verdict.direction, seen):
-            return f"storyline:{status.key}"
-        return None
-    if (
-        status.pushed_4h >= policy.theme_cap_4h
-        and verdict.magnitude <= status.max_magnitude_4h
-        and not _direction_flip(verdict.direction, status.directions_4h)
-    ):
-        return f"storyline:{status.key}:cap{policy.theme_cap_4h}"
-    return None
 
 
 def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> tuple[TriageVerdict, DecisionResult]:
@@ -384,8 +276,7 @@ def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> t
     return verdict, DecisionResult(baseline, "fail_closed_fallback", None, baseline)
 
 
-def storyline_status_from_row(
-    row: Mapping[str, Any] | None,
+def storyline_status(
     key: str,
     *,
     told: Sequence[Mapping[str, Any]] = (),
@@ -393,7 +284,7 @@ def storyline_status_from_row(
 ) -> StorylineStatus:
     """``told`` is the ledger the model saw (status-bar order); only its directions matter to decide().
 
-    ``seen`` is every card the reader received in the window — the wider set decide() measures a throttled card
+    ``seen`` is every card the reader received in the window — the wider set decide() measures a duplicate candidate
     against. It defaults to ``told`` so pure callers and replays that only kept the status bar still work, at the
     cost of a narrower comparison than the worker performs.
     """
@@ -405,23 +296,8 @@ def storyline_status_from_row(
     # `told` rows spell the direction `dir`, ledger rows spell it `direction`; a row that carries neither leaves
     # an empty string, which `_seen_flip` reads as "no opinion" and never exempts on.
     seen_directions = tuple(str(r.get("direction") or r.get("dir") or "") for r in rows)
-    if not row:
-        return StorylineStatus(
-            key=key,
-            told_directions=told_directions,
-            seen_headlines=seen_headlines,
-            seen_event_ids=seen_event_ids,
-            seen_directions=seen_directions,
-        )
     return StorylineStatus(
         key=key,
-        pushed_2h=int(row.get("pushed_2h") or 0),
-        pushed_4h=int(row.get("pushed_4h") or 0),
-        max_magnitude_2h=int(row.get("max_magnitude_2h") or 0),
-        max_magnitude_4h=int(row.get("max_magnitude_4h") or 0),
-        directions_2h=tuple(row.get("directions_2h") or ()),
-        directions_4h=tuple(row.get("directions_4h") or ()),
-        last_push_ago_ms=(int(row["last_push_ago_ms"]) if row.get("last_push_ago_ms") is not None else None),
         told_directions=told_directions,
         seen_headlines=seen_headlines,
         seen_event_ids=seen_event_ids,
@@ -431,8 +307,6 @@ def storyline_status_from_row(
 
 __all__ = [
     "DEFAULT_POLICY",
-    "ESCALATE_WINDOW_MS",
-    "PUSH_WINDOW_MS",
     "DecidePolicy",
     "DecisionResult",
     "GateFacts",
@@ -441,5 +315,5 @@ __all__ = [
     "fallback_verdict",
     "grounded_restatement",
     "rule_baseline",
-    "storyline_status_from_row",
+    "storyline_status",
 ]

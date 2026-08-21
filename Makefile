@@ -194,4 +194,3 @@ docs-db-schema: ## regenerate docs/generated/db-schema.md (requires Postgres)
 
 docs-cli-help: ## regenerate docs/generated/cli-help.md
 	@uv run python scripts/regen_cli_help.py
-

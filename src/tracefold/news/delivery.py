@@ -200,7 +200,7 @@ def _facts_line(
     if direction is not None and magnitude is not None:
         parts.append(DIRECTION_ZH.get(direction, direction))
         # 28.8% of a week's cards advanced a story the reader already had one for, and the card said nothing
-        # about it (#113). `新进展` is the model's own `novelty`, not a count: policy v6 already withheld the
+        # about it (#113). `新进展` is the model's own `novelty`, not a count: policy v7 already withheld the
         # near-duplicates, so what survives here is a genuine next step the reader can read as a delta.
         if novelty == "progression":
             parts.append(NOVELTY_ZH["progression"])

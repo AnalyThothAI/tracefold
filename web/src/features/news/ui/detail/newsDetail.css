@@ -297,6 +297,12 @@
     overflow-wrap: anywhere;
   }
 
+  .news-detail-reaction-caveat {
+    margin: 0;
+    color: var(--text-subtle);
+    font: var(--type-mono-meta);
+  }
+
   /* ------------------------------------------------------------------ evidence band */
   .news-detail-grid {
     display: grid;
@@ -322,58 +328,6 @@
     color: var(--text-subtle);
     font: 500 11px/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
-  }
-
-  /* ------------------------------------------------------------------ labels */
-  .news-label-block {
-    display: grid;
-    gap: 10px;
-  }
-
-  .news-label-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .news-label-hint {
-    margin: 0;
-    color: var(--text-subtle);
-    font-size: 11px;
-    line-height: 1.5;
-  }
-
-  .news-label-hint kbd {
-    padding: 1px 5px;
-    border-radius: var(--radius-xs);
-    background: var(--border-faint);
-    font: 600 10px/1.5 var(--font-mono);
-  }
-
-  .news-label-list {
-    display: grid;
-    gap: 6px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .news-label-list li {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 10px;
-    align-items: baseline;
-    font-size: 12px;
-  }
-
-  .news-label-list b {
-    color: var(--text-primary);
-    font-weight: 620;
-  }
-
-  .news-label-list small {
-    color: var(--text-subtle);
-    font: 500 10.5px/1.5 var(--font-mono);
   }
 
   /* ------------------------------------------------------------------ members */

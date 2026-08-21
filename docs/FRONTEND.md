@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, and `/api/news/review` over HTTP. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out, and the Macro lane was removed in #68 and `web/tests/architecture/macroLaneHardCut.test.ts` keeps it out.
+The React operator console is a News workbench. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/review`, and `/api/news/review/tasks/{task_id}/evidence` over HTTP; the two ReviewDesk mutation endpoints are the only browser writes. There is no WebSocket client, no Search, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench; the GMGN lane was removed in #50 and `web/tests/architecture/gmgnLaneHardCut.test.ts` keeps it out, and the Macro lane was removed in #68 and `web/tests/architecture/macroLaneHardCut.test.ts` keeps it out.
 
 ## Source Layer Map (`web/src/`)
 
@@ -14,7 +14,7 @@ The React operator console is a News workbench. It reads exactly `/api/bootstrap
 | `features/<name>/model/` | Pure feature helpers, view models, and constants. Framework-free where practical.                                                                                                                                 |
 | `features/<name>/state/` | Local client state that is not shareable URL state and not server cache state. Keep it narrow and feature-owned.                                                                                                  |
 | `features/<name>/ui/`    | Feature screens and components. UI reads data from props or feature hooks exposed through the feature public index, not from another feature's deep files.                                                        |
-| `shared/hooks/`          | Framework hooks that belong to no feature: `useMediaQuery` (which frame to *mount*), `useCopyToast` (the console's one clipboard confirmation).                                                                   |
+| `shared/hooks/`          | Framework hooks that belong to no feature, such as `useMediaQuery` (which frame to *mount*).                                                                                                                       |
 | `shared/query/`          | Cross-feature React Query key helpers. Feature hooks own their queries; there is no cross-feature cache patching.                                                                                                 |
 | `shared/routing/`        | Reusable route parsing, path building, and URL search-param helpers.                                                                                                                                              |
 | `shared/ui/`             | Reusable presentational primitives (`Card`, `Metric`, `Bar`, `FactGrid`, `KeyValue`, `ActionButton`, `IconButton`, `PageState`, `Toast`, `Drawer`, `CommandPalette`, `ShortcutsDialog`, `RouteBackLink`). No server fetching. |
@@ -67,7 +67,7 @@ the route components into the eager shell chunk.
   never re-flows the ones beside it.
 
   Stable routes declare one of two information archetypes with `data-page-archetype`:
-  `scan` for the News Event feed, 命中复盘 and News status, which sit in a 1340px measure;
+  `scan` for the News Event feed, 学习复盘 and News status, which sit in a 1340px measure;
   `case` for News Event detail, one document centred at 1000px whose hero leads with the
   model's market direction. The archetype governs measure, hierarchy and density, never
   data ownership or business inference.
@@ -91,7 +91,8 @@ the route components into the eager shell chunk.
 - **News routes.** `/news` is a decision-first scan surface over the flat
   Event feed from `/api/news/feed`; the browser never clusters, scores,
   triages, throttles, or reorders. The public News navigation contains
-  exactly `事件流` and `流水线状态`, backed by `/news` and `/news/status`. It
+  exactly `事件流`, `学习复盘`, and `流水线状态`, backed by `/news`,
+  `/news/review`, and `/news/status`. It
   lives in the sidebar at tablet width and above and in the bottom tab bar
   below it (#87) — one `APP_NAVIGATION_GROUPS` model, two presentations, and no
   route renders a second section switcher. Event
@@ -105,16 +106,26 @@ the route components into the eager shell chunk.
   allowlist; the browser neither displays the private Strategy IDs nor
   reimplements provider rules, Gate admission, Triage, or storyline throttling.
 
-  `/news/review` is the 命中复盘 destination (#88). It reads
-  `/api/news/review` every 60 s with a URL-owned `hours` window
-  (`24|72|168|720`, default 168) and renders coverage before accuracy: every
-  percentage is paired with the N it came from, neutral and unclear judgments
-  report their own N instead of entering the hit-rate denominator, and an empty
-  window says whether data is pending, unavailable or outside coverage rather
-  than showing `0%`. The potential-miss list is a review queue — each row names
-  the decision and the rule that withheld it, and the page writes no label; the
-  `复制「漏推」标注命令` button copies the existing `tracefold news label`
-  command, exactly like the feed's `X` shortcut.
+  `/news/review` is the #112 ReviewDesk destination, not a price scorecard. It
+  owns four views: `待复盘` (deterministically sampled event tasks), `证据覆盖`
+  (received -> replayable -> reviewed -> accepted -> holdout funnel), `候选版本`
+  (sealed proposal/evaluation/deployment evidence), and `市场旁证`. Selecting a
+  task loads its evidence-bound version; submission sends that version plus a
+  UUID idempotency key and the multi-dimensional rubric to the append-only
+  ReviewDesk write path, then advances to the server-provided next task. The browser
+  never manufactures labels, release decisions, candidate hashes or queue
+  order. Blind A/B exposes a side-qualified critical-error checklist; the
+  browser still does not know which side is stable/candidate, while the server
+  can turn a candidate-only factual/entity/direction/key-fact/duplicate or
+  injection failure into a hard release guard. Market data stays hidden until
+  a judgment is accepted.
+
+  `市场旁证` defaults to one exact prompt/policy/model cohort and leads with
+  mature-horizon coverage, not HIT. Similar withheld Events are shown as one
+  fact cluster with related Event ids. The permanent disclaimer states that a
+  1 h/4 h move is neither causality, reward nor `should_push` truth; the page
+  exposes no action that can promote a prompt from this view. An empty or mixed
+  cohort reports insufficient evidence instead of combining versions.
 
   Current quotes are a separate 15 s query (`/api/news/quotes`) keyed by the
   sorted symbol batch, never a feed field: a price that changed must not
@@ -214,10 +225,9 @@ the route components into the eager shell chunk.
   name, no click handler on the article itself. At 1366×720 the target is at
   least four rows, at 390×844 about two, with no horizontal overflow.
 
-  Above pointer widths a row carries two controls and no more: a hover-revealed
-  checkbox for bulk labelling and a caret that expands the judgment in place.
-  #87 removed the row's buttons because a hover-only target means nothing under
-  a thumb — these come back only where hover exists and are absent below 768px.
+  Above pointer widths a row carries one optional caret that expands the
+  judgment in place. There is no bulk-label checkbox or hover-only review
+  action; evidence-bound judgments live on ReviewDesk.
   The expansion shows `why_zh` plus the verdict `FactGrid` and the full asset
   list: server copy only, never a rule key, which stays behind 技术详情 on the
   Event's own page.
@@ -231,8 +241,8 @@ the route components into the eager shell chunk.
   Keyboard: `⌘K`/`Ctrl-K` opens the command palette (the one binding that fires
   while a field has focus, because it is how the reader leaves the field),
   `J`/`K` (and `↑`/`↓`) move a real focus cursor down the rows, `Enter` opens
-  the cursor row, `Space` expands its judgment in place, `1`–`4` pick a task
-  tab, `X` copies that Event's `tracefold news label` command, `Esc` leaves an
+  the cursor row, `Space` expands its judgment in place, `1`–`4` pick a feed
+  outcome tab, `Esc` leaves an
   Event or closes a panel, `/` focuses the topbar search, `G` then `F`/`R`/`S`
   jumps between the three routes, and `?` opens the shortcut panel.
   `features/cockpit/ui/appShortcuts.ts` is the list the panel shows and the
@@ -245,12 +255,9 @@ the route components into the eager shell chunk.
   are held back while the reader is scrolled away and offered as a pulsing
   `N 条新事件 · 回到顶部` capsule; when they land they flash once, so a reader
   already at the top sees which rows are new without re-reading the list.
-  Selecting rows raises a sticky action bar that copies one
-  `tracefold news label … missed` command per selected Event — `Shift` extends
-  the range from the last row touched. Selection is per-render list state and
-  deliberately not in the URL: it is a scratch pad for the next clipboard copy,
-  not something to share, and like every other affordance here it writes
-  nothing to the server.
+  Feed rows are deliberately not a labeling surface. A production judgment is
+  made only from a sampled, evidence-versioned ReviewDesk task, so there is no
+  row selection, bulk label action, clipboard command, or `X` shortcut.
 
   From 1024px up, a plain click on a row opens the Event in a *non-modal*
   drawer beside the list instead of replacing it: the queue stays on screen,
@@ -274,13 +281,11 @@ the route components into the eager shell chunk.
   primary/mentioned assets, and the original wire line with its origin, merged
   report count and link; the `符号归一` block when the server sends a
   `normalization[]` group that actually collapses several names into one
-  `base_symbol` (#87), which is what makes the storyline throttle legible; the
+  `base_symbol` (#87), which is what makes the normalized storyline identity legible; the
   `事件后反应` card; then a two-column band — the timeline
   (`这条新闻经历了什么`) over the server `timeline[]`, one `summary_zh`
   sentence per step with `+Δ` from the previous step, an end-to-end figure on
   the card, and the raw `facts` behind an `展开字段` toggle — beside
-  `这条判得对吗` (four buttons that copy the `tracefold news label` command
-  for `good` / `noise` / `missed` / `must_push`, plus any existing labels) and
   `同类报道` (members: time, title, origin, 首条/归并, original link); and a
   collapsed `技术详情` disclosure that holds `event_id`, `storyline_key`,
   family, admission, engine/ingest mode, grounded assets, provenance, every
@@ -292,7 +297,8 @@ the route components into the eager shell chunk.
   inventing an order. Every duration on the page is two server timestamps
   subtracted. Internal identifiers do not appear above the fold. The browser
   does not recompute any verdict, decision, or delivery state, and it does not
-  write labels: the News API is read-only and the learning plane is the CLI.
+  write review evidence from Event detail. The normal feed/detail API remains
+  read-only; ReviewDesk uses its own narrow append-only POST contract.
 
   `/news/status` reads `/api/news/status` and renders four thresholded
   health cards plus a `标的表快照` card. That card renders the whole
@@ -343,8 +349,8 @@ the route components into the eager shell chunk.
 - **Cascade layers.** Side-effect CSS participates in the app cascade contract declared in `styles/tokens.css`: `app.base`, `app.primitives`, `app.shell`, `app.features`, then `app.overrides`. `styles/base.css` uses `app.base`; shared primitives use `app.primitives`; cockpit shell files use `app.shell`; feature route CSS uses `app.features`. Unlayered side-effect CSS is allowed only for Tailwind's import file.
 - **Responsive CSS contract.** Mobile behavior is a tested architecture surface, not a best-effort visual tweak. Shell CSS owns `.cockpit-shell`, `.cockpit-main`, `.center-column`, `.topbar`, `.topbar-sidebar-trigger` and `.cockpit-app-sidebar`, split by owner files (`cockpitShell.css`, `CockpitTopbar.css`, `AppSidebar.css`, `AppBottomNav.css`, and `cockpitShellContract.css`). Final shell breakpoint decisions, including the mobile topbar row height token, live in `features/cockpit/ui/cockpitShellContract.css`. Tablet route navigation is the shared `Drawer` primitive opened from the topbar trigger; below `768px` there is no drawer at all and `AppBottomNav` carries every destination (#87).
 - **Route controls.** Shells do not render route-specific filter controls. News controls belong to the feature route that consumes them. `CockpitShell` is the only shell; it owns navigation, frame layout, the main route scroll container, and the `/` search hotkey.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is part of the page and the topbar trigger folds it away for readers who want the whole column; from `768px` to `1279px` the same sidebar is the left `Drawer` that trigger opens; below `768px` neither is rendered and `AppBottomNav` takes over — a sticky bar of 48px targets over every destination the model holds (three today), reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses (#87). The frame re-syncs when the viewport crosses a breakpoint so a rotated tablet lands in the right one. There is no rail and no remembered collapse state: a manual toggle is per-page. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries the three News destinations (`事件流` `/news`, `命中复盘` `/news/review`, `流水线状态` `/news/status`); `/news/events/:eventId` highlights `事件流`. The feed entry shows the 24 h `funnel_24h.received` count compacted to `1.4k` (truncated, never rounded — a shorthand must not report more than arrived) and the status entry shows a dot only when `health.overall` is not `ok`; both are `aria-hidden` so they decorate the link without renaming it. The shell reads them through `@features/news/shell` — the same query key the feed header and status route use, so React Query serves all three from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/review`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
-- **Command palette and toast.** `⌘K` opens one entry for jump, filter, label and navigate. It adds no capability: every command is something the console already offers somewhere else — a destination, a task tab, a `symbol` filter drawn from the server's own watchlist, a `tracefold news label` command — collapsed into one keystroke, which is why `shellChromeData` assembles the list from what the routes already expose and `CommandPalette` only renders and filters it. Matching is a plain substring with no ranking, so the same query always puts the same command under the same keystroke. The console has exactly one toast: `useCopyToast` lives in the shell, `CockpitShell` renders it, and routes push through `ShellRouteContext.copy` rather than owning one each.
+- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is part of the page and the topbar trigger folds it away for readers who want the whole column; from `768px` to `1279px` the same sidebar is the left `Drawer` that trigger opens; below `768px` neither is rendered and `AppBottomNav` takes over — a sticky bar of 48px targets over every destination the model holds (three today), reading the same `APP_NAVIGATION_GROUPS`, with `aria-current` from the same `isActive` predicate the sidebar uses (#87). The frame re-syncs when the viewport crosses a breakpoint so a rotated tablet lands in the right one. There is no rail and no remembered collapse state: a manual toggle is per-page. `.news-detail-shell` centres its reading measure rather than hugging the left edge. The nav carries the three News destinations (`事件流` `/news`, `学习复盘` `/news/review`, `流水线状态` `/news/status`); `/news/events/:eventId` highlights `事件流`. The feed entry shows the 24 h `funnel_24h.received` count compacted to `1.4k` (truncated, never rounded — a shorthand must not report more than arrived) and the status entry shows a dot only when `health.overall` is not `ok`; both are `aria-hidden` so they decorate the link without renaming it. The shell reads them through `@features/news/shell` — the same query key the feed header and status route use, so React Query serves all three from one poll. `/` redirects to `/news`, and the topbar search submits to `/news?q=`. The public SPA routes are `/`, `/news`, `/news/review`, `/news/status`, and `/news/events/:eventId`; `/macro*`, `/search*`, `/token/*`, `/radar`, and `/stocks` resolve through the standard not-found route with no redirect or compatibility screen. Healthy runtime state is silent. Configuration or service anomalies (`/api/status.runtime` not ok, a failed status check, or a missing bootstrap token) appear as an accessible topbar status; operational diagnosis remains on the API/CLI surfaces and there is no browser Ops route.
+- **Command palette.** `⌘K` opens one entry for jump, filter and navigate. It adds no capability: every command is something the console already offers somewhere else — a destination, a feed task tab, or a `symbol` filter drawn from the server's own watchlist — collapsed into one keystroke, which is why `shellChromeData` assembles the list from what the routes already expose and `CommandPalette` only renders and filters it. Matching is a plain substring with no ranking, so the same query always puts the same command under the same keystroke. Review writes remain inside ReviewDesk; there is no label-command palette action or shell copy toast.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
 - **Side-effect CSS budget.** Architecture tests fail any side-effect CSS file above 500 lines. Component-specific styling should move toward CSS Modules or smaller owner files instead of growing route-wide side-effect CSS buckets.
@@ -439,8 +445,8 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    into view, `Enter` opens the drawer at desktop width and the page below it,
    `Space` expands the cursor row's judgment in place, `Esc` closes the drawer
    and leaves an Event, `1`–`4` switch tabs and survive reload, `/` focuses
-   search, `G`→`F`/`R`/`S` navigates, `X` copies the label command with a
-   toast, and `?` opens and closes the panel. Confirm no binding except `⌘K`
+   search, `G`→`F`/`R`/`S` navigates, and `?` opens and closes the panel.
+   Confirm `X` has no label side effect and no binding except `⌘K`
    fires while the search box has focus.
 9. From a row at `≥1024px`, confirm a plain click opens the drawer with the
    list still visible and the URL unchanged, `J`/`K` move the drawer to the next
@@ -463,7 +469,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     reason, headline, direction + magnitude + 把握, why, the
     `TYPE/SCOPE/NOVELTY/ACTIONABLE/AUDIENCE/MEMBERS` grid with framed cells,
     主要标的 vs 提及), the timeline with `+Δ` and an end-to-end figure,
-    这条判得对吗 / 同类报道, and a collapsed 技术详情 appear in that order
+    同类报道 and a collapsed 技术详情 appear in that order
     with no market-mark table — the two #88 market blocks (`当前报价` and
     `事件后反应`) are separate cards, never one table, because a rolling change and a
     fixed post-Event return are different time semantics; the hero's left rail carries the direction colour and a
@@ -477,3 +483,11 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     tables render as two-column grids rather than stacked `dl`s. Confirm about
     two News rows remain scannable at 390px and at least four at desktop height
     without horizontal overflow.
+11. On `/news/review`, verify the four ReviewDesk views survive reload through
+    URL state; an event task shows frozen evidence and the rubric before any
+    market data; submit sends `If-Match` plus one UUID idempotency key and moves
+    to the server-provided next task. Coverage must distinguish accepted from
+    merely reviewed. The market view must show the exact cohort, priced/mature
+    coverage and fact-cluster counts, display the non-causal disclaimer, and
+    show no HIT headline, event-type ranking, label-copy action, or promotion
+    control. Empty/mixed cohorts render insufficient evidence, never `0%`.

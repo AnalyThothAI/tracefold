@@ -5,6 +5,7 @@ import {
   NEWS_NOW_MS,
   newsDeliveryFixture,
   newsEventDetailFixture,
+  newsEventReactionFixture,
   newsFeedEventFixture,
   newsFeedFixture,
   newsOutcomeFixture,
@@ -56,7 +57,7 @@ describe("NewsPage", () => {
       }),
     );
 
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    renderNews(<NewsPage token="test-token" view="feed" />);
 
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
     // Section navigation lives in the shell sidebar now (#82); this renders the surface on its own.
@@ -89,7 +90,7 @@ describe("NewsPage", () => {
   });
 
   it("renders one Event row as when · what · one outcome, with server-labelled facts and no rule keys", async () => {
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    renderNews(<NewsPage token="test-token" view="feed" />);
 
     const row = (
       await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
@@ -150,7 +151,7 @@ describe("NewsPage", () => {
                   group: "held",
                   kind: "throttled",
                   reason_zh: "BTC 同一话题 2 小时内已推过同等或更重要的消息",
-                  text_zh: "未推送（限流）",
+                  text_zh: "未推送（历史限流）",
                 }),
                 triage: {
                   ...newsFeedEventFixture().triage!,
@@ -178,7 +179,7 @@ describe("NewsPage", () => {
       ),
     );
 
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    renderNews(<NewsPage token="test-token" view="feed" />);
 
     /*
      * Three quarters of a day's Events stop short of a card. Badging every one of them with a capsule made a
@@ -194,7 +195,7 @@ describe("NewsPage", () => {
     const heldBadge = throttled.querySelector(".news-outcome")!;
     expect(heldBadge).toHaveAttribute("data-variant", "text");
     expect(heldBadge).toHaveAttribute("data-tone", "caution");
-    expect(heldBadge).toHaveTextContent("未推送（限流）");
+    expect(heldBadge).toHaveTextContent("未推送（历史限流）");
     expect(within(throttled).queryByText("storyline:asset:BTC")).not.toBeInTheDocument();
     const recovery = screen.getByText("断线期间补抄的旧闻，仅用于去重与历史").closest("article")!;
     expect(recovery.querySelector(".news-outcome")).toHaveTextContent("补抄件，不推送");
@@ -207,10 +208,7 @@ describe("NewsPage", () => {
      * scroll position. The expansion carries the model's own sentence and the verdict grid — server copy
      * only, never the rule key behind the decision, which stays on the Event's page.
      */
-    const copied: Array<[string, string]> = [];
-    renderNews(
-      <NewsPage copy={(text, note) => copied.push([text, note])} token="test-token" view="feed" />,
-    );
+    renderNews(<NewsPage token="test-token" view="feed" />);
 
     const row = (
       await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ })
@@ -229,89 +227,6 @@ describe("NewsPage", () => {
 
     fireEvent.click(within(row).getByRole("button", { name: /收起判定/ }));
     expect(row.querySelector(".news-event-verdict")).toBeNull();
-    expect(copied).toEqual([]);
-  });
-
-  it("extends a bulk selection with Shift and copies one command per selected Event", async () => {
-    server.use(
-      http.get(/.*\/api\/news\/feed$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsFeedFixture({
-            events: ["a", "b", "c", "d"].map((suffix, index) =>
-              newsFeedEventFixture({
-                event_id: `evt-${suffix}`,
-                leader_title: `Bulk row ${index + 1}`,
-                opened_at_ms: NEWS_NOW_MS - index * 60_000,
-                title_zh: null,
-                triage: { ...newsFeedEventFixture().triage!, headline_zh: `批量行 ${index + 1}` },
-              }),
-            ),
-          }),
-        }),
-      ),
-    );
-    const copied: Array<[string, string]> = [];
-    renderNews(
-      <NewsPage copy={(text, note) => copied.push([text, note])} token="test-token" view="feed" />,
-    );
-
-    await screen.findByRole("heading", { name: "批量行 1" });
-    // 484 held Events waiting to be checked is a queue, and a button per row is not a review (proposal ④).
-    fireEvent.click(screen.getByRole("button", { name: "选择 批量行 1" }));
-    fireEvent.click(screen.getByRole("button", { name: "选择 批量行 4" }), { shiftKey: true });
-
-    expect(screen.getByText("已选 4 条")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "批量标为漏推" }));
-
-    expect(copied).toEqual([
-      [
-        [
-          "tracefold news label evt-a missed",
-          "tracefold news label evt-b missed",
-          "tracefold news label evt-c missed",
-          "tracefold news label evt-d missed",
-        ].join("\n"),
-        "已复制 4 条「漏推」标注命令",
-      ],
-    ]);
-    // The bar clears itself, so the next selection starts from nothing rather than from a stale set.
-    expect(screen.queryByText(/已选/)).toBeNull();
-  });
-
-  it("drops a bulk selection when the list it was made in changes", async () => {
-    server.use(
-      http.get(/.*\/api\/news\/feed$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsFeedFixture({
-            events: ["a", "b"].map((suffix, index) =>
-              newsFeedEventFixture({
-                event_id: `evt-${suffix}`,
-                leader_title: `Scoped row ${index + 1}`,
-                opened_at_ms: NEWS_NOW_MS - index * 60_000,
-                title_zh: null,
-                triage: { ...newsFeedEventFixture().triage!, headline_zh: `作用域行 ${index + 1}` },
-              }),
-            ),
-          }),
-        }),
-      ),
-    );
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
-
-    await screen.findByRole("heading", { name: "作用域行 1" });
-    fireEvent.click(screen.getByRole("button", { name: "选择 作用域行 1" }));
-    expect(screen.getByText("已选 1 条")).toBeInTheDocument();
-
-    /*
-     * Switching the task tab replaces the URL without unmounting anything. Without a scope the bar kept
-     * counting rows that had left the screen and could no longer be deselected, and 批量标为漏推 would then
-     * copy commands for Events the operator cannot see.
-     */
-    fireEvent.click(screen.getByRole("tab", { name: "已推送" }));
-
-    await waitFor(() => expect(screen.queryByText(/已选/)).toBeNull());
   });
 
   it("keeps a 668-character feed headline accessible inside the compact density surface", async () => {
@@ -333,7 +248,7 @@ describe("NewsPage", () => {
       ),
     );
 
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    renderNews(<NewsPage token="test-token" view="feed" />);
 
     const heading = await screen.findByRole("heading", { level: 2, name: longTitle });
     expect(heading.textContent).toHaveLength(longTitle.length);
@@ -363,7 +278,7 @@ describe("NewsPage", () => {
     );
 
     renderNews(
-      <NewsPage copy={() => {}} token="test-token" view="feed" />,
+      <NewsPage token="test-token" view="feed" />,
       "/news?q=bitcoin&family=general&admission=candidate&priority=high&decision=push&symbol=btc&sort=priority&outcome=held&hours=6",
     );
 
@@ -439,7 +354,7 @@ describe("NewsPage", () => {
     );
 
     renderNews(
-      <NewsPage copy={() => {}} token="test-token" view="feed" />,
+      <NewsPage token="test-token" view="feed" />,
       "/news?priority=urgent&decision=maybe&outcome=whatever&hours=999",
     );
 
@@ -473,7 +388,7 @@ describe("NewsPage", () => {
         });
       }),
     );
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    renderNews(<NewsPage token="test-token" view="feed" />);
     await screen.findByText(/央行政策转向，风险资产承压/);
 
     fireEvent.click(screen.getByRole("button", { name: "加载更多事件" }));
@@ -486,7 +401,7 @@ describe("NewsPage", () => {
   it("shows new first-page events immediately when the reader is at the top", async () => {
     let feed = newsFeedFixture();
     server.use(http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: true, data: feed })));
-    const rendered = renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
     await screen.findByText(/央行政策转向，风险资产承压/);
 
     feed = newsFeedFixture({
@@ -530,7 +445,7 @@ describe("NewsPage", () => {
         });
       }),
     );
-    const rendered = renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    const rendered = renderNews(<NewsPage token="test-token" view="feed" />);
     const currentTitle = await screen.findByText(/央行政策转向，风险资产承压/);
     const currentRow = currentTitle.closest("article");
     const scrollContainer = rendered.container.querySelector<HTMLElement>(".center-column");
@@ -567,7 +482,7 @@ describe("NewsPage", () => {
   });
 
   it("stays silent about a healthy pipeline and keeps the 24 h funnel on the Feed header", async () => {
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    renderNews(<NewsPage token="test-token" view="feed" />);
 
     const funnel = await screen.findByRole("region", { name: "过去 24 小时漏斗" });
     /*
@@ -602,7 +517,7 @@ describe("NewsPage", () => {
         }),
       ),
     );
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="feed" />);
+    renderNews(<NewsPage token="test-token" view="feed" />);
     const pill = await screen.findByRole("link", { name: "查看流水线状态" });
     await waitFor(() => expect(pill).toHaveTextContent("流水线异常"));
     expect(pill).toHaveAttribute("data-tone", "alert");
@@ -634,7 +549,7 @@ describe("NewsPage", () => {
       ),
     );
 
-    renderNews(<NewsPage copy={() => {}} token="test-token" view="status" />, "/news/status");
+    renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
 
     expect(await screen.findByRole("heading", { name: "流水线状态" })).toBeInTheDocument();
     expect(await screen.findByText("总体注意")).toBeInTheDocument();
@@ -681,18 +596,14 @@ describe("NewsPage", () => {
     const technical = screen.getByText(/技术指标/).closest("details")!;
     expect(technical).not.toHaveAttribute("open");
     expect(within(technical).getByText("triage_p95_ms")).toBeInTheDocument();
+    expect(within(technical).getByText("学习证据保留")).toBeInTheDocument();
+    expect(within(technical).getByText("deleted_last_turn")).toBeInTheDocument();
   });
 
   // ------------------------------------------------------------------ detail
-  it("renders Event detail as one conclusion, a timeline, members, labels, and folded technical details", async () => {
-    const copied: Array<[string, string]> = [];
+  it("renders Event detail as one conclusion, a timeline, members, and folded technical details", async () => {
     renderNews(
-      <NewsPage
-        copy={(text, note) => copied.push([text, note])}
-        eventId="evt-global-policy"
-        token="test-token"
-        view="event"
-      />,
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
     );
 
@@ -708,6 +619,11 @@ describe("NewsPage", () => {
       screen.getByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" }),
     ).toBeInTheDocument();
     expect(screen.getByText("利率指引与市场预期背离，风险资产定价需要重估")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "学习复盘" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "在学习复盘中打开" })).toHaveAttribute(
+      "href",
+      "/news/review?view=queue&mode=event&event=evt-global-policy",
+    );
     const hero = region.querySelector<HTMLElement>(".news-detail-hero")!;
     expect(
       within(hero).getByText("Central banks respond to a new global policy shock"),
@@ -736,21 +652,7 @@ describe("NewsPage", () => {
     ).toBeInTheDocument();
     expect(within(members).queryByText(/0\.71/)).not.toBeInTheDocument();
 
-    // Labelling is the learning plane and the News API is read-only, so the console hands over the command
-    // instead of pretending to write one.
-    const labels = screen.getByRole("region", { name: "运营标注" });
-    expect(within(labels).getByText("good")).toBeInTheDocument();
-    expect(
-      within(labels)
-        .getAllByRole("button")
-        .map((button) => button.textContent),
-    ).toEqual(["判得对", "不该推", "漏推", "必须推"]);
-    // The page hands the command to the shell, which owns the console's one clipboard affordance and its
-    // one toast — the News API is read-only and nothing here writes a label.
-    fireEvent.click(within(labels).getByRole("button", { name: "不该推" }));
-    expect(copied).toEqual([
-      ["tracefold news label evt-global-policy noise", "已复制「不该推」标注命令"],
-    ]);
+    expect(screen.queryByRole("region", { name: "运营标注" })).not.toBeInTheDocument();
 
     const technical = screen.getByText(/技术详情/).closest("details")!;
     expect(technical).not.toHaveAttribute("open");
@@ -759,6 +661,36 @@ describe("NewsPage", () => {
     expect(within(technical).getByText("news_triage_policy_v1")).toBeInTheDocument();
     // Internal identifiers do not leak into the first screen.
     expect(within(hero).queryByText(/asset:BTC|evt-global-policy|jaccard/)).toBeNull();
+  });
+
+  it("hides same-name non-primary market candidates from Event evidence", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsEventDetailFixture({
+            reaction: null,
+            reactions: [
+              newsEventReactionFixture({ is_primary: true, symbol: "NVDA" }),
+              newsEventReactionFixture({
+                is_primary: false,
+                symbol: "GLM",
+                venue_symbol: "GLMUSDT",
+              }),
+            ],
+          }),
+        }),
+      ),
+    );
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+
+    await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
+    expect(screen.getByText("NVDA")).toBeInTheDocument();
+    expect(screen.queryByText("GLM")).not.toBeInTheDocument();
+    expect(screen.getByText(/已隐藏 1 个同名但非主标的/)).toBeInTheDocument();
   });
 
   it("explains a degraded, throttled, and failed-delivery Event without inventing state", async () => {
@@ -823,7 +755,7 @@ describe("NewsPage", () => {
     );
 
     renderNews(
-      <NewsPage copy={() => {}} eventId="evt-global-policy" token="test-token" view="event" />,
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
     );
 

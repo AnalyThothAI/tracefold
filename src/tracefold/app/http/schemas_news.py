@@ -49,7 +49,7 @@ class NewsAssetRefData(ExactApiSchema):
 
 
 class NewsSymbolNormalizationData(ExactApiSchema):
-    """#87: the several names one issuer trades under, collapsed to the base the storyline throttle buckets by."""
+    """#87: the several names one issuer trades under, collapsed to one stable storyline identity."""
 
     base_symbol: str
     aliases: list[str] = Field(default_factory=list)
@@ -100,6 +100,12 @@ class NewsEventData(ExactApiSchema):
     leader_title: str
     leader_url: str | None = None
     leader_description: str = ""
+    focus_fact_id: str = ""
+    focus_fact_text: str = ""
+    focus_fact_context: str = ""
+    focus_fact_method: str = ""
+    focus_span_start: int = 0
+    focus_span_end: int = 0
     reporting_origin: str = ""
     opened_at_ms: int
     last_member_at_ms: int
@@ -176,6 +182,8 @@ class NewsEventMemberData(ExactApiSchema):
     jaccard_estimate: float | None = None
     provenance: list[str] = Field(default_factory=list)
     description: str = ""
+    fact_id: str = ""
+    fact_text: str = ""
 
 
 class NewsVerdictData(ExactApiSchema):
@@ -192,6 +200,9 @@ class NewsVerdictData(ExactApiSchema):
     degraded: bool = False
     error_code: str | None = None
     trace: dict[str, Any] = Field(default_factory=dict)
+    evidence_version: int | None = None
+    evidence_sha256: str | None = None
+    focus_fact_id: str | None = None
     published_at_ms: int | None = None
     created_at_ms: int
 
@@ -202,16 +213,50 @@ class NewsDeliveryData(ExactApiSchema):
     error_code: str | None = None
     attempted_at_ms: int
     settled_at_ms: int | None = None
+    card: dict[str, Any] = Field(default_factory=dict)
     receipt: dict[str, Any] | None = None
 
 
-class NewsLabelData(ExactApiSchema):
-    label_version: str
-    source: str
-    label: dict[str, Any] = Field(default_factory=dict)
+class NewsEvidenceSnapshotData(ExactApiSchema):
+    event_id: str
+    evidence_version: int
+    focus_fact_id: str
+    evidence_sha256: str
+    provenance: Literal["observed", "legacy_reconstructed"]
+    release_eligible: bool
+    snapshot: dict[str, Any] = Field(default_factory=dict)
     created_at_ms: int
-    labeled_by: str = "operator"
-    subject: str = ""
+
+
+class NewsReaderReceiptData(ExactApiSchema):
+    state: Literal["received", "not_received", "unknown"]
+    delivery_state: str | None = None
+    error_code: str | None = None
+    received_at_ms: int | None = None
+    rendered_card: dict[str, Any] | None = None
+
+
+class NewsAcceptedReviewData(ExactApiSchema):
+    review_id: str
+    should_push: Literal["must_push", "should_push", "should_hold", "must_hold", "uncertain"] | None = None
+    dimensions: dict[str, str] = Field(default_factory=dict)
+    novelty: dict[str, Any] = Field(default_factory=dict)
+    first_bad_owner: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    expected_correction: str = ""
+    note: str = ""
+    reviewer: str
+    created_at_ms: int
+    rubric_version: str
+    reader_contract_version: str
+    pairwise_case_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class NewsEventReviewSummaryData(ExactApiSchema):
+    judgment_n: int = 0
+    accepted: NewsAcceptedReviewData | None = None
+    uncertain: bool = False
 
 
 class NewsTimelineStepData(ExactApiSchema):
@@ -230,7 +275,9 @@ class NewsEventDetailData(ExactApiSchema):
     members: list[NewsEventMemberData]
     verdicts: list[NewsVerdictData]
     deliveries: list[NewsDeliveryData]
-    labels: list[NewsLabelData] = Field(default_factory=list)
+    review: NewsEventReviewSummaryData
+    evidence_snapshots: list[NewsEvidenceSnapshotData] = Field(default_factory=list)
+    reader_receipt: NewsReaderReceiptData
     normalization: list[NewsSymbolNormalizationData] = Field(default_factory=list)
     reaction: NewsReactionSummaryData | None = None
     reactions: list[NewsEventReactionData] = Field(default_factory=list)
@@ -304,6 +351,7 @@ class NewsEventReactionData(ExactApiSchema):
     p4_at_ms: int | None = None
     return_1h_bps: int | None = None
     return_4h_bps: int | None = None
+    is_primary: bool
     state: Literal["pending", "partial", "complete", "unavailable"]
     state_zh: str = ""
     unavailable_reason: str | None = None
@@ -403,14 +451,19 @@ class NewsReviewMissData(ExactApiSchema):
     return_4h_bps: int | None = None
     asset_n: int = 0
     assets: list[NewsEventReactionData] = Field(default_factory=list)
+    fact_cluster_key: str = ""
+    fact_cluster_n: int = 1
+    related_event_ids: list[str] = Field(default_factory=list)
 
 
 class NewsReviewMetaData(ExactApiSchema):
     hours: int
     window_start_ms: int
     window_end_ms: int
+    discovery_window_start_ms: int
     metric_version: str
     measured_at_ms: int
+    cohort: str | None = None
 
 
 class NewsReviewSummaryData(ExactApiSchema):
@@ -421,7 +474,7 @@ class NewsReviewSummaryData(ExactApiSchema):
     coverage_1h_pct: float | None = None
 
 
-class NewsReviewData(ExactApiSchema):
+class NewsMarketReviewData(ExactApiSchema):
     meta: NewsReviewMetaData
     coverage: list[NewsReviewCoverageData] = Field(default_factory=list)
     directions: list[NewsReviewDirectionData] = Field(default_factory=list)
@@ -429,6 +482,141 @@ class NewsReviewData(ExactApiSchema):
     event_types: list[NewsReviewEventTypeData] = Field(default_factory=list)
     potential_misses: list[NewsReviewMissData] = Field(default_factory=list)
     summary: NewsReviewSummaryData
+
+
+class NewsReviewSelectionData(ExactApiSchema):
+    stratum: str
+    stratum_zh: str = ""
+    reason: str | None = None
+    reason_zh: str = ""
+    sampling_probability: float
+    selection_version: str
+
+
+class NewsReviewReceiptTruthData(ExactApiSchema):
+    truth: Literal["received", "not_received", "unknown"]
+    truth_zh: str = ""
+    state: str | None = None
+    settled_at_ms: int | None = None
+    rendered_card: dict[str, Any] | None = None
+    error_code: str | None = None
+
+
+class NewsReviewTaskData(ExactApiSchema):
+    task_id: str
+    task_version: str
+    mode: Literal["event", "pairwise"]
+    event_id: str | None = None
+    evidence_version: int | None = None
+    verdict_evidence_version: int | None = None
+    opened_at_ms: int | None = None
+    headline: str | None = None
+    agent_headline: str | None = None
+    agent_why: str | None = None
+    final_decision: str | None = None
+    final_decision_zh: str = ""
+    reader_receipt: NewsReviewReceiptTruthData | None = None
+    cohort: str | None = None
+    agent_cohort: dict[str, str] | None = None
+    selection: NewsReviewSelectionData
+    evidence_ready: bool | None = None
+    disclosure: dict[str, Any] | None = None
+    review_status: Literal["pending", "accepted"]
+    accepted_review: NewsAcceptedReviewData | None = None
+
+
+class NewsReviewCoverageIntervalData(ExactApiSchema):
+    lower_pct: float
+    upper_pct: float
+
+
+class NewsReviewCoverageBucketData(ExactApiSchema):
+    cohort: str | None = None
+    legacy_cohort: str | None = None
+    agent: dict[str, str] | None = None
+    stratum: str | None = None
+    stratum_zh: str | None = None
+    events: int
+    accepted: int
+    received: int | None = None
+    reviewed: int | None = None
+    accepted_pct: float | None = None
+    accepted_interval_95: NewsReviewCoverageIntervalData | None = None
+
+
+class NewsReviewFunnelV2Data(ExactApiSchema):
+    received: int
+    replayable: int
+    reviewed: int
+    accepted: int
+    holdout_ready: int
+    total: int
+    external_misses: int
+
+
+class NewsReviewHoldoutData(ExactApiSchema):
+    status: Literal["ready", "insufficient_evidence"]
+    case_n: int
+    cluster_n: int
+    accepted_case_n: int
+    accepted_cluster_n: int
+    coverage_pct: float | None = None
+    coverage_interval_95: NewsReviewCoverageIntervalData | None = None
+
+
+class NewsReviewData(ExactApiSchema):
+    view: Literal["queue", "coverage", "proposals", "market"]
+    status: str | None = None
+    mode: Literal["event", "pairwise"] | None = None
+    message_zh: str | None = None
+    title_zh: str | None = None
+    disclaimer_zh: str | None = None
+    reader_contract_version: str | None = None
+    reader_contract_sha256: str | None = None
+    rubric_version: str | None = None
+    tasks: list[NewsReviewTaskData] = Field(default_factory=list)
+    next_cursor: str | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+    window: dict[str, int] | None = None
+    funnel: NewsReviewFunnelV2Data | None = None
+    cohorts: list[NewsReviewCoverageBucketData] = Field(default_factory=list)
+    strata: list[NewsReviewCoverageBucketData] = Field(default_factory=list)
+    holdout: NewsReviewHoldoutData | None = None
+    proposals: list[dict[str, Any]] = Field(default_factory=list)
+    reaction: NewsMarketReviewData | None = None
+    disclosure: dict[str, Any] | None = None
+
+
+class NewsReviewSubmissionReceiptData(ExactApiSchema):
+    review_id: str
+    acceptance_id: str | None = None
+    external_snapshot_id: str | None = None
+    task_id: str
+    task_version: str
+    created_at_ms: int | None = None
+
+
+class NewsReviewSubmitData(ExactApiSchema):
+    idempotent: bool
+    receipt: NewsReviewSubmissionReceiptData
+    next_task: NewsReviewTaskData | None = None
+    updated_queue_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class NewsReviewEvidenceData(ExactApiSchema):
+    task: NewsReviewTaskData
+    disclosure: dict[str, Any]
+    evidence: dict[str, Any] | None = None
+    agent: dict[str, Any] | None = None
+    reader_receipt: NewsReviewReceiptTruthData | None = None
+    market_reactions: list[NewsEventReactionData] = Field(default_factory=list)
+    accepted_review: NewsAcceptedReviewData | None = None
+    rubric: dict[str, Any] = Field(default_factory=dict)
+    versions: dict[str, Any] = Field(default_factory=dict)
+    source_evidence: dict[str, Any] | None = None
+    output_A: dict[str, Any] | None = None
+    output_B: dict[str, Any] | None = None
+    reveal: dict[str, Any] | None = None
 
 
 class NewsQuoteVenueData(ExactApiSchema):
@@ -506,8 +694,8 @@ class NewsPipelineStatusData(ExactApiSchema):
     dropped_by_rule: dict[str, int] = Field(default_factory=dict)
     throttled_by_key: dict[str, int] = Field(default_factory=dict)
     pushed_by_rule: dict[str, int] = Field(default_factory=dict)
-    labeled_missed_24h: int = 0
-    labeled_missed_without_event_24h: int = 0
+    reviewed_should_push_24h: int = 0
+    reviewed_external_miss_24h: int = 0
     # #100: {"throttled": n, "all": n} — duplicates withheld, by the path that measured the card.
     duplicates_withheld_24h: dict[str, int] = Field(default_factory=dict)
     tagged_24h: int = 0
@@ -524,7 +712,21 @@ class NewsDeliveryStatusData(ExactApiSchema):
     last_error_code: str | None = None
     e2e_p95_ms: float | None = None
     delivery_available: bool
-    hourly_cap: int
+
+
+class NewsLearningRetentionStatusData(ExactApiSchema):
+    last_run_at_ms: int | None = None
+    eligible_recordings: int = 0
+    eligible_cases: int = 0
+    eligible_artifacts: int = 0
+    deleted_recordings: int = 0
+    deleted_cases: int = 0
+    deleted_artifacts: int = 0
+    oldest_recording_age_ms: int | None = None
+    oldest_case_age_ms: int | None = None
+    oldest_artifact_age_ms: int | None = None
+    last_error_code: str | None = None
+    updated_at_ms: int | None = None
 
 
 class NewsControlStateData(ExactApiSchema):
@@ -597,6 +799,7 @@ class NewsStatusData(ExactApiSchema):
     broker: NewsBrokerStatusData
     pipeline: NewsPipelineStatusData
     delivery: NewsDeliveryStatusData
+    learning_retention: NewsLearningRetentionStatusData
     control: NewsControlStateData
     watchlist: list[str] = Field(default_factory=list)
     instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
@@ -625,7 +828,7 @@ __all__ = [
     "NewsHealthItemData",
     "NewsIncidentData",
     "NewsIngestStatusData",
-    "NewsLabelData",
+    "NewsLearningRetentionStatusData",
     "NewsOutcomeData",
     "NewsPipelineStatusData",
     "NewsPriceStatusData",

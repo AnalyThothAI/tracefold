@@ -8,6 +8,54 @@
 |--------|------|----------|---------|
 | `version_num` | `VARCHAR(32)` | False | `None` |
 
+## `news_agent_assignments`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `activation_id` | `TEXT` | True | `None` |
+| `arm` | `TEXT` | False | `None` |
+| `bundle_sha` | `TEXT` | False | `None` |
+| `selector_version` | `TEXT` | False | `None` |
+| `eligibility_reason` | `TEXT` | False | `None` |
+| `assigned_at_ms` | `BIGINT` | False | `None` |
+
+## `news_agent_runtime_manifests`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `manifest_sha` | `TEXT` | False | `None` |
+| `stable_bundle_sha` | `TEXT` | False | `None` |
+| `candidate_shas` | `JSONB` | False | `None` |
+| `image_digest` | `TEXT` | False | `None` |
+| `runtime_revision` | `TEXT` | False | `None` |
+| `registered_at_ms` | `BIGINT` | False | `None` |
+
+## `news_canary_activations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `activation_id` | `TEXT` | False | `None` |
+| `baseline_bundle_sha` | `TEXT` | False | `None` |
+| `candidate_manifest_sha` | `TEXT` | False | `None` |
+| `candidate_bundle_sha` | `TEXT` | False | `None` |
+| `selector_version` | `TEXT` | False | `None` |
+| `exposure_bps` | `INTEGER` | False | `None` |
+| `eligibility_profile_sha` | `TEXT` | False | `None` |
+| `rolling_profile_sha` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `revision` | `INTEGER` | False | `1` |
+| `trip_reason` | `TEXT` | True | `None` |
+| `hold_reason` | `TEXT` | True | `None` |
+| `rolling_last_bucket_ms` | `BIGINT` | True | `None` |
+| `rolling_breach_windows` | `INTEGER` | False | `0` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `activated_at_ms` | `BIGINT` | True | `None` |
+| `held_at_ms` | `BIGINT` | True | `None` |
+| `resumed_at_ms` | `BIGINT` | True | `None` |
+| `tripped_at_ms` | `BIGINT` | True | `None` |
+| `closed_at_ms` | `BIGINT` | True | `None` |
+
 ## `news_control_state`
 
 | Column | Type | Nullable | Default |
@@ -50,18 +98,18 @@
 | `family` | `TEXT` | False | `None` |
 | `expires_at_ms` | `BIGINT` | False | `None` |
 
-## `news_event_labels`
+## `news_event_evidence_snapshots`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `event_id` | `TEXT` | True | `None` |
-| `label_version` | `TEXT` | False | `None` |
-| `source` | `TEXT` | False | `None` |
-| `label` | `JSONB` | False | `'{}'::jsonb` |
+| `event_id` | `TEXT` | False | `None` |
+| `evidence_version` | `INTEGER` | False | `None` |
+| `focus_fact_id` | `TEXT` | False | `None` |
+| `evidence_sha256` | `TEXT` | False | `None` |
+| `provenance` | `TEXT` | False | `None` |
+| `release_eligible` | `BOOLEAN` | False | `true` |
+| `snapshot` | `JSONB` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-| `labeled_by` | `TEXT` | False | `'operator'::text` |
-| `subject` | `TEXT` | False | `''::text` |
-| `label_id` | `TEXT` | False | `None` |
 
 ## `news_event_members`
 
@@ -72,6 +120,8 @@
 | `joined_at_ms` | `BIGINT` | False | `None` |
 | `match_kind` | `TEXT` | False | `None` |
 | `jaccard_estimate` | `DOUBLE PRECISION` | True | `None` |
+| `fact_id` | `TEXT` | False | `None` |
+| `fact_text` | `TEXT` | False | `''::text` |
 
 ## `news_event_reactions`
 
@@ -129,6 +179,28 @@
 | `trace_id` | `TEXT` | False | `''::text` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `focus_fact_id` | `TEXT` | False | `None` |
+| `focus_fact_text` | `TEXT` | False | `''::text` |
+| `focus_fact_context` | `TEXT` | False | `''::text` |
+| `focus_fact_method` | `TEXT` | False | `'legacy_reconstructed'::text` |
+| `focus_span_start` | `INTEGER` | False | `0` |
+| `focus_span_end` | `INTEGER` | False | `0` |
+
+## `news_external_miss_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `snapshot_id` | `TEXT` | False | `None` |
+| `evidence_sha256` | `TEXT` | False | `None` |
+| `source_url` | `TEXT` | False | `None` |
+| `title` | `TEXT` | False | `None` |
+| `body` | `TEXT` | False | `''::text` |
+| `occurred_at_ms` | `BIGINT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `provenance` | `TEXT` | False | `None` |
+| `snapshot` | `JSONB` | False | `None` |
+| `created_by` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_ingest_state`
 
@@ -166,6 +238,58 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_learning_artifacts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `artifact_sha` | `TEXT` | False | `None` |
+| `kind` | `TEXT` | False | `None` |
+| `parent_sha` | `TEXT` | True | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `created_by` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_learning_cases`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `run_sha` | `TEXT` | False | `None` |
+| `case_id` | `TEXT` | False | `None` |
+| `dataset_sha` | `TEXT` | False | `None` |
+| `dataset_role` | `TEXT` | False | `None` |
+| `evaluation_stage` | `TEXT` | False | `None` |
+| `subject_kind` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | True | `None` |
+| `evidence_version` | `INTEGER` | True | `None` |
+| `external_snapshot_id` | `TEXT` | True | `None` |
+| `review_id` | `TEXT` | True | `None` |
+| `opened_at_ms` | `BIGINT` | False | `None` |
+| `evidence_sha256` | `TEXT` | False | `None` |
+| `cluster_id` | `TEXT` | False | `None` |
+| `stratum` | `TEXT` | False | `None` |
+| `stable_observation` | `JSONB` | False | `None` |
+| `candidate_observation` | `JSONB` | False | `None` |
+| `comparison` | `JSONB` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_learning_retention_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `singleton` | `BOOLEAN` | False | `true` |
+| `last_run_at_ms` | `BIGINT` | True | `None` |
+| `eligible_recordings` | `INTEGER` | False | `0` |
+| `eligible_cases` | `INTEGER` | False | `0` |
+| `eligible_artifacts` | `INTEGER` | False | `0` |
+| `deleted_recordings` | `INTEGER` | False | `0` |
+| `deleted_cases` | `INTEGER` | False | `0` |
+| `deleted_artifacts` | `INTEGER` | False | `0` |
+| `oldest_recording_age_ms` | `BIGINT` | True | `None` |
+| `oldest_case_age_ms` | `BIGINT` | True | `None` |
+| `oldest_artifact_age_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_market_instruments`
 
 | Column | Type | Nullable | Default |
@@ -177,6 +301,30 @@
 | `quote_asset` | `TEXT` | True | `None` |
 | `status` | `TEXT` | False | `'trading'::text` |
 | `last_seen_ms` | `BIGINT` | False | `None` |
+
+## `news_model_recordings`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `recording_sha` | `TEXT` | False | `None` |
+| `run_sha` | `TEXT` | False | `None` |
+| `case_id` | `TEXT` | False | `None` |
+| `arm` | `TEXT` | False | `None` |
+| `trial` | `INTEGER` | False | `None` |
+| `request_sha256` | `TEXT` | False | `None` |
+| `response_sha256` | `TEXT` | True | `None` |
+| `request` | `JSONB` | False | `None` |
+| `response` | `JSONB` | True | `None` |
+| `provider` | `TEXT` | False | `None` |
+| `model` | `TEXT` | False | `None` |
+| `model_sha` | `TEXT` | False | `None` |
+| `execution_contract_sha` | `TEXT` | False | `None` |
+| `latency_ms` | `INTEGER` | True | `None` |
+| `input_tokens` | `INTEGER` | True | `None` |
+| `output_tokens` | `INTEGER` | True | `None` |
+| `finish_reason` | `TEXT` | True | `None` |
+| `error_code` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_opennews_incidents`
 
@@ -208,6 +356,38 @@
 | `received_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_reviews`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `review_id` | `TEXT` | False | `None` |
+| `idempotency_key` | `TEXT` | True | `None` |
+| `idempotency_request_sha` | `TEXT` | True | `None` |
+| `review_kind` | `TEXT` | False | `None` |
+| `subject_kind` | `TEXT` | False | `None` |
+| `task_id` | `TEXT` | False | `None` |
+| `task_version` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | True | `None` |
+| `evidence_version` | `INTEGER` | True | `None` |
+| `external_snapshot_id` | `TEXT` | True | `None` |
+| `pairwise_case_id` | `TEXT` | True | `None` |
+| `rubric_version` | `TEXT` | False | `None` |
+| `reader_contract_version` | `TEXT` | False | `None` |
+| `reviewer` | `TEXT` | False | `None` |
+| `should_push` | `TEXT` | True | `None` |
+| `dimensions` | `JSONB` | False | `'{}'::jsonb` |
+| `novelty` | `JSONB` | False | `'{}'::jsonb` |
+| `first_bad_owner` | `TEXT` | True | `None` |
+| `evidence_refs` | `JSONB` | False | `'[]'::jsonb` |
+| `expected_correction` | `TEXT` | False | `''::text` |
+| `note` | `TEXT` | False | `''::text` |
+| `selection` | `JSONB` | False | `'{}'::jsonb` |
+| `payload` | `JSONB` | False | `'{}'::jsonb` |
+| `supersedes_review_id` | `TEXT` | True | `None` |
+| `accepts_review_id` | `TEXT` | True | `None` |
+| `release_eligible` | `BOOLEAN` | False | `true` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_symbol_aliases`
 
 | Column | Type | Nullable | Default |
@@ -237,6 +417,9 @@
 | `trace` | `JSONB` | False | `'{}'::jsonb` |
 | `published_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `evidence_version` | `INTEGER` | True | `None` |
+| `evidence_sha256` | `TEXT` | True | `None` |
+| `focus_fact_id` | `TEXT` | True | `None` |
 
 ## `workers_runtime`
 

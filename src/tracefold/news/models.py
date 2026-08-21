@@ -12,7 +12,7 @@ EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v4"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
 TRIAGE_PROMPT_VERSION = "news_triage_prompt_v9"
-TRIAGE_POLICY_VERSION = "news_triage_policy_v6"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v7"
 DELIVERY_CARD_VERSION = "news_delivery_card_v10"
 
 Admission = Literal[
@@ -39,6 +39,7 @@ AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
 Decision = Literal["push", "escalate", "drop", "throttled"]
 Novelty = Literal["new_fact", "progression", "restatement"]
+ReaderReceiptState = Literal["received", "not_received", "unknown"]
 
 
 class ExactNewsModel(BaseModel):
@@ -54,6 +55,45 @@ class NewsFeedEntry(ExactNewsModel):
     description: str = ""
     published_at_ms: int | None = None
     reporting_origin: str = ""
+
+
+class ReaderReceipt(ExactNewsModel):
+    """Delivery truth used by semantic memory and learning.
+
+    Only a settled first delivery in state ``sent`` is known to have reached
+    the reader.  A crash after the external send is explicitly unknown; every
+    other shape is not received.  This value object intentionally does not
+    treat a policy decision or a reservation as delivery evidence.
+    """
+
+    state: ReaderReceiptState
+    delivery_state: str | None = None
+    error_code: str | None = None
+    received_at_ms: int | None = None
+    rendered_card: dict[str, Any] | None = None
+
+    @classmethod
+    def from_delivery(cls, delivery: Mapping[str, Any] | None) -> ReaderReceipt:
+        if delivery is None:
+            return cls(state="not_received")
+        delivery_state = str(delivery.get("state") or "") or None
+        error_code = str(delivery.get("error_code") or "") or None
+        if delivery_state == "sent":
+            return cls(
+                state="received",
+                delivery_state=delivery_state,
+                error_code=error_code,
+                received_at_ms=int(delivery["settled_at_ms"]) if delivery.get("settled_at_ms") is not None else None,
+                rendered_card=dict(delivery.get("card") or {}),
+            )
+        if error_code == "ambiguous_after_crash":
+            return cls(
+                state="unknown",
+                delivery_state=delivery_state,
+                error_code=error_code,
+                rendered_card=dict(delivery.get("card") or {}),
+            )
+        return cls(state="not_received", delivery_state=delivery_state, error_code=error_code)
 
 
 class TriageAsset(BaseModel):
@@ -164,6 +204,8 @@ __all__ = [
     "ExactNewsModel",
     "NewsFeedEntry",
     "Novelty",
+    "ReaderReceipt",
+    "ReaderReceiptState",
     "TriageAsset",
     "TriageVerdict",
     "display_title",

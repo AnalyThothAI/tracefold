@@ -182,11 +182,14 @@ def event_timeline(
         restated = restated_card(trace, verdict, at_ms=int(latest["created_at_ms"]))
         seen_against = trace.get("seen_against") if isinstance(trace.get("seen_against"), Mapping) else None
         if final == "throttled":
-            decide_summary = "限流 · " + throttled_by_zh(latest.get("throttled_by"))
-            if str(latest.get("throttled_by") or "").endswith(":seen") and seen_against:
+            duplicate = str(latest.get("throttled_by") or "").endswith(":seen")
+            decide_summary = ("重复拦截 · " if duplicate else "历史限流 · ") + throttled_by_zh(
+                latest.get("throttled_by")
+            )
+            if duplicate and seen_against:
                 # Name the card the reader already has, the way a restatement drop names the entry it repeats.
                 ago = max(0, int(latest["created_at_ms"]) - int(seen_against.get("at_ms") or 0)) // 60_000
-                decide_summary = f"限流 · 重复：{ago} 分钟前已推「{seen_against.get('headline_zh')}」"
+                decide_summary = f"重复拦截 · {ago} 分钟前已推「{seen_against.get('headline_zh')}」"
         else:
             reason = override_rule_zh(latest.get("override_rule"))
             if latest.get("override_rule") == "restatement" and restated is not None:

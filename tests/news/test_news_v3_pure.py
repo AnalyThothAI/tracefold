@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -11,17 +11,12 @@ import pytest
 
 from tracefold.news import bus
 from tracefold.news.control import apply_control, is_muted, parse_control
-from tracefold.news.delivery import (
-    _CHANGE_BASIS_LABEL,
-    _quote_line,
-    card_assets,
-    render_first_card,
-    sanitize_ai_text,
-)
+from tracefold.news.delivery import _CHANGE_BASIS_LABEL, _quote_line, card_assets, render_first_card, sanitize_ai_text
 from tracefold.news.eval.replay import replay_hits
+from tracefold.news.facts import extract_fact_units
 from tracefold.news.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
-from tracefold.news.models import TriageAsset, TriageVerdict
+from tracefold.news.models import ReaderReceipt, TriageAsset, TriageVerdict
 from tracefold.news.pricing import CHANGE_BASIS_ZH
 from tracefold.news.similarity import similarity
 from tracefold.news.storyline import (
@@ -40,7 +35,7 @@ from tracefold.news.triage_rules import (
     decide,
     fallback_verdict,
     rule_baseline,
-    storyline_status_from_row,
+    storyline_status,
 )
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
@@ -102,6 +97,46 @@ def test_extract_title_keeps_exchange_and_handle_subjects() -> None:
         extract_title("The $DLUSD volume from @deel has exceeded $115M").title
         == "The $DLUSD volume from deel has exceeded $115M"
     )
+
+
+def test_fact_units_split_only_explicit_sequential_numbered_digests() -> None:
+    raw = (
+        "市场快讯：<br/>1. 商务部反对欧方打压中国企业。<br/>"
+        "2. Moderna 盘前下跌 13%，公司下调全年指引。<br/>"
+        "3. 沃尔玛上调全年销售预期至 4.8%。"
+    )
+    units = extract_fact_units(item_id="item-1", raw_text=raw, fallback_title="市场快讯")
+    assert [u.ordinal for u in units] == [0, 1, 2]
+    assert [u.method for u in units] == ["explicit_numbered"] * 3
+    assert units[0].text.startswith("商务部") and units[1].text.startswith("Moderna")
+    assert all(u.context == "市场快讯：" for u in units)
+    assert len({u.fact_id for u in units}) == 3
+
+    # Two bullets are not enough evidence to manufacture two Events; neither
+    # are broken numbers or prose that merely contains a number.
+    for uncertain in (
+        "1. 第一条足够长的事实。<br/>2. 第二条足够长的事实。",
+        "1. 第一条足够长的事实。<br/>3. 第三条足够长的事实。<br/>4. 第四条足够长的事实。",
+        "Revenue rose 3.2% while costs fell 1.1%.",
+    ):
+        whole = extract_fact_units(item_id="item-2", raw_text=uncertain, fallback_title="原标题")
+        assert len(whole) == 1 and whole[0].method == "whole_item" and whole[0].text == "原标题"
+
+
+def test_reader_receipt_never_confuses_decision_or_ambiguous_send_with_received() -> None:
+    assert ReaderReceipt.from_delivery(None).state == "not_received"
+    assert ReaderReceipt.from_delivery({"state": "sending"}).state == "not_received"
+    assert (
+        ReaderReceipt.from_delivery({"state": "terminal", "error_code": "delivery_unavailable"}).state == "not_received"
+    )
+    ambiguous = ReaderReceipt.from_delivery(
+        {"state": "terminal", "error_code": "ambiguous_after_crash", "card": {"header": {"x": 1}}}
+    )
+    assert ambiguous.state == "unknown" and ambiguous.rendered_card == {"header": {"x": 1}}
+    sent = ReaderReceipt.from_delivery(
+        {"state": "sent", "settled_at_ms": 123, "card": {"header": {"title": {"content": "实际卡片"}}}}
+    )
+    assert sent.state == "received" and sent.received_at_ms == 123 and sent.rendered_card is not None
 
 
 # ---------------------------------------------------------------- tokens / minhash
@@ -394,48 +429,9 @@ def test_decide_rules_and_throttle() -> None:
     )
     # #77: a high-priority push still pushes, it just no longer earns the ⚡ header.
     assert decide(_verdict(), high, None).final == "push"
-    # Asset storylines: window-max plus direction flip. (COUNT_ONLY switches the v5 content judgment off, so the
-    # soft throttle is the thing under test rather than the distinctness release.)
-    SOFT = DecidePolicy(similarity_max=0.0)
-    status = StorylineStatus(key="asset:NVDA", pushed_2h=1, max_magnitude_2h=2, directions_2h=("bullish",))
-    throttled = decide(_verdict(), _FACTS, status, policy=SOFT)
-    assert throttled.final == "throttled" and throttled.throttled_by == "storyline:asset:NVDA"
-    assert decide(_verdict(magnitude=3), _FACTS, status, policy=SOFT).final == "escalate"  # exceeds window max
-    assert decide(_verdict(direction="bearish"), _FACTS, status, policy=SOFT).final == "push"  # genuine flip
-    # Theme storylines: a cap per 4 h instead of "only ever higher magnitude".
-    theme = StorylineStatus(
-        key="theme:mideast_energy",
-        pushed_2h=2,
-        pushed_4h=2,
-        max_magnitude_2h=3,
-        max_magnitude_4h=3,
-        directions_2h=("bullish",),
-        directions_4h=("bullish",),
-    )
-    assert decide(_verdict(magnitude=2, scope="sector"), _FACTS, theme, policy=SOFT).final == "push"  # 2 < cap 3
-    capped = StorylineStatus(
-        key="theme:mideast_energy",
-        pushed_2h=3,
-        pushed_4h=3,
-        max_magnitude_2h=3,
-        max_magnitude_4h=3,
-        directions_2h=("bullish",),
-        directions_4h=("bullish",),
-    )
-    assert (
-        decide(_verdict(magnitude=2, scope="sector"), _FACTS, capped, policy=SOFT).throttled_by
-        == "storyline:theme:mideast_energy:cap3"
-    )
-    assert (
-        decide(_verdict(magnitude=2, scope="sector", direction="bearish"), _FACTS, capped, policy=SOFT).final == "push"
-    )  # flip
-    # Switches.
-    assert decide(_verdict(), _FACTS, status, policy=DecidePolicy(storyline_throttle=False)).final == "push"
-    assert decide(_verdict(), _FACTS, None, hourly_cap_reached=True).throttled_by == "hourly_cap"
-    assert (
-        decide(_verdict(), _FACTS, None, hourly_cap_reached=True, policy=DecidePolicy(hourly_cap_enabled=False)).final
-        == "push"
-    )
+    busy = StorylineStatus(key="theme:mideast_energy")
+    unbounded = decide(_verdict(magnitude=2, scope="sector"), _FACTS, busy)
+    assert unbounded.final == "push" and unbounded.throttled_by is None
     assert decide(_verdict(), _FACTS, None, muted=True).final == "drop"
     assert (
         decide(_verdict(magnitude=1), _FACTS, None, policy=DecidePolicy(min_push_magnitude=2)).final == "push"
@@ -482,33 +478,26 @@ def test_decide_restatement_drop_is_grounded() -> None:
 
 
 def _busy(**seen: object) -> StorylineStatus:
-    """An asset storyline the soft throttle would stop: one m2 push already in the 2 h window."""
+    """An asset storyline with prior delivery history and optional sent-ledger evidence."""
 
     return StorylineStatus(
         key="asset:NVDA",
-        pushed_2h=1,
-        pushed_4h=1,
-        max_magnitude_2h=2,
-        max_magnitude_4h=2,
-        directions_2h=("bullish",),
-        directions_4h=("bullish",),
         **seen,  # type: ignore[arg-type]
     )
 
 
-def test_decide_v5_releases_a_card_the_reader_has_not_seen() -> None:
-    """Policy v5 (issue #81): what gets a card past the soft throttle is measured distinctness from the cards the
-    reader actually received — not the model's own claim that its event is new, which nothing verified."""
+def test_decide_uses_content_duplicate_evidence_without_a_count_quota() -> None:
+    """Prior volume never blocks a card; only evidence that the reader already got this fact can."""
 
     # Nothing in the window to compare against: the reader received nothing, so nothing can be a repeat.
     empty = decide(_verdict(), _FACTS, _busy())
-    assert empty.final == "push" and empty.override_rule == "distinct_bypass" and empty.throttled_by is None
+    assert empty.final == "push" and empty.override_rule == "model_push_actionable" and empty.throttled_by is None
     assert empty.seen_similarity == 0.0 and empty.seen_against == -1
 
     seen = _busy(seen_headlines=("英伟达发布 Blackwell Ultra，单卡算力翻倍",), seen_event_ids=("evt-a",))
-    # A card about something else goes out even though the count cap would have stopped it.
+    # A card about something else goes out regardless of prior volume.
     released = decide(_verdict(headline_zh="美联储会议纪要显示多数官员倾向 9 月降息"), _FACTS, seen)
-    assert released.final == "push" and released.override_rule == "distinct_bypass"
+    assert released.final == "push" and released.override_rule == "model_push_actionable"
     assert released.seen_similarity is not None and released.seen_similarity < 0.25
 
     # A near-repeat of that card does not, whatever the model called its novelty.
@@ -522,62 +511,28 @@ def test_decide_v5_releases_a_card_the_reader_has_not_seen() -> None:
         )
         assert claimed.final == "throttled", novelty
 
-    # A degraded verdict carries a placeholder headline, so it is never released on distinctness.
-    assert decide(_verdict(), _FACTS, seen, degraded=True).final == "throttled"
-    # similarity_max = 0 is the operator switching the content judgment off: the pre-v5 count cap comes back.
-    count_only = decide(
-        _verdict(headline_zh="完全无关的另一件事"), _FACTS, seen, policy=DecidePolicy(similarity_max=0.0)
+    # Degraded fallback has no semantic headline and therefore skips similarity.
+    assert decide(_verdict(), _FACTS, seen, degraded=True).final == "push"
+    # Disabling similarity does not restore a hidden count cap.
+    duplicate_off = decide(
+        _verdict(headline_zh="英伟达发布 Blackwell Ultra 芯片，单卡算力翻倍"),
+        _FACTS,
+        seen,
+        policy=DecidePolicy(similarity_max=0.0),
     )
-    assert count_only.final == "throttled" and count_only.throttled_by == "storyline:asset:NVDA"
+    assert duplicate_off.final == "push" and duplicate_off.throttled_by is None
 
 
-def test_decide_v5_flood_ceiling_bounds_the_release() -> None:
-    """The counts survive as a ceiling: one storyline cannot spend an unbounded number of cards on the reader,
-    however distinct each one is."""
+def test_storyline_status_carries_only_content_evidence() -> None:
+    """A count-based capacity field cannot quietly return to the decision interface."""
 
-    full_asset = StorylineStatus(
-        key="asset:NVDA",
-        pushed_2h=6,
-        pushed_4h=6,
-        max_magnitude_2h=2,
-        max_magnitude_4h=2,
-        directions_2h=("bullish",),
-        directions_4h=("bullish",),
-        seen_headlines=("完全无关的另一件事",),
-        seen_event_ids=("evt-a",),
-    )
-    capped = decide(_verdict(), _FACTS, full_asset)
-    assert capped.final == "throttled" and capped.throttled_by == "storyline:asset:NVDA:hard6"
-    assert capped.seen_similarity is not None  # the measurement still happened, and is still traced
-
-    full_theme = StorylineStatus(
-        key="theme:mideast_energy",
-        pushed_2h=18,
-        pushed_4h=18,
-        max_magnitude_2h=3,
-        max_magnitude_4h=3,
-        directions_2h=("bullish",),
-        directions_4h=("bullish",),
-        seen_headlines=("完全无关的另一件事",),
-        seen_event_ids=("evt-a",),
-    )
-    assert (
-        decide(_verdict(magnitude=2, scope="sector"), _FACTS, full_theme).throttled_by
-        == "storyline:theme:mideast_energy:hard18"
-    )
-    # One below the ceiling still goes out.
-    almost = StorylineStatus(
-        key="theme:mideast_energy",
-        pushed_2h=17,
-        pushed_4h=17,
-        max_magnitude_2h=3,
-        max_magnitude_4h=3,
-        directions_2h=("bullish",),
-        directions_4h=("bullish",),
-        seen_headlines=("完全无关的另一件事",),
-        seen_event_ids=("evt-a",),
-    )
-    assert decide(_verdict(magnitude=2, scope="sector"), _FACTS, almost).override_rule == "distinct_bypass"
+    assert {item.name for item in fields(StorylineStatus)} == {
+        "key",
+        "told_directions",
+        "seen_headlines",
+        "seen_event_ids",
+        "seen_directions",
+    }
 
 
 def test_told_ledger_for_prompt_reserves_same_key_slots_and_keeps_cross_key_cards() -> None:
@@ -618,11 +573,43 @@ def test_told_ledger_for_prompt_reserves_same_key_slots_and_keeps_cross_key_card
     assert [t["at_ms"] for t in told] == sorted((t["at_ms"] for t in told), reverse=True)
 
 
-def test_storyline_status_from_row_carries_told_directions() -> None:
+def test_storyline_status_carries_told_directions() -> None:
     told = [{"i": 0, "dir": "bullish", "headline_zh": "a"}, {"i": 1, "dir": "neutral", "headline_zh": "b"}]
-    status = storyline_status_from_row({"pushed_2h": 1}, "asset:BTC", told=told)
-    assert status.told_directions == ("bullish", "neutral") and status.told_count == 2 and status.pushed_2h == 1
-    assert storyline_status_from_row(None, "asset:BTC").told_count == 0
+    status = storyline_status("asset:BTC", told=told)
+    assert status.told_directions == ("bullish", "neutral") and status.told_count == 2
+    assert storyline_status("asset:BTC").told_count == 0
+
+
+def test_mideast_storyline_requires_real_strait_or_mideast_context() -> None:
+    # "STRAITS" was matching the unbounded substring ``strait`` and any
+    # unrelated use of "oil" was classified as Middle East energy.
+    assert (
+        preliminary_storyline_key(
+            title="STRAITS: Crypto surge causes $2.7bn liquidations",
+            grounded_assets=("BTC",),
+            asset_class="crypto",
+            family="market_telemetry",
+        )
+        == "asset:BTC"
+    )
+    assert (
+        preliminary_storyline_key(
+            title="Exxon starts production at new Guyana oil FPSO",
+            grounded_assets=("XOM",),
+            asset_class="equity_or_commodity",
+            family="general",
+        )
+        == "asset:XOM"
+    )
+    assert (
+        preliminary_storyline_key(
+            title="Tanker struck in Strait of Hormuz, Brent supply risk rises",
+            grounded_assets=("CL",),
+            asset_class="equity_or_commodity",
+            family="general",
+        )
+        == "theme:mideast_energy"
+    )
 
 
 def test_fallback_is_not_silent() -> None:
@@ -1073,8 +1060,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
 
 
 def _fresh(**seen: object) -> StorylineStatus:
-    """A storyline nobody has pushed on yet — exactly what a provider batch fanning out across N keys looks like,
-    and exactly what the v5 count throttle could never see."""
+    """A fresh storyline with optional sent-ledger evidence."""
 
     return StorylineStatus(key="asset:KLAC", **seen)  # type: ignore[arg-type]
 
@@ -1086,10 +1072,8 @@ _OKX_LEDGER = (
 )
 
 
-def test_decide_v6_measures_every_push_not_only_the_throttled_ones() -> None:
-    """#100: v5 read the reader's ledger only on a storyline the count throttle had already stopped. A fresh key
-    has `pushed_2h = 0`, so `max_similarity` never ran — 55% of a live day's pushes were never compared with the
-    78-row ledger sitting in memory, and one batch shipped 19 near-identical cards in 7 minutes."""
+def test_decide_measures_every_ordinary_push_for_duplicate_evidence() -> None:
+    """A fresh storyline is still compared with the sent ledger; counts do not participate."""
 
     duplicate = _verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")
     window = _fresh(seen_headlines=_OKX_LEDGER, seen_event_ids=("a", "b", "c"))
@@ -1104,43 +1088,33 @@ def test_decide_v6_measures_every_push_not_only_the_throttled_ones() -> None:
     assert fresh_fact.final == "push" and fresh_fact.throttled_by is None
     assert fresh_fact.seen_scope == "all" and fresh_fact.seen_similarity is not None
 
-    # The v5 path is unchanged and still says which path measured it.
+    # A busy storyline uses the exact same content-only path.
     busy = _busy(seen_headlines=("英伟达发布 Blackwell Ultra，单卡算力翻倍",), seen_event_ids=("evt-a",))
-    v5_repeat = decide(_verdict(headline_zh="英伟达发布 Blackwell Ultra 芯片，单卡算力翻倍"), _FACTS, busy)
-    assert v5_repeat.throttled_by == "storyline:asset:NVDA:seen" and v5_repeat.seen_scope == "throttled"
-
-    # The switch restores v5 exactly: a fresh key is never measured, so the duplicate ships.
-    v5 = DecidePolicy(similarity_all_pushes=False)
-    assert decide(duplicate, _FACTS, window, policy=v5).final == "push"
-    assert decide(duplicate, _FACTS, window, policy=v5).seen_scope == ""
+    repeat = decide(_verdict(headline_zh="英伟达发布 Blackwell Ultra 芯片，单卡算力翻倍"), _FACTS, busy)
+    assert repeat.throttled_by == "storyline:asset:NVDA:seen" and repeat.seen_scope == "all"
 
 
-def test_decide_v6_never_withholds_an_escalate_on_the_new_path() -> None:
+def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
     """Character bigrams over a fixed topic vocabulary mistake one Trump headline for another. On a magnitude-3
-    card that mistake is not affordable, so `escalate` stays on the v5 path: only its own hot storyline can
-    withhold it."""
+    card that mistake is not affordable, so `escalate` skips deterministic similarity."""
 
     told = ("特朗普称其政府已结束对加密的战争",)
     big = _verdict(magnitude=3, headline_zh="特朗普称美国正考虑购买大量比特币及其他加密资产")
     on_fresh = decide(big, _FACTS, _fresh(seen_headlines=told, seen_event_ids=("a",)))
     assert on_fresh.final == "escalate" and on_fresh.throttled_by is None and on_fresh.seen_scope == ""
 
-    # On the new path a distinct escalate is released, exactly as before — the exemption only skips the
-    # measurement, it does not make `escalate` unthrottleable.
+    # Even identical text cannot make the content heuristic veto an escalation.
     hot = StorylineStatus(
         key="asset:NVDA",
-        pushed_4h=1,
-        max_magnitude_4h=3,
-        directions_4h=("bullish",),
         seen_headlines=("特朗普称美国正考虑购买大量比特币及其他加密资产",),
         seen_event_ids=("a",),
     )
     repeat = decide(big, _FACTS, hot)
-    assert repeat.final == "throttled" and repeat.seen_scope == "throttled"
-    assert repeat.throttled_by == "storyline:asset:NVDA:seen"
+    assert repeat.final == "escalate" and repeat.seen_scope == ""
+    assert repeat.throttled_by is None
 
 
-def test_decide_v6_leaves_the_degraded_and_switched_off_paths_alone() -> None:
+def test_decide_leaves_the_degraded_and_switched_off_paths_alone() -> None:
     """A rule-baseline card carries a placeholder headline, and `similarity_max = 0` is the operator switching the
     content judgment off. Neither is ever measured, on either path."""
 
@@ -1154,11 +1128,9 @@ def test_decide_v6_leaves_the_degraded_and_switched_off_paths_alone() -> None:
     assert off.final == "push" and off.seen_similarity is None and off.seen_scope == ""
 
 
-def test_decide_v6_never_withholds_a_reversal_as_a_duplicate() -> None:
+def test_decide_never_withholds_a_reversal_as_a_duplicate() -> None:
     """Character bigrams are blind to negation: "SEC 批准…" and "SEC 拒绝…" score 0.60, well over
-    `similarity_max`. `_storyline_throttle` has always exempted a direction flip; once similarity can withhold a
-    card on its own (#100) it needs the same exemption — and the storyline windows cannot supply it, because on a
-    fresh key `directions_2h/4h` are empty while the card it resembles lives in the *global* ledger."""
+    `similarity_max`. The duplicate check must exempt a direction flip using the matched sent-ledger row."""
 
     approved = "SEC 批准以太坊现货 ETF"
     window = _fresh(seen_headlines=(approved,), seen_event_ids=("evt-a",), seen_directions=("bullish",))
@@ -1179,15 +1151,15 @@ def test_decide_v6_never_withholds_a_reversal_as_a_duplicate() -> None:
     blind = _fresh(seen_headlines=(approved,), seen_event_ids=("evt-a",))
     assert decide(reversal, _FACTS, blind).final == "throttled"
 
-    # The same guard on the v5 path: the count throttle stopped it, but it contradicts what it resembles.
+    # Prior volume changes nothing; the matched direction still exempts it.
     hot = _busy(seen_headlines=(approved,), seen_event_ids=("evt-a",), seen_directions=("bullish",))
     assert decide(reversal, _FACTS, hot).final == "push"
 
 
 def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
     """`TriageAsset.symbol` is free text and this fallback is reached when nothing grounded it, so it is the least
-    validated string in the pipeline — and it becomes a throttle bucket, an advisory-lock key and a console
-    label."""
+    validated string in the pipeline — and it becomes a duplicate-comparison group, an advisory-lock key and a
+    console label."""
 
     def key(primaries: list[str], **over: object) -> str:
         return final_storyline_key(
@@ -1200,7 +1172,7 @@ def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
         )
 
     assert key(["TSLA"]) == "asset:TSLA"
-    # An exchange-qualified identifier we have no bucket for falls through instead of minting one.
+    # An exchange-qualified identifier we cannot group falls through instead of minting one.
     assert key(["0001.HK"]) == "macro:general"
     assert key(["a" * 11]) == "macro:general"
 

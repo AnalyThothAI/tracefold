@@ -18,7 +18,7 @@ from tracefold.platform.postgres.postgres_migrations import latest_migration_ver
 
 @dataclass(slots=True)
 class ServeRuntime:
-    """PostgreSQL-only read-side composition."""
+    """PostgreSQL-only HTTP composition."""
 
     settings: Settings
     db: ServeDatabase
@@ -37,6 +37,18 @@ class ServeRuntime:
         runtime = self._runtime_status_payload(now_ms=measured_at_ms)
         return {"measured_at_ms": measured_at_ms, "runtime": runtime}
 
+    @contextmanager
+    def review_transaction(self) -> Iterator[Any]:
+        try:
+            with self.db.api_session("ordinary") as repos, repos.transaction():
+                # tracefold_serve defaults to read-only.  Only this authenticated
+                # ReviewDesk path opts one transaction into its two table-level
+                # INSERT grants; every other table remains privilege-protected.
+                repos.conn.execute("SET TRANSACTION READ WRITE")
+                yield repos.conn
+        except ServeDatabaseBusy as exc:
+            raise ApiUnavailable("review_write_busy") from exc
+
     def readiness_payload(self, *, now_ms: int | None = None) -> dict[str, Any]:
         measured_at_ms = int(time.time() * 1_000) if now_ms is None else int(now_ms)
         runtime = self._runtime_status_payload(now_ms=measured_at_ms)
@@ -49,7 +61,9 @@ class ServeRuntime:
             "reasons": reasons,
             "store": "postgresql",
             "db": db_status,
-            "composition": {"workers_runtime": runtime["workers_runtime"]},
+            "composition": {
+                "workers_runtime": runtime["workers_runtime"],
+            },
         }
 
     def _runtime_status_payload(self, *, now_ms: int) -> dict[str, Any]:
@@ -116,7 +130,11 @@ def bootstrap_serve(settings: Settings) -> ServeRuntime:
     telemetry = TelemetryRegistry()
     db = ServeDatabase.create(settings, telemetry=telemetry)
     try:
-        runtime = ServeRuntime(settings=settings, db=db, telemetry=telemetry)
+        runtime = ServeRuntime(
+            settings=settings,
+            db=db,
+            telemetry=telemetry,
+        )
         readiness = runtime.readiness_payload()
         if readiness["db"]["error_code"] == "database_unavailable":
             raise RuntimeError("postgres health check failed")

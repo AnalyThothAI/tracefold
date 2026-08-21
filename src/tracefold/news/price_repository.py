@@ -26,7 +26,6 @@ from .pricing import (
     Quote,
     change_basis_zh,
     coverage_pct,
-    hit_pct,
     horizon_zh,
     median_bps,
     price_kind_for,
@@ -38,8 +37,10 @@ from .pricing import (
     reaction_state_zh,
     source_rank_sql,
 )
+from .similarity import similarity
 
 _JSON_SEPARATORS = (",", ":")
+_REVIEW_DISCOVERY_MAX_HOURS: Final = 168
 
 # The latest Triage verdict per Event, and the Events a review window covers. Both sections below start here
 # so "which Event counts" is written once.
@@ -52,6 +53,8 @@ _REVIEW_FACTS_CTE: Final = """
     ev AS (
       SELECT DISTINCT ON (v.event_id)
              v.event_id, e.opened_at_ms,
+             e.opened_at_ms <= %s - 3600000 AS mature_1h,
+             e.opened_at_ms <= %s - 14400000 AS mature_4h,
              v.final_decision, v.degraded, v.override_rule, v.throttled_by,
              v.verdict ->> 'direction' AS direction,
              COALESCE((v.verdict ->> 'magnitude')::int, 0) AS magnitude,
@@ -62,6 +65,7 @@ _REVIEW_FACTS_CTE: Final = """
         LEFT JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first'
        WHERE v.stage = 'triage' AND e.ingest_mode = 'live'
          AND e.opened_at_ms >= %s AND e.opened_at_ms < %s
+         {cohort_filter}
        ORDER BY v.event_id, v.created_at_ms DESC
     ),
     agg AS (
@@ -72,16 +76,18 @@ _REVIEW_FACTS_CTE: Final = """
              count(*) FILTER (WHERE r.state = 'unavailable') AS unavailable_n,
              min(r.unavailable_reason) AS unavailable_reason,
              (array_agg(r.return_1h_bps ORDER BY r.return_1h_bps)
-                FILTER (WHERE r.return_1h_bps IS NOT NULL))[(count(r.return_1h_bps) + 1) / 2] AS bps_1h,
-             (array_agg(r.return_4h_bps ORDER BY r.return_4h_bps)
-                FILTER (WHERE r.return_4h_bps IS NOT NULL))[(count(r.return_4h_bps) + 1) / 2] AS bps_4h
+                FILTER (WHERE r.return_1h_bps IS NOT NULL AND r.anchor_at_ms >= %s))[
+                  (count(r.return_1h_bps) FILTER (WHERE r.anchor_at_ms >= %s) + 1) / 2
+                ] AS bps_1h,
+             NULL::integer AS bps_4h
         FROM news_event_reactions r
        WHERE r.metric_version = %s AND r.is_primary
          AND r.anchor_at_ms >= %s AND r.anchor_at_ms < %s
        GROUP BY r.event_id
     ),
     fact AS (
-      SELECT ev.event_id, ev.opened_at_ms, ev.final_decision, ev.degraded, ev.override_rule, ev.throttled_by,
+      SELECT ev.event_id, ev.opened_at_ms, ev.mature_1h, ev.mature_4h,
+             ev.final_decision, ev.degraded, ev.override_rule, ev.throttled_by,
              ev.direction, ev.magnitude, ev.event_type, ev.delivered,
              a.event_id IS NOT NULL AS has_primary,
              COALESCE(a.asset_n, 0) AS asset_n,
@@ -106,7 +112,7 @@ class PriceRepository:
         """Raw provider tag -> the one contract its price comes from, for a bounded batch.
 
         Exact-symbol-first: a symbol that is itself tradeable is never resolved through an issuer alias, so
-        `SKHX` prices SKHX even though the storyline throttle buckets it under `SKHY` (#88 §3). The alias is
+        `SKHX` prices SKHX even though storyline identity normalizes it to `SKHY` (#88 §3). The alias is
         the fallback for tags that name nothing on their own. Reference-only tiers (`us.listed`) are excluded
         here rather than filtered later — they answer "does this ticker exist", not "what does it cost".
 
@@ -475,7 +481,7 @@ class PriceRepository:
             """
             SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
                    p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
-                   state, unavailable_reason, updated_at_ms
+                   is_primary, state, unavailable_reason, updated_at_ms
               FROM news_event_reactions
              WHERE event_id = %s
              ORDER BY symbol
@@ -533,7 +539,13 @@ class PriceRepository:
         return {str(row["event_id"]): _aggregate_public(dict(row), now_ms=int(now_ms)) for row in rows}
 
     # ------------------------------------------------------------------ review
-    def review(self, *, hours: int, now_ms: int) -> dict[str, Any]:
+    def review(
+        self,
+        *,
+        hours: int,
+        now_ms: int,
+        cohort: tuple[str, str, str] | None = None,
+    ) -> dict[str, Any]:
         """The whole 命中复盘 payload for one bounded window. Coverage first, then accuracy.
 
         One pass, not five. The shared fact set — every live Event in the window with its latest Triage
@@ -543,95 +555,110 @@ class PriceRepository:
         trip that returns tens of rows rather than the window.
         """
 
-        window_ms = int(hours) * 3_600_000
-        start_ms, end_ms = int(now_ms) - window_ms, int(now_ms)
-        # `ev` bounds the window, `agg` bounds the same window on the Reaction index.
-        sections = self._review_sections((start_ms, end_ms, REACTION_METRIC_VERSION, start_ms, end_ms))
+        sql, params, start_ms, end_ms, discovery_start_ms = self.review_statement(
+            hours=hours,
+            now_ms=now_ms,
+            cohort=cohort,
+        )
+        sections = self._review_sections(sql, params)
         coverage = _coverage_rows(sections["coverage"][0] if sections["coverage"] else {})
-        directions = _direction_rows(sections["direction"])
-        hit = {row["horizon"]: row for row in directions if row["direction"] == "all"}
         return {
             "meta": {
                 "hours": int(hours),
                 "window_start_ms": start_ms,
                 "window_end_ms": end_ms,
+                "discovery_window_start_ms": discovery_start_ms,
                 "metric_version": REACTION_METRIC_VERSION,
                 "measured_at_ms": int(now_ms),
+                "cohort": "/".join(cohort) if cohort else None,
             },
             "coverage": coverage,
-            "directions": [row for row in directions if row["direction"] != "all"],
-            "magnitudes": _magnitude_rows(sections["magnitude"]),
-            "event_types": _event_type_rows(sections["event_type"]),
+            "directions": [],
+            # Retired from the product surface in #112: these post-event price rankings were not causal
+            # quality evidence, and their ordered aggregates dominated the 30-day query budget.
+            "magnitudes": [],
+            "event_types": [],
             "potential_misses": self._miss_rows(sections["miss"]),
             "summary": {
-                "hit_1h_pct": hit.get("1h", {}).get("hit_pct"),
-                "hit_1h_n": int(hit.get("1h", {}).get("priced_n") or 0),
+                "hit_1h_pct": None,
+                "hit_1h_n": 0,
                 "coverage_1h_pct": (coverage[0] if coverage else {}).get("coverage_pct"),
             },
         }
 
-    def _review_sections(self, params: tuple[Any, ...]) -> dict[str, list[dict[str, Any]]]:
+    def _review_sections(self, sql: str, params: tuple[Any, ...]) -> dict[str, list[dict[str, Any]]]:
         """Every section of the page in one statement, tagged by section and carried as JSON rows."""
 
-        rows = self.conn.execute(
-            f"""
-            WITH {_REVIEW_FACTS_CTE},
-            -- Four small aggregates over one materialized fact set. Each computes only what its section
-            -- renders: an ordered `array_agg` is a sort, so coverage and direction — which report counts —
-            -- must not build one, and a single GROUPING SETS pass that computed medians for every set was
-            -- measurably slower than four narrow passes (#88 §14).
+        rows = self.conn.execute(sql, params).fetchall()
+        out: dict[str, list[dict[str, Any]]] = {
+            "coverage": [],
+            "miss": [],
+        }
+        for row in rows:
+            payload = row["payload"]
+            # psycopg hands jsonb back as a mapping when a loader is registered and as text otherwise; the
+            # section rows are small, so accept either rather than depending on connection setup.
+            out[str(row["section"])].append(dict(json.loads(payload) if isinstance(payload, str) else payload))
+        return out
+
+    @staticmethod
+    def review_statement(
+        *,
+        hours: int,
+        now_ms: int,
+        cohort: tuple[str, str, str] | None,
+    ) -> tuple[str, tuple[Any, ...], int, int, int]:
+        """Build the exact bounded market-review read used by serving and query audit."""
+
+        window_ms = int(hours) * 3_600_000
+        start_ms, end_ms = int(now_ms) - window_ms, int(now_ms)
+        discovery_start_ms = max(start_ms, end_ms - _REVIEW_DISCOVERY_MAX_HOURS * 3_600_000)
+        params: list[Any] = [end_ms, end_ms, start_ms, end_ms]
+        cohort_filter = ""
+        if cohort is not None:
+            cohort_filter = (
+                "AND COALESCE(v.prompt_version, '') = %s "
+                "AND COALESCE(v.policy_version, '') = %s "
+                "AND COALESCE(v.model, '') = %s"
+            )
+            params.extend(cohort)
+        params.extend(
+            (
+                discovery_start_ms,
+                discovery_start_ms,
+                REACTION_METRIC_VERSION,
+                start_ms,
+                end_ms,
+            )
+        )
+        facts_cte = _REVIEW_FACTS_CTE.format(cohort_filter=cohort_filter)
+        sql = f"""
+            WITH {facts_cte},
+            -- One coverage aggregate and one bounded discovery queue over one materialized fact set.  #112
+            -- retired the direction/magnitude/event-type price rankings: they were neither causal quality
+            -- evidence nor rendered by ReviewDesk, and they consumed the 30-day query budget.
             coverage AS (
-              SELECT count(*) AS eligible_n,
-                     count(*) FILTER (WHERE priced_1h > 0) AS priced_1h,
-                     count(*) FILTER (WHERE priced_4h > 0) AS priced_4h,
-                     count(*) FILTER (WHERE NOT has_primary) AS no_primary_n,
-                     count(*) FILTER (WHERE degraded) AS degraded_n,
-                     count(*) FILTER (WHERE unavailable_reason = 'instrument_unresolved') AS unresolved_n,
-                     count(*) FILTER (WHERE unavailable_reason = 'no_candle_within_gap') AS gap_n,
-                     count(*) FILTER (WHERE unavailable_reason = 'history_expired') AS expired_n,
-                     count(*) FILTER (WHERE unavailable_reason = 'reference_only') AS reference_n
+              SELECT count(*) FILTER (WHERE mature_1h) AS eligible_1h,
+                     count(*) FILTER (WHERE mature_4h) AS eligible_4h,
+                     count(*) FILTER (WHERE mature_1h AND priced_1h > 0) AS priced_1h,
+                     count(*) FILTER (WHERE mature_4h AND priced_4h > 0) AS priced_4h,
+                     count(*) FILTER (WHERE mature_1h AND NOT has_primary) AS no_primary_1h,
+                     count(*) FILTER (WHERE mature_4h AND NOT has_primary) AS no_primary_4h,
+                     count(*) FILTER (WHERE mature_1h AND degraded) AS degraded_1h,
+                     count(*) FILTER (WHERE mature_4h AND degraded) AS degraded_4h,
+                     count(*) FILTER (
+                       WHERE mature_1h AND unavailable_reason = 'instrument_unresolved'
+                     ) AS unresolved_1h,
+                     count(*) FILTER (
+                       WHERE mature_4h AND unavailable_reason = 'instrument_unresolved'
+                     ) AS unresolved_4h,
+                     count(*) FILTER (WHERE mature_1h AND unavailable_reason = 'no_candle_within_gap') AS gap_1h,
+                     count(*) FILTER (WHERE mature_4h AND unavailable_reason = 'no_candle_within_gap') AS gap_4h,
+                     count(*) FILTER (WHERE mature_1h AND unavailable_reason = 'history_expired') AS expired_1h,
+                     count(*) FILTER (WHERE mature_4h AND unavailable_reason = 'history_expired') AS expired_4h,
+                     count(*) FILTER (WHERE mature_1h AND unavailable_reason = 'reference_only') AS reference_1h,
+                     count(*) FILTER (WHERE mature_4h AND unavailable_reason = 'reference_only') AS reference_4h
                 FROM fact
-            ),
-            direction AS (
-              SELECT COALESCE(direction, 'unclear') AS direction,
-                     count(*) AS eligible_n,
-                     count(*) FILTER (WHERE priced_1h > 0) AS priced_1h,
-                     count(*) FILTER (WHERE priced_4h > 0) AS priced_4h,
-                     count(*) FILTER (WHERE bps_1h > 0) AS up_1h,
-                     count(*) FILTER (WHERE bps_1h < 0) AS down_1h,
-                     count(*) FILTER (WHERE bps_4h > 0) AS up_4h,
-                     count(*) FILTER (WHERE bps_4h < 0) AS down_4h
-                FROM fact WHERE NOT degraded GROUP BY 1
-            ),
-            magnitude AS (
-              SELECT magnitude,
-                     count(*) AS eligible_n,
-                     count(*) FILTER (WHERE priced_1h > 0) AS priced_1h,
-                     count(*) FILTER (WHERE priced_4h > 0) AS priced_4h,
-                     avg(abs(bps_1h)) AS mean_abs_1h,
-                     avg(abs(bps_4h)) AS mean_abs_4h,
-                     (array_agg(abs(bps_1h) ORDER BY abs(bps_1h)) FILTER (WHERE bps_1h IS NOT NULL))[
-                       (count(bps_1h) + 1) / 2] AS median_abs_1h,
-                     (array_agg(abs(bps_4h) ORDER BY abs(bps_4h)) FILTER (WHERE bps_4h IS NOT NULL))[
-                       (count(bps_4h) + 1) / 2] AS median_abs_4h
-                FROM fact WHERE NOT degraded GROUP BY 1
-            ),
-            event_type AS (
-              SELECT event_type,
-                     count(*) AS eligible_n,
-                     count(*) FILTER (WHERE final_decision IN ('push', 'escalate')) AS pushed_n,
-                     count(*) FILTER (WHERE final_decision = 'escalate') AS escalated_n,
-                     count(*) FILTER (WHERE COALESCE(delivered, false) IS NOT TRUE) AS held_n,
-                     count(*) FILTER (WHERE priced_1h > 0) AS priced_1h,
-                     (array_agg(bps_1h ORDER BY bps_1h) FILTER (WHERE bps_1h IS NOT NULL))[
-                       (count(bps_1h) + 1) / 2] AS median_1h,
-                     (array_agg(abs(bps_1h) ORDER BY abs(bps_1h)) FILTER (WHERE bps_1h IS NOT NULL))[
-                       (count(bps_1h) + 1) / 2] AS median_abs_1h,
-                     (array_agg(bps_4h ORDER BY bps_4h) FILTER (WHERE bps_4h IS NOT NULL))[
-                       (count(bps_4h) + 1) / 2] AS median_4h,
-                     (array_agg(abs(bps_4h) ORDER BY abs(bps_4h)) FILTER (WHERE bps_4h IS NOT NULL))[
-                       (count(bps_4h) + 1) / 2] AS median_abs_4h
-                FROM fact WHERE NOT degraded GROUP BY 1
             ),
             miss AS (
               SELECT event_id, opened_at_ms, final_decision, override_rule, throttled_by, direction,
@@ -644,26 +671,9 @@ class PriceRepository:
             -- Each CTE is aliased before `to_jsonb`: a bare CTE name that also names one of its columns
             -- resolves to the column, and `to_jsonb(direction)` silently returned the string 'bullish'.
             SELECT 'coverage' AS section, to_jsonb(c) AS payload FROM coverage c
-            UNION ALL SELECT 'direction', to_jsonb(d) FROM direction d
-            UNION ALL SELECT 'magnitude', to_jsonb(m) FROM magnitude m
-            UNION ALL SELECT 'event_type', to_jsonb(t) FROM event_type t
             UNION ALL SELECT 'miss', to_jsonb(x) FROM miss x
-            """,
-            params,
-        ).fetchall()
-        out: dict[str, list[dict[str, Any]]] = {
-            "coverage": [],
-            "direction": [],
-            "magnitude": [],
-            "event_type": [],
-            "miss": [],
-        }
-        for row in rows:
-            payload = row["payload"]
-            # psycopg hands jsonb back as a mapping when a loader is registered and as text otherwise; the
-            # section rows are small, so accept either rather than depending on connection setup.
-            out[str(row["section"])].append(dict(json.loads(payload) if isinstance(payload, str) else payload))
-        return out
+            """
+        return sql, tuple(params), start_ms, end_ms, discovery_start_ms
 
     def _miss_rows(self, misses: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Withheld Events ranked by how much the market moved afterwards — a queue, never a verdict.
@@ -675,7 +685,7 @@ class PriceRepository:
         event_ids = [str(row["event_id"]) for row in misses]
         assets = self._reaction_assets_for(event_ids)
         text = self._miss_text(event_ids)
-        return [
+        rows: list[dict[str, Any]] = [
             {
                 "event_id": str(data["event_id"]),
                 "opened_at_ms": int(data["opened_at_ms"]),
@@ -698,12 +708,57 @@ class PriceRepository:
                 "event_type": data.get("event_type"),
                 "event_type_zh": event_type_zh(data.get("event_type")),
                 "return_1h_bps": _optional_int(data.get("bps_1h")),
-                "return_4h_bps": _optional_int(data.get("bps_4h")),
+                "return_4h_bps": median_bps(
+                    [
+                        int(asset["return_4h_bps"])
+                        for asset in assets.get(str(data["event_id"]), [])
+                        if asset.get("is_primary") and asset.get("return_4h_bps") is not None
+                    ]
+                ),
                 "asset_n": int(data.get("asset_n") or 0),
                 "assets": assets.get(str(data["event_id"]), []),
             }
             for data in misses
         ]
+        # The market queue is about distinct facts, not how many provider Items happened to become Events.
+        # N is capped at 50, so an explicit pairwise connected-component fold is simpler and more auditable
+        # than adding another persistence model.  Similar wording within four hours is one discovery case;
+        # the highest-move row remains the representative because `miss` already arrives in that order.
+        parents = list(range(len(rows)))
+
+        def root(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            a, b = root(left), root(right)
+            if a != b:
+                parents[b] = a
+
+        for left, first in enumerate(rows):
+            first_text = str(first.get("headline_zh") or first.get("leader_title") or "")
+            for right in range(left + 1, len(rows)):
+                second = rows[right]
+                if abs(int(first["opened_at_ms"]) - int(second["opened_at_ms"])) > 4 * 3_600_000:
+                    continue
+                second_text = str(second.get("headline_zh") or second.get("leader_title") or "")
+                if similarity(first_text, second_text) >= 0.55:
+                    union(left, right)
+
+        groups: dict[int, list[int]] = {}
+        for index in range(len(rows)):
+            groups.setdefault(root(index), []).append(index)
+        clustered: list[dict[str, Any]] = []
+        for members in sorted(groups.values(), key=min):
+            representative = dict(rows[min(members)])
+            event_ids = sorted(str(rows[index]["event_id"]) for index in members)
+            representative["fact_cluster_key"] = hashlib.sha256("|".join(event_ids).encode()).hexdigest()
+            representative["fact_cluster_n"] = len(event_ids)
+            representative["related_event_ids"] = event_ids
+            clustered.append(representative)
+        return clustered
 
     def _miss_text(self, event_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         """Reader text for the rows that actually reach the page — never carried through the window's sort."""
@@ -730,7 +785,7 @@ class PriceRepository:
             """
             SELECT event_id, symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
                    p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
-                   state, unavailable_reason, updated_at_ms
+                   is_primary, state, unavailable_reason, updated_at_ms
               FROM news_event_reactions
              WHERE event_id = ANY(%s) AND metric_version = %s
              ORDER BY event_id, symbol
@@ -788,118 +843,32 @@ class PriceRepository:
 def _coverage_rows(data: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Coverage before accuracy: the denominators and the named reasons a horizon could not be priced."""
 
-    eligible = int(data.get("eligible_n") or 0)
-    unavailable = [
-        {"reason": reason, "reason_zh": reaction_reason_zh(reason), "n": int(data.get(key) or 0)}
-        for reason, key in (
-            ("instrument_unresolved", "unresolved_n"),
-            ("no_candle_within_gap", "gap_n"),
-            ("history_expired", "expired_n"),
-            ("reference_only", "reference_n"),
-        )
-        if int(data.get(key) or 0) > 0
-    ]
-    return [
-        {
-            "horizon": horizon,
-            "horizon_zh": horizon_zh(horizon),
-            "eligible_n": eligible,
-            "priced_n": int(data.get(key) or 0),
-            "coverage_pct": coverage_pct(int(data.get(key) or 0), eligible),
-            "no_primary_n": int(data.get("no_primary_n") or 0),
-            "degraded_n": int(data.get("degraded_n") or 0),
-            "unavailable": unavailable,
-        }
-        for horizon, key in (("1h", "priced_1h"), ("4h", "priced_4h"))
-    ]
-
-
-def _direction_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Bullish/bearish accuracy; neutral and unclear report their N and never enter the denominator."""
-
-    out: list[dict[str, Any]] = []
-    totals = {"1h": [0, 0], "4h": [0, 0]}
-    for data in rows:
-        direction = str(data["direction"])
-        scored = direction in {"bullish", "bearish"}
-        for horizon in ("1h", "4h"):
-            priced = int(data.get(f"priced_{horizon}") or 0)
-            hits = int(data.get(f"{'up' if direction == 'bullish' else 'down'}_{horizon}") or 0)
-            if scored:
-                totals[horizon][0] += hits
-                totals[horizon][1] += priced
-            out.append(
-                {
-                    "direction": direction,
-                    "direction_zh": direction_zh(direction),
-                    "horizon": horizon,
-                    "horizon_zh": horizon_zh(horizon),
-                    "scored": scored,
-                    "eligible_n": int(data.get("eligible_n") or 0),
-                    "priced_n": priced,
-                    "hits": hits if scored else None,
-                    "hit_pct": hit_pct(hits, priced) if scored else None,
-                    "coverage_pct": coverage_pct(priced, int(data.get("eligible_n") or 0)),
-                }
+    rows: list[dict[str, Any]] = []
+    for horizon, key in (("1h", "priced_1h"), ("4h", "priced_4h")):
+        eligible = int(data.get(f"eligible_{horizon}") or 0)
+        unavailable = [
+            {"reason": reason, "reason_zh": reaction_reason_zh(reason), "n": int(data.get(reason_key) or 0)}
+            for reason, reason_key in (
+                ("instrument_unresolved", f"unresolved_{horizon}"),
+                ("no_candle_within_gap", f"gap_{horizon}"),
+                ("history_expired", f"expired_{horizon}"),
+                ("reference_only", f"reference_{horizon}"),
             )
-    out.extend(
-        {
-            "direction": "all",
-            "direction_zh": "",
-            "horizon": horizon,
-            "horizon_zh": horizon_zh(horizon),
-            "scored": True,
-            "eligible_n": priced,
-            "priced_n": priced,
-            "hits": hits,
-            "hit_pct": hit_pct(hits, priced),
-            "coverage_pct": None,
-        }
-        for horizon, (hits, priced) in totals.items()
-    )
-    out.sort(key=lambda row: (row["horizon"], row["direction"]))
-    return out
-
-
-def _magnitude_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    total = sum(int(data.get("eligible_n") or 0) for data in rows)
-    return [
-        {
-            "magnitude": int(data["magnitude"]),
-            "magnitude_zh": magnitude_zh(int(data["magnitude"])),
-            "eligible_n": int(data.get("eligible_n") or 0),
-            "share_pct": coverage_pct(int(data.get("eligible_n") or 0), total),
-            "priced_1h_n": int(data.get("priced_1h") or 0),
-            "priced_4h_n": int(data.get("priced_4h") or 0),
-            "coverage_1h_pct": coverage_pct(int(data.get("priced_1h") or 0), int(data.get("eligible_n") or 0)),
-            "mean_abs_1h_bps": _optional_int(data.get("mean_abs_1h")),
-            "mean_abs_4h_bps": _optional_int(data.get("mean_abs_4h")),
-            "median_abs_1h_bps": _optional_int(data.get("median_abs_1h")),
-            "median_abs_4h_bps": _optional_int(data.get("median_abs_4h")),
-        }
-        for data in sorted(rows, key=lambda data: int(data["magnitude"]))
-    ]
-
-
-def _event_type_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "event_type": str(data["event_type"]),
-            "event_type_zh": event_type_zh(str(data["event_type"])),
-            "eligible_n": int(data.get("eligible_n") or 0),
-            "pushed_n": int(data.get("pushed_n") or 0),
-            "escalated_n": int(data.get("escalated_n") or 0),
-            "pushed_pct": coverage_pct(int(data.get("pushed_n") or 0), int(data.get("eligible_n") or 0)),
-            "held_n": int(data.get("held_n") or 0),
-            "priced_1h_n": int(data.get("priced_1h") or 0),
-            "coverage_1h_pct": coverage_pct(int(data.get("priced_1h") or 0), int(data.get("eligible_n") or 0)),
-            "median_1h_bps": _optional_int(data.get("median_1h")),
-            "median_abs_1h_bps": _optional_int(data.get("median_abs_1h")),
-            "median_4h_bps": _optional_int(data.get("median_4h")),
-            "median_abs_4h_bps": _optional_int(data.get("median_abs_4h")),
-        }
-        for data in sorted(rows, key=lambda data: -int(data.get("eligible_n") or 0))
-    ]
+            if int(data.get(reason_key) or 0) > 0
+        ]
+        rows.append(
+            {
+                "horizon": horizon,
+                "horizon_zh": horizon_zh(horizon),
+                "eligible_n": eligible,
+                "priced_n": int(data.get(key) or 0),
+                "coverage_pct": coverage_pct(int(data.get(key) or 0), eligible),
+                "no_primary_n": int(data.get(f"no_primary_{horizon}") or 0),
+                "degraded_n": int(data.get(f"degraded_{horizon}") or 0),
+                "unavailable": unavailable,
+            }
+        )
+    return rows
 
 
 def _unlisted_quote(symbol: str) -> dict[str, Any]:
@@ -966,6 +935,7 @@ def _reaction_public(row: Mapping[str, Any]) -> dict[str, Any]:
         "p4_at_ms": _optional_int(row.get("p4_at_ms")),
         "return_1h_bps": _optional_int(row.get("return_1h_bps")),
         "return_4h_bps": _optional_int(row.get("return_4h_bps")),
+        "is_primary": bool(row.get("is_primary")),
         "state": state,
         "state_zh": reaction_state_zh(state),
         "unavailable_reason": reason,

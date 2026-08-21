@@ -6,13 +6,5 @@
  * exports pages, and importing that barrel from shell chrome would make every route's code eager. This
  * entrypoint carries hooks, pure helpers and types only.
  */
-export {
-  NEWS_REVIEW_DEFAULT_HOURS,
-  useNewsReviewWithToken,
-  useNewsStatusWithToken,
-} from "./api/newsQueries";
+export { useNewsStatusWithToken } from "./api/newsQueries";
 export type { NewsReview, NewsStatus } from "./api/newsQueries";
-// The learning plane is the CLI: the palette copies the same command the detail page and the feed row do.
-export { labelCommand } from "./model/newsLabels";
-// #88: the topbar renders the review summary as one string, and the rule for that string belongs to News.
-export { hitFigure } from "./model/newsPrice";

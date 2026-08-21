@@ -10,12 +10,14 @@
   redacted config-path and configured-status diagnostics. Do not paste or copy
   provider keys from `~/.tracefold/config.yaml` into chat, docs, tests,
   shell history, or source files.
-- A frozen corpus (`news corpus freeze`) and a release-gate evidence document
-  (`news validate-candidate --evidence`) carry no credentials, but they do
-  carry provider news content and reader-facing card text. Treat them as
-  business data: write them outside the repository and do not commit them. The
-  reviewed expectations overlay is the one artefact of this lane that belongs
-  in git, and it holds Event ids and one-line judgments, not provider payloads.
+- Frozen ReviewDesk datasets, candidate manifests, model recordings, shadow
+  observations, evaluation reports, and deployment receipts carry no
+  credentials, but may carry provider news content, prompts and reader-facing
+  copy. Treat exported copies as business data: keep them outside the
+  repository and do not commit them. The database copies are content-addressed
+  audit evidence and append-only. Automated proposal/optimizer paths may never
+  write accepted reviews, holdout membership, reader contracts, release
+  thresholds, stable pointers, or canary assignments.
 
 ## Single config source boundary
 
@@ -29,7 +31,8 @@ The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
 `llm.news_triage_fallback.api_key` (second Triage endpoint, issue #65),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
-`news.push.feishu_signing_secret`, and the four PostgreSQL password files.
+`news.push.feishu_signing_secret`, and the five PostgreSQL password files
+(bootstrap, Serve, Review, Workers, migrate).
 There is no other provider key or credential.
 
 `tracefold init` is the sole default-config generator. It creates
@@ -64,13 +67,17 @@ admission, storyline keys, and feed ordering remain deterministic.
 
 PostgreSQL runtime roles are code-owned:
 `src/tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
-`20260818_0275` baseline migration, creates the non-login `tracefold_owner`
-plus `tracefold_serve` (`default_transaction_read_only=on`, SELECT only),
-`tracefold_workers` (SELECT/INSERT/UPDATE/DELETE), and `tracefold_migrate`
-when run by the bootstrap superuser, verifies that role contract, and applies
-the grants. Serve never writes; `tracefold news control` and `tracefold news label` write
-`news_control_state` and `news_event_labels` from the CLI through the Workers
-role, and no HTTP route mutates News state.
+`20260818_0275` baseline migration and extended by the #112 migrations,
+creates the non-login `tracefold_owner` plus `tracefold_serve`
+(`default_transaction_read_only=on`), `tracefold_workers` (pipeline/control
+writes), and `tracefold_migrate`. Serve has SELECT plus INSERT only on
+`news_reviews` and `news_external_miss_snapshots`; it has no UPDATE/DELETE on
+those append-only facts and no write grant on Event, verdict, delivery,
+learning-artifact or control tables. Every ordinary Serve transaction remains
+read-only. Only the two bearer-authenticated ReviewDesk POST routes explicitly
+open one transaction as read-write through the existing Serve pool. Learning
+freeze/evaluate and canary control run under Workers, while assignment and
+runtime/deployment receipts are append-only.
 
 HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
 to the served console and every other `/api/*` route requires it as
@@ -90,10 +97,10 @@ route lists configured and provider-enabled Strategy IDs (non-secret opaque
 IDs) so allowlist warnings are actionable, but never the token or broker URL. OpenNews transport exceptions, logs,
 generated artifacts, and public source/status responses must never contain the
 token, authorization header, or allowlist values.
-The current reviewed configuration contains exactly `1018`, `1352`, and
-`1353`, so diagnostics expose count `3`; `1019` is disabled provider-side and
-not configured. A future change requires an explicit reviewed configuration
-change.
+The current reviewed configuration contains exactly `1018`, `1352`, `1353`,
+and `1672`, so diagnostics expose count `4`; `1019` is disabled provider-side
+and not configured. A future change requires an explicit reviewed
+configuration change.
 
 The authenticated WSS automatically sends the account owner's
 `strategy.triggered` notifications. Tracefold sends no application subscription

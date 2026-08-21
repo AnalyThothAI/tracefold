@@ -95,7 +95,7 @@ describe("frontend documentation contract", () => {
       expect(frontendDoc).toContain(term);
       expect(navigationTargets).toContain(to);
     }
-    // #88 added 命中复盘 as the third destination; the navigation model still drives both presentations.
+    // ReviewDesk is a first-class destination; one navigation model drives every presentation.
     expect(navigationTargets).toEqual(["/news", "/news/review", "/news/status"]);
     expect(navigationTargets).not.toContain("/");
     expect(frontendDoc).not.toMatch(/Token Radar|RadarPage|live-radar|features\/live/);

@@ -7,12 +7,7 @@ import { ExternalLink } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { useNewsEventWithToken, useNewsQuotesWithToken } from "../../api/newsQueries";
-import {
-  clockTime,
-  displayAssetRefs,
-  labelCommand,
-  validExternalUrl,
-} from "../../model/newsLabels";
+import { clockTime, displayAssetRefs, validExternalUrl } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
@@ -34,13 +29,11 @@ import "./newsEventDrawer.css";
  * it got here. The audit trail (`技术详情`, 同类报道, every raw verdict record) stays on the full page.
  */
 export function NewsEventDrawer({
-  copy,
   eventId,
   feedSearch,
   onClose,
   token,
 }: {
-  copy: (text: string, note: string) => void;
   eventId: string | null;
   feedSearch: string;
   onClose: () => void;
@@ -145,30 +138,6 @@ export function NewsEventDrawer({
             ) : null}
           </p>
           <NewsEventDrawerTimeline steps={detail.timeline ?? []} />
-          <div className="news-drawer-labels">
-            <ActionButton
-              onClick={() => copy(labelCommand(event.event_id, "good"), "已复制「判得对」标注命令")}
-              size="sm"
-              variant="positive"
-            >
-              判得对
-            </ActionButton>
-            <ActionButton
-              onClick={() =>
-                copy(labelCommand(event.event_id, "noise"), "已复制「不该推」标注命令")
-              }
-              size="sm"
-              variant="negative"
-            >
-              不该推
-            </ActionButton>
-            <ActionButton
-              onClick={() => copy(labelCommand(event.event_id, "missed"), "已复制「漏推」标注命令")}
-              size="sm"
-            >
-              漏推
-            </ActionButton>
-          </div>
         </div>
       ) : null}
     </Drawer>

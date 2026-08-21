@@ -136,7 +136,6 @@ class NewsPushSettings(BaseModel):
     feishu_webhook_url: str | None = None
     feishu_signing_secret: str | None = None
     min_interval_seconds: float = 0.6
-    hourly_cap: int = 30
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
     @classmethod
@@ -145,11 +144,9 @@ class NewsPushSettings(BaseModel):
         return normalized or None
 
     @model_validator(mode="after")
-    def validate_limits(self) -> NewsPushSettings:
+    def validate_pacing(self) -> NewsPushSettings:
         if self.min_interval_seconds < 0 or self.min_interval_seconds > 60:
             raise ValueError("news_push_min_interval_invalid")
-        if self.hourly_cap < 1 or self.hourly_cap > 1000:
-            raise ValueError("news_push_hourly_cap_invalid")
         return self
 
 
@@ -216,19 +213,10 @@ class NewsPolicySettings(BaseModel):
         "partnership",
         "filing",
     )
-    theme_cap_4h: int = 3
-    storyline_throttle: bool = True
-    hourly_cap_enabled: bool = True
     restatement_drop: bool = True
-    # Policy v5 (issue #81): the storyline throttle releases a card whose headline resembles nothing the reader
-    # received in the window, and the counts survive only as a flood ceiling. `similarity_max = 0` switches the
-    # content judgment off and restores the pre-v5 count cap; towards 1 it releases all but exact repeats.
+    # This is duplicate evidence, not a reader quota. Zero disables the
+    # deterministic similarity check.
     similarity_max: float = 0.25
-    distinct_hard_cap_4h: int = 18
-    distinct_asset_cap_2h: int = 6
-    # Policy v6 (#100): measure every push candidate against the reader's window, not only the ones the count
-    # throttle already stopped. Set false to restore the v5 behaviour (measure only what the throttle stopped).
-    similarity_all_pushes: bool = True
     # #77: the Gate's AMQP priority no longer decides the ⚡ header. Set true to restore the pre-v4 behaviour.
     high_priority_escalates: bool = False
 
@@ -247,17 +235,8 @@ class NewsPolicySettings(BaseModel):
         for name in bounded:
             if not 0 <= int(getattr(self, name)) <= 3:
                 raise ValueError(f"news_policy_{name}_invalid")
-        if not 1 <= self.theme_cap_4h <= 100:
-            raise ValueError("news_policy_theme_cap_invalid")
         if not 0.0 <= float(self.similarity_max) <= 1.0:
             raise ValueError("news_policy_similarity_max_invalid")
-        if "distinct_hard_cap_4h" not in self.model_fields_set:
-            # An operator who only raised the soft cap keeps a valid config: the ceiling follows it.
-            self.distinct_hard_cap_4h = max(self.distinct_hard_cap_4h, self.theme_cap_4h)
-        if not self.theme_cap_4h <= self.distinct_hard_cap_4h <= 100:
-            raise ValueError("news_policy_distinct_hard_cap_invalid")
-        if not 1 <= self.distinct_asset_cap_2h <= 100:
-            raise ValueError("news_policy_distinct_asset_cap_invalid")
         return self
 
 
@@ -596,21 +575,14 @@ news:
     feishu_webhook_url:
     feishu_signing_secret:
     min_interval_seconds: 0.6
-    hourly_cap: 30
   policy:
     escalate_magnitude: 3
     min_push_magnitude: 1
     min_watchlist_magnitude: 1
     unclear_push_min_magnitude: 2
     unclear_push_event_types: [product, listing, delisting, regulation, hack, exploit, partnership, filing]
-    theme_cap_4h: 3
-    storyline_throttle: true
-    hourly_cap_enabled: true
     restatement_drop: true
     similarity_max: 0.25
-    distinct_hard_cap_4h: 18
-    distinct_asset_cap_2h: 6
-    similarity_all_pushes: true
     high_priority_escalates: false
   retention:
     raw_days: 30

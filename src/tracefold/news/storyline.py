@@ -22,7 +22,7 @@ THEMES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     (
         "mideast_energy",
         re.compile(
-            r"hormuz|霍尔木兹|strait|\biran|伊朗|irgc|khamenei|\boman|阿曼|\boil\b|crude|brent|wti|油价|原油|opec"
+            r"hormuz|霍尔木兹|\bstrait\b|\biran|伊朗|irgc|khamenei|\boman|阿曼|opec"
             r"|israel|hezbollah|以色列|中东|gulf|houthi|yemen",
             re.IGNORECASE,
         ),
@@ -55,8 +55,8 @@ _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 
 # A model primary is free text (`TriageAsset.symbol` is any 1-16 characters) and this fallback is reached
 # precisely when nothing grounded it, so it is the least validated string in the pipeline — and it becomes a
-# throttle bucket, an advisory-lock key and a console label. Accept only something shaped like a symbol; an
-# exchange-qualified identifier we have no bucket for (`0001.HK`) falls through to the next step instead.
+# duplicate-comparison group, an advisory-lock key and a console label. Accept only something shaped like a
+# symbol; an exchange-qualified identifier we cannot group (`0001.HK`) falls through to the next step instead.
 _SYMBOL_SHAPE: Final = re.compile(r"^[A-Z0-9]{1,10}$")
 
 
@@ -86,13 +86,13 @@ def storyline_key(
     """Asset-level key when a non-CL primary asset exists and scope is not macro; else theme; else family.
 
     Called twice per Event: before Triage with the Gate's grounded assets (preliminary key, status bar only) and
-    after Triage with the verdict's primary assets and scope (final key, written back to the Event and used by the
-    storyline windows and throttling).
+    after Triage with the verdict's primary assets and scope (final key, written back to the Event and used by
+    duplicate comparison, grouping and explicit mutes).
 
     ``aliases`` (#75) collapses the several symbols one issuer trades under before the key is formed. ``SKHY`` and
     ``SKHX`` are both real hl.xyz contracts for SK Hynix, so keeping them apart at the venue level is right — but
-    an ``asset:<symbol>`` throttle bucket per *contract* let one buyback ship nine cards on 2026-08-19. ``None``
-    uses the built-in seeds, which is what every pure caller and every test gets.
+    separate ``asset:<symbol>`` groups prevent same-issuer duplicate comparison. ``None`` uses the built-in
+    seeds, which is what every pure caller and every test gets.
     """
 
     primaries = sorted(resolve_base_symbol(a, aliases) for a in primary_assets if a.upper() not in _CL_SYMBOLS)
@@ -137,8 +137,8 @@ def final_storyline_key(
     ``triage_rules.fallback_verdict``). "The model named no primary" is evidence only when a model actually
     answered, so a degraded card keeps the pre-#100 fallback: the provider's tags are the only evidence there is.
 
-    This key is a throttle bucket and an operator-facing grouping, never a claim shown to the reader — the card's
-    tickers come from ``delivery.card_assets`` (verdict primaries ∩ grounded), which this does not touch."""
+    This key is a duplicate-comparison and operator-facing grouping, never a claim shown to the reader — the
+    card's tickers come from ``delivery.card_assets`` (verdict primaries ∩ grounded), which this does not touch."""
 
     grounded = {resolve_base_symbol(a, aliases) for a in grounded_assets}
     primaries = [a for a in verdict_primaries if resolve_base_symbol(a, aliases) in grounded]
@@ -177,9 +177,10 @@ def final_storyline_key(
     # A model that answered and still named nothing is saying the headline has no tradable subject, so a provider
     # tag is only a storyline when the text is actually about it — the symbol appearing as its own token is the
     # cheap evidence for that. Everything else is the family bucket: `asset:BTC` was collecting Polish jets
-    # scrambling and a lending protocol being drained, and those counts throttled real BTC cards. A false negative
-    # here costs a coarser bucket; a false positive costs another card's window. A degraded verdict is exempt: it
-    # has no `assets` to begin with, and "NVIDIA to invest $100bn" never spells `NVDA`.
+    # scrambling and a lending protocol being drained, which polluted duplicate evidence for real BTC cards. A
+    # false negative here costs a coarser group; a false positive contaminates another card's comparison set. A
+    # degraded verdict is exempt: it has no `assets` to begin with, and "NVIDIA to invest $100bn" never spells
+    # `NVDA`.
     text = f"{title} {headline_zh}"
     fallback = sorted(
         a for a in grounded_assets if a.upper() not in _CL_SYMBOLS and (degraded or _symbol_in_text(a, text))

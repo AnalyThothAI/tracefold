@@ -170,10 +170,7 @@ function HealthNumbers({
               ["JUDGED", formatCount(status.pipeline.triage_24h)],
               ["P95", optionalDuration(status.pipeline.triage_p95_ms)],
             ]
-          : [
-              ["SENT", formatCount(status.delivery.sent_24h)],
-              ["CAP/H", formatCount(status.delivery.hourly_cap)],
-            ];
+          : [["SENT", formatCount(status.delivery.sent_24h)]];
   return (
     <dl className="news-health-card-numbers">
       {cells.map(([label, value]) => (
@@ -448,19 +445,21 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="triage_24h" v={String(status.pipeline.triage_24h)} />
           <KeyValueRow k="triage_degraded_24h" v={String(status.pipeline.triage_degraded_24h)} />
           <KeyValueRow k="throttled_24h" v={String(status.pipeline.throttled_24h)} />
-          {/* #100: of the throttled cards, the ones withheld because the reader already had the content —
-              `throttled` is the count-throttle path, `all` the every-push measurement policy v6 added. The
-              per-key bars above cannot show this: v6 spreads one reason across one key per asset. */}
+          {/* `all` is policy v7's content comparison path. `throttled` only
+              decodes pre-v7 historical rows that lacked an explicit scope. */}
           <KeyValueRow
             k="duplicates_withheld_24h"
-            v={`${status.pipeline.duplicates_withheld_24h?.throttled ?? 0} 计数拦下 · ${
+            v={`${status.pipeline.duplicates_withheld_24h?.throttled ?? 0} 历史记录 · ${
               status.pipeline.duplicates_withheld_24h?.all ?? 0
             } 全量比对`}
           />
-          <KeyValueRow k="labeled_missed_24h" v={String(status.pipeline.labeled_missed_24h)} />
           <KeyValueRow
-            k="labeled_missed_without_event_24h"
-            v={String(status.pipeline.labeled_missed_without_event_24h)}
+            k="reviewed_should_push_24h"
+            v={String(status.pipeline.reviewed_should_push_24h)}
+          />
+          <KeyValueRow
+            k="reviewed_external_miss_24h"
+            v={String(status.pipeline.reviewed_external_miss_24h)}
           />
           <KeyValueRow
             k="candidate_share_24h"
@@ -515,6 +514,36 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
               v={`${queue.messages} 条 · ${queue.consumers} 消费者`}
             />
           ))}
+        </KeyValue>
+      </section>
+      <section>
+        <h4>学习证据保留</h4>
+        <KeyValue>
+          <KeyValueRow
+            k="eligible"
+            v={`${status.learning_retention.eligible_recordings} recordings · ${status.learning_retention.eligible_cases} cases · ${status.learning_retention.eligible_artifacts} artifacts`}
+          />
+          <KeyValueRow
+            k="deleted_last_turn"
+            v={`${status.learning_retention.deleted_recordings} recordings · ${status.learning_retention.deleted_cases} cases · ${status.learning_retention.deleted_artifacts} artifacts`}
+          />
+          <KeyValueRow
+            k="oldest_recording_age"
+            v={optionalDuration(status.learning_retention.oldest_recording_age_ms)}
+          />
+          <KeyValueRow
+            k="oldest_case_age"
+            v={optionalDuration(status.learning_retention.oldest_case_age_ms)}
+          />
+          <KeyValueRow
+            k="oldest_artifact_age"
+            v={optionalDuration(status.learning_retention.oldest_artifact_age_ms)}
+          />
+          <KeyValueRow
+            k="last_run_at_ms"
+            v={optionalTime(status.learning_retention.last_run_at_ms)}
+          />
+          <KeyValueRow k="last_error_code" v={status.learning_retention.last_error_code ?? "—"} />
         </KeyValue>
       </section>
     </NewsTechnical>

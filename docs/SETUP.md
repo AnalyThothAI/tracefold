@@ -129,25 +129,18 @@ news:
     enabled: true
     feishu_webhook_url: "<Feishu v2 webhook>"
     feishu_signing_secret:
-    hourly_cap: 30
   policy:                     # decide() thresholds and switches (all optional; these are the defaults)
     min_push_magnitude: 1
     min_watchlist_magnitude: 1
     escalate_magnitude: 3
     unclear_push_min_magnitude: 2
     unclear_push_event_types: [product, listing, delisting, regulation, hack, exploit, partnership, filing]
-    theme_cap_4h: 3
-    storyline_throttle: true
-    hourly_cap_enabled: true
     restatement_drop: true      # a restatement of a card the reader already received never pushes
-    similarity_max: 0.25        # a throttled card is released when it resembles the reader's window less than this
-    distinct_hard_cap_4h: 18    # flood ceiling: pushes per theme / 4 h whatever they say (>= theme_cap_4h)
-    similarity_all_pushes: true # measure every push candidate against the reader's window, not only throttled ones
-    distinct_asset_cap_2h: 6    # flood ceiling: pushes per asset / 2 h
+    similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
     high_priority_escalates: false  # true = the Gate's AMQP priority also earns the ⚡ header (pre-v4, #77)
   retention:
     raw_days: 30                # an Item nobody judged is storage
-    judged_days: 365            # an Item behind a judged or labelled Event is the corpus every replay reads
+    judged_days: 365            # an Item behind a verdict or accepted review is retained as learning evidence
   gate:
     suppress_low_signal: false  # true = drop ungrounded, non-macro social posts under score 70 without a model call
   venues:                       # instrument-universe snapshot; public catalogues, no credentials
@@ -170,9 +163,13 @@ Gate admits nearly every Item (only recovery replays, law-firm templates,
 and — behind `suppress_low_signal` — low-score ungrounded social posts skip
 the model; exchange listing/delisting frames are admitted and judged like any
 candidate), Triage is the semantic filter, and
-`decide()` applies these thresholds. Change them after `tracefold news
-replay-decisions` and operator labels agree; `tracefold config` prints the
-effective values.
+`decide()` applies these thresholds. Changes are one-variable candidates:
+record accepted cases with `tracefold news review`, freeze development and
+future validation windows with `tracefold news learning freeze`, then run the
+offline, holdout, shadow and canary gates under `tracefold news learning`.
+`tracefold config` prints the effective values. Policy v7 has no 1 h/2 h/4 h
+reader-count veto: every distinct fact that passes the semantic contract moves
+to delivery; the sent-reader ledger remains only for same-fact suppression.
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
 not commit the populated operator config. Missing or invalid delivery
@@ -222,8 +219,8 @@ uv run tracefold db audit
 
 The first command confirms the real config paths. `news bus-check` proves the
 broker URL, declares the News topology idempotently, and prints per-queue
-message/consumer counts. `db audit` confirms the migration head, the eleven
-`news_*` row counts, and that the schema holds exactly those tables. Source
+message/consumer counts. `db audit` confirms the migration head, every current
+News table count, and that the schema holds exactly the declared table set. Source
 blocks, rate limits, and missing rows surface as explicit diagnostic results,
 not as fake facts.
 
@@ -232,20 +229,14 @@ and confirm `config_path` points at `~/.tracefold/config.yaml`. Report only
 paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
-After `uv run tracefold db migrate`, the database contains exactly 13 tables:
-the eleven `news_*` tables plus the platform tables `alembic_version` and
-`workers_runtime`.
-The Alembic chain is the `20260818_0275` current-schema baseline (root; it
-executes `current_schema_20260818_0275.sql` and `runtime_roles.sql`) followed
-by `20260818_0276_review_49_hard_cut`, `20260818_0277_gmgn_lane_removal`, and
-`20260819_0278_macro_lane_removal`. A new empty database applies all four
-without replaying retired runtime tables, compatibility columns, historical
-backfills, or intermediate contracts. A database stamped at an earlier
-revision migrates forward with `tracefold db migrate`; 0278 drops the whole
-Macro lane and `queue_terminal_events` and is irreversible (see
-`OPERATIONS.md`). Stop Serve and Workers before applying it, remove the
-retired `providers.macro_sources` and `llm.macro_document_analysis_*` config
-keys, and start the workers only after the migration is current.
+The Alembic chain starts at the `20260818_0275` current-schema baseline and is
+linear through `20260821_0288_learning_retention`. A new empty database applies
+the complete chain without replaying retired runtime tables. A database
+stamped at an earlier revision migrates forward with `tracefold db migrate`;
+all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers
+before applying them and start Workers only after the migration is current.
+An existing 0283 volume uses the backup/stop/migrate/redeploy sequence
+documented in `OPERATIONS.md`; #112 adds no login role or password.
 
 Retired routes return `404`; there is no compatibility alias.
 
@@ -305,7 +296,7 @@ npm run dev          # Vite console with API proxy to 127.0.0.1:8765
 ```
 
 For an intentional host-process backend loop, first provision PostgreSQL roles
-and set the three DSNs in `~/.tracefold/config.yaml` to a database reachable
+and set the four role DSNs in `~/.tracefold/config.yaml` to a database reachable
 from the host. This is for development against an already prepared database;
 it does not bootstrap a blank cluster. Then use separate terminals:
 

@@ -13,6 +13,5 @@ export const APP_SHORTCUTS: readonly Shortcut[] = [
   { what: "切换结局筛选", keys: "1 – 4" },
   { what: "聚焦搜索", keys: "/" },
   { what: "事件流 / 复盘 / 状态", keys: "G 然后 F / R / S" },
-  { what: "复制「不该推」标注命令", keys: "X" },
   { what: "本面板", keys: "?" },
 ];

@@ -30,7 +30,7 @@ describe("AppSidebar", () => {
     // no count of their own.
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1.4k");
-    expect(links[1].textContent?.trim()).toBe("命中复盘");
+    expect(links[1].textContent?.trim()).toBe("学习复盘");
     expect(links[2].textContent?.trim()).toBe("流水线状态");
   });
 

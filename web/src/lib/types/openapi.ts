@@ -88,11 +88,62 @@ export interface paths {
         };
         /**
          * Get News Review
-         * @description 命中复盘: coverage, direction accuracy, magnitude calibration, event types, and potential misses.
+         * @description Learning ReviewDesk: actionable queue, evidence coverage, proposals, or market observations.
          */
         get: operations["get_news_review_api_news_review_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/news/review/external-misses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit News External Miss */
+        post: operations["submit_news_external_miss_api_news_review_external_misses_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/news/review/tasks/{task_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get News Review Evidence */
+        get: operations["get_news_review_evidence_api_news_review_tasks__task_id__evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/news/review/tasks/{task_id}/responses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit News Review */
+        post: operations["submit_news_review_api_news_review_tasks__task_id__responses_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -238,6 +289,26 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
+        /** ApiEnvelope[NewsReviewEvidenceData] */
+        ApiEnvelope_NewsReviewEvidenceData_: {
+            data?: components["schemas"]["NewsReviewEvidenceData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[NewsReviewSubmitData] */
+        ApiEnvelope_NewsReviewSubmitData_: {
+            data?: components["schemas"]["NewsReviewSubmitData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
         /** ApiEnvelope[NewsStatusData] */
         ApiEnvelope_NewsStatusData_: {
             data?: components["schemas"]["NewsStatusData"] | null;
@@ -258,15 +329,135 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
+        /** BlindPairwiseSubmission */
+        BlindPairwiseSubmission: {
+            /** Critical Errors */
+            critical_errors?: ("A:unsupported_fact" | "A:wrong_entity" | "A:wrong_direction" | "A:missed_key_fact" | "A:near_duplicate" | "A:injection_obedience" | "B:unsupported_fact" | "B:wrong_entity" | "B:wrong_direction" | "B:missed_key_fact" | "B:near_duplicate" | "B:injection_obedience")[];
+            /** Evidence Refs */
+            evidence_refs?: string[];
+            /**
+             * Kind
+             * @default blind_pairwise
+             * @constant
+             */
+            kind: "blind_pairwise";
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Preference
+             * @enum {string}
+             */
+            preference: "A" | "B" | "tie" | "both_bad" | "uncertain";
+        };
         /** BootstrapData */
         BootstrapData: {
             /** Ws Token */
             ws_token: string;
         };
+        /** EventRubricSubmission */
+        EventRubricSubmission: {
+            /** Dimensions */
+            dimensions: {
+                [key: string]: "pass" | "fail" | "uncertain" | "not_applicable";
+            };
+            /** Evidence Refs */
+            evidence_refs?: string[];
+            /**
+             * Expected Correction
+             * @default
+             */
+            expected_correction: string;
+            /** First Bad Owner */
+            first_bad_owner?: ("receiver" | "deduper" | "event_evidence" | "gate" | "retrieval" | "storyline" | "triage_prompt" | "model" | "policy" | "delivery" | "taxonomy" | "unknown") | null;
+            /**
+             * Kind
+             * @default event_rubric
+             * @constant
+             */
+            kind: "event_rubric";
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            novelty: components["schemas"]["NoveltyJudgment"];
+            /**
+             * Should Push
+             * @enum {string}
+             */
+            should_push: "must_push" | "should_push" | "should_hold" | "must_hold" | "uncertain";
+        };
+        /** ExternalMissSubmission */
+        ExternalMissSubmission: {
+            /**
+             * Body
+             * @default
+             */
+            body: string;
+            /**
+             * Kind
+             * @default external_miss
+             * @constant
+             */
+            kind: "external_miss";
+            /** Occurred At Ms */
+            occurred_at_ms: number;
+            rubric: components["schemas"]["EventRubricSubmission"];
+            /** Source Url */
+            source_url: string;
+            /** Title */
+            title: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** NewsAcceptedReviewData */
+        NewsAcceptedReviewData: {
+            /** Created At Ms */
+            created_at_ms: number;
+            /** Dimensions */
+            dimensions?: {
+                [key: string]: string;
+            };
+            /** Evidence Refs */
+            evidence_refs?: string[];
+            /**
+             * Expected Correction
+             * @default
+             */
+            expected_correction: string;
+            /** First Bad Owner */
+            first_bad_owner?: string | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Novelty */
+            novelty?: {
+                [key: string]: unknown;
+            };
+            /** Pairwise Case Id */
+            pairwise_case_id?: string | null;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+            /** Reader Contract Version */
+            reader_contract_version: string;
+            /** Review Id */
+            review_id: string;
+            /** Reviewer */
+            reviewer: string;
+            /** Rubric Version */
+            rubric_version: string;
+            /** Should Push */
+            should_push?: ("must_push" | "should_push" | "should_hold" | "must_hold" | "uncertain") | null;
         };
         /**
          * NewsAssetRefData
@@ -327,6 +518,10 @@ export interface components {
         NewsDeliveryData: {
             /** Attempted At Ms */
             attempted_at_ms: number;
+            /** Card */
+            card?: {
+                [key: string]: unknown;
+            };
             /** Error Code */
             error_code?: string | null;
             /** Kind */
@@ -346,8 +541,6 @@ export interface components {
             delivery_available: boolean;
             /** E2E P95 Ms */
             e2e_p95_ms?: number | null;
-            /** Hourly Cap */
-            hourly_cap: number;
             /** Last Error Code */
             last_error_code?: string | null;
             /**
@@ -394,6 +587,36 @@ export interface components {
             event_id: string;
             /** Family */
             family: string;
+            /**
+             * Focus Fact Context
+             * @default
+             */
+            focus_fact_context: string;
+            /**
+             * Focus Fact Id
+             * @default
+             */
+            focus_fact_id: string;
+            /**
+             * Focus Fact Method
+             * @default
+             */
+            focus_fact_method: string;
+            /**
+             * Focus Fact Text
+             * @default
+             */
+            focus_fact_text: string;
+            /**
+             * Focus Span End
+             * @default 0
+             */
+            focus_span_end: number;
+            /**
+             * Focus Span Start
+             * @default 0
+             */
+            focus_span_start: number;
             /** Grounded Assets */
             grounded_assets?: string[];
             /** Ingest Mode */
@@ -444,8 +667,8 @@ export interface components {
             /** Deliveries */
             deliveries: components["schemas"]["NewsDeliveryData"][];
             event: components["schemas"]["NewsEventData"];
-            /** Labels */
-            labels?: components["schemas"]["NewsLabelData"][];
+            /** Evidence Snapshots */
+            evidence_snapshots?: components["schemas"]["NewsEvidenceSnapshotData"][];
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
             /** Normalization */
@@ -454,6 +677,8 @@ export interface components {
             reaction?: components["schemas"]["NewsReactionSummaryData"] | null;
             /** Reactions */
             reactions?: components["schemas"]["NewsEventReactionData"][];
+            reader_receipt: components["schemas"]["NewsReaderReceiptData"];
+            review: components["schemas"]["NewsEventReviewSummaryData"];
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
             triage?: components["schemas"]["NewsTriageSummaryData"] | null;
@@ -467,6 +692,16 @@ export interface components {
              * @default
              */
             description: string;
+            /**
+             * Fact Id
+             * @default
+             */
+            fact_id: string;
+            /**
+             * Fact Text
+             * @default
+             */
+            fact_text: string;
             /** Item Id */
             item_id: string;
             /** Jaccard Estimate */
@@ -498,6 +733,8 @@ export interface components {
              * @default unknown
              */
             instrument_class: string;
+            /** Is Primary */
+            is_primary: boolean;
             /** Metric Version */
             metric_version: string;
             /** P0 */
@@ -541,6 +778,44 @@ export interface components {
             venue?: string | null;
             /** Venue Symbol */
             venue_symbol?: string | null;
+        };
+        /** NewsEventReviewSummaryData */
+        NewsEventReviewSummaryData: {
+            accepted?: components["schemas"]["NewsAcceptedReviewData"] | null;
+            /**
+             * Judgment N
+             * @default 0
+             */
+            judgment_n: number;
+            /**
+             * Uncertain
+             * @default false
+             */
+            uncertain: boolean;
+        };
+        /** NewsEvidenceSnapshotData */
+        NewsEvidenceSnapshotData: {
+            /** Created At Ms */
+            created_at_ms: number;
+            /** Event Id */
+            event_id: string;
+            /** Evidence Sha256 */
+            evidence_sha256: string;
+            /** Evidence Version */
+            evidence_version: number;
+            /** Focus Fact Id */
+            focus_fact_id: string;
+            /**
+             * Provenance
+             * @enum {string}
+             */
+            provenance: "observed" | "legacy_reconstructed";
+            /** Release Eligible */
+            release_eligible: boolean;
+            /** Snapshot */
+            snapshot?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * NewsFeedCountsData
@@ -587,6 +862,36 @@ export interface components {
             event_id: string;
             /** Family */
             family: string;
+            /**
+             * Focus Fact Context
+             * @default
+             */
+            focus_fact_context: string;
+            /**
+             * Focus Fact Id
+             * @default
+             */
+            focus_fact_id: string;
+            /**
+             * Focus Fact Method
+             * @default
+             */
+            focus_fact_method: string;
+            /**
+             * Focus Fact Text
+             * @default
+             */
+            focus_fact_text: string;
+            /**
+             * Focus Span End
+             * @default 0
+             */
+            focus_span_end: number;
+            /**
+             * Focus Span Start
+             * @default 0
+             */
+            focus_span_start: number;
             /** Grounded Assets */
             grounded_assets?: string[];
             /** Ingest Mode */
@@ -823,28 +1128,65 @@ export interface components {
              */
             venues: number;
         };
-        /** NewsLabelData */
-        NewsLabelData: {
-            /** Created At Ms */
-            created_at_ms: number;
-            /** Label */
-            label?: {
-                [key: string]: unknown;
-            };
-            /** Label Version */
-            label_version: string;
+        /** NewsLearningRetentionStatusData */
+        NewsLearningRetentionStatusData: {
             /**
-             * Labeled By
-             * @default operator
+             * Deleted Artifacts
+             * @default 0
              */
-            labeled_by: string;
-            /** Source */
-            source: string;
+            deleted_artifacts: number;
             /**
-             * Subject
-             * @default
+             * Deleted Cases
+             * @default 0
              */
-            subject: string;
+            deleted_cases: number;
+            /**
+             * Deleted Recordings
+             * @default 0
+             */
+            deleted_recordings: number;
+            /**
+             * Eligible Artifacts
+             * @default 0
+             */
+            eligible_artifacts: number;
+            /**
+             * Eligible Cases
+             * @default 0
+             */
+            eligible_cases: number;
+            /**
+             * Eligible Recordings
+             * @default 0
+             */
+            eligible_recordings: number;
+            /** Last Error Code */
+            last_error_code?: string | null;
+            /** Last Run At Ms */
+            last_run_at_ms?: number | null;
+            /** Oldest Artifact Age Ms */
+            oldest_artifact_age_ms?: number | null;
+            /** Oldest Case Age Ms */
+            oldest_case_age_ms?: number | null;
+            /** Oldest Recording Age Ms */
+            oldest_recording_age_ms?: number | null;
+            /** Updated At Ms */
+            updated_at_ms?: number | null;
+        };
+        /** NewsMarketReviewData */
+        NewsMarketReviewData: {
+            /** Coverage */
+            coverage?: components["schemas"]["NewsReviewCoverageData"][];
+            /** Directions */
+            directions?: components["schemas"]["NewsReviewDirectionData"][];
+            /** Event Types */
+            event_types?: components["schemas"]["NewsReviewEventTypeData"][];
+            /** Magnitudes */
+            magnitudes?: components["schemas"]["NewsReviewMagnitudeData"][];
+            meta: components["schemas"]["NewsReviewMetaData"];
+            /** Potential Misses */
+            potential_misses?: components["schemas"]["NewsReviewMissData"][];
+            summary: components["schemas"]["NewsReviewSummaryData"];
         };
         /**
          * NewsOutcomeData
@@ -907,16 +1249,6 @@ export interface components {
              */
             grounded_24h: number;
             /**
-             * Labeled Missed 24H
-             * @default 0
-             */
-            labeled_missed_24h: number;
-            /**
-             * Labeled Missed Without Event 24H
-             * @default 0
-             */
-            labeled_missed_without_event_24h: number;
-            /**
              * Novelty Defaulted 24H
              * @default 0
              */
@@ -932,6 +1264,16 @@ export interface components {
              * @default 0
              */
             reasked_24h: number;
+            /**
+             * Reviewed External Miss 24H
+             * @default 0
+             */
+            reviewed_external_miss_24h: number;
+            /**
+             * Reviewed Should Push 24H
+             * @default 0
+             */
+            reviewed_should_push_24h: number;
             /** Suppressed By Reason */
             suppressed_by_reason?: {
                 [key: string]: number;
@@ -1144,6 +1486,24 @@ export interface components {
              */
             unavailable_reason_zh: string;
         };
+        /** NewsReaderReceiptData */
+        NewsReaderReceiptData: {
+            /** Delivery State */
+            delivery_state?: string | null;
+            /** Error Code */
+            error_code?: string | null;
+            /** Received At Ms */
+            received_at_ms?: number | null;
+            /** Rendered Card */
+            rendered_card?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "received" | "not_received" | "unknown";
+        };
         /** NewsReasonCountData */
         NewsReasonCountData: {
             /** Count */
@@ -1157,6 +1517,32 @@ export interface components {
              * @enum {string}
              */
             stage: "gate" | "drop" | "throttle" | "push" | "degraded" | "ungrounded";
+        };
+        /** NewsReviewCoverageBucketData */
+        NewsReviewCoverageBucketData: {
+            /** Accepted */
+            accepted: number;
+            accepted_interval_95?: components["schemas"]["NewsReviewCoverageIntervalData"] | null;
+            /** Accepted Pct */
+            accepted_pct?: number | null;
+            /** Agent */
+            agent?: {
+                [key: string]: string;
+            } | null;
+            /** Cohort */
+            cohort?: string | null;
+            /** Events */
+            events: number;
+            /** Legacy Cohort */
+            legacy_cohort?: string | null;
+            /** Received */
+            received?: number | null;
+            /** Reviewed */
+            reviewed?: number | null;
+            /** Stratum */
+            stratum?: string | null;
+            /** Stratum Zh */
+            stratum_zh?: string | null;
         };
         /**
          * NewsReviewCoverageData
@@ -1192,20 +1578,63 @@ export interface components {
             /** Unavailable */
             unavailable?: components["schemas"]["NewsReviewUnavailableData"][];
         };
+        /** NewsReviewCoverageIntervalData */
+        NewsReviewCoverageIntervalData: {
+            /** Lower Pct */
+            lower_pct: number;
+            /** Upper Pct */
+            upper_pct: number;
+        };
         /** NewsReviewData */
         NewsReviewData: {
-            /** Coverage */
-            coverage?: components["schemas"]["NewsReviewCoverageData"][];
-            /** Directions */
-            directions?: components["schemas"]["NewsReviewDirectionData"][];
-            /** Event Types */
-            event_types?: components["schemas"]["NewsReviewEventTypeData"][];
-            /** Magnitudes */
-            magnitudes?: components["schemas"]["NewsReviewMagnitudeData"][];
-            meta: components["schemas"]["NewsReviewMetaData"];
-            /** Potential Misses */
-            potential_misses?: components["schemas"]["NewsReviewMissData"][];
-            summary: components["schemas"]["NewsReviewSummaryData"];
+            /** Cohorts */
+            cohorts?: components["schemas"]["NewsReviewCoverageBucketData"][];
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /** Disclaimer Zh */
+            disclaimer_zh?: string | null;
+            /** Disclosure */
+            disclosure?: {
+                [key: string]: unknown;
+            } | null;
+            funnel?: components["schemas"]["NewsReviewFunnelV2Data"] | null;
+            holdout?: components["schemas"]["NewsReviewHoldoutData"] | null;
+            /** Message Zh */
+            message_zh?: string | null;
+            /** Mode */
+            mode?: ("event" | "pairwise") | null;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Proposals */
+            proposals?: {
+                [key: string]: unknown;
+            }[];
+            reaction?: components["schemas"]["NewsMarketReviewData"] | null;
+            /** Reader Contract Sha256 */
+            reader_contract_sha256?: string | null;
+            /** Reader Contract Version */
+            reader_contract_version?: string | null;
+            /** Rubric Version */
+            rubric_version?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Strata */
+            strata?: components["schemas"]["NewsReviewCoverageBucketData"][];
+            /** Tasks */
+            tasks?: components["schemas"]["NewsReviewTaskData"][];
+            /** Title Zh */
+            title_zh?: string | null;
+            /**
+             * View
+             * @enum {string}
+             */
+            view: "queue" | "coverage" | "proposals" | "market";
+            /** Window */
+            window?: {
+                [key: string]: number;
+            } | null;
         };
         /**
          * NewsReviewDirectionData
@@ -1277,6 +1706,86 @@ export interface components {
             /** Pushed Pct */
             pushed_pct?: number | null;
         };
+        /** NewsReviewEvidenceData */
+        NewsReviewEvidenceData: {
+            accepted_review?: components["schemas"]["NewsAcceptedReviewData"] | null;
+            /** Agent */
+            agent?: {
+                [key: string]: unknown;
+            } | null;
+            /** Disclosure */
+            disclosure: {
+                [key: string]: unknown;
+            };
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            } | null;
+            /** Market Reactions */
+            market_reactions?: components["schemas"]["NewsEventReactionData"][];
+            /** Output A */
+            output_A?: {
+                [key: string]: unknown;
+            } | null;
+            /** Output B */
+            output_B?: {
+                [key: string]: unknown;
+            } | null;
+            reader_receipt?: components["schemas"]["NewsReviewReceiptTruthData"] | null;
+            /** Reveal */
+            reveal?: {
+                [key: string]: unknown;
+            } | null;
+            /** Rubric */
+            rubric?: {
+                [key: string]: unknown;
+            };
+            /** Source Evidence */
+            source_evidence?: {
+                [key: string]: unknown;
+            } | null;
+            task: components["schemas"]["NewsReviewTaskData"];
+            /** Versions */
+            versions?: {
+                [key: string]: unknown;
+            };
+        };
+        /** NewsReviewFunnelV2Data */
+        NewsReviewFunnelV2Data: {
+            /** Accepted */
+            accepted: number;
+            /** External Misses */
+            external_misses: number;
+            /** Holdout Ready */
+            holdout_ready: number;
+            /** Received */
+            received: number;
+            /** Replayable */
+            replayable: number;
+            /** Reviewed */
+            reviewed: number;
+            /** Total */
+            total: number;
+        };
+        /** NewsReviewHoldoutData */
+        NewsReviewHoldoutData: {
+            /** Accepted Case N */
+            accepted_case_n: number;
+            /** Accepted Cluster N */
+            accepted_cluster_n: number;
+            /** Case N */
+            case_n: number;
+            /** Cluster N */
+            cluster_n: number;
+            coverage_interval_95?: components["schemas"]["NewsReviewCoverageIntervalData"] | null;
+            /** Coverage Pct */
+            coverage_pct?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "insufficient_evidence";
+        };
         /** NewsReviewMagnitudeData */
         NewsReviewMagnitudeData: {
             /** Coverage 1H Pct */
@@ -1307,6 +1816,10 @@ export interface components {
         };
         /** NewsReviewMetaData */
         NewsReviewMetaData: {
+            /** Cohort */
+            cohort?: string | null;
+            /** Discovery Window Start Ms */
+            discovery_window_start_ms: number;
             /** Hours */
             hours: number;
             /** Measured At Ms */
@@ -1351,6 +1864,16 @@ export interface components {
              * @default
              */
             event_type_zh: string;
+            /**
+             * Fact Cluster Key
+             * @default
+             */
+            fact_cluster_key: string;
+            /**
+             * Fact Cluster N
+             * @default 1
+             */
+            fact_cluster_n: number;
             /** Final Decision */
             final_decision: string;
             /** Headline Zh */
@@ -1376,6 +1899,8 @@ export interface components {
              * @default
              */
             override_rule_zh: string;
+            /** Related Event Ids */
+            related_event_ids?: string[];
             /** Return 1H Bps */
             return_1h_bps?: number | null;
             /** Return 4H Bps */
@@ -1393,6 +1918,76 @@ export interface components {
              */
             throttled_by_zh: string;
         };
+        /** NewsReviewReceiptTruthData */
+        NewsReviewReceiptTruthData: {
+            /** Error Code */
+            error_code?: string | null;
+            /** Rendered Card */
+            rendered_card?: {
+                [key: string]: unknown;
+            } | null;
+            /** Settled At Ms */
+            settled_at_ms?: number | null;
+            /** State */
+            state?: string | null;
+            /**
+             * Truth
+             * @enum {string}
+             */
+            truth: "received" | "not_received" | "unknown";
+            /**
+             * Truth Zh
+             * @default
+             */
+            truth_zh: string;
+        };
+        /** NewsReviewSelectionData */
+        NewsReviewSelectionData: {
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Reason Zh
+             * @default
+             */
+            reason_zh: string;
+            /** Sampling Probability */
+            sampling_probability: number;
+            /** Selection Version */
+            selection_version: string;
+            /** Stratum */
+            stratum: string;
+            /**
+             * Stratum Zh
+             * @default
+             */
+            stratum_zh: string;
+        };
+        /** NewsReviewSubmissionReceiptData */
+        NewsReviewSubmissionReceiptData: {
+            /** Acceptance Id */
+            acceptance_id?: string | null;
+            /** Created At Ms */
+            created_at_ms?: number | null;
+            /** External Snapshot Id */
+            external_snapshot_id?: string | null;
+            /** Review Id */
+            review_id: string;
+            /** Task Id */
+            task_id: string;
+            /** Task Version */
+            task_version: string;
+        };
+        /** NewsReviewSubmitData */
+        NewsReviewSubmitData: {
+            /** Idempotent */
+            idempotent: boolean;
+            next_task?: components["schemas"]["NewsReviewTaskData"] | null;
+            receipt: components["schemas"]["NewsReviewSubmissionReceiptData"];
+            /** Updated Queue Counts */
+            updated_queue_counts?: {
+                [key: string]: number;
+            };
+        };
         /**
          * NewsReviewSummaryData
          * @description The topbar figure. A percentage without a priced denominator is not shown at all.
@@ -1407,6 +2002,59 @@ export interface components {
             hit_1h_n: number;
             /** Hit 1H Pct */
             hit_1h_pct?: number | null;
+        };
+        /** NewsReviewTaskData */
+        NewsReviewTaskData: {
+            accepted_review?: components["schemas"]["NewsAcceptedReviewData"] | null;
+            /** Agent Cohort */
+            agent_cohort?: {
+                [key: string]: string;
+            } | null;
+            /** Agent Headline */
+            agent_headline?: string | null;
+            /** Agent Why */
+            agent_why?: string | null;
+            /** Cohort */
+            cohort?: string | null;
+            /** Disclosure */
+            disclosure?: {
+                [key: string]: unknown;
+            } | null;
+            /** Event Id */
+            event_id?: string | null;
+            /** Evidence Ready */
+            evidence_ready?: boolean | null;
+            /** Evidence Version */
+            evidence_version?: number | null;
+            /** Final Decision */
+            final_decision?: string | null;
+            /**
+             * Final Decision Zh
+             * @default
+             */
+            final_decision_zh: string;
+            /** Headline */
+            headline?: string | null;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "event" | "pairwise";
+            /** Opened At Ms */
+            opened_at_ms?: number | null;
+            reader_receipt?: components["schemas"]["NewsReviewReceiptTruthData"] | null;
+            /**
+             * Review Status
+             * @enum {string}
+             */
+            review_status: "pending" | "accepted";
+            selection: components["schemas"]["NewsReviewSelectionData"];
+            /** Task Id */
+            task_id: string;
+            /** Task Version */
+            task_version: string;
+            /** Verdict Evidence Version */
+            verdict_evidence_version?: number | null;
         };
         /** NewsReviewUnavailableData */
         NewsReviewUnavailableData: {
@@ -1429,6 +2077,7 @@ export interface components {
             health: components["schemas"]["NewsHealthData"];
             ingest: components["schemas"]["NewsIngestStatusData"];
             instruments?: components["schemas"]["NewsInstrumentUniverse"];
+            learning_retention: components["schemas"]["NewsLearningRetentionStatusData"];
             /** Measured At Ms */
             measured_at_ms: number;
             pipeline: components["schemas"]["NewsPipelineStatusData"];
@@ -1447,7 +2096,7 @@ export interface components {
         };
         /**
          * NewsSymbolNormalizationData
-         * @description #87: the several names one issuer trades under, collapsed to the base the storyline throttle buckets by.
+         * @description #87: the several names one issuer trades under, collapsed to one stable storyline identity.
          */
         NewsSymbolNormalizationData: {
             /** Aliases */
@@ -1579,8 +2228,14 @@ export interface components {
             degraded: boolean;
             /** Error Code */
             error_code?: string | null;
+            /** Evidence Sha256 */
+            evidence_sha256?: string | null;
+            /** Evidence Version */
+            evidence_version?: number | null;
             /** Final Decision */
             final_decision: string;
+            /** Focus Fact Id */
+            focus_fact_id?: string | null;
             /** Model */
             model?: string | null;
             /** Model Decision */
@@ -1607,6 +2262,19 @@ export interface components {
             verdict?: {
                 [key: string]: unknown;
             };
+        };
+        /** NoveltyJudgment */
+        NoveltyJudgment: {
+            /**
+             * Duplicate Of
+             * @default
+             */
+            duplicate_of: string;
+            /**
+             * Judgment
+             * @enum {string}
+             */
+            judgment: "new_fact" | "progression" | "restatement" | "uncertain";
         };
         /** ReadinessData */
         ReadinessData: {
@@ -1829,7 +2497,17 @@ export interface operations {
     get_news_review_api_news_review_get: {
         parameters: {
             query?: {
+                view?: string;
+                mode?: string;
+                cohort?: string;
+                stratum?: string;
+                proposal?: string;
+                task?: string;
+                event?: string;
+                status?: string;
                 hours?: number;
+                limit?: number;
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -1844,6 +2522,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_NewsReviewData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_news_external_miss_api_news_review_external_misses_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalMissSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsReviewSubmitData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_news_review_evidence_api_news_review_tasks__task_id__evidence_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-Match"?: string | null;
+            };
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsReviewEvidenceData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_news_review_api_news_review_tasks__task_id__responses_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-Match"?: string | null;
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EventRubricSubmission"] | components["schemas"]["BlindPairwiseSubmission"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsReviewSubmitData_"];
                 };
             };
             /** @description Validation Error */

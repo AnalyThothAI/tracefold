@@ -230,7 +230,7 @@ def test_normalization_block_only_reports_the_operator_owned_collapse(conn) -> N
     # The venue rows exist and would pad the group with forms the reader already assumes.
     assert "XYZ-SKHY" in everything
     assert "XYZ-SKHY" not in seeded_only
-    # What survives is the collapse the storyline throttle actually depends on.
+    # What survives is the collapse the stable storyline identity depends on.
     assert set(seeded_only) == {"SKHY", "SKHX", "SKHYNIX"}
 
 

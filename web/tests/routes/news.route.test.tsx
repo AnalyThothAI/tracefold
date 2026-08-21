@@ -41,8 +41,7 @@ describe("news route", () => {
 
   it.each([
     ["/news/status", "流水线状态", "/api/news/status"],
-    // #88: 命中复盘 is a hard-loadable destination of its own, on its own bounded endpoint.
-    ["/news/review", "命中复盘", "/api/news/review"],
+    ["/news/review", "学习复盘", "/api/news/review"],
     [
       "/news/events/evt-global-policy",
       "央行政策转向，风险资产承压",
@@ -62,8 +61,8 @@ describe("news route", () => {
     fireEvent.click(screen.getByRole("link", { name: "流水线状态" }));
     expect(await screen.findByRole("heading", { name: "流水线状态" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("link", { name: "命中复盘" }));
-    expect(await screen.findByRole("heading", { name: "命中复盘" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "学习复盘" }));
+    expect(await screen.findByRole("heading", { name: "学习复盘" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "事件流" }));
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();

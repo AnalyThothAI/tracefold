@@ -12,6 +12,7 @@ SRC = ROOT / "src" / "tracefold"
 NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {
+    "FACT_UNIT_VERSION",
     "DEFAULT_POLICY",
     "GATE_POLICY_VERSION",
     "OPENNEWS_SOURCE_ID",
@@ -19,24 +20,54 @@ PUBLIC_NEWS_INTERFACE = {
     # package root exactly like `status_health` rather than reaching into the pricing module.
     "QUOTE_REQUEST_SYMBOL_MAX",
     "REACTION_METRIC_VERSION",
+    "READER_CONTRACT_VERSION",
     "REVIEW_DEFAULT_HOURS",
     "REVIEW_MAX_HOURS",
+    "REVIEW_RUBRIC_VERSION",
     "TRIAGE_POLICY_VERSION",
     "TRIAGE_PROMPT_VERSION",
+    "TRUSTED_ROOT_SHA",
+    "ArmManifest",
+    "BlindPairwiseSubmission",
+    "CandidateEvaluator",
+    "CandidateManifest",
+    "ClosedWindow",
+    "DatasetManifest",
+    "DatasetSpec",
     "DecidePolicy",
+    "DeskQuery",
+    "EvaluationReport",
+    "EvaluationRequest",
+    "EventRubricSubmission",
+    "ExternalMissSubmission",
+    "FactUnit",
+    "LiveTriageModelAdapter",
+    "ModelInvocation",
+    "ModelObservation",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
     "OpenNewsStrategyHistory",
     "Outcome",
+    "Principal",
+    "ProposalReceipt",
+    "ReaderReceipt",
+    "RecordReplayModelAdapter",
+    "ReviewDesk",
+    "ReviewSubmission",
+    "TaskRef",
     "TriageVerdict",
     "apply_control",
+    "apply_canary_control",
     "event_outcome",
+    "canonical_sha",
     # #87: the console's «符号落表» funnel segment folds two halves neither repository reaches across for —
     # News owns which tags an Event carried, the instrument universe owns what they name. The fold is pure,
     # so the HTTP route imports it from the package root like `status_health`.
     "grounding_rollup",
+    "extract_fact_units",
+    "parse_canary_control",
     "parse_control",
     "parse_opennews_message",
     "status_health",
@@ -199,6 +230,34 @@ def test_analyst_lane_is_retired() -> None:
     assert "news.deep" not in consumers and "render_followup_card" not in consumers
     triage = NEWS_ROOT / "agents" / "triage_model.py"
     assert "with_structured_output" in triage.read_text(encoding="utf-8")
+
+
+def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:
+    """Policy v7 has one semantic decision plus content evidence, never a second editor based on card counts."""
+
+    retired = {
+        "hourly_cap",
+        "sent_count_since",
+        "reservation_status",
+        "pushed_2h",
+        "pushed_4h",
+        "max_magnitude_2h",
+        "max_magnitude_4h",
+        "theme_cap_4h",
+        "distinct_hard_cap_4h",
+        "distinct_asset_cap_2h",
+    }
+    runtime = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            NEWS_ROOT / "triage_rules.py",
+            NEWS_ROOT / "repository.py",
+            NEWS_ROOT / "consumers.py",
+            NEWS_ROOT / "candidate_evaluator.py",
+            SRC / "platform" / "config" / "settings.py",
+        )
+    )
+    assert {token for token in retired if token in runtime} == set()
 
 
 def test_serve_news_routes_are_read_only_and_broker_free() -> None:

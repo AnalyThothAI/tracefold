@@ -1,1 +1,1 @@
-"""Learning plane: operator labels and offline evaluation."""
+"""Read-only Event explanation and provider-frame Gate replay utilities."""

@@ -18,6 +18,7 @@ from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, Qu
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import WorkerDatabase
+from tracefold.app.learning_runtime import active_arm_manifest, runtime_manifest_sha
 from tracefold.app.llm import configured_chat_model
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
@@ -37,7 +38,9 @@ from tracefold.integrations.venues import (
     fetch_us_reference_instruments,
 )
 from tracefold.news import DecidePolicy
+from tracefold.news.agents.prompts.candidates import compiled_canary_candidates
 from tracefold.news.agents.triage_model import TriageModel
+from tracefold.news.canary import CanaryRuntimeArm
 from tracefold.news.consumers import (
     DeduperConsumer,
     DelivererConsumer,
@@ -578,9 +581,14 @@ async def _wire_news_pipeline(
     )
 
     models = news_model_availability(settings)
+    stable_arm = active_arm_manifest(settings)
+    compiled_candidates = compiled_canary_candidates()
+    canary_arms: dict[str, CanaryRuntimeArm] = {}
     triage_model: TriageModel | None = None
     if models.triage_configured and models.triage_model:
         fallback_model: TriageModel | None = None
+        fallback_chat: Any | None = None
+        fallback_effective: str | None = None
         if models.triage_fallback_model:
             fallback_endpoint = settings.llm.news_triage_fallback
             fallback_chat, fallback_effective = configured_chat_model(
@@ -610,6 +618,45 @@ async def _wire_news_pipeline(
             primary_breaker_failures=settings.news.triage.circuit_failures,
             primary_breaker_open_seconds=settings.news.triage.circuit_open_seconds,
         )
+        for candidate in compiled_candidates.values():
+            if candidate.parent_stable_sha != stable_arm.bundle_sha:
+                logger.warning(
+                    "ignoring canary candidate with stale parent candidate=%s parent=%s active=%s",
+                    candidate.candidate_sha,
+                    candidate.parent_stable_sha,
+                    stable_arm.bundle_sha,
+                )
+                continue
+            arm = candidate.candidate_arm
+            # Every arm owns its complete model chain and internal primary
+            # breaker. Sharing the stable TriageModel with a policy candidate
+            # would let one arm open the other's breaker; omitting fallback on
+            # a prompt candidate would change two variables at once.
+            candidate_fallback = (
+                TriageModel(
+                    model=fallback_chat,
+                    model_name=str(fallback_effective),
+                    deadline_seconds=settings.news.triage.deadline_seconds,
+                )
+                if fallback_chat is not None and fallback_effective is not None
+                else None
+            )
+            candidate_model = TriageModel(
+                model=chat_model,
+                model_name=effective,
+                deadline_seconds=settings.news.triage.deadline_seconds,
+                system_prompt=arm.prompt_text,
+                fallback=candidate_fallback,
+                primary_breaker_failures=settings.news.triage.circuit_failures,
+                primary_breaker_open_seconds=settings.news.triage.circuit_open_seconds,
+            )
+            canary_arms[arm.bundle_sha] = CanaryRuntimeArm(
+                bundle_sha=arm.bundle_sha,
+                model=candidate_model,
+                policy=DecidePolicy(**arm.policy),
+                prompt_version=arm.prompt_version,
+                prompt_sha256=arm.prompt_sha256,
+            )
 
     push = news_push_availability(settings)
     sender = (
@@ -636,11 +683,25 @@ async def _wire_news_pipeline(
             model=triage_model,
             watchlist_symbols=watchlist_symbols,
             watchlist=sorted(watchlist_symbols),
-            hourly_cap=settings.news.push.hourly_cap,
             concurrency=settings.news.triage.concurrency,
             circuit_failures=settings.news.triage.circuit_failures,
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
             policy=DecidePolicy(**settings.news.policy.model_dump()),
+            stable_bundle_sha=stable_arm.bundle_sha,
+            canary_arms=canary_arms,
+            runtime_manifest={
+                "manifest_sha": runtime_manifest_sha(
+                    stable_bundle_sha=stable_arm.bundle_sha,
+                    candidate_shas=sorted(compiled_candidates),
+                    image_digest=os.getenv("TRACEFOLD_IMAGE_DIGEST", "unversioned"),
+                    runtime_revision=os.getenv(_RUNTIME_REVISION_ENV, "unversioned"),
+                ),
+                "stable_bundle_sha": stable_arm.bundle_sha,
+                "candidate_shas": sorted(compiled_candidates),
+                "image_digest": os.getenv("TRACEFOLD_IMAGE_DIGEST", "unversioned"),
+                "runtime_revision": os.getenv(_RUNTIME_REVISION_ENV, "unversioned"),
+                "now_ms": int(time.time() * 1000),
+            },
         ),
         deliverer=DelivererConsumer(
             bus=bus,
@@ -648,7 +709,6 @@ async def _wire_news_pipeline(
             sender=sender,
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
-            hourly_cap=settings.news.push.hourly_cap,
         ),
         janitor=JanitorLoop(
             db=db,

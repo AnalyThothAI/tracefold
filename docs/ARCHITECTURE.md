@@ -40,7 +40,7 @@ The deployment composition has four required boundaries: PostgreSQL, one
 successful migration job, Serve, and Workers. `make up` is only their
 fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
 On an empty PostgreSQL volume, the image's `initdb` hook creates the
-non-login owner plus least-privilege Serve, Workers, and migrate roles from
+non-login owner plus least-privilege Serve, Review, Workers, and migrate roles from
 separate password files, then revokes the bootstrap login before the migration
 job runs. That hook is never replayed against a non-empty cluster. Repeated
 startup therefore preserves the database and operator-owned credentials, while
@@ -95,14 +95,28 @@ in `news_opennews_incidents`, News control state (`news_control_state`),
 and broker queues are control state. Retry attempts and terminal reasons are
 likewise queue policy, not facts. `news_verdicts` (Triage decisions bound to a
 policy version) are derived model outputs bound to frozen evidence; they are
-not material facts. `news_deliveries` is the one-attempt outbound
-ledger keyed by `(event_id, kind)`; there is no retry, lease, or backfill.
-`news_event_labels` is the learning-plane truth for evaluating decisions.
+not material facts. `news_deliveries` is the one-attempt outbound ledger keyed
+by `(event_id, kind)`; there is no retry, lease, or backfill. Reader receipt
+truth is `news_deliveries.state = 'sent'`; a model decision, pending attempt,
+or missing delivery row never means that the reader saw a card.
+`news_event_evidence_snapshots` freezes the exact fact unit and evidence
+version read by Triage so a later member cannot rewrite the meaning of an old
+verdict.
 
-The current schema is exactly 17 tables: the fifteen `news_*` tables (eleven
-News V3 tables, the two instrument-universe tables from #75/#89, and the two
-Price Review tables from #88) and the two platform tables `alembic_version` and
-`workers_runtime`.
+The learning plane is append-only. `news_reviews` stores rubric judgments and
+their separate acceptance receipts; `news_external_miss_snapshots` stores
+important facts that never became an Event. Content-addressed datasets,
+candidate manifests, evaluation reports, pairwise cases, model recordings,
+deployments and rollback receipts live in `news_learning_artifacts` and
+`news_learning_cases`. `news_canary_activations`, `news_agent_assignments`, and
+`news_agent_runtime_manifests` are the durable production control/audit seam.
+`news_learning_retention_state` makes the bounded 90/365-day cold purge and
+its current backlog/error observable; the database function pins the current
+and previous distinct stable release chains. The schema currently has 24
+`news_*` base tables and four security-barrier
+review views; the exact list is executable in
+`tests/integration/test_news_v3_pipeline.py`, not repeated as a hand-maintained
+table-count contract.
 
 ## Package map
 
@@ -117,19 +131,23 @@ tracefold.news
   pricing.py          Price Review domain: source order, quote/candle normalization, reaction_v1 metric
   price_loops.py      the two cold loops (QuoteSnapshotLoop, EventReactionLoop) and their one-slot DB lane
   price_repository.py quote snapshots, Event Reactions, and the bounded review aggregates
+  facts.py            atomic fact units and immutable Event evidence snapshots
+  review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
+  candidate_evaluator.py content-addressed datasets and stable/candidate evaluation workflow
+  canary.py           deterministic one-arm assignment and durable trip/close control
   events.py           the Deduper transaction (admit_item)
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
   agents/             the Triage structured call and its byte-frozen prompt
   delivery.py / control.py  cards, control commands
   consumers.py        Receiver, Recovery, Deduper, Triage, Deliverer, Janitor
   repository.py / query_specs.py  news_* access and audited reads
-  eval/               offline label evaluation, decision replay, hits replay
+  eval/               provider-hits Deduper+Gate replay only
 
 tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu
 
 tracefold.platform
-  config, PostgreSQL/Alembic (baseline + three chained hard cuts), telemetry, paths,
+  config, PostgreSQL/Alembic, telemetry, paths,
   bounded resource primitives, docker host translation
 
 tracefold.app
@@ -267,7 +285,8 @@ OpenNews account Strategies (news.opennews_strategy_ids; validated at startup)
        -> ambiguous_after_crash
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
      DeferError uncounted; x:news.dlx -> q:news.dead for permanent/exhausted/crashed messages
-  -> Janitor: outbox catch-up (unpublished candidates), band expiry, 30-day retention,
+  -> Janitor: outbox catch-up, band expiry, 30/365-day Item retention,
+              bounded learning-evidence retention on the one-slot cold lane,
      broker depth snapshot
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
@@ -446,13 +465,13 @@ is theme-first (`crypto_treasury`, `mideast_energy`, `rates`, `trade`,
 `china_macro`, `metals`, `us_equity_macro`, `us_macro_data`), then the first
 A/A+ or cashtag asset; the final key is computed after Triage from the
 verdict's grounded primaries and scope, written back to `news_events`, and
-used by every window query, throttle, and mute.
+used by duplicate comparison, operator grouping, advisory locking, and mute.
 
 Triage (`tracefold.news.agents.triage_model`, `tracefold.news.triage_rules`)
-never retrieves: the Deduper computes `event_status` (storyline window facts),
+never retrieves: the worker builds reader context from settled sent cards,
 the consumer adds the **told ledger** — the cards the reader actually received
 in the last 4 h (`repository.told_ledger`: newest push/escalate verdicts whose
-first card was not terminalised, no degraded fallbacks, plus the preliminary
+first delivery has a durable `sent` receipt, no degraded fallbacks, plus the preliminary
 storyline's own newest cards fetched separately; at most 12 entries in the
 status bar, up to six same-storyline slots reserved, the rest the newest
 cross-storyline cards, each with index `i`, age, magnitude, direction,
@@ -489,42 +508,26 @@ push -> escalate; model push/escalate intent, actionable, magnitude >=
 unclear direction with a clear event type (product, listing, delisting,
 regulation, hack, exploit, partnership, filing) at magnitude >= 2 -> push
 (`unclear_but_clear_event`); other unclear -> drop; watchlist primary at
-magnitude >= 1 -> push; else drop (`below_threshold`). Storyline throttling
-(switch `storyline_throttle`) keeps the window-max + direction-flip rule for
-`asset:` keys and caps `theme:`/`macro:` keys at `theme_cap_4h` (3) pushes
-per 4 h unless magnitude exceeds the window max or the direction flips. What
-gets past that soft throttle is *measured*, not claimed (policy v5, issue #81):
-the card's `headline_zh` is compared with every card the reader received in the
-window, and it is released as `distinct_bypass` when the closest resemblance
-(character-bigram Jaccard, `tracefold.news.similarity`) stays under
-`similarity_max` (0.25). At or above it the reader already has this and the key
-gains a `:seen` suffix; a degraded rule-baseline verdict carries a placeholder
-headline and is never released; `similarity_max = 0` restores the pre-v5 count
-cap. Since policy v6 (issue #100, switch `similarity_all_pushes`) that
-measurement runs on *every* push candidate, not only the ones the count
-throttle already stopped: the count rule is per-storyline, so a fresh key
-(`pushed_2h = 0`) skipped it entirely and a provider batch fanning out across
-many keys — 19 tokenised-equity listings in 7 minutes, one `asset:` key each —
-was never compared with the ledger at all, and ate the hourly cap eight real
-cards needed. Two guards keep a metric that can now withhold on its own from
-suppressing the cards that matter most: `escalate` stays on the v5 path
-(character bigrams over a fixed topic vocabulary confuse one geopolitical
-headline with another, and a magnitude-3 card cannot afford that), and a card
-whose direction contradicts the ledger entry it matched is never withheld —
-bigrams are blind to negation, so "SEC 批准…" and "SEC 拒绝…" score 0.60, and a
-reversal of a fact the reader already has is the highest-value card in the
-system. `trace.seen_scope` (`throttled` / `all`)
-and `status.pipeline.duplicates_withheld_24h` keep the two paths apart. Counts
-survive only as a flood ceiling (`distinct_asset_cap_2h` 6 pushes
-in the last 2 h, `distinct_hard_cap_4h` 18 in the last 4 h; `throttled_by =
-storyline:<key>:hard<N>` beyond it) — one storyline cannot spend an unbounded
-stream on the reader however distinct each card is. This retired
-`novel_bypass`, which released a card on the model's own unverified claim that
-its event was new and was the last path where a self-report opened a gate;
-`novelty` is still read, but only to *withhold* a grounded restatement. The
-hourly cap (switch
-`hourly_cap_enabled`, `news.push.hourly_cap`, default 30) throttles pushes
-only. Every path names its rule; nothing drops silently. A fast retryable
+magnitude >= 1 -> push; else drop (`below_threshold`). Policy v7 deliberately
+has **no hourly, two-hour, or four-hour reader quota**. Historical push counts
+remain observable metrics, but they are not included in the model input and
+cannot change `push`/`escalate` into `throttled`. Once the semantic conditions
+pass, the delivery harness executes the decision; it only enforces explicit
+pause/mute controls, idempotency, provider pacing, and real delivery receipts.
+
+Duplicate protection is content evidence rather than a quota: each ordinary
+`push` headline is compared with cards the reader actually received in the
+last four hours (character-bigram Jaccard, `tracefold.news.similarity`). At or
+above `similarity_max` (0.25) the card is withheld with
+`storyline:<key>:seen`; otherwise it is sent regardless of prior volume.
+`similarity_max = 0` disables this check and never restores a count cap.
+`escalate` and degraded wire-headline fallbacks skip similarity because a
+false positive is least affordable there; a directional reversal also passes
+because bigrams are blind to negation. `trace.seen_scope=all` records that the
+ordinary push path was measured. This preserves the useful part of policies
+v5/v6 (catching same-fact repeats such as a cross-key provider batch) while
+removing their second, count-based editor. Every path names its rule; nothing
+drops silently. A fast retryable
 model failure (timeout, rate limit, connection) or an unusable answer that is
 not a `max_tokens` truncation (empty tool call, missing field) earns one more
 attempt inside the deadline, and once that budget is spent a verdict that is
@@ -544,12 +547,12 @@ counts toward the circuit and records `finish_reason`, `output_tokens`, and
 `parsing_error` in the trace. After the model call the consumer decides and
 persists in one transaction under a per-storyline advisory lock on the final
 key (`repository.lock_storyline`; `pg_advisory_xact_lock('NEWS', hashtext(key))`),
-re-reading the window facts inside the lock so two same-key Events in flight
-cannot both pass the throttle (the lock raises the lane's 250 ms
+re-reading the reader evidence inside the lock so two same-key Events in flight
+cannot both send the same fact (the lock raises the lane's 250 ms
 `lock_timeout` for that transaction only); when a card the model was not
 shown has landed in the ledger by then (compared by event id, not by clock —
-verdict rows carry their handler's start stamp), the consumer reloads window
-facts, control and hourly count under a fresh stamp and asks the model once
+verdict rows carry their handler's start stamp), the consumer reloads sent
+content evidence and control under a fresh stamp and asks the model once
 more with the fresh ledger (`reasked_after_told_change`) instead of pushing a
 restatement the reader just received; if that second call fails, the model's
 first judgment is persisted (`reask_failed`), never the rule baseline. `news_verdicts` stores `model_decision`, `rule_baseline_decision`,
@@ -593,10 +596,10 @@ is repeated per asset rather than said once for the line, because a trailing
 mark on a mixed line cannot say whether it covers the last asset or all of them.
 The price/percentage formatting
 mirrors the console's `web/src/features/news/model/newsPrice.ts` character for
-character. The quotes are read inside the one existing `news_delivery_load`
-session over exactly `card_assets()`, so the two lines cannot name different
-assets, and any price failure degrades to no line: delivery never depends on
-the price plane. Then a 打开来源 button and a small `Tracefold · <event_id[:8]>`
+character. The quotes are read in a separate short database session over
+exactly `card_assets()`, so the two lines cannot name different assets, and any
+price failure degrades to no line: delivery never depends on the price plane.
+Then a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or
 scope enum, no provider score, and no line labelled as AI: those internals stay
 in the console and `tracefold news why`.
@@ -612,8 +615,10 @@ retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
 interrupted rows are terminalized at startup. Recovery items, suppressed
 events, and muted storylines never deliver; a paused lane settles
-`terminal/delivery_paused` instead of holding an unacked message; the hourly cap
-lets only escalates through. Control state (`news_control_state`) is written by
+`terminal/delivery_paused` instead of holding an unacked message. Policy v7 has
+no hourly, two-hour, or four-hour reader quota: a push/escalate decision reaches
+the Deliverer regardless of how many earlier cards were sent. Control state
+(`news_control_state`) is written by
 `tracefold news control` and read by Triage and the Deliverer on every message.
 
 Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
@@ -624,38 +629,70 @@ interval and publishes `raw.recovery.*` frames (`admission=recovery`, never
 delivered). Dead letters are operator-visible through `tracefold news dlq
 inspect|replay|purge`.
 
-Storage is exactly eleven tables: `news_ingest_state`,
-`news_opennews_incidents`, `news_items`, `news_events`, `news_event_members`,
-`news_event_bands`, `news_event_assets`, `news_verdicts`, `news_deliveries`,
-`news_control_state`, `news_event_labels`. Read queries are registered in
-`tracefold.news.query_specs` for the query audit.
+News storage is split by meaning, not by a fragile table count. Material
+evidence and current Event state remain in the ingestion/Event tables;
+judgment, delivery and exact evidence snapshots are immutable observations;
+reviews and learning artifacts form the cold learning plane. Read queries are
+registered in `tracefold.news.query_specs` for the query audit.
 
-Learning plane: `news_event_labels` hold operator labels written by `tracefold
-news label` (`good`, `noise`, `late`, `wrong_direction`, `dup`, `missed`) on
-any Event, pushed or held; `tracefold news eval` walks every Event of the
-window (Gate-suppressed ones count as `suppressed`), treats
-`good`/`wrong_direction`/`late`/`missed` as "moved" and `noise`/`dup` as
-"flat", and reports precision@push, the guardrail `missed_rate` and
-`false_push_rate`, suppressed/missed/throttled-mover rates, and per-admission /
-per-rule / per-throttle / per-asset-class / per-audience / per-event-type
-confusion tables; `tracefold news replay-decisions` re-runs `decide()` over
-stored verdicts with a candidate `DecidePolicy` (defaults from `news.policy`,
-switches for storyline throttling and the unclear-event rule) against the
-final storyline status snapshot; `tracefold news replay <hits.json>
-[--gate-policy]` replays provider hits through Deduper+Gate without a model or
-broker and lists every Event with its admission, grounded assets, and
-preliminary storyline; `tracefold news why <event_id>` prints one Event's whole
-chain (item, gate, triage, decide, delivery) with a one-line outcome.
-`tests/fixtures/news_v3_hits_sample.json` and
-`news_v3_hits_recall_sample.json` are the golden replay corpora and
-`news_v3_expectations.json` the trajectory-prefix regression over them. There
-is no market-mark or price-reaction lane.
+Learning loop (#112): `ReviewDesk` draws deterministic, version-homogeneous
+tasks from sent, model-drop, Gate-suppressed, throttled, delivery-failed,
+high-reaction and random strata. The operator sees the exact historical
+evidence, verdict, policy trace and real sent receipt, then records a
+multi-dimensional rubric (`should_push`, factuality, evidence sufficiency,
+entity grounding, novelty, direction, magnitude, copy value, timeliness and
+first bad owner). A judgment becomes training/eval truth only after a separate
+acceptance receipt. An important fact missing before Event creation enters as
+an immutable external-miss snapshot, rather than a fake Event id.
 
-Migration history is squashed. `20260818_0275_baseline` is the single root
+`CandidateEvaluator` exposes one deep interface: freeze accepted evidence,
+compare stable and one declared candidate variable, and publish release
+evidence. Validation/holdout replay both arms sequentially because each arm's
+would-reach-reader ledger changes later decisions. Model requests/responses are
+recorded and content-addressed; replay mode must match those recordings exactly
+or fail. A frozen dataset accepts Event cases only from the exact active Agent
+bundle cohort and records every prompt/schema/retrieval/model/execution/policy
+hash plus the reader-contract version; a mutable provider model alias is marked
+as mutable rather than described as an immutable snapshot. Hidden validation
+pre-registers at most 50 independent fact-cluster representatives before either
+arm output is inspected, permits at most 100 human judgments, and returns
+`UNKNOWN` when the batch remains unresolved. A candidate-only critical error
+(unsupported fact, wrong entity/direction, missed key fact, severe repetition,
+or injection obedience) is a release failure. Mean and peak delivery load are
+reported for operator impact analysis but are not candidate-release quotas;
+correctly recognizing many distinct facts cannot fail a release by count alone.
+Automated optimizers may propose a candidate but cannot modify the
+reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
+or production assignment.
+
+Promotion is monotonic: development screen -> future temporal validation ->
+blind pairwise review -> 24 h shadow -> deterministic 10% canary -> stable.
+Every stage requires the prior sealed PASS. One Event is assigned to exactly
+one production arm before the model call and runs exactly one model; recovery,
+deterministic listing and high-priority fail-open traffic stay on stable. A
+candidate artifact/schema fault trips the canary to stable, and activation,
+assignment, deployment and rollback receipts remain auditable. The market view
+is secondary discovery evidence only: it defaults to one exact
+prompt/policy/model cohort, uses horizon-mature coverage denominators, clusters
+similar withheld Events at fact grain, and never treats a 1 h/4 h move or a
+directional hit as causality, reward, or `should_push` truth. The former
+directional-hit, price-by-magnitude and price-by-event-type rankings are
+retired: ReviewDesk does not render them, the taxonomy is not reliable enough,
+and they consumed the 30-day read budget without producing release evidence.
+Coverage may span 30 days, while the operator discovery queue is explicitly
+bounded to the most recent seven days; the market view rejects a larger window,
+while the separate evidence-coverage view retains 30 days.
+
+`tracefold news replay <hits.json> [--gate-policy]` remains the deterministic
+provider-hits Deduper+Gate regression; `tracefold news why <event_id>` prints a
+single production chain. The retired single-label evaluator, policy-only
+corpus gate, label-copy UI and `news_event_labels` table no longer exist.
+
+Migration history begins at a squashed root. `20260818_0275_baseline` is the single root
 revision: it executes the frozen `current_schema_20260818_0275.sql` dump
 (every table, index, constraint, seed row of the schema as it stood after the
 News V3 hard cut and Radar removal) plus `runtime_roles.sql`, and it is
-irreversible. Three chained revisions follow. `20260818_0276_review_49_hard_cut`
+irreversible. The first chained hard cuts follow. `20260818_0276_review_49_hard_cut`
 drops the retired title-translation, DEX discovery, token profile, token
 image, and Radar-era checkpoint tables. `20260818_0277_gmgn_lane_removal`
 drops the whole GMGN lane: the social evidence tables (`raw_frames`, `events`,
@@ -675,9 +712,16 @@ market observation tables (`market_instruments`, `market_observations`,
 `market_settlements`, `market_position_facts`), the durable queue
 terminal-evidence table (`queue_terminal_events`, whose only writers were the
 Macro repository and the projection frontier), and the
-`reject_macro_fact_mutation()` trigger function. No chained revision has a
-downgrade. Earlier hard cuts live only in git history; a fresh database and a
-database upgraded through the chain reach byte-identical schemas.
+`reject_macro_fact_mutation()` trigger function. Revisions `0279` through
+`0283` add listing admission, the consolidated instrument universe, the
+retired label-v1 foundation, and Price Review. The #112 hard cut is `0284`
+through `0288`: atomic fact/evidence snapshots, ReviewDesk v2 (including
+verified migration and removal of `news_event_labels`), content-addressed
+learning artifacts/recordings, durable canary control, and bounded
+learning-evidence retention with release-chain pinning. No
+chained revision has a downgrade. Earlier hard cuts live only in git history;
+a fresh database and a database upgraded through the chain reach
+byte-identical schemas.
 
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.

@@ -6,14 +6,15 @@ import json
 from pathlib import Path
 
 import pytest
+from psycopg.errors import RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repositories import repositories_for_connection
-from tracefold.news.events import admit_item
+from tracefold.news.events import admit_frame, admit_item
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status_from_row
+from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status
 
 pytestmark = pytest.mark.integration
 
@@ -29,13 +30,30 @@ NEWS_TABLES = {
     "news_verdicts",
     "news_deliveries",
     "news_control_state",
-    "news_event_labels",
+    "news_reviews",
+    "news_external_miss_snapshots",
+    "news_learning_artifacts",
+    "news_learning_cases",
+    "news_model_recordings",
+    "news_canary_activations",
+    "news_agent_assignments",
+    "news_agent_runtime_manifests",
+    "news_learning_retention_state",
+    "news_review_task_source_v1",
+    # #112 security-barrier views expose only the rows each runtime role is
+    # allowed to read; information_schema reports views in this relation too.
+    "news_review_records_v1",
+    "news_review_external_source_v1",
+    "news_review_pairwise_tasks_v1",
+    "news_review_active_agent_v1",
     # #75 instrument universe: a News-owned provider fact table plus its alias map.
     "news_market_instruments",
     "news_symbol_aliases",
     # #88 price review plane: latest-only current quotes, versioned deterministic Event Reactions.
     "news_quote_snapshots",
     "news_event_reactions",
+    # #112 immutable evidence actually read by the SemanticJudge.
+    "news_event_evidence_snapshots",
 }
 
 
@@ -118,7 +136,7 @@ def test_deduper_is_idempotent_and_merges_exact_and_near(conn) -> None:
     conn.commit()
 
 
-def test_storyline_status_and_verdict_idempotency(conn) -> None:
+def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     repos = repositories_for_connection(conn)
     row = conn.execute(
         "SELECT event_id, storyline_key, grounded_assets, provider_score_max, priority, admission, opened_at_ms"
@@ -146,11 +164,11 @@ def test_storyline_status_and_verdict_idempotency(conn) -> None:
         priority=row["priority"],
         admission=row["admission"],
     )
-    status0 = storyline_status_from_row(
-        repos.news.event_status(storyline_key=row["storyline_key"], now_ms=now_ms), row["storyline_key"]
-    )
+    status0 = storyline_status(row["storyline_key"])
     first = decide(verdict, facts, status0)
     assert first.final == "push"
+    evidence = repos.news.latest_evidence_snapshot(row["event_id"])
+    assert evidence is not None
     with repos.transaction():
         inserted = repos.news.insert_verdict(
             event_id=row["event_id"],
@@ -167,6 +185,9 @@ def test_storyline_status_and_verdict_idempotency(conn) -> None:
             degraded=False,
             error_code=None,
             trace={"latency_ms": 5},
+            evidence_version=int(evidence["evidence_version"]),
+            evidence_sha256=str(evidence["evidence_sha256"]),
+            focus_fact_id=str(evidence["focus_fact_id"]),
             now_ms=now_ms,
         )
         assert inserted is True
@@ -185,31 +206,26 @@ def test_storyline_status_and_verdict_idempotency(conn) -> None:
             degraded=False,
             error_code=None,
             trace={},
+            evidence_version=int(evidence["evidence_version"]),
+            evidence_sha256=str(evidence["evidence_sha256"]),
+            focus_fact_id=str(evidence["focus_fact_id"]),
             now_ms=now_ms,
         )
         assert again is False
-    status1 = storyline_status_from_row(
-        repos.news.event_status(storyline_key=row["storyline_key"], now_ms=now_ms + 1000), row["storyline_key"]
-    )
-    assert status1.pushed_2h == 1 and status1.max_magnitude_2h == 2
-    # Policy v5: the soft throttle stands for a card the reader already has, and releases one they do not. The
-    # status built here carries no ledger, so the first check switches the content judgment off explicitly.
+    status1 = storyline_status(row["storyline_key"])
     second = decide(verdict, facts, status1, policy=DecidePolicy(similarity_max=0.0))
-    assert second.final == "throttled" and second.throttled_by == f"storyline:{row['storyline_key']}"
-    seen = storyline_status_from_row(
-        repos.news.event_status(storyline_key=row["storyline_key"], now_ms=now_ms + 1000),
+    assert second.final == "push" and second.throttled_by is None
+    seen = storyline_status(
         row["storyline_key"],
         seen=[{"event_id": row["event_id"], "headline_zh": verdict.headline_zh}],
     )
     repeated = decide(verdict, facts, seen)
     assert repeated.final == "throttled" and repeated.throttled_by.endswith(":seen")
     distinct = decide(verdict.model_copy(update={"headline_zh": "另一件完全不同的事情"}), facts, seen)
-    assert distinct.final == "push" and distinct.override_rule == "distinct_bypass"
-    # The told ledger is what the reader received: the push above, newest first, with what decide()/the console need.
-    told = repos.news.told_ledger(now_ms=now_ms + 1000, window_ms=4 * 3600_000, limit=12)
-    assert [t["event_id"] for t in told] == [row["event_id"]]
-    assert told[0]["headline_zh"] == "测试" and told[0]["magnitude"] == 2 and told[0]["direction"] == "bullish"
-    assert told[0]["storyline_key"] == row["storyline_key"] and told[0]["at_ms"] == now_ms
+    assert distinct.final == "push" and distinct.override_rule == "model_push_actionable"
+    # A decision is only a reservation.  With no settled first delivery there
+    # is no ReaderReceipt and therefore no semantic told memory.
+    assert repos.news.told_ledger(now_ms=now_ms + 1000, window_ms=4 * 3600_000, limit=12) == []
     assert repos.news.told_ledger(now_ms=now_ms + 5 * 3600_000, window_ms=4 * 3600_000, limit=12) == []
     # A card the reader never received (first delivery terminalised) leaves the ledger; a sent one stays; and the
     # preliminary storyline's own cards are fetched even when the global limit would not reach them.
@@ -237,17 +253,17 @@ def test_storyline_status_and_verdict_idempotency(conn) -> None:
             error_code=None,
             now_ms=now_ms + 20,
         )
-    assert [t["event_id"] for t in repos.news.told_ledger(now_ms=later, window_ms=window, limit=12)] == [
-        row["event_id"]
-    ]
+    told = repos.news.told_ledger(now_ms=later, window_ms=window, limit=12)
+    assert [t["event_id"] for t in told] == [row["event_id"]]
+    assert told[0]["headline_zh"] == "测试" and told[0]["magnitude"] == 2 and told[0]["direction"] == "bullish"
+    assert told[0]["storyline_key"] == row["storyline_key"] and told[0]["at_ms"] == now_ms + 20
     preferred = repos.news.told_ledger(now_ms=later, window_ms=window, limit=1, prefer_key=row["storyline_key"])
     assert [t["event_id"] for t in preferred] == [row["event_id"]]
     assert len(repos.news.told_ledger(now_ms=later, window_ms=window, limit=12, prefer_key="asset:NOPE")) == 1
     with repos.transaction():
         conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
     # A grounded restatement of that card drops, and the storyline lock is a plain transaction-scoped advisory lock.
-    told_status = storyline_status_from_row(
-        repos.news.event_status(storyline_key=row["storyline_key"], now_ms=now_ms + 1000),
+    told_status = storyline_status(
         row["storyline_key"],
         told=[{"i": 0, "dir": t["direction"], "headline_zh": t["headline_zh"]} for t in told],
     )
@@ -276,7 +292,6 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
             event_id=event_id, kind="first", state="sent", receipt={"code": 0}, error_code=None, now_ms=2_000
         )
         assert repos.news.begin_delivery(event_id=event_id, kind="first", card={}, now_ms=3_000) == "sent"
-        assert repos.news.sent_count_since(since_ms=0) == 1
     detail = repos.news.event_detail(event_id)
     assert detail is not None and detail["deliveries"][0]["state"] == "sent"
     feed = repos.news.list_feed(
@@ -345,6 +360,75 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     assert _feed(hours=1, now_ms=10_000_000_000_000)["events"] == []
     status = repos.news.status_snapshot(now_ms=10_000_000_000_000)
     assert status["delivery"]["sent_24h"] >= 0 and "pipeline" in status
+    assert status["learning_retention"]["eligible_recordings"] == 0
+    conn.commit()
+
+
+def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(conn) -> None:
+    repos = repositories_for_connection(conn)
+    candidates = conn.execute(
+        """
+        SELECT e.event_id FROM news_events e
+         WHERE NOT EXISTS (SELECT 1 FROM news_verdicts v WHERE v.event_id = e.event_id)
+         ORDER BY e.opened_at_ms LIMIT 2
+        """
+    ).fetchall()
+    assert len(candidates) == 2
+    sent_event, ambiguous_event = str(candidates[0]["event_id"]), str(candidates[1]["event_id"])
+    evidence = repos.news.latest_evidence_snapshot(sent_event)
+    assert evidence is not None
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        event_type="macro",
+        assets=[],
+        direction="unclear",
+        scope="macro",
+        magnitude=2,
+        actionable=True,
+        confidence=0.0,
+        decision="push",
+        headline_zh="模型占位文字",
+        why_zh="",
+    )
+    degraded_card = {"header": {"title": {"tag": "plain_text", "content": "实际降级卡片"}}}
+    with repos.transaction():
+        assert repos.news.insert_verdict(
+            event_id=sent_event,
+            stage="triage",
+            policy_version="news_triage_policy_receipt_test",
+            model_decision=None,
+            rule_baseline_decision="push",
+            final_decision="push",
+            override_rule="rule_baseline",
+            throttled_by=None,
+            verdict=verdict.model_dump(),
+            model=None,
+            prompt_version=None,
+            degraded=True,
+            error_code="news_triage_timeout",
+            trace={},
+            evidence_version=int(evidence["evidence_version"]),
+            evidence_sha256=str(evidence["evidence_sha256"]),
+            focus_fact_id=str(evidence["focus_fact_id"]),
+            now_ms=10_000,
+        )
+        assert repos.news.begin_delivery(event_id=sent_event, kind="first", card=degraded_card, now_ms=10_100) == "new"
+    # A sending reservation is not a receipt.
+    assert repos.news.told_ledger(now_ms=10_150, window_ms=3600_000, limit=12) == []
+    with repos.transaction():
+        assert repos.news.settle_delivery(
+            event_id=sent_event, kind="first", state="sent", receipt={"ok": True}, error_code=None, now_ms=10_200
+        )
+        assert repos.news.begin_delivery(event_id=ambiguous_event, kind="first", card={}, now_ms=20_000) == "new"
+        assert repos.news.terminalize_interrupted_deliveries(now_ms=81_001) == 1
+
+    told = repos.news.told_ledger(now_ms=10_300, window_ms=3600_000, limit=12)
+    assert len(told) == 1 and told[0]["event_id"] == sent_event and told[0]["headline_zh"] == "实际降级卡片"
+    sent_detail = repos.news.event_detail(sent_event)
+    ambiguous_detail = repos.news.event_detail(ambiguous_event)
+    assert sent_detail is not None and sent_detail["reader_receipt"]["state"] == "received"
+    assert sent_detail["reader_receipt"]["rendered_card"] == degraded_card
+    assert ambiguous_detail is not None and ambiguous_detail["reader_receipt"]["state"] == "unknown"
     conn.commit()
 
 
@@ -388,6 +472,61 @@ def _hit(*, hit_id: int, text: str, engine: str, score: int, coins: list[dict], 
         ],
         "strategy": {"id": 1018, "name": "News Score > 70", "engine_type": engine, "source_type": "news"},
     }
+
+
+def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> None:
+    repos = repositories_for_connection(conn)
+    raw = (
+        "市场快讯：<br/>1. 商务部反对欧方打压中国企业并要求纠正。<br/>"
+        "2. Moderna 下调全年指引，盘前下跌 13%。<br/>"
+        "3. 沃尔玛上调全年销售预期至 4.8%。"
+    )
+    event = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": _hit(
+                hit_id=920001,
+                text=raw,
+                engine="news",
+                score=80,
+                coins=[],
+                source="wire",
+                ts="2026-08-18T21:00:00+08:00",
+            ),
+        },
+        strategy_ids=frozenset({"1018"}),
+    )
+    assert event is not None
+    stamp = int(event.entry.published_at_ms or 0) + 1000
+    with repos.transaction():
+        batch = admit_frame(
+            repos,
+            event=event,
+            ingest_mode="live",
+            observed_at_ms=stamp,
+            trace_id="fact-batch",
+            watchlist_symbols=frozenset(),
+            now_ms=stamp,
+        )
+    assert batch.item_inserted and len(batch.results) == 3
+    assert len({result.event_id for result in batch.results}) == 3
+    rows = conn.execute(
+        """
+        SELECT e.event_id, e.focus_fact_id, e.focus_fact_text, e.focus_fact_method,
+               s.evidence_version, s.snapshot #>> '{card,leader_description}' AS content
+          FROM news_events e
+          JOIN news_event_evidence_snapshots s
+            ON s.event_id = e.event_id AND s.evidence_version = 1
+         WHERE e.leader_item_id = %s ORDER BY e.focus_fact_text
+        """,
+        (batch.item_id,),
+    ).fetchall()
+    assert len(rows) == 3
+    assert {row["focus_fact_method"] for row in rows} == {"explicit_numbered"}
+    assert {int(row["evidence_version"]) for row in rows} == {1}
+    assert all(row["content"] == "市场快讯：" for row in rows)
+    assert any(str(row["focus_fact_text"]).startswith("Moderna") for row in rows)
+    conn.commit()
 
 
 def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn) -> None:
@@ -440,6 +579,8 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
             suppress_low_signal=True,
         )
         assert opened.event_created and opened.admission == "suppressed_low_signal"
+        first_evidence = repos.news.latest_evidence_snapshot(opened.event_id)
+        assert first_evidence is not None and int(first_evidence["evidence_version"]) == 1
         joined = admit_item(
             repos,
             event=second,
@@ -463,6 +604,14 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
             suppress_low_signal=True,
         )
         assert again.event_created is False and again.admission == "candidate"  # idempotent replay
+        latest_evidence = repos.news.latest_evidence_snapshot(opened.event_id)
+        assert latest_evidence is not None and int(latest_evidence["evidence_version"]) == 2
+        assert len(latest_evidence["snapshot"]["members"]) == 2
+        assert latest_evidence["snapshot"]["card"]["provider_score_max"] == 85.0
+        assert latest_evidence["snapshot"]["focus_fact"]["text"] == text
+        assert latest_evidence["snapshot"]["card"]["reporting_origin"] == "coindesk"
+        assert latest_evidence["snapshot"]["card"]["leader_item_id"] == joined.item_id
+        assert repos.news.event_card(opened.event_id)["reporting_origin"] == "coindesk"
     row = conn.execute(
         "SELECT admission, grounded_assets, member_count, provider_score_max FROM news_events WHERE event_id = %s",
         (opened.event_id,),
@@ -471,6 +620,59 @@ def test_a_stronger_member_regates_a_suppressed_event_and_publishes_it_once(conn
     assert row["member_count"] == 2 and float(row["provider_score_max"]) == 85.0
     assets = conn.execute("SELECT symbol FROM news_event_assets WHERE event_id = %s", (opened.event_id,)).fetchall()
     assert {r["symbol"] for r in assets} == {"SFP"}
+    conn.commit()
+
+
+def test_evidence_snapshots_are_append_only_and_outlive_event_retention(conn) -> None:
+    repos = repositories_for_connection(conn)
+    event = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": _hit(
+                hit_id=910099,
+                text="Micron says DRAM contract prices rose again in August",
+                engine="news",
+                score=82,
+                coins=[],
+                source="Reuters",
+                ts="2026-08-18T21:00:00+08:00",
+            ),
+        },
+        strategy_ids=frozenset({"1018"}),
+    )
+    assert event is not None
+    now_ms = int(event.entry.published_at_ms or 0) + 1000
+    with repos.transaction():
+        opened = admit_item(
+            repos,
+            event=event,
+            ingest_mode="live",
+            observed_at_ms=now_ms,
+            trace_id="retention-evidence",
+            watchlist_symbols=frozenset(),
+            now_ms=now_ms,
+        )
+    snapshot = repos.news.latest_evidence_snapshot(opened.event_id)
+    assert snapshot is not None
+
+    conn.execute("BEGIN")
+    conn.execute("SAVEPOINT evidence_mutation")
+    with pytest.raises(RaiseException, match="news_event_evidence_append_only"):
+        conn.execute(
+            "UPDATE news_event_evidence_snapshots SET release_eligible = false "
+            "WHERE event_id = %s AND evidence_version = %s",
+            (opened.event_id, snapshot["evidence_version"]),
+        )
+    conn.execute("ROLLBACK TO SAVEPOINT evidence_mutation")
+    conn.execute("RELEASE SAVEPOINT evidence_mutation")
+
+    conn.execute("DELETE FROM news_items WHERE item_id = %s", (opened.item_id,))
+    assert conn.execute("SELECT 1 FROM news_events WHERE event_id = %s", (opened.event_id,)).fetchone() is None
+    retained = conn.execute(
+        "SELECT provenance, release_eligible FROM news_event_evidence_snapshots WHERE event_id = %s",
+        (opened.event_id,),
+    ).fetchone()
+    assert retained == {"provenance": "observed", "release_eligible": True}
     conn.commit()
 
 

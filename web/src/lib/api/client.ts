@@ -5,6 +5,8 @@ export type RequestOptions = {
   token?: string;
   params?: Record<string, string | number | boolean | null | undefined>;
   etagKey?: string;
+  body?: unknown;
+  headers?: Record<string, string>;
 };
 
 let authToken: string | null = null;
@@ -55,7 +57,7 @@ async function requestApi<T>(
     }
   }
 
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: "application/json", ...options.headers };
   const requestToken = options.token ?? authToken;
   if (requestToken) {
     headers.Authorization = `Bearer ${requestToken}`;
@@ -63,7 +65,12 @@ async function requestApi<T>(
   const cached = options.etagKey ? etagCache.get(options.etagKey) : undefined;
   if (cached) headers["If-None-Match"] = cached.etag;
 
-  const response = await fetch(url, { headers, method: options.method });
+  if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  const response = await fetch(url, {
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    headers,
+    method: options.method,
+  });
   if (response.status === 304 && cached) {
     return cached.body as ApiResponse<T>;
   }

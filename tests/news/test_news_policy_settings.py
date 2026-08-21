@@ -1,11 +1,11 @@
-"""news.policy (NewsPolicySettings): the decide() knobs, incl. the policy v3 novelty caps (issue #61)."""
+"""news.policy settings: semantic thresholds and duplicate evidence, never reader quotas."""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from tracefold.platform.config.settings import NewsPolicySettings
+from tracefold.platform.config.settings import NewsPolicySettings, NewsPushSettings
 
 
 def test_policy_defaults_match_the_live_decide_policy() -> None:
@@ -15,19 +15,29 @@ def test_policy_defaults_match_the_live_decide_policy() -> None:
     assert DecidePolicy(**settings.model_dump()) == DEFAULT_POLICY
 
 
-def test_flood_ceiling_follows_a_raised_soft_cap_unless_set_explicitly() -> None:
-    # A config that only raises theme_cap_4h stays valid: the ceiling follows it.
-    assert NewsPolicySettings(theme_cap_4h=24).distinct_hard_cap_4h == 24
-    assert NewsPolicySettings(theme_cap_4h=2).distinct_hard_cap_4h == 18
-    assert NewsPolicySettings(theme_cap_4h=3, distinct_hard_cap_4h=10).distinct_hard_cap_4h == 10
-    with pytest.raises(ValidationError, match="news_policy_distinct_hard_cap_invalid"):
-        NewsPolicySettings(theme_cap_4h=8, distinct_hard_cap_4h=6)
-    with pytest.raises(ValidationError, match="news_policy_distinct_asset_cap_invalid"):
-        NewsPolicySettings(distinct_asset_cap_2h=0)
+@pytest.mark.parametrize(
+    "key",
+    [
+        "theme_cap_4h",
+        "storyline_throttle",
+        "hourly_cap_enabled",
+        "distinct_hard_cap_4h",
+        "distinct_asset_cap_2h",
+        "similarity_all_pushes",
+    ],
+)
+def test_retired_policy_keys_are_rejected(key: str) -> None:
+    with pytest.raises(ValidationError):
+        NewsPolicySettings.model_validate({key: True})
+
+
+def test_retired_delivery_quota_key_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        NewsPushSettings.model_validate({"hourly_cap": 20})
 
 
 def test_similarity_max_is_a_ratio() -> None:
-    # 0 switches the content judgment off (pre-v5 count cap); 1 releases all but an exact repeat.
+    # 0 switches duplicate similarity off; it never restores a count cap.
     assert NewsPolicySettings(similarity_max=0.0).similarity_max == 0.0
     assert NewsPolicySettings(similarity_max=1.0).similarity_max == 1.0
     with pytest.raises(ValidationError, match="news_policy_similarity_max_invalid"):

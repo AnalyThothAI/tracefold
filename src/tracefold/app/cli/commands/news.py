@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
+import uuid
 from argparse import Namespace
 from collections.abc import Mapping
 from typing import Any
 
 from tracefold.platform.config.settings import load_settings
-
-LABEL_VERSION = "news_label_v1"
 
 
 def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
@@ -19,16 +19,10 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_control(args)
     if args.news_command == "instruments":
         return _handle_instruments(args)
-    if args.news_command == "label":
-        return _handle_label(args)
-    if args.news_command == "eval":
-        return _handle_eval(args)
-    if args.news_command == "replay-decisions":
-        return _handle_replay_decisions(args)
-    if args.news_command == "corpus":
-        return _handle_corpus(args)
-    if args.news_command == "validate-candidate":
-        return _handle_validate_candidate(args)
+    if args.news_command == "review":
+        return _handle_review(args)
+    if args.news_command == "learning":
+        return _handle_learning(args)
     if args.news_command == "replay":
         return _handle_replay(args)
     if args.news_command == "dlq":
@@ -172,52 +166,346 @@ def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:
         }
 
 
-def _handle_label(args: Namespace) -> tuple[int, dict[str, Any]]:
-    """Record one operator label. Labels are the only ground truth this system has (#81), so a label must be
-    correctable, attributable, and able to say "the reader should have got this and no Event exists for it"."""
-
-    from tracefold.app.repositories import repositories
-
-    event_id = str(args.event_id or "").strip() or None
-    subject = " ".join(str(args.subject or "").split())[:200]
-    if event_id is None and not subject:
-        return 2, {"ok": False, "error": "news_label_subject_required"}
-    settings = load_settings(require_ws_token=False)
-    stamp = int(time.time() * 1000)
-    labelled_by = " ".join(str(args.by or "operator").split())[:64] or "operator"
-    label = {"label": args.label, "note": str(args.note or "")[:200]}
-    with repositories(settings) as repos, repos.transaction():
-        if event_id is not None:
-            card = repos.news.event_card(event_id)
-            if card is None:
-                return 1, {"ok": False, "error": "news_event_not_found"}
-            subject = subject or " ".join(str(card.get("leader_title") or "").split())[:200]
-        repos.news.insert_label(
-            event_id=event_id,
-            label_version=LABEL_VERSION,
-            source="human",
-            label=label,
-            now_ms=stamp,
-            labeled_by=labelled_by,
-            subject=subject,
-        )
-    return 0, {
-        "ok": True,
-        "data": {"event_id": event_id, "subject": subject, "labeled_by": labelled_by, "label": label},
-    }
-
-
-def _handle_eval(args: Namespace) -> tuple[int, dict[str, Any]]:
-    from tracefold.app.repositories import repositories
-    from tracefold.news.eval.offline import evaluate_recent
+def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repositories import postgres_connection
+    from tracefold.news import (
+        BlindPairwiseSubmission,
+        DeskQuery,
+        EventRubricSubmission,
+        ExternalMissSubmission,
+        Principal,
+        ReviewDesk,
+        TaskRef,
+    )
+    from tracefold.platform.postgres.postgres_client import transaction
 
     settings = load_settings(require_ws_token=False)
-    now_ms = int(time.time() * 1000)
-    with repositories(settings) as repos:
-        report = evaluate_recent(
-            repos, now_ms=now_ms, hours=int(args.hours), policy_version=str(args.policy_version or "") or None
+    principal = Principal(subject="operator")
+    action = str(args.review_command)
+    try:
+        if action == "queue":
+            query = DeskQuery(
+                view=args.view,
+                mode=args.mode,
+                cohort=args.cohort,
+                stratum=args.stratum,
+                proposal=args.proposal,
+                task=args.task,
+                event=args.event,
+                status=args.status,
+                hours=int(args.hours),
+                limit=min(100, int(args.limit)),
+                cursor=args.cursor,
+            )
+            with postgres_connection(settings, role="serve") as conn:
+                data = ReviewDesk(conn).open(query, principal=principal)
+            return 0, {"ok": True, "data": data}
+        if action == "evidence":
+            task = TaskRef(task_id=str(args.task), task_version=str(args.version))
+            with postgres_connection(settings, role="serve") as conn:
+                data = ReviewDesk(conn).evidence(task, principal=principal)
+            return 0, {"ok": True, "data": data}
+
+        payload = _read_json_or_yaml(str(args.file))
+        kind = str(payload.get("kind") or "")
+        key = str(args.idempotency_key or uuid.uuid4())
+        with postgres_connection(settings, role="review") as conn, transaction(conn):
+            desk = ReviewDesk(conn)
+            if action == "external-miss":
+                submission = ExternalMissSubmission.model_validate(payload)
+                data = desk.submit(None, submission, principal=principal, idempotency_key=key)
+            else:
+                submission = (
+                    EventRubricSubmission.model_validate(payload)
+                    if kind == "event_rubric"
+                    else BlindPairwiseSubmission.model_validate(payload)
+                )
+                task = TaskRef(task_id=str(args.task), task_version=str(args.version))
+                data = desk.submit(task, submission, principal=principal, idempotency_key=key)
+        return 0, {"ok": True, "data": data}
+    except (ValueError, PermissionError) as exc:
+        return 2, {"ok": False, "error": str(exc)}
+
+
+def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repositories import postgres_connection
+    from tracefold.news import (
+        CandidateEvaluator,
+        CandidateManifest,
+        ClosedWindow,
+        DatasetSpec,
+        EvaluationRequest,
+        ProposalReceipt,
+        RecordReplayModelAdapter,
+        canonical_sha,
+    )
+
+    settings = load_settings(require_ws_token=False)
+    action = str(args.learning_command)
+    from tracefold.app.learning_runtime import active_arm_manifest
+
+    stable = active_arm_manifest(settings)
+    try:
+        if action == "canary":
+            from tracefold.app.repositories import repositories
+            from tracefold.news import apply_canary_control, parse_canary_control
+            from tracefold.news.agents.prompts.candidates import compiled_canary_candidates
+
+            subcommand = str(args.canary_command)
+            payload = {
+                "action": subcommand,
+                "candidate_sha": getattr(args, "candidate", None),
+                "activation_id": getattr(args, "activation", None),
+                "reason": getattr(args, "reason", None),
+            }
+            command = parse_canary_control(payload)
+            compiled = compiled_canary_candidates()
+            shipped = {
+                sha: candidate.candidate_arm.bundle_sha
+                for sha, candidate in compiled.items()
+                if candidate.parent_stable_sha == stable.bundle_sha
+            }
+            stamp = int(time.time() * 1000)
+            with repositories(settings) as repos, repos.transaction():
+                result = apply_canary_control(
+                    repos,
+                    command,
+                    stable_bundle_sha=stable.bundle_sha,
+                    shipped_candidates=shipped,
+                    now_ms=stamp,
+                )
+            return 0, {"ok": True, "data": result}
+
+        if action == "propose":
+            spec = _read_json_or_yaml(str(args.file))
+            target = str(spec.get("target") or "")
+            candidate_arm = stable
+            if target == "prompt":
+                prompt_text = str(spec.get("prompt_text") or "")
+                candidate_arm = stable.model_copy(
+                    update={
+                        "prompt_version": str(spec.get("prompt_version") or "candidate"),
+                        "prompt_text": prompt_text,
+                        "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest(),
+                    }
+                )
+                candidate_arm = type(stable).model_validate(candidate_arm.model_dump(mode="json"))
+                patch_payload: Mapping[str, Any] = {
+                    "prompt_version": candidate_arm.prompt_version,
+                    "prompt_sha256": candidate_arm.prompt_sha256,
+                }
+            elif target == "policy":
+                policy = dict(stable.policy)
+                policy.update(dict(spec.get("policy") or {}))
+                arm_payload = stable.model_dump(mode="json")
+                arm_payload.update(policy=policy, policy_sha256=canonical_sha(policy))
+                candidate_arm = type(stable).model_validate(arm_payload)
+                patch_payload = {"policy": dict(spec.get("policy") or {})}
+            else:
+                raise ValueError("candidate_kind_unsupported")
+            dimensions = tuple(str(value) for value in spec.get("target_dimensions") or ())
+            with postgres_connection(settings, role="workers") as conn, conn.transaction():
+                development = conn.execute(
+                    "SELECT artifact_sha FROM news_learning_artifacts "
+                    "WHERE artifact_sha = %s AND kind = 'dataset' AND payload->>'role' = 'development'",
+                    (str(args.development),),
+                ).fetchone()
+                if development is None:
+                    raise ValueError("news_learning_development_dataset_not_found")
+                registered_at_ms = int(
+                    conn.execute(
+                        "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
+                    ).fetchone()["now_ms"]
+                )
+                receipt = ProposalReceipt.issue(
+                    development_dataset_sha=str(args.development),
+                    failure_cluster_ids=tuple(str(value) for value in spec.get("failure_cluster_ids") or ()),
+                    generator_kind=str(spec.get("generator_kind") or "human"),
+                    generator_prompt_sha=spec.get("generator_prompt_sha"),
+                    generator_model_sha=spec.get("generator_model_sha"),
+                    generator_execution_sha=spec.get("generator_execution_sha"),
+                    registered_at_ms=registered_at_ms,
+                    candidate_patch_sha=canonical_sha(patch_payload),
+                    declared_target_dimensions=dimensions,
+                    guardrails=tuple(str(value) for value in spec.get("guardrails") or ()),
+                )
+                candidate = CandidateManifest(
+                    target=target,
+                    parent_stable_sha=stable.bundle_sha,
+                    candidate_arm=candidate_arm,
+                    hypothesis=str(spec.get("hypothesis") or ""),
+                    target_dimensions=dimensions,
+                    development_dataset_sha=str(args.development),
+                    proposal_receipt=receipt,
+                )
+                proposal_payload = receipt.model_dump(mode="json")
+                proposal_sha = _insert_learning_artifact(
+                    conn,
+                    kind="candidate_registration",
+                    payload=receipt.registration_payload,
+                    parent_sha=str(args.development),
+                    created_at_ms=registered_at_ms,
+                )
+                if proposal_sha != receipt.registration_receipt_sha:
+                    raise ValueError("news_learning_candidate_registration_hash_mismatch")
+                sealed_proposal_sha = _insert_learning_artifact(
+                    conn,
+                    kind="proposal",
+                    payload=proposal_payload,
+                    parent_sha=str(args.development),
+                    created_at_ms=registered_at_ms,
+                )
+                _insert_learning_artifact(
+                    conn,
+                    kind="candidate",
+                    payload={
+                        "candidate_sha": candidate.candidate_sha,
+                        "proposal_sha": sealed_proposal_sha,
+                        "manifest": candidate.model_dump(mode="json"),
+                    },
+                    parent_sha=stable.bundle_sha,
+                    created_at_ms=registered_at_ms,
+                )
+            payload = {"candidate_sha": candidate.candidate_sha, "candidate": candidate.model_dump(mode="json")}
+            _write_json(str(args.out), payload)
+            return 0, {"ok": True, "data": {"path": args.out, **payload}}
+
+        candidate = _load_candidate(str(getattr(args, "candidate", "") or ""))
+        catalog = () if candidate is None else (candidate,)
+        with postgres_connection(settings, role="workers") as conn:
+            if action == "freeze":
+                if args.role == "validation" and candidate is None:
+                    raise ValueError("news_learning_validation_candidate_required")
+                evaluator = CandidateEvaluator(
+                    conn,
+                    stable=stable,
+                    model_adapter=RecordReplayModelAdapter({}),
+                    candidate_catalog=catalog,
+                )
+                manifest = asyncio.run(
+                    evaluator.freeze_dataset(
+                        DatasetSpec(
+                            role=str(args.role),
+                            window=ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms)),
+                            observation_ref=candidate.candidate_sha if candidate is not None else None,
+                        )
+                    )
+                )
+                payload = manifest.model_dump(mode="json")
+                _write_json(str(args.out), payload)
+                return 0, {"ok": True, "data": {"path": args.out, **payload}}
+
+            if candidate is None:
+                raise ValueError("news_learning_candidate_required")
+            observation_manifest = str(getattr(args, "observation_manifest", "") or "") or None
+            if action == "shadow" and observation_manifest is None and not bool(args.live_model):
+                raise ValueError("news_learning_shadow_live_model_confirmation_required")
+            adapter = _learning_model_adapter(conn, settings=settings, live=bool(getattr(args, "live_model", False)))
+            evaluator = CandidateEvaluator(
+                conn,
+                stable=stable,
+                model_adapter=adapter,
+                candidate_catalog=(candidate,),
+            )
+            stage = str(args.stage) if action == "evaluate" else action
+            report = asyncio.run(
+                evaluator.evaluate(
+                    EvaluationRequest(
+                        development_dataset_sha=str(args.development),
+                        validation_dataset_sha=str(args.validation) or None,
+                        candidate_sha=candidate.candidate_sha,
+                        stage=stage,
+                        observation_manifest_sha=observation_manifest,
+                    )
+                )
+            )
+            payload = report.model_dump(mode="json")
+            _write_json(str(args.out), payload)
+            code = 0 if report.gate_outcome == "pass" else 1
+            return code, {"ok": report.gate_outcome == "pass", "data": {"path": args.out, **payload}}
+    except (ValueError, PermissionError) as exc:
+        return 2, {"ok": False, "error": str(exc)}
+
+
+def _load_candidate(path: str) -> Any | None:
+    if not path:
+        return None
+    from tracefold.news import CandidateManifest
+
+    document = _read_json_or_yaml(path)
+    return CandidateManifest.model_validate(document.get("candidate") or document)
+
+
+def _learning_model_adapter(conn: Any, *, settings: Any, live: bool) -> Any:
+    from tracefold.news import LiveTriageModelAdapter, RecordReplayModelAdapter
+
+    if live:
+        from tracefold.app.llm import configured_chat_model
+        from tracefold.platform.config.settings import news_model_availability
+
+        availability = news_model_availability(settings)
+        if not availability.triage_configured or not availability.triage_model:
+            raise ValueError("news_learning_live_model_not_configured")
+        chat, _ = configured_chat_model(
+            settings,
+            model_name=availability.triage_model,
+            request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
+            max_tokens=700,
         )
-    return 0, {"ok": True, "data": report}
+        fallback_chat = None
+        fallback_effective = None
+        if availability.triage_fallback_model:
+            fallback_endpoint = settings.llm.news_triage_fallback
+            fallback_chat, fallback_effective = configured_chat_model(
+                settings,
+                model_name=availability.triage_fallback_model,
+                request_timeout_seconds=settings.news.triage.deadline_seconds + 2.0,
+                max_tokens=700,
+                api_key=fallback_endpoint.api_key,
+                base_url=fallback_endpoint.base_url,
+            )
+        return LiveTriageModelAdapter(
+            chat_model=chat,
+            deadline_seconds=settings.news.triage.deadline_seconds,
+            fallback_chat_model=fallback_chat,
+            fallback_model_name=fallback_effective,
+            primary_breaker_failures=settings.news.triage.circuit_failures,
+            primary_breaker_open_seconds=settings.news.triage.circuit_open_seconds,
+        )
+    rows = conn.execute(
+        "SELECT DISTINCT ON (request_sha256) request_sha256, response "
+        "FROM news_model_recordings WHERE response IS NOT NULL "
+        "ORDER BY request_sha256, created_at_ms DESC"
+    ).fetchall()
+    return RecordReplayModelAdapter({str(row["request_sha256"]): row["response"] for row in rows})
+
+
+def _insert_learning_artifact(
+    conn: Any,
+    *,
+    kind: str,
+    payload: Mapping[str, Any],
+    parent_sha: str | None,
+    created_at_ms: int,
+) -> str:
+    public = json.loads(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, default=str))
+    from tracefold.news import canonical_sha
+
+    artifact_sha = canonical_sha({"kind": kind, "payload": public})
+    conn.execute(
+        "INSERT INTO news_learning_artifacts "
+        "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
+        "VALUES (%s, %s, %s, %s::jsonb, 'learning_propose', %s) "
+        "ON CONFLICT (artifact_sha) DO NOTHING",
+        (artifact_sha, kind, parent_sha, json.dumps(public, ensure_ascii=False, sort_keys=True), created_at_ms),
+    )
+    row = conn.execute(
+        "SELECT kind, payload FROM news_learning_artifacts WHERE artifact_sha = %s",
+        (artifact_sha,),
+    ).fetchone()
+    if row is None or str(row["kind"]) != kind or dict(row["payload"] or {}) != public:
+        raise ValueError("news_learning_artifact_collision")
+    return artifact_sha
 
 
 def _handle_why(args: Namespace) -> tuple[int, dict[str, Any]]:
@@ -230,118 +518,6 @@ def _handle_why(args: Namespace) -> tuple[int, dict[str, Any]]:
     if report is None:
         return 1, {"ok": False, "error": "news_event_not_found"}
     return 0, {"ok": True, "data": report}
-
-
-def _handle_replay_decisions(args: Namespace) -> tuple[int, dict[str, Any]]:
-    from tracefold.app.repositories import repositories
-    from tracefold.news import DecidePolicy
-    from tracefold.news.eval.harness import candidate_policy
-    from tracefold.news.eval.offline import replay_decisions
-
-    settings = load_settings(require_ws_token=False)
-    now_ms = int(time.time() * 1000)
-    live = DecidePolicy(**settings.news.policy.model_dump())
-    overrides: dict[str, Any] = {
-        name: getattr(args, name)
-        for name in (
-            "escalate_magnitude",
-            "min_push_magnitude",
-            "min_watchlist_magnitude",
-            "theme_cap_4h",
-            "distinct_hard_cap_4h",
-            "distinct_asset_cap_2h",
-            "similarity_max",
-        )
-        if getattr(args, name, None) is not None
-    }
-    if args.no_unclear_push:
-        overrides["unclear_push_event_types"] = ()
-    if args.no_storyline_throttle:
-        overrides["storyline_throttle"] = False
-    if args.no_restatement_drop:
-        overrides["restatement_drop"] = False
-    if args.high_priority_escalates:
-        overrides["high_priority_escalates"] = True
-    policy = candidate_policy(live, overrides)
-    with repositories(settings) as repos:
-        report = replay_decisions(
-            repos,
-            now_ms=now_ms,
-            hours=int(args.hours),
-            watchlist_symbols=settings.news.watchlist_symbols,
-            policy=policy,
-        )
-    return 0, {"ok": True, "data": report}
-
-
-def _handle_corpus(args: Namespace) -> tuple[int, dict[str, Any]]:
-    from tracefold.app.repositories import repositories
-    from tracefold.news.eval.harness import freeze_corpus
-
-    settings = load_settings(require_ws_token=False)
-    with repositories(settings) as repos:
-        payload = freeze_corpus(
-            repos,
-            now_ms=int(time.time() * 1000),
-            hours=int(args.hours),
-            watchlist_symbols=settings.news.watchlist_symbols,
-        )
-    if args.out:
-        _write_json(args.out, payload)
-    return 0, {
-        "ok": True,
-        "data": {
-            "path": args.out or None,
-            "corpus_version": payload["corpus_version"],
-            "sha256": payload["sha256"],
-            "cases": len(payload["cases"]),
-            "skipped_unreplayable_verdicts": payload["skipped_unreplayable_verdicts"],
-            "prompt_versions": payload["prompt_versions"],
-            **({} if args.out else {"corpus": payload}),
-        },
-    }
-
-
-def _handle_validate_candidate(args: Namespace) -> tuple[int, dict[str, Any]]:
-    """The release gate. Exit code 1 means "do not ship this"; the evidence says exactly which check said so."""
-
-    from tracefold.news import DecidePolicy
-    from tracefold.news.eval.harness import candidate_policy, load_corpus, validate_candidate
-
-    settings = load_settings(require_ws_token=False)
-    payload = _read_json_or_yaml(args.corpus)
-    expectations = _read_json_or_yaml(args.expectations) if args.expectations else {}
-    overrides: dict[str, Any] = {}
-    if args.candidate:
-        document = _read_json_or_yaml(args.candidate)
-        overrides.update(dict(document.get("policy") or {}))
-    for pair in args.overrides:
-        name, _, value = str(pair).partition("=")
-        if not name or not _:
-            return 2, {"ok": False, "error": f"news_policy_override_invalid:{pair}"}
-        overrides[name.strip()] = value.strip()
-    try:
-        corpus = load_corpus(payload, expectations=expectations)
-        stable = DecidePolicy(**settings.news.policy.model_dump())
-        decision = validate_candidate(
-            corpus,
-            stable=stable,
-            candidate=candidate_policy(stable, overrides),
-            hourly_cap=settings.news.push.hourly_cap,
-        )
-    except ValueError as exc:
-        return 2, {"ok": False, "error": str(exc)}
-    if args.evidence:
-        _write_json(args.evidence, dict(decision.evidence))
-    return (0 if decision.accepted else 1), {
-        "ok": decision.accepted,
-        "data": {
-            "decision": "release_to_canary" if decision.accepted else "reject_candidate",
-            "failed_checks": list(decision.failed_checks),
-            "evidence_path": args.evidence or None,
-            "evidence": dict(decision.evidence),
-        },
-    }
 
 
 def _read_json_or_yaml(path: str) -> dict[str, Any]:

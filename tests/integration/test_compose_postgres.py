@@ -86,6 +86,7 @@ def test_compose_declares_host_role_password_files_as_postgres_init_secrets() ->
     assert compose["secrets"]["postgres_serve_password"]["file"] == "${HOME}/.tracefold/postgres_serve_password"
     assert compose["secrets"]["postgres_workers_password"]["file"] == "${HOME}/.tracefold/postgres_workers_password"
     assert compose["secrets"]["postgres_migrate_password"]["file"] == "${HOME}/.tracefold/postgres_migrate_password"
+    assert "postgres_review_password" not in compose["secrets"]
 
 
 def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputting_passwords(tmp_path: Path) -> None:
@@ -133,6 +134,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     assert "CREATE ROLE tracefold_owner" in sql
     assert "CREATE ROLE tracefold_serve" in sql
     assert "CREATE ROLE tracefold_workers" in sql
+    assert "tracefold_review" not in sql
     assert "CREATE ROLE tracefold_migrate" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE" in sql
@@ -221,6 +223,7 @@ def test_retired_ops_tree_and_orphan_scripts_are_absent() -> None:
         "regen_db_schema.py",
         "regen_openapi.py",
     }
+    assert not Path("docker/postgres-provision-review-role.sh").exists()
 
 
 def test_postgres_keeps_supported_extensions_and_removes_retired_ones() -> None:

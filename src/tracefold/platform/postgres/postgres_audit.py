@@ -36,6 +36,7 @@ class QueryAuditCatalog:
     queries: tuple[ReadQuerySpec, ...]
     query_routes: dict[str, tuple[str, ...]]
     no_sql_routes: frozenset[str]
+    write_routes: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         names = [query.name for query in self.queries]
@@ -54,11 +55,20 @@ NEWS_TABLES = (
     "news_verdicts",
     "news_deliveries",
     "news_control_state",
-    "news_event_labels",
+    "news_reviews",
+    "news_external_miss_snapshots",
     "news_market_instruments",
     "news_symbol_aliases",
     "news_quote_snapshots",
     "news_event_reactions",
+    "news_event_evidence_snapshots",
+    "news_learning_artifacts",
+    "news_learning_cases",
+    "news_model_recordings",
+    "news_canary_activations",
+    "news_agent_assignments",
+    "news_agent_runtime_manifests",
+    "news_learning_retention_state",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
@@ -177,6 +187,7 @@ class PostgresQueryAudit:
             "route_coverage": {
                 "query_routes": self.catalog.query_routes,
                 "no_sql_routes": sorted(self.catalog.no_sql_routes),
+                "write_routes": sorted(self.catalog.write_routes),
                 "missing_query_names": missing_query_names,
             },
             "queries": queries,

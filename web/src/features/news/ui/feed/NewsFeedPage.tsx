@@ -28,7 +28,6 @@ import {
   hourBucketKey,
   hourBucketLabel,
   hoursLabel,
-  labelCommand,
 } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
 import { useFeedCursor } from "../../state/useFeedCursor";
@@ -59,13 +58,7 @@ const DRAWER_QUERY = "(min-width: 1024px)";
  * the pointer, an in-place judgment so "why was this dropped" costs no navigation, and a drawer so opening an
  * Event does not replace the list you were working through.
  */
-export function NewsFeedPage({
-  copy,
-  token,
-}: {
-  copy: (text: string, note: string) => void;
-  token: string;
-}) {
+export function NewsFeedPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const filters = parseFeedFilters(searchParams);
@@ -114,10 +107,8 @@ export function NewsFeedPage({
   );
   const feedSearch = searchParams.toString();
   const wideEnoughForDrawer = useMediaQuery(DRAWER_QUERY);
-  const selectable = wideEnoughForDrawer;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [drawerId, setDrawerId] = useState<string | null>(null);
-  const selection = useRowSelection(eventIds, selectable ? feedIdentity : "off");
 
   const updateFeedParams = (changes: FeedFilterChanges) => {
     setSearchParams(nextFeedParams(searchParams, filters, changes), { replace: true });
@@ -142,7 +133,6 @@ export function NewsFeedPage({
       else navigate(newsEventPath(eventId), { state: { feedSearch } });
     },
     onExpand: toggleExpanded,
-    onLabel: (eventId) => copy(labelCommand(eventId, "noise"), "已复制「不该推」标注命令"),
   });
   // J/K with the drawer open walks the list without closing it: the reader is reading through a queue.
   useEffect(() => {
@@ -262,39 +252,15 @@ export function NewsFeedPage({
                             }
                           : undefined
                       }
-                      onSelect={selection.toggle}
                       quotes={quotes}
                       searchState={feedSearch}
-                      selectable={selectable}
-                      selected={selection.ids.has(event.event_id)}
+                      selectable={false}
+                      selected={false}
                     />
                   ))}
                 </Fragment>
               ))}
             </div>
-            {selectable && selection.ids.size ? (
-              <div className="news-selection-bar" role="group" aria-label="批量标注">
-                <span className="news-selection-count">已选 {selection.ids.size} 条</span>
-                <span className="news-selection-actions">
-                  <ActionButton
-                    onClick={() => {
-                      copy(
-                        [...selection.ids].map((id) => labelCommand(id, "missed")).join("\n"),
-                        `已复制 ${selection.ids.size} 条「漏推」标注命令`,
-                      );
-                      selection.clear();
-                    }}
-                    size="sm"
-                    variant="primary"
-                  >
-                    批量标为漏推
-                  </ActionButton>
-                  <ActionButton onClick={selection.clear} size="sm">
-                    清除
-                  </ActionButton>
-                </span>
-              </div>
-            ) : null}
             {historyQuery.hasNextPage || (!historyRequested && historyCursor) ? (
               <ActionButton
                 className="news-load-more"
@@ -312,7 +278,6 @@ export function NewsFeedPage({
       ) : null}
 
       <NewsEventDrawer
-        copy={copy}
         eventId={wideEnoughForDrawer ? drawerId : null}
         feedSearch={feedSearch}
         onClose={() => setDrawerId(null)}
@@ -353,59 +318,6 @@ function groupByHour(events: NewsFeedEvent[], enabled: boolean): FeedGroup[] {
     day = eventDay;
   }
   return groups;
-}
-
-/**
- * Which rows are selected for bulk labelling (design proposal ④), with `Shift` extending from the last one
- * touched. 484 held Events waiting to be checked is a queue, and clicking a button per row is not a review.
- *
- * Selection is per-render list state and deliberately not in the URL: it is a scratch pad for the next
- * clipboard copy, not something to share. Nothing here writes to the server — the bar copies CLI commands.
- */
-function useRowSelection(eventIds: string[], scope: string) {
-  const [ids, setIds] = useState<ReadonlySet<string>>(() => new Set<string>());
-  const anchor = useRef<string | null>(null);
-  /*
-   * A selection belongs to the list it was made in. Changing the tab, the window or a filter replaces the
-   * URL without unmounting anything, so without this the bar kept counting rows that had left the screen and
-   * could no longer be deselected — and 批量标为漏推 would then copy commands for Events the operator could
-   * not see. Narrowing past the drawer breakpoint takes the checkboxes away and does the same.
-   */
-  const lastScope = useRef(scope);
-  if (lastScope.current !== scope) {
-    lastScope.current = scope;
-    anchor.current = null;
-    if (ids.size) setIds(new Set<string>());
-  }
-  const toggle = (eventId: string, shiftKey: boolean) => {
-    /*
-     * The anchor is resolved *before* the updater runs and never read inside it. React may invoke a state
-     * updater more than once for the same event, and a ref read in there sees whatever the last call left
-     * behind — which turned `Shift` over five rows into a two-row selection.
-     */
-    const from = anchor.current ? eventIds.indexOf(anchor.current) : -1;
-    const to = eventIds.indexOf(eventId);
-    anchor.current = eventId;
-    setIds((current) => {
-      const next = new Set(current);
-      if (shiftKey && from >= 0 && to >= 0) {
-        for (const id of eventIds.slice(Math.min(from, to), Math.max(from, to) + 1)) next.add(id);
-      } else if (next.has(eventId)) {
-        next.delete(eventId);
-      } else {
-        next.add(eventId);
-      }
-      return next;
-    });
-  };
-  return {
-    clear: () => {
-      anchor.current = null;
-      setIds(new Set<string>());
-    },
-    ids,
-    toggle,
-  };
 }
 
 function emptyTitle(filters: NewsFeedFilters): string {

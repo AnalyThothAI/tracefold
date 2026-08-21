@@ -98,7 +98,7 @@ their database work through the one-slot heavy-business lane, never the four
 News hot-path slots, so a price backlog cannot starve a live Event. Their
 provider calls are bounded (quotes: one batch per source per turn — the #109 day
 read replaces that turn's price read rather than adding a call — concurrency 4, a 10 s
-turn deadline, 5 s cadence, never overlapping; reactions: at most 32 merged
+turn deadline, 20 s cadence, never overlapping; reactions: at most 32 merged
 candle requests per 60 s turn, concurrency 4) and none of them holds a database
 connection while calling out.
 
@@ -117,10 +117,13 @@ root, and recovery restores readiness. Invariant failures and an unfinished
 native control future remain process-fatal. This retry does not apply to
 general control writes whose commit outcome could be ambiguous.
 
-Serve owns a read-only pool of seven with ordinary/control admission `6/1`,
+Serve owns one pool of seven with ordinary/control admission `6/1`,
 50 ms permit wait, 250 ms checkout, one-second statement timeout, JIT off,
-parallel gather off, and 8 MiB work memory. Workers owns the exact pool/lane
-topology above. Finite provider/filesystem operations share the three-slot
+parallel gather off, and 8 MiB work memory. Connections and ordinary requests
+default to read-only; the two authenticated ReviewDesk POST routes explicitly
+open a read-write transaction whose role grants permit INSERT only on the two
+append-only review fact tables. Workers owns the exact pool/lane topology
+above. Finite provider/filesystem operations share the three-slot
 external capability; the OpenNews WSS socket remains a long-lived async root
 child outside it. Only the owning source seam may map an outer
 finite-operation overrun into its existing durable failure policy. A typed
@@ -310,7 +313,8 @@ Diagnose News in this order:
 3. `pipeline`: `candidate_share_24h` (the Gate now admits nearly every Item;
    a share far below ~90% means the low-signal switch or a template flood),
    `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
-   `pushed_by_rule`, `labeled_missed_24h`, `triage_24h` vs
+   `pushed_by_rule`, `reviewed_should_push_24h`,
+   `reviewed_external_miss_24h`, `triage_24h` vs
    `triage_degraded_24h`, `triage_p95_ms`, `queue_lag_p95_ms`,
    `throttled_24h`. For one Event, `tracefold news why <event_id>` prints
    raw first line -> normalized title -> gate facts -> triage verdict ->
@@ -318,28 +322,28 @@ Diagnose News in this order:
 4. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
    (`delivery_unavailable` = push disabled or webhook invalid;
    `delivery_paused` = control pause; `ambiguous_after_crash` = a send whose
-   ack was lost; `hourly_cap_reached`).
-5. `tracefold news eval --hours 168`: precision@push, the guardrail
-   `missed_rate`/`false_push_rate`, and suppressed/missed/throttled movers from
-   operator labels (`tracefold news label <event_id>
-   <good|noise|late|wrong_direction|dup|missed|must_push>` on any Event, and
-   `tracefold news label --subject "…" missed` for a miss the pipeline never
-   created an Event for; `good`/`wrong_direction`/`late`/`missed` count as
-   moved, `noise`/`dup` as flat), with per-admission/`override_rule`/
-   `throttled_by`/asset-class/audience/event-type confusion tables.
-   `tracefold news replay-decisions --hours 168 --min-push-magnitude 2
-   --no-storyline-throttle ...` re-runs `decide()` with a candidate policy over
-   the same stored verdicts. **Do not change `news.policy` on a
-   `replay-decisions` reading alone**: it reuses each verdict's stored window
-   snapshot, so it cannot see what a flipped card does to every later card's
-   window. Run `tracefold news validate-candidate` (docs/DEVELOPMENT.md) and
-   ship only on its PASS plus the evidence document.
-   The throttle knobs (`--similarity-max`, `--distinct-hard-cap-4h`,
-   `--distinct-asset-cap-2h`, `--no-restatement-drop`) trade reader volume for
-   coverage: on the 2026-08-18/20 corpus (issue #81) the shipped 0.25 / 18 / 6
-   delivered 639 cards at a peak of 29/h, and 24/8 delivered 663 with 24 fewer
-   facts lost and 3 more near-duplicate pairs — a candidate the gate accepts,
-   left for the operator to promote after a week of watching.
+   ack was lost). Historical rows can still contain the retired
+   `hourly_cap_reached` error, but policy v7 never writes it.
+5. `tracefold news review queue --view coverage --hours 168` first checks
+   whether there is enough same-version production evidence and accepted
+   review coverage to make a quality claim. Work the deterministic strata with
+   `review queue`, inspect the exact frozen input using `review evidence`, and
+   append a rubric with `review submit`; a fact that never became an Event uses
+   `review external-miss`. Do not infer precision/recall from unlabeled rows or
+   infer causality from the market tab.
+6. A change is a sealed candidate, not an edited production prompt. Freeze a
+   development dataset, `learning propose` exactly one variable, and run
+   `learning evaluate`. Production promotion additionally requires a future
+   temporal validation dataset, blind pairwise review, a sealed 24 h shadow
+   observation, and then `learning canary arm`; inspect with `canary status`
+   and use `canary trip` immediately on a schema/artifact/quality guardrail
+   breach. One Event belongs to one arm and gets one model call. A canary is
+   not an excuse to skip the earlier evidence stages: the evaluator rejects a
+   holdout/shadow/canary request before any model call unless the preceding
+   stage has a sealed PASS. Validation fixes at most 50 independent cluster
+   tasks before execution; 100 unresolved human judgments, an empty required
+   set, or a common provider outage is `UNKNOWN`, while a candidate-only
+   critical error is `FAIL`.
    `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
    duplicates the reader was spared; `pipeline.reasked_24h` counts Events the
    model was asked twice because a card landed while it was thinking (expect
@@ -350,9 +354,17 @@ Diagnose News in this order:
 6. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-Retention: `news_items`/`news_events` older than 30 days are purged by the
-Janitor; bands expire with their family window. Feed shows Events from the
-first frame after deployment; there is no backfill of pre-V3 history.
+Retention: unjudged `news_items`/`news_events` older than 30 days are purged by
+the Janitor; judged evidence is retained under the configured 365-day tier and
+bands expire with their family window. The same turn uses the existing
+one-slot cold/heavy DB admission for learning evidence: unreferenced model
+recordings/cases become eligible after 90 days, report-referenced rows and
+ordinary artifacts after 365 days, while current and previous distinct stable
+release chains and an active canary remain pinned. Each table deletes at most
+500 rows per turn; `/api/news/status.learning_retention` exposes the capped
+remaining eligible count, last-turn deletes, oldest retained age and error.
+Feed shows Events from the first frame after deployment; there is no backfill
+of pre-V3 history.
 
 ### Price Review plane (#88)
 
@@ -409,14 +421,22 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 `current_schema_20260818_0275.sql` and then `runtime_roles.sql`, which
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
-role contract, and applies the Serve read / Workers write grants) followed
-by `20260818_0276_review_49_hard_cut`, `20260818_0277_gmgn_lane_removal`, and
-`20260819_0278_macro_lane_removal`. A live database stamped at an earlier
-revision upgrades with `tracefold db migrate`; a fresh database runs the
-baseline and the three hard cuts. All four are irreversible; a downgrade is a
-backup restore. Stop Serve and Workers before applying a chained revision
+role contract, and applies the Serve read / Workers write grants) followed by
+the linear revisions through `20260821_0288_learning_retention`. The #112 chain
+adds ReviewDesk tables and grants the existing Serve role only their
+append-only INSERT capability. It adds no login role or password. A live
+database stamped at an earlier revision upgrades with `tracefold db migrate`;
+a fresh database runs the same complete chain. Every revision is irreversible;
+a downgrade is a backup restore. Stop Serve and Workers before applying a
+chained revision
 (each takes the maintenance gate advisory lock and refuses to run while
 Workers hold the steady lock).
+
+An existing volume at 0283 needs no new password or offline role bootstrap.
+Before its first 0284–0288 upgrade, take a restorable volume backup, stop Serve
+and Workers, run the normal migration, then deploy the matching image. The
+migration owns the narrow ReviewDesk grants; the existing Serve credential is
+unchanged.
 
 0276 drops `news_title_presentations`, `token_discovery_results`,
 `token_discovery_dirty_lookup_keys`, `asset_profiles`,
@@ -449,11 +469,22 @@ Macro repository and the projection frontier); it also drops the
 `reject_macro_fact_mutation()` function. No revision performs a provider,
 broker, or outbound call.
 
+0279–0283 add listing admission, the instrument universe, legacy label-v1 and
+Price Review. 0284 freezes fact/evidence versions. 0285 verifies legacy-label
+migration, hard-deletes `news_event_labels`, creates append-only ReviewDesk
+evidence and the security-barrier task view, and grants Serve only INSERT on
+the two review fact tables in addition to its read access. 0286 adds content-addressed datasets,
+candidate/evaluation/deployment artifacts, pairwise cases and exact model
+recordings. 0287 adds durable canary activations, one assignment per Event and
+runtime manifests. 0288 adds the bounded retention function, cold-Janitor
+state, and indexes used by its ordered batches. Migration never calls the
+model or derives a release PASS.
+
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
 settings schema rejects them and Serve/Workers fail to start with them
 present. Verify after restart: `tracefold db audit` reports
-`migration_status` `ready`, `counts` for the eleven `news_*` tables, and
+`migration_status` `ready`, current News table counts, and
 `news_schema.exact`; `tracefold news bus-check` shows one consumer on
 `news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` once
 the WSS connects; `/api/macro/overview` answers `404`; and the first candidate
@@ -468,14 +499,56 @@ archive, or quarantine action. Failed News messages retry through the broker's
 stable row per identity.
 
 News retention has two tiers (`news.retention`, issue #81). The Janitor deletes
-`news_items` older than `raw_days` (30), which cascades to `news_events` and
-from there to every verdict, delivery, member, asset, band **and operator
-label** — so a single number used to decide the lifetime of the whole learning
-plane. An Item behind an Event that carries a verdict or a label is evidence,
-not storage, and survives to `judged_days` (365): it is what
-`news corpus freeze` and the release gate replay against. Widening the judged
-tier costs disk and nothing else; narrowing it silently destroys the only
+`news_items` older than `raw_days` (30), which cascades to Event-owned verdict,
+delivery, member, asset, band and evidence snapshots. An Item behind an Event
+that carries a verdict or an accepted ReviewDesk judgment is evaluation
+evidence and survives to `judged_days` (365). Accepted reviews, external-miss
+snapshots, sealed datasets/evaluations/model recordings, canary assignments
+and deployment/rollback receipts are append-only audit evidence; a retention
+change must preserve every foreign-key dependency and the ability to replay a
+sealed dataset. Narrowing the evidence window silently destroys the only
 ground truth the system has.
+
+Learning evidence follows #118's separate deterministic policy:
+
+- an unreferenced `news_model_recordings` or `news_learning_cases` row is kept
+  for at least 90 days;
+- a run named by an evaluation report/release receipt and every ordinary
+  learning artifact is kept for at least 365 days;
+- the newest manifest for each of the current and previous distinct stable
+  bundles, plus an armed/active canary, pins its candidate, datasets, reports,
+  observations, per-case rows and exact model recordings regardless of age;
+- `active_agent`, deployment and rollback receipts are permanent audit truth;
+- every purge call deletes at most 500 recordings, 500 cases and 500 artifacts.
+  Eligible counters are capped at 501: `501` means “at least one more full
+  batch”, not an exact global count. A purge error is recorded but does not
+  change News readiness or stop ingest/delivery.
+
+Capacity assumption for V1: request and response JSON are each capped at
+64 KiB, so a worst-case 200-case, two-arm, three-trial run is under roughly
+150 MiB of payload before PostgreSQL/index overhead; typical one-trial runs
+are much smaller. Operators should alert on a non-zero eligible count that
+does not fall across Janitor turns, any `last_error_code`, or persistent table
+growth outside the 90/365-day envelope. The purge shares the one-slot cold
+admission with Price Review, never the four-slot News hot lane.
+
+Restore/audit procedure:
+
+1. Restore the PostgreSQL backup into an isolated database and migrate only to
+   the image's recorded schema head; never set
+   `tracefold.learning_retention_purge` or issue manual DELETEs.
+2. Run `uv run tracefold db audit`; confirm migration head, exact News table
+   set and role grants. Read `news_learning_retention_state` and retain its
+   pre-restore snapshot for comparison.
+3. Select the latest manifest for each distinct `stable_bundle_sha`; for the
+   newest two bundles, verify candidate → release evidence → report → dataset,
+   `news_learning_cases` and `news_model_recordings` references are present.
+   Recompute content hashes through CandidateEvaluator/record-replay; do not
+   accept row counts alone as proof.
+4. Verify every deployment/rollback receipt from the backup still exists and
+   compare counts plus oldest ages before allowing Workers to start. If any
+   pinned link is missing, keep the restored system offline and restore an
+   earlier backup; the irreversible migration's rollback is backup restore.
 
 Destructive migrations use bounded timeouts, transform data before constraints,
 drop children before parents, avoid `CASCADE`/`IF EXISTS`, and preserve material

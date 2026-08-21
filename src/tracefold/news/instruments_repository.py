@@ -178,9 +178,9 @@ class InstrumentsRepository:
     ) -> dict[str, dict[str, Any]]:
         """base_symbol -> every name that resolves into it, for the detail page's normalization block (#87).
 
-        This is what makes the storyline throttle legible: SKHY / SKHX / SKHYNIX are three real contracts for one
-        issuer, and the reader needs to see that they share a bucket rather than wonder why one buyback shipped
-        one card. Only bases that actually collapse something are worth a row, so the caller drops singletons.
+        This is what makes the storyline identity legible: SKHY / SKHX / SKHYNIX are three real contracts for one
+        issuer, and the reader needs to see why they share one storyline. Only bases that actually collapse
+        something are worth a row, so the caller drops singletons.
 
         ``sources`` narrows to particular ``news_symbol_aliases.source`` values. The console passes
         ``("seed",)``: venue-derived rows are mechanical (`XYZ-{base}` exists for every builder-DEX base),

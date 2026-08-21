@@ -5,7 +5,7 @@ The provider already tags Items with venue symbols — OpenNews emits a bare sym
 equity/commodity/index perps. ~95% of a full day's coin-tag volume lands on a Binance or Hyperliquid listing, so
 the venue universe is the natural reference table for News, and it does exactly two jobs:
 
-* **symbol normalization** — the several names one issuer trades under collapse to one storyline throttle key
+* **symbol normalization** — the several names one issuer trades under collapse to one stable storyline identity
 * **asset class** — whether a headline is about a coin or a stock, which the Gate used to guess from the ``XYZ-``
   prefix alone. Since #91 the table also carries a *reference* tier (``us.listed``) for the thousands of equities
   no crypto venue lists; it can only answer that second question, never the first.
@@ -52,7 +52,7 @@ _SYMBOL_OK = re.compile(r"^[^\s\x00-\x1f]{1,32}$")
 # every snapshot (this file is the source of truth — see `InstrumentsRepository.reconcile_seed_aliases`). Venue-
 # derived aliases (the `XYZ-` prefix, the `dex:SYMBOL` form) are computed, not listed here. `SKHY` and `SKHX` are
 # *both* real hl.xyz contracts for SK Hynix — keeping them apart at the venue level is correct, but the storyline
-# throttle must treat them as one issuer or the same buyback ships nine cards (observed 2026-08-19).
+# identity must treat them as one issuer so same-issuer duplicate evidence shares one group.
 #
 # Every value must be a symbol a venue actually lists, or the alias resolves to nothing: `1810.HK -> XIAOMI` was
 # such a dead end (Binance lists Xiaomi as `HK1810`), which cost 13 tags and 3 pushed cards in one week.

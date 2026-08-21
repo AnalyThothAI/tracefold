@@ -76,14 +76,14 @@ token with an empty Strategy set fails closed. Workers compare the configured
 list with the provider Strategy list at startup: configured-but-disabled and
 enabled-but-unconfigured IDs become `strategy_warnings` in `/api/news/status`;
 they never fail startup or recovery. The current operator set is `1018`,
-`1352`, `1353`; `1019` is disabled provider-side and not configured.
+`1352`, `1353`, `1672`; `1019` is disabled provider-side and not configured.
 
 `news.broker.url` (`amqp://` or `amqps://`, a secret) is required for News to
 run; `news.broker.name_prefix` prefixes every exchange and queue name and
 `news.broker.connect_timeout_seconds` bounds the connect. `news.triage.*`
 (`deadline_seconds`, `concurrency`, `circuit_failures`,
 `circuit_open_seconds`), `news.push.*` (`enabled`, `feishu_webhook_url`,
-optional `feishu_signing_secret`, `min_interval_seconds`, `hourly_cap`), and
+optional `feishu_signing_secret`, `min_interval_seconds`), and
 `news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
 `news.triage.concurrency` (default 4) is the real consumer width of its queue.
 Lexicons, prefix tables, LSH geometry, prompt texts, and policy versions are
@@ -145,7 +145,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 | Family | Routes | Source of data |
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
-| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/review` | broker-driven Event feed, one Event with members/verdicts/deliveries/labels, four-layer News status, bounded current quotes, and the 命中复盘 aggregates |
+| News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/review`, `/api/news/review/tasks/{task_id}/evidence`, `/api/news/review/tasks/{task_id}/responses`, `/api/news/review/external-misses` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and ReviewDesk reads/writes |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -158,7 +158,8 @@ feature flag.
 ### News
 
 News is an operator-bound, Strategy-qualified Event surface. The public
-surface is exactly five read-only routes:
+surface is exactly six GET route templates and two ReviewDesk POST route
+templates:
 
 - `GET /api/news/feed?family={family}&admission={admission}&priority={high|normal}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&sort={latest|priority}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}`
   returns Events newest first (or high priority first) with the leader title,
@@ -209,8 +210,7 @@ surface is exactly five read-only routes:
   publication time, match kind, Jaccard estimate, provenance, description),
   every Triage verdict (model decision, rule baseline, final decision,
   override rule, throttle reason, verdict payload, model, prompt version,
-  degraded flag, trace), deliveries, and operator labels (`label_version`,
-  `source`, label payload, created time), and `normalization[]` — the alias
+  degraded flag, trace), deliveries, and `normalization[]` — the alias
   groups this Event's assets fall into (`base_symbol`, every `alias` that
   resolves into it including the base itself, and the alias `sources`). Only
   the code-owned seed aliases count (`source = 'seed'`, reconciled from
@@ -237,11 +237,11 @@ surface is exactly five read-only routes:
   throttled, Triage p50/p95, queue lag p95, the Triage model name, and the
   named 24 h maps `suppressed_by_reason`, `dropped_by_rule`,
   `throttled_by_key`, `pushed_by_rule`, `duplicates_withheld_24h`
-  (`{throttled, all}` — duplicates the reader was spared, by the path that
-  measured the card; `all` only exists under policy v6), plus `tagged_24h`,
+  (`all` is the current content-only path; historical rows may retain the old
+  `throttled` scope), plus `tagged_24h`,
   `grounded_24h` and
   the top-ten `ungrounded_by_symbol_24h`), and `delivery` (sent/terminal
-  counts, last error, end-to-end p95, availability, hourly cap), plus
+  counts, last error, end-to-end p95, availability), plus
   `control` (paused, mutes), the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last
   snapshot time, per-venue and per-class counts, `dangling_aliases`, and
@@ -298,11 +298,9 @@ surface, so the model only spends tokens on it when `headline_zh` actually
 condensed something), `why_zh` (one plain sentence adding mechanism and who is
 exposed, prompt target <= 70 characters, at most 140); the stored row adds
 `model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`
-(policy v3 added `restatement`; policy v5 replaces `novel_bypass` with
-`distinct_bypass`), `throttled_by` (`storyline:<key>`,
-`storyline:<key>:cap<N>`, `storyline:<key>:hard<N>`, any of those with a
-`:seen` suffix when the card was withheld as something the reader already
-received, `hourly_cap`), `degraded`, `error_code`, `trace` (`prompt_sha256`,
+(policy v3 added `restatement`), `throttled_by`
+(`storyline:<key>:seen` only for deterministic duplicate evidence; historical
+cap keys remain readable on old rows), `degraded`, `error_code`, `trace` (`prompt_sha256`,
 `policy` — every `DecidePolicy` value that produced the decision —
 `schema_sha256` (the tool schema half of the same contract, #101),
 `gate_policy_version`, `input_sha256`, `storyline_key_preliminary`, `status`,
@@ -314,20 +312,18 @@ model telemetry). `triage` is the only
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_triage_prompt_v9`, `news_triage_policy_v6`, and `news_delivery_card_v10`.
+`news_triage_prompt_v9`, `news_triage_policy_v7`, and `news_delivery_card_v10`.
 Every shipped prompt version and the sha256 of the text it shipped with are
 pinned in `TRIAGE_PROMPT_SHA256_BY_VERSION`; editing the prompt without bumping
 `TRIAGE_PROMPT_VERSION` fails `tests/news/test_news_v3_prompt_pin.py`.
 `news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
 `min_watchlist_magnitude`, `unclear_push_min_magnitude`,
-`unclear_push_event_types`, `theme_cap_4h`, `storyline_throttle`,
-`hourly_cap_enabled`, `restatement_drop`, `similarity_max`,
-`distinct_hard_cap_4h` (>= `theme_cap_4h`), `distinct_asset_cap_2h`,
-`similarity_all_pushes` (policy v6: measure every push candidate against the
-reader's window, not only the ones the count throttle stopped; false restores
-v5), `high_priority_escalates`. `news.retention` keys are `raw_days` (30) and
+`unclear_push_event_types`, `restatement_drop`, `similarity_max`, and
+`high_priority_escalates`. There is no runtime reader quota. Retired quota keys
+are rejected as unknown configuration instead of being silently carried
+forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a
-verdict or a label is evidence and outlives the raw tier.
+verdict or accepted review is evidence and outlives the raw tier.
 
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
@@ -363,19 +359,16 @@ social evidence, token identity/registry, DEX/CEX market, live broadcast,
 provider circuit, and News market-mark tables), and
 `20260819_0278_macro_lane_removal` (drops the ten `macro_*` tables, the four
 general market observation tables, `queue_terminal_events`, and the
-`reject_macro_fact_mutation()` trigger function). A database at an earlier
-revision upgrades with `tracefold db migrate`; a fresh database runs the
-baseline and the three hard cuts. The resulting schema is exactly 13 tables.
-News owns exactly eleven:
-`news_ingest_state`, `news_opennews_incidents`, `news_items`, `news_events`,
-`news_event_members`, `news_event_bands`, `news_event_assets`,
-`news_verdicts`, `news_deliveries`, `news_control_state`,
-`news_event_labels`, plus the instrument universe (`news_market_instruments`,
-`news_symbol_aliases`, #75/#89) and the Price Review plane
-(`news_quote_snapshots`, `news_event_reactions`, #88) — fifteen in all, and the
-resulting schema is exactly 17 tables. Migrations perform no provider, broker, or outbound call
-and have no compatibility reader/writer; the Feed starts from the first frames
-observed after deployment.
+`reject_macro_fact_mutation()` trigger function). Revisions `0279` through
+`0283` add listing admission, instruments and Price Review. The #112 chain is
+`0284` through `0288`: immutable fact/evidence snapshots, ReviewDesk v2 and
+verified label-v1 removal, content-addressed learning artifacts/recordings,
+durable canary control, and bounded 90/365-day learning retention. A database at an earlier revision upgrades with
+`tracefold db migrate`; a fresh database runs the complete chain. The exact
+24 News base tables plus four security-barrier review views are asserted by
+the schema integration test instead of a duplicated prose allowlist. Migrations
+perform no provider, broker, model, or outbound call and have no compatibility
+reader/writer.
 
 - `GET /api/news/quotes?symbols={comma-separated}` returns one result per
   requested symbol, in request order, for at most 100 deduplicated symbols
@@ -394,17 +387,36 @@ observed after deployment.
   between day reads). Current quotes are deliberately **not** feed
   fields — a price that changed must not invalidate the Feed ETag or re-run its
   count query every three seconds.
-- `GET /api/news/review?hours={1..720}` (default 168) returns the 命中复盘
-  aggregates for one bounded window: `meta` (window, `metric_version`),
-  `coverage` per horizon (`eligible_n`, `priced_n`, `coverage_pct`, no-primary
-  and degraded counts, and the named unavailable reasons), `directions`
-  (bullish/bearish hit rate with its own `priced_n`; neutral and unclear carry
-  `scored: false` and no rate), `magnitudes`, `event_types`,
-  `potential_misses` (live Events that never reached the reader whose 1H is
-  complete, ranked by absolute 1H return, each with its decision, named
-  rule/throttle key and per-asset sources), and a compact `summary`
-  (`hit_1h_pct`, `hit_1h_n`, `coverage_1h_pct`) for the topbar. A percentage is
-  `null` when its denominator is zero — never `0`.
+- `GET /api/news/review` is the ReviewDesk read surface. Query fields are
+  `view=queue|coverage|proposals|market`, `mode=event|pairwise`, exact
+  `cohort`, `stratum`, `event`, `status`, `hours`, `limit`, and opaque
+  `cursor`. Queue tasks are deterministic and carry `task_id` plus an ETag-like
+  `task_version`; coverage separates received, replayable, reviewed, accepted,
+  external-miss and holdout-ready counts. `view=market` is explicitly
+  non-causal, defaults to the latest homogeneous prompt/policy/model cohort in
+  the requested window, uses mature denominators, hides the unreliable v1
+  event taxonomy, leaves the retired direction/magnitude/event-type price
+  rankings empty, and clusters similar withheld Events from at most the latest
+  seven days into one fact row. Market view rejects `hours > 168`; the separate
+  evidence-coverage view retains the 720-hour option.
+- `GET /api/news/review/tasks/{task_id}/evidence` requires `If-Match` and
+  returns only the evidence scoped to that task: immutable source/fact
+  snapshot, exact Agent cohort/input/told ledger, policy trace, real sent
+  receipt, and verifier flags. Market reactions are hidden until a judgment is
+  accepted so they cannot anchor `should_push` review.
+- `POST /api/news/review/tasks/{task_id}/responses` requires `If-Match`, a
+  UUID `Idempotency-Key`, and a bounded rubric or blind-pairwise body. It
+  appends the judgment and its acceptance receipt atomically, never overwrites
+  history, and returns the next deterministic task. Blind pairwise critical
+  errors are side-qualified (`A:` or `B:`) and limited to the code-owned
+  factual/entity/direction/key-fact/duplicate/injection safety enum; the sealed
+  arm mapping converts a candidate-only critical error into release evidence.
+  `POST
+  /api/news/review/external-misses` applies the same receipt contract to an
+  immutable fact the pipeline never turned into an Event. These are the only
+  News HTTP writes. They use the existing Serve connection in an explicit
+  read-write transaction; PostgreSQL permits that role to INSERT only the two
+  append-only review fact tables and still denies all News/control rewrites.
 - `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
   Event Reaction: the feed the compact event-level aggregate (median signed
   return of the Triage primaries that price, with `state`
@@ -423,7 +435,7 @@ observed after deployment.
 
 - service/config: `serve`, `workers`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
-- News: `news bus-check|control|instruments|label|eval|replay-decisions|corpus|validate-candidate|replay|dlq|why`;
+- News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -436,52 +448,33 @@ generation/run identity or make a provider response the source of truth.
 maintenance lock, so operators can inspect the running singleton without
 interrupting it.
 
-`db audit` reports the migration revision, row `counts` for the eleven
-`news_*` tables, and `news_schema` exactness over those same tables.
-`db query-audit` covers `/readyz`, `/api/status`, and `/api/news/*`;
-`/healthz`, `/metrics`, and `/api/bootstrap` are declared no-SQL routes.
+`db audit` reports the migration revision, row `counts` for every table in the
+code-owned `NEWS_TABLES` contract, and `news_schema` exactness over that same
+set (24 tables at migration `20260821_0288`).
+`db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
+News GET; the two ReviewDesk POST paths are explicitly catalogued as write
+routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and
+`/api/bootstrap` are declared no-SQL routes.
 
 `news bus-check` connects, declares the topology idempotently, and prints
 per-queue message/consumer counts. `news control <action> [--key
---ttl-minutes]` writes `news_control_state` through the Workers role. `news
-label <event_id> <good|noise|late|wrong_direction|dup|missed> [--note]`
-inserts one `news_event_labels` row (`source` `human`, `label_version`
-`news_label_v1`) on any Event, including Gate-suppressed, dropped, or
-throttled ones. `news eval --hours --policy-version` scores every Event of the
-window against operator labels only (`good`/`wrong_direction`/`late`/`missed`
-count as moved, `noise`/`dup` as flat; an Event without a verdict counts as
-`suppressed`): `precision_at_push`, `missed_rate`, `false_push_rate`,
-`missed_movers_rate`, `suppressed_movers_rate`, `throttled_movers_rate`,
-per-admission, `override_rule`, `throttled_by`, asset-class, audience, and
-event-type confusion tables, and storyline statistics. `news
-replay-decisions --hours [--escalate-magnitude --min-push-magnitude
---min-watchlist-magnitude --theme-cap-4h --distinct-hard-cap-4h
---distinct-asset-cap-2h --similarity-max --high-priority-escalates
---no-restatement-drop --no-storyline-throttle --no-unclear-push]` re-runs
-`decide()` over stored verdicts with a candidate `DecidePolicy` (unspecified
-values come from `news.policy`) and no model call, reporting the changed
-decisions. It is a *first-order* replay: it reuses each verdict's stored window
-snapshot, so it shows which cards flip but not what a flip does to every later
-card — `validate-candidate` is the second-order instrument.
+--ttl-minutes]` writes `news_control_state` through the Workers role.
+`news review queue|evidence|submit|external-miss` is the CLI form of the same
+ReviewDesk contract as HTTP; submissions require the task version and an
+idempotency key.
 
-`news corpus freeze --hours [--out]` exports every replayable Triage decision
-of the window as a self-hashing corpus (verdict, gate facts, told ledger,
-operator label). `news validate-candidate --corpus <path> [--candidate <path>
---set KEY=VALUE --expectations <path> --evidence <path>]` replays the deployed
-policy and the candidate over that corpus *sequentially* — rebuilding each
-storyline window and the reader's ledger as decisions change — and returns a
-release decision plus a self-hashing evidence document. Exit code 1 means
-reject. The blocking checks are `no_critical_miss`, `no_retention_regression`,
-`no_marked_noise_regression`, `missed_facts_not_worse`,
-`strong_duplicates_not_worse`, `duplicates_within_recall_trade` (a candidate
-may add near-duplicate pairs only against at least three times as many facts it
-stops losing), `peak_within_reader_budget` (<= the larger of
-`news.push.hourly_cap` and the deployed policy's own peak, so a busy hour
-cannot block an unrelated improvement) and `trusted_root_unchanged`. Duplicates are scored with a metric the policy never
-reads, because scoring a rule with the rule is not evidence. The reviewed
-expectations overlay (`tests/fixtures/news_recall_boundary_v1.json`) is part of
-the trusted root: it is the human judgment about what should have happened, and
-no automated proposal path may write it. `news replay <hits.json> [--gate-policy config|open|strict]` runs
+`news learning freeze` seals accepted reviews into a content-addressed
+development or future temporal validation dataset. `learning propose` seals
+exactly one candidate variable (`prompt` or `policy`) against a
+development dataset. `learning evaluate` runs the development/offline or
+validation/holdout release gate; validation calls both arms sequentially and
+can append exact model recordings. `learning shadow --live-model` cold-runs the
+candidate over the closed validation window and seals the observations; an
+existing sealed shadow observation manifest can be replayed instead.
+`learning canary arm|status|hold|resume|trip|close` owns the durable one-arm
+rollout. A candidate may advance only when the prior
+stage has a sealed PASS; a tool or optimizer may propose but cannot accept or
+deploy. `news replay <hits.json> [--gate-policy config|open|strict]` runs
 Deduper+Gate over saved provider hits without broker or model and lists every
 Event with admission, grounded assets, and preliminary storyline. `news why
 <event_id>` prints the Event's chain (item, gate, triage, decide, delivery)

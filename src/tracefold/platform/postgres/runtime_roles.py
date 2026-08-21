@@ -100,6 +100,16 @@ def runtime_role_contract(
                 'public',
                 'CREATE'
               ) AS workers_create,
+              has_table_privilege(
+                'tracefold_serve',
+                'public.news_reviews',
+                'INSERT'
+              ) AS serve_review_insert,
+              has_table_privilege(
+                'tracefold_serve',
+                'public.news_external_miss_snapshots',
+                'INSERT'
+              ) AS serve_external_miss_insert,
               pg_has_role(
                 'tracefold_migrate',
                 'tracefold_owner',
@@ -122,6 +132,8 @@ def runtime_role_contract(
         "serve_insert_denied": not bool(privileges["serve_insert"]),
         "workers_dml": bool(privileges["workers_dml"]),
         "workers_create_denied": not bool(privileges["workers_create"]),
+        "serve_review_append": bool(privileges["serve_review_insert"])
+        and bool(privileges["serve_external_miss_insert"]),
         "migrate_owner_member": bool(privileges["migrate_owner_member"]),
     }
     failures = [name for name, passed in checks.items() if not passed]

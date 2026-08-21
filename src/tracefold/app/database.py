@@ -76,7 +76,12 @@ class ServeDatabaseBusy(RuntimeError):
 
 @dataclass(slots=True)
 class ServeDatabase:
-    """The read-only database boundary owned by the public serving runtime."""
+    """The public serving database boundary.
+
+    Connections default to read-only.  The two authenticated ReviewDesk
+    mutations explicitly open a read-write transaction; PostgreSQL grants the
+    role INSERT only on the append-only review fact tables.
+    """
 
     api_pool: Any
     telemetry: TelemetryRegistry | None = field(default_factory=TelemetryRegistry)

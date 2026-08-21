@@ -1,4 +1,4 @@
-"""News V3 repository: facts, events, verdicts, deliveries, control, labels, and bounded reads.
+"""News V3 repository: facts, events, verdicts, deliveries, control, and bounded reads.
 
 Every write is idempotent by key. Callers own the transaction (worker_session / api_session).
 """
@@ -12,7 +12,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from .models import display_title
+from .models import ReaderReceipt, display_title
 from .outcome import (
     audience_zh,
     decision_zh,
@@ -24,7 +24,6 @@ from .outcome import (
     scope_zh,
 )
 from .timeline import event_timeline
-from .triage_rules import ESCALATE_WINDOW_MS, PUSH_WINDOW_MS
 
 _JSON_SEPARATORS = (",", ":")
 
@@ -297,6 +296,12 @@ class NewsRepository:
         comparison_fingerprint: str,
         comparison_title: str,
         leader_title: str,
+        focus_fact_id: str,
+        focus_fact_text: str,
+        focus_fact_context: str,
+        focus_fact_method: str,
+        focus_span_start: int,
+        focus_span_end: int,
         opened_at_ms: int,
         expires_at_ms: int,
         admission: str,
@@ -318,11 +323,12 @@ class NewsRepository:
             """
             INSERT INTO news_events (
               event_id, leader_item_id, family, comparison_fingerprint, comparison_title, leader_title,
+              focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start, focus_span_end,
               opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, priority,
               provider_score_max, engine_type, asset_class, grounded_assets, watchlist_hits, macro_lexicon,
               storyline_key, context_line, ingest_mode, trace_id, created_at_ms, updated_at_ms
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s,
               %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s
             )
             """,
@@ -333,6 +339,12 @@ class NewsRepository:
                 comparison_fingerprint,
                 comparison_title,
                 leader_title,
+                focus_fact_id,
+                focus_fact_text,
+                focus_fact_context,
+                focus_fact_method,
+                int(focus_span_start),
+                int(focus_span_end),
                 int(opened_at_ms),
                 int(opened_at_ms),
                 int(expires_at_ms),
@@ -354,10 +366,11 @@ class NewsRepository:
         )
         self.conn.execute(
             """
-            INSERT INTO news_event_members (event_id, item_id, joined_at_ms, match_kind, jaccard_estimate)
-            VALUES (%s, %s, %s, 'leader', NULL) ON CONFLICT DO NOTHING
+            INSERT INTO news_event_members
+                   (event_id, item_id, joined_at_ms, match_kind, jaccard_estimate, fact_id, fact_text)
+            VALUES (%s, %s, %s, 'leader', NULL, %s, %s) ON CONFLICT DO NOTHING
             """,
-            (event_id, leader_item_id, int(opened_at_ms)),
+            (event_id, leader_item_id, int(opened_at_ms), focus_fact_id, focus_fact_text),
         )
         if band_keys:
             self.conn.execute(
@@ -387,14 +400,17 @@ class NewsRepository:
         match_kind: str,
         jaccard_estimate: float | None,
         provider_score: float | None,
+        fact_id: str,
+        fact_text: str,
         now_ms: int,
     ) -> bool:
         cursor = self.conn.execute(
             """
-            INSERT INTO news_event_members (event_id, item_id, joined_at_ms, match_kind, jaccard_estimate)
-            VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
+            INSERT INTO news_event_members
+                   (event_id, item_id, joined_at_ms, match_kind, jaccard_estimate, fact_id, fact_text)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """,
-            (event_id, item_id, int(joined_at_ms), match_kind, jaccard_estimate),
+            (event_id, item_id, int(joined_at_ms), match_kind, jaccard_estimate, fact_id, fact_text),
         )
         if not cursor.rowcount:
             return False
@@ -527,7 +543,7 @@ class NewsRepository:
             (context_line[:400], followup_of, int(now_ms), event_id),
         )
 
-    def event_card(self, event_id: str) -> dict[str, Any] | None:
+    def _current_event_card(self, event_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
             SELECT e.*, i.description AS leader_description, i.canonical_url AS leader_url, i.reporting_origin,
@@ -540,67 +556,236 @@ class NewsRepository:
         ).fetchone()
         return dict(row) if row else None
 
-    def event_status(self, *, storyline_key: str, now_ms: int) -> dict[str, Any]:
+    def append_evidence_snapshot(
+        self,
+        *,
+        event_id: str,
+        now_ms: int,
+        focus_item_id: str | None = None,
+        focus_fact: Any | None = None,
+    ) -> dict[str, Any]:
+        """Append the current focused evidence when its canonical content changed.
+
+        The hash excludes timestamps and the version counter.  Re-consuming the
+        same member is therefore a zero-write, while a stronger/new member gets
+        a new immutable version.  The table trigger rejects UPDATE and DELETE.
+        """
+
+        card = self._current_event_card(event_id)
+        if card is None:
+            raise ValueError("news_event_missing")
+        members = self.conn.execute(
+            """
+            SELECT m.item_id, m.fact_id, m.fact_text, m.joined_at_ms, m.match_kind, m.jaccard_estimate,
+                   i.reporting_origin, i.canonical_url, i.provider_metadata, i.provenance
+              FROM news_event_members m
+              JOIN news_items i ON i.item_id = m.item_id
+             WHERE m.event_id = %s
+             ORDER BY m.joined_at_ms, m.item_id, m.fact_id
+            """,
+            (event_id,),
+        ).fetchall()
+        latest = self.conn.execute(
+            """
+            SELECT evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible,
+                   created_at_ms
+              FROM news_event_evidence_snapshots
+             WHERE event_id = %s ORDER BY evidence_version DESC LIMIT 1
+             FOR SHARE
+            """,
+            (event_id,),
+        ).fetchone()
+        if (focus_item_id is None) != (focus_fact is None):
+            raise ValueError("news_event_evidence_focus_incomplete")
+        previous = dict(latest["snapshot"] or {}) if latest is not None else {}
+        if focus_fact is not None:
+            focus = {
+                "fact_id": str(focus_fact.fact_id),
+                "text": str(focus_fact.text),
+                "context": str(focus_fact.context),
+                "method": str(focus_fact.method),
+                "span_start": int(focus_fact.span_start),
+                "span_end": int(focus_fact.span_end),
+            }
+            source = self.conn.execute(
+                """
+                SELECT item_id AS leader_item_id, canonical_url AS leader_url, reporting_origin,
+                       provider_metadata, provenance, published_at_ms AS leader_published_at_ms, raw_first_line
+                  FROM news_items WHERE item_id = %s
+                """,
+                (focus_item_id,),
+            ).fetchone()
+            if source is None:
+                raise ValueError("news_event_evidence_focus_item_missing")
+            focus_source = dict(source)
+        elif previous:
+            focus = dict(previous.get("focus_fact") or {})
+            focus_source = dict(previous.get("card") or {})
+        else:
+            focus = {
+                "fact_id": str(card.get("focus_fact_id") or ""),
+                "text": str(card.get("focus_fact_text") or card.get("leader_title") or ""),
+                "context": str(card.get("focus_fact_context") or ""),
+                "method": str(card.get("focus_fact_method") or "whole_item"),
+                "span_start": int(card.get("focus_span_start") or 0),
+                "span_end": int(card.get("focus_span_end") or 0),
+            }
+            focus_source = card
+        snapshot_card = {
+            key: card.get(key)
+            for key in (
+                "event_id",
+                "leader_item_id",
+                "family",
+                "comparison_fingerprint",
+                "comparison_title",
+                "opened_at_ms",
+                "last_member_at_ms",
+                "expires_at_ms",
+                "member_count",
+                "admission",
+                "priority",
+                "provider_score_max",
+                "engine_type",
+                "asset_class",
+                "grounded_assets",
+                "watchlist_hits",
+                "macro_lexicon",
+                "storyline_key",
+                "ingest_mode",
+                "trace_id",
+                "leader_url",
+                "reporting_origin",
+                "provider_metadata",
+                "provenance",
+                "leader_published_at_ms",
+                "raw_first_line",
+            )
+        }
+        snapshot_card.update(
+            {
+                key: focus_source.get(key)
+                for key in (
+                    "leader_item_id",
+                    "leader_url",
+                    "reporting_origin",
+                    "provider_metadata",
+                    "provenance",
+                    "leader_published_at_ms",
+                    "raw_first_line",
+                )
+            }
+        )
+        # The SemanticJudge sees one question, never the parent digest.
+        snapshot_card.update(
+            {
+                "leader_title": focus["text"],
+                "leader_description": focus["context"],
+                "focus_fact_id": focus["fact_id"],
+            }
+        )
+        snapshot = {
+            "schema_version": "news_event_evidence_v1",
+            "event_id": event_id,
+            "focus_fact": focus,
+            "card": snapshot_card,
+            "members": [
+                {
+                    "item_id": str(row["item_id"]),
+                    "fact_id": str(row["fact_id"]),
+                    "fact_text": str(row["fact_text"]),
+                    "joined_at_ms": int(row["joined_at_ms"]),
+                    "match_kind": str(row["match_kind"]),
+                    "jaccard_estimate": row["jaccard_estimate"],
+                    "reporting_origin": str(row["reporting_origin"] or ""),
+                    "canonical_url": row["canonical_url"],
+                    "provider_metadata": dict(row["provider_metadata"] or {}),
+                    "provenance": list(row["provenance"] or []),
+                }
+                for row in members
+            ],
+            "provenance": "observed",
+        }
+        serialized = _dumps(snapshot)
+        evidence_sha = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        if latest is not None and str(latest["evidence_sha256"]) == evidence_sha:
+            return dict(latest)
+        version = int(latest["evidence_version"]) + 1 if latest is not None else 1
         row = self.conn.execute(
             """
-            WITH pushed AS (
-              SELECT v.event_id, v.created_at_ms,
-                     (v.verdict ->> 'magnitude')::int AS magnitude,
-                     v.verdict ->> 'direction' AS direction
-                FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
-               WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
-                 AND e.storyline_key = %s AND v.created_at_ms >= %s
-            )
-            SELECT
-              (SELECT count(*) FROM pushed WHERE created_at_ms >= %s) AS pushed_2h,
-              (SELECT count(*) FROM pushed) AS pushed_4h,
-              (SELECT COALESCE(max(magnitude), 0) FROM pushed WHERE created_at_ms >= %s) AS max_magnitude_2h,
-              (SELECT COALESCE(max(magnitude), 0) FROM pushed) AS max_magnitude_4h,
-              (SELECT COALESCE(array_agg(DISTINCT direction), '{}') FROM pushed
-                WHERE created_at_ms >= %s) AS directions_2h,
-              (SELECT COALESCE(array_agg(DISTINCT direction), '{}') FROM pushed) AS directions_4h,
-              (SELECT %s - max(created_at_ms) FROM pushed) AS last_push_ago_ms,
-              (SELECT count(*) FROM news_events WHERE storyline_key = %s AND opened_at_ms >= %s) AS events_2h
+            INSERT INTO news_event_evidence_snapshots (
+              event_id, evidence_version, focus_fact_id, evidence_sha256,
+              provenance, release_eligible, snapshot, created_at_ms
+            ) VALUES (%s, %s, %s, %s, 'observed', true, %s::jsonb, %s)
+            RETURNING evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible,
+                      created_at_ms
             """,
-            (
-                storyline_key,
-                int(now_ms) - ESCALATE_WINDOW_MS,
-                int(now_ms) - PUSH_WINDOW_MS,
-                int(now_ms) - PUSH_WINDOW_MS,
-                int(now_ms) - PUSH_WINDOW_MS,
-                int(now_ms),
-                storyline_key,
-                int(now_ms) - PUSH_WINDOW_MS,
-            ),
+            (event_id, version, focus["fact_id"], evidence_sha, serialized, int(now_ms)),
         ).fetchone()
-        return dict(row) if row else {}
+        if row is None:
+            raise RuntimeError("news_event_evidence_insert_failed")
+        return dict(row)
+
+    def latest_evidence_snapshot(self, event_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT event_id, evidence_version, focus_fact_id, evidence_sha256, provenance,
+                   release_eligible, snapshot, created_at_ms
+              FROM news_event_evidence_snapshots
+             WHERE event_id = %s ORDER BY evidence_version DESC LIMIT 1
+            """,
+            (event_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def event_card(self, event_id: str) -> dict[str, Any] | None:
+        """The exact latest immutable evidence card the SemanticJudge may read."""
+
+        evidence = self.latest_evidence_snapshot(event_id)
+        if evidence is None:
+            return None
+        snapshot = dict(evidence.get("snapshot") or {})
+        card = dict(snapshot.get("card") or {})
+        card.update(
+            {
+                "evidence_version": int(evidence["evidence_version"]),
+                "evidence_sha256": str(evidence["evidence_sha256"]),
+                "focus_fact_id": str(evidence["focus_fact_id"]),
+                "evidence_provenance": str(evidence["provenance"]),
+                "evidence_release_eligible": bool(evidence["release_eligible"]),
+            }
+        )
+        return card
 
     def told_ledger(
         self, *, now_ms: int, window_ms: int, limit: int, prefer_key: str | None = None, prefer_limit: int = 8
     ) -> list[dict[str, Any]]:
-        """Cards the reader received in the window: push/escalate verdicts whose first card was not terminalised
-        (a Feishu failure, sender unavailable, paused lane, hourly cap or crash never reached the reader; degraded
-        fallbacks are excluded too — their placeholder headline is not a card the reader can recognise). The newest
+        """Cards proven to have reached the reader in the window.
+
+        Only ``news_deliveries(kind='first', state='sent')`` is reader truth.
+        A decision, missing row, sending row, terminal failure, or ambiguous
+        with the header that was actually rendered.  The newest
         ``limit`` overall plus, when ``prefer_key`` is given, the newest ``prefer_limit`` on that storyline (which
         may be older than the global window's newest); newest first, one row per event. The consumer trims for the
         status bar (``told_ledger_for_prompt``) and compares the event-id set for staleness."""
 
         base = """
-            SELECT v.event_id, v.created_at_ms AS at_ms, e.storyline_key,
+            SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
                    (v.verdict ->> 'magnitude')::int AS magnitude, v.verdict ->> 'direction' AS direction,
-                   v.verdict ->> 'headline_zh' AS headline_zh
+                   COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh')
+                     AS headline_zh
               FROM news_verdicts v
               JOIN news_events e ON e.event_id = v.event_id
-              LEFT JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first'
-             WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate') AND NOT v.degraded
-               AND v.created_at_ms >= %s AND COALESCE(d.state, '') <> 'terminal'
+              JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first' AND d.state = 'sent'
+             WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
+               AND d.settled_at_ms >= %s
         """
         since = int(now_ms) - int(window_ms)
-        rows = self.conn.execute(base + " ORDER BY v.created_at_ms DESC LIMIT %s", (since, int(limit))).fetchall()
+        rows = self.conn.execute(base + " ORDER BY d.settled_at_ms DESC LIMIT %s", (since, int(limit))).fetchall()
         merged = {str(r["event_id"]): dict(r) for r in rows}
         if prefer_key:
             same = self.conn.execute(
-                base + " AND e.storyline_key = %s ORDER BY v.created_at_ms DESC LIMIT %s",
+                base + " AND e.storyline_key = %s ORDER BY d.settled_at_ms DESC LIMIT %s",
                 (since, prefer_key, int(prefer_limit)),
             ).fetchall()
             for r in same:
@@ -608,7 +793,7 @@ class NewsRepository:
         return sorted(merged.values(), key=lambda r: -int(r["at_ms"]))
 
     def lock_storyline(self, storyline_key: str) -> None:
-        """Transaction-scoped advisory lock on one storyline key so "read window facts -> decide -> insert verdict"
+        """Transaction-scoped advisory lock on one storyline key so "read reader evidence -> decide -> insert verdict"
         is serialised per key across concurrent Triage handlers (and processes). Released at commit/rollback. The
         worker pool's 250 ms ``lock_timeout`` is raised for this transaction only: a same-key holder finishes in a
         few ms, and a waiter that gave up would re-run the whole handler including a second paid model call."""
@@ -634,6 +819,9 @@ class NewsRepository:
         degraded: bool,
         error_code: str | None,
         trace: Mapping[str, Any],
+        evidence_version: int,
+        evidence_sha256: str,
+        focus_fact_id: str,
         now_ms: int,
     ) -> bool:
         cursor = self.conn.execute(
@@ -641,7 +829,9 @@ class NewsRepository:
             INSERT INTO news_verdicts (
               event_id, stage, policy_version, model_decision, rule_baseline_decision, final_decision, override_rule,
               throttled_by, verdict, model, prompt_version, degraded, error_code, trace, created_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s)
+              , evidence_version, evidence_sha256, focus_fact_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s,
+                      %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
             (
@@ -660,6 +850,9 @@ class NewsRepository:
                 error_code,
                 _dumps(dict(trace)),
                 int(now_ms),
+                int(evidence_version),
+                evidence_sha256,
+                focus_fact_id,
             ),
         )
         return bool(cursor.rowcount)
@@ -731,12 +924,6 @@ class NewsRepository:
         ).fetchone()
         return dict(row) if row else None
 
-    def sent_count_since(self, *, since_ms: int) -> int:
-        row = self.conn.execute(
-            "SELECT count(*) AS n FROM news_deliveries WHERE state = 'sent' AND settled_at_ms >= %s", (int(since_ms),)
-        ).fetchone()
-        return int(row["n"]) if row else 0
-
     def terminalize_interrupted_deliveries(self, *, now_ms: int) -> int:
         cursor = self.conn.execute(
             """
@@ -767,19 +954,455 @@ class NewsRepository:
             (paused, _dumps([dict(m) for m in mutes]) if mutes is not None else None, int(now_ms)),
         )
 
-    # ------------------------------------------------------------------ janitor / marks / labels
+    # ------------------------------------------------------------------ one-arm Agent canary
+    def active_canary(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM news_canary_activations WHERE state = 'active' ORDER BY activated_at_ms DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def canary_status(self) -> dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM news_canary_activations ORDER BY created_at_ms DESC LIMIT 1").fetchone()
+        if row is None:
+            return {"state": "inactive", "activation": None, "assignments": {"stable": 0, "candidate": 0}}
+        activation = dict(row)
+        counts = self.conn.execute(
+            """
+            SELECT arm, count(*) AS n
+              FROM news_agent_assignments
+             WHERE activation_id = %s
+             GROUP BY arm
+            """,
+            (activation["activation_id"],),
+        ).fetchall()
+        return {
+            "state": activation["state"],
+            "activation": activation,
+            "assignments": {str(item["arm"]): int(item["n"]) for item in counts},
+        }
+
+    def canary_candidate_eligible(self, candidate_manifest_sha: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 AS ok
+              FROM news_learning_artifacts
+             WHERE kind = 'release_evidence'
+               AND payload->>'candidate_sha' = %s
+               AND payload->>'stage' = 'shadow'
+               AND payload->>'gate_outcome' = 'pass'
+             LIMIT 1
+            """,
+            (candidate_manifest_sha,),
+        ).fetchone()
+        return bool(row)
+
+    def arm_canary(
+        self,
+        *,
+        activation_id: str,
+        baseline_bundle_sha: str,
+        candidate_manifest_sha: str,
+        candidate_bundle_sha: str,
+        selector_version: str,
+        exposure_bps: int,
+        eligibility_profile_sha: str,
+        rolling_profile_sha: str,
+        now_ms: int,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO news_canary_activations(
+              activation_id, baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha,
+              selector_version, exposure_bps, eligibility_profile_sha,
+              rolling_profile_sha, state, revision, created_at_ms, activated_at_ms
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'active',1,%s,%s)
+            """,
+            (
+                activation_id,
+                baseline_bundle_sha,
+                candidate_manifest_sha,
+                candidate_bundle_sha,
+                selector_version,
+                int(exposure_bps),
+                eligibility_profile_sha,
+                rolling_profile_sha,
+                int(now_ms),
+                int(now_ms),
+            ),
+        )
+        self._append_learning_artifact(
+            "deployment_receipt",
+            {
+                "action": "canary_arm",
+                "activation_id": activation_id,
+                "baseline_bundle_sha": baseline_bundle_sha,
+                "candidate_manifest_sha": candidate_manifest_sha,
+                "candidate_bundle_sha": candidate_bundle_sha,
+                "selector_version": selector_version,
+                "exposure_bps": int(exposure_bps),
+                "eligibility_profile_sha": eligibility_profile_sha,
+                "rolling_profile_sha": rolling_profile_sha,
+                "activated_at_ms": int(now_ms),
+            },
+            parent_sha=candidate_manifest_sha,
+            created_by="canary_control",
+            now_ms=now_ms,
+        )
+
+    def transition_canary(
+        self,
+        *,
+        activation_id: str,
+        target_state: str,
+        reason: str,
+        now_ms: int,
+    ) -> bool:
+        if target_state not in {"armed", "active", "tripped", "closed"}:
+            raise ValueError("news_canary_transition_invalid")
+        row = self.conn.execute(
+            "SELECT * FROM news_canary_activations WHERE activation_id = %s FOR UPDATE",
+            (activation_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("news_canary_activation_not_found")
+        if row["state"] in {"tripped", "closed"}:
+            return False
+        allowed_sources = {
+            "armed": {"active"},
+            "active": {"armed"},
+            "tripped": {"armed", "active"},
+            "closed": {"armed", "active"},
+        }[target_state]
+        if str(row["state"]) not in allowed_sources:
+            return False
+        stamp_column = {
+            "armed": "held_at_ms",
+            "active": "resumed_at_ms",
+            "tripped": "tripped_at_ms",
+            "closed": "closed_at_ms",
+        }[target_state]
+        reason_column = "hold_reason" if target_state in {"armed", "active"} else "trip_reason"
+        cursor = self.conn.execute(
+            f"""
+            UPDATE news_canary_activations
+               SET state = %s, revision = revision + 1, {reason_column} = %s, {stamp_column} = %s
+             WHERE activation_id = %s AND revision = %s AND state = %s
+            """,
+            (
+                target_state,
+                reason[:200],
+                int(now_ms),
+                activation_id,
+                int(row["revision"]),
+                row["state"],
+            ),
+        )
+        changed = bool(cursor.rowcount)
+        if changed:
+            kind = "rollback_receipt" if target_state == "tripped" else "deployment_receipt"
+            action = {
+                "armed": "canary_hold",
+                "active": "canary_resume",
+                "tripped": "canary_trip",
+                "closed": "canary_close",
+            }[target_state]
+            self._append_learning_artifact(
+                kind,
+                {
+                    "action": action,
+                    "activation_id": activation_id,
+                    "baseline_bundle_sha": str(row["baseline_bundle_sha"]),
+                    "candidate_manifest_sha": str(row["candidate_manifest_sha"]),
+                    "candidate_bundle_sha": str(row["candidate_bundle_sha"]),
+                    "reason": reason[:200],
+                    "transitioned_at_ms": int(now_ms),
+                    "previous_revision": int(row["revision"]),
+                    "new_revision": int(row["revision"]) + 1,
+                },
+                parent_sha=str(row["candidate_manifest_sha"]),
+                created_by="canary_control",
+                now_ms=now_ms,
+            )
+        return changed
+
+    def evaluate_canary_rolling_slo(self, *, activation_id: str, now_ms: int) -> dict[str, Any]:
+        """Evaluate one durable, pre-registered rolling candidate SLO bucket."""
+
+        from .canary import CANARY_ROLLING_PROFILE, CANARY_ROLLING_PROFILE_SHA
+
+        row = self.conn.execute(
+            "SELECT * FROM news_canary_activations WHERE activation_id = %s FOR UPDATE",
+            (activation_id,),
+        ).fetchone()
+        if row is None or str(row["state"]) != "active":
+            return {"evaluated": False, "reason": "activation_not_active"}
+        if str(row["rolling_profile_sha"]) != CANARY_ROLLING_PROFILE_SHA:
+            self.transition_canary(
+                activation_id=activation_id,
+                target_state="tripped",
+                reason="rolling_profile_hash_mismatch",
+                now_ms=now_ms,
+            )
+            return {"evaluated": True, "tripped": True, "reason": "rolling_profile_hash_mismatch"}
+        bucket_ms = int(CANARY_ROLLING_PROFILE["evaluation_bucket_ms"])
+        bucket = int(now_ms) // bucket_ms * bucket_ms
+        if row["rolling_last_bucket_ms"] is not None and int(row["rolling_last_bucket_ms"]) >= bucket:
+            return {"evaluated": False, "reason": "bucket_already_evaluated"}
+        lower = bucket - int(CANARY_ROLLING_PROFILE["lookback_ms"])
+        counts = self.conn.execute(
+            """
+            SELECT count(*) AS n,
+                   count(*) FILTER (
+                     WHERE v.present IS NULL OR v.degraded OR v.error_code IS NOT NULL
+                   ) AS bad_n
+              FROM news_agent_assignments a
+              LEFT JOIN LATERAL (
+                SELECT true AS present, x.degraded, x.error_code
+                  FROM news_verdicts x
+                 WHERE x.event_id = a.event_id AND x.stage = 'triage'
+                 ORDER BY x.created_at_ms DESC LIMIT 1
+              ) v ON true
+             WHERE a.activation_id = %s AND a.arm = 'candidate'
+               AND a.assigned_at_ms >= %s AND a.assigned_at_ms < %s
+            """,
+            (activation_id, lower, bucket),
+        ).fetchone()
+        n = int(counts["n"] or 0)
+        bad_n = int(counts["bad_n"] or 0)
+        enough = n >= int(CANARY_ROLLING_PROFILE["candidate_min_n"])
+        breached = enough and bad_n / n > float(CANARY_ROLLING_PROFILE["error_or_degraded_rate_max"])
+        breach_windows = int(row["rolling_breach_windows"] or 0) + 1 if breached else 0
+        self.conn.execute(
+            """
+            UPDATE news_canary_activations
+               SET rolling_last_bucket_ms = %s, rolling_breach_windows = %s,
+                   revision = revision + 1
+             WHERE activation_id = %s AND revision = %s AND state = 'active'
+            """,
+            (bucket, breach_windows, activation_id, int(row["revision"])),
+        )
+        tripped = breach_windows >= int(CANARY_ROLLING_PROFILE["consecutive_breach_buckets"])
+        if tripped:
+            self.transition_canary(
+                activation_id=activation_id,
+                target_state="tripped",
+                reason="candidate_rolling_error_slo_trip",
+                now_ms=now_ms,
+            )
+        return {
+            "evaluated": True,
+            "bucket_ms": bucket,
+            "candidate_n": n,
+            "bad_n": bad_n,
+            "breached": breached,
+            "breach_windows": breach_windows,
+            "tripped": tripped,
+        }
+
+    def assign_agent_arm(
+        self,
+        *,
+        event_id: str,
+        stable_bundle_sha: str,
+        admission: str,
+        priority: str,
+        ingest_mode: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        existing = self.conn.execute("SELECT * FROM news_agent_assignments WHERE event_id = %s", (event_id,)).fetchone()
+        if existing:
+            return dict(existing)
+        activation = self.active_canary()
+        if activation is None:
+            selection = {
+                "activation_id": None,
+                "arm": "stable",
+                "bundle_sha": stable_bundle_sha,
+                "selector_version": "stable_only_v1",
+                "eligibility_reason": "no_active_canary",
+            }
+        elif str(activation["baseline_bundle_sha"]) != stable_bundle_sha:
+            self.transition_canary(
+                activation_id=str(activation["activation_id"]),
+                target_state="tripped",
+                reason="baseline_bundle_mismatch",
+                now_ms=now_ms,
+            )
+            selection = {
+                "activation_id": str(activation["activation_id"]),
+                "arm": "stable",
+                "bundle_sha": stable_bundle_sha,
+                "selector_version": str(activation["selector_version"]),
+                "eligibility_reason": "activation_tripped_baseline_mismatch",
+            }
+        else:
+            from .canary import select_canary_arm
+
+            selected = select_canary_arm(
+                event_id=event_id,
+                activation_id=str(activation["activation_id"]),
+                baseline_bundle_sha=stable_bundle_sha,
+                candidate_bundle_sha=str(activation["candidate_bundle_sha"]),
+                exposure_bps=int(activation["exposure_bps"]),
+                admission=admission,
+                priority=priority,
+                ingest_mode=ingest_mode,
+            )
+            selection = {
+                "activation_id": str(activation["activation_id"]),
+                "arm": selected.arm,
+                "bundle_sha": selected.bundle_sha,
+                "selector_version": str(activation["selector_version"]),
+                "eligibility_reason": selected.eligibility_reason,
+            }
+        self.conn.execute(
+            """
+            INSERT INTO news_agent_assignments(
+              event_id, activation_id, arm, bundle_sha, selector_version,
+              eligibility_reason, assigned_at_ms
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (event_id) DO NOTHING
+            """,
+            (
+                event_id,
+                selection["activation_id"],
+                selection["arm"],
+                selection["bundle_sha"],
+                selection["selector_version"],
+                selection["eligibility_reason"],
+                int(now_ms),
+            ),
+        )
+        row = self.conn.execute("SELECT * FROM news_agent_assignments WHERE event_id = %s", (event_id,)).fetchone()
+        if row is None:
+            raise RuntimeError("news_agent_assignment_insert_failed")
+        return dict(row)
+
+    def register_agent_runtime_manifest(
+        self,
+        *,
+        manifest_sha: str,
+        stable_bundle_sha: str,
+        candidate_shas: Sequence[str],
+        image_digest: str,
+        runtime_revision: str,
+        now_ms: int,
+    ) -> None:
+        previous = self.conn.execute(
+            "SELECT * FROM news_agent_runtime_manifests ORDER BY registered_at_ms DESC LIMIT 1"
+        ).fetchone()
+        previous_active = self.conn.execute(
+            "SELECT artifact_sha FROM news_learning_artifacts "
+            "WHERE kind = 'active_agent' ORDER BY created_at_ms DESC LIMIT 1"
+        ).fetchone()
+        cursor = self.conn.execute(
+            """
+            INSERT INTO news_agent_runtime_manifests(
+              manifest_sha, stable_bundle_sha, candidate_shas, image_digest,
+              runtime_revision, registered_at_ms
+            ) VALUES (%s,%s,%s::jsonb,%s,%s,%s)
+            ON CONFLICT (manifest_sha) DO NOTHING
+            """,
+            (
+                manifest_sha,
+                stable_bundle_sha,
+                _dumps(sorted(set(candidate_shas))),
+                image_digest,
+                runtime_revision,
+                int(now_ms),
+            ),
+        )
+        if not cursor.rowcount:
+            return
+        active_sha = self._append_learning_artifact(
+            "active_agent",
+            {
+                "stable_sha": stable_bundle_sha,
+                "runtime_manifest_sha": manifest_sha,
+                "candidate_shas": sorted(set(candidate_shas)),
+                "image_digest": image_digest,
+                "runtime_revision": runtime_revision,
+                "registered_at_ms": int(now_ms),
+            },
+            parent_sha=str(previous_active["artifact_sha"]) if previous_active else None,
+            created_by="worker_startup",
+            now_ms=now_ms,
+        )
+        previous_stable = str(previous["stable_bundle_sha"]) if previous else None
+        previous_image = str(previous["image_digest"]) if previous else None
+        if previous is None or previous_stable != stable_bundle_sha or previous_image != image_digest:
+            self._append_learning_artifact(
+                "deployment_receipt",
+                {
+                    "action": "runtime_deploy",
+                    "active_agent_sha": active_sha,
+                    "stable_sha": stable_bundle_sha,
+                    "image_digest": image_digest,
+                    "runtime_revision": runtime_revision,
+                    "previous_stable_sha": previous_stable,
+                    "previous_image_digest": previous_image,
+                    "deployed_at_ms": int(now_ms),
+                    "rollback_available_until_ms": int(now_ms) + 24 * 3_600_000,
+                },
+                parent_sha=active_sha,
+                created_by="worker_startup",
+                now_ms=now_ms,
+            )
+
+    def _append_learning_artifact(
+        self,
+        kind: str,
+        payload: Mapping[str, Any],
+        *,
+        parent_sha: str | None,
+        created_by: str,
+        now_ms: int,
+    ) -> str:
+        public = dict(payload)
+        artifact_sha = hashlib.sha256(_dumps({"kind": kind, "payload": public}).encode("utf-8")).hexdigest()
+        self.conn.execute(
+            """
+            INSERT INTO news_learning_artifacts(
+              artifact_sha, kind, parent_sha, payload, created_by, created_at_ms
+            ) VALUES (%s,%s,%s,%s::jsonb,%s,%s)
+            ON CONFLICT (artifact_sha) DO NOTHING
+            """,
+            (artifact_sha, kind, parent_sha, _dumps(public), created_by, int(now_ms)),
+        )
+        return artifact_sha
+
+    # ------------------------------------------------------------------ janitor / retention
     def expire_bands(self, *, now_ms: int) -> int:
         cursor = self.conn.execute("DELETE FROM news_event_bands WHERE expires_at_ms < %s", (int(now_ms),))
         return int(cursor.rowcount or 0)
 
+    def purge_learning_retention(self, *, batch_size: int = 500) -> dict[str, Any]:
+        """Run the database-owned bounded learning-evidence retention policy."""
+
+        row = self.conn.execute(
+            "SELECT purge_news_learning_retention(%s) AS result",
+            (int(batch_size),),
+        ).fetchone()
+        return dict(row["result"] or {})
+
+    def record_learning_retention_error(self, *, error_code: str, now_ms: int) -> None:
+        self.conn.execute(
+            """
+            UPDATE news_learning_retention_state
+               SET last_error_code = %s, updated_at_ms = %s
+             WHERE singleton
+            """,
+            (str(error_code)[:200], int(now_ms)),
+        )
+
     def purge_before(self, *, cutoff_ms: int, judged_cutoff_ms: int | None = None) -> int:
-        """Delete raw Items older than ``cutoff_ms``, keeping any Item that is evidence for a judged or labelled
+        """Delete raw Items older than ``cutoff_ms``, keeping any Item that is evidence for a judged or reviewed
         Event newer than ``judged_cutoff_ms`` (#81).
 
         Deleting `news_items` cascades to `news_events` (leader FK) and from there to verdicts, deliveries,
-        members, assets, bands and operator labels, so a single retention number decided the lifetime of the
+        members, assets, bands, snapshots and reviews, so one retention number decides the lifetime of the
         whole learning plane. An Item is evidence when *any* Event it belongs to — as leader or as a later
-        member, which is what a rebuild of the Triage input needs — carries a verdict or a label. Passing no
+        member, which is what a rebuild of the Triage input needs — carries a verdict or review. Passing no
         ``judged_cutoff_ms`` keeps the old one-tier behaviour for callers that do not care.
         """
 
@@ -797,7 +1420,8 @@ class NewsRepository:
                       WHERE m.item_id = i.item_id
                         AND e.opened_at_ms >= %s
                         AND (EXISTS (SELECT 1 FROM news_verdicts v WHERE v.event_id = e.event_id)
-                          OR EXISTS (SELECT 1 FROM news_event_labels l WHERE l.event_id = e.event_id))
+                          OR EXISTS (SELECT 1 FROM news_reviews r WHERE r.event_id = e.event_id)
+                          OR EXISTS (SELECT 1 FROM news_learning_cases c WHERE c.event_id = e.event_id))
                    )
                AND NOT EXISTS (
                      SELECT 1
@@ -805,73 +1429,13 @@ class NewsRepository:
                       WHERE e2.leader_item_id = i.item_id
                         AND e2.opened_at_ms >= %s
                         AND (EXISTS (SELECT 1 FROM news_verdicts v WHERE v.event_id = e2.event_id)
-                          OR EXISTS (SELECT 1 FROM news_event_labels l WHERE l.event_id = e2.event_id))
+                          OR EXISTS (SELECT 1 FROM news_reviews r WHERE r.event_id = e2.event_id)
+                          OR EXISTS (SELECT 1 FROM news_learning_cases c WHERE c.event_id = e2.event_id))
                    )
             """,
             (int(cutoff_ms), int(judged_cutoff_ms), int(judged_cutoff_ms)),
         )
         return int(cursor.rowcount or 0)
-
-    def insert_label(
-        self,
-        *,
-        event_id: str | None,
-        label_version: str,
-        source: str,
-        label: Mapping[str, Any],
-        now_ms: int,
-        labeled_by: str = "operator",
-        subject: str = "",
-    ) -> bool:
-        """Record one label, idempotent by ``label_id`` and *correctable* (#81).
-
-        ``event_id`` may be None: a miss the pipeline never created an Event for is the one label that measures
-        recall, and it has nothing to hang on. ``subject`` denormalises what was labelled so the row stays
-        readable after the Event is purged.
-        """
-
-        # Identity: the Event when there is one, the subject text when there is not. Re-labelling the same Event
-        # updates that row instead of failing silently, which is what the old ON CONFLICT DO NOTHING did.
-        key = f"{event_id}:{label_version}:{labeled_by}" if event_id else f":{subject}:{label_version}:{labeled_by}"
-        label_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
-        cursor = self.conn.execute(
-            """
-            INSERT INTO news_event_labels
-                   (label_id, event_id, label_version, source, label, created_at_ms, labeled_by, subject)
-            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-            ON CONFLICT (label_id) DO UPDATE
-               SET label = EXCLUDED.label, source = EXCLUDED.source, created_at_ms = EXCLUDED.created_at_ms
-            """,
-            (
-                label_id,
-                event_id,
-                label_version,
-                source,
-                _dumps(dict(label)),
-                int(now_ms),
-                labeled_by,
-                subject,
-            ),
-        )
-        return bool(cursor.rowcount)
-
-    def labels_for_event(self, event_id: str) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT label_version, source, label, created_at_ms, labeled_by, subject FROM news_event_labels"
-            " WHERE event_id = %s ORDER BY created_at_ms",
-            (event_id,),
-        ).fetchall()
-        return [
-            {
-                "label_version": r["label_version"],
-                "source": r["source"],
-                "label": dict(r["label"] or {}),
-                "created_at_ms": int(r["created_at_ms"]),
-                "labeled_by": r["labeled_by"],
-                "subject": r["subject"],
-            }
-            for r in rows
-        ]
 
     # ------------------------------------------------------------------ reads (Serve)
     def list_feed(
@@ -1016,13 +1580,13 @@ class NewsRepository:
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
-        card = self.event_card(event_id)
+        card = self._current_event_card(event_id)
         if card is None:
             return None
         members = self.conn.execute(
             """
             SELECT m.item_id, m.joined_at_ms, m.match_kind, m.jaccard_estimate, i.title, i.canonical_url,
-                   i.reporting_origin, i.published_at_ms, i.provenance, i.description
+                   i.reporting_origin, i.published_at_ms, i.provenance, i.description, m.fact_id, m.fact_text
               FROM news_event_members m JOIN news_items i ON i.item_id = m.item_id
              WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
             """,
@@ -1047,6 +1611,8 @@ class NewsRepository:
                 "jaccard_estimate": r["jaccard_estimate"],
                 "provenance": list(r["provenance"] or []),
                 "description": r["description"],
+                "fact_id": r["fact_id"],
+                "fact_text": r["fact_text"],
             }
             for r in members
         ]
@@ -1058,6 +1624,7 @@ class NewsRepository:
                 "error_code": r["error_code"],
                 "attempted_at_ms": int(r["attempted_at_ms"]),
                 "settled_at_ms": r["settled_at_ms"],
+                "card": dict(r["card"] or {}),
                 "receipt": r["receipt"],
             }
             for r in deliveries
@@ -1083,7 +1650,68 @@ class NewsRepository:
             "members": member_rows,
             "verdicts": verdict_rows,
             "deliveries": delivery_rows,
-            "labels": self.labels_for_event(event_id),
+            "review": self._review_summary(event_id),
+            "evidence_snapshots": [
+                {
+                    "event_id": row["event_id"],
+                    "evidence_version": int(row["evidence_version"]),
+                    "focus_fact_id": row["focus_fact_id"],
+                    "evidence_sha256": row["evidence_sha256"],
+                    "provenance": row["provenance"],
+                    "release_eligible": bool(row["release_eligible"]),
+                    "snapshot": dict(row["snapshot"] or {}),
+                    "created_at_ms": int(row["created_at_ms"]),
+                }
+                for row in self.conn.execute(
+                    "SELECT * FROM news_event_evidence_snapshots WHERE event_id = %s ORDER BY evidence_version",
+                    (event_id,),
+                ).fetchall()
+            ],
+            "reader_receipt": ReaderReceipt.from_delivery(delivery_rows[-1] if delivery_rows else None).model_dump(
+                mode="json"
+            ),
+        }
+
+    def _review_summary(self, event_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            """
+            SELECT j.*, counts.judgment_n
+              FROM (
+                SELECT count(*) AS judgment_n FROM news_reviews
+                 WHERE event_id = %s AND review_kind = 'judgment'
+              ) counts
+              LEFT JOIN LATERAL (
+                SELECT judgment.*
+                  FROM news_reviews acceptance
+                  JOIN news_reviews judgment ON judgment.review_id = acceptance.accepts_review_id
+                 WHERE acceptance.review_kind = 'acceptance' AND judgment.event_id = %s
+                 ORDER BY acceptance.created_at_ms DESC, acceptance.review_id DESC LIMIT 1
+              ) j ON true
+            """,
+            (event_id, event_id),
+        ).fetchone()
+        if row is None:
+            return {"judgment_n": 0, "accepted": None, "uncertain": False}
+        accepted = None
+        if row.get("review_id"):
+            accepted = {
+                "review_id": row["review_id"],
+                "should_push": row["should_push"],
+                "dimensions": dict(row["dimensions"] or {}),
+                "novelty": dict(row["novelty"] or {}),
+                "first_bad_owner": row["first_bad_owner"],
+                "evidence_refs": list(row["evidence_refs"] or []),
+                "expected_correction": row["expected_correction"],
+                "note": row["note"],
+                "reviewer": row["reviewer"],
+                "created_at_ms": int(row["created_at_ms"]),
+                "rubric_version": row["rubric_version"],
+                "reader_contract_version": row["reader_contract_version"],
+            }
+        return {
+            "judgment_n": int(row["judgment_n"] or 0),
+            "accepted": accepted,
+            "uncertain": bool(accepted and accepted["should_push"] == "uncertain"),
         }
 
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
@@ -1141,6 +1769,7 @@ class NewsRepository:
         ).fetchone()
         control = self.read_control(now_ms=now_ms)
         funnel = self._funnel_24h(day_ago=day_ago)
+        retention = self.conn.execute("SELECT * FROM news_learning_retention_state WHERE singleton").fetchone()
         return {
             "ingest": {
                 "connected": bool(ingest["connected"]) if ingest else False,
@@ -1180,6 +1809,20 @@ class NewsRepository:
                 "e2e_p95_ms": float(delivery["e2e_p95_ms"])
                 if delivery and delivery["e2e_p95_ms"] is not None
                 else None,
+            },
+            "learning_retention": {
+                "last_run_at_ms": retention["last_run_at_ms"] if retention else None,
+                "eligible_recordings": int(retention["eligible_recordings"] or 0) if retention else 0,
+                "eligible_cases": int(retention["eligible_cases"] or 0) if retention else 0,
+                "eligible_artifacts": int(retention["eligible_artifacts"] or 0) if retention else 0,
+                "deleted_recordings": int(retention["deleted_recordings"] or 0) if retention else 0,
+                "deleted_cases": int(retention["deleted_cases"] or 0) if retention else 0,
+                "deleted_artifacts": int(retention["deleted_artifacts"] or 0) if retention else 0,
+                "oldest_recording_age_ms": retention["oldest_recording_age_ms"] if retention else None,
+                "oldest_case_age_ms": retention["oldest_case_age_ms"] if retention else None,
+                "oldest_artifact_age_ms": retention["oldest_artifact_age_ms"] if retention else None,
+                "last_error_code": retention["last_error_code"] if retention else None,
+                "updated_at_ms": int(retention["updated_at_ms"]) if retention else None,
             },
             "control": control,
         }
@@ -1236,9 +1879,8 @@ class NewsRepository:
         throttled: dict[str, int] = {}
         pushed_by_rule: dict[str, int] = {}
         degraded_by_code: dict[str, int] = {}
-        # #100: duplicates the reader was spared, split by which path measured the card. `all` only exists under
-        # policy v6; a zero there on a busy day means `similarity_all_pushes` is off, or the every-push
-        # measurement is finding nothing the count throttle would not have caught anyway.
+        # Duplicate withholds by measurement path. Policy v7 writes `all` for
+        # every ordinary push comparison; `throttled` is retained for old rows.
         duplicates: dict[str, int] = {"throttled": 0, "all": 0}
         for row in verdict_groups:
             n = int(row["n"])
@@ -1248,24 +1890,26 @@ class NewsRepository:
             elif final == "throttled":
                 throttled[str(row["key"])] = throttled.get(str(row["key"]), 0) + n
                 if str(row["key"]).endswith(":seen"):
-                    # Rows written before v6 — and by a worker the rolling restart has not reached — carry no
-                    # `seen_scope`. They are all v5 withholds by construction, so credit them to `throttled`
-                    # rather than to neither: otherwise the metric reads near-zero for a day after every deploy.
+                    # Old rows without `seen_scope` came from the pre-v7
+                    # count-throttle path; keep them in the historical bucket.
                     scope = str(row["seen_scope"] or "") or "throttled"
                     duplicates[scope] = duplicates.get(scope, 0) + n
             elif final in {"push", "escalate"}:
                 pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
             if row["degraded"]:
                 degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
-        # Both shapes of "the reader should have got this": a label on an Event, and one on a subject the
-        # pipeline never created an Event for. The second is the only observation of recall's *upper* bound, so
-        # counting only the first (an inner join on news_events) made the more important half invisible.
+        # Both Review v2 shapes of "the reader should have got this": an accepted Event judgment and an
+        # accepted ExternalMissSnapshot.  The latter is the only observed upper bound on upstream recall.
         missed = self.conn.execute(
             """
-            SELECT count(*) AS n,
-                   count(*) FILTER (WHERE event_id IS NULL) AS without_event
-              FROM news_event_labels
-             WHERE created_at_ms >= %s AND label ->> 'label' IN ('missed', 'must_push')
+            SELECT count(*) FILTER (WHERE j.should_push IN ('must_push', 'should_push')) AS n,
+                   count(*) FILTER (
+                     WHERE j.subject_kind = 'external_miss'
+                       AND j.should_push IN ('must_push', 'should_push')
+                   ) AS external
+              FROM news_reviews acceptance
+              JOIN news_reviews j ON j.review_id = acceptance.accepts_review_id
+             WHERE acceptance.review_kind = 'acceptance' AND acceptance.created_at_ms >= %s
             """,
             (day_ago,),
         ).fetchone()
@@ -1285,8 +1929,8 @@ class NewsRepository:
             "throttled_by_key": dict(sorted(throttled.items(), key=lambda kv: -kv[1])[:10]),
             "pushed_by_rule": dict(sorted(pushed_by_rule.items(), key=lambda kv: -kv[1])),
             "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
-            "labeled_missed_24h": int(missed["n"] or 0) if missed else 0,
-            "labeled_missed_without_event_24h": int(missed["without_event"] or 0) if missed else 0,
+            "reviewed_should_push_24h": int(missed["n"] or 0) if missed else 0,
+            "reviewed_external_miss_24h": int(missed["external"] or 0) if missed else 0,
             "duplicates_withheld_24h": duplicates,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
         }
@@ -1331,6 +1975,12 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
         "leader_title": card["leader_title"],
         "leader_url": card.get("leader_url"),
         "leader_description": card.get("leader_description", ""),
+        "focus_fact_id": card.get("focus_fact_id", ""),
+        "focus_fact_text": card.get("focus_fact_text", ""),
+        "focus_fact_context": card.get("focus_fact_context", ""),
+        "focus_fact_method": card.get("focus_fact_method", ""),
+        "focus_span_start": int(card.get("focus_span_start") or 0),
+        "focus_span_end": int(card.get("focus_span_end") or 0),
         "reporting_origin": card.get("reporting_origin", ""),
         "opened_at_ms": int(card["opened_at_ms"]),
         "last_member_at_ms": int(card["last_member_at_ms"]),
@@ -1492,6 +2142,9 @@ def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
         "degraded": bool(row.get("degraded")),
         "error_code": row.get("error_code"),
         "trace": dict(row.get("trace") or {}),
+        "evidence_version": row.get("evidence_version"),
+        "evidence_sha256": row.get("evidence_sha256"),
+        "focus_fact_id": row.get("focus_fact_id"),
         "published_at_ms": row.get("published_at_ms"),
         "created_at_ms": int(row["created_at_ms"]),
     }
