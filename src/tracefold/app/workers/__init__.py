@@ -18,7 +18,7 @@ from psycopg.errors import IdleInTransactionSessionTimeout, LockNotAvailable, Qu
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.database import WorkerDatabase
-from tracefold.app.learning_runtime import active_arm_manifest, runtime_manifest_sha
+from tracefold.app.learning_runtime import UNVERSIONED, active_arm_manifest, runtime_identity, runtime_manifest_sha
 from tracefold.app.llm import configured_chat_model
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
@@ -66,7 +66,6 @@ from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperat
 GRACEFUL_DRAIN_TIMEOUT_SECONDS = 30.0
 FATAL_EXIT_TIMEOUT_SECONDS = 5.0
 _WORKER_INTERNAL_PORT = 8766
-_RUNTIME_REVISION_ENV = "TRACEFOLD_RUNTIME_REVISION"
 _HEARTBEAT_SECONDS = 5.0
 _CONTROL_TIMEOUT_SECONDS = 1.0
 _CONTROL_RETRY_SECONDS = 0.250
@@ -91,7 +90,8 @@ class _ProbeState:
     runtime_version: str
     started_at_ms: int
     clock_ms: Callable[[], int]
-    runtime_revision: str = "unversioned"
+    runtime_revision: str = UNVERSIONED
+    image_digest: str = UNVERSIONED
     lifecycle_state: str = "starting"
     heartbeat_at_ms: int | None = None
     ready: bool = False
@@ -112,6 +112,7 @@ class _ProbeState:
             "runtime_id": self.runtime_id,
             "runtime_version": self.runtime_version,
             "runtime_revision": self.runtime_revision,
+            "image_digest": self.image_digest,
             "process_id": os.getpid(),
             "lifecycle_state": self.lifecycle_state,
             "started_at_ms": self.started_at_ms,
@@ -134,12 +135,14 @@ async def run_workers(settings: Settings) -> None:
     runtime_version = WORKERS_RUNTIME_VERSION
     started_at_ms = _now_ms()
     telemetry = TelemetryRegistry()
+    identity = runtime_identity()
     probe_state = _ProbeState(
         runtime_id=runtime_id,
         runtime_version=runtime_version,
         started_at_ms=started_at_ms,
         clock_ms=_now_ms,
-        runtime_revision=os.environ.get(_RUNTIME_REVISION_ENV, "").strip() or "unversioned",
+        runtime_revision=identity.runtime_revision,
+        image_digest=identity.image_digest,
     )
     work_stop_event = asyncio.Event()
     control_stop_event = asyncio.Event()
@@ -581,6 +584,7 @@ async def _wire_news_pipeline(
     )
 
     models = news_model_availability(settings)
+    identity = runtime_identity()
     stable_arm = active_arm_manifest(settings)
     compiled_candidates = compiled_canary_candidates()
     canary_arms: dict[str, CanaryRuntimeArm] = {}
@@ -693,13 +697,13 @@ async def _wire_news_pipeline(
                 "manifest_sha": runtime_manifest_sha(
                     stable_bundle_sha=stable_arm.bundle_sha,
                     candidate_shas=sorted(compiled_candidates),
-                    image_digest=os.getenv("TRACEFOLD_IMAGE_DIGEST", "unversioned"),
-                    runtime_revision=os.getenv(_RUNTIME_REVISION_ENV, "unversioned"),
+                    image_digest=identity.image_digest,
+                    runtime_revision=identity.runtime_revision,
                 ),
                 "stable_bundle_sha": stable_arm.bundle_sha,
                 "candidate_shas": sorted(compiled_candidates),
-                "image_digest": os.getenv("TRACEFOLD_IMAGE_DIGEST", "unversioned"),
-                "runtime_revision": os.getenv(_RUNTIME_REVISION_ENV, "unversioned"),
+                "image_digest": identity.image_digest,
+                "runtime_revision": identity.runtime_revision,
                 "now_ms": int(time.time() * 1000),
             },
         ),

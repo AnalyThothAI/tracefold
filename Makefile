@@ -114,14 +114,24 @@ up: preflight init ## build, migrate, start, and verify the complete product
 		GITHUB_TOKEN="$$token"; \
 		TRACEFOLD_BUILD_REVISION=$$(git rev-parse --verify HEAD); \
 		export GITHUB_TOKEN TRACEFOLD_BUILD_REVISION; \
-		if ! docker compose build migrate || \
-			! docker compose stop -t 40 workers serve || \
-			! docker compose up -d --no-build --force-recreate --wait \
-				--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers; then \
+		fail() { \
 			docker compose ps --all >&2 || true; \
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
-		fi
+		}; \
+		docker compose build migrate || fail; \
+		image=$$(docker compose config --images migrate 2>/dev/null \
+			| grep -v '@sha256:' | head -n 1); \
+		TRACEFOLD_IMAGE_DIGEST=$$(docker image inspect --format '{{.Id}}' "$$image" 2>/dev/null || true); \
+		export TRACEFOLD_IMAGE_DIGEST; \
+		if [ -z "$$TRACEFOLD_IMAGE_DIGEST" ]; then \
+			echo "WARNING: could not read the digest of $${image:-the built image}." >&2; \
+			echo "  Deployment continues, but every runtime manifest it writes records" >&2; \
+			echo "  image_digest=unversioned and cannot close a learning promotion." >&2; \
+		fi; \
+		docker compose stop -t 40 workers serve || fail; \
+		docker compose up -d --no-build --force-recreate --wait \
+			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers || fail
 	@$(MAKE) --no-print-directory status
 	@echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 

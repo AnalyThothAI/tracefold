@@ -54,7 +54,7 @@ Compose command whose exit status ignores an unhealthy Worker.
 |---|---|---|
 | `/healthz` | process liveness | none |
 | Serve `/readyz` | DB liveness plus cached startup schema/composition | no queue inspection |
-| Workers `/readyz` | root running, singleton session healthy, and latest O(1) heartbeat persisted within 15 s | no queue inspection |
+| Workers `/readyz` | root running, singleton session healthy, and latest O(1) heartbeat persisted within 15 s, plus the `runtime_revision` / `image_digest` this process can prove | no queue inspection |
 | `/api/status` | `{measured_at_ms, runtime}`: database probe plus the Workers heartbeat row | bounded control read |
 | `/api/news/status` | four-layer News state (`ingest`, `broker`, `pipeline`, `delivery`) plus `control` | bounded News reads |
 | `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
@@ -331,7 +331,14 @@ Diagnose News in this order:
    append a rubric with `review submit`; a fact that never became an Event uses
    `review external-miss`. Do not infer precision/recall from unlabeled rows or
    infer causality from the market tab.
-6. A change is a sealed candidate, not an edited production prompt. Freeze a
+6. A release receipt may only claim an identity the deployment can prove. The
+   image cannot hash itself at build time, so `make up` reads the digest of the
+   image it just built and passes it in as `TRACEFOLD_IMAGE_DIGEST`; an absent
+   or empty value is recorded as `unversioned`, never as an empty string.
+   Before starting an evidence run, confirm Workers `/readyz` reports a real
+   `image_digest` and `runtime_revision` — an `unversioned` deployment still
+   serves News correctly but cannot close a promotion.
+7. A change is a sealed candidate, not an edited production prompt. Freeze a
    development dataset, `learning propose` exactly one variable, and run
    `learning evaluate`. Production promotion additionally requires a future
    temporal validation dataset, blind pairwise review, a sealed 24 h shadow
@@ -351,7 +358,7 @@ Diagnose News in this order:
    counts verdicts the model returned without the `novelty` field (accepted as
    `new_fact` after the retry — a rising count means the schema stopped
    landing and novelty is silently off).
-6. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
+8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
 Retention: unjudged `news_items`/`news_events` older than 30 days are purged by
