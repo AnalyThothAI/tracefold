@@ -1,8 +1,6 @@
 import { useMediaQuery } from "@shared/hooks/useMediaQuery";
-import { CommandPalette, type Command } from "@shared/ui/CommandPalette";
 import { Drawer } from "@shared/ui/Drawer";
 import { IconButton } from "@shared/ui/IconButton";
-import { ShortcutsDialog, type Shortcut } from "@shared/ui/ShortcutsDialog";
 import { PanelLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
@@ -24,18 +22,9 @@ const DESKTOP_QUERY = "(min-width: 1280px)";
 const PHONE_QUERY = "(max-width: 767px)";
 
 export type CockpitShellProps = {
-  /** What ⌘K can do, assembled by the shell route from what the destinations already expose. */
-  commands?: Command[];
   navCounts?: AppNavigationCounts;
   navStatusLevel?: AppNavigationLevel;
-  onHotkey: (event: KeyboardEvent) => void;
   outletContext?: unknown;
-  palette?: { onOpenChange: (open: boolean) => void; open: boolean };
-  shortcuts: {
-    items: readonly Shortcut[];
-    onOpenChange: (open: boolean) => void;
-    open: boolean;
-  };
   topbar: CockpitTopbarProps;
 };
 
@@ -48,16 +37,11 @@ export type CockpitShellProps = {
  *          go, and `AppBottomNav` shows every destination at once under the thumb (#87).
  */
 export function CockpitShell({
-  commands,
   navCounts,
   navStatusLevel,
-  onHotkey,
   outletContext,
-  palette,
-  shortcuts,
   topbar,
 }: CockpitShellProps) {
-  useShellHotkeys(onHotkey);
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const phone = useMediaQuery(PHONE_QUERY);
   // One control, two meanings: at desktop it folds the in-frame sidebar away for readers who want the whole
@@ -122,25 +106,6 @@ export function CockpitShell({
           />
         </Drawer>
       )}
-      <ShortcutsDialog
-        onOpenChange={shortcuts.onOpenChange}
-        open={shortcuts.open}
-        shortcuts={shortcuts.items}
-      />
-      {palette ? (
-        <CommandPalette
-          commands={commands ?? []}
-          onOpenChange={palette.onOpenChange}
-          open={palette.open}
-        />
-      ) : null}
     </div>
   );
-}
-
-function useShellHotkeys(onHotkey: (event: KeyboardEvent) => void) {
-  useEffect(() => {
-    document.addEventListener("keydown", onHotkey);
-    return () => document.removeEventListener("keydown", onHotkey);
-  }, [onHotkey]);
 }

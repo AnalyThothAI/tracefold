@@ -2,7 +2,6 @@ import { CockpitTopbar } from "@features/cockpit";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { appStatusFixture } from "@tests/fixtures/appRouteFixtures";
 import { axe } from "jest-axe";
-import { createRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -20,7 +19,6 @@ const healthyStatus = {
 describe("CockpitTopbar", () => {
   it("keeps its News search draft synchronized with the URL-owned query", () => {
     const search = {
-      inputRef: createRef<HTMLInputElement>(),
       onSubmitQuery: vi.fn(),
       query: "bitcoin",
     };
@@ -72,7 +70,7 @@ describe("CockpitTopbar", () => {
       <MemoryRouter>
         <CockpitTopbar
           title="新闻事件流"
-          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery }}
+          search={{ onSubmitQuery }}
           status={healthyStatus}
           onRefresh={vi.fn()}
         />
@@ -93,7 +91,7 @@ describe("CockpitTopbar", () => {
       <MemoryRouter>
         <CockpitTopbar
           title="新闻事件流"
-          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
+          search={{ onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, status: appStatusFixture() }}
           onRefresh={vi.fn()}
         />
@@ -115,7 +113,7 @@ describe("CockpitTopbar", () => {
       <MemoryRouter>
         <CockpitTopbar
           title="新闻事件流"
-          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
+          search={{ onSubmitQuery: vi.fn() }}
           status={{
             ...healthyStatus,
             status: appStatusFixture({
@@ -141,7 +139,7 @@ describe("CockpitTopbar", () => {
       <MemoryRouter>
         <CockpitTopbar
           title="新闻事件流"
-          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
+          search={{ onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, statusError: true }}
           onRefresh={vi.fn()}
         />
@@ -153,7 +151,7 @@ describe("CockpitTopbar", () => {
       <MemoryRouter>
         <CockpitTopbar
           title="新闻事件流"
-          search={{ inputRef: createRef<HTMLInputElement>(), onSubmitQuery: vi.fn() }}
+          search={{ onSubmitQuery: vi.fn() }}
           status={{ ...healthyStatus, configReady: false }}
           onRefresh={vi.fn()}
         />

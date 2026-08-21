@@ -6,8 +6,8 @@
  * The product is a Chinese-language reading surface: a headline, one why sentence, a few chips. Han glyphs
  * carry far more strokes per em than Latin, and light-on-dark blooms them at the small sizes this console
  * uses, so the ground is a cool light grey and the ink is near-black. A panel separates from the canvas by a
- * 1px inset ring, never by lightening and never by a drop shadow — elevation is reserved for the four things
- * that actually float (segmented pill, drawer, command palette, hover card).
+ * 1px inset ring, never by lightening and never by a drop shadow — elevation is reserved for the three
+ * things that actually float (segmented pill, drawer, hover card).
  *
  * Colour carries exactly two axes and they never share a hue:
  *
@@ -24,9 +24,8 @@
   color-scheme: light;
 
   /*
-   * Surfaces. The canvas is cool grey so a full-width white panel reads as a raised sheet; `raised` is the
-   * *sunken* block inside a panel (a well, not an elevation), and `cursor` is the keyboard reading position —
-   * one step darker than hover so the two are never confused mid-scan.
+   * Surfaces. The canvas is cool grey so a full-width white panel reads as a raised sheet, and `raised` is
+   * the *sunken* block inside a panel (a well, not an elevation).
    */
   --surface-canvas: #eaedf1;
   --surface-root: #ffffff;
@@ -34,7 +33,6 @@
   --surface-panel: #ffffff;
   --surface-raised: #f8f9fb;
   --surface-hover: #f8f9fb;
-  --surface-cursor: #e9edf2;
   /* The segmented-control groove. Alpha, so it sits on white and on the sunken block alike. */
   --surface-slot: rgba(13, 17, 23, 0.05);
 

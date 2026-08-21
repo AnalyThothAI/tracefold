@@ -21,8 +21,8 @@ import "./newsEventDrawer.css";
  * The Event beside the list, not instead of it (design proposal ⑦).
  *
  * Reviewing a queue used to mean a full-page navigation per Event and a scroll back to where you were. The
- * drawer is deliberately non-modal: the feed keeps the keyboard, `J`/`K` walk the rows, and the drawer
- * follows the cursor without ever closing. The Event's own page is still the canonical, shareable surface —
+ * drawer is deliberately non-modal: the list stays live behind it, and clicking the next row swaps what the
+ * drawer shows instead of closing it. The Event's own page is still the canonical, shareable surface —
  * 打开整页 and any modified click go straight there.
  *
  * It carries the three things a reviewer actually needs: what was judged, what the assets are worth, and how
@@ -59,15 +59,9 @@ export function NewsEventDrawer({
       actions={
         eventId ? (
           <>
-            <span aria-hidden className="news-drawer-hint">
-              <kbd>K</kbd>
-              <kbd>J</kbd>
-              换条
-            </span>
             <Link className="news-drawer-open" state={{ feedSearch }} to={newsEventPath(eventId)}>
               打开整页
             </Link>
-            {/* A panel that survives a click outside needs a way out that is not a keystroke. */}
             <ActionButton onClick={onClose} size="sm" variant="quiet">
               关闭
             </ActionButton>

@@ -18,7 +18,7 @@ import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 
 import "./newsEventRow.css";
 
-/** Three chips fit a meta line; the rest are counted and listed in full one keystroke away. */
+/** Three chips fit a meta line; the rest are counted and listed in full one click away. */
 const ROW_ASSET_CHIPS = 3;
 
 /**
@@ -39,7 +39,6 @@ const ROW_ASSET_CHIPS = 3;
  * and stay out of the phone card entirely.
  */
 export function NewsEventRow({
-  cursor = false,
   event,
   expanded = false,
   fresh = false,
@@ -51,7 +50,6 @@ export function NewsEventRow({
   selectable = false,
   selected = false,
 }: {
-  cursor?: boolean;
   event: NewsFeedEvent;
   expanded?: boolean;
   fresh?: boolean;
@@ -85,7 +83,6 @@ export function NewsEventRow({
   return (
     <article
       className="news-event-row"
-      data-cursor={cursor || undefined}
       /* The 3px rail is the market call, not the pipeline state — the right column already owns that. */
       data-direction={directionTone(triage?.direction)}
       data-event-id={event.event_id}
@@ -96,7 +93,6 @@ export function NewsEventRow({
       data-priority={event.priority}
       data-selectable={selectable || undefined}
       data-selected={selected || undefined}
-      tabIndex={-1}
     >
       {selectable ? (
         <button

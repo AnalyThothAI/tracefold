@@ -82,8 +82,8 @@ test.describe("desktop sidebar navigation", () => {
     await expectSidebarRouteChange(page, "事件流", "/news");
     /*
      * At this width an Event opens in the drawer beside the list (design proposal ⑦): the list stays where
-     * it was and the reader walks it with J/K. 打开整页 is the way to the canonical, shareable page, and the
-     * navigation still marks the feed — and only the feed — as current on it.
+     * it was and clicking another row swaps the drawer. 打开整页 is the way to the canonical, shareable page,
+     * and the navigation still marks the feed — and only the feed — as current on it.
      */
     await page.locator("[data-event-id] h2 a").first().click();
     await page.getByRole("dialog").getByRole("link", { name: "打开整页" }).click();

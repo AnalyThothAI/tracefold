@@ -73,22 +73,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .news-drawer-hint {
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
-    color: var(--text-subtle);
-    font-size: 10.5px;
-    white-space: nowrap;
-  }
-
-  .news-drawer-hint kbd {
-    padding: 1px 5px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xs);
-    font: 500 9.5px/1.5 var(--font-mono);
-  }
-
   .news-drawer-open {
     padding: 0 9px;
     border-radius: 5px;

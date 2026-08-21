@@ -398,11 +398,6 @@
       padding: 13px 14px 15px;
     }
 
-    /* A key hint on a device with no keyboard is decoration that costs the pager its width. */
-    .news-detail-pager kbd {
-      display: none;
-    }
-
     .news-detail-headline {
       font-size: 19px;
       letter-spacing: -0.02em;

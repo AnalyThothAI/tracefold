@@ -32,14 +32,6 @@
     flex: 0 0 auto;
   }
 
-  .ui-button kbd {
-    padding: 1px 5px;
-    border-radius: var(--radius-xs);
-    color: var(--text-subtle);
-    background: var(--border-faint);
-    font: 500 10px/1.5 var(--font-mono);
-  }
-
   .ui-button[data-size="sm"] {
     min-height: 26px;
     padding: 0 10px;
@@ -105,11 +97,6 @@
     color: var(--text-faint);
     background: var(--border-faint);
     box-shadow: none;
-  }
-
-  .ui-button:disabled kbd {
-    color: var(--text-faint);
-    background: transparent;
   }
 
   /* A control a thumb has to find gets the full target, whatever size the desktop asked for. */
