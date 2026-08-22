@@ -229,15 +229,19 @@ class _FeedbackCompileProgram(DspyCompileProgram):
         trace = dspy.settings.trace
         before = len(trace) if isinstance(trace, list) else None
         try:
-            prediction = cast(dspy.Prediction, super().forward(evidence_json, card_evidence_json, told_count))
+            return cast(dspy.Prediction, super().forward(evidence_json, card_evidence_json, told_count))
         except (ValidationError, ValueError) as exc:
             code = _advisory_rejection_code(exc)
             if code is None:
                 raise
             return dspy.Prediction(semantics=None, card=None, verdict=None, advisory_rejected=code)
-        if before is not None:
-            self._rekey_trace(trace, before)
-        return prediction
+        finally:
+            # In `finally`, not on the success path only. A schema rejection of the model's own output is the
+            # most informative failure there is — it is exactly what `add_format_failure_as_feedback` exists to
+            # surface — and leaving those entries keyed to the anonymous inner predictor drops them from the
+            # reflective dataset, so the reflection model never sees the outputs it most needs to fix.
+            if before is not None:
+                self._rekey_trace(trace, before)
 
     def _rekey_trace(self, trace: list[Any], before: int) -> None:
         """Attribute the recorded calls to the two named Predictors GEPA is optimizing.
@@ -303,10 +307,16 @@ class _BudgetedLM(dspy.BaseLM):  # type: ignore[misc]
                 try:
                     output = call()
                 except BaseException as exc:
-                    self._meter.after(_require_compile_metadata(capture))
-                    if not _is_transport_failure(exc) or attempt == _COMPILE_NUM_RETRIES:
-                        if _is_transport_failure(exc):
-                            self.transport_failures += 1
+                    # A transport failure means the provider never returned a response, so nothing recorded
+                    # usage or cost and `_require_compile_metadata` would raise here — aborting the compile and
+                    # masking the original error. `before()` has already reserved this attempt's worst-case
+                    # cost, so the budget stays bounded without a settle-up the provider never supplied.
+                    transport = _is_transport_failure(exc)
+                    if not transport:
+                        self._meter.after(_require_compile_metadata(capture))
+                        raise
+                    if attempt == _COMPILE_NUM_RETRIES:
+                        self.transport_failures += 1
                         raise
                     self.transport_retries += 1
                     last = exc

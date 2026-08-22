@@ -418,10 +418,6 @@ export interface components {
             direction?: ("bullish" | "bearish" | "neutral" | "unclear") | null;
             /** Magnitude */
             magnitude?: number | null;
-            /** Novelty */
-            novelty?: ("new_fact" | "progression" | "restatement") | null;
-            /** Should Reach Reader */
-            should_reach_reader?: boolean | null;
         };
         /** ExternalMissSubmission */
         ExternalMissSubmission: {

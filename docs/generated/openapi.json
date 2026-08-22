@@ -669,33 +669,6 @@
               }
             ],
             "title": "Magnitude"
-          },
-          "novelty": {
-            "anyOf": [
-              {
-                "enum": [
-                  "new_fact",
-                  "progression",
-                  "restatement"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Novelty"
-          },
-          "should_reach_reader": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Should Reach Reader"
           }
         },
         "title": "ExpectedCorrection",

@@ -18,11 +18,12 @@ the compiler image; the optimizer cannot supply or modify it.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import dspy  # type: ignore[import-untyped]
+from pydantic import ValidationError
 
-from .semantic_program import PredictorName, ProgramArtifact, render_predictor_instruction
+from .semantic_program import LearnedStrategy, PredictorName, ProgramArtifact, render_predictor_instruction
 
 _BRIEF = """You are amending ONE bounded advisory block inside a larger, code-owned prompt.
 
@@ -57,6 +58,7 @@ class RulePackAwareProposer:
         }
         self.calls = 0
         self.components_seen: list[str] = []
+        self.rejections: list[str] = []
 
     def context_for(self, component: str) -> str:
         """The read-only brief for one component. Exposed so a test can assert the RulePacks reach the model."""
@@ -99,9 +101,57 @@ class RulePackAwareProposer:
                 },
             )
             text = str(proposal.get("new_instruction") or "").strip()
+            rejection = _advisory_rejection(component, text)
+            if rejection is not None:
+                # Validate here, where the model that wrote the text is still in the loop.
+                #
+                # A rejected advisory is rejected *before* any provider call, so nothing reaches
+                # `dspy.settings.trace`; GEPA's `make_reflective_dataset` finds no instances for the component
+                # and the whole iteration is silently skipped. The metric's repair instruction is real but
+                # unreachable in that path — it can only be delivered by asking again, here, with the code.
+                self.rejections.append(rejection)
+                retry = InstructionProposalSignature.run(
+                    lm=_reflect,
+                    input_dict={
+                        "current_instruction_doc": (
+                            f"{doc}\n\n===== YOUR PREVIOUS PROPOSAL WAS REJECTED =====\n"
+                            f"Code-owned advisory safety rejected it: {rejection}.\n"
+                            "Rewrite it without URLs, template braces, credential-shaped text, or any claim of "
+                            "authority over the QualityKernel, the RulePacks or the schema, and keep it under "
+                            "8192 bytes."
+                        ),
+                        "dataset_with_feedback": examples,
+                        "prompt_template": None,
+                    },
+                )
+                text = str(retry.get("new_instruction") or "").strip()
+                if _advisory_rejection(component, text) is not None:
+                    continue
             if text:
                 updated[component] = text
         return updated
+
+
+def _advisory_rejection(component: str, text: str) -> str | None:
+    """The exact code the advisory bounds would refuse this text with, or `None` if it is acceptable."""
+
+    if not text:
+        return None
+    try:
+        LearnedStrategy.issue(predictor=cast("PredictorName", component), text=text, source="optimizer_patch")
+    except ValidationError as exc:
+        for error in exc.errors():
+            message = str(error.get("msg") or "")
+            for marker in (
+                "news_program_learned_strategy_too_large",
+                "news_program_learned_strategy_unsafe",
+                "news_program_learned_strategy_secret",
+                "news_program_learned_strategy_unicode_noncanonical",
+            ):
+                if marker in message:
+                    return marker
+        return "news_program_learned_strategy_rejected"
+    return None
 
 
 def _reflect(prompt: Any) -> str:

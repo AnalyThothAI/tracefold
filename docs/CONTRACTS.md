@@ -580,7 +580,7 @@ per-queue message/consumer counts.
 ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.
 
-`news learning baseline --from-ms N --to-ms N [--mode recorded|replay|live]
+`news learning baseline --from-ms N --to-ms N [--mode recorded|live]
 [--action-source recorded|policy] [--all-cohorts] [--limit N] [--out FILE]`
 scores the stable Program over accepted reviews and returns one
 content-addressed report: total score, action agreement, per-dimension pass
@@ -589,8 +589,12 @@ provider failures, latency and the full subject identity (program, state,
 policy, metric, corpus roots). It is read-only — no dataset, sandbox, tariff or
 container, and no writes to any table. `--mode recorded` scores the persisted
 verdict against the action that actually shipped and makes no provider call;
-`--all-cohorts` drops release-plane eligibility so a retired arm's corpus can
-still be measured. Reviews whose `evidence_version` has been superseded are not
+`--all-cohorts` drops release-plane eligibility — for the seed sent ledger too,
+not only the cases — so a retired arm's corpus is measured against the ledger
+`decide()` would actually have read. A `replay` mode over a recorded Predictor
+corpus exists in the harness but is deliberately not offered by the CLI: nothing
+builds that corpus yet, and a flag that silently reaches a live provider is
+worse than a missing one. Reviews whose `evidence_version` has been superseded are not
 replayable and are excluded, the same rule `_load_case` already enforced.
 
 Reviews are accepted under `news_review_v3`, which adds one optional `expected`

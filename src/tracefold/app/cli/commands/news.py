@@ -867,9 +867,15 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     architecture boundary that keeps DSPy out of the CLI still holds.
     """
 
+    from tracefold.app.learning_runtime import compose_news_program_runtime
     from tracefold.app.repositories import postgres_connection
     from tracefold.news import CandidateEvaluator, ClosedWindow
-    from tracefold.news.agents.program_baseline import build_baseline_cases, compile_program_factory, run_baseline
+    from tracefold.news.agents.program_baseline import (
+        build_baseline_cases,
+        build_runtime_lm,
+        compile_program_factory,
+        run_baseline,
+    )
     from tracefold.news.agents.semantic_program import load_program_artifact
 
     mode = str(args.mode)
@@ -884,11 +890,26 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     if not episodes:
         return 2, {"ok": False, "error": {"code": "news_program_baseline_no_accepted_reviews_in_window"}}
     artifact = load_program_artifact(stable.program_sha256)
+    lm = None
+    if mode != "recorded":
+        # The production task endpoint and route budget, so a live baseline measures the arm that actually
+        # runs rather than some other binding.
+        endpoint = compose_news_program_runtime(settings).event_semantics_primary
+        lm = build_runtime_lm(
+            model_name=endpoint.model_name,
+            api_key=endpoint.api_key,
+            api_base=endpoint.api_base,
+            timeout=float(artifact.execution.route_deadline_seconds),
+            max_tokens=max(artifact.route_spec.event_semantics_max_tokens, artifact.route_spec.reader_card_max_tokens),
+            model_kwargs=endpoint.model_kwargs,
+        )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
         mode=mode,
         artifact=artifact,
         program_factory=compile_program_factory if mode != "recorded" else None,
+        lm=lm,
+        runtime_identity={"model": getattr(lm, "model", None)} if lm else {},
     )
     payload = report.model_dump(mode="json")
     payload["report_sha256"] = report.report_sha256

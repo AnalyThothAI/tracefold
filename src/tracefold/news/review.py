@@ -245,8 +245,12 @@ class ExpectedCorrection(BaseModel):
     magnitude: int | None = Field(default=None, ge=0, le=3)
     direction: Literal["bullish", "bearish", "neutral", "unclear"] | None = None
     assets: list[ExpectedAsset] | None = Field(default=None, max_length=16)
-    novelty: Literal["new_fact", "progression", "restatement"] | None = None
-    should_reach_reader: bool | None = None
+    # No `novelty` field: the accepted novelty already *is* gold — `novelty.judgment` is the reviewer's own
+    # answer, not a pass/fail on someone else's — and the metric scores against it directly. A second place to
+    # state the same thing could only disagree with the first.
+    #
+    # `should_reach_reader` is deliberately absent for the same reason: `should_push` already carries it, with
+    # the must/should distinction the hard gates depend on.
 
 
 class EventRubricSubmission(BaseModel):
@@ -277,8 +281,8 @@ class EventRubricSubmission(BaseModel):
             ):
                 if getattr(self.expected, field) is not None and self.dimensions.get(dimension) != "fail":
                     raise ValueError(f"news_review_expected_requires_failed_dimension:{dimension}")
-            if self.expected.novelty is not None and self.expected.novelty == self.novelty.judgment:
-                raise ValueError("news_review_expected_novelty_matches_accepted")
+            if self.expected.model_dump(exclude_none=True) == {}:
+                raise ValueError("news_review_expected_must_state_a_value")
         if "factual_fidelity" not in self.dimensions:
             raise ValueError("news_review_factual_fidelity_required")
         if self.should_push in {"must_push", "should_push"} and "timeliness" not in self.dimensions:

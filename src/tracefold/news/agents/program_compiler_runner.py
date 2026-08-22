@@ -158,6 +158,9 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
     compiler = ProgramCompiler(
         base_artifact=parent,
         eligible_demo_bank=eligible_demo_bank,
+        # Same trusted rates the proxy reserves against. Without it `_BudgetMeter` still fails closed on the
+        # `None` cost every endpoint this project uses actually returns.
+        tariff=grant.tariff,
         task_lm=CompilerProxyLM(
             socket_path=proxy_path,
             grant=grant,

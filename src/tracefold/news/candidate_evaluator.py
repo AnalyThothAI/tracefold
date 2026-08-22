@@ -508,7 +508,7 @@ class CandidateEvaluator:
         cases = tuple(sorted(cases, key=lambda case: (case.opened_at_ms, case.case_id))[:limit])
         if not cases:
             return ()
-        seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
+        seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms, cohort=cohort)
         actions = self._recorded_actions([case.event_id for case in cases if case.event_id])
         return tuple(
             {**episode, "recorded_action": actions.get(str(episode.get("event_id") or ""), "")}
@@ -1236,7 +1236,17 @@ class CandidateEvaluator:
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }
 
-    def _seed_receipts(self, from_ms: int, *, epoch_started_at_ms: int) -> tuple[dict[str, Any], ...]:
+    def _seed_receipts(
+        self, from_ms: int, *, epoch_started_at_ms: int, cohort: bool = True
+    ) -> tuple[dict[str, Any], ...]:
+        """The 4 h sent ledger the first cases replay against.
+
+        `cohort=False` drops the arm filter for the same reason `_baseline_cases` does. The ledger is what
+        `decide()` reads for the restatement drop and the similarity throttle; scoping it to the current arm
+        while the corpus is not would hand the earliest cases an empty ledger and bias every
+        `--action-source policy` score toward push, silently.
+        """
+
         rows = self._conn.execute(
             """
             SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
@@ -1261,13 +1271,16 @@ class CandidateEvaluator:
               JOIN news_events e ON e.event_id = d.event_id
              WHERE d.kind = 'first' AND d.state = 'sent'
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-               AND v.program_version = %s AND v.program_sha256 = %s
-               AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
+               AND (%s IS FALSE OR (
+                     v.program_version = %s AND v.program_sha256 = %s
+                     AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
+                   ))
              ORDER BY d.settled_at_ms, v.event_id
             """,
             (
                 max(epoch_started_at_ms, from_ms - 4 * 3_600_000),
                 from_ms,
+                cohort,
                 self._stable.program_version,
                 self._stable.program_sha256,
                 self._stable.bundle_sha,

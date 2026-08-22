@@ -49,6 +49,7 @@ from .program_metric import (
 from .semantic_program import (
     PROGRAM_VERSION,
     DspyCompileProgram,
+    DspyStrictJSONAdapter,
     ProgramArtifact,
     render_model_evidence_json,
 )
@@ -155,12 +156,41 @@ def _hard_gate(feedback: str, score: float) -> str | None:
     return "scored_zero"
 
 
+def build_runtime_lm(
+    *,
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    timeout: float,
+    max_tokens: int,
+    model_kwargs: Mapping[str, Any] | None = None,
+) -> dspy.LM:
+    """The provider binding for `--mode live`, kept here so the CLI layer never imports DSPy."""
+
+    extras = dict(model_kwargs or {})
+    owned = {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
+    if owned & set(extras):
+        raise ValueError(f"news_program_baseline_model_kwargs_owned:{','.join(sorted(owned & set(extras)))}")
+    return dspy.LM(
+        str(model_name),
+        api_key=str(api_key),
+        api_base=str(api_base),
+        timeout=float(timeout),
+        max_tokens=int(max_tokens),
+        temperature=0,
+        cache=False,
+        num_retries=0,
+        **extras,
+    )
+
+
 def run_baseline(
     cases: Sequence[BaselineCase],
     *,
     mode: BaselineMode,
     artifact: ProgramArtifact,
     program_factory: Callable[[ProgramArtifact], dspy.Module] | None = None,
+    lm: dspy.LM | None = None,
     runtime_identity: Mapping[str, Any] | None = None,
     num_threads: int = 1,
 ) -> BaselineReport:
@@ -168,6 +198,10 @@ def run_baseline(
 
     if not cases:
         raise ValueError("news_program_baseline_requires_cases")
+    if mode != "recorded" and lm is None and dspy.settings.lm is None:
+        # Without this the run "succeeds": every case raises `No LM is loaded`, `Evaluate` swallows it, and the
+        # receipt reads as a measured 0.0 baseline instead of a run that made no requests at all.
+        raise ValueError("news_program_baseline_requires_lm")
     examples = [_gold_example(case) for case in cases]
     by_case = {case.episode.case_id: case for case in cases}
 
@@ -202,7 +236,13 @@ def run_baseline(
             max_errors=len(examples) * 10 + 100,
         )
         started = time.monotonic()
-        evaluation = evaluate(program)
+        # The Program's Predictors carry no `lm` of their own — they resolve `dspy.settings.lm` — and its
+        # outputs are only parseable by the same strict JSON adapter production uses. Both have to be in
+        # context or every case fails identically and silently.
+        with dspy.context(lm=lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False)) if lm else (
+            dspy.context(adapter=DspyStrictJSONAdapter(use_native_function_calling=False))
+        ):
+            evaluation = evaluate(program)
         wall_ms = int((time.monotonic() - started) * 1000)
         latency = {
             "wall_ms": wall_ms,
@@ -236,7 +276,11 @@ def run_baseline(
             results.append(_case_result(case, outcome, latency_ms=0))
 
     scored = [result for result in results if result.error_code is None]
-    score = round(statistics.fmean(result.score for result in scored), 6) if scored else 0.0
+    if not scored:
+        # Every case failed. Reporting `score=0.0` here would read as a measured baseline of zero rather than
+        # a run that produced no measurement at all.
+        raise ValueError(f"news_program_baseline_all_cases_failed:{provider_failures}/{len(cases)}")
+    score = round(statistics.fmean(result.score for result in scored), 6)
     gates: dict[str, int] = {}
     for result in scored:
         reason = _hard_gate(result.feedback, result.score)

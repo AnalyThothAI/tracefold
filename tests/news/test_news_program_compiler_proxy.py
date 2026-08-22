@@ -334,19 +334,48 @@ def test_real_compile_program_adapter_can_use_proxy_without_forwarding_generatio
     assert all(set(kwargs) <= {"messages", "response_format"} for _, kwargs in task_lm.calls)
 
 
+def test_proxy_imputes_the_tariff_reservation_when_the_provider_reports_no_price() -> None:
+    """#143: `None` is the normal case, not an anomaly.
+
+    Neither the local llama.cpp endpoint nor DeepSeek returns a price litellm can resolve, so failing closed
+    on a missing cost meant a real compile died on its first model call. Charging the grant's own worst-case
+    reservation over-charges, which is the safe direction: the budget stops the run early, never late.
+    """
+
+    class NoPriceLM(_ExactFakeLM):
+        def __call__(self, *args: Any, **kwargs: Any) -> list[str]:
+            self.calls.append((args, kwargs))
+            self._capture.record_metadata(
+                ExactProviderMetadata(
+                    input_tokens=3,
+                    output_tokens=2,
+                    total_tokens=5,
+                    provider_cost_microusd=None,
+                    finish_reason="stop",
+                )
+            )
+            return ["priced-by-tariff"]
+
+    grant = _grant()
+    proxy = TrustedCompilerModelProxy(
+        grant=grant,
+        task_lm=NoPriceLM(grant.task_endpoint, cost_microusd=0),
+        reflection_lm=_ExactFakeLM(grant.reflection_endpoint, cost_microusd=7),
+    )
+    with _short_socket_path() as path, proxy.serve(path) as socket_path:
+        client = CompilerProxyLM(socket_path=socket_path, grant=grant, role="task", timeout_seconds=2)
+        assert client(prompt="no price is still meterable") == ["priced-by-tariff"]
+
+    receipt = proxy.execution_receipt()
+    assert receipt.task_model_calls == 1
+    # Charged, not skipped, and charged at the grant's own reservation for this request.
+    assert receipt.actual_cost_microusd == receipt.reserved_cost_microusd > 0
+    assert not receipt.error_codes
+
+
 @pytest.mark.parametrize(
     ("metadata", "expected_error"),
     [
-        (
-            ExactProviderMetadata(
-                input_tokens=3,
-                output_tokens=2,
-                total_tokens=5,
-                provider_cost_microusd=None,
-                finish_reason="stop",
-            ),
-            "provider_cost_unavailable",
-        ),
         (
             ExactProviderMetadata(
                 input_tokens=0,
