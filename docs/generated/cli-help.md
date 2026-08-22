@@ -311,6 +311,7 @@ options:
 ```
 usage: tracefold news learning compile [-h] --development DEVELOPMENT
                                        --artifact-root ARTIFACT_ROOT --out OUT
+                                       --compiler-image COMPILER_IMAGE
                                        --max-metric-calls MAX_METRIC_CALLS
                                        --max-task-model-calls MAX_TASK_MODEL_CALLS
                                        --max-cost-microusd MAX_COST_MICROUSD
@@ -323,6 +324,8 @@ options:
   --artifact-root ARTIFACT_ROOT
                         write <program-sha>/manifest.json and state.json
   --out OUT             write compile receipt and proposal input JSON
+  --compiler-image COMPILER_IMAGE
+                        exact local compiler image ID (sha256:<64 hex>)
   --max-metric-calls MAX_METRIC_CALLS
   --max-task-model-calls MAX_TASK_MODEL_CALLS
   --max-cost-microusd MAX_COST_MICROUSD

@@ -6,6 +6,7 @@ import ast
 from pathlib import Path
 
 from tracefold import news
+from tracefold.news import agents as news_agents
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
@@ -27,6 +28,9 @@ PUBLIC_NEWS_INTERFACE = {
     "TRIAGE_POLICY_VERSION",
     "LEARNING_EPOCH",
     "TRUSTED_ROOT_SHA",
+    "TOLD_MAX",
+    "TOLD_SAME_KEY_MAX",
+    "TOLD_WINDOW_MS",
     "ArmManifest",
     "BlindPairwiseSubmission",
     "CandidateEvaluator",
@@ -58,6 +62,7 @@ PUBLIC_NEWS_INTERFACE = {
     "ReviewDesk",
     "ReviewSubmission",
     "SemanticJudge",
+    "SemanticJudgeError",
     "SemanticJudgment",
     "TaskRef",
     "TriageVerdict",
@@ -66,6 +71,7 @@ PUBLIC_NEWS_INTERFACE = {
     "apply_canary_control",
     "event_outcome",
     "evaluation_run_sha",
+    "canonical_json",
     "canonical_sha",
     # #87: the console's «符号落表» funnel segment folds two halves neither repository reaches across for —
     # News owns which tags an Event carried, the instrument universe owns what they name. The fold is pure,
@@ -245,6 +251,7 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
     allowed = {
         NEWS_ROOT / "agents" / "semantic_program.py",
         NEWS_ROOT / "agents" / "program_compiler.py",
+        NEWS_ROOT / "agents" / "program_compiler_proxy.py",
     }
     dspy_offenders = sorted(
         str(path.relative_to(ROOT))
@@ -256,6 +263,25 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
         str(path.relative_to(ROOT)) for path in SRC.rglob("*.py") if "langchain" in _imported_roots(path)
     )
     assert langchain_offenders == []
+
+
+def test_semantic_judge_contract_has_public_locality() -> None:
+    """#134: hot callers learn the framework-neutral Interface from ``tracefold.news`` only."""
+
+    for symbol in (
+        "SemanticJudge",
+        "SemanticJudgeError",
+        "TriageContext",
+        "SemanticJudgment",
+        "ProgramTrace",
+        "ProgramUsage",
+    ):
+        assert symbol in news.__all__
+        assert getattr(news, symbol) is not None
+        assert not hasattr(news_agents, symbol)
+    assert news.TOLD_MAX == 12
+    assert news.TOLD_SAME_KEY_MAX == 6
+    assert news.TOLD_WINDOW_MS == 4 * 3_600_000
 
 
 def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:

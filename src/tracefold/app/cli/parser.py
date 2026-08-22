@@ -95,6 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--artifact-root", required=True, help="write <program-sha>/manifest.json and state.json"
     )
     learning_compile.add_argument("--out", required=True, help="write compile receipt and proposal input JSON")
+    learning_compile.add_argument(
+        "--compiler-image",
+        required=True,
+        help="exact local compiler image ID (sha256:<64 hex>)",
+    )
     learning_compile.add_argument("--max-metric-calls", type=_positive_int, required=True)
     learning_compile.add_argument("--max-task-model-calls", type=_positive_int, required=True)
     learning_compile.add_argument("--max-cost-microusd", type=_positive_int, required=True)

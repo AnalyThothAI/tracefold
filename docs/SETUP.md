@@ -102,7 +102,8 @@ contract is not valid.
 The credentials a live deployment can hold are exactly: the OpenNews token
 (`news.opennews_token`), the direct model triple (`llm.api_key`,
 `llm.base_url`, `llm.news_triage_model`, plus the optional
-`llm.news_reader_card` and `llm.news_triage_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
+`llm.news_reader_card`, `llm.news_triage_fallback`, and
+`llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
 Feishu webhook and optional signing secret (`news.push.*`), and the PostgreSQL
 role password files.
 
@@ -148,6 +149,25 @@ llm:
     api_key: "<reader model secret>"
     base_url: "https://reader.example/v1"
     model: "reader-model"
+  # Optional all-or-none fallback route.
+  news_triage_fallback:
+    api_key: "<event fallback secret>"
+    base_url: "https://event-fallback.example/v1"
+    model: "event-fallback-model"
+  # Optional: requires news_triage_fallback; omit to alias its endpoint explicitly.
+  news_reader_card_fallback:
+    api_key: "<reader fallback secret>"
+    base_url: "https://reader-fallback.example/v1"
+    model: "reader-fallback-model"
+  # Optional cold-compiler contract. All values are required together and do
+  # not affect production News calls. Rates are micro-USD per million tokens.
+  news_compiler_tariff:
+    tariff_id: "provider-contract-2026-08"
+    input_token_overhead: 1024
+    task_input_microusd_per_million: 300000
+    task_output_microusd_per_million: 1200000
+    reflection_input_microusd_per_million: 300000
+    reflection_output_microusd_per_million: 1200000
 
 news:
   enabled: true
@@ -203,14 +223,18 @@ exact-one-variable `program` or `policy` candidates:
 record accepted cases with `tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
 offline, holdout, shadow and canary gates under `tracefold news learning`.
-The optional `learning compile` command cold-runs bounded DSPy GEPA over
-accepted development episodes only; it requires explicit metric-call,
-model-call and provider-cost limits plus a seed, and cannot inspect holdout,
-accept, deploy or promote. Migration `0292` records the initial `program_v1`
+The optional `learning compile` workflow seals accepted development, runs
+bounded DSPy GEPA without DB/holdout/application credentials, and accepts only
+a typed LearnedStrategy/Demo patch. It requires the complete trusted tariff
+above, an exact local `--compiler-image sha256:<64 hex>`, explicit
+metric/model/total-cost and resource limits, plus a seed; it cannot accept,
+deploy or promote. Migration
+`0292` records the initial `program_v1`
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality
-`program_v3` epoch. Prompt-era, `program_v1`, and `program_v2` evidence remain
-audit-only, and quality evidence restarts from zero at the `program_v3`
+`program_v3` epoch; migration `0295` preserves v1-v3 and starts D-generation
+`program_v4`. Every earlier cohort remains audit-only, and quality evidence
+restarts from zero at the `program_v4`
 deployment. The hard cut itself
 does not prove a quality uplift; it
 creates future per-Predictor feedback, demo, routing and fine-tuning leverage
@@ -239,7 +263,10 @@ Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain only the News credentials above; the `llm` block
 owns one all-or-none direct Triage triple (`api_key`, `base_url`,
 `news_triage_model`) and may own one all-or-none `news_reader_card` endpoint;
-an absent Reader endpoint inherits Triage. There is no environment-variable
+an absent Reader endpoint inherits Triage. The optional fallback route has an
+all-or-none `news_triage_fallback` endpoint and may add an all-or-none
+`news_reader_card_fallback`; absent Reader fallback is an explicit alias of the
+EventSemantics fallback endpoint. There is no environment-variable
 credential path or inferred URL/model. Configs written before the GMGN lane removal must drop the
 `gmgn`, `upstream`, `providers.binance`, `api.heartbeat_interval`, and
 `api.replay_limit` keys, and configs written before the Analyst lane removal
@@ -280,7 +307,7 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 The Alembic chain starts at the `20260818_0275` current-schema baseline and is
-linear through `20260822_0294_program_v3_epoch`. A new empty database applies
+linear through `20260822_0295_program_v4_epoch`. A new empty database applies
 the complete chain without replaying retired runtime tables. A database
 stamped at an earlier revision migrates forward with `tracefold db migrate`;
 all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers

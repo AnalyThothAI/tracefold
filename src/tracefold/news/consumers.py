@@ -18,17 +18,17 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
-
-from .agents.semantic_program import (
+from tracefold.news import (
     TOLD_MAX,
     TOLD_WINDOW_MS,
     ProgramTrace,
     ProgramUsage,
     SemanticJudge,
-    SemanticProgramError,
+    SemanticJudgeError,
     TriageContext,
 )
+from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+
 from .bus import (
     Q_DELIVER,
     Q_RAW,
@@ -632,7 +632,7 @@ def _told_from_context(context: TriageContext) -> list[dict[str, Any]]:
 def _usage_from_partial_trace(program_trace: ProgramTrace | None, *, attempts: int) -> dict[str, Any]:
     """Recover the observable usage of a failed Program execution.
 
-    ``SemanticProgramError`` deliberately carries a partial trace rather than a
+    ``SemanticJudgeError`` deliberately carries a partial trace rather than a
     second usage object.  Calls already made before the failure are nevertheless
     billable facts and must survive a stale-ledger re-ask.  Synthetic trace
     entries remain in ``call_count`` for audit, while only entries explicitly
@@ -1010,7 +1010,7 @@ class TriageConsumer:
                 execution_phase = "stale_reask" if first_verdict is not None else "initial"
                 try:
                     call = await active_judge.judge(context)
-                except SemanticProgramError as exc:
+                except SemanticJudgeError as exc:
                     program_executions.append(
                         _program_execution(
                             execution_index=len(program_executions),

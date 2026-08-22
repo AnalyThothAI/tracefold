@@ -11,15 +11,14 @@ from typing import Any, Literal
 
 import pytest
 
-from tracefold.news import consumers as consumers_module
-from tracefold.news.agents.semantic_program import (
-    ProgramCallTrace,
+from tracefold.news import (
     ProgramTrace,
     ProgramUsage,
+    SemanticJudgeError,
     SemanticJudgment,
-    SemanticProgramError,
     TriageContext,
 )
+from tracefold.news import consumers as consumers_module
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import (
     RK_RAW_LIVE,
@@ -38,6 +37,7 @@ from tracefold.news.consumers import (
     TriageConsumer,
 )
 from tracefold.news.models import OUTBOX_MAX_AGE_MS, TRIAGE_POLICY_VERSION
+from tracefold.news.semantic_contract import ProgramCallTrace
 from tracefold.news.triage_rules import DEFAULT_POLICY
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -537,6 +537,21 @@ def _program_trace(
     )
 
 
+def _synthetic_program_call() -> ProgramCallTrace:
+    return ProgramCallTrace(
+        predictor="event_semantics",
+        route="primary",
+        attempt=1,
+        request_sha256="0" * 64,
+        input_sha256="0" * 64,
+        signature_sha256="a" * 64,
+        instruction_sha256="b" * 64,
+        demos_sha256="c" * 64,
+        model_binding="primary",
+        error_code="news_program_model_binding_unresolved",
+    )
+
+
 def _judgment(
     verdict: Any,
     *,
@@ -600,8 +615,8 @@ def _program_error(
     retryable: bool = False,
     output_failure: bool = False,
     partial_trace: ProgramTrace | None = None,
-) -> SemanticProgramError:
-    return SemanticProgramError(
+) -> SemanticJudgeError:
+    return SemanticJudgeError(
         code,
         retryable=retryable,
         output_failure=output_failure,
@@ -611,20 +626,7 @@ def _program_error(
 
 
 def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_calls() -> None:
-    synthetic = _program_call(
-        predictor="event_semantics",
-        marker="0",
-        input_tokens=101,
-        output_tokens=102,
-        cached_tokens=103,
-        provider_cost_microusd=10_000,
-    ).model_copy(
-        update={
-            "physical_provider_call": False,
-            "latency_ms": 1_000,
-            "error_code": "news_program_model_binding_unresolved",
-        }
-    )
+    synthetic = _synthetic_program_call()
     fallback_calls = (
         _program_call(
             predictor="event_semantics",
@@ -671,20 +673,7 @@ def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_cal
 
 
 def test_failed_program_synthetic_only_trace_has_zero_physical_cost() -> None:
-    synthetic = _program_call(
-        predictor="event_semantics",
-        marker="0",
-        input_tokens=101,
-        output_tokens=102,
-        cached_tokens=103,
-        provider_cost_microusd=10_000,
-    ).model_copy(
-        update={
-            "physical_provider_call": False,
-            "latency_ms": 1_000,
-            "error_code": "news_program_model_binding_unresolved",
-        }
-    )
+    synthetic = _synthetic_program_call()
     program_trace = _program_trace(verdict_sha256=None, calls=(synthetic,))
 
     usage = consumers_module._usage_from_partial_trace(program_trace, attempts=1)

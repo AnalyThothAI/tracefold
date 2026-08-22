@@ -111,9 +111,10 @@ Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. Historical migration-path tests are narrow and explicit: they cover the
 preservation/grant cuts that carry user evidence forward and the `0292` to
-`0293` plus `0293` to `0294` append-only Program epoch transitions. The Alembic chain is the
+`0292` to `0293`, `0293` to `0294`, and `0294` to `0295` append-only Program
+epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
-`20260822_0294`; schema tests also run against that migrated head. The e2e lane
+`20260822_0295`; schema tests also run against that migrated head. The e2e lane
 (`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
@@ -144,6 +145,7 @@ uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out /tmp/development.json
 uv run tracefold news learning compile --development DATASET_SHA \
   --artifact-root /tmp/programs --out /tmp/program-proposal.json \
+  --compiler-image sha256:FULL_LOCAL_DOCKER_IMAGE_ID \
   --max-metric-calls 100 --max-task-model-calls 150 \
   --max-cost-microusd 500000 --seed 112
 uv run tracefold news learning propose --development DATASET_SHA \
@@ -169,20 +171,25 @@ the initial `program_v1` epoch start from the database deployment clock;
 `0293` preserves it and appends the corrected `program_v2` epoch after the
 semantic fast-retry state bug was found in production proof. `0294` preserves
 both prior rows and appends `program_v3` after the expert quality baseline and
-semantic normalization change Program identity. Prompt-era, `program_v1`, and
-`program_v2` reviews, datasets, recordings and release receipts remain immutable
-audit history but are not training, validation, holdout or promotion evidence.
-New datasets require post-epoch reviews and acceptance receipts bound to the
-exact stable Program bundle, so quality evidence begins at zero.
+semantic normalization change Program identity. `0295` preserves v1-v3 and
+appends `program_v4` for the D-generation factory/artifact and optimizer
+ownership hard cut. Every earlier review, dataset, recording and release receipt
+remains immutable audit history but is not compiler, DemoBank, validation,
+holdout or promotion evidence. New datasets require post-epoch reviews and
+acceptance receipts bound to the exact stable Program bundle, so quality
+evidence begins at zero.
 
-`learning compile` is a cold, operator-invoked DSPy GEPA compiler, not a Worker
-and not a release gate. It can read only accepted development episodes and the
-fixed `EventSemantics -> ReaderCard` factory. Every invocation must state
-metric-call, total task/reflection-model-call and provider-cost-in-microusd
-limits plus an explicit seed. The result is canonical state-only JSON plus
-provenance and a machine diff. The compiler cannot see validation/holdout,
-write accepted truth,
-register a candidate, alter the Python topology, accept, deploy or promote.
+`learning compile` is a cold, operator-invoked DSPy GEPA workflow, not a Worker
+and not a release gate. The trusted side seals the exact current development
+corpus; an isolated runner sees neither DB nor holdout and can write only a
+bounded `ProgramPatchV2` for LearnedStrategy and eligible Demo references.
+The operator config must contain one complete, positive
+`llm.news_compiler_tariff`; every invocation pins the exact local compiler
+image ID and states metric/model/total-cost and resource limits plus a seed. The
+trusted applier revalidates the complete receipt chain and constructs canonical
+state-only JSON from the exact stable root. The runner cannot write accepted
+truth, register a candidate, alter trusted Program state, accept, deploy or
+promote.
 
 Promotion requires sealed PASS artifacts in order: development, future
 temporal validation, blind pairwise, 24 h shadow, deterministic 10% canary,

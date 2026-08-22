@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -9,13 +10,13 @@ import pytest
 from tracefold.news import (
     RecordingReplayError,
     ReplayArmSpec,
+    TriageContext,
     load_recording_replay_capability,
 )
 from tracefold.news.agents.semantic_program import (
     DspyNewsSemanticProgram,
     ProgramCallTrace,
     ScriptedPredictorAdapter,
-    TriageContext,
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
@@ -138,6 +139,7 @@ def _recording_row(
     request_payload.update(
         {
             "request_sha256": request.request_sha256,
+            "input_sha256": call.input_sha256,
             "call_index": call_index,
             "runtime_model_bindings_sha256": "c" * 64,
         }
@@ -294,6 +296,27 @@ def test_sealed_replay_exposes_an_absent_run_corpus_as_unavailable() -> None:
     assert conn.requested_run_sha == RUN_SHA
 
 
+def test_sealed_replay_rejects_program_v1_artifacts_before_reading_recordings() -> None:
+    legacy_artifact: Any = SimpleNamespace(
+        schema_version="news_semantic_program_artifact_v1",
+        factory_id="tracefold.news.semantic_program.factory_v1",
+        program_version="news_semantic_program_v1",
+    )
+    conn = _ExactRunConnection([])
+
+    with pytest.raises(RecordingReplayError, match="news_learning_recording_replay_program_v1_unsupported"):
+        load_recording_replay_capability(
+            conn,
+            run_sha=RUN_SHA,
+            arms=(
+                ReplayArmSpec(arm="stable", bundle_sha=STABLE_BUNDLE_SHA, artifact=legacy_artifact),
+                ReplayArmSpec(arm="candidate", bundle_sha=CANDIDATE_BUNDLE_SHA, artifact=legacy_artifact),
+            ),
+        )
+
+    assert conn.requested_run_sha is None
+
+
 def test_sealed_replay_exposes_an_incomplete_arm_corpus_as_unavailable() -> None:
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
@@ -407,6 +430,32 @@ def test_sealed_replay_keeps_program_identity_mismatch_fail_closed() -> None:
         _load(rows)
 
     assert not isinstance(caught.value, RecordingReplayMiss)
+
+
+def test_sealed_replay_rejects_a_recorded_adapter_identity_not_in_the_signed_request() -> None:
+    artifact = load_stable_program_artifact()
+    primary = ScriptedPredictorAdapter([_semantics(), _card()])
+    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    rows = _recording_rows(judgment=original, adapters=(primary,))
+    rows[0] = {
+        **rows[0],
+        "request": {**rows[0]["request"], "adapter_sha256": "f" * 64},
+    }
+    capability, _ = _load(rows)
+
+    with pytest.raises(
+        RecordingReplayError,
+        match="news_learning_recording_replay_request_mismatch:adapter_sha256",
+    ):
+        asyncio.run(
+            capability.judge(
+                arm="stable",
+                bundle_sha=STABLE_BUNDLE_SHA,
+                case_id="case-1",
+                trial=1,
+                context=_context(),
+            )
+        )
 
 
 @pytest.mark.parametrize(

@@ -1267,6 +1267,13 @@ export interface components {
              * @default false
              */
             reader_card_dedicated: boolean;
+            /**
+             * Reader Card Fallback Dedicated
+             * @default false
+             */
+            reader_card_fallback_dedicated: boolean;
+            /** Reader Card Fallback Model */
+            reader_card_fallback_model?: string | null;
             /** Reader Card Model */
             reader_card_model?: string | null;
             /**

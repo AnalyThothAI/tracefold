@@ -258,6 +258,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(news["models"]["triage_model"], "deepseek-chat")
         self.assertEqual(news["models"]["reader_card_model"], "deepseek-chat")
         self.assertIs(news["models"]["reader_card_dedicated"], False)
+        self.assertIsNone(news["models"]["reader_card_fallback_model"])
+        self.assertIs(news["models"]["reader_card_fallback_dedicated"], False)
         self.assertIsInstance(news["watchlist"], list)
         self.assertNotIn("hourly_cap", news["push"])
         self.assertNotIn("rss_enabled", news)
@@ -286,6 +288,10 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("news_brief_model", payload.get("llm") or {})
         self.assertEqual(
             payload["llm"]["news_reader_card"],
+            {"api_key": None, "base_url": None, "model": None},
+        )
+        self.assertEqual(
+            payload["llm"]["news_reader_card_fallback"],
             {"api_key": None, "base_url": None, "model": None},
         )
         self.assertNotIn("opennews_strategy_ids", payload["news"])

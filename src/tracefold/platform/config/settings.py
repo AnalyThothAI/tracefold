@@ -66,7 +66,7 @@ class _LlmEndpointConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     api_key: str | None = Field(default=None, repr=False)
-    base_url: str | None = None
+    base_url: str | None = Field(default=None, repr=False)
     model: str | None = None
 
     @field_validator("api_key", "model", mode="before")
@@ -111,14 +111,55 @@ class LlmReaderCardConfig(_LlmEndpointConfig):
     """Optional primary endpoint dedicated to the ReaderCard Predictor."""
 
 
+class LlmReaderCardFallbackConfig(_LlmEndpointConfig):
+    """Optional ReaderCard endpoint for the all-or-none fallback route."""
+
+    @property
+    def incomplete_error_code(self) -> str:
+        return "llm_reader_card_fallback_configuration_incomplete"
+
+
+class LlmCompilerTariffConfig(BaseModel):
+    """Trusted, secret-free worst-case rates for the optional cold compiler."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    tariff_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    input_token_overhead: int | None = Field(default=None, gt=0, le=100_000)
+    task_input_microusd_per_million: int | None = Field(default=None, gt=0)
+    task_output_microusd_per_million: int | None = Field(default=None, gt=0)
+    reflection_input_microusd_per_million: int | None = Field(default=None, gt=0)
+    reflection_output_microusd_per_million: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def require_complete_tariff(self) -> LlmCompilerTariffConfig:
+        values = (
+            self.tariff_id,
+            self.input_token_overhead,
+            self.task_input_microusd_per_million,
+            self.task_output_microusd_per_million,
+            self.reflection_input_microusd_per_million,
+            self.reflection_output_microusd_per_million,
+        )
+        if any(value is not None for value in values) and not all(value is not None for value in values):
+            raise ValueError("llm_news_compiler_tariff_incomplete")
+        return self
+
+    @property
+    def configured(self) -> bool:
+        return self.tariff_id is not None
+
+
 class LlmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    api_key: str | None = None
-    base_url: str | None = None
+    api_key: str | None = Field(default=None, repr=False)
+    base_url: str | None = Field(default=None, repr=False)
     news_triage_model: str | None = None
     news_reader_card: LlmReaderCardConfig = Field(default_factory=LlmReaderCardConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
+    news_reader_card_fallback: LlmReaderCardFallbackConfig = Field(default_factory=LlmReaderCardFallbackConfig)
+    news_compiler_tariff: LlmCompilerTariffConfig = Field(default_factory=LlmCompilerTariffConfig)
 
     @field_validator("api_key", "news_triage_model", mode="before")
     @classmethod
@@ -143,6 +184,8 @@ class LlmConfig(BaseModel):
             raise ValueError("llm_fallback_without_primary")
         if self.news_reader_card.configured and not all(configured):
             raise ValueError("llm_reader_card_without_primary")
+        if self.news_reader_card_fallback.configured and not self.news_triage_fallback.configured:
+            raise ValueError("llm_reader_card_fallback_without_event_fallback")
         return self
 
 
@@ -434,6 +477,8 @@ class NewsModelAvailability:
     reader_card_model: str | None
     reader_card_dedicated: bool
     triage_fallback_model: str | None = None
+    reader_card_fallback_model: str | None = None
+    reader_card_fallback_dedicated: bool = False
 
     @property
     def program_configured(self) -> bool:
@@ -447,6 +492,8 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
     reader_ok = triage and reader.configured and _is_http_base_url(reader.base_url)
     fallback = settings.llm.news_triage_fallback
     fallback_ok = triage and fallback.configured and _is_http_base_url(fallback.base_url)
+    reader_fallback = settings.llm.news_reader_card_fallback
+    reader_fallback_ok = fallback_ok and reader_fallback.configured and _is_http_base_url(reader_fallback.base_url)
     return NewsModelAvailability(
         triage_configured=triage,
         triage_model=settings.llm.news_triage_model if triage else None,
@@ -455,6 +502,14 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
         ),
         reader_card_dedicated=bool(reader_ok),
         triage_fallback_model=fallback.model if fallback_ok else None,
+        reader_card_fallback_model=(
+            reader_fallback.model
+            if reader_fallback_ok
+            else fallback.model
+            if fallback_ok and not reader_fallback.configured
+            else None
+        ),
+        reader_card_fallback_dedicated=bool(reader_fallback_ok),
     )
 
 
@@ -557,6 +612,19 @@ llm:
     api_key:
     base_url:
     model:
+  news_reader_card_fallback:
+    api_key:
+    base_url:
+    model:
+  # Optional, secret-free provider contract used only by `news learning compile`.
+  # All six values are required together; rates are micro-USD per million tokens.
+  news_compiler_tariff:
+    tariff_id:
+    input_token_overhead:
+    task_input_microusd_per_million:
+    task_output_microusd_per_million:
+    reflection_input_microusd_per_million:
+    reflection_output_microusd_per_million:
 
 news:
   enabled: true

@@ -10,7 +10,7 @@ class ConfiguredLMEndpoint:
 
     model_name: str
     api_key: str = field(repr=False)
-    api_base: str
+    api_base: str = field(repr=False)
     model_kwargs: dict[str, Any]
 
 

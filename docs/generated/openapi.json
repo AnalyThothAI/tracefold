@@ -2657,6 +2657,22 @@
             "title": "Reader Card Dedicated",
             "type": "boolean"
           },
+          "reader_card_fallback_dedicated": {
+            "default": false,
+            "title": "Reader Card Fallback Dedicated",
+            "type": "boolean"
+          },
+          "reader_card_fallback_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Card Fallback Model"
+          },
           "reader_card_model": {
             "anyOf": [
               {

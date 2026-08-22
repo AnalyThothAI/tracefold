@@ -694,6 +694,8 @@ class NewsPipelineStatusData(ExactApiSchema):
     reader_card_model: str | None = None
     reader_card_dedicated: bool = False
     triage_fallback_model: str | None = None
+    reader_card_fallback_model: str | None = None
+    reader_card_fallback_dedicated: bool = False
     suppressed_by_reason: dict[str, int] = Field(default_factory=dict)
     dropped_by_rule: dict[str, int] = Field(default_factory=dict)
     throttled_by_key: dict[str, int] = Field(default_factory=dict)

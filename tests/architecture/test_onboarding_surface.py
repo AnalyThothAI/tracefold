@@ -42,7 +42,7 @@ set -eu
 if [ "$1" = "info" ]; then exit 0; fi
 if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
 if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then printf '%s\\n' "$TRACEFOLD_TEST_IMAGE"; exit 0; fi
-if [ "$1" = "run" ]; then printf '%s\\n' 20260822_0294; exit 0; fi
+if [ "$1" = "run" ]; then printf '%s\\n' 20260822_0295; exit 0; fi
 if [ "$1" = "compose" ] && [ "$2" = "config" ]; then
   printf '%s\\n' 'postgres:18-bookworm@sha256:pinned' "$TRACEFOLD_APP_IMAGE"
   exit 0
@@ -105,7 +105,7 @@ if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "scripts/with_deployment_
 fi
 case "$*" in
   *image_digest*) printf '%s\\n' "$TRACEFOLD_TEST_READY_IMAGE" ;;
-  *) printf '%s\\n' 20260822_0294 ;;
+  *) printf '%s\\n' 20260822_0295 ;;
 esac
 """,
         encoding="utf-8",
@@ -131,7 +131,7 @@ esac
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "TRACEFOLD_TEST_EXTERNAL_ACTIVITY": str(external_activity),
         "TRACEFOLD_TEST_SERVICES_STOPPED": str(services_stopped),
-        "TRACEFOLD_TEST_DB_HEAD": "20260822_0294",
+        "TRACEFOLD_TEST_DB_HEAD": "20260822_0295",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,

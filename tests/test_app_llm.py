@@ -67,6 +67,9 @@ def test_endpoint_override_targets_the_fallback_gateway() -> None:
     assert endpoint.model_name == "openai/deepseek-chat"
     assert endpoint.api_base == "https://api.deepseek.com/v1"
     assert endpoint.api_key == "remote-key"
+    assert "remote-key" not in repr(endpoint)
+    assert "api.deepseek.com" not in repr(endpoint)
+    assert "api_base" not in repr(endpoint)
 
 
 def test_active_arm_uses_the_composed_secret_free_runtime_bindings() -> None:
@@ -92,6 +95,10 @@ def test_active_arm_uses_the_composed_secret_free_runtime_bindings() -> None:
     assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
     assert slots["event_semantics.primary"] == slots["reader_card.primary"]
     assert slots["event_semantics.fallback"] == slots["reader_card.fallback"]
+    assert composition.slot_aliases() == {
+        "reader_card.primary": "event_semantics.primary",
+        "reader_card.fallback": "event_semantics.fallback",
+    }
     assert "primary-key" not in repr(slots) and "fallback-key" not in repr(slots)
     assert "primary.test" not in repr(slots) and "fallback.test" not in repr(slots)
 
@@ -129,6 +136,114 @@ def test_different_reader_backend_changes_same_named_model_identity() -> None:
     assert inherited_slots["event_semantics.primary"] == dedicated_slots["event_semantics.primary"]
     assert inherited_slots["reader_card.primary"] != dedicated_slots["reader_card.primary"]
     assert inherited_composition.runtime_model_bindings_sha256 != dedicated_composition.runtime_model_bindings_sha256
+
+
+def test_runtime_binding_identity_ignores_credential_rotation() -> None:
+    def settings_with_key(key: str) -> Settings:
+        return Settings.model_validate(
+            {
+                "llm": {
+                    "api_key": key,
+                    "base_url": "https://triage.test/v1",
+                    "news_triage_model": "shared-model",
+                    "news_reader_card": {
+                        "api_key": f"reader-{key}",
+                        "base_url": "https://reader.test/v1",
+                        "model": "shared-model",
+                    },
+                }
+            }
+        )
+
+    before = learning_runtime.compose_news_program_runtime(settings_with_key("key-before"))
+    after = learning_runtime.compose_news_program_runtime(settings_with_key("key-after"))
+
+    assert before.slot_aliases() == after.slot_aliases() == {}
+    assert before.secret_free_slot_identities() == after.secret_free_slot_identities()
+    assert before.runtime_model_bindings_sha256 == after.runtime_model_bindings_sha256
+
+
+def test_runtime_binding_identity_canonicalizes_equivalent_endpoint_urls() -> None:
+    def settings_with_endpoint(base_url: str) -> Settings:
+        return Settings.model_validate(
+            {
+                "llm": {
+                    "api_key": "same-key",
+                    "base_url": base_url,
+                    "news_triage_model": "shared-model",
+                }
+            }
+        )
+
+    explicit_default_port = learning_runtime.compose_news_program_runtime(
+        settings_with_endpoint("https://TRIAGE.TEST:443/v1/")
+    )
+    canonical = learning_runtime.compose_news_program_runtime(settings_with_endpoint("https://triage.test/v1"))
+
+    assert explicit_default_port.secret_free_slot_identities() == canonical.secret_free_slot_identities()
+    assert explicit_default_port.runtime_model_bindings_sha256 == canonical.runtime_model_bindings_sha256
+
+
+def test_dedicated_reader_fallback_has_its_own_explicit_slot_identity() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+                "news_triage_fallback": {
+                    "api_key": "event-fallback-key",
+                    "base_url": "https://event-fallback.test/v1",
+                    "model": "event-fallback-model",
+                },
+                "news_reader_card_fallback": {
+                    "api_key": "reader-fallback-key",
+                    "base_url": "https://reader-fallback.test/v1",
+                    "model": "reader-fallback-model",
+                },
+            }
+        }
+    )
+
+    composition = learning_runtime.compose_news_program_runtime(settings)
+    slots = composition.secret_free_slot_identities()
+
+    assert slots["event_semantics.fallback"] != slots["reader_card.fallback"]
+    assert composition.slot_aliases() == {"reader_card.primary": "event_semantics.primary"}
+    rendered = repr(slots)
+    assert "event-fallback.test" not in rendered
+    assert "reader-fallback.test" not in rendered
+    assert "event-fallback-key" not in rendered
+    assert "reader-fallback-key" not in rendered
+
+
+def test_invalid_requested_reader_fallback_disables_the_whole_fallback_route() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+                "news_triage_fallback": {
+                    "api_key": "event-fallback-key",
+                    "base_url": "https://event-fallback.test/v1",
+                    "model": "event-fallback-model",
+                },
+                "news_reader_card_fallback": {
+                    "api_key": "reader-fallback-key",
+                    "base_url": "ftp://reader-fallback.test/v1",
+                    "model": "reader-fallback-model",
+                },
+            }
+        }
+    )
+
+    composition = learning_runtime.compose_news_program_runtime(settings)
+
+    assert composition.program_configured is True
+    assert composition.event_semantics_fallback is not None
+    assert composition.reader_card_fallback is None
+    assert composition.secret_free_slot_identities()["reader_card.fallback"] is None
 
 
 def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
@@ -364,6 +479,7 @@ def _program_candidate_document() -> CandidateManifest:
         declared_target_dimensions=("why_support",),
         program_parent_sha256="b" * 64,
         program_candidate_sha256=candidate_arm.program_sha256,
+        program_state_sha256="2" * 64,
         program_machine_diff={"reader_card": {"instruction": "changed"}},
         compile_provenance={"mode": "test"},
     )

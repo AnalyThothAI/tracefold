@@ -15,7 +15,12 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # product callers or compatibility interfaces; every new edge must be named.
 ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/app/cli/commands/news.py": {
-        "tracefold.news.agents.program_compiler",
+        "tracefold.news.agents.program_compiler_launcher",
+        "tracefold.news.agents.program_compiler_proxy",
+        "tracefold.news.agents.program_compiler_sandbox",
+        "tracefold.news.agents.program_compiler_security",
+        "tracefold.news.agents.program_compiler_source",
+        "tracefold.news.agents.program_compiler_trusted",
         "tracefold.news.agents.programs.candidates",
         "tracefold.news.agents.semantic_program",
         "tracefold.news.bus",
@@ -358,6 +363,9 @@ def test_public_news_has_no_personalization_or_parallel_product_infrastructure()
         for path in paths
         for imported in _imports(path)
         if imported.split(".")[0] in forbidden_import_roots
+        and not (
+            imported.split(".")[0] == "subprocess" and path == SRC / "news" / "agents" / "program_compiler_launcher.py"
+        )
     ]
     assert import_violations == []
 
