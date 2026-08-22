@@ -35,6 +35,7 @@ METRIC_VERSION: Final = "oi_signal_v1"
 # The judge's identity on the verdict row, where a model-judged Event carries its ProgramArtifact sha.
 # Content-addressed the same way: change the rule and the identity changes with it.
 PROGRAM_VERSION: Final = "news_oi_signal_v1"
+READER_CONTRACT_VERSION: Final = "oi_card_v2"
 WINDOW_MS: Final = 4 * 3_600_000
 
 # Anchored on purpose: this must recognise the telemetry template and nothing that merely mentions
@@ -177,7 +178,12 @@ def program_sha256(policy: OiPolicy = DEFAULT_OI_POLICY) -> str:
 
     return hashlib.sha256(
         json.dumps(
-            {"program": PROGRAM_VERSION, "metric": METRIC_VERSION, "policy": policy.as_dict()},
+            {
+                "program": PROGRAM_VERSION,
+                "reader_contract": READER_CONTRACT_VERSION,
+                "metric": METRIC_VERSION,
+                "policy": policy.as_dict(),
+            },
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
@@ -320,6 +326,7 @@ __all__ = [
     "DEFAULT_OI_POLICY",
     "METRIC_VERSION",
     "PROGRAM_VERSION",
+    "READER_CONTRACT_VERSION",
     "WINDOW_MS",
     "OiJudgment",
     "OiPolicy",

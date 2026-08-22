@@ -8,6 +8,7 @@ consumer imports or waits on this adapter.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import math
@@ -23,13 +24,17 @@ from tracefold.news import (
     unavailable_snapshot,
 )
 
-COINGLASS_CLI_COMMIT: Final = "dc8f9d253a8dc1fded6fabcef93c96feeaa4b826"
 _PROVIDER: Final = "coinglass_web"
 _CONTRACT: Final = "undocumented_public_web_http"
 _LEVEL_MAX: Final = 64
 _PACKAGED_EXECUTABLE: Final = "/opt/coinglass-cli/bin/coinglass-cli"
 _SUBPROCESS_TIMEOUT_SECONDS: Final = 40.0
 _STDOUT_MAX_BYTES: Final = 5 * 1024 * 1024
+_READ_CHUNK_BYTES: Final = 64 * 1024
+
+
+class _PayloadTooLarge(Exception):
+    pass
 
 
 class CoinglassCliLiquidationProvider:
@@ -62,8 +67,8 @@ class CoinglassCliLiquidationProvider:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=_STDOUT_MAX_BYTES + 1,
+                stderr=asyncio.subprocess.DEVNULL,
+                limit=_READ_CHUNK_BYTES,
             )
         except OSError:
             return _unavailable_snapshot(
@@ -74,10 +79,9 @@ class CoinglassCliLiquidationProvider:
                 range_key=range_key,
             )
         try:
-            stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout)
+            stdout = await asyncio.wait_for(_read_bounded_stdout(process), timeout=self.timeout)
         except TimeoutError:
-            process.kill()
-            await process.wait()
+            await _stop_process(process)
             return _unavailable_snapshot(
                 target,
                 received_at_ms=_clock_ms(),
@@ -85,15 +89,18 @@ class CoinglassCliLiquidationProvider:
                 model_version=model_version,
                 range_key=range_key,
             )
-        received_at_ms = _clock_ms()
-        if len(stdout) > _STDOUT_MAX_BYTES:
+        except _PayloadTooLarge:
             return _unavailable_snapshot(
                 target,
-                received_at_ms=received_at_ms,
+                received_at_ms=_clock_ms(),
                 error_class="payload_too_large",
                 model_version=model_version,
                 range_key=range_key,
             )
+        except BaseException:
+            await _stop_process(process)
+            raise
+        received_at_ms = _clock_ms()
         try:
             envelope = json.loads(stdout)
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -316,4 +323,32 @@ def _clock_ms() -> int:
     return int(time.time() * 1000)
 
 
-__all__ = ["COINGLASS_CLI_COMMIT", "CoinglassCliLiquidationProvider", "snapshot_from_envelope"]
+async def _read_bounded_stdout(process: asyncio.subprocess.Process) -> bytes:
+    """Read at most the code-owned payload budget, kill on overflow, and always reap the child."""
+
+    if process.stdout is None:
+        await _stop_process(process)
+        raise RuntimeError("coinglass_stdout_unavailable")
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await process.stdout.read(min(_READ_CHUNK_BYTES, _STDOUT_MAX_BYTES - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _STDOUT_MAX_BYTES:
+            await _stop_process(process)
+            raise _PayloadTooLarge
+        chunks.append(chunk)
+    await process.wait()
+    return b"".join(chunks)
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+    await process.wait()
+
+
+__all__ = ["CoinglassCliLiquidationProvider", "snapshot_from_envelope"]

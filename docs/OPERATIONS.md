@@ -580,10 +580,10 @@ one attempt per minute, about four minutes per healthy full cycle), with concurr
 turn deadline.
 
 The application image installs the fixed coinglass-cli commit in
-`/opt/coinglass-cli`, outside the main Program-bound dependency lock. Local
-source runs may point `TRACEFOLD_COINGLASS_CLI` at an explicitly installed
-executable; this selects only the adapter executable and does not enable the
-feature or change its targets/budgets.
+`/opt/coinglass-cli`, outside the main Program-bound dependency lock. The
+adapter accepts no environment/PATH override: a local source process without
+that packaged path records `adapter_unavailable`; provider acquisition is
+verified from the application image.
 
 Read-only SQL for acquisition health and the bounded stored shape:
 

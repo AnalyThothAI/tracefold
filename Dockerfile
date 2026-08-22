@@ -27,7 +27,6 @@ RUN npm run build
 FROM python:3.13-slim-bookworm AS python-deps
 
 ARG TRACEFOLD_NEWS_PROGRAM_PROFILE=d_stable
-ARG COINGLASS_CLI_COMMIT=dc8f9d253a8dc1fded6fabcef93c96feeaa4b826
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -89,7 +88,7 @@ RUN --mount=type=secret,id=github_token \
             && python -m venv /opt/coinglass-cli \
             && UV_HTTP_TIMEOUT=300 UV_CONCURRENT_DOWNLOADS=1 uv pip install \
                 --python /opt/coinglass-cli/bin/python \
-                "git+https://github.com/AnalyThothAI/coinglass-cli.git@${COINGLASS_CLI_COMMIT}" \
+                "git+https://github.com/AnalyThothAI/coinglass-cli.git@dc8f9d253a8dc1fded6fabcef93c96feeaa4b826" \
             && /opt/coinglass-cli/bin/python -c 'import coinglass_cli'; then \
             exit 0; \
         fi; \
