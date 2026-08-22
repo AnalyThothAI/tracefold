@@ -41,6 +41,7 @@ from .liquidation import (
     LiquidationTarget,
     LiquidationZone,
     ProviderLiquidationSnapshot,
+    unavailable_snapshot,
 )
 from .models import (
     GATE_POLICY_VERSION,
@@ -157,4 +158,5 @@ __all__ = [
     "parse_canary_control",
     "parse_opennews_message",
     "status_health",
+    "unavailable_snapshot",
 ]

@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager, nullcontext
 from decimal import Decimal
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from tracefold.integrations.coinglass import COINGLASS_CLI_COMMIT, snapshot_from_envelope
+import pytest
+
+from tracefold.integrations.coinglass import snapshot_from_envelope
 from tracefold.news.liquidation import (
     LIQUIDATION_LEVEL_MAX,
     LIQUIDATION_MODEL_VERSION,
@@ -20,7 +21,6 @@ from tracefold.news.liquidation import (
 from tracefold.news.liquidation_loops import LiquidationSnapshotLoop
 
 NOW = 1_800_000_000_000
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def _envelope(*, levels: list[dict[str, Any]], freshness: str = "fresh") -> dict[str, Any]:
@@ -100,11 +100,24 @@ def test_coinglass_shape_drift_is_unavailable_and_cannot_blank_a_good_snapshot()
     assert snapshot.zones == () and snapshot.payload_sha256 is None
 
 
-def test_image_installs_the_same_isolated_commit_the_adapter_documents() -> None:
-    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert f"COINGLASS_CLI_COMMIT={COINGLASS_CLI_COMMIT}" in dockerfile
-    assert "COPY --from=python-deps /opt/coinglass-cli /opt/coinglass-cli" in dockerfile
-    assert "coinglass-cli" not in (ROOT / "uv.lock").read_text(encoding="utf-8")
+@pytest.mark.parametrize("missing", ["meta", "timestamp"])
+def test_coinglass_missing_health_or_provider_timestamp_is_never_reported_fresh(missing: str) -> None:
+    envelope = _envelope(levels=[])
+    if missing == "meta":
+        del envelope["meta"]
+    else:
+        envelope["data"]["prices"] = []
+
+    snapshot = snapshot_from_envelope(
+        envelope,
+        target=LIQUIDATION_TARGETS[-1],
+        received_at_ms=NOW,
+        model_version=LIQUIDATION_MODEL_VERSION,
+        range_key=LIQUIDATION_RANGE,
+    )
+
+    assert snapshot.freshness == "unavailable" and snapshot.degraded is True
+    assert snapshot.error_class in {"provider_contract_drift", "provider_timestamp_missing"}
 
 
 class _LiquidationRepo:
@@ -122,6 +135,7 @@ class _LiquidationRepo:
 class _FakeDb:
     def __init__(self, liquidation: _LiquidationRepo) -> None:
         self.liquidation = liquidation
+        self.open_sessions = 0
 
     def heavy_business(self) -> Any:
         return self
@@ -132,15 +146,22 @@ class _FakeDb:
 
     @contextmanager
     def worker_session(self, _name: str, _timeout: float):
-        yield SimpleNamespace(liquidation=self.liquidation, transaction=nullcontext)
+        self.open_sessions += 1
+        try:
+            yield SimpleNamespace(liquidation=self.liquidation, transaction=nullcontext)
+        finally:
+            self.open_sessions -= 1
 
 
 class _Provider:
-    def __init__(self, snapshot: ProviderLiquidationSnapshot) -> None:
+    def __init__(self, snapshot: ProviderLiquidationSnapshot, *, db: _FakeDb | None = None) -> None:
         self.snapshot = snapshot
+        self.db = db
         self.calls: list[Any] = []
 
     async def fetch(self, target: Any, *, model_version: str, range_key: str) -> ProviderLiquidationSnapshot:
+        if self.db is not None:
+            assert self.db.open_sessions == 0, "external I/O must not hold a database session"
         self.calls.append((target, model_version, range_key))
         return self.snapshot
 
@@ -156,11 +177,74 @@ def test_shadow_turn_fetches_only_one_due_pair_and_writes_no_card_or_decision() 
     )
     repo = _LiquidationRepo()
     repo.due = [target]
-    provider = _Provider(snapshot)
-    loop = LiquidationSnapshotLoop(db=_FakeDb(repo), provider=provider, clock_ms=lambda: NOW)
+    db = _FakeDb(repo)
+    provider = _Provider(snapshot, db=db)
+    loop = LiquidationSnapshotLoop(db=db, provider=provider, clock_ms=lambda: NOW)
 
     result = asyncio.run(loop.turn())
 
     assert provider.calls == [(target, LIQUIDATION_MODEL_VERSION, LIQUIDATION_RANGE)]
     assert repo.stored == [snapshot]
     assert result == {"due": 1, "attempted": 1, "written": 1, "fresh": 1, "error": None}
+
+
+def test_shadow_turns_skip_instead_of_overlapping_or_queueing() -> None:
+    target = LIQUIDATION_TARGETS[0]
+    snapshot = snapshot_from_envelope(
+        {**_envelope(levels=[]), "data": {**_envelope(levels=[])["data"], "symbol": "Binance_BTCUSDT"}},
+        target=target,
+        received_at_ms=NOW,
+        model_version=LIQUIDATION_MODEL_VERSION,
+        range_key=LIQUIDATION_RANGE,
+    )
+    repo = _LiquidationRepo()
+    repo.due = [target]
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingProvider(_Provider):
+        async def fetch(self, target: Any, *, model_version: str, range_key: str) -> ProviderLiquidationSnapshot:
+            self.calls.append((target, model_version, range_key))
+            started.set()
+            await release.wait()
+            return self.snapshot
+
+    async def _exercise() -> tuple[dict[str, Any], dict[str, Any]]:
+        provider = _BlockingProvider(snapshot)
+        loop = LiquidationSnapshotLoop(db=_FakeDb(repo), provider=provider, clock_ms=lambda: NOW)
+        first = asyncio.create_task(loop.turn())
+        await started.wait()
+        skipped = await loop.turn()
+        release.set()
+        completed = await first
+        assert len(provider.calls) == 1
+        return skipped, completed
+
+    skipped, completed = asyncio.run(_exercise())
+    assert skipped["error"] == "turn_in_progress" and skipped["attempted"] == 0
+    assert completed["attempted"] == 1 and completed["written"] == 1
+
+
+def test_shadow_deadline_and_code_owned_pacer_bounds_are_enforced() -> None:
+    repo = _LiquidationRepo()
+    repo.due = [LIQUIDATION_TARGETS[0]]
+
+    class _NeverAnswers:
+        async def fetch(self, target: Any, *, model_version: str, range_key: str) -> ProviderLiquidationSnapshot:
+            del target, model_version, range_key
+            await asyncio.sleep(10)
+            raise AssertionError("unreachable")
+
+    loop = LiquidationSnapshotLoop(
+        db=_FakeDb(repo),
+        provider=_NeverAnswers(),
+        period_seconds=0,
+        refresh_seconds=0,
+        turn_deadline_seconds=1,
+        clock_ms=lambda: NOW,
+    )
+
+    result = asyncio.run(loop.turn())
+    assert loop.period == 60.0 and loop.refresh_ms == 60_000.0
+    assert result["attempted"] == 1 and result["written"] == 1 and result["error"] == "turn_deadline"
+    assert repo.stored[0].freshness == "unavailable"

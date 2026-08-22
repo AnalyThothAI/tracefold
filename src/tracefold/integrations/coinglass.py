@@ -11,8 +11,6 @@ import asyncio
 import hashlib
 import json
 import math
-import os
-import shutil
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, cast
@@ -22,6 +20,7 @@ from tracefold.news import (
     LiquidationTarget,
     LiquidationZone,
     ProviderLiquidationSnapshot,
+    unavailable_snapshot,
 )
 
 COINGLASS_CLI_COMMIT: Final = "dc8f9d253a8dc1fded6fabcef93c96feeaa4b826"
@@ -29,7 +28,6 @@ _PROVIDER: Final = "coinglass_web"
 _CONTRACT: Final = "undocumented_public_web_http"
 _LEVEL_MAX: Final = 64
 _PACKAGED_EXECUTABLE: Final = "/opt/coinglass-cli/bin/coinglass-cli"
-_EXECUTABLE_ENV: Final = "TRACEFOLD_COINGLASS_CLI"
 _SUBPROCESS_TIMEOUT_SECONDS: Final = 40.0
 _STDOUT_MAX_BYTES: Final = 5 * 1024 * 1024
 
@@ -48,17 +46,8 @@ class CoinglassCliLiquidationProvider:
         range_key: str,
     ) -> ProviderLiquidationSnapshot:
         received_at_ms = _clock_ms()
-        executable = _coinglass_executable()
-        if executable is None:
-            return _unavailable_snapshot(
-                target,
-                received_at_ms=received_at_ms,
-                error_class="adapter_unavailable",
-                model_version=model_version,
-                range_key=range_key,
-            )
         command = (
-            executable,
+            _PACKAGED_EXECUTABLE,
             "liquidation-levels",
             "--symbol",
             target.base_symbol,
@@ -69,12 +58,21 @@ class CoinglassCliLiquidationProvider:
             "--range",
             range_key,
         )
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_STDOUT_MAX_BYTES + 1,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_STDOUT_MAX_BYTES + 1,
+            )
+        except OSError:
+            return _unavailable_snapshot(
+                target,
+                received_at_ms=_clock_ms(),
+                error_class="adapter_unavailable",
+                model_version=model_version,
+                range_key=range_key,
+            )
         try:
             stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout)
         except TimeoutError:
@@ -133,7 +131,15 @@ def snapshot_from_envelope(
             model_version=model_version,
             range_key=range_key,
         )
-    meta = envelope.get("meta") if isinstance(envelope.get("meta"), Mapping) else {}
+    if not isinstance(envelope.get("meta"), Mapping):
+        return _unavailable_snapshot(
+            target,
+            received_at_ms=received_at_ms,
+            error_class="provider_contract_drift",
+            model_version=model_version,
+            range_key=range_key,
+        )
+    meta = envelope["meta"]
     upstream = meta.get("upstream_status") if isinstance(meta.get("upstream_status"), Mapping) else {}
     error = envelope.get("error") if isinstance(envelope.get("error"), Mapping) else {}
     error_class = str(upstream.get("class") or error.get("code") or "provider_unavailable")
@@ -181,9 +187,24 @@ def snapshot_from_envelope(
             range_key=range_key,
         )
     zones.sort(key=lambda zone: (-abs(zone.size), zone.price, zone.begin_at_ms, zone.x))
-    freshness = str(meta.get("freshness") or "fresh")
+    freshness = str(meta.get("freshness") or "")
     if freshness not in {"fresh", "stale"}:
-        freshness = "stale"
+        return _unavailable_snapshot(
+            target,
+            received_at_ms=received_at_ms,
+            error_class="provider_contract_drift",
+            model_version=model_version,
+            range_key=range_key,
+        )
+    source_at_ms = _latest_source_ms(raw_levels, raw_prices)
+    if source_at_ms is None:
+        return _unavailable_snapshot(
+            target,
+            received_at_ms=received_at_ms,
+            error_class="provider_timestamp_missing",
+            model_version=model_version,
+            range_key=range_key,
+        )
     try:
         payload_sha256 = hashlib.sha256(
             json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
@@ -205,7 +226,7 @@ def snapshot_from_envelope(
         model_version=model_version,
         range_key=range_key,
         zones=tuple(zones[:_LEVEL_MAX]),
-        source_at_ms=_latest_source_ms(raw_levels, raw_prices),
+        source_at_ms=source_at_ms,
         received_at_ms=int(received_at_ms),
         freshness=cast(LiquidationFreshness, freshness),
         degraded=bool(meta.get("degraded")) or freshness != "fresh",
@@ -278,23 +299,14 @@ def _unavailable_snapshot(
     model_version: str,
     range_key: str,
 ) -> ProviderLiquidationSnapshot:
-    return ProviderLiquidationSnapshot(
-        target=target,
+    return unavailable_snapshot(
+        target,
+        received_at_ms=received_at_ms,
+        error_class=error_class,
         provider=_PROVIDER,
         contract=_CONTRACT,
-        authenticated=False,
-        completeness="unknown",
         model_version=model_version,
         range_key=range_key,
-        zones=(),
-        source_at_ms=None,
-        received_at_ms=int(received_at_ms),
-        freshness="unavailable",
-        degraded=True,
-        error_class=str(error_class or "unavailable"),
-        payload_sha256=None,
-        raw_level_count=0,
-        raw_price_count=0,
     )
 
 
@@ -302,15 +314,6 @@ def _clock_ms() -> int:
     import time
 
     return int(time.time() * 1000)
-
-
-def _coinglass_executable() -> str | None:
-    override = str(os.environ.get(_EXECUTABLE_ENV) or "").strip()
-    if override:
-        return override
-    if os.path.isfile(_PACKAGED_EXECUTABLE) and os.access(_PACKAGED_EXECUTABLE, os.X_OK):
-        return _PACKAGED_EXECUTABLE
-    return shutil.which("coinglass-cli")
 
 
 __all__ = ["COINGLASS_CLI_COMMIT", "CoinglassCliLiquidationProvider", "snapshot_from_envelope"]

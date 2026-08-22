@@ -598,7 +598,7 @@ SELECT provider, venue, venue_symbol, model_version, range_key,
 
 `freshness=unavailable` with a non-null `last_success_at_ms` means the latest
 attempt failed but the last successful zones were deliberately retained.
-`error_class=protocol_drift` means the pinned no-key web adapter no longer
+`error_class=provider_contract_drift` means the pinned no-key web adapter no longer
 understands the upstream contract; it is not permission to fall back silently
 to an authenticated or differently modeled endpoint. The row stores raw
 `side` and `size` fields without assigning long/short or USD semantics. Do not

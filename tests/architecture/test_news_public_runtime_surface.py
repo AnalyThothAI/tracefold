@@ -92,6 +92,7 @@ PUBLIC_NEWS_INTERFACE = {
     "parse_canary_control",
     "parse_opennews_message",
     "status_health",
+    "unavailable_snapshot",
 }
 
 IO_MODULE_ROOTS = {"aio_pika", "psycopg", "httpx", "aiohttp", "websockets", "requests"}

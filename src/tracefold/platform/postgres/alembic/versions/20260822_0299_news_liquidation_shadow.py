@@ -61,4 +61,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE news_liquidation_snapshots")
+    raise RuntimeError("20260822_0299 is an irreversible liquidation-shadow contract")

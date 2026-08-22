@@ -1001,20 +1001,8 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
     assert sender.cards[0]["elements"][0]["content"].splitlines()[-1] == "行情 NVDA $217.32 24h +1.50%（永续）"
 
 
-def test_deliverer_prices_the_verified_asset_on_an_oi_card() -> None:
-    price = RecordingPrice(
-        quotes=[
-            {
-                "symbol": "DOGE",
-                "price": "0.2143",
-                "change_pct": 8.64,
-                "change_basis": "rolling_24h",
-                "instrument_class": "crypto",
-                "state": "fresh",
-            }
-        ]
-    )
-    news = _delivery_news(
+def _oi_delivery_news() -> RecordingNews:
+    return _delivery_news(
         event_card=_card(admission="telemetry_deterministic", grounded_assets=[]),
         latest_verdict=lambda *, event_id, stage: {
             "final_decision": "push",
@@ -1028,6 +1016,22 @@ def test_deliverer_prices_the_verified_asset_on_an_oi_card() -> None:
         },
         oi_signal={"symbol": "DOGE", "metric_version": "oi_signal_v1"},
     )
+
+
+def test_deliverer_prices_the_verified_asset_on_an_oi_card() -> None:
+    price = RecordingPrice(
+        quotes=[
+            {
+                "symbol": "DOGE",
+                "price": "0.2143",
+                "change_pct": 8.64,
+                "change_basis": "rolling_24h",
+                "instrument_class": "crypto",
+                "state": "fresh",
+            }
+        ]
+    )
+    news = _oi_delivery_news()
     sender = RecordingSender()
 
     asyncio.run(
@@ -1040,6 +1044,47 @@ def test_deliverer_prices_the_verified_asset_on_an_oi_card() -> None:
     lines = sender.cards[0]["elements"][0]["content"].splitlines()
     assert "DOGE" in lines[0]
     assert lines[-1] == "行情 DOGE $0.2143 24h +8.64%"
+
+
+def test_deliverer_omits_a_stale_oi_quote_after_requesting_the_verified_symbol() -> None:
+    price = RecordingPrice(quotes=[{"symbol": "DOGE", "price": "0.2143", "state": "stale"}])
+    sender = RecordingSender()
+
+    asyncio.run(
+        _deliverer(_oi_delivery_news(), FakeBus(), price=price, sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    assert price.requested == [["DOGE"]]
+    assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
+
+
+def test_deliverer_does_not_price_an_ordinary_ungrounded_model_asset() -> None:
+    price = RecordingPrice(quotes=[{"symbol": "DOGE", "price": "0.2143", "state": "fresh"}])
+    news = _delivery_news(
+        event_card=_card(admission="candidate", grounded_assets=[]),
+        latest_verdict=lambda *, event_id, stage: {
+            "final_decision": "push",
+            "program_version": "program-v4",
+            "verdict": {
+                "direction": "bullish",
+                "magnitude": 2,
+                "headline_zh": "模型提到了 DOGE",
+                "assets": [{"symbol": "DOGE", "role": "primary"}],
+            },
+        },
+    )
+    sender = RecordingSender()
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    assert price.requested == []
+    assert "行情" not in json.dumps(sender.cards[0], ensure_ascii=False)
 
 
 def test_deliverer_delivers_when_the_price_plane_fails() -> None:

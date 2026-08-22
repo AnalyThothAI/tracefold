@@ -53,17 +53,28 @@ class LiquidationSnapshotLoop:
         self.enabled = bool(enabled)
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
+        self._turn_active = False
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if not self.enabled:
             await stop_event.wait()
             return
         while not stop_event.is_set():
-            with contextlib.suppress(Exception):
-                await self.turn()
+            await self.turn()
             await _sleep_or_stop(stop_event, self.period)
 
     async def turn(self) -> dict[str, Any]:
+        # The Workers runner is sequential, and this guard also makes direct operational/test calls skip instead
+        # of queueing a second provider request behind an in-flight turn.
+        if self._turn_active:
+            return {"due": 0, "attempted": 0, "written": 0, "fresh": 0, "error": "turn_in_progress"}
+        self._turn_active = True
+        try:
+            return await self._turn_once()
+        finally:
+            self._turn_active = False
+
+    async def _turn_once(self) -> dict[str, Any]:
         stamp = int(self.clock_ms())
 
         def _due(repos: Any) -> list[LiquidationTarget]:

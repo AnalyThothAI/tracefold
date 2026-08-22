@@ -205,7 +205,8 @@ A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
 into a business-package protocol. The adapters are OpenNews (the authenticated
 Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
-(`aio-pika`), and Feishu (the custom-bot webhook). No provider owns a durable
+(`aio-pika`), Feishu (the custom-bot webhook), and the pinned CoinGlass CLI
+(shadow-only potential-liquidation snapshots). No provider owns a durable
 queue. Expected provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
@@ -265,10 +266,11 @@ health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
 `news-deliverer`, `news-janitor`), the bounded cold loops
 (`news-instruments`, and with venues enabled `news-quotes`,
-`news-reactions`), and `workers-control` (singleton lock, heartbeat, runtime
+`news-reactions`, `news-liquidations`), and `workers-control` (singleton lock, heartbeat, runtime
 row). There is no acquisition clock, projection coordinator, model arbiter,
 stream ingester, identity backfill, or universe sync task. The three cold
-loops poll public catalogues and prices on code-owned cadences and admit their
+loops poll public catalogues and prices on code-owned cadences; the fourth polls
+the four-pair CoinGlass shadow. All admit their
 database work through a separate one-slot lane, never the four News hot-path
 slots.
 
