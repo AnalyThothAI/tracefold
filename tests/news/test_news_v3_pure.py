@@ -797,14 +797,32 @@ def test_told_selector_ranks_the_candidates_own_storyline_above_every_unrelated_
     entries = _select(unrelated + same).entries
     assert len(entries) == TOLD_MAX
     # The storyline tier wins the top slots even though every unrelated card is newer, but it is capped so the
-    # tiers below it stay reachable; its overflow then fills what is left.
+    # tiers below it stay reachable. Its overflow is then offered the remaining slots *before* any recency
+    # filler: filler must never displace evidence, or an unrelated delivery would change what the model saw.
     assert [entry.event_id for entry in entries[:TOLD_STORYLINE_TIER_MAX]] == [
         f"s{i}" for i in range(TOLD_STORYLINE_TIER_MAX)
     ]
-    assert [entry.event_id for entry in entries[TOLD_STORYLINE_TIER_MAX:]] == [
-        f"o{i}" for i in range(TOLD_MAX - TOLD_STORYLINE_TIER_MAX)
-    ]
+    assert [entry.event_id for entry in entries[TOLD_STORYLINE_TIER_MAX:10]] == ["s8", "s9"]
+    assert [entry.event_id for entry in entries[10:]] == [f"o{i}" for i in range(TOLD_MAX - 10)]
     assert [entry.i for entry in entries] == list(range(TOLD_MAX))
+
+
+def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
+    """A dense storyline plus a trickle of unrelated cards: every slot goes to evidence.
+
+    This is what keeps an unrelated delivery from buying a second paid execution — if filler could take a slot
+    an evidence row wanted, a new unrelated card would change the evidence set and force a re-ask.
+    """
+
+    from tracefold.news.semantic_contract import TOLD_MAX
+
+    dense = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
+    filler = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(3)]
+    entries = _select(filler + dense).entries
+    assert [entry.tier for entry in entries] == ["storyline"] * TOLD_MAX
+    # Adding one more unrelated card changes nothing the model sees.
+    grew = _select([_told_row("new", _NOW, storyline_key="macro:general"), *filler, *dense]).entries
+    assert [entry.event_id for entry in grew] == [entry.event_id for entry in entries]
 
 
 def test_told_selector_overflow_from_a_capped_tier_still_fills_leftover_slots() -> None:

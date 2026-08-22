@@ -157,26 +157,33 @@ def _take_with_tier_caps(
     *,
     limit: int,
 ) -> list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]]:
-    """Fill the slots in rank order, but never let the storyline tier take them all.
+    """Fill the slots in rank order, capping the storyline tier so the evidence tiers under it stay reachable —
+    and never letting recency filler displace evidence.
 
-    A capped tier's overflow is not discarded: once every other tier has had its chance, the leftovers fill any
-    remaining slots in the same rank order, so the result is still a total order over the same rows.
+    Three passes, and the order of the last two is the whole point. Filler exists so a sparse candidate still
+    sees what the reader has been reading; it must never take a slot an evidence row wants, because then an
+    unrelated delivery changes the evidence the model saw and buys a second paid execution. So a capped tier's
+    overflow is offered every remaining slot before any filler is, and is not discarded either way.
     """
 
     caps = {TOLD_TIER_ORDER.index("storyline"): TOLD_STORYLINE_TIER_MAX}
+    filler_tier = TOLD_TIER_ORDER.index("recency")
     chosen: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
     overflow: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
+    filler: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
     used: dict[int, int] = {}
     for item in ranked:
-        if len(chosen) >= limit:
-            break
         tier_index = item[0]
-        if used.get(tier_index, 0) >= caps.get(tier_index, limit):
+        if tier_index == filler_tier:
+            filler.append(item)
+        elif used.get(tier_index, 0) >= caps.get(tier_index, limit):
             overflow.append(item)
-            continue
-        used[tier_index] = used.get(tier_index, 0) + 1
-        chosen.append(item)
-    for item in overflow:
+        else:
+            used[tier_index] = used.get(tier_index, 0) + 1
+            chosen.append(item)
+        if len(chosen) >= limit:
+            return chosen[:limit]
+    for item in (*overflow, *filler):
         if len(chosen) >= limit:
             break
         chosen.append(item)

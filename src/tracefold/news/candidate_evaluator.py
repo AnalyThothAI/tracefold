@@ -1035,7 +1035,16 @@ class CandidateEvaluator:
                    COALESCE(v.verdict ->> 'direction', 'unclear') AS direction,
                    COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh', '')
                      AS headline_zh,
-                   COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets
+                   COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
+                   -- Same projection as `told_ledger` and the in-run receipts. A seed row that carries fewer
+                   -- instruments than production would give the first 4 h of every run a different selection
+                   -- and a different listing exemption than the arm it is meant to reproduce.
+                   COALESCE(
+                     (SELECT jsonb_agg(asset ->> 'symbol')
+                        FROM jsonb_array_elements(COALESCE(v.verdict -> 'assets', '[]'::jsonb)) AS asset
+                       WHERE asset ->> 'symbol' IS NOT NULL),
+                     '[]'::jsonb
+                   ) AS assets
               FROM news_deliveries d
               JOIN news_verdicts v ON v.event_id = d.event_id AND v.stage = 'triage'
               JOIN news_events e ON e.event_id = d.event_id

@@ -959,7 +959,7 @@ class TriageConsumer:
             else self.circuit
         )
         prelim_key = str(card.get("storyline_key") or "")
-        # The told context: the <= 12 cards the selector ranked against *this* candidate out of the bounded sent
+        # The told context: the <= TOLD_MAX cards the selector ranked against *this* candidate out of the bounded sent
         # ledger.  The model judges novelty against it, and its SHA — not the raw ledger's event-id set — is what
         # the persist step compares, so only a change to what the model saw can make the judgment stale.
         context = TriageContext.from_card(
@@ -1482,7 +1482,7 @@ class TriageConsumer:
             raise TransientError("news_event_evidence_changed")
         # The wide ledger is always re-read: `decide()` must measure this card against every card the reader
         # received, including one that landed while the model was thinking.  Only the *selected* context — the
-        # <= 12 rows the model actually saw — decides whether the judgment is stale, so an unrelated new card
+        # bounded set of rows the model actually saw — decides whether the judgment is stale, so an unrelated new card
         # costs a cheap query instead of a second paid two-Predictor execution.
         seen = repos.news.told_ledger(now_ms=s.stamp, window_ms=TOLD_WINDOW_MS, limit=_SEEN_LEDGER_MAX)
         if s.allow_stale:

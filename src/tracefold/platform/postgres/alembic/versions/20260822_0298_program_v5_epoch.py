@@ -21,7 +21,7 @@ branch_labels = None
 depends_on = None
 
 _PROGRAM_V4_SHA = "5bc03f976b10f22ce788f93a8d91202e2b0e9899172cb91e33beeca89b93cb48"
-_PROGRAM_V5_SHA = "080ce94d9a39640639e8ee5e9501f7c9b238838ec7c9217e2a1c906a65a4f406"
+_PROGRAM_V5_SHA = "c62e0d69bf6c1901b3e8a1a716ca153acaf92793421d5af2701030c0477cac3b"
 
 
 def upgrade() -> None:

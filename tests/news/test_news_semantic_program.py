@@ -426,11 +426,10 @@ def test_told_selection_is_candidate_conditioned_not_a_recency_quota() -> None:
         f"same-{index}" for index in range(TOLD_STORYLINE_TIER_MAX)
     ]
     assert all(entry.tier == "storyline" for entry in entries[:TOLD_STORYLINE_TIER_MAX])
-    assert [entry.tier for entry in entries[TOLD_STORYLINE_TIER_MAX:]] == ["recency"] * (
-        TOLD_MAX - TOLD_STORYLINE_TIER_MAX
-    )
-    # The capped tier's overflow is not discarded; it just yields to the other tiers first.
-    assert "same-8" not in [entry.event_id for entry in entries]
+    # The cap's overflow is offered the remaining slots before any recency filler: filler must never displace
+    # evidence, or an unrelated delivery would change the evidence set and buy a second paid execution.
+    assert [entry.event_id for entry in entries[TOLD_STORYLINE_TIER_MAX:10]] == ["same-8", "same-9"]
+    assert [entry.tier for entry in entries[10:]] == ["recency"] * (TOLD_MAX - 10)
     assert [entry.i for entry in entries] == list(range(TOLD_MAX))
 
 
