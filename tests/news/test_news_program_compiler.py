@@ -189,7 +189,7 @@ def test_compile_is_bounded_development_only_and_writes_two_file_artifact(tmp_pa
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
     assert result.compile_provenance.development_dataset_sha == "d" * 64
-    assert result.compile_provenance.learning_epoch == "program_v2"
+    assert result.compile_provenance.learning_epoch == "program_v3"
     assert result.compile_provenance.optimizer == "dspy.GEPA@3.3.0/gepa@0.1.1"
     assert result.compile_provenance.metric_calls == 2
     assert result.compile_provenance.task_model_calls == 1

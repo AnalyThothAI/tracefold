@@ -150,13 +150,12 @@ class TriageVerdict(BaseModel):
     decision: Literal["push", "drop", "escalate"]
     audience: Audience = "none"
     headline_zh: str = Field(min_length=1, max_length=60)
-    # Empty means "same as headline_zh" (#101). 85% of a live day's verdicts repeated the headline verbatim here,
-    # ~13% of all output tokens, because the prompt only ever asks for a condensed header when the wire headline
-    # is long. Every reader of this field fills the sentinel in; nothing downstream sees an empty title.
+    # Empty means "same as headline_zh" (#101). The current Program no longer asks ReaderCard to generate this
+    # duplicate field and always emits the sentinel; historical verdicts with a populated value remain readable.
     title_zh: str = Field(
         default="",
         max_length=160,
-        description="leave empty when headline_zh already carries the whole headline; fill only when it condensed",
+        description="legacy compatibility sentinel; the current Program always leaves it empty",
     )
     why_zh: str = Field(default="", max_length=140)
 
@@ -164,10 +163,9 @@ class TriageVerdict(BaseModel):
 def display_title(verdict: Mapping[str, Any]) -> str:
     """The Chinese title an operator surface should show for a verdict.
 
-    ``title_zh`` empty means "same as ``headline_zh``" (#101): the prompt asks for the sentinel because 85% of a
-    live day's verdicts repeated the headline verbatim, ~13% of all output tokens. Every console/API read site
-    calls this so the rule lives in one place — the one deliberate exception is the Feishu card, where an empty
-    ``title_zh`` must stay empty so the header can fall through to the wire title (see ``delivery``).
+    ``title_zh`` empty means "same as ``headline_zh``" (#101). The current Program always emits that sentinel;
+    historical populated values remain readable. Every console/API read site calls this so the fallback rule
+    lives in one place.
     """
 
     return str(verdict.get("title_zh") or verdict.get("headline_zh") or "")

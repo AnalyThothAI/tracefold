@@ -32,6 +32,7 @@ provider/name.
 
 The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
+`llm.news_reader_card.api_key` (dedicated ReaderCard endpoint), the optional
 `llm.news_triage_fallback.api_key` (second Triage endpoint, issue #65),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, and the five PostgreSQL password files
@@ -59,13 +60,23 @@ environment variables, or move code-owned safety budgets into
 `news_triage` is the only production product-model consumer. Its sole
 Interface is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The
 production Adapter executes the fixed DSPy graph
-`EventSemantics -> ReaderCard -> deterministic VerdictAssembler`; callers
+`EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
+deterministic VerdictAssembler`; callers
 cannot supply instructions, demonstrations, topology, routes, retry policy or
 artifact paths. A normal judgment uses two serial provider calls. One fast
 retry is shared by a route (at most three calls); fallback restarts the full
 graph (at most six across the chain). The artifact owns the route deadline and
 call/token budgets. DSPy cache and hidden provider retries are disabled so the
 audit trace contains every provider attempt.
+
+EventSemantics uses the primary Triage endpoint. ReaderCard inherits that
+endpoint unless the operator supplies the complete `llm.news_reader_card`
+triple. The two Predictors always receive separate Adapters and artifact-owned
+token caps; endpoint credentials remain application configuration and never
+enter the content-addressed Program artifact or secret-free runtime identity.
+The identity includes only a one-way endpoint fingerprint beside provider and
+model, so different backends cannot share a learning cohort while the URL and
+credential remain undisclosed.
 
 The Program output never decides delivery by itself: pure `decide()` rules own
 the final decision, Program failure is fail-closed, and every verdict row stores
@@ -97,7 +108,7 @@ There is no legacy Prompt executor or dynamic compatibility loader to bypass
 these checks; Prompt-era database fields are audit-only.
 
 The DSPy GEPA compiler is a cold manual development command, not a runtime
-Worker. It receives accepted `program_v2` development episodes only and must be
+Worker. It receives accepted `program_v3` development episodes only and must be
 given explicit metric-call, total task/reflection-model-call,
 provider-cost-in-microusd limits and a seed. It has no authority to read
 validation/holdout, write accepted truth, register, deploy or promote. Its
@@ -106,11 +117,13 @@ code review carry it into an image.
 
 Migration `0292` creates the append-only deployment-time `program_v1` learning
 epoch; `0293` preserves it and appends `program_v2` for the corrected semantic
-retry state machine and hardened restatement sentinel. Prompt-era and
-`program_v1` reviews, datasets, recordings and release receipts are retained as
-audit history but are never training, validation, holdout or
-promotion evidence for this Program factory. The reset is an eligibility hard
-cut, not permission for an optimizer to relabel old evidence or delete it.
+retry state machine and hardened restatement sentinel. `0294` preserves both
+rows and appends `program_v3` for the expert quality baseline and semantic
+normalization. Prompt-era, `program_v1`, and `program_v2` reviews, datasets,
+recordings and release receipts are retained as audit history but are never
+training, validation, holdout or promotion evidence for this Program factory.
+The reset is an eligibility hard cut, not permission for an optimizer to
+relabel old evidence or delete it.
 
 PostgreSQL runtime roles are code-owned:
 `src/tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the

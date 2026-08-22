@@ -316,6 +316,8 @@ def get_news_status(request: Request) -> Response:
         **snapshot["pipeline"],
         **grounding,
         "triage_model": models.triage_model,
+        "reader_card_model": models.reader_card_model,
+        "reader_card_dedicated": models.reader_card_dedicated,
         "triage_fallback_model": models.triage_fallback_model,
     }
     delivery = {
@@ -336,7 +338,7 @@ def get_news_status(request: Request) -> Response:
         workers_state=workers_state,
         now_ms=now_ms,
         enabled=bool(settings.news.enabled),
-        model_configured=bool(models.triage_configured and models.triage_model),
+        model_configured=models.program_configured,
     )
     data = {
         "state": state,

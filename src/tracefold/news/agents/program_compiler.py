@@ -1,7 +1,7 @@
 """Bounded cold compiler for News semantic Program candidates.
 
 The compiler accepts only an
-already-frozen ``program_v2`` development corpus, runs the fixed two-Predictor
+already-frozen ``program_v3`` development corpus, runs the fixed two-Predictor
 factory through a bounded GEPA optimizer, and emits a state-only candidate
 image plus a proposal input.  It cannot read a holdout, register a candidate,
 promote a Program, or change Python topology.
@@ -35,7 +35,7 @@ from .semantic_program import (
     TriageContext,
 )
 
-LEARNING_EPOCH = "program_v2"
+LEARNING_EPOCH = "program_v3"
 COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v1"
 METRIC_ID = "tracefold.news.accepted_review_feedback_v1"
 _PROPOSAL_GUARDRAILS = (
@@ -73,7 +73,7 @@ class DevelopmentEpisode(_ExactModel):
 
 class CompileRequest(_ExactModel):
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v2"] = "program_v2"
+    learning_epoch: Literal["program_v3"] = "program_v3"
     episodes: tuple[DevelopmentEpisode, ...] = Field(min_length=1)
     budget: CompileBudget
 

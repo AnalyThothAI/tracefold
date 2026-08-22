@@ -78,6 +78,8 @@ def handle_config(_args: object) -> tuple[int, dict[str, Any]]:
                     "models": {
                         "triage_configured": model_availability.triage_configured,
                         "triage_model": model_availability.triage_model,
+                        "reader_card_model": model_availability.reader_card_model,
+                        "reader_card_dedicated": model_availability.reader_card_dedicated,
                         "triage_fallback_model": model_availability.triage_fallback_model,
                     },
                     "triage": settings.news.triage.model_dump(),

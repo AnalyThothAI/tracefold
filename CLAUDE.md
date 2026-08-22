@@ -47,10 +47,13 @@ stored and then silently dropped), and a stronger later member re-gates a
 suppressed Event — and computes a theme-first preliminary storyline key. Triage
 is one Program-native `SemanticJudge.judge(TriageContext)` Interface backed by
 a code-owned two-Predictor DSPy Module: `EventSemantics` interprets the Event,
-Gate facts and 4 h told ledger, then `ReaderCard` receives the original evidence
-plus frozen semantics and writes Chinese reader text (`headline_zh`, `why_zh`,
-console-only `title_zh` whose empty value means "same as `headline_zh`", #101);
-a deterministic assembler produces the exact `TriageVerdict`. A normal route is
+Gate facts and 4 h told ledger; a deterministic `SemanticNormalizer` discards a
+stray restatement index on `new_fact`/`progression`, preserves the raw value in
+the call trace, and spends no provider call or fast retry; then internal
+`ReaderCard.v2` receives the original evidence plus normalized semantics and
+writes only `headline_zh` and `why_zh`. A deterministic assembler produces the
+exact `TriageVerdict` and retains public `title_zh=""` only as the legacy "same as
+`headline_zh`" sentinel (#101). A normal route is
 exactly two serial structured calls. The content-addressed, state-only
 `ProgramArtifact` pins topology, signatures, instructions, demos, Adapter,
 model slots, execution contract and dependency lock; DSPy cache and hidden
@@ -80,8 +83,9 @@ the model was thinking earns one re-ask with the fresh ledger), model failure is
 degraded but never silent (rule baseline: watchlist, score >= 80 with a grounded
 asset, or a high-priority Event or deterministic exchange notice, which fail
 open onto the wire headline instead of dropping a missile strike because it has
-no ticker) with a circuit breaker, and the verdict carries `title_zh` and
-`audience` (no separate translation lane) plus a replayable trace (Program and
+no ticker) with a circuit breaker, and the verdict carries `audience` plus the
+empty compatibility `title_zh` sentinel (no separate translation lane) and a
+replayable trace (Program and
 runtime-model identity, per-Predictor request/output/usage/cost, every stale
 re-ask execution, preliminary and final ledger snapshots, and final storyline
 key). There is no Analyst lane: one Event gets
@@ -128,9 +132,10 @@ removed real equities with no crypto perp, and listing/delisting facts arrive as
 provider frames (#72) that the snapshot diff could only have duplicated for the
 two venues we poll. The learning plane is immutable `EventEvidenceSnapshot`
 plus append-only multi-dimensional reviews/external misses and one
-`CandidateEvaluator`. The corrected deployment-time `program_v2` epoch makes
-Prompt-era and the superseded `program_v1` baseline evidence audit-only and
-reaccrues release evidence from zero. It freezes accepted evidence, runs stable
+`CandidateEvaluator`. The deployment-time `program_v3` epoch for the expert
+quality baseline and semantic normalization makes Prompt-era plus the
+superseded `program_v1`/`program_v2` baseline evidence audit-only and reaccrues
+release evidence from zero. It freezes accepted evidence, runs stable
 and exactly one declared `program` or
 `policy` variable sequentially, then requires sealed future holdout, blind
 pairwise, shadow and deterministic one-arm canary evidence before promotion. A

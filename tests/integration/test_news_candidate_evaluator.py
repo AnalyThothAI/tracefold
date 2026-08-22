@@ -430,15 +430,15 @@ def _epoch_started_at_ms(conn: object) -> int:
     return int(row["starts_at_ms"])
 
 
-def test_candidate_evaluator_pins_the_program_v2_epoch_contract(conn) -> None:
+def test_candidate_evaluator_pins_the_program_v3_epoch_contract(conn) -> None:
     row = conn.execute(
         "SELECT prior_evidence_disposition, reset_reason FROM news_learning_epochs WHERE epoch_id = %s",
         (LEARNING_EPOCH,),
     ).fetchone()
 
-    assert LEARNING_EPOCH == "program_v2"
-    assert (
-        candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON == "semantic_retry_and_restatement_contract_reidentity"
+    assert LEARNING_EPOCH == "program_v3"
+    assert candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON == (
+        "expert_quality_baseline_and_semantic_normalization"
     )
     assert dict(row) == {
         "prior_evidence_disposition": "audit_only",
@@ -502,7 +502,7 @@ def _verdict() -> dict[str, object]:
 def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object]) -> ProgramTrace:
     context_sha = _sha(context.model_dump(mode="json"))
     semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "title_zh", "why_zh"}}
-    card = {key: verdict[key] for key in ("headline_zh", "title_zh", "why_zh")}
+    card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
     runtime_model_sha = _sha({"provider": "fixture-provider", "model": "fixture-model"})
     runtime_binding_sha = _sha(
         {
@@ -932,7 +932,7 @@ def _open_event(
         assert evidence is not None
         verdict = _verdict()
         semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "title_zh", "why_zh"}}
-        card = {key: verdict[key] for key in ("headline_zh", "title_zh", "why_zh")}
+        card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
         runtime_model_sha = _sha({"provider": "fixture-provider", "model": "fixture-model"})
         runtime_binding_sha = _sha(
             {
@@ -1541,7 +1541,7 @@ def test_strict_recording_verification_reexecutes_real_program_graph_without_new
         program_sha256=candidate_artifact.program_sha256,
     )
     semantics = {key: value for key, value in _verdict().items() if key not in {"headline_zh", "title_zh", "why_zh"}}
-    card = {key: _verdict()[key] for key in ("headline_zh", "title_zh", "why_zh")}
+    card = {key: _verdict()[key] for key in ("headline_zh", "why_zh")}
     stable_adapter = ScriptedPredictorAdapter([value for _ in range(6) for value in (semantics, card)])
     candidate_adapter = ScriptedPredictorAdapter([value for _ in range(6) for value in (semantics, card)])
     judges = {

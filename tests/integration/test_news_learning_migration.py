@@ -65,7 +65,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260822_0293"
+        assert revision["version_num"] == "20260822_0294"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -169,7 +169,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0293"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0294"
     finally:
         if conn is not None:
             conn.close()
@@ -211,7 +211,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0293"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0294"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -269,7 +269,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
             restore.close()
 
 
-def test_0292_to_head_appends_program_v2_epoch_without_rewriting_program_v1() -> None:
+def test_0292_to_0293_appends_program_v2_epoch_without_rewriting_program_v1() -> None:
     conn: Any | None = None
     try:
         _fresh_schema_at("20260822_0292")
@@ -279,7 +279,7 @@ def test_0292_to_head_appends_program_v2_epoch_without_rewriting_program_v1() ->
         conn = None
 
         deployed_after_ms = int(time.time() * 1000) - 5_000
-        _upgrade("head")
+        _upgrade("20260822_0293")
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
@@ -298,6 +298,51 @@ def test_0292_to_head_appends_program_v2_epoch_without_rewriting_program_v1() ->
         assert program_v2["baseline_program_version"] == "news_semantic_program_v1"
         assert program_v2["baseline_program_sha256"] == (
             "ad8720a8f70c9210440f7c9eaeaad182b261359dcbe77a0fb7c6d2063815da3c"
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()
+
+
+def test_0293_to_head_appends_program_v3_epoch_without_rewriting_prior_epochs() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260822_0293")
+        conn = connect_postgres_test(read_only=False)
+        prior_epochs = {
+            row["epoch_id"]: dict(row)
+            for row in conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        }
+        conn.close()
+        conn = None
+
+        deployed_after_ms = int(time.time() * 1000) - 5_000
+        _upgrade("head")
+        deployed_before_ms = int(time.time() * 1000) + 5_000
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0294"
+        epochs = conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
+        assert len(epochs) == 3
+        assert dict(next(row for row in epochs if row["epoch_id"] == "program_v1")) == prior_epochs["program_v1"]
+        assert dict(next(row for row in epochs if row["epoch_id"] == "program_v2")) == prior_epochs["program_v2"]
+        program_v3 = next(row for row in epochs if row["epoch_id"] == "program_v3")
+        assert deployed_after_ms <= program_v3["starts_at_ms"] <= deployed_before_ms
+        assert program_v3["created_at_ms"] == program_v3["starts_at_ms"]
+        assert program_v3["starts_at_ms"] >= prior_epochs["program_v2"]["starts_at_ms"]
+        assert program_v3["source_issue"] == "https://github.com/AnalyThothAI/tracefold/issues/132"
+        assert program_v3["prior_evidence_disposition"] == "audit_only"
+        assert program_v3["reset_reason"] == "expert_quality_baseline_and_semantic_normalization"
+        assert program_v3["program_factory_id"] == "tracefold.news.semantic_program.factory_v1"
+        assert program_v3["artifact_schema_version"] == "news_semantic_program_artifact_v1"
+        assert program_v3["baseline_program_version"] == "news_semantic_program_v1"
+        assert program_v3["baseline_program_sha256"] == (
+            "49643db931211aee7f1d4f5b7124345d45e18132b10628b85843c55e05dff8d5"
         )
     finally:
         if conn is not None:

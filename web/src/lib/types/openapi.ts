@@ -1263,6 +1263,13 @@ export interface components {
             /** Queue Lag P95 Ms */
             queue_lag_p95_ms?: number | null;
             /**
+             * Reader Card Dedicated
+             * @default false
+             */
+            reader_card_dedicated: boolean;
+            /** Reader Card Model */
+            reader_card_model?: string | null;
+            /**
              * Reasked 24H
              * @default 0
              */

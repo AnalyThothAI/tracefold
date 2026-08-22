@@ -128,6 +128,8 @@ def model_health(
     if not enabled:
         return HealthItem("off", "News 未启用", "")
     if not model_configured:
+        if pipeline.get("triage_model") and not pipeline.get("reader_card_model"):
+            return HealthItem("bad", "Reader 模型不可用", "ReaderCard 配置无效；所有事件按规则兜底")
         return HealthItem("bad", "未配置 Triage 模型", "所有事件按规则兜底")
     if "triage_circuit_open" in open_causes:
         return HealthItem("bad", "模型熔断中", "连续调用失败后暂停调用；此期间所有事件按规则兜底")

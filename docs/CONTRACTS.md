@@ -56,6 +56,12 @@ They are all absent or all present; a partial triple fails validation, and
 Tracefold never supplies an implicit endpoint or model. `qwen*` models are
 called with `chat_template_kwargs.enable_thinking=false` (code-owned): Qwen3
 otherwise spends the Triage token budget on reasoning before the tool call.
+`llm.news_reader_card` (`api_key`, `base_url`, `model`; all-or-nothing and only
+valid next to a complete primary triple) optionally binds ReaderCard to a
+different direct endpoint. When absent, ReaderCard inherits the Triage endpoint.
+EventSemantics and ReaderCard still receive separate Adapters and their own
+artifact-owned `max_tokens`; changing this endpoint changes only the secret-free
+`reader_card.primary` runtime binding identity, not Program identity.
 `llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
 only valid next to a complete primary triple; issue #65) is a second direct
 endpoint used only when the primary Triage call fails — timeout, transport
@@ -67,10 +73,14 @@ configuration field. The separate `news.triage.circuit_failures` /
 both routes fail retryably. `news_verdicts.model` records the runtime model that
 answered and the trace carries `model_fallback_from` (the primary's error code
 or `primary_circuit_open`) or, when both routes failed, `primary_error`.
-`/api/news/status.pipeline` and `tracefold config` report both
-`triage_model` and `triage_fallback_model`. The card's Chinese text is the Triage verdict's
-`headline_zh` and `why_zh` (with `title_zh` for the console); no other model
-or provider produces copy. Model execution policy, timeouts, token budgets,
+`/api/news/status.pipeline` and `tracefold config` report `triage_model`, the
+effective `reader_card_model`, whether it is dedicated, and
+`triage_fallback_model`. Internal `ReaderCard.v2` outputs only `headline_zh`
+and `why_zh`; no other model or provider produces copy. Raw persisted
+`TriageVerdict.title_zh` is always `""` for the current Program. Feed and
+summary read models may expose the non-empty derived display value returned by
+`models.display_title`; that is not Reader output. Model execution policy,
+timeouts, token budgets,
 cadence, retries, and reservations are code-owned. Environment variables are
 not a credential contract.
 
@@ -183,7 +193,8 @@ templates:
 
 - `GET /api/news/feed?family={family}&admission={admission}&priority={high|normal}&decision={push|escalate|drop|throttled|degraded}&symbol={symbol}&q={query}&sort={latest|priority}&limit={limit}&cursor={cursor}&outcome={pushed|held|pending}&hours={0..168}`
   returns Events newest first (or high priority first) with the leader title,
-  the Triage `title_zh` when a verdict carries one, admission, priority,
+  the derived display `title_zh` (`models.display_title`, normally the current
+  verdict's `headline_zh`), admission, priority,
   asset class, grounded assets, watchlist hits, storyline key, context line,
   **one `outcome`** (`kind` from the stable enum `held_recovery`, `held_gate`,
   `queued_publish`, `queued_triage`, `dropped`, `throttled`,
@@ -191,7 +202,8 @@ templates:
   reader copy `text_zh` and `reason_zh`; `group` = `pushed|held|pending`),
   the latest Triage summary (final decision, override rule, throttle reason,
   degraded flag, error code, direction, magnitude, event type, scope,
-  `headline_zh`, `title_zh`, `why_zh`, plus Chinese `direction_zh`,
+  `headline_zh`, derived display `title_zh`, `why_zh`, plus Chinese
+  `direction_zh`,
   `magnitude_zh`, `event_type_zh`), and the first delivery state with its
   error code. `outcome` is the feed's task-tab filter (its SQL mirrors the
   outcome groups); `hours` bounds `opened_at_ms` to the last N hours (`0`
@@ -312,10 +324,10 @@ otherwise), `event_type`, `assets[{symbol, market_type?, role}]`, `direction`,
 `scope`, `magnitude 0..3`, `actionable`, `confidence`, `decision` (model
 intent), `audience`, `headline_zh` (the card header: a complete headline that
 keeps the decisive number / condition / consequence clause, at most 60
-characters), `title_zh` (the console's full Chinese title, at most 160
-characters; empty means "same as `headline_zh`" — the deterministic assembler
-enforces the sentinel, and `models.display_title` fills it in for every console
-and API surface), `why_zh` (at most one plain sentence adding mechanism and who
+characters), `title_zh` (a legacy compatibility field; the current Program
+always writes the empty "same as `headline_zh`" sentinel, while historical rows
+remain readable; `models.display_title` resolves it to `headline_zh`),
+`why_zh` (at most one plain sentence adding mechanism and who
 is exposed, at most 140 characters); the stored row adds
 `model_decision`, `rule_baseline_decision`, `final_decision`, `override_rule`
 (policy v3 added `restatement`), `throttled_by`
@@ -337,8 +349,11 @@ the persisted verdict is then the deterministic degraded fallback. A selected
 Program trace's per-Predictor calls bind request/input/signature/
 instruction/demo/upstream/output hashes, route and attempt, resolved runtime
 provider/model identity, validated output, finish reason, latency, input/
-output/cached/total tokens and optional provider cost in microusd. Aggregate
-latency, call count and tokens include superseded and failed re-ask executions;
+output/cached/total tokens and optional provider cost in microusd. Calls may
+also record a deterministic semantic normalization from a raw stray
+`restates` value to `-1`; it is attached to the originating EventSemantics call
+and is not a physical provider call. Aggregate latency, call count and tokens
+include superseded and failed re-ask executions;
 aggregate cost is unknown unless every billable call reported it.
 `triage` is the only
 stage written; the retired Analyst lane's `deep` rows survive as history
@@ -352,8 +367,8 @@ the display version alone.
 canonical, content-addressed, state-only JSON pair (`manifest.json` and
 `state.json`) carried in the application image and selected by the code-owned
 registry. The manifest binds the fixed factory/topology, DSPy and dependency
-lock, input/Adapter/assembler contracts, execution budget, Predictor state
-hashes and compile receipt; state is limited to the two validated Predictor
+lock, input/Adapter/normalizer/assembler contracts, execution budget,
+Predictor state hashes and compile receipt; state is limited to the two validated Predictor
 records (name/signature identity, instruction, demonstrations, model-binding
 slots, token cap and their hashes). Loading fails closed on an
 unknown hash/version/factory/lock, a path or symlink violation, extra file, or
@@ -367,9 +382,11 @@ provider retries are disabled; every provider attempt must appear in the trace.
 There is no legacy Prompt runtime, dual stack, compatibility Adapter or
 production operator-selected artifact path. Nullable Prompt-era fields remain
 audit-only.
-The current execution contract is `EventSemantics -> ReaderCard ->`
-deterministic assembler: normally two serial calls; one fast retry shared by
-the whole route, so at most three calls per route; fallback restarts the full
+The current execution contract is `EventSemantics -> deterministic
+SemanticNormalizer -> ReaderCard.v2 -> deterministic assembler`: normally two
+serial calls because the normalizer and assembler make no provider request;
+one fast retry is shared by the whole route, so at most three calls per route;
+fallback restarts the full
 graph, so primary plus fallback is at most six. The artifact's 20-second
 deadline covers one whole route. One Event still persists one final
 SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
@@ -428,7 +445,10 @@ Strategy allowlist. The irreversible `20260822_0292` hard cut adds Program
 identity to verdicts, per-Predictor call identity/usage/cost to recordings, and
 the append-only deployment-time `program_v1` epoch. `20260822_0293` preserves
 that history and appends the corrected `program_v2` epoch; Prompt-era and
-`program_v1` learning rows are audit-only and promotion-ineligible. A database
+`program_v1` learning rows are audit-only and promotion-ineligible.
+`20260822_0294` preserves both rows and appends the expert-quality `program_v3`
+epoch; Prompt-era, `program_v1`, and `program_v2` rows are audit-only for the
+current release chain. A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
 News base-table set plus four security-barrier review views is asserted by
@@ -519,7 +539,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260822_0293`).
+append without rewrite access (current at migration `20260822_0294`).
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and
@@ -534,8 +554,9 @@ idempotency key.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
-the deployment-time `program_v2` epoch; Prompt-era and `program_v1` evidence are
-audit-only, and reviews plus acceptance receipts before the epoch cannot enter a dataset.
+the deployment-time `program_v3` epoch; Prompt-era, `program_v1`, and
+`program_v2` evidence are audit-only, and reviews plus acceptance receipts
+before the epoch cannot enter a dataset.
 `learning compile --development SHA --artifact-root DIR --out FILE
 --max-metric-calls N --max-task-model-calls N --max-cost-microusd N [--seed
 N]` is the manual cold DSPy GEPA compiler. It consumes accepted development

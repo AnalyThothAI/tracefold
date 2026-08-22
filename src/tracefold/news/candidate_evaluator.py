@@ -31,8 +31,8 @@ from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
 LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
-LEARNING_EPOCH: Literal["program_v2"] = "program_v2"
-LEARNING_EPOCH_RESET_REASON = "semantic_retry_and_restatement_contract_reidentity"
+LEARNING_EPOCH: Literal["program_v3"] = "program_v3"
+LEARNING_EPOCH_RESET_REASON = "expert_quality_baseline_and_semantic_normalization"
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
@@ -102,7 +102,7 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v2"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v3"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
 
@@ -130,7 +130,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: Literal["program_v2"]
+    learning_epoch: Literal["program_v3"]
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int

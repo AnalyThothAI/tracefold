@@ -111,9 +111,9 @@ Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. Historical migration-path tests are narrow and explicit: they cover the
 preservation/grant cuts that carry user evidence forward and the `0292` to
-`0293` append-only Program epoch transition. The Alembic chain is the
+`0293` plus `0293` to `0294` append-only Program epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
-`20260822_0293`; schema tests also run against that migrated head. The e2e lane
+`20260822_0294`; schema tests also run against that migrated head. The e2e lane
 (`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
@@ -167,8 +167,10 @@ fails on an unrecorded request or runtime-model identity mismatch.
 Issue #129 deliberately resets learning eligibility. Migration `0292` records
 the initial `program_v1` epoch start from the database deployment clock;
 `0293` preserves it and appends the corrected `program_v2` epoch after the
-semantic fast-retry state bug was found in production proof. Prompt-era and
-`program_v1` reviews, datasets, recordings and release receipts remain immutable
+semantic fast-retry state bug was found in production proof. `0294` preserves
+both prior rows and appends `program_v3` after the expert quality baseline and
+semantic normalization change Program identity. Prompt-era, `program_v1`, and
+`program_v2` reviews, datasets, recordings and release receipts remain immutable
 audit history but are not training, validation, holdout or promotion evidence.
 New datasets require post-epoch reviews and acceptance receipts bound to the
 exact stable Program bundle, so quality evidence begins at zero.

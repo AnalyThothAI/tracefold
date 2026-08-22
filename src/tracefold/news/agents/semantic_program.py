@@ -2,10 +2,10 @@
 
 The public Interface is deliberately small: callers submit one immutable
 ``TriageContext`` to ``SemanticJudge.judge`` and receive one complete
-``SemanticJudgment``.  The hidden DSPy graph is exactly
-``EventSemantics -> ReaderCard -> VerdictAssembler``.  Model transport is an
-Adapter Seam; domain validation, retry/fallback budgets, identity and audit
-remain owned by this Module.
+``SemanticJudgment``.  The hidden graph is exactly
+``EventSemantics -> SemanticNormalizer -> ReaderCard -> VerdictAssembler``.
+Model transport is an Adapter Seam; domain validation, retry/fallback budgets,
+identity and audit remain owned by this Module.
 
 Only canonical JSON state is loadable.  This module never loads pickle,
 cloudpickle, DSPy Flex state, arbitrary classes, endpoints, or credentials.
@@ -58,7 +58,10 @@ PROGRAM_DEPENDENCY_LOCK_SHA256: Final[str] = "defdd610578ecd1f1f667f5eaf0ebf0b94
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_semantic_program_artifact_v1"
 PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.semantic_program.factory_v1"
 PROGRAM_TOPOLOGY_SHA256: Final[str] = canonical_sha(
-    {"nodes": ["event_semantics", "reader_card", "verdict_assembler"], "edges": [[0, 1], [1, 2]]}
+    {
+        "nodes": ["event_semantics", "semantic_normalizer", "reader_card", "verdict_assembler"],
+        "edges": [[0, 1], [1, 2], [2, 3]],
+    }
 )
 PROGRAM_ADAPTER_SHA256: Final[str] = canonical_sha(
     {
@@ -72,9 +75,11 @@ PROGRAM_ADAPTER_SHA256: Final[str] = canonical_sha(
 )
 PROGRAM_ASSEMBLER_SHA256: Final[str] = canonical_sha(
     {
-        "assembler": "verdict_assembler_v1",
+        "assembler": "verdict_assembler_v2",
+        "semantic_normalizer": "semantic_normalizer_v1",
+        "non_restatement_index": "normalize_to_minus_one",
         "restatement_index": "strict",
-        "title_sentinel": "empty_when_equal",
+        "title_sentinel": "always_empty",
     }
 )
 PROGRAM_INPUT_CONTRACT_SHA256: Final[str] = canonical_sha(
@@ -89,7 +94,7 @@ EVENT_SEMANTICS_SIGNATURE_SHA256: Final[str] = canonical_sha(
 )
 READER_CARD_SIGNATURE_SHA256: Final[str] = canonical_sha(
     {
-        "signature": "ReaderCard.v1",
+        "signature": "ReaderCard.v2",
         "inputs": ["evidence_json", "semantics_json"],
         "outputs": ["card"],
     }
@@ -592,7 +597,6 @@ class EventSemantics(_ExactModel):
 
 class ReaderCard(_ExactModel):
     headline_zh: str = Field(min_length=1, max_length=60)
-    title_zh: str = Field(default="", max_length=160)
     why_zh: str = Field(default="", max_length=140)
 
     @model_validator(mode="after")
@@ -775,7 +779,7 @@ class ProgramArtifact(_ExactModel):
             raise ValueError("news_program_reader_card_signature_unknown")
         if self.event_semantics.signature_id != "tracefold.news.EventSemantics.v1":
             raise ValueError("news_program_event_semantics_signature_id_unknown")
-        if self.reader_card.signature_id != "tracefold.news.ReaderCard.v1":
+        if self.reader_card.signature_id != "tracefold.news.ReaderCard.v2":
             raise ValueError("news_program_reader_card_signature_id_unknown")
         if self.dependency_lock_sha256 != _runtime_dependency_lock_sha256():
             raise ValueError("news_program_dependency_lock_mismatch")
@@ -1509,11 +1513,16 @@ class ScriptedPredictorAdapter:
         *,
         model_name: str = "scripted/test",
         provider: str = "scripted",
+        model_sha256: str | None = None,
     ) -> None:
         self._steps = list(steps)
         self.model_name = model_name
         self.provider = provider
-        self._runtime = RuntimeModelIdentity.issue(provider=provider, model=model_name)
+        self._runtime = RuntimeModelIdentity.issue(
+            provider=provider,
+            model=model_name,
+            model_sha256=model_sha256,
+        )
         self.requests: list[PredictorRequest] = []
 
     def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity:
@@ -1635,6 +1644,16 @@ class RecordReplayPredictorAdapter:
         return recording.response
 
 
+class ProgramNormalizationTrace(_ExactModel):
+    """One deterministic correction applied to a validated model output."""
+
+    normalizer_id: Literal["semantic_normalizer_v1"] = "semantic_normalizer_v1"
+    field: Literal["restates"] = "restates"
+    reason: Literal["non_restatement_index_ignored"] = "non_restatement_index_ignored"
+    input_value: int = Field(ge=0)
+    output_value: Literal[-1] = -1
+
+
 class ProgramCallTrace(_ExactModel):
     predictor: Literal["event_semantics", "reader_card"]
     route: Literal["primary", "fallback"]
@@ -1653,6 +1672,7 @@ class ProgramCallTrace(_ExactModel):
     upstream_sha256: str | None = None
     output_sha256: str | None = None
     validated_output: dict[str, Any] | None = None
+    normalizations: tuple[ProgramNormalizationTrace, ...] = Field(default=(), max_length=1)
     provider: str | None = None
     model: str | None = None
     model_sha256: str | None = None
@@ -1876,13 +1896,12 @@ def _assemble(semantics: EventSemantics, card: ReaderCard, *, told_count: int) -
             raise ValueError("news_program_restatement_index_invalid")
     elif semantics.restates != -1:
         raise ValueError("news_program_non_restatement_index_invalid")
-    title_zh = "" if card.title_zh.strip() == card.headline_zh.strip() else card.title_zh.strip()
     return TriageVerdict.model_validate(
         {
             **semantics.model_dump(mode="json"),
             "assets": [asset.model_dump(mode="json") for asset in semantics.assets],
             "headline_zh": card.headline_zh.strip(),
-            "title_zh": title_zh,
+            "title_zh": "",
             "why_zh": card.why_zh.strip(),
         }
     )
@@ -1894,6 +1913,16 @@ def _validate_semantic_context(semantics: EventSemantics, *, told_count: int) ->
             raise ValueError("news_program_restatement_index_invalid")
     elif semantics.restates != -1:
         raise ValueError("news_program_non_restatement_index_invalid")
+
+
+def _normalize_semantics(
+    semantics: EventSemantics,
+) -> tuple[EventSemantics, ProgramNormalizationTrace | None]:
+    if semantics.novelty == "restatement" or semantics.restates == -1:
+        return semantics, None
+    normalization = ProgramNormalizationTrace(input_value=semantics.restates)
+    normalized = semantics.model_copy(update={"restates": normalization.output_value})
+    return normalized, normalization
 
 
 class _CallFailure(Exception):
@@ -1940,6 +1969,8 @@ class DspyCompileProgram(dspy.Module):  # type: ignore[misc]
     def forward(self, evidence_json: str, told_count: int) -> dspy.Prediction:
         semantics_prediction = self.event_semantics(evidence_json=evidence_json)
         semantics = EventSemantics.model_validate(_unwrap_output(semantics_prediction.toDict(), "semantics"))
+        semantics, _ = _normalize_semantics(semantics)
+        _validate_semantic_context(semantics, told_count=max(0, int(told_count)))
         card_prediction = self.reader_card(
             evidence_json=evidence_json,
             semantics_json=canonical_json(semantics.model_dump(mode="json")),
@@ -2192,6 +2223,11 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     output_model=EventSemantics,
                     calls=calls,
                 )
+                semantics, normalization = _normalize_semantics(semantics)
+                if normalization is not None:
+                    calls[-1] = calls[-1].model_copy(
+                        update={"normalizations": (*calls[-1].normalizations, normalization)}
+                    )
                 try:
                     _validate_semantic_context(semantics, told_count=len(context.told.entries))
                 except ValueError as exc:
@@ -2670,6 +2706,7 @@ __all__ = [
     "ProgramArtifact",
     "ProgramArtifactCodec",
     "ProgramCallTrace",
+    "ProgramNormalizationTrace",
     "ProgramTrace",
     "ProgramUsage",
     "ProviderCallObservation",

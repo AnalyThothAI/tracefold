@@ -435,6 +435,8 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       triage_24h: 175,
       triage_degraded_24h: 2,
       triage_degraded_by_code_24h: { news_triage_timeout: 2 },
+      reader_card_dedicated: false,
+      reader_card_model: "triage-model-v1",
       triage_model: "triage-model-v1",
       triage_p50_ms: 640,
       triage_p95_ms: 1_900,
