@@ -14,8 +14,10 @@ Three case sources, deliberately separate:
 ``recorded``   Score the verdict production actually persisted, against the action it actually shipped.
                No model request. This is the metric-wiring proof: it is exactly reproducible forever, across
                policy revisions, because it asserts nothing about what today's policy would do.
-``replay``     Re-run the Program graph over a recorded Predictor corpus. Assembly, normalization, storyline
-               and `decide()` all execute; only the provider is replaced. Deterministic and free.
+``replay``     Re-run the Program graph over a recorded Predictor corpus: assembly, normalization, storyline
+               and `decide()` all execute, only the provider is replaced. The harness supports it, but no
+               caller builds the corpus yet, so the CLI does not offer it — a flag that silently reaches a
+               live provider is worse than a missing one.
 ``live``       Run the Program against the configured provider. The only mode that costs money and time, and
                the only one that can measure a Prompt change.
 """

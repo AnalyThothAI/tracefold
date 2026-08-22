@@ -102,11 +102,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     learning_baseline.add_argument("--from-ms", type=_nonnegative_int, required=True)
     learning_baseline.add_argument("--to-ms", type=_positive_int, required=True)
+    # `replay` (re-run the graph over a recorded Predictor corpus) is deliberately absent: the harness supports
+    # the mode, but nothing here builds the recording corpus yet, so exposing it would run a live provider
+    # while the flag said otherwise. A mode that quietly does something else is worse than a missing one.
     learning_baseline.add_argument(
         "--mode",
-        choices=("recorded", "replay", "live"),
+        choices=("recorded", "live"),
         default="recorded",
-        help="recorded: score the persisted verdict, no model call; replay: recorded Predictor corpus; live: provider",
+        help="recorded: score the persisted verdict, no model call; live: re-run the Program against the provider",
     )
     learning_baseline.add_argument(
         "--action-source",

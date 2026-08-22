@@ -320,7 +320,7 @@ options:
 
 ```
 usage: tracefold news learning baseline [-h] --from-ms FROM_MS --to-ms TO_MS
-                                        [--mode {recorded,replay,live}]
+                                        [--mode {recorded,live}]
                                         [--action-source {recorded,policy}]
                                         [--all-cohorts] [--limit LIMIT]
                                         [--out OUT]
@@ -329,9 +329,9 @@ options:
   -h, --help            show this help message and exit
   --from-ms FROM_MS
   --to-ms TO_MS
-  --mode {recorded,replay,live}
+  --mode {recorded,live}
                         recorded: score the persisted verdict, no model call;
-                        replay: recorded Predictor corpus; live: provider
+                        live: re-run the Program against the provider
   --action-source {recorded,policy}
                         recorded: the action that shipped; policy: re-run
                         decide(). Defaults to recorded for --mode recorded
