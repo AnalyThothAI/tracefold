@@ -1242,7 +1242,12 @@ def test_triage_fails_closed_when_a_persisted_stable_assignment_names_a_retired_
 
 
 def _ledger_row(
-    event_id: str, at_ms: int, *, key: str = "asset:NVDA", headline: str = "英伟达投资 OpenAI"
+    event_id: str,
+    at_ms: int,
+    *,
+    key: str = "asset:NVDA",
+    headline: str = "英伟达投资 OpenAI",
+    grounded_assets: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "event_id": event_id,
@@ -1251,7 +1256,60 @@ def _ledger_row(
         "magnitude": 2,
         "direction": "bullish",
         "headline_zh": headline,
+        "grounded_assets": grounded_assets if grounded_assets is not None else [],
+        "assets": [],
     }
+
+
+def test_triage_told_rows_carry_the_instruments_so_the_listing_exemption_can_fire() -> None:
+    """A listing frame whose closest told entry is about a *different* instrument still reaches the reader.
+
+    ``decide()`` compares symbol sets, so the told rows it reads have to carry symbols.  The rows the
+    handler builds come from ``ToldLedgerEntry``, which is deliberately free of anything the Program may
+    not read — so the symbols have to be re-attached from the source ledger row.  Without that, every
+    told row looks like "no instruments", ``_names_another_instrument`` reads that as "not evidence of a
+    different instrument", and the policy-v8 listing exemption is inert in production while its own unit
+    test passes because it supplies the symbols by hand.
+    """
+
+    ledger = [
+        _ledger_row(
+            "ev-doge", NOW_MS - 300_000, key="asset:DOGE", headline="Coinbase 将上线狗狗币", grounded_assets=["DOGE"]
+        )
+    ]
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(
+            admission="listing_deterministic",
+            grounded_assets=["BICO"],
+            watchlist_hits=[],
+            storyline_key="asset:BICO",
+            leader_title="Upbit will list BICO",
+        ),
+        insert_verdict=True,
+        told_ledger=ledger,
+    )
+    bus = FakeBus()
+    model = _ScriptedSemanticJudge(
+        [
+            _model_verdict(
+                novelty="restatement",
+                restates=0,
+                event_type="listing",
+                decision="push",
+                magnitude=1,
+                assets=[{"symbol": "BICO", "role": "primary"}],
+                headline_zh="Upbit 将上线 BICO",
+            )
+        ]
+    )
+    triage = _triage_with_judge(news, bus, model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "push"
+    assert inserted["override_rule"] != "restatement"
 
 
 def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restatement() -> None:
