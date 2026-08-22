@@ -548,7 +548,13 @@ class ProgramCompiler:
             "auto": None,
             "max_full_evals": None,
             "max_metric_calls": request.budget.max_metric_calls,
-            "reflection_minibatch_size": min(3, len(train_examples)),
+            # DSPy's default is 3, and 3 is too few for this metric. In the first real run every proposal was
+            # skipped on an *exact* tie — 1.729166 vs 1.729166, 1.597917 vs 1.597917, 1.714583 vs 1.714583 —
+            # because a good advisory here names recurring evidence patterns (a sentiment index, a comparison
+            # base, a crypto-linked equity) that a 3-example sample almost never contains. The metric is also
+            # coarse, moving in steps like 0 / 0.675 / 0.825 / 1.0, so ties are easy to hit and GEPA skips on
+            # a tie by rule. A wider minibatch is what gives a real improvement room to show up as one.
+            "reflection_minibatch_size": min(10, len(train_examples)),
             "candidate_selection_strategy": "pareto",
             "skip_perfect_score": True,
             "add_format_failure_as_feedback": True,
