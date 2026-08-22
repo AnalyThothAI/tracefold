@@ -157,7 +157,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsPipelineStatusData",
         "NewsDeliveryStatusData",
         "NewsLearningRetentionStatusData",
-        "NewsControlStateData",
         "NewsOutcomeData",
         "NewsTimelineStepData",
         "NewsHealthData",
@@ -197,7 +196,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "pipeline",
         "delivery",
         "learning_retention",
-        "control",
         "watchlist",
         "instruments",
         # #88 §11: per-source quote freshness and Reaction backlog.

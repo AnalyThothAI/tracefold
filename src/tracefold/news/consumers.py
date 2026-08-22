@@ -45,7 +45,6 @@ from .bus import (
     now_ms,
 )
 from .canary import CanaryRuntimeArm
-from .control import is_muted
 from .delivery import card_assets, render_first_card
 from .events import admit_frame
 from .models import (
@@ -568,7 +567,6 @@ class _TriageSettle:
     told: Sequence[Mapping[str, Any]]
     seen: Sequence[Mapping[str, Any]]
     told_seen: frozenset[str]
-    control: Mapping[str, Any]
     degraded: bool
     error_code: str | None
     model_name: str | None
@@ -875,7 +873,7 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, control, ledger_rows = bundle
+        card, ledger_rows = bundle
         facts = GateFacts(
             grounded_assets=tuple(card.get("grounded_assets") or []),
             watchlist_symbols=self.watchlist_symbols,
@@ -1158,7 +1156,6 @@ class TriageConsumer:
                 told=told,
                 seen=ledger_rows,
                 told_seen=told_seen,
-                control=control,
                 degraded=degraded,
                 error_code=error_code,
                 model_name=model_name,
@@ -1201,7 +1198,7 @@ class TriageConsumer:
                 )
                 if bundle is None:
                     raise PermanentError("news_event_missing")
-                card, control, ledger_rows = bundle
+                card, ledger_rows = bundle
                 wire_title = str(card.get("leader_title") or "")
                 facts = GateFacts(
                     grounded_assets=tuple(card.get("grounded_assets") or []),
@@ -1276,19 +1273,11 @@ class TriageConsumer:
             if any(str(r.get("event_id") or "") not in s.told_seen for r in fresh):
                 return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
         status = storyline_status(s.final_key, told=s.told, seen=s.seen)
-        muted = bool(s.control.get("paused")) or is_muted(
-            s.control, storyline_key=s.final_key, grounded_assets=s.facts.grounded_assets, now_ms=s.stamp
-        )
         trace = s.trace
-        trace["control"] = {
-            "paused": bool(s.control.get("paused")),
-            "muted": muted,
-        }
         decision = decide(
             s.verdict,
             s.facts,
             status,
-            muted=muted,
             degraded=s.degraded,
             policy=s.policy,
         )
@@ -1362,27 +1351,24 @@ class TriageConsumer:
 
     def _load_with_aliases(
         self, repos: Any, event_id: str, stamp: int
-    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]] | None:
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
         """The Triage bundle plus a refreshed alias table, both from the one session (#75)."""
 
         self._refresh_aliases(repos, now=stamp)
         return self._load(repos, event_id, stamp)
 
     @staticmethod
-    def _load(
-        repos: Any, event_id: str, stamp: int
-    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]] | None:
+    def _load(repos: Any, event_id: str, stamp: int) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
         card = repos.news.event_card(event_id)
         if card is None:
             return None
-        control = repos.news.read_control(now_ms=stamp)
         ledger = repos.news.told_ledger(
             now_ms=stamp,
             window_ms=TOLD_WINDOW_MS,
             limit=_SEEN_LEDGER_MAX,
             prefer_key=str(card.get("storyline_key") or "") or None,
         )
-        return card, control, ledger
+        return card, ledger
 
     async def _publish_decision(self, event_id: str, final: str, *, trace_id: str, amqp_priority: int) -> None:
         stamp = now_ms()
@@ -1449,19 +1435,15 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, control = bundle
+        card, triage_row = bundle
         tv = dict(triage_row.get("verdict") or {})
         if triage_row["final_decision"] not in {"push", "escalate"}:
-            return
-        if control.get("paused"):
-            # News is perishable: a paused lane drops instead of holding an unacked message.
-            await self._settle_direct(event_id, kind, "delivery_paused", stamp)
             return
         if self.sender is None:
             await self._settle_direct(event_id, kind, "delivery_unavailable", stamp)
             return
-        # Only query a quote after every policy/control return above. A quote
-        # failure never changes the delivery decision.
+        # Only query a quote after every policy return above. A quote failure
+        # never changes the delivery decision.
         quotes = await self._quotes(card, tv, stamp)
         card_payload = render_first_card(
             event=card,
@@ -1557,8 +1539,7 @@ class DelivererConsumer:
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if card is None or triage is None:
             return None
-        control = repos.news.read_control(now_ms=stamp)
-        return card, triage, control
+        return card, triage
 
     async def close(self) -> None:
         if self.sender is not None:

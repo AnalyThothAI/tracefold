@@ -53,7 +53,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_pipeline_24h",
         "news_status_delivery_1h",
         "news_status_learning_retention",
-        "news_control_state",
     ),
 }
 

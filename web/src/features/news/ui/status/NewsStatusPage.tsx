@@ -98,9 +98,6 @@ export function NewsStatusPage({ token }: { token: string }) {
             </div>
 
             <div className="news-status-grid">
-              <Card aria-label="控制状态" hint="用 tracefold news control 修改" title="控制">
-                <ControlView status={status} />
-              </Card>
               <Card aria-label="关注列表" title="关注列表">
                 <WatchPanel status={status} />
               </Card>
@@ -330,48 +327,6 @@ function reasonBarTone(stage: string) {
   return "neutral" as const;
 }
 
-/**
- * Read-only on purpose. Pause and mute are written by `tracefold news control` and read on every message; a
- * browser button would be a second writer for state the pipeline consults on the hot path.
- */
-function ControlView({ status }: { status: NewsStatus }) {
-  const mutes = status.control.mutes as Array<Record<string, unknown>>;
-  const paused = Boolean(status.control.paused);
-  return (
-    <div className="news-control">
-      <p className="news-control-state news-toned" data-tone={paused ? "caution" : "done"}>
-        <NewsToneDot />
-        <b>{paused ? "推送已暂停" : "推送运行中"}</b>
-      </p>
-      <h3 className="news-control-heading">生效中的静音 {formatCount(mutes.length)}</h3>
-      {mutes.length ? (
-        <table className="news-mute-table">
-          <thead>
-            <tr>
-              <th>类型</th>
-              <th>对象</th>
-              <th>到期</th>
-            </tr>
-          </thead>
-          <tbody>
-            {mutes.map((mute, index) => (
-              <tr key={index}>
-                <td>{String(mute.kind ?? "")}</td>
-                <td>
-                  <code>{String(mute.key ?? mute.symbol ?? mute.storyline_key ?? "")}</code>
-                </td>
-                <td>{typeof mute.until_ms === "number" ? absoluteTime(mute.until_ms) : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <NewsEmptyNote>没有生效中的静音。</NewsEmptyNote>
-      )}
-    </div>
-  );
-}
-
 function WatchPanel({ status }: { status: NewsStatus }) {
   /*
    * Just the watchlist. The Strategy panel went with #126: which Strategies feed News is decided in the
@@ -381,7 +336,7 @@ function WatchPanel({ status }: { status: NewsStatus }) {
   const watchlist = status.watchlist ?? [];
   return (
     <div className="news-watch">
-      <h3 className="news-control-heading">关注列表 {formatCount(watchlist.length)}</h3>
+      <h3 className="news-panel-heading">关注列表 {formatCount(watchlist.length)}</h3>
       <div className="news-chip-row">
         {watchlist.length ? (
           watchlist.map((symbol) => <code key={symbol}>{symbol}</code>)

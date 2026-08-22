@@ -92,7 +92,7 @@ source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 `grounded_assets` from it and the read API exposes both.
 
 OpenNews connection state in `news_ingest_state`, explicit incident intervals
-in `news_opennews_incidents`, News control state (`news_control_state`),
+in `news_opennews_incidents`,
 and broker queues are control state. Retry attempts and terminal reasons are
 likewise queue policy, not facts. `news_verdicts` (Triage decisions bound to a
 policy version) are derived model outputs bound to frozen evidence; they are
@@ -296,7 +296,7 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        Program identity, per-Predictor execution/cost trace, preliminary + final status snapshots,
        named rule) -> publish verdict.push (an escalate rides the same routing key at AMQP priority 5)
   -> q:news.deliver [single-active-consumer] Deliverer: begin(sending) -> one Feishu attempt
-       -> settle sent|terminal; paused -> terminal/delivery_paused; crash between send and ack
+       -> settle sent|terminal; crash between send and ack
        -> ambiguous_after_crash
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
      DeferError uncounted; x:news.dlx -> q:news.dead for permanent/exhausted/crashed messages
@@ -480,7 +480,7 @@ is theme-first (`crypto_treasury`, `mideast_energy`, `rates`, `trade`,
 `china_macro`, `metals`, `us_equity_macro`, `us_macro_data`), then the first
 A/A+ or cashtag asset; the final key is computed after Triage from the
 verdict's grounded primaries and scope, written back to `news_events`, and
-used by duplicate comparison, operator grouping, advisory locking, and mute.
+used by duplicate comparison, operator grouping, and advisory locking.
 
 Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
@@ -561,7 +561,7 @@ instruction/demonstrations, never to `decide()`. This matters because the
 `model_push_actionable` branch of `decide()` consumes both values (the other
 push paths do not require `actionable`). `decide()` owns the final
 decision under a `DecidePolicy` whose defaults are the live policy and whose
-values come from `news.policy`: mute -> drop; noise -> drop; a *grounded*
+values come from `news.policy`: noise -> drop; a *grounded*
 restatement (the model cites a ledger entry it was shown and the direction did
 not flip against it; switch `restatement_drop`) -> drop (`restatement`);
 magnitude >= 3 with a direction or macro scope -> escalate; high priority +
@@ -598,7 +598,7 @@ has **no hourly, two-hour, or four-hour reader quota**. Historical push counts
 remain observable metrics, but they are not included in the model input and
 cannot change `push`/`escalate` into `throttled`. Once the semantic conditions
 pass, the delivery harness executes the decision; it only enforces explicit
-pause/mute controls, idempotency, provider pacing, and real delivery receipts.
+idempotency, provider pacing, and real delivery receipts.
 
 Duplicate protection is content evidence rather than a quota: each ordinary
 `push` headline is compared with cards the reader actually received in the
@@ -734,12 +734,12 @@ AI copy is sanitized (URLs fall back to the code-owned title). There is no
 retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
 interrupted rows are terminalized at startup. Recovery items, suppressed
-events, and muted storylines never deliver; a paused lane settles
-`terminal/delivery_paused` instead of holding an unacked message. Policy v7 has
+events never deliver. There is no operator pause or mute: `news_control_state`
+was removed after never withholding a single card in the whole retained history,
+and an unread singleton that two hot-path consumers still SELECT is how a second
+decision plane grows beside `decide()`. Policy v7 has
 no hourly, two-hour, or four-hour reader quota: a push/escalate decision reaches
 the Deliverer regardless of how many earlier cards were sent. Control state
-(`news_control_state`) is written by
-`tracefold news control` and read by Triage and the Deliverer on every message.
 
 Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
 backpressure/unavailability, and Triage circuit opens are rows in

@@ -735,11 +735,6 @@ class NewsLearningRetentionStatusData(ExactApiSchema):
     updated_at_ms: int | None = None
 
 
-class NewsControlStateData(ExactApiSchema):
-    paused: bool = False
-    mutes: list[dict[str, Any]] = Field(default_factory=list)
-
-
 class NewsHealthItemData(ExactApiSchema):
     level: Literal["ok", "warn", "bad", "off"]
     summary_zh: str
@@ -806,7 +801,6 @@ class NewsStatusData(ExactApiSchema):
     pipeline: NewsPipelineStatusData
     delivery: NewsDeliveryStatusData
     learning_retention: NewsLearningRetentionStatusData
-    control: NewsControlStateData
     watchlist: list[str] = Field(default_factory=list)
     instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
     price: NewsPriceStatusData = Field(default_factory=NewsPriceStatusData)
@@ -817,7 +811,6 @@ __all__ = [
     "NewsAssetRefData",
     "NewsBrokerQueueData",
     "NewsBrokerStatusData",
-    "NewsControlStateData",
     "NewsDeliveryData",
     "NewsDeliveryStatusData",
     "NewsDeliverySummaryData",

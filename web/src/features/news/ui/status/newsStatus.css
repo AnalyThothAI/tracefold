@@ -211,60 +211,19 @@
     text-align: right;
   }
 
-  /* ------------------------------------------------------------------ control & watchlist */
-  .news-control,
+  /* ------------------------------------------------------------------ watchlist */
   .news-watch {
     display: grid;
     gap: 8px;
     align-content: start;
   }
 
-  .news-control-state {
-    display: inline-flex;
-    gap: 7px;
-    align-items: center;
-    justify-self: start;
-    min-height: 26px;
-    padding: 0 9px;
-    border-radius: var(--radius-sm);
-    color: var(--tone);
-    background: var(--tone-soft);
-    box-shadow: inset 0 0 0 1px var(--tone-border);
-    margin: 0;
-    font-size: 12px;
-    font-weight: 620;
-  }
-
-  .news-control-heading {
+  .news-panel-heading {
     margin: 4px 0 0;
     color: var(--text-subtle);
     font: var(--type-eyebrow);
     letter-spacing: 0.09em;
     text-transform: uppercase;
-  }
-
-  .news-mute-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 11.5px;
-  }
-
-  .news-mute-table th {
-    padding: 0 0 5px;
-    color: var(--text-subtle);
-    font: var(--type-eyebrow);
-    letter-spacing: 0.06em;
-    text-align: left;
-  }
-
-  .news-mute-table td {
-    padding: 5px 0;
-    border-top: 1px solid var(--border-faint);
-    color: var(--text-secondary);
-  }
-
-  .news-mute-table code {
-    font: 500 11px/1.5 var(--font-mono);
   }
 
   .news-chip-row {

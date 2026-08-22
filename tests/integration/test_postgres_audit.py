@@ -91,7 +91,6 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_pipeline_24h",
         "news_status_delivery_1h",
         "news_status_learning_retention",
-        "news_control_state",
     )
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
@@ -138,7 +137,6 @@ _NEWS_QUERY_NAMES = (
     "news_status_pipeline_24h",
     "news_status_delivery_1h",
     "news_status_learning_retention",
-    "news_control_state",
     # #88 price plane reads.
     "news_quote_snapshot_read",
     "news_reaction_due_scan",
@@ -236,7 +234,7 @@ def test_projection_validation_checks_bounded_public_models(tmp_path):
     try:
         migrate(conn)
         initial = ProjectionValidationAudit(conn).run(sample=100)
-        conn.execute("DELETE FROM news_control_state")
+        conn.execute("DELETE FROM news_ingest_state")
         stale = ProjectionValidationAudit(conn).run(sample=100)
     finally:
         conn.close()
@@ -245,11 +243,10 @@ def test_projection_validation_checks_bounded_public_models(tmp_path):
     assert initial["mismatch_count"] == 0
     assert set(initial["checks"]) == {
         "news_ingest_state_mismatch",
-        "news_control_state_mismatch",
         "news_delivery_state_mismatch",
     }
     assert stale["ok"] is False
-    assert stale["checks"]["news_control_state_mismatch"] == 1
+    assert stale["checks"]["news_ingest_state_mismatch"] == 1
 
 
 def test_query_audit_analyzes_all_route_query_families_on_empty_schema(

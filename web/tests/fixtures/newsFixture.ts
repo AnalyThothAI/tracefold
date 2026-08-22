@@ -382,7 +382,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       },
       { count: 2, key: "news_triage_timeout", label_zh: "模型超时", stage: "degraded" },
     ],
-    control: { mutes: [], paused: false },
     delivery: {
       delivery_available: true,
       e2e_p95_ms: 3_400,

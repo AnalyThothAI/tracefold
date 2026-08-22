@@ -72,7 +72,6 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "noise": "模型判定为噪音",
     "unclear_direction": "方向不明，未达推送标准",
     "below_threshold": "影响不够，未达推送标准",
-    "muted": "已被静音，或推送处于暂停",
     "model_push_actionable": "模型判断值得推送",
     "unclear_but_clear_event": "方向不明但事件明确",
     "watchlist": "命中关注列表",
@@ -116,7 +115,6 @@ INCIDENT_CAUSE_ZH: Final[dict[str, str]] = {
 }
 
 DELIVERY_ERROR_ZH: Final[dict[str, str]] = {
-    "delivery_paused": "推送已暂停",
     "delivery_unavailable": "推送未配置",
     "hourly_cap_reached": "已达每小时推送上限",
     "ambiguous_after_crash": "发送状态不确定（进程中断），不重发",

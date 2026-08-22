@@ -212,7 +212,6 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert status_data["broker"]["queues"]["news.raw"]["consumers"] == 1
     assert status_data["pipeline"]["events_24h"] >= 1
     assert status_data["delivery"]["delivery_available"] is False
-    assert status_data["control"] == {"paused": False, "mutes": []}
     assert "amqp" not in json.dumps(status_data)
     assert [response.status_code for response in retired] == [404, 404, 404, 404]
 

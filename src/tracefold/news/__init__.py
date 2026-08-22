@@ -29,7 +29,6 @@ from .candidate_evaluator import (
     ProposalReceipt,
     evaluation_run_sha,
 )
-from .control import apply_control, parse_control
 from .facts import FACT_UNIT_VERSION, FactUnit, extract_fact_units
 from .health import status_health
 from .instruments import grounding_rollup
@@ -127,7 +126,6 @@ __all__ = [
     "TriageContext",
     "TriageVerdict",
     "apply_canary_control",
-    "apply_control",
     "canonical_json",
     "canonical_sha",
     "evaluation_run_sha",
@@ -136,7 +134,6 @@ __all__ = [
     "grounding_rollup",
     "load_recording_replay_capability",
     "parse_canary_control",
-    "parse_control",
     "parse_opennews_message",
     "status_health",
 ]

@@ -1,4 +1,4 @@
-"""Pure-module tests for News V3: titles, gate, storyline, rules, minhash, delivery, control, bus."""
+"""Pure-module tests for News V3: titles, gate, storyline, rules, minhash, delivery, bus."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from tracefold.news import bus
-from tracefold.news.control import apply_control, is_muted, parse_control
 from tracefold.news.delivery import _CHANGE_BASIS_LABEL, _quote_line, card_assets, render_first_card, sanitize_ai_text
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.facts import extract_fact_units
@@ -616,7 +615,6 @@ def test_decide_rules_and_throttle() -> None:
     busy = StorylineStatus(key="theme:mideast_energy")
     unbounded = decide(_verdict(magnitude=2, scope="sector"), _FACTS, busy)
     assert unbounded.final == "push" and unbounded.throttled_by is None
-    assert decide(_verdict(), _FACTS, None, muted=True).final == "drop"
     assert (
         decide(_verdict(magnitude=1), _FACTS, None, policy=DecidePolicy(min_push_magnitude=2)).final == "push"
     )  # watchlist
@@ -646,13 +644,12 @@ def test_decide_restatement_drop_is_grounded() -> None:
         decide(_verdict(novelty="restatement", restates=0), _FACTS, StorylineStatus(key="asset:NVDA")).final == "push"
     )
     assert decide(_verdict(novelty="restatement", restates=0), _FACTS, None).final == "push"
-    # An m3 restatement (the duplicated 4.75% yield escalate) drops too; muted stays muted.
+    # An m3 restatement (the duplicated 4.75% yield escalate) drops too.
     assert decide(_verdict(novelty="restatement", restates=0, magnitude=3), _FACTS, quiet).final == "drop"
     # Policy v8: `noise` no longer outranks restatement on a magnitude-2 actionable verdict. The card
     # still drops — the trace now names the rule that actually applies to it.
     noisy_repeat = decide(_verdict(novelty="restatement", restates=0, event_type="noise"), _FACTS, quiet)
     assert noisy_repeat.final == "drop" and noisy_repeat.override_rule == "restatement"
-    assert decide(_verdict(novelty="restatement", restates=0), _FACTS, quiet, muted=True).override_rule == "muted"
     # The switch.
     assert (
         decide(
@@ -861,7 +858,7 @@ def test_fallback_is_not_silent() -> None:
     assert fallback_verdict(strong, error_code="x")[0].headline_zh == "模型不可用（规则兜底）"  # no wire title at all
 
 
-# ---------------------------------------------------------------- delivery / control / bus
+# ---------------------------------------------------------------- delivery / bus
 def test_card_is_the_reader_contract() -> None:
     assert sanitize_ai_text("看 https://evil.example 这里", limit=60, fallback="原标题") == "原标题"
     assert sanitize_ai_text("**加粗** @user 文本\x00", limit=60) == "加粗 文本"
@@ -1063,21 +1060,6 @@ def test_card_marks_a_progression() -> None:
             grounded_assets=["CL"],
         )
         assert card["elements"][0]["content"].splitlines() == ["利空 · 影响重大 · CL · jin10"]
-
-
-def test_control_commands() -> None:
-    state = {"paused": False, "mutes": []}
-    state = apply_control(
-        state, parse_control({"action": "mute_theme", "key": "mideast_energy", "ttl_ms": 120000}), now_ms=1000
-    )
-    assert is_muted(state, storyline_key="theme:mideast_energy", grounded_assets=[], now_ms=2000)
-    assert not is_muted(state, storyline_key="theme:mideast_energy", grounded_assets=[], now_ms=200000)
-    state = apply_control(state, parse_control({"action": "mute_symbol", "key": "cl"}), now_ms=1000)
-    assert is_muted(state, storyline_key="asset:CL", grounded_assets=["XYZ-CL"], now_ms=2000)
-    state = apply_control(state, parse_control({"action": "pause_delivery"}), now_ms=1000)
-    assert state["paused"]
-    with pytest.raises(ValueError):
-        parse_control({"action": "nuke"})
 
 
 def test_bus_envelope_roundtrip() -> None:

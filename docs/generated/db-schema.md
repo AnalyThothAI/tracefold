@@ -56,15 +56,6 @@
 | `tripped_at_ms` | `BIGINT` | True | `None` |
 | `closed_at_ms` | `BIGINT` | True | `None` |
 
-## `news_control_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `singleton_key` | `TEXT` | False | `'current'::text` |
-| `paused` | `BOOLEAN` | False | `false` |
-| `mutes` | `JSONB` | False | `'[]'::jsonb` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_deliveries`
 
 | Column | Type | Nullable | Default |

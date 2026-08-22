@@ -327,16 +327,11 @@ def get_news_status(request: Request) -> Response:
         "delivery_available": push.delivery_available,
     }
     state = _derive_state(ingest=ingest, broker=broker_data, workers_state=workers_state, settings=settings)
-    control = {
-        "paused": bool(snapshot["control"].get("paused")),
-        "mutes": list(snapshot["control"].get("mutes") or []),
-    }
     health = status_health(
         ingest=ingest,
         broker=broker_data,
         pipeline=pipeline,
         delivery=delivery,
-        control=control,
         workers_state=workers_state,
         now_ms=now_ms,
         enabled=bool(settings.news.enabled),
@@ -351,7 +346,6 @@ def get_news_status(request: Request) -> Response:
         "pipeline": pipeline,
         "delivery": delivery,
         "learning_retention": snapshot["learning_retention"],
-        "control": control,
         "watchlist": sorted(settings.news.watchlist_symbols),
         "instruments": instruments,
         "price": price,

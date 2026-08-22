@@ -1,4 +1,4 @@
-"""News V3 repository: facts, events, verdicts, deliveries, control, and bounded reads.
+"""News V3 repository: facts, events, verdicts, deliveries, and bounded reads.
 
 Every write is idempotent by key. Callers own the transaction (worker_session / api_session).
 """
@@ -930,27 +930,6 @@ class NewsRepository:
         )
         return int(cursor.rowcount or 0)
 
-    # ------------------------------------------------------------------ control
-    def read_control(self, *, now_ms: int) -> dict[str, Any]:
-        row = self.conn.execute(
-            "SELECT paused, mutes, updated_at_ms FROM news_control_state WHERE singleton_key = 'current'"
-        ).fetchone()
-        if row is None:
-            return {"paused": False, "mutes": []}
-        mutes = [m for m in (row["mutes"] or []) if int(m.get("until_ms") or 0) > int(now_ms)]
-        return {"paused": bool(row["paused"]), "mutes": mutes, "updated_at_ms": int(row["updated_at_ms"])}
-
-    def write_control(self, *, paused: bool | None, mutes: Sequence[Mapping[str, Any]] | None, now_ms: int) -> None:
-        self.conn.execute(
-            """
-            UPDATE news_control_state
-               SET paused = COALESCE(%s, paused), mutes = COALESCE(%s::jsonb, mutes), updated_at_ms = %s
-             WHERE singleton_key = 'current'
-            """,
-            (paused, _dumps([dict(m) for m in mutes]) if mutes is not None else None, int(now_ms)),
-        )
-
-    # ------------------------------------------------------------------ one-arm Agent canary
     def active_canary(self) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM news_canary_activations WHERE state = 'active' ORDER BY activated_at_ms DESC LIMIT 1"
@@ -1760,7 +1739,6 @@ class NewsRepository:
             """,
             (day_ago, hour_ago, day_ago, day_ago),
         ).fetchone()
-        control = self.read_control(now_ms=now_ms)
         funnel = self._funnel_24h(day_ago=day_ago)
         retention = self.conn.execute("SELECT * FROM news_learning_retention_state WHERE singleton").fetchone()
         return {
@@ -1810,7 +1788,6 @@ class NewsRepository:
                 "last_error_code": retention["last_error_code"] if retention else None,
                 "updated_at_ms": int(retention["updated_at_ms"]) if retention else None,
             },
-            "control": control,
         }
 
     def asset_usage_24h(self, *, now_ms: int) -> dict[str, list[str]]:

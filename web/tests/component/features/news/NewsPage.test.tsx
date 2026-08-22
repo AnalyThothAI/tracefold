@@ -525,22 +525,18 @@ describe("NewsPage", () => {
   });
 
   // ------------------------------------------------------------------ status
-  it("renders four thresholded health cards, the funnel, named reasons, and control state", async () => {
+  it("renders four thresholded health cards, the funnel, and named reasons", async () => {
     server.use(
       http.get(/.*\/api\/news\/status$/, () =>
         HttpResponse.json({
           ok: true,
           data: newsStatusFixture({
-            control: {
-              mutes: [{ kind: "symbol", key: "DOGE", until_ms: NEWS_NOW_MS + 3_600_000 }],
-              paused: true,
-            },
             health: {
               ...newsStatusFixture().health,
               delivery: {
-                detail_zh: "暂停期间应推的事件直接丢弃，不会补发",
+                detail_zh: "feishu_http_500",
                 level: "warn",
-                summary_zh: "推送已暂停",
+                summary_zh: "24 小时 10/100 条未送达",
               },
               overall: "warn",
             },
@@ -582,10 +578,9 @@ describe("NewsPage", () => {
     ).not.toBeInTheDocument();
     expect(within(reasons).queryByText("suppressed_pr_template")).not.toBeInTheDocument();
 
-    const control = screen.getByRole("region", { name: "控制状态" });
-    expect(within(control).getByText("推送已暂停")).toBeInTheDocument();
-    expect(within(control).getByRole("cell", { name: "DOGE" })).toBeInTheDocument();
-    expect(within(control).queryByText(/until_ms/)).not.toBeInTheDocument();
+    // The pause/mute control panel went with `news_control_state`: it never withheld a card, so the
+    // console has nothing to show and no button that would be a second writer.
+    expect(screen.queryByRole("region", { name: "控制状态" })).not.toBeInTheDocument();
     const watch = screen.getByRole("region", { name: "关注列表" });
     expect(within(watch).getByText("BTC")).toBeInTheDocument();
     // #126: which Strategies feed News is provider account configuration. The console says nothing about

@@ -29,7 +29,6 @@ NEWS_TABLES = {
     "news_event_assets",
     "news_verdicts",
     "news_deliveries",
-    "news_control_state",
     "news_reviews",
     "news_external_miss_snapshots",
     "news_learning_artifacts",
@@ -434,7 +433,7 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
     conn.commit()
 
 
-def test_control_state_and_incidents(conn) -> None:
+def test_incidents_and_broker_snapshot(conn) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():
         planned = repos.news.open_incident(cause_class="planned_shutdown", now_ms=50, planned=True)
@@ -444,11 +443,6 @@ def test_control_state_and_incidents(conn) -> None:
         assert planned != incident
         pending = repos.news.pending_recovery_incidents()
         assert any(int(p["incident_id"]) == incident for p in pending)
-        repos.news.write_control(
-            paused=True, mutes=[{"kind": "theme", "key": "rates", "until_ms": 999_999_999_999_999}], now_ms=1
-        )
-    control = repos.news.read_control(now_ms=5)
-    assert control["paused"] is True and control["mutes"][0]["key"] == "rates"
     with repos.transaction():
         repos.news.update_broker_snapshot(
             snapshot={"connected": True, "queues": {"news.raw": {"messages": 0, "consumers": 1}}}, now_ms=7

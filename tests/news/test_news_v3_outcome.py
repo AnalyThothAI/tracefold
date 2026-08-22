@@ -84,7 +84,7 @@ def _triage(final: str, **over: object) -> dict[str, object]:
             "listing_deterministic",
             NOW,
             _triage("push", override_rule="model_push_actionable"),
-            {"state": "terminal", "error_code": "delivery_paused"},
+            {"state": "terminal", "error_code": "feishu_http_500"},
             "delivery_failed",
             "未送达",
         ),
@@ -117,10 +117,6 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
         delivery=None,
     )
     assert duplicate.text_zh == "未推送（重复）"
-    paused = event_outcome(
-        admission="candidate", published_at_ms=NOW, triage=_triage("drop", override_rule="muted"), delivery=None
-    )
-    assert paused.reason_zh == "已被静音，或推送处于暂停"
     dropped = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
@@ -163,7 +159,6 @@ def test_vocabulary_covers_every_decide_rule_and_falls_back_to_the_key() -> None
         )
     )
     assert emitted >= {
-        "muted",
         "noise",
         "magnitude3",
         "model_push_actionable",
@@ -318,7 +313,6 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "terminal_24h": 1,
             "last_error_code": None,
         },
-        "control": {"paused": False, "mutes": []},
         "workers_state": "running",
         "now_ms": NOW,
         "enabled": True,
@@ -407,12 +401,19 @@ def test_status_health_thresholds_turn_amber_and_red() -> None:
         and backlog["health"]["broker"]["summary_zh"] == "news.triage 积压 260 条"
     )
 
-    paused = status_health(**_status_inputs(control={"paused": True, "mutes": []}))  # type: ignore[arg-type]
-    assert paused["health"]["delivery"] == {
-        "level": "warn",
-        "summary_zh": "推送已暂停",
-        "detail_zh": "暂停期间应推的事件直接丢弃，不会补发",
-    }
+    # There is no operator pause any more: only real delivery failures can turn this item amber.
+    failing = status_health(
+        **_status_inputs(
+            delivery={
+                "delivery_available": True,
+                "sent_24h": 90,
+                "sent_1h": 4,
+                "terminal_24h": 10,
+                "last_error_code": "feishu_http_500",
+            }
+        )
+    )  # type: ignore[arg-type]
+    assert failing["health"]["delivery"]["level"] in {"warn", "bad"}
 
     off = status_health(**_status_inputs(delivery={"delivery_available": False}, model_configured=False))  # type: ignore[arg-type]
     assert off["health"]["delivery"]["level"] == "off" and off["health"]["model"]["level"] == "bad"

@@ -317,14 +317,12 @@ the route components into the eager shell chunk.
   grouped by stage with `label_zh` bars — never raw keys; the `ungrounded`
   stage lists provider tags that name nothing, where the tag *is* the label
   because inventing the English word it collided with would be a guess),
-  read-only `control`
-  (paused state and a mute table), the watchlist chips, and a
+  the watchlist chips, and a
   collapsed `技术指标` disclosure with the raw pipeline/ingest/broker facts (latency
   percentiles, queue depths, incidents, counters). No layer computes a second health
-  state; thresholds are the server's. There are no pause/resume/mute controls — control
-  state is written by `tracefold news control` and read by the pipeline on every
-  message, so a browser button would be a second writer — and no source inventory
-  and no Brief.
+  state; thresholds are the server's. There is no control panel at all: the
+  pause/mute plane was removed after it never withheld a card in the whole
+  retained history — and no source inventory and no Brief.
 
   Polling: Feed every 3 seconds; Event detail and Status every 15 seconds
   (one shared status query feeds both the Feed header and `/news/status`).
@@ -466,7 +464,7 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     the hero without the 判定 block instead of empty cells; and the back link
     returns to the feed the reader came from. Verify `/news/status` shows four
     coloured health cards with bars, the overall pill, the funnel with its
-    biggest-drop sentence, Chinese reason bars, read-only control (mute table,
+    biggest-drop sentence, Chinese reason bars,
     no buttons), the Strategy usage bar with counts only (never IDs), a
     collapsed 技术指标, and no operator controls. Confirm the technical key/value
     tables render as two-column grids rather than stacked `dl`s. Confirm about

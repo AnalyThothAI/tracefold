@@ -134,7 +134,6 @@ class _FakeNewsRepository:
                 "last_error_code": None,
                 "updated_at_ms": None,
             },
-            "control": {"paused": False, "mutes": []},
         }
 
 
@@ -403,7 +402,6 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "pipeline",
         "delivery",
         "learning_retention",
-        "control",
         "watchlist",
         "instruments",
         # #88 §11: per-source quote freshness and Reaction backlog, beside the pipeline's own health.
@@ -595,7 +593,6 @@ def test_status_reports_unavailable_without_broker_or_token(client) -> None:
     }
     assert data["delivery"]["delivery_available"] is False
     assert "hourly_cap" not in data["delivery"]
-    assert data["control"] == {"paused": False, "mutes": []}
     assert isinstance(data["watchlist"], list)
 
 

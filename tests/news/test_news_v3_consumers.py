@@ -68,7 +68,6 @@ class RecordingNews:
     def __init__(self, **responses: Any) -> None:
         self.responses = responses
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.control_state: dict[str, Any] = {"paused": False, "mutes": []}
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -76,11 +75,6 @@ class RecordingNews:
 
         def _call(*args: Any, **kwargs: Any) -> Any:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
-            if name == "read_control":
-                return dict(self.control_state)
-            if name == "write_control":
-                self.control_state = {"paused": bool(kwargs["paused"]), "mutes": list(kwargs["mutes"])}
-                return None
             if name == "told_ledger" and name not in self.responses:
                 return []  # nothing pushed yet: an empty told ledger
             if name == "latest_evidence_snapshot" and name not in self.responses:
@@ -461,19 +455,6 @@ def test_triage_without_model_pushes_a_grounded_score_80_event() -> None:
     assert inserted["degraded"] is True and inserted["rule_baseline_decision"] == "push"
     assert inserted["final_decision"] == "push"
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
-
-
-def test_triage_without_model_never_pushes_while_muted_or_paused() -> None:
-    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True)
-    news.control_state = {"paused": False, "mutes": [{"kind": "symbol", "key": "NVDA", "until_ms": NOW_MS * 2}]}
-    bus = FakeBus()
-
-    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-strong"})))
-
-    inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "muted"
-    assert inserted["rule_baseline_decision"] == "push"
-    assert bus.published == []
 
 
 def _program_call(
@@ -942,16 +923,6 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable() -> Non
     assert "get_presentation" not in news.names()
 
 
-def test_deliverer_paused_lane_drops_instead_of_holding_the_message() -> None:
-    news = _delivery_news()
-    news.control_state = {"paused": True, "mutes": []}
-
-    asyncio.run(_deliverer(news, FakeBus()).handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
-
-    settle = news.kwargs_of("settle_delivery")
-    assert settle["state"] == "terminal" and settle["error_code"] == "delivery_paused"
-
-
 def test_deliverer_without_sender_leaves_existing_delivery_untouched() -> None:
     news = _delivery_news(begin_states=["terminal"])
 
@@ -1057,16 +1028,6 @@ def test_deliverer_does_not_read_quotes_for_a_card_it_will_not_send() -> None:
         )
     )
     assert dropped_price.requested == []
-
-    paused = _delivery_news()
-    paused.control_state = {"paused": True, "mutes": []}
-    paused_price = RecordingPrice()
-    asyncio.run(
-        _deliverer(paused, FakeBus(), price=paused_price, sender=RecordingSender()).handle(
-            _message("verdict", {"event_id": "ev-strong"})
-        )
-    )
-    assert paused_price.requested == []
 
     unavailable_price = RecordingPrice()
     asyncio.run(
@@ -1473,7 +1434,7 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     }
     assert news.names().count("lock_storyline") == 2
     # The re-ask reloads everything the model and decide() look at: card, sent ledger, and control state.
-    assert news.names().count("event_card") == 2 and news.names().count("read_control") == 2
+    assert news.names().count("event_card") == 2
     assert bus.published == []
 
 

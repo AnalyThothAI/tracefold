@@ -894,26 +894,6 @@
         "title": "NewsBrokerStatusData",
         "type": "object"
       },
-      "NewsControlStateData": {
-        "additionalProperties": false,
-        "properties": {
-          "mutes": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Mutes",
-            "type": "array"
-          },
-          "paused": {
-            "default": false,
-            "title": "Paused",
-            "type": "boolean"
-          }
-        },
-        "title": "NewsControlStateData",
-        "type": "object"
-      },
       "NewsDeliveryData": {
         "additionalProperties": false,
         "properties": {
@@ -4912,9 +4892,6 @@
           "broker": {
             "$ref": "#/components/schemas/NewsBrokerStatusData"
           },
-          "control": {
-            "$ref": "#/components/schemas/NewsControlStateData"
-          },
           "delivery": {
             "$ref": "#/components/schemas/NewsDeliveryStatusData"
           },
@@ -4988,7 +4965,6 @@
           "pipeline",
           "delivery",
           "learning_retention",
-          "control",
           "measured_at_ms"
         ],
         "title": "NewsStatusData",

@@ -1596,11 +1596,9 @@ class CandidateEvaluator:
             verdict,
             facts,
             status,
-            muted=bool((case.get("control") or {}).get("muted")),
             policy=DecidePolicy(**arm.policy),
         )
-        paused = bool((case.get("control") or {}).get("paused"))
-        delivered = decision.final in {"push", "escalate"} and not paused
+        delivered = decision.final in {"push", "escalate"}
         return {
             "verdict": verdict.model_dump(mode="json"),
             "final_decision": decision.final,
@@ -1609,7 +1607,7 @@ class CandidateEvaluator:
             "storyline_key": storyline,
             "delivered": delivered,
             "execution": "simulated",
-            "delivery": "paused_drop" if paused and decision.final in {"push", "escalate"} else "simulated",
+            "delivery": "simulated",
         }
 
     @staticmethod
@@ -2399,7 +2397,6 @@ class CandidateEvaluator:
                 "production_verdict": dict(row["verdict"] or {}) if row.get("verdict") else None,
                 "review": dict(review),
                 "watchlist": list((row.get("trace") or {}).get("watchlist") or []),
-                "control": dict((row.get("trace") or {}).get("control") or {}),
             }
         row = self._conn.execute(
             "SELECT * FROM news_external_miss_snapshots WHERE snapshot_id = %s", (case.external_snapshot_id,)
@@ -2436,7 +2433,6 @@ class CandidateEvaluator:
             "production_verdict": None,
             "review": dict(review),
             "watchlist": [],
-            "control": {"paused": False, "muted": False},
         }
 
     def _persist_run_cases(

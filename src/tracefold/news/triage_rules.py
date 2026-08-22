@@ -260,15 +260,14 @@ def decide(
     facts: GateFacts,
     status: StorylineStatus | None,
     *,
-    muted: bool = False,
     degraded: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
     """Deterministic policy over the model's intent. Every path names its rule; nothing drops silently.
 
-    Runtime policy has no hourly, 2-hour, or 4-hour reader quota.  Once the
-    semantic conditions resolve to push/escalate, only explicit control state
-    and duplicate evidence may withhold it. ``degraded`` fallback cards skip
+    Runtime policy has no hourly, 2-hour, or 4-hour reader quota, and no
+    operator mute: once the semantic conditions resolve to push/escalate, only
+    duplicate evidence may withhold the card. ``degraded`` fallback cards skip
     similarity because their wire headline is not a semantic judgment.
     """
 
@@ -277,8 +276,6 @@ def decide(
     grounded = {_base(s) for s in facts.grounded_assets}
     watch_hits = tuple(sorted(s for s in (primaries & grounded) if s in facts.watchlist_symbols))
 
-    if muted:
-        return DecisionResult("drop", "muted", None, baseline, watch_hits)
     if verdict.event_type == "noise" and _noise_veto_applies(verdict, facts, policy):
         return DecisionResult("drop", "noise", None, baseline, watch_hits)
     listing_fact = policy.listing_exempt_from_duplicate and _listing_fact(facts)

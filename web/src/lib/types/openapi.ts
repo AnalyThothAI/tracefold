@@ -511,18 +511,6 @@ export interface components {
                 [key: string]: components["schemas"]["NewsBrokerQueueData"];
             };
         };
-        /** NewsControlStateData */
-        NewsControlStateData: {
-            /** Mutes */
-            mutes?: {
-                [key: string]: unknown;
-            }[];
-            /**
-             * Paused
-             * @default false
-             */
-            paused: boolean;
-        };
         /** NewsDeliveryData */
         NewsDeliveryData: {
             /** Attempted At Ms */
@@ -2088,7 +2076,6 @@ export interface components {
         /** NewsStatusData */
         NewsStatusData: {
             broker: components["schemas"]["NewsBrokerStatusData"];
-            control: components["schemas"]["NewsControlStateData"];
             delivery: components["schemas"]["NewsDeliveryStatusData"];
             funnel_24h: components["schemas"]["NewsFunnelData"];
             health: components["schemas"]["NewsHealthData"];

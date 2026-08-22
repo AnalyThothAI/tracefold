@@ -111,10 +111,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_status_learning_retention",
             sql="SELECT * FROM news_learning_retention_state WHERE singleton",
         ),
-        ReadQuerySpec(
-            name="news_control_state",
-            sql="SELECT paused, mutes FROM news_control_state WHERE singleton_key = 'current'",
-        ),
         # #88 price plane. The due scan and the review aggregates are the two reads that could grow without
         # anyone noticing, so both are in the EXPLAIN registry with their real predicates.
         ReadQuerySpec(

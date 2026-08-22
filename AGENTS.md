@@ -72,7 +72,7 @@ in a bucket that was not about them — every OKX listing notice in `asset:OKB`,
 Polish jets scrambling in `asset:BTC`); the pure `decide()` policy
 (`news.policy`: grounded restatement drop, model push intent at magnitude >= 1,
 unclear-but-clear-event push, watchlist rescue, content-based duplicate check,
-control mutes — every path names its rule) owns the final decision. Policy v8 is
+every path names its rule) owns the final decision. Policy v8 is
 recall-first: `noise` drops a card only when the verdict agrees with itself
 (magnitude <= `noise_veto_max_magnitude`, not actionable, no push intent) and
 the Gate did not flag the Event high priority, because a verdict that calls an
@@ -113,9 +113,10 @@ per Event and renders the reader contract card (v10: `headline_zh` header, one
 words, plus a separate fresh quote line for exactly those assets; price is
 display-only and any unavailable/stale quote silently removes that line; no
 titles, enums, provider score, or AI label), drops instead of holding when
-delivery is paused, and a crash between send and ack terminalizes as ambiguous
-instead of resending. Control state (pause/mute) is a PostgreSQL singleton
-written by `tracefold news control` and read on every message; the Janitor
+a crash between send and ack terminalizes as ambiguous instead of resending.
+There is no operator pause/mute plane: `news_control_state` never withheld a
+card in the whole retained history and was removed rather than left unread. The
+Janitor
 republishes candidates that never left the process, expires bands, and snapshots
 broker depths. The instrument universe (`news_market_instruments` +
 `news_symbol_aliases`, #75, consolidated in #89) is a rebuildable provider fact

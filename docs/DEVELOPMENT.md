@@ -114,7 +114,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0292` to `0293`, `0293` to `0294`, and `0294` to `0295` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
-`20260822_0295`; schema tests also run against that migrated head. The e2e lane
+`20260822_0296`; schema tests also run against that migrated head. The e2e lane
 (`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
