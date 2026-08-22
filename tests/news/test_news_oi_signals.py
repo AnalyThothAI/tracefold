@@ -94,6 +94,12 @@ def test_units_scale_to_whole_dollars() -> None:
         assert signal is not None and signal.oi_value_usd == expected
 
 
+def test_a_provider_number_that_cannot_fit_the_ledger_is_not_a_signal() -> None:
+    too_large = "9" * 100
+    frame = f"BTC OI Rise {too_large}%, OI Value 1M, Whale Long Profit 1%, Whale/OI Ratio 1%"
+    assert parse_oi_signal(frame) is None
+
+
 def test_rank_counts_every_frame_in_a_sliding_window() -> None:
     """The window slides with the reader rather than resetting on a clock boundary, and a frame the
     policy dropped still happened — it still moves the next one further down the run."""
@@ -161,12 +167,50 @@ def test_the_verdict_reaches_the_intended_answer_through_decide_unchanged() -> N
 
 
 def test_reader_text_carries_the_numbers_and_the_position_in_the_run() -> None:
-    """No mechanism sentence: the frame carries four numbers and no causality to state."""
+    """The deterministic numbers form one complete title, with no duplicate body sentence."""
 
     verdict = evaluate_oi(_signal(), earlier_at_ms=[], now_ms=0).verdict
-    assert verdict.headline_zh == "▲ TRUMP 持仓异动 4.55%"
-    assert verdict.why_zh == "持仓 3217 万 · 鲸鱼占比 100.7% · 鲸鱼多头盈利 80.2% · 4h 内第 1 次"
-    assert "AI" not in verdict.why_zh and "模型" not in verdict.why_zh
+    assert verdict.headline_zh == ("▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%｜4h内第1次")
+    assert verdict.why_zh == ""
+    assert len(verdict.headline_zh) <= 60
+    assert "AI" not in verdict.headline_zh and "模型" not in verdict.headline_zh
+
+
+def test_reader_title_compacts_long_symbols_without_losing_any_measurement() -> None:
+    verdict = evaluate_oi(
+        _signal(
+            symbol="SIXTEENCHARACTRS",
+            oi_change_bps=143_820,
+            oi_value_usd=3_860_000_000,
+            whale_oi_ratio_bps=21097,
+            whale_long_profit_bps=8060,
+        ),
+        earlier_at_ms=[1],
+        now_ms=2,
+    ).verdict
+
+    assert len(verdict.headline_zh) <= 60
+    for fact in ("SIXTEENCHARACTRS", "1438.20%", "38.60亿", "211.0%", "80.6%", "4h#2"):
+        assert fact in verdict.headline_zh
+
+
+def test_reader_title_is_bounded_at_the_bigint_storage_limit() -> None:
+    maximum = 2**63 - 1
+    verdict = evaluate_oi(
+        _signal(
+            symbol="SIXTEENCHARACTRS",
+            oi_change_bps=maximum,
+            oi_value_usd=maximum,
+            whale_oi_ratio_bps=maximum,
+            whale_long_profit_bps=-maximum,
+        ),
+        earlier_at_ms=[1],
+        now_ms=2,
+    ).verdict
+
+    assert len(verdict.headline_zh) <= 60
+    for fact in ("SIXTEENCHARACTRS", "Δ9e16%", "O9e18", "W9e16%", "P-9e16%", "4h#2"):
+        assert fact in verdict.headline_zh
 
 
 def test_repeats_are_bounded_by_the_rank_ceiling_not_by_content_similarity() -> None:

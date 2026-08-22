@@ -826,6 +826,17 @@ class NewsRepository:
         ).fetchall()
         return [int(row["observed_at_ms"]) for row in rows]
 
+    def oi_signal(self, *, event_id: str, metric_version: str) -> dict[str, Any] | None:
+        """The code-verified OI row that may ground its deterministic reader card."""
+
+        row = self.conn.execute(
+            "SELECT event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd, "
+            "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window "
+            "FROM news_oi_signals WHERE event_id = %s AND metric_version = %s",
+            (event_id, metric_version),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def insert_oi_signal(
         self,
         *,
