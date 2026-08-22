@@ -520,6 +520,16 @@
             "title": "Evidence Refs",
             "type": "array"
           },
+          "expected": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExpectedCorrection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "expected_correction": {
             "default": "",
             "maxLength": 2000,
@@ -584,6 +594,84 @@
           "novelty"
         ],
         "title": "EventRubricSubmission",
+        "type": "object"
+      },
+      "ExpectedAsset": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "default": "primary",
+            "enum": [
+              "primary",
+              "mentioned"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "symbol": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "title": "ExpectedAsset",
+        "type": "object"
+      },
+      "ExpectedCorrection": {
+        "additionalProperties": false,
+        "description": "The reviewer's stated correct values \u2014 `news_review_v3` gold.\n\nWithout this the metric can only ask \"did the candidate change the field the reviewer failed?\", which\nscores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one\nanswer and not the others, and because the copy dimensions (`why_*`, `headline_fidelity`) have no value a\nrubric could hold \u2014 \"the correct Chinese sentence\" is not a label.",
+        "properties": {
+          "assets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExpectedAsset"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assets"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "bullish",
+                  "bearish",
+                  "neutral",
+                  "unclear"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "magnitude": {
+            "anyOf": [
+              {
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Magnitude"
+          }
+        },
+        "title": "ExpectedCorrection",
         "type": "object"
       },
       "ExternalMissSubmission": {

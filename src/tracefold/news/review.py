@@ -23,7 +23,11 @@ from .artifact_identity import canonical_json, canonical_sha
 from .outcome import decision_zh
 from .price_repository import MarketReviewCohort, PriceRepository
 
-REVIEW_RUBRIC_VERSION = "news_review_v2"
+REVIEW_RUBRIC_VERSION = "news_review_v3"
+# Every rubric revision whose accepted rows still mean what they said. v3 only *adds* the optional `expected`
+# gold; every v2 field kept its meaning, so widening the read is what lets a corpus survive the revision instead
+# of restarting at zero — the same mistake `bundle_sha` eligibility was making until #143.
+REVIEW_RUBRIC_VERSIONS: tuple[str, ...] = ("news_review_v2", "news_review_v3")
 READER_CONTRACT_VERSION = "reader_contract_v2"
 # This is product truth, not prompt advice.  v2 is the operator-approved
 # no-quota contract: a distinct fact that satisfies push/escalate reaches
@@ -220,6 +224,35 @@ class NoveltyJudgment(BaseModel):
         return self
 
 
+class ExpectedAsset(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    symbol: str = Field(min_length=1, max_length=32)
+    role: Literal["primary", "mentioned"] = "primary"
+
+
+class ExpectedCorrection(BaseModel):
+    """The reviewer's stated correct values — `news_review_v3` gold.
+
+    Without this the metric can only ask "did the candidate change the field the reviewer failed?", which
+    scores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one
+    answer and not the others, and because the copy dimensions (`why_*`, `headline_fidelity`) have no value a
+    rubric could hold — "the correct Chinese sentence" is not a label.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    magnitude: int | None = Field(default=None, ge=0, le=3)
+    direction: Literal["bullish", "bearish", "neutral", "unclear"] | None = None
+    assets: list[ExpectedAsset] | None = Field(default=None, max_length=16)
+    # No `novelty` field: the accepted novelty already *is* gold — `novelty.judgment` is the reviewer's own
+    # answer, not a pass/fail on someone else's — and the metric scores against it directly. A second place to
+    # state the same thing could only disagree with the first.
+    #
+    # `should_reach_reader` is deliberately absent for the same reason: `should_push` already carries it, with
+    # the must/should distinction the hard gates depend on.
+
+
 class EventRubricSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -229,6 +262,7 @@ class EventRubricSubmission(BaseModel):
     novelty: NoveltyJudgment
     first_bad_owner: FirstBadOwner | None = None
     evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=32)
+    expected: ExpectedCorrection | None = None
     expected_correction: str = Field(default="", max_length=2_000)
     note: str = Field(default="", max_length=2_000)
 
@@ -237,6 +271,18 @@ class EventRubricSubmission(BaseModel):
         unknown = set(self.dimensions) - _DIMENSIONS
         if unknown:
             raise ValueError(f"news_review_dimension_unknown:{sorted(unknown)[0]}")
+        # Gold is a repair instruction. Stating one for a dimension the reviewer passed would silently move the
+        # accepted value, which is the one thing an append-only review plane must never let a submission do.
+        if self.expected is not None:
+            for field, dimension in (
+                ("magnitude", "magnitude"),
+                ("direction", "direction"),
+                ("assets", "asset_grounding"),
+            ):
+                if getattr(self.expected, field) is not None and self.dimensions.get(dimension) != "fail":
+                    raise ValueError(f"news_review_expected_requires_failed_dimension:{dimension}")
+            if self.expected.model_dump(exclude_none=True) == {}:
+                raise ValueError("news_review_expected_must_state_a_value")
         if "factual_fidelity" not in self.dimensions:
             raise ValueError("news_review_factual_fidelity_required")
         if self.should_push in {"must_push", "should_push"} and "timeliness" not in self.dimensions:

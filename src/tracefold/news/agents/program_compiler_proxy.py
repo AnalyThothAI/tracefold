@@ -654,6 +654,7 @@ class TrustedCompilerModelProxy:
         self._task_calls = 0
         self._reflection_calls = 0
         self._actual_cost_microusd = 0
+        self._imputed_cost_calls = 0
         self._reserved_cost_microusd = 0
 
     @contextmanager
@@ -806,8 +807,16 @@ class TrustedCompilerModelProxy:
                 "news_program_compile_proxy_model_call_failed",
                 metadata=metadata,
             )
-        if metadata.provider_cost_microusd is None:
-            return self._failure(request, "news_program_compile_proxy_provider_cost_unavailable")
+        # A provider that reports no price is the normal case here, not an anomaly: neither the local
+        # llama.cpp endpoint nor DeepSeek returns one litellm can resolve, so failing closed on `None` meant a
+        # real compile died on its first model call. The grant already computed this exact request's trusted
+        # worst-case reservation from the tariff; charging that is strictly conservative — it over-charges, so
+        # the budget stops the run early rather than late — and keeps the spend provable without depending on
+        # a price the provider does not publish.
+        imputed = metadata.provider_cost_microusd is None
+        if imputed:
+            metadata = metadata.model_copy(update={"provider_cost_microusd": reservation_microusd})
+            self._imputed_cost_calls += 1
         self._charge(metadata)
         if metadata.total_tokens <= 0:
             return self._failure(

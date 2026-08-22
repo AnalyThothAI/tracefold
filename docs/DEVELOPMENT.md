@@ -141,6 +141,15 @@ uv run tracefold news review evidence TASK --version TASK_VERSION
 uv run tracefold news review submit TASK --version TASK_VERSION \
   --file /tmp/rubric.json --idempotency-key UUID
 
+# Measure before you change anything. This is the only command in the learning
+# plane that needs no dataset, sandbox, tariff or container, and it writes
+# nothing. `--mode recorded` scores the verdict production actually persisted
+# against the action it actually shipped, so it costs no provider call and stays
+# reproducible across policy revisions; `--mode live` re-runs the Program and is
+# the only mode that can measure a Prompt or RulePack change.
+uv run tracefold news learning baseline --from-ms START --to-ms END \
+  --mode recorded --out /tmp/baseline.json
+
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out /tmp/development.json
 uv run tracefold news learning compile --development DATASET_SHA \
@@ -183,6 +192,46 @@ evidence begins at zero.
 and not a release gate. The trusted side seals the exact current development
 corpus; an isolated runner sees neither DB nor holdout and can write only a
 bounded `ProgramPatchV2` for LearnedStrategy and eligible Demo references.
+
+`learning baseline` (#143) is the step that has to come first and did not exist
+until then: a cold, read-only `dspy.Evaluate` over the same graph, the same
+`decide()` and — literally the same function object — the same
+`accepted_review_metric`, so the number an operator reads before a RulePack edit
+is the number GEPA will later try to maximize. It needs no dataset, sandbox,
+tariff or container and writes nothing. Two source facts about the optimizer are
+worth stating plainly, because both were invisible while the compiler's only
+tests drove a fake GEPA:
+
+- **`dspy.GEPA` never writes demos.** Its `build_program` only assigns
+  `pred.signature = pred.signature.with_instructions(...)`. `DemoBank`,
+  `EligibleDemoBank` and `demo_refs` are therefore always empty under this
+  optimizer — a recorded property, not a defect to chase. Demos would need a
+  `BootstrapFewShot` pass after GEPA, and only then would the metric need the
+  tutorial's `if trace is not None: return score >= 1.0` branch.
+- **GEPA matches traces to components by signature equality**
+  (`t[0].signature.equals(module.signature)`). `_OptimizerOwnedPredictor` renders
+  RulePacks plus the advisory into a fresh inner `dspy.Predict` and delegates, so
+  the trace records a signature the outer one never equals; the compiler re-keys
+  those two entries positionally. Without that, `make_reflective_dataset` raises
+  "No valid predictions found for any module" and the reflective loop cannot
+  propose anything at all.
+
+The reflection endpoint is configured separately from the task endpoint
+(`llm.news_compiler_reflection`) with its own 32k-token, 300 s, temperature-1.0
+budget. Passing one endpoint for both made the local student its own teacher,
+capped a proposed instruction at the task route's 1,200 tokens — below what
+`LearnedStrategy` itself accepts — and pointed a multi-hour run at the same
+single-slot GPU that serves production Triage. A code-owned
+`RulePackAwareProposer` puts the full rendered instruction in front of the
+reflection model as read-only context; before it, `<curr_param>` was one space
+and the model was rewriting 8.5 KB of rules it could not see.
+
+The tariff is not optional bookkeeping. Neither the local llama.cpp endpoint nor
+DeepSeek returns a price litellm can resolve, so `provider_cost_microusd` is
+`None` for every endpoint this project uses and the budget meter fails closed
+without a trusted worst-case rate. Note also that `_BudgetMeter` reserves
+`max_call_cost_microusd` for every call, so the reachable call count is
+`max_cost / max_call_cost`: the two limits look independent and are not.
 
 The metric scores the **reader-facing action**, not the model's intermediate
 `decision` field. Each sealed episode carries a frozen policy projection — Gate

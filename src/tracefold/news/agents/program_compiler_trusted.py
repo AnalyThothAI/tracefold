@@ -36,6 +36,12 @@ from .semantic_program import (
 )
 
 LEARNING_EPOCH: Literal["program_v5"] = "program_v5"
+# The reflection endpoint's budget, declared on the trusted seam because the CLI may not import the optimizer
+# module. GEPA's reflection call reads a minibatch of failures and emits a whole replacement instruction, so it
+# is nothing like a Program route: DSPy documents 32k output tokens for it, while the task route's ceiling here
+# is 1,200 — below even what `LearnedStrategy` itself accepts.
+REFLECTION_MAX_TOKENS = 32_000
+REFLECTION_TIMEOUT_SECONDS = 300.0
 
 
 class _ExactModel(BaseModel):

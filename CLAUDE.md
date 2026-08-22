@@ -167,7 +167,20 @@ corpus without DB/holdout/application credentials, can emit only a bounded
 LearnedStrategy/Demo `ProgramPatchV2`, and runs under explicit metric/model/
 cost/resource/seed budgets. A trusted applier constructs the unaccepted
 Artifact; the optimizer can never accept, deploy, promote, or edit the trusted
-root. `news.retention` keeps raw
+root. `news learning baseline` (#143) is the cold, read-only `dspy.Evaluate`
+step that has to come first: same graph, same `decide()`, and literally the same
+`accepted_review_metric` object the optimizer maximizes, with no dataset,
+sandbox, tariff, container or write of any kind. `--mode recorded` scores the
+persisted verdict against the action that actually shipped and spends no
+provider call. `dspy.GEPA` only rewrites instructions and never writes demos, so
+DemoBank stays empty under this optimizer by construction; the reflection
+endpoint is configured separately from the task endpoint with its own 32k-token,
+temperature-1.0 budget, and a code-owned proposer shows the reflection model the
+full rendered RulePacks it is amending. Reviews are accepted under
+`news_review_v3`, whose optional `expected` gold is what lets a failed dimension
+be scored against the correct value rather than against "did anything change";
+reads still accept `news_review_v2`, so a rubric revision does not void the
+corpus. `news.retention` keeps raw
 Items 30 days and judged/reviewed ones 365. `/api/news/status.pipeline` reports
 where the last 24 h went
 (`suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,

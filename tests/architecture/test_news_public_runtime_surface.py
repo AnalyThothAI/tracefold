@@ -254,6 +254,14 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
         NEWS_ROOT / "agents" / "semantic_program.py",
         NEWS_ROOT / "agents" / "program_compiler.py",
         NEWS_ROOT / "agents" / "program_compiler_proxy.py",
+        # #143. The metric the optimizer maximizes and the metric an operator reads before a RulePack edit have
+        # to be the same bytes, and the compiler module may be imported by exactly one runner — so the shared
+        # scoring truth and the offline `dspy.Evaluate` harness live beside the Program instead.
+        NEWS_ROOT / "agents" / "program_metric.py",
+        NEWS_ROOT / "agents" / "program_baseline.py",
+        # The code-owned GEPA instruction proposer. It travels with the compiler image and is the reason the
+        # reflection model can see the RulePacks it is amending.
+        NEWS_ROOT / "agents" / "program_proposer.py",
     }
     dspy_offenders = sorted(
         str(path.relative_to(ROOT))

@@ -119,6 +119,21 @@ class LlmReaderCardFallbackConfig(_LlmEndpointConfig):
         return "llm_reader_card_fallback_configuration_incomplete"
 
 
+class LlmCompilerReflectionConfig(_LlmEndpointConfig):
+    """The GEPA reflection endpoint — deliberately not the task endpoint (#143).
+
+    DSPy's own guidance is that "when optimizing smaller models, it's worthwhile to use a larger model as the
+    `reflection_lm`", and until now the compiler passed the task endpoint object for both. That made the local
+    27B student its own teacher, gave the reflection call the task route's 1,200-token ceiling (it has to emit
+    a whole new instruction) and its 20 s route deadline, and pointed a multi-hour optimization run at the same
+    single-slot GPU production Triage runs on.
+    """
+
+    @property
+    def incomplete_error_code(self) -> str:
+        return "llm_compiler_reflection_configuration_incomplete"
+
+
 class LlmCompilerTariffConfig(BaseModel):
     """Trusted, secret-free worst-case rates for the optional cold compiler."""
 
@@ -159,6 +174,7 @@ class LlmConfig(BaseModel):
     news_reader_card: LlmReaderCardConfig = Field(default_factory=LlmReaderCardConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     news_reader_card_fallback: LlmReaderCardFallbackConfig = Field(default_factory=LlmReaderCardFallbackConfig)
+    news_compiler_reflection: LlmCompilerReflectionConfig = Field(default_factory=LlmCompilerReflectionConfig)
     news_compiler_tariff: LlmCompilerTariffConfig = Field(default_factory=LlmCompilerTariffConfig)
 
     @field_validator("api_key", "news_triage_model", mode="before")
