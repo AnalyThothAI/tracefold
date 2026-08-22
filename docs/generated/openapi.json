@@ -2457,6 +2457,160 @@
         "title": "NewsLearningRetentionStatusData",
         "type": "object"
       },
+      "NewsLiquidationSnapshotStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Ms"
+          },
+          "base_symbol": {
+            "title": "Base Symbol",
+            "type": "string"
+          },
+          "degraded": {
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "error_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Class"
+          },
+          "freshness": {
+            "enum": [
+              "fresh",
+              "stale",
+              "unavailable"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "last_attempt_at_ms": {
+            "title": "Last Attempt At Ms",
+            "type": "integer"
+          },
+          "last_success_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At Ms"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "range_key": {
+            "title": "Range Key",
+            "type": "string"
+          },
+          "received_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At Ms"
+          },
+          "source_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source At Ms"
+          },
+          "venue": {
+            "title": "Venue",
+            "type": "string"
+          },
+          "venue_symbol": {
+            "title": "Venue Symbol",
+            "type": "string"
+          },
+          "zone_count": {
+            "default": 0,
+            "title": "Zone Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider",
+          "venue",
+          "venue_symbol",
+          "base_symbol",
+          "model_version",
+          "range_key",
+          "last_attempt_at_ms",
+          "freshness",
+          "degraded"
+        ],
+        "title": "NewsLiquidationSnapshotStatusData",
+        "type": "object"
+      },
+      "NewsLiquidationStatusData": {
+        "additionalProperties": false,
+        "description": "#144 shadow-only provider state; this surface exposes no card or decision input.",
+        "properties": {
+          "degraded": {
+            "default": 0,
+            "title": "Degraded",
+            "type": "integer"
+          },
+          "fresh": {
+            "default": 0,
+            "title": "Fresh",
+            "type": "integer"
+          },
+          "provider": {
+            "default": "coinglass_web",
+            "title": "Provider",
+            "type": "string"
+          },
+          "shadow": {
+            "default": true,
+            "title": "Shadow",
+            "type": "boolean"
+          },
+          "snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/NewsLiquidationSnapshotStatusData"
+            },
+            "title": "Snapshots",
+            "type": "array"
+          }
+        },
+        "title": "NewsLiquidationStatusData",
+        "type": "object"
+      },
       "NewsMarketReviewData": {
         "additionalProperties": false,
         "properties": {
@@ -4919,6 +5073,9 @@
           },
           "learning_retention": {
             "$ref": "#/components/schemas/NewsLearningRetentionStatusData"
+          },
+          "liquidation": {
+            "$ref": "#/components/schemas/NewsLiquidationStatusData"
           },
           "measured_at_ms": {
             "title": "Measured At Ms",

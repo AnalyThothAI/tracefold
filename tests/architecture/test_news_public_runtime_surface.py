@@ -29,6 +29,11 @@ PUBLIC_NEWS_INTERFACE = {
     "REVIEW_RUBRIC_VERSION",
     "TRIAGE_POLICY_VERSION",
     "LEARNING_EPOCH",
+    # #144: the concrete provider adapter sees only these provider-neutral public types.
+    "LiquidationFreshness",
+    "LiquidationSnapshotProvider",
+    "LiquidationTarget",
+    "LiquidationZone",
     "TRUSTED_ROOT_SHA",
     "TOLD_MAX",
     "TOLD_SELECTOR_ID",
@@ -58,6 +63,7 @@ PUBLIC_NEWS_INTERFACE = {
     "Outcome",
     "Principal",
     "ProposalReceipt",
+    "ProviderLiquidationSnapshot",
     "ProgramTrace",
     "ProgramUsage",
     "ReaderReceipt",
@@ -86,6 +92,7 @@ PUBLIC_NEWS_INTERFACE = {
     "parse_canary_control",
     "parse_opennews_message",
     "status_health",
+    "unavailable_snapshot",
 }
 
 IO_MODULE_ROOTS = {"aio_pika", "psycopg", "httpx", "aiohttp", "websockets", "requests"}
@@ -98,6 +105,7 @@ PURE_NEWS_MODULES = (
     "timeline.py",
     "triage_rules.py",
     "oi_signals.py",
+    "liquidation.py",
     "tokens.py",
     "minhash.py",
     "titles.py",
@@ -123,6 +131,7 @@ RETIRED_NEWS_MODULES = (
 WRITE_REPOSITORY_METHODS = (
     "forget_sources_except",
     "replace_source_snapshot",
+    "store_snapshot",
     "upsert_reaction",
     "insert_event",
     "insert_verdict",

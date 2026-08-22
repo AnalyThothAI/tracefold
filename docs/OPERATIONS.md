@@ -570,6 +570,42 @@ tolerance are code-owned; `news.venues.binance` / `news.venues.hyperliquid` /
 `news.venues.enabled` are the only switches, shared with the instrument
 snapshot.
 
+### CoinGlass liquidation-level shadow (#144)
+
+`/api/news/status.liquidation` is the only public surface. `shadow=true` is a
+hard boundary: these rows are not read by Gate, Triage, policy or Deliverer.
+The loop runs only when the shared Binance venue capability is enabled. It
+cycles the code-owned BTC/ETH/SOL/DOGE USDT pairs one at a time (no faster than
+one attempt per minute, about four minutes per healthy full cycle), with concurrency 1 and a 45-second
+turn deadline.
+
+The application image installs the fixed coinglass-cli commit in
+`/opt/coinglass-cli`, outside the main Program-bound dependency lock. The
+adapter accepts no environment/PATH override: a local source process without
+that packaged path records `adapter_unavailable`; provider acquisition is
+verified from the application image.
+
+Read-only SQL for acquisition health and the bounded stored shape:
+
+```sql
+SELECT provider, venue, venue_symbol, model_version, range_key,
+       jsonb_array_length(zones) AS zone_count,
+       source_at_ms, received_at_ms, last_success_at_ms, last_attempt_at_ms,
+       freshness, degraded, error_class, raw_level_count, raw_price_count
+  FROM news_liquidation_snapshots
+ ORDER BY venue_symbol;
+```
+
+`freshness=unavailable` with a non-null `last_success_at_ms` means the latest
+attempt failed but the last successful zones were deliberately retained.
+`error_class=provider_contract_drift` means the pinned no-key web adapter no longer
+understands the upstream contract; it is not permission to fall back silently
+to an authenticated or differently modeled endpoint. The row stores raw
+`side` and `size` fields without assigning long/short or USD semantics. Do not
+use this shadow in a reader card until a separate issue locks the entitled
+provider contract, units, side semantics, freshness criteria and display
+rights.
+
 ## Migrations
 
 The Alembic chain is the `20260818_0275` baseline (root; it executes
@@ -577,7 +613,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260822_0298_program_v5_epoch`. The #112 chain
+the linear revisions through `20260822_0299_news_liquidation_shadow`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;

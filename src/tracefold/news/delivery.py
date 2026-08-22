@@ -32,6 +32,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from math import isfinite
 from typing import Any
 
+from .oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 from .pricing import parse_price
 
@@ -186,6 +187,37 @@ def card_assets(verdict: Mapping[str, Any], grounded_assets: Sequence[str]) -> l
     return shown[:_MAX_ASSETS]
 
 
+def reader_assets(
+    *,
+    event: Mapping[str, Any],
+    verdict: Mapping[str, Any],
+    grounded_assets: Sequence[str],
+    program_version: str = "",
+    oi_signal: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Code-verified assets that the facts and quote lines may name.
+
+    Ordinary News keeps the Gate-grounded intersection. OI telemetry has no provider coin tag, so its
+    deterministic parser's stored rank-ledger row is the grounding fact; all three independent markers must
+    agree before the symbol is exposed to the reader.
+    """
+
+    ordinary = card_assets(verdict, grounded_assets)
+    if (
+        str(event.get("admission") or "") != "telemetry_deterministic"
+        or str(program_version or "") != OI_PROGRAM_VERSION
+        or not isinstance(oi_signal, Mapping)
+    ):
+        return ordinary
+    symbol = str(oi_signal.get("symbol") or "").strip().upper().removeprefix("XYZ-")
+    primaries = {
+        str(asset.get("symbol") or "").strip().upper().removeprefix("XYZ-")
+        for asset in (verdict.get("assets") or [])
+        if isinstance(asset, Mapping) and asset.get("role") == "primary"
+    }
+    return [symbol] if symbol and symbol in primaries else ordinary
+
+
 def _facts_line(
     *,
     direction: str | None,
@@ -220,10 +252,11 @@ def render_first_card(
     verdict: Mapping[str, Any],
     decision: str,
     grounded_assets: Sequence[str],
+    assets: Sequence[str] | None = None,
     degraded: bool = False,
     quotes: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """`quotes` are `PriceRepository.quotes_for_symbols` rows for `card_assets()`, in that order.
+    """`quotes` are `PriceRepository.quotes_for_symbols` rows for the rendered assets, in that order.
 
     Passing none renders exactly the v9 card, so the price is additive and never a precondition for delivery.
     """
@@ -254,7 +287,7 @@ def render_first_card(
             direction=direction,
             magnitude=magnitude,
             novelty=novelty,
-            assets=card_assets(verdict, grounded_assets),
+            assets=list(assets) if assets is not None else card_assets(verdict, grounded_assets),
             source=str(event.get("reporting_origin") or ""),
             members=int(event.get("member_count") or 1),
             at_ms=event.get("leader_published_at_ms") or event.get("opened_at_ms"),
@@ -294,4 +327,4 @@ def render_first_card(
     }
 
 
-__all__ = ["card_assets", "render_first_card", "sanitize_ai_text"]
+__all__ = ["card_assets", "reader_assets", "render_first_card", "sanitize_ai_text"]

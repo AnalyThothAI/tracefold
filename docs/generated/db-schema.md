@@ -293,6 +293,32 @@
 | `last_error_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_liquidation_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `provider` | `TEXT` | False | `None` |
+| `venue` | `TEXT` | False | `None` |
+| `venue_symbol` | `TEXT` | False | `None` |
+| `base_symbol` | `TEXT` | False | `None` |
+| `quote_asset` | `TEXT` | False | `None` |
+| `model_version` | `TEXT` | False | `None` |
+| `range_key` | `TEXT` | False | `None` |
+| `contract` | `TEXT` | False | `None` |
+| `authenticated` | `BOOLEAN` | False | `None` |
+| `completeness` | `TEXT` | False | `None` |
+| `zones` | `JSONB` | False | `None` |
+| `source_at_ms` | `BIGINT` | True | `None` |
+| `received_at_ms` | `BIGINT` | True | `None` |
+| `last_success_at_ms` | `BIGINT` | True | `None` |
+| `last_attempt_at_ms` | `BIGINT` | False | `None` |
+| `freshness` | `TEXT` | False | `None` |
+| `degraded` | `BOOLEAN` | False | `None` |
+| `error_class` | `TEXT` | True | `None` |
+| `payload_sha256` | `TEXT` | True | `None` |
+| `raw_level_count` | `INTEGER` | False | `None` |
+| `raw_price_count` | `INTEGER` | False | `None` |
+
 ## `news_market_instruments`
 
 | Column | Type | Nullable | Default |

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from tracefold.news.instruments_repository import InstrumentsRepository
+from tracefold.news.liquidation_repository import LiquidationRepository
 from tracefold.news.price_repository import PriceRepository
 from tracefold.news.repository import NewsRepository
 from tracefold.platform.postgres.postgres_client import (
@@ -22,6 +23,7 @@ class RepositorySession:
     conn: Any
     news: NewsRepository
     instruments: InstrumentsRepository
+    liquidation: LiquidationRepository
     price: PriceRepository
     transaction_observer: Callable[[float], None] | None = None
 
@@ -51,6 +53,7 @@ def repositories_for_connection(
         conn=conn,
         news=NewsRepository(conn),
         instruments=InstrumentsRepository(conn),
+        liquidation=LiquidationRepository(conn),
         price=PriceRepository(conn),
         transaction_observer=transaction_observer,
     )

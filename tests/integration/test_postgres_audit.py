@@ -91,6 +91,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_pipeline_24h",
         "news_status_delivery_1h",
         "news_status_learning_retention",
+        "news_liquidation_status",
     )
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
@@ -137,6 +138,7 @@ _NEWS_QUERY_NAMES = (
     "news_status_pipeline_24h",
     "news_status_delivery_1h",
     "news_status_learning_retention",
+    "news_liquidation_status",
     # #88 price plane reads.
     "news_quote_snapshot_read",
     "news_reaction_due_scan",

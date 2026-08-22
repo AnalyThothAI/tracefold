@@ -1164,6 +1164,73 @@ export interface components {
             /** Updated At Ms */
             updated_at_ms?: number | null;
         };
+        /** NewsLiquidationSnapshotStatusData */
+        NewsLiquidationSnapshotStatusData: {
+            /** Age Ms */
+            age_ms?: number | null;
+            /** Base Symbol */
+            base_symbol: string;
+            /** Degraded */
+            degraded: boolean;
+            /** Error Class */
+            error_class?: string | null;
+            /**
+             * Freshness
+             * @enum {string}
+             */
+            freshness: "fresh" | "stale" | "unavailable";
+            /** Last Attempt At Ms */
+            last_attempt_at_ms: number;
+            /** Last Success At Ms */
+            last_success_at_ms?: number | null;
+            /** Model Version */
+            model_version: string;
+            /** Provider */
+            provider: string;
+            /** Range Key */
+            range_key: string;
+            /** Received At Ms */
+            received_at_ms?: number | null;
+            /** Source At Ms */
+            source_at_ms?: number | null;
+            /** Venue */
+            venue: string;
+            /** Venue Symbol */
+            venue_symbol: string;
+            /**
+             * Zone Count
+             * @default 0
+             */
+            zone_count: number;
+        };
+        /**
+         * NewsLiquidationStatusData
+         * @description #144 shadow-only provider state; this surface exposes no card or decision input.
+         */
+        NewsLiquidationStatusData: {
+            /**
+             * Degraded
+             * @default 0
+             */
+            degraded: number;
+            /**
+             * Fresh
+             * @default 0
+             */
+            fresh: number;
+            /**
+             * Provider
+             * @default coinglass_web
+             */
+            provider: string;
+            /**
+             * Shadow
+             * @default true
+             */
+            shadow: boolean;
+            /** Snapshots */
+            snapshots?: components["schemas"]["NewsLiquidationSnapshotStatusData"][];
+        };
         /** NewsMarketReviewData */
         NewsMarketReviewData: {
             /** Coverage */
@@ -2092,6 +2159,7 @@ export interface components {
             ingest: components["schemas"]["NewsIngestStatusData"];
             instruments?: components["schemas"]["NewsInstrumentUniverse"];
             learning_retention: components["schemas"]["NewsLearningRetentionStatusData"];
+            liquidation?: components["schemas"]["NewsLiquidationStatusData"];
             /** Measured At Ms */
             measured_at_ms: number;
             pipeline: components["schemas"]["NewsPipelineStatusData"];

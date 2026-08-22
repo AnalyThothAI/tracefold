@@ -200,6 +200,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "instruments",
         # #88 §11: per-source quote freshness and Reaction backlog.
         "price",
+        # #144: the CoinGlass levels plane is visible but shadow-only.
+        "liquidation",
         "measured_at_ms",
     }
     state = components["NewsStatusData"]["properties"]["state"]

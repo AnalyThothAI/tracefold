@@ -19,9 +19,8 @@ from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
-from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
-
 from .bus import DeferError, TransientError, now_ms
+from .cold_db import ColdDatabase
 from .pricing import (
     CANDLE_INTERVAL_MS,
     EXTERNAL_CONCURRENCY,
@@ -61,36 +60,6 @@ _COLD_WRITE_TIMEOUT_SECONDS = 10.0
 _MAX_MERGED_SPAN_MS = 1000 * CANDLE_INTERVAL_MS
 
 
-class _ColdDb:
-    """The price plane's own database admission: one slot, on the heavy-business lane, never the News lane."""
-
-    def __init__(self, db: Any) -> None:
-        self._db = db
-        self._lane = db.heavy_business()
-
-    async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
-        def _run() -> Any:
-            with self._db.worker_session(name, timeout_seconds) as repos, repos.transaction():
-                return fn(repos)
-
-        return await self._run(name, _run, timeout_seconds)
-
-    async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
-        def _run() -> Any:
-            with self._db.worker_session(name, timeout_seconds) as repos:
-                return fn(repos)
-
-        return await self._run(name, _run, timeout_seconds)
-
-    async def _run(self, name: str, fn: Callable[[], Any], timeout_seconds: float) -> Any:
-        try:
-            return await self._lane.run_business(name, fn, operation_timeout_seconds=timeout_seconds)
-        except ResourceAdmissionTimeout as exc:
-            raise DeferError(f"cold_db_admission_timeout:{name}") from exc
-        except ResourceOperationOverrun as exc:
-            raise TransientError(f"cold_db_overrun:{name}") from exc
-
-
 async def _sleep_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(stop_event.wait(), timeout=max(0.001, float(seconds)))
@@ -128,7 +97,7 @@ class QuoteSnapshotLoop:
         day_period_seconds: float = QUOTE_DAY_PERIOD_SECONDS,
         enabled: bool = True,
     ) -> None:
-        self.db = _ColdDb(db)
+        self.db = ColdDatabase(db)
         self.fetcher_for = fetcher_for
         self.day_fetcher_for = day_fetcher_for
         self.watchlist = tuple(watchlist)
@@ -377,7 +346,7 @@ class EventReactionLoop:
         period_seconds: float = REACTION_PERIOD_SECONDS,
         enabled: bool = True,
     ) -> None:
-        self.db = _ColdDb(db)
+        self.db = ColdDatabase(db)
         self.fetcher_for = fetcher_for
         self.period = float(period_seconds)
         self.enabled = bool(enabled)

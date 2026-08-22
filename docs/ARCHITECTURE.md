@@ -18,14 +18,15 @@ OpenNews Strategy WSS
   -> HTTP / React
 ```
 
-Beside that hot path runs one strictly bounded cold plane, the Price Review
-plane (#88): two polling loops in Workers read their own work from PostgreSQL,
-call public venue REST with no database connection held, and write two derived
-read models — latest-only current quotes and versioned Event Reactions. It is
-not a market lane: no tick history, no socket, no OI, no order book, and no
-price reaches the Gate, Triage, `decide()` or a delivery card. Its failure is
-local by construction; News ingestion, judgment, delivery and readiness do not
-depend on it.
+Beside that hot path run strictly bounded cold read-model loops. The Price
+Review plane (#88) writes latest-only current quotes and versioned Event
+Reactions. The liquidation-level shadow (#144) polls one exact CoinGlass pair
+per minute and writes a latest-only research snapshot. Neither is a market
+truth or decision lane: there is no tick history or order book; no price or
+liquidation estimate reaches the Gate, Triage, `decide()` or ranking. A fresh
+price may be added to a card as display-only reader context; the liquidation
+shadow is not yet a card input. Their failures are local by construction; News
+ingestion, judgment, delivery and readiness do not depend on them.
 
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
@@ -81,6 +82,15 @@ that asset a primary at measurement time — because the review's event-level
 sample is the median over primaries and re-deriving that from verdict JSONB per
 request costs 1.2 s at the 720 h bound, past Serve's one-second statement
 timeout. Both tables cascade with their Event under existing retention.
+
+`news_liquidation_snapshots` is a third, independent derived read model (#144),
+keyed by `(provider, venue, venue_symbol, model_version, range_key)`. It holds
+only the strongest 64 normalized raw potential-liquidation levels from the
+latest snapshot plus source/receipt clocks, payload hash and attempt health.
+The no-key CoinGlass contract does not establish the business unit of `size`
+or the long/short meaning of `side`; the row therefore stores them as raw model
+fields and never renders a liquidation amount or position side. A failed or
+stale attempt updates health without erasing the last successful zones.
 
 The current read model is `news_events` (plus `news_event_members`,
 `news_event_bands`, `news_event_assets`). It uses stable product identity, has
@@ -195,7 +205,8 @@ A Provider is an integration adapter, not a product layer, registry, or second
 source of truth. Each adapter translates one upstream transport and error model
 into a business-package protocol. The adapters are OpenNews (the authenticated
 Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
-(`aio-pika`), and Feishu (the custom-bot webhook). No provider owns a durable
+(`aio-pika`), Feishu (the custom-bot webhook), and the pinned CoinGlass CLI
+(shadow-only potential-liquidation snapshots). No provider owns a durable
 queue. Expected provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
@@ -255,10 +266,11 @@ health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
 `news-deliverer`, `news-janitor`), the bounded cold loops
 (`news-instruments`, and with venues enabled `news-quotes`,
-`news-reactions`), and `workers-control` (singleton lock, heartbeat, runtime
+`news-reactions`, `news-liquidations`), and `workers-control` (singleton lock, heartbeat, runtime
 row). There is no acquisition clock, projection coordinator, model arbiter,
 stream ingester, identity backfill, or universe sync task. The three cold
-loops poll public catalogues and prices on code-owned cadences and admit their
+loops poll public catalogues and prices on code-owned cadences; the fourth polls
+the four-pair CoinGlass shadow. All admit their
 database work through a separate one-slot lane, never the four News hot-path
 slots.
 
@@ -345,6 +357,44 @@ the Gate, Triage, `decide()`, a throttle key or a ranking signal. Since card v10
 行情 line rendered from a `fresh` (<= 60 s) Quote Snapshot, never read back by
 any decision, and absent rather than approximated when no fresh value exists —
 68.7% of a week's cards carried one.
+
+OI telemetry has no provider coin tag, so it deliberately has no
+`news_event_assets` row. Its parser, `telemetry_deterministic` admission,
+`news_oi_signals(event_id, oi_signal_v1)` row and OI Program identity together
+form an equivalent code-grounded reader asset. The Deliverer uses that same
+asset list for the facts line and quote lookup, while the Quote planner unions
+recent OI-ledger symbols into its ordinary bounded working set. Price remains
+display-only and never changes the arithmetic OI judgment.
+
+#### Liquidation-level shadow (#144)
+
+```text
+BTC / ETH / SOL / DOGE (exact Binance USDT perpetuals, code-owned)
+  -> oldest due target, one target per 60 s turn, concurrency 1
+  -> pinned coinglass-cli commit, liquidation-levels 3d, 45 s turn deadline
+  -> validate provider/endpoint/pair/range and preserve raw side/size semantics
+  -> strongest 64 levels by raw size, deterministic tie order
+  -> news_liquidation_snapshots latest-only upsert on the one-slot cold DB lane
+  -> /api/news/status.liquidation (shadow health only)
+```
+
+The tool is installed into an isolated image venv and pinned at commit
+`dc8f9d253a8dc1fded6fabcef93c96feeaa4b826`; it does not alter the main
+application `uv.lock`, whose digest is part of the semantic Program identity.
+Its synchronous acquisition stack runs in a killable subprocess so a
+retry/protocol-probe sequence cannot outlive the cold loop's deadline. Four
+exact pairs cycle in roughly four healthy minutes; a new
+or never-attempted pair is selected before an old one. There is no dynamic
+Event-sized fan-out, no broker message, no delivery read, and no fallback from
+the unofficial web contract to a future authenticated API under the same
+provider identity.
+
+This is an internal shadow, not evidence of display or redistribution rights.
+The upstream website contract is unauthenticated, completeness is unknown, and
+the adapter can report protocol drift, timeout, rate limit or unavailable
+without affecting any News outcome. Promotion into a News/OI card requires a
+separate contract/version, documented side and unit semantics, explicit data
+rights, freshness QA and a reader-only acceptance change.
 
 The price and the day change are two questions on two cadences (#109). Binance
 answers "what is it worth now" in 45.5 kB (`ticker/price`, whole USD-M market,

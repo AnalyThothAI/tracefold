@@ -298,6 +298,7 @@ def get_news_status(request: Request) -> Response:
         # tags an Event carried, the instrument universe knows which of them name something listed.
         usage = repos.news.asset_usage_24h(now_ms=now_ms)
         price = repos.price.price_status(now_ms=now_ms)
+        liquidation = repos.liquidation.status(now_ms=now_ms)
         grounding = grounding_rollup(
             usage,
             repos.instruments.asset_refs({symbol for symbols in usage.values() for symbol in symbols}),
@@ -350,6 +351,7 @@ def get_news_status(request: Request) -> Response:
         "watchlist": sorted(settings.news.watchlist_symbols),
         "instruments": instruments,
         "price": price,
+        "liquidation": liquidation,
         "measured_at_ms": now_ms,
     }
     return _validated_etag_json(

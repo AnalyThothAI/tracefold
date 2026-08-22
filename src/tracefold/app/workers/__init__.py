@@ -30,6 +30,7 @@ from tracefold.app.learning_runtime import (
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
+from tracefold.integrations.coinglass import CoinglassCliLiquidationProvider
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.integrations.venues import (
@@ -53,6 +54,7 @@ from tracefold.news.consumers import (
     EventReactionLoop,
     InstrumentSnapshotLoop,
     JanitorLoop,
+    LiquidationSnapshotLoop,
     NewsPipeline,
     OpenNewsReceiver,
     QuoteSnapshotLoop,
@@ -714,6 +716,7 @@ async def _wire_news_pipeline(
         instruments=_instrument_snapshot_loop(settings, db=db),
         quotes=_quote_snapshot_loop(settings, db=db, watchlist=sorted(watchlist_symbols)),
         reactions=_event_reaction_loop(settings, db=db),
+        liquidations=_liquidation_snapshot_loop(settings, db=db),
     )
     return bus, pipeline
 
@@ -822,6 +825,15 @@ def _event_reaction_loop(settings: Any, *, db: Any) -> EventReactionLoop | None:
     if not venues.enabled or not (venues.binance or venues.hyperliquid):
         return None
     return EventReactionLoop(db=db, fetcher_for=fetcher_for)
+
+
+def _liquidation_snapshot_loop(settings: Any, *, db: Any) -> LiquidationSnapshotLoop | None:
+    """#144: four code-owned Binance/USDT targets, one per minute, no News hot-path dependency."""
+
+    venues = settings.news.venues
+    if not venues.enabled or not venues.binance:
+        return None
+    return LiquidationSnapshotLoop(db=db, provider=CoinglassCliLiquidationProvider())
 
 
 def _instrument_snapshot_loop(settings: Any, *, db: Any) -> InstrumentSnapshotLoop | None:
