@@ -16,6 +16,7 @@ from .facts import FactUnit, extract_fact_units
 from .gate import GateInput, GateVerdict, evaluate_gate
 from .minhash import band_keys, minhash_signature
 from .models import EVENT_IDENTITY_VERSION
+from .oi_signals import parse_oi_signal
 from .opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent
 from .storyline import preliminary_storyline_key
 from .titles import description_after_title, extract_title
@@ -274,7 +275,22 @@ def admit_item(
         keys = band_keys(signature)
         mine = _strong_facts(title, gate.grounded_assets)
         best_id, best_j = None, 0.0
-        for cand in news.find_band_candidates(family=family, band_keys=keys, now_ms=now_ms):
+        # Telemetry frames are exempt from near-duplicate matching (#137). Two frames for one symbol
+        # differ only in their four numbers, which is their entire content: they score 0.60 against
+        # each other, so the second observation would join the first as a member, never reach Triage,
+        # and never count toward its own rank. Byte-identical redeliveries are still collapsed by the
+        # exact fingerprint above.
+        #
+        # Keyed on the parser rather than on `family`: `event_family()` calls anything matching
+        # \b(oi|open interest|whale oi ratio)\b market telemetry, which includes ordinary prose such as
+        # "Bitcoin open interest hits a record". Exempting that too would let one story from two
+        # sources become two Events, two model calls and possibly two cards.
+        candidates = (
+            ()
+            if parse_oi_signal(title) is not None
+            else news.find_band_candidates(family=family, band_keys=keys, now_ms=now_ms)
+        )
+        for cand in candidates:
             cand_tokens = comparison_tokens(str(cand["comparison_title"]))
             j = jaccard(tokens, cand_tokens)
             if j >= NEAR_DUPLICATE_THRESHOLD and j > best_j:
@@ -357,7 +373,10 @@ def admit_item(
     )
 
 
-_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "recovery"})
+# Admissions a stronger member may not overwrite. `telemetry_deterministic` is decided by the
+# provider's strategy id, and upgrading it to `candidate` would route a fixed-format frame back into
+# the model call the admission exists to avoid (#137).
+_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "telemetry_deterministic", "recovery"})
 _STRONG_MEMBER_SCORE = 80.0
 
 

@@ -55,13 +55,13 @@ NEWS_TABLES = (
     "news_event_assets",
     "news_verdicts",
     "news_deliveries",
-    "news_control_state",
     "news_reviews",
     "news_external_miss_snapshots",
     "news_market_instruments",
     "news_symbol_aliases",
     "news_quote_snapshots",
     "news_event_reactions",
+    "news_oi_signals",
     "news_event_evidence_snapshots",
     "news_learning_epochs",
     "news_learning_artifacts",
@@ -255,16 +255,6 @@ class ProjectionValidationAudit:
                      END AS count
                 FROM news_ingest_state
             ),
-            control_mismatch AS (
-              SELECT CASE
-                       WHEN count(*) <> 1 THEN 1
-                       ELSE count(*) FILTER (
-                         WHERE singleton_key <> 'current'
-                            OR jsonb_typeof(mutes) <> 'array'
-                       )::integer
-                     END AS count
-                FROM news_control_state
-            ),
             delivery_mismatch AS (
               SELECT count(*)::integer AS count
               FROM news_deliveries
@@ -275,7 +265,6 @@ class ProjectionValidationAudit:
             )
             SELECT
               (SELECT count FROM ingest_mismatch) AS news_ingest_state_mismatch,
-              (SELECT count FROM control_mismatch) AS news_control_state_mismatch,
               (SELECT count FROM delivery_mismatch) AS news_delivery_state_mismatch
             """
         ).fetchone()

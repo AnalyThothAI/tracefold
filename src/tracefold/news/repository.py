@@ -1,4 +1,4 @@
-"""News V3 repository: facts, events, verdicts, deliveries, control, and bounded reads.
+"""News V3 repository: facts, events, verdicts, deliveries, and bounded reads.
 
 Every write is idempotent by key. Callers own the transaction (worker_session / api_session).
 """
@@ -12,7 +12,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from .models import ReaderReceipt, display_title
+from .models import ADMITTED_ADMISSIONS, ReaderReceipt, display_title
 from .outcome import (
     audience_zh,
     decision_zh,
@@ -34,6 +34,16 @@ _STORYLINE_LOCK_NAMESPACE = 0x4E455753
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=_JSON_SEPARATORS, default=str)
+
+
+_ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
+"""SQL literal for `ADMITTED_ADMISSIONS`, derived rather than repeated.
+
+Every predicate below means the same thing — "the Gate sent this Event to Triage" — and each used to
+spell the list out. A new admission then had to be found in six places by review, which is how #137's
+first pass left the outbox rescue, the give-up count, the funnel and the feed's outcome tabs all
+disagreeing with `event_outcome()`. The values are code-owned members of a `Literal`, never input.
+"""
 
 
 class NewsRepository:
@@ -439,9 +449,9 @@ class NewsRepository:
         """
 
         rows = self.conn.execute(
-            """
+            f"""
             SELECT event_id FROM news_events
-             WHERE published_at_ms IS NULL AND admission IN ('candidate', 'listing_deterministic')
+             WHERE published_at_ms IS NULL AND admission IN ({_ADMITTED_SQL})
                AND opened_at_ms <= %s AND opened_at_ms >= %s
              ORDER BY opened_at_ms LIMIT %s
             """,
@@ -467,9 +477,9 @@ class NewsRepository:
         """Admitted Events the catch-up has given up on — surfaced so the ceiling is never silent (#76)."""
 
         row = self.conn.execute(
-            """
+            f"""
             SELECT count(*) AS n FROM news_events
-             WHERE published_at_ms IS NULL AND admission IN ('candidate', 'listing_deterministic')
+             WHERE published_at_ms IS NULL AND admission IN ({_ADMITTED_SQL})
                AND opened_at_ms < %s
             """,
             (int(older_than_ms),),
@@ -795,6 +805,69 @@ class NewsRepository:
         self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_STORYLINE_LOCK_NAMESPACE, storyline_key))
 
+    # ------------------------------------------------------------------ open-interest rank ledger
+    def recent_oi_signal_times(
+        self, *, symbol: str, metric_version: str, since_ms: int, before_ms: int, exclude_event_id: str = ""
+    ) -> list[int]:
+        """Every *other* frame recorded for this symbol inside the window, newest first.
+
+        The rank rule counts frames, not pushes: a frame the rule rejected still happened and still
+        moves the next one further down the run. ``before_ms`` is the judged frame's own timestamp, so
+        a frame processed out of order — the outbox rescue, or the retry lane — is not ranked behind
+        frames that arrived after it. It is inclusive because the provider can stamp two frames for one
+        symbol with the same publication millisecond, and the earlier one still happened;
+        ``exclude_event_id`` is what keeps a redelivery out of its own history.
+        """
+
+        rows = self.conn.execute(
+            "SELECT observed_at_ms FROM news_oi_signals "
+            "WHERE metric_version = %s AND symbol = %s "
+            "AND observed_at_ms > %s AND observed_at_ms <= %s AND event_id <> %s "
+            "ORDER BY observed_at_ms DESC LIMIT 64",
+            (metric_version, symbol, int(since_ms), int(before_ms), exclude_event_id),
+        ).fetchall()
+        return [int(row["observed_at_ms"]) for row in rows]
+
+    def insert_oi_signal(
+        self,
+        *,
+        event_id: str,
+        metric_version: str,
+        symbol: str,
+        direction: str,
+        oi_change_bps: int,
+        oi_value_usd: int,
+        whale_long_profit_bps: int,
+        whale_oi_ratio_bps: int,
+        observed_at_ms: int,
+        rank_in_window: int,
+        now_ms: int,
+    ) -> None:
+        """Append one parsed frame to the rank ledger. Idempotent; the decision lives in the verdict."""
+
+        self.conn.execute(
+            """
+            INSERT INTO news_oi_signals (
+              event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (event_id, metric_version) DO NOTHING
+            """,
+            (
+                event_id,
+                metric_version,
+                symbol,
+                direction,
+                int(oi_change_bps),
+                int(oi_value_usd),
+                int(whale_long_profit_bps),
+                int(whale_oi_ratio_bps),
+                int(observed_at_ms),
+                int(rank_in_window),
+                int(now_ms),
+            ),
+        )
+
     # ------------------------------------------------------------------ verdicts
     def insert_verdict(
         self,
@@ -930,27 +1003,6 @@ class NewsRepository:
         )
         return int(cursor.rowcount or 0)
 
-    # ------------------------------------------------------------------ control
-    def read_control(self, *, now_ms: int) -> dict[str, Any]:
-        row = self.conn.execute(
-            "SELECT paused, mutes, updated_at_ms FROM news_control_state WHERE singleton_key = 'current'"
-        ).fetchone()
-        if row is None:
-            return {"paused": False, "mutes": []}
-        mutes = [m for m in (row["mutes"] or []) if int(m.get("until_ms") or 0) > int(now_ms)]
-        return {"paused": bool(row["paused"]), "mutes": mutes, "updated_at_ms": int(row["updated_at_ms"])}
-
-    def write_control(self, *, paused: bool | None, mutes: Sequence[Mapping[str, Any]] | None, now_ms: int) -> None:
-        self.conn.execute(
-            """
-            UPDATE news_control_state
-               SET paused = COALESCE(%s, paused), mutes = COALESCE(%s::jsonb, mutes), updated_at_ms = %s
-             WHERE singleton_key = 'current'
-            """,
-            (paused, _dumps([dict(m) for m in mutes]) if mutes is not None else None, int(now_ms)),
-        )
-
-    # ------------------------------------------------------------------ one-arm Agent canary
     def active_canary(self) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM news_canary_activations WHERE state = 'active' ORDER BY activated_at_ms DESC LIMIT 1"
@@ -1718,12 +1770,25 @@ class NewsRepository:
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s) AS events_1h,
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s) AS events_24h,
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s AND admission = 'candidate') AS candidates_24h,
+              -- Two denominators on purpose. The funnel is the reader's view — 收到 ⊇ 送审 ⊇ 模型判断
+              -- ⊇ 决定推送 ⊇ 已送达, subtracted band by band by the console — and a telemetry judgment
+              -- is a judgment and its push is a card the reader received, so both count here or the
+              -- containment breaks at one end or the other. Model health is a different question and
+              -- gets its own denominator below: ~190 arithmetic judgments a day, never degraded,
+              -- would otherwise dilute the degraded share and make the model look healthier than it is.
               (SELECT count(*) FROM news_verdicts WHERE stage = 'triage' AND created_at_ms >= %s) AS triage_24h,
+              (SELECT count(*) FROM news_verdicts
+                WHERE stage = 'triage' AND created_at_ms >= %s
+                  AND program_version IS DISTINCT FROM 'news_oi_signal_v1') AS model_triage_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND degraded AND created_at_ms >= %s) AS triage_degraded_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
                   AND created_at_ms >= %s) AS decided_push_24h,
+              (SELECT count(*) FROM news_verdicts
+                WHERE stage = 'triage' AND final_decision IN ('push','escalate')
+                  AND created_at_ms >= %s
+                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision = 'throttled' AND created_at_ms >= %s) AS throttled_24h,
               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY (trace ->> 'latency_ms')::double precision)
@@ -1742,7 +1807,7 @@ class NewsRepository:
                 WHERE stage = 'triage' AND created_at_ms >= %s
                   AND COALESCE((trace ->> 'novelty_defaulted')::boolean, false)) AS novelty_defaulted_24h
             """,
-            (hour_ago, *([day_ago] * 11)),
+            (hour_ago, *([day_ago] * 13)),
         ).fetchone()
         delivery = self.conn.execute(
             """
@@ -1760,7 +1825,6 @@ class NewsRepository:
             """,
             (day_ago, hour_ago, day_ago, day_ago),
         ).fetchone()
-        control = self.read_control(now_ms=now_ms)
         funnel = self._funnel_24h(day_ago=day_ago)
         retention = self.conn.execute("SELECT * FROM news_learning_retention_state WHERE singleton").fetchone()
         return {
@@ -1810,7 +1874,6 @@ class NewsRepository:
                 "last_error_code": retention["last_error_code"] if retention else None,
                 "updated_at_ms": int(retention["updated_at_ms"]) if retention else None,
             },
-            "control": control,
         }
 
     def asset_usage_24h(self, *, now_ms: int) -> dict[str, list[str]]:
@@ -1841,9 +1904,9 @@ class NewsRepository:
         """Where the last 24 h of Events went, by named reason: Gate admissions, decide() rules, storyline keys."""
 
         suppressed = self.conn.execute(
-            """
+            f"""
             SELECT admission, count(*) AS n FROM news_events
-             WHERE opened_at_ms >= %s AND admission NOT IN ('candidate', 'listing_deterministic')
+             WHERE opened_at_ms >= %s AND admission NOT IN ({_ADMITTED_SQL})
              GROUP BY admission ORDER BY n DESC
             """,
             (day_ago,),
@@ -1900,9 +1963,9 @@ class NewsRepository:
             (day_ago,),
         ).fetchone()
         totals = self.conn.execute(
-            """
+            f"""
             SELECT count(*) AS events,
-                   count(*) FILTER (WHERE admission IN ('candidate', 'listing_deterministic')) AS admitted
+                   count(*) FILTER (WHERE admission IN ({_ADMITTED_SQL})) AS admitted
               FROM news_events WHERE opened_at_ms >= %s
             """,
             (day_ago,),
@@ -1928,7 +1991,7 @@ class NewsRepository:
 # pushed = the first card was sent; pending = still moving (not yet triaged, or decided push and not yet settled);
 # held = everything that stopped short of a sent card (gate, drop, throttle, fallback drop, delivery failure).
 _PENDING_CORE_SQL: Final = (
-    "e.admission IN ('candidate', 'listing_deterministic')"
+    f"e.admission IN ({_ADMITTED_SQL})"
     " AND (t.final_decision IS NULL"
     "      OR (t.final_decision IN ('push', 'escalate') AND (d.state IS NULL OR d.state = 'sending')))"
 )

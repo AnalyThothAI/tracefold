@@ -14,8 +14,7 @@ positional arguments:
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
-    news                News V3 broker, control, ReviewDesk, and learning
-                        commands
+    news                News V3 broker, ReviewDesk, and learning commands
     ops                 maintenance commands
 
 options:
@@ -126,13 +125,12 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,control,instruments,review,learning,replay,why,dlq} ...
+                      {bus-check,instruments,review,learning,replay,why,dlq} ...
 
 positional arguments:
-  {bus-check,control,instruments,review,learning,replay,why,dlq}
+  {bus-check,instruments,review,learning,replay,why,dlq}
     bus-check           connect to RabbitMQ, declare the News topology, and
                         print queue depths
-    control             write a delivery control command to news_control_state
     instruments         instrument universe: snapshot the venues, or inspect
                         what is stored
     review              ReviewDesk queue, evidence, and append-only judgments
@@ -156,23 +154,6 @@ usage: tracefold news bus-check [-h]
 
 options:
   -h, --help  show this help message and exit
-
-```
-
-## `news control`
-
-```
-usage: tracefold news control [-h] [--key KEY] [--ttl-minutes TTL_MINUTES]
-                              {pause_delivery,resume_delivery,mute_theme,mute_symbol,unmute}
-
-positional arguments:
-  {pause_delivery,resume_delivery,mute_theme,mute_symbol,unmute}
-
-options:
-  -h, --help            show this help message and exit
-  --key KEY             theme name or symbol for mute/unmute
-  --ttl-minutes TTL_MINUTES
-                        mute duration
 
 ```
 

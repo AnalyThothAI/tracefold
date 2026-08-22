@@ -682,8 +682,11 @@ class NewsPipelineStatusData(ExactApiSchema):
     events_24h: int = 0
     candidates_24h: int = 0
     triage_24h: int = 0
+    # The funnel counts every judgment; model health counts only the model's (#137).
+    model_triage_24h: int = 0
     triage_degraded_24h: int = 0
     decided_push_24h: int = 0
+    telemetry_push_24h: int = 0
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None
@@ -733,11 +736,6 @@ class NewsLearningRetentionStatusData(ExactApiSchema):
     oldest_artifact_age_ms: int | None = None
     last_error_code: str | None = None
     updated_at_ms: int | None = None
-
-
-class NewsControlStateData(ExactApiSchema):
-    paused: bool = False
-    mutes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class NewsHealthItemData(ExactApiSchema):
@@ -806,7 +804,6 @@ class NewsStatusData(ExactApiSchema):
     pipeline: NewsPipelineStatusData
     delivery: NewsDeliveryStatusData
     learning_retention: NewsLearningRetentionStatusData
-    control: NewsControlStateData
     watchlist: list[str] = Field(default_factory=list)
     instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
     price: NewsPriceStatusData = Field(default_factory=NewsPriceStatusData)
@@ -817,7 +814,6 @@ __all__ = [
     "NewsAssetRefData",
     "NewsBrokerQueueData",
     "NewsBrokerStatusData",
-    "NewsControlStateData",
     "NewsDeliveryData",
     "NewsDeliveryStatusData",
     "NewsDeliverySummaryData",

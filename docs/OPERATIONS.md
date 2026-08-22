@@ -57,7 +57,7 @@ Compose command whose exit status ignores an unhealthy Worker.
 An image rollback is a runtime replacement, not an Alembic downgrade. Use the
 repo-owned target only when the previous image carries the exact same Alembic
 head as the current source. After the #134 D-generation hard cut that means
-`20260822_0295`;
+`20260822_0297`;
 after any future migration it means that newer current head, so an older-schema
 image is deliberately unavailable as a rollback target.
 
@@ -310,9 +310,7 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      -> ReaderCard.v2
      -> deterministic assembler -> decide() -> news_verdicts
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
-  -> q:news.deliver [SAC] Deliverer: one Feishu attempt per Event (kind first);
-     paused control settles terminal/delivery_paused
-  -> tracefold news control -> news_control_state (read on every message)
+  -> q:news.deliver [SAC] Deliverer: one Feishu attempt per Event (kind first)
   -> q:news.retry (30 s TTL) for TransientError/DeferError; q:news.dead for the rest
   -> Janitor: outbox catch-up (unpublished candidates older than 15 s), band
      expiry, 30-day purge, broker snapshot
@@ -343,15 +341,12 @@ and `bus-check` show the depth. A growing DLQ with a healthy DB means a code
 bug, not load. Purge only after the cause is fixed; recovered Items never
 deliver, so re-driving old raw frames is safe.
 
-Control: `tracefold news control <action> [--key K] [--ttl-minutes N]` writes
-`news_control_state` directly through the Workers role; there is no broker
-hop and consumers read the row on every message. `pause_delivery` makes
-`decide()` drop new candidates (`override_rule` `muted`) and the Deliverer
-settle already-decided verdicts as `terminal/delivery_paused` instead of
-holding an unacked message; `resume_delivery` clears it. `mute_theme --key
-<theme>` / `mute_symbol --key <SYM>` (`--ttl-minutes`, default 360) make
-`decide()` drop matching events; `unmute --key <key>` removes a mute. State
-is visible in `/api/news/status.control`.
+Control: there is none. `news_control_state` and `tracefold news control` were
+removed after the singleton never withheld a card: across the whole retained
+history no verdict carried `override_rule = 'muted'` and no delivery settled as
+`delivery_paused`, while both hot-path consumers read the row on every message.
+To stop delivery, stop the Workers container; to stop a source, turn its
+Strategy off in the OpenNews account (#126).
 
 Model failure: Triage's sole Interface is
 `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The production
@@ -424,7 +419,7 @@ thresholds from `tracefold.news.health`: ingest is `warn` after 10 min and
 running; broker is `warn` at 50 and `bad` at 200 queued messages on a business
 queue, `bad` when a business queue has no consumer, `warn` with dead letters;
 model is `warn` at a 3 % and `bad` at a 10 % 24 h degraded share (the detail
-names the error codes); delivery is `warn` when paused or 10 % of 24 h attempts
+names the error codes); delivery is `warn` when 10 % of 24 h attempts
 are terminal, `bad` at 30 %. `funnel_24h` and `reasons_24h` (Chinese labels
 over `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
 `pushed_by_rule`, `triage_degraded_by_code_24h`) say where the day went. Every
@@ -453,8 +448,8 @@ Diagnose News in this order:
    decide rule / throttle key -> storyline status snapshots -> delivery.
 4. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
    (`delivery_unavailable` = push disabled or webhook invalid;
-   `delivery_paused` = control pause; `ambiguous_after_crash` = a send whose
-   ack was lost). Historical rows can still contain the retired
+   `ambiguous_after_crash` = a send whose ack was lost). Historical rows can
+   still contain the retired `delivery_paused` and
    `hourly_cap_reached` error, but policy v7 never writes it.
 5. `tracefold news review queue --view coverage --hours 168` first checks
    whether there is enough same-version production evidence and accepted
@@ -582,7 +577,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260822_0295_program_v4_epoch`. The #112 chain
+the linear revisions through `20260822_0297_news_oi_signals`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;

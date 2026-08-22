@@ -187,11 +187,17 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     reasons: list[str] = []
 
     listing = inp.engine_type == "listing" or "1353" in inp.strategy_ids
+    # #137: strategy 1019 is the provider's OI Event Monitor, read off the frame's own metadata exactly
+    # as 1353 marks a listing notice — provenance, not configuration. Its frames are a fixed-format
+    # telemetry template, so they are admitted and judged by a deterministic rule instead of the model.
+    telemetry = "1019" in inp.strategy_ids
     if inp.ingest_mode == "recovery":
         admission: Admission = "recovery"
         reasons.append("recovery_never_delivers")
     elif listing:
         admission = "listing_deterministic"
+    elif telemetry:
+        admission = "telemetry_deterministic"
     elif pr_strong or (pr_template and not grounded):
         admission = "suppressed_pr_template"
         reasons.append("law_firm_template" if pr_strong else "law_firm_template_without_asset")

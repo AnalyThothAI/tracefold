@@ -29,7 +29,6 @@ from .candidate_evaluator import (
     ProposalReceipt,
     evaluation_run_sha,
 )
-from .control import apply_control, parse_control
 from .facts import FACT_UNIT_VERSION, FactUnit, extract_fact_units
 from .health import status_health
 from .instruments import grounding_rollup
@@ -40,6 +39,7 @@ from .models import (
     ReaderReceipt,
     TriageVerdict,
 )
+from .oi_signals import DEFAULT_OI_POLICY, OiPolicy
 from .opennews import (
     OPENNEWS_SOURCE_ID,
     OpenNewsEvent,
@@ -74,6 +74,7 @@ from .review import (
 from .triage_rules import DEFAULT_POLICY, DecidePolicy
 
 __all__ = [
+    "DEFAULT_OI_POLICY",
     "DEFAULT_POLICY",
     "FACT_UNIT_VERSION",
     "GATE_POLICY_VERSION",
@@ -105,6 +106,7 @@ __all__ = [
     "ExternalMissSubmission",
     "FactUnit",
     "NewsFeedEntry",
+    "OiPolicy",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
@@ -127,7 +129,6 @@ __all__ = [
     "TriageContext",
     "TriageVerdict",
     "apply_canary_control",
-    "apply_control",
     "canonical_json",
     "canonical_sha",
     "evaluation_run_sha",
@@ -136,7 +137,6 @@ __all__ = [
     "grounding_rollup",
     "load_recording_replay_capability",
     "parse_canary_control",
-    "parse_control",
     "parse_opennews_message",
     "status_health",
 ]

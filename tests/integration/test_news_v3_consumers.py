@@ -27,7 +27,6 @@ from tracefold.news.bus import (
     now_ms,
 )
 from tracefold.news.consumers import DeduperConsumer, DelivererConsumer, TriageConsumer
-from tracefold.news.control import apply_control, parse_control
 from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION
 
 pytestmark = pytest.mark.integration
@@ -395,39 +394,3 @@ def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) ->
     repos = repositories_for_connection(conn)
     detail = repos.news.event_detail(event_id)
     assert detail is not None and detail["deliveries"][0]["state"] == "terminal"
-
-
-def test_control_commands_write_control_state_directly(conn) -> None:
-    """The CLI writes news_control_state in one transaction; consumers read it on every message."""
-
-    repos = repositories_for_connection(conn)
-    stamp = now_ms()
-
-    def _apply(payload: dict[str, Any]) -> None:
-        with repos.transaction():
-            state = repos.news.read_control(now_ms=stamp)
-            new_state = apply_control(state, parse_control(payload), now_ms=stamp)
-            repos.news.write_control(paused=new_state["paused"], mutes=new_state["mutes"], now_ms=stamp)
-
-    _apply({"action": "pause_delivery"})
-    _apply({"action": "mute_symbol", "key": "btc", "ttl_ms": 3_600_000})
-    _apply({"action": "mute_theme", "key": "rates", "ttl_ms": 3_600_000})
-    with pytest.raises(ValueError, match="news_control_action_invalid"):
-        parse_control({"action": "explode"})
-    with pytest.raises(ValueError, match="news_control_key_required"):
-        parse_control({"action": "mute_symbol"})
-    conn.commit()
-
-    state = repos.news.read_control(now_ms=now_ms())
-    assert state["paused"] is True
-    assert {(m["kind"], m["key"]) for m in state["mutes"]} == {("symbol", "BTC"), ("theme", "rates")}
-    assert all(m["until_ms"] > stamp for m in state["mutes"])
-    rows = conn.execute("SELECT count(*) AS n FROM news_control_state").fetchone()
-    assert rows["n"] == 1
-
-    _apply({"action": "resume_delivery"})
-    _apply({"action": "unmute", "key": "BTC"})
-    conn.commit()
-    state = repos.news.read_control(now_ms=now_ms())
-    assert state["paused"] is False
-    assert [(m["kind"], m["key"]) for m in state["mutes"]] == [("theme", "rates")]

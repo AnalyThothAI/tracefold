@@ -251,6 +251,19 @@ class NewsTriageSettings(BaseModel):
         return self
 
 
+class NewsOiSettings(BaseModel):
+    """Operator-owned thresholds for the deterministic open-interest lane (tracefold.news.oi_signals)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window_ms: int = 4 * 3_600_000
+    # The opening moves of a run, by count. This is the knob that decides volume.
+    max_rank_in_window: int = 2
+    # A frame must *exceed* this: the rule is 大于 80%, so exactly 8000 does not qualify.
+    whale_oi_ratio_above_bps: int = 8_000
+    oi_change_at_least_bps: int = 0
+
+
 class NewsPolicySettings(BaseModel):
     """Operator-owned decide() thresholds and switches (see tracefold.news.DecidePolicy)."""
 
@@ -382,6 +395,7 @@ class NewsSettings(BaseModel):
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
     policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
+    oi: NewsOiSettings = Field(default_factory=NewsOiSettings)
     retention: NewsRetentionSettings = Field(default_factory=NewsRetentionSettings)
     gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
     venues: NewsVenuesSettings = Field(default_factory=NewsVenuesSettings)
@@ -664,6 +678,11 @@ news:
     noise_veto_respects_gate_priority: true
     contested_push_min_magnitude: 2
     listing_exempt_from_duplicate: true
+  oi:                             # #137 open-interest telemetry, judged by rule instead of by model
+    window_ms: 14400000           # 4 h rolling window the rank counts within
+    max_rank_in_window: 2         # push a symbol's first N frames in that window
+    whale_oi_ratio_above_bps: 8000  # a frame must exceed this ratio; 8000 = 80.00% does not qualify
+    oi_change_at_least_bps: 0     # 0 disables the OI-move floor
   retention:
     raw_days: 30
     judged_days: 365

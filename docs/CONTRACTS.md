@@ -289,7 +289,7 @@ templates:
   `grounded_24h` and
   the top-ten `ungrounded_by_symbol_24h`), and `delivery` (sent/terminal
   counts, last error, end-to-end p95, availability), plus
-  `control` (paused, mutes), the watchlist symbols, and `instruments` (the
+  the watchlist symbols, and `instruments` (the
   #75 universe summary: trading/delisted counts, base symbols, venues, last
   snapshot time, per-venue and per-class counts, `dangling_aliases`, and
   `reference_symbols`). Every figure but the last two counts contracts on
@@ -373,7 +373,8 @@ aggregate cost is unknown unless every billable call reported it.
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_semantic_program_v2`, `news_triage_policy_v8`, and
+`news_semantic_program_v2` (or `news_oi_signal_v1` for a deterministic
+telemetry judgment, #137), `news_triage_policy_v8`, and
 `news_delivery_card_v10`. The exact Program identity is its content SHA, not
 the display version alone.
 
@@ -411,6 +412,9 @@ deadline covers one whole route. One Event still persists one final
 SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
 ledger re-ask is a separate execution with the same ceiling (normally another
 two calls), and both executions remain in the verdict audit.
+`news.oi` keys are `window_ms` (4 h), `max_rank_in_window` (2),
+`whale_oi_ratio_above_bps` (8000, exceeded not met) and `oi_change_at_least_bps`
+(0, disabled): the deterministic open-interest lane's thresholds (#137).
 `news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
 `min_watchlist_magnitude`, `unclear_push_min_magnitude`,
 `unclear_push_event_types`, `restatement_drop`, `similarity_max`,
@@ -425,7 +429,7 @@ verdict or accepted review is evidence and outlives the raw tier.
 Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
 history. States are `sending`, `sent`, `terminal`. There is exactly one HTTP
-attempt; a paused control settles `terminal/delivery_paused` immediately
+attempt; a delivery without a configured sender settles `terminal` immediately
 instead of holding the message.
 
 Broker contract (code-owned): topic exchange `news`, dead-letter exchange
@@ -442,10 +446,9 @@ envelopes (`schema_version`, `kind`, `message_id`, `trace_id`, `occurred_at_ms`,
 headers. Consumer outcomes are typed: `TransientError` retries through the
 lane and dead-letters after 3 attempts, `DeferError` requeues uncounted when
 the News DB lane cannot admit the message, and `PermanentError` or a handler
-crash dead-letters. Control is not a broker message: `tracefold news control
-<pause_delivery|resume_delivery|mute_theme|mute_symbol|unmute> [--key
---ttl-minutes]` writes `news_control_state` and consumers read that row on
-every message.
+crash dead-letters. There is no operator control plane: pause and mute were
+removed with `news_control_state`, which had never withheld a card, so the only
+things that can withhold one are `decide()` and duplicate evidence.
 
 The Alembic chain is `20260818_0275` (the root baseline: it executes
 `current_schema_20260818_0275.sql` plus `runtime_roles.sql`) followed by
@@ -562,15 +565,14 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260822_0295`).
+append without rewrite access (current at migration `20260822_0297`).
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and
 `/api/bootstrap` are declared no-SQL routes.
 
 `news bus-check` connects, declares the topology idempotently, and prints
-per-queue message/consumer counts. `news control <action> [--key
---ttl-minutes]` writes `news_control_state` through the Workers role.
+per-queue message/consumer counts.
 `news review queue|evidence|submit|external-miss` is the CLI form of the same
 ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.

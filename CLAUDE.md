@@ -72,7 +72,7 @@ in a bucket that was not about them — every OKX listing notice in `asset:OKB`,
 Polish jets scrambling in `asset:BTC`); the pure `decide()` policy
 (`news.policy`: grounded restatement drop, model push intent at magnitude >= 1,
 unclear-but-clear-event push, watchlist rescue, content-based duplicate check,
-control mutes — every path names its rule) owns the final decision. Policy v8 is
+every path names its rule) owns the final decision. Policy v8 is
 recall-first: `noise` drops a card only when the verdict agrees with itself
 (magnitude <= `noise_veto_max_magnitude`, not actionable, no push intent) and
 the Gate did not flag the Event high priority, because a verdict that calls an
@@ -113,9 +113,19 @@ per Event and renders the reader contract card (v10: `headline_zh` header, one
 words, plus a separate fresh quote line for exactly those assets; price is
 display-only and any unavailable/stale quote silently removes that line; no
 titles, enums, provider score, or AI label), drops instead of holding when
-delivery is paused, and a crash between send and ack terminalizes as ambiguous
-instead of resending. Control state (pause/mute) is a PostgreSQL singleton
-written by `tracefold news control` and read on every message; the Janitor
+a crash between send and ack terminalizes as ambiguous instead of resending.
+There is no operator pause/mute plane: `news_control_state` never withheld a
+card in the whole retained history and was removed rather than left unread.
+OpenNews strategy 1019 OI telemetry is the one Event the Program never sees: the
+Gate admits it as `telemetry_deterministic` off the frame's own metadata, and
+Triage judges it by arithmetic — `tracefold.news.oi_signals` parses the four
+numbers, ranks the frame against the symbol's others in a rolling 4 h, and
+returns an ordinary `TriageVerdict` so `decide()`, delivery, `event_outcome` and
+the feed all stay on one path. `news_oi_signals` is only the rank ledger; the
+decision lives in `news_verdicts` like any other. These Events are exempt from
+near-duplicate matching, share the per-instrument duplicate exemption listing
+frames got in #72 (one template, different instruments), and are excluded from
+ReviewDesk and the model-health denominators (#137). The Janitor
 republishes candidates that never left the process, expires bands, and snapshots
 broker depths. The instrument universe (`news_market_instruments` +
 `news_symbol_aliases`, #75, consolidated in #89) is a rebuildable provider fact

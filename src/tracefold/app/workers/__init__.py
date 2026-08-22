@@ -44,7 +44,7 @@ from tracefold.integrations.venues import (
     fetch_hyperliquid_quotes,
     fetch_us_reference_instruments,
 )
-from tracefold.news import CandidateManifest, DecidePolicy
+from tracefold.news import CandidateManifest, DecidePolicy, OiPolicy
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.canary import CanaryRuntimeArm
 from tracefold.news.consumers import (
@@ -681,6 +681,7 @@ async def _wire_news_pipeline(
             circuit_failures=settings.news.triage.circuit_failures,
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
             policy=DecidePolicy(**settings.news.policy.model_dump()),
+            oi_policy=OiPolicy(**settings.news.oi.model_dump()),
             stable_bundle_sha=stable_arm.bundle_sha,
             canary_arms=canary_arms,
             runtime_manifest={

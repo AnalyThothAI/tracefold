@@ -92,7 +92,7 @@ source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 `grounded_assets` from it and the read API exposes both.
 
 OpenNews connection state in `news_ingest_state`, explicit incident intervals
-in `news_opennews_incidents`, News control state (`news_control_state`),
+in `news_opennews_incidents`,
 and broker queues are control state. Retry attempts and terminal reasons are
 likewise queue policy, not facts. `news_verdicts` (Triage decisions bound to a
 policy version) are derived model outputs bound to frozen evidence; they are
@@ -296,7 +296,7 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        Program identity, per-Predictor execution/cost trace, preliminary + final status snapshots,
        named rule) -> publish verdict.push (an escalate rides the same routing key at AMQP priority 5)
   -> q:news.deliver [single-active-consumer] Deliverer: begin(sending) -> one Feishu attempt
-       -> settle sent|terminal; paused -> terminal/delivery_paused; crash between send and ack
+       -> settle sent|terminal; crash between send and ack
        -> ambiguous_after_crash
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
      DeferError uncounted; x:news.dlx -> q:news.dead for permanent/exhausted/crashed messages
@@ -480,7 +480,7 @@ is theme-first (`crypto_treasury`, `mideast_energy`, `rates`, `trade`,
 `china_macro`, `metals`, `us_equity_macro`, `us_macro_data`), then the first
 A/A+ or cashtag asset; the final key is computed after Triage from the
 verdict's grounded primaries and scope, written back to `news_events`, and
-used by duplicate comparison, operator grouping, advisory locking, and mute.
+used by duplicate comparison, operator grouping, and advisory locking.
 
 Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
@@ -561,7 +561,7 @@ instruction/demonstrations, never to `decide()`. This matters because the
 `model_push_actionable` branch of `decide()` consumes both values (the other
 push paths do not require `actionable`). `decide()` owns the final
 decision under a `DecidePolicy` whose defaults are the live policy and whose
-values come from `news.policy`: mute -> drop; noise -> drop; a *grounded*
+values come from `news.policy`: noise -> drop; a *grounded*
 restatement (the model cites a ledger entry it was shown and the direction did
 not flip against it; switch `restatement_drop`) -> drop (`restatement`);
 magnitude >= 3 with a direction or macro scope -> escalate; high priority +
@@ -598,7 +598,7 @@ has **no hourly, two-hour, or four-hour reader quota**. Historical push counts
 remain observable metrics, but they are not included in the model input and
 cannot change `push`/`escalate` into `throttled`. Once the semantic conditions
 pass, the delivery harness executes the decision; it only enforces explicit
-pause/mute controls, idempotency, provider pacing, and real delivery receipts.
+idempotency, provider pacing, and real delivery receipts.
 
 Duplicate protection is content evidence rather than a quota: each ordinary
 `push` headline is compared with cards the reader actually received in the
@@ -734,12 +734,12 @@ AI copy is sanitized (URLs fall back to the code-owned title). There is no
 retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` before the single HTTP call and settled `sent`/`terminal`;
 interrupted rows are terminalized at startup. Recovery items, suppressed
-events, and muted storylines never deliver; a paused lane settles
-`terminal/delivery_paused` instead of holding an unacked message. Policy v7 has
+events never deliver. There is no operator pause or mute: `news_control_state`
+was removed after never withholding a single card in the whole retained history,
+and an unread singleton that two hot-path consumers still SELECT is how a second
+decision plane grows beside `decide()`. Policy v7 has
 no hourly, two-hour, or four-hour reader quota: a push/escalate decision reaches
-the Deliverer regardless of how many earlier cards were sent. Control state
-(`news_control_state`) is written by
-`tracefold news control` and read by Triage and the Deliverer on every message.
+the Deliverer regardless of how many earlier cards were sent.
 
 Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
 backpressure/unavailability, and Triage circuit opens are rows in
@@ -882,3 +882,65 @@ byte-identical schemas.
 
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.
+
+
+## Open-interest telemetry (#137)
+
+OpenNews strategy `1019` (`OI Event Monitor`) pushes a fixed-format frame about
+190 times a day: `{SYM} OI Rise {x}%, OI Value {y}, Whale Long Profit {z}%,
+Whale/OI Ratio {w}%`. The Gate reads `1019` off the frame's own metadata exactly
+as it reads `1353` for a listing notice — provenance, not configuration — and
+admits it as `telemetry_deterministic`.
+
+Those four numbers are the whole message, so Triage judges the frame by
+arithmetic instead of spending two structured model calls re-reading them.
+`tracefold.news.oi_signals` parses it, ranks it against the symbol's other
+frames in a rolling `window_ms` (4 h), and returns an ordinary `TriageVerdict`:
+a qualifying frame — inside `max_rank_in_window` (2) with `whale_oi_ratio_bps`
+above `whale_oi_ratio_above_bps` (8000, which the frame must exceed) — is an
+actionable, directional
+magnitude-2 `oi_spike` with a push intent, and a rejected one is a
+self-consistent magnitude-0 `noise` that policy v8's veto still holds.
+
+Returning a verdict rather than its own decision is the design, not a detail.
+The rule counts, and `decide()` deliberately cannot: policy v7 removed every
+reader quota and `StorylineStatus` is tested to carry no capacity field.
+Counting inside the evaluator and handing `decide()` a verdict it already knows
+how to rule on keeps one decision plane, and keeps delivery, receipts,
+`event_outcome`, the feed, the counters and the audit trail on the single path
+they were built for.
+
+Duplicate protection for this lane *is* the rank ceiling, so `decide()`'s content
+check is skipped for it entirely. Every telemetry headline is one template: two
+cards about unrelated symbols score 0.33 against the 0.25 threshold, and two
+frames for one symbol score 0.41. `WINDOW_MS` and `TOLD_WINDOW_MS` are both 4 h,
+so a rank-2 frame is always inside its rank-1 sibling's ledger — running the
+content check as well would have shipped "the first two per symbol" as "one per
+symbol". Two frames for one symbol are two different observations, and the
+reader asked for the opening ones by count; a byte-identical repeat is still
+collapsed upstream by the exact fingerprint. Listing frames keep the different
+exemption they were given in #72, which is per instrument rather than blanket,
+because two notices for the same instrument really are one fact.
+
+Rank, ledger row and verdict are written in one transaction under the storyline's
+advisory lock. The rank is a count of the symbol's other frames, so reading it
+outside the lock lets two frames for one symbol both see a history without the
+other and both claim the same rank.
+
+`news_oi_signals` is the rank ledger and nothing more: a derived read model with
+one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
+cascade-deleted with it. Two consequences of judging these frames rather than
+suppressing them are deliberate and worth stating: every 1019 frame now carries
+a verdict, so `news.retention` keeps its Item for 365 days instead of purging at
+30 (~70k small rows a year), and the card shows no ticker chip and no quote line
+because `card_assets()` intersects with the Gate's grounded assets and the Gate
+grounds nothing here — the symbol is in the headline instead. The decision itself lives in `news_verdicts` like every
+other decision, which is also where the lane's idempotency comes from — Triage
+already re-publishes an unpublished push on redelivery.
+
+Two places treat these Events specially and both are explicit: they are exempt
+from near-duplicate matching (two frames for one symbol differ only in their
+numbers, which is their entire content, and would otherwise merge), and they are
+excluded from `news_review_task_source_v1` and the model-health denominators,
+because an arithmetic judgment is not model output and rating one teaches the
+optimizer nothing.

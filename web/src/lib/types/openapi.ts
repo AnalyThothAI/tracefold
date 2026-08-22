@@ -511,18 +511,6 @@ export interface components {
                 [key: string]: components["schemas"]["NewsBrokerQueueData"];
             };
         };
-        /** NewsControlStateData */
-        NewsControlStateData: {
-            /** Mutes */
-            mutes?: {
-                [key: string]: unknown;
-            }[];
-            /**
-             * Paused
-             * @default false
-             */
-            paused: boolean;
-        };
         /** NewsDeliveryData */
         NewsDeliveryData: {
             /** Attempted At Ms */
@@ -1252,6 +1240,11 @@ export interface components {
              */
             grounded_24h: number;
             /**
+             * Model Triage 24H
+             * @default 0
+             */
+            model_triage_24h: number;
+            /**
              * Novelty Defaulted 24H
              * @default 0
              */
@@ -1300,6 +1293,11 @@ export interface components {
              * @default 0
              */
             tagged_24h: number;
+            /**
+             * Telemetry Push 24H
+             * @default 0
+             */
+            telemetry_push_24h: number;
             /**
              * Throttled 24H
              * @default 0
@@ -2088,7 +2086,6 @@ export interface components {
         /** NewsStatusData */
         NewsStatusData: {
             broker: components["schemas"]["NewsBrokerStatusData"];
-            control: components["schemas"]["NewsControlStateData"];
             delivery: components["schemas"]["NewsDeliveryStatusData"];
             funnel_24h: components["schemas"]["NewsFunnelData"];
             health: components["schemas"]["NewsHealthData"];

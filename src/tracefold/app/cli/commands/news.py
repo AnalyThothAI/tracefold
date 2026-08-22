@@ -15,8 +15,6 @@ from tracefold.platform.config.settings import load_settings
 def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
     if args.news_command == "bus-check":
         return _handle_bus_check()
-    if args.news_command == "control":
-        return _handle_control(args)
     if args.news_command == "instruments":
         return _handle_instruments(args)
     if args.news_command == "review":
@@ -63,26 +61,6 @@ def _handle_bus_check() -> tuple[int, dict[str, Any]]:
     except Exception as exc:
         return 1, {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:200]}
     return 0, {"ok": True, "data": result}
-
-
-def _handle_control(args: Namespace) -> tuple[int, dict[str, Any]]:
-    """Consumers read news_control_state on every message; the CLI writes it directly (no broker hop)."""
-
-    from tracefold.app.repositories import repositories
-    from tracefold.news import apply_control, parse_control
-
-    settings = load_settings(require_ws_token=False)
-    payload = {"action": args.action, "key": args.key or None, "ttl_ms": int(args.ttl_minutes) * 60_000}
-    try:
-        command = parse_control(payload)
-    except ValueError as exc:
-        return 1, {"ok": False, "error": str(exc)}
-    stamp = int(time.time() * 1000)
-    with repositories(settings) as repos, repos.transaction():
-        state = repos.news.read_control(now_ms=stamp)
-        new_state = apply_control(state, command, now_ms=stamp)
-        repos.news.write_control(paused=new_state["paused"], mutes=new_state["mutes"], now_ms=stamp)
-    return 0, {"ok": True, "data": {"command": payload, "control": new_state}}
 
 
 def _handle_instruments(args: Namespace) -> tuple[int, dict[str, Any]]:

@@ -15,6 +15,8 @@ NEWS_ROOT = SRC / "news"
 PUBLIC_NEWS_INTERFACE = {
     "FACT_UNIT_VERSION",
     "DEFAULT_POLICY",
+    "DEFAULT_OI_POLICY",
+    "OiPolicy",
     "GATE_POLICY_VERSION",
     "OPENNEWS_SOURCE_ID",
     # #88: the public bounds of `/api/news/quotes` and `/api/news/review`, read by the HTTP layer from the
@@ -67,7 +69,6 @@ PUBLIC_NEWS_INTERFACE = {
     "TaskRef",
     "TriageVerdict",
     "TriageContext",
-    "apply_control",
     "apply_canary_control",
     "event_outcome",
     "evaluation_run_sha",
@@ -80,7 +81,6 @@ PUBLIC_NEWS_INTERFACE = {
     "load_recording_replay_capability",
     "extract_fact_units",
     "parse_canary_control",
-    "parse_control",
     "parse_opennews_message",
     "status_health",
 }
@@ -94,7 +94,7 @@ PURE_NEWS_MODULES = (
     "storyline.py",
     "timeline.py",
     "triage_rules.py",
-    "control.py",
+    "oi_signals.py",
     "tokens.py",
     "minhash.py",
     "titles.py",
@@ -128,7 +128,6 @@ WRITE_REPOSITORY_METHODS = (
     "add_member",
     "begin_delivery",
     "settle_delivery",
-    "write_control",
     "open_incident",
     "close_open_incidents",
     "complete_recovery",

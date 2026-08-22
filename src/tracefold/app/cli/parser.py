@@ -37,18 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
     query_audit = db_subcommands.add_parser("query-audit", help="explain PostgreSQL hot read paths")
     query_audit.add_argument("--analyze", action="store_true", help="run EXPLAIN ANALYZE with buffers")
 
-    news = subcommands.add_parser("news", help="News V3 broker, control, ReviewDesk, and learning commands")
+    news = subcommands.add_parser("news", help="News V3 broker, ReviewDesk, and learning commands")
     news_subcommands = news.add_subparsers(dest="news_command", required=True)
     news_subcommands.add_parser(
         "bus-check", help="connect to RabbitMQ, declare the News topology, and print queue depths"
     )
-    news_control = news_subcommands.add_parser("control", help="write a delivery control command to news_control_state")
-    news_control.add_argument(
-        "action",
-        choices=("pause_delivery", "resume_delivery", "mute_theme", "mute_symbol", "unmute"),
-    )
-    news_control.add_argument("--key", default="", help="theme name or symbol for mute/unmute")
-    news_control.add_argument("--ttl-minutes", type=_positive_int, default=360, help="mute duration")
     news_instruments = news_subcommands.add_parser(
         "instruments", help="instrument universe: snapshot the venues, or inspect what is stored"
     )
