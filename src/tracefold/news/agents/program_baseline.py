@@ -55,7 +55,7 @@ from .semantic_program import (
 )
 
 BaselineMode = Literal["recorded", "replay", "live"]
-BASELINE_SCHEMA = "tracefold.news.program_baseline_report.v1"
+BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v1"] = "tracefold.news.program_baseline_report.v1"
 
 
 class BaselineCase(BaseModel):
@@ -217,7 +217,7 @@ def run_baseline(
         if program_factory is None:
             raise ValueError("news_program_baseline_requires_program_factory")
         program = program_factory(artifact)
-        captured: dict[str, dict[str, Any]] = {}
+        captured: dict[str, dspy.Prediction] = {}
 
         def metric(gold: dspy.Example, pred: dspy.Prediction, *args: Any, **kwargs: Any) -> float:
             captured[str(gold.get("case_id"))] = accepted_review_metric(gold, pred, None, None, None)
@@ -239,8 +239,10 @@ def run_baseline(
         # The Program's Predictors carry no `lm` of their own — they resolve `dspy.settings.lm` — and its
         # outputs are only parseable by the same strict JSON adapter production uses. Both have to be in
         # context or every case fails identically and silently.
-        with dspy.context(lm=lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False)) if lm else (
-            dspy.context(adapter=DspyStrictJSONAdapter(use_native_function_calling=False))
+        with (
+            dspy.context(lm=lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False))
+            if lm
+            else (dspy.context(adapter=DspyStrictJSONAdapter(use_native_function_calling=False)))
         ):
             evaluation = evaluate(program)
         wall_ms = int((time.monotonic() - started) * 1000)

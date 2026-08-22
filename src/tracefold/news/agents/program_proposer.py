@@ -53,8 +53,9 @@ class RulePackAwareProposer:
 
     def __init__(self, artifact: ProgramArtifact) -> None:
         self._artifact = artifact
-        self._rendered = {
-            name: render_predictor_instruction(artifact, name) for name in ("event_semantics", "reader_card")
+        predictor_names: tuple[PredictorName, ...] = ("event_semantics", "reader_card")
+        self._rendered: dict[str, str] = {
+            name: render_predictor_instruction(artifact, name) for name in predictor_names
         }
         self.calls = 0
         self.components_seen: list[str] = []
