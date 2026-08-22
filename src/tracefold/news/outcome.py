@@ -60,6 +60,7 @@ class Outcome:
 ADMISSION_ZH: Final[dict[str, str]] = {
     "candidate": "已送审",
     "listing_deterministic": "上币/下币公告（自动送审）",
+    "telemetry_deterministic": "持仓异动遥测（规则判断，不过模型）",
     "suppressed_pr_template": "律所推广模板，规则直接拦截",
     "suppressed_low_signal": "低分社媒/盘口噪音，规则直接拦截",
     "recovery": "断线期间补抄的旧闻，仅用于去重与历史",

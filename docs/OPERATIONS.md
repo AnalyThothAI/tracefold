@@ -57,7 +57,7 @@ Compose command whose exit status ignores an unhealthy Worker.
 An image rollback is a runtime replacement, not an Alembic downgrade. Use the
 repo-owned target only when the previous image carries the exact same Alembic
 head as the current source. After the #134 D-generation hard cut that means
-`20260822_0296`;
+`20260822_0297`;
 after any future migration it means that newer current head, so an older-schema
 image is deliberately unavailable as a rollback target.
 
@@ -577,7 +577,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260822_0296_program_v4_epoch`. The #112 chain
+the linear revisions through `20260822_0297_news_oi_signals`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;

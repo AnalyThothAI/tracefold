@@ -336,6 +336,22 @@
 | `total_tokens` | `INTEGER` | True | `None` |
 | `provider_cost_microusd` | `BIGINT` | True | `None` |
 
+## `news_oi_signals`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `metric_version` | `TEXT` | False | `None` |
+| `symbol` | `TEXT` | False | `None` |
+| `direction` | `TEXT` | False | `None` |
+| `oi_change_bps` | `BIGINT` | False | `None` |
+| `oi_value_usd` | `BIGINT` | False | `None` |
+| `whale_long_profit_bps` | `BIGINT` | False | `None` |
+| `whale_oi_ratio_bps` | `BIGINT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `rank_in_window` | `INTEGER` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_opennews_incidents`
 
 | Column | Type | Nullable | Default |

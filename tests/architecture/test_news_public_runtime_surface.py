@@ -92,6 +92,7 @@ PURE_NEWS_MODULES = (
     "storyline.py",
     "timeline.py",
     "triage_rules.py",
+    "oi_signals.py",
     "tokens.py",
     "minhash.py",
     "titles.py",

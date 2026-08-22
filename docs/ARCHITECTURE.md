@@ -882,3 +882,45 @@ byte-identical schemas.
 
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.
+
+
+## Open-interest telemetry (#137)
+
+OpenNews strategy `1019` (`OI Event Monitor`) pushes a fixed-format frame about
+190 times a day: `{SYM} OI Rise {x}%, OI Value {y}, Whale Long Profit {z}%,
+Whale/OI Ratio {w}%`. The Gate reads `1019` off the frame's own metadata exactly
+as it reads `1353` for a listing notice — provenance, not configuration — and
+admits it as `telemetry_deterministic`.
+
+Those four numbers are the whole message, so Triage judges the frame by
+arithmetic instead of spending two structured model calls re-reading them.
+`tracefold.news.oi_signals` parses it, ranks it against the symbol's other
+frames in a rolling `window_ms` (4 h), and returns an ordinary `TriageVerdict`:
+a qualifying frame — inside `max_rank_in_window` (2) with `whale_oi_ratio_bps`
+above `min_whale_oi_ratio_bps` (8000 = 80%) — is an actionable, directional
+magnitude-2 `oi_spike` with a push intent, and a rejected one is a
+self-consistent magnitude-0 `noise` that policy v8's veto still holds.
+
+Returning a verdict rather than its own decision is the design, not a detail.
+The rule counts, and `decide()` deliberately cannot: policy v7 removed every
+reader quota and `StorylineStatus` is tested to carry no capacity field.
+Counting inside the evaluator and handing `decide()` a verdict it already knows
+how to rule on keeps one decision plane, and keeps delivery, receipts,
+`event_outcome`, the feed, the counters and the audit trail on the single path
+they were built for — including duplicate protection, which needs no exemption
+here: two telemetry headlines for different symbols score 0.12 against the 0.25
+threshold and both send, while two frames for one symbol score 0.65 and the
+second is withheld.
+
+`news_oi_signals` is the rank ledger and nothing more: a derived read model with
+one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
+cascade-deleted with it. The decision itself lives in `news_verdicts` like every
+other decision, which is also where the lane's idempotency comes from — Triage
+already re-publishes an unpublished push on redelivery.
+
+Two places treat these Events specially and both are explicit: they are exempt
+from near-duplicate matching (two frames for one symbol differ only in their
+numbers, which is their entire content, and would otherwise merge), and they are
+excluded from `news_review_task_source_v1` and the model-health denominators,
+because an arithmetic judgment is not model output and rating one teaches the
+optimizer nothing.

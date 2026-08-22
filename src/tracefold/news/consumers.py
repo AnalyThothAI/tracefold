@@ -55,6 +55,9 @@ from .models import (
     TriageVerdict,
     json_ready,
 )
+from .oi_signals import DEFAULT_OI_POLICY, OiPolicy, evaluate_oi, parse_oi_signal, program_sha256
+from .oi_signals import METRIC_VERSION as OI_METRIC_VERSION
+from .oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from .opennews import (
     OpenNewsExpectedError,
     OpenNewsHistoryError,
@@ -794,6 +797,7 @@ class TriageConsumer:
         circuit_failures: int,
         circuit_open_seconds: float,
         policy: DecidePolicy = DEFAULT_POLICY,
+        oi_policy: OiPolicy = DEFAULT_OI_POLICY,
         stable_bundle_sha: str | None = None,
         canary_arms: Mapping[str, CanaryRuntimeArm] | None = None,
         runtime_manifest: Mapping[str, Any] | None = None,
@@ -812,6 +816,7 @@ class TriageConsumer:
         self._candidate_circuits: dict[str, _Circuit] = {}
         self._circuit_incident_open = False
         self.policy = policy
+        self.oi_policy = oi_policy
         self._canary_enabled = stable_bundle_sha is not None
         self.stable_bundle_sha = (
             stable_bundle_sha
@@ -881,6 +886,20 @@ class TriageConsumer:
             priority=str(card.get("priority") or "normal"),
             admission=str(card.get("admission") or ""),
         )
+        if str(card.get("admission") or "") == "telemetry_deterministic":
+            # #137. Fixed-format open-interest telemetry: judged here by arithmetic instead of by two
+            # structured model calls that would re-read four numbers a regex already has. Everything
+            # after the judgment — decide(), the storyline lock, the verdict row, delivery, the receipt,
+            # the outcome, the feed — is the ordinary path, because nothing after the judgment differs.
+            await self._judge_telemetry(
+                event_id=event_id,
+                card=card,
+                facts=facts,
+                ledger_rows=ledger_rows,
+                stamp=stamp,
+                message=message,
+            )
+            return
         assignment = (
             await self.db.tx(
                 "news_canary_assign",
@@ -1243,6 +1262,143 @@ class TriageConsumer:
                         ),
                     )
             break
+        if outcome.final in {"push", "escalate"}:
+            await self._publish_decision(
+                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
+            )
+
+    async def _judge_telemetry(
+        self,
+        *,
+        event_id: str,
+        card: Mapping[str, Any],
+        facts: GateFacts,
+        ledger_rows: Sequence[Mapping[str, Any]],
+        stamp: int,
+        message: BusMessage,
+    ) -> None:
+        """Deterministic judgment for one telemetry frame, then the ordinary settle path.
+
+        No model call, so no arm assignment, no circuit breaker and no Program identity: the verdict
+        carries `OI_PROGRAM_VERSION` instead, which is what the trace, `news why` and the release
+        cohorts read. The rank counts this symbol's other frames inside the window — counting lives
+        here because `decide()` deliberately cannot count, and what `decide()` receives is an ordinary
+        verdict it already knows how to rule on.
+        """
+
+        title = str(card.get("leader_title") or "")
+        coins = list((card.get("provider_metadata") or {}).get("coins") or ())
+        signal = parse_oi_signal(title, coins)
+        observed = int(card.get("opened_at_ms") or card.get("leader_published_at_ms") or stamp)
+        trace: dict[str, Any] = {
+            "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
+            "attempt": message.attempt,
+            "program_version": OI_PROGRAM_VERSION,
+            "policy": self.policy.as_dict(),
+            "gate_policy_version": GATE_POLICY_VERSION,
+            "evidence_version": int(card.get("evidence_version") or 0),
+            "evidence_sha256": str(card.get("evidence_sha256") or ""),
+            "focus_fact_id": str(card.get("focus_fact_id") or ""),
+            "storyline_key_preliminary": str(card.get("storyline_key") or ""),
+            "told": [],
+            "told_count": 0,
+        }
+        if signal is None:
+            # `1019` is provider provenance, not a parser guarantee. A frame that is not the template
+            # carries no numbers this rule can act on; it is dropped deterministically rather than
+            # falling through to a model call the Gate admitted it specifically to avoid.
+            log.info("news telemetry frame not parseable event=%s title=%r", event_id, title[:120])
+            verdict = TriageVerdict(
+                novelty="new_fact",
+                event_type="noise",
+                assets=[],
+                direction="neutral",
+                scope="single_name",
+                magnitude=0,
+                actionable=False,
+                confidence=1.0,
+                decision="drop",
+                headline_zh=title[:60] or "持仓异动帧无法解析",
+                why_zh="",
+            )
+            trace["oi_signal"] = {"parsed": False}
+        else:
+            earlier = await self.db.read(
+                "news_signal_history",
+                lambda repos: repos.news.recent_oi_signal_times(
+                    symbol=signal.symbol,
+                    metric_version=OI_METRIC_VERSION,
+                    since_ms=observed - self.oi_policy.window_ms,
+                    before_ms=observed,
+                    exclude_event_id=event_id,
+                ),
+            )
+            judgment = evaluate_oi(signal, earlier_at_ms=earlier, now_ms=observed, policy=self.oi_policy)
+            verdict = judgment.verdict
+            trace["oi_signal"] = {
+                "parsed": True,
+                "symbol": signal.symbol,
+                "direction": signal.direction,
+                "oi_change_bps": signal.oi_change_bps,
+                "oi_value_usd": signal.oi_value_usd,
+                "whale_long_profit_bps": signal.whale_long_profit_bps,
+                "whale_oi_ratio_bps": signal.whale_oi_ratio_bps,
+                "rank_in_window": judgment.rank_in_window,
+                "rule": judgment.rule,
+                "policy": self.oi_policy.as_dict(),
+            }
+            # The rank ledger. Written before the verdict so a crash between the two can only make the
+            # next frame rank itself higher, never lower — the safe direction for a recall-first rule.
+            with contextlib.suppress(TransientError, DeferError):
+                await self.db.tx(
+                    "news_signal_record",
+                    lambda repos: repos.news.insert_oi_signal(
+                        event_id=event_id,
+                        metric_version=OI_METRIC_VERSION,
+                        symbol=signal.symbol,
+                        direction=signal.direction,
+                        oi_change_bps=signal.oi_change_bps,
+                        oi_value_usd=signal.oi_value_usd,
+                        whale_long_profit_bps=signal.whale_long_profit_bps,
+                        whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
+                        observed_at_ms=observed,
+                        rank_in_window=judgment.rank_in_window,
+                        now_ms=stamp,
+                    ),
+                )
+        final_key = final_storyline_key(
+            title=title,
+            headline_zh=verdict.headline_zh,
+            scope=verdict.scope,
+            verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
+            grounded_assets=facts.grounded_assets,
+            family=str(card.get("family") or "general"),
+            aliases=self._aliases,
+            degraded=False,
+        )
+        settle = _TriageSettle(
+            event_id=event_id,
+            evidence_version=int(card.get("evidence_version") or 0),
+            evidence_sha256=str(card.get("evidence_sha256") or ""),
+            focus_fact_id=str(card.get("focus_fact_id") or ""),
+            verdict=verdict,
+            facts=facts,
+            final_key=final_key,
+            told=[],
+            seen=ledger_rows,
+            told_seen=frozenset(str(r.get("event_id") or "") for r in ledger_rows),
+            degraded=False,
+            error_code=None,
+            model_name=None,
+            program_version=OI_PROGRAM_VERSION,
+            program_sha256=program_sha256(self.oi_policy),
+            policy=self.policy,
+            trace=trace,
+            stamp=stamp,
+            # No model was thinking, so no card can have landed while it was: nothing to re-ask.
+            allow_stale=False,
+        )
+        outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
         if outcome.final in {"push", "escalate"}:
             await self._publish_decision(
                 event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority

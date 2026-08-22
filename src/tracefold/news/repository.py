@@ -795,6 +795,68 @@ class NewsRepository:
         self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_STORYLINE_LOCK_NAMESPACE, storyline_key))
 
+    # ------------------------------------------------------------------ open-interest rank ledger
+    def recent_oi_signal_times(
+        self, *, symbol: str, metric_version: str, since_ms: int, before_ms: int, exclude_event_id: str = ""
+    ) -> list[int]:
+        """Every *other* frame recorded for this symbol inside the window, newest first.
+
+        The rank rule counts frames, not pushes: a frame the rule rejected still happened and still
+        moves the next one further down the run. ``before_ms`` is the judged frame's own timestamp, so
+        a frame processed out of order — the outbox rescue, or the retry lane — is not ranked behind
+        frames that arrived after it, and ``exclude_event_id`` keeps a redelivery out of its own
+        history.
+        """
+
+        rows = self.conn.execute(
+            "SELECT observed_at_ms FROM news_oi_signals "
+            "WHERE metric_version = %s AND symbol = %s "
+            "AND observed_at_ms > %s AND observed_at_ms < %s AND event_id <> %s "
+            "ORDER BY observed_at_ms DESC LIMIT 64",
+            (metric_version, symbol, int(since_ms), int(before_ms), exclude_event_id),
+        ).fetchall()
+        return [int(row["observed_at_ms"]) for row in rows]
+
+    def insert_oi_signal(
+        self,
+        *,
+        event_id: str,
+        metric_version: str,
+        symbol: str,
+        direction: str,
+        oi_change_bps: int,
+        oi_value_usd: int,
+        whale_long_profit_bps: int,
+        whale_oi_ratio_bps: int,
+        observed_at_ms: int,
+        rank_in_window: int,
+        now_ms: int,
+    ) -> None:
+        """Append one parsed frame to the rank ledger. Idempotent; the decision lives in the verdict."""
+
+        self.conn.execute(
+            """
+            INSERT INTO news_oi_signals (
+              event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (event_id, metric_version) DO NOTHING
+            """,
+            (
+                event_id,
+                metric_version,
+                symbol,
+                direction,
+                int(oi_change_bps),
+                int(oi_value_usd),
+                int(whale_long_profit_bps),
+                int(whale_oi_ratio_bps),
+                int(observed_at_ms),
+                int(rank_in_window),
+                int(now_ms),
+            ),
+        )
+
     # ------------------------------------------------------------------ verdicts
     def insert_verdict(
         self,
@@ -1697,9 +1759,16 @@ class NewsRepository:
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s) AS events_1h,
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s) AS events_24h,
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s AND admission = 'candidate') AS candidates_24h,
-              (SELECT count(*) FROM news_verdicts WHERE stage = 'triage' AND created_at_ms >= %s) AS triage_24h,
+              -- Model health only: a deterministic telemetry judgment is never degraded, so counting
+              -- ~190 of them a day in this denominator would quietly make the degraded share look
+              -- healthier than the model actually is. The reader funnel below still counts their
+              -- pushes, because a telemetry push is a card the reader received (#137).
               (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND degraded AND created_at_ms >= %s) AS triage_degraded_24h,
+                WHERE stage = 'triage' AND created_at_ms >= %s
+                  AND program_version IS DISTINCT FROM 'news_oi_signal_v1') AS triage_24h,
+              (SELECT count(*) FROM news_verdicts
+                WHERE stage = 'triage' AND degraded AND created_at_ms >= %s
+                  AND program_version IS DISTINCT FROM 'news_oi_signal_v1') AS triage_degraded_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
                   AND created_at_ms >= %s) AS decided_push_24h,

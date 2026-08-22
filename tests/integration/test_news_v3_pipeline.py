@@ -52,6 +52,7 @@ NEWS_TABLES = {
     # #88 price review plane: latest-only current quotes, versioned deterministic Event Reactions.
     "news_quote_snapshots",
     "news_event_reactions",
+    "news_oi_signals",
     # #112 immutable evidence actually read by the SemanticJudge.
     "news_event_evidence_snapshots",
 }

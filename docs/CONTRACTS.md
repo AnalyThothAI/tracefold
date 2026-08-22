@@ -373,7 +373,8 @@ aggregate cost is unknown unless every billable call reported it.
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_semantic_program_v2`, `news_triage_policy_v8`, and
+`news_semantic_program_v2` (or `news_oi_signal_v1` for a deterministic
+telemetry judgment, #137), `news_triage_policy_v8`, and
 `news_delivery_card_v10`. The exact Program identity is its content SHA, not
 the display version alone.
 
@@ -469,7 +470,7 @@ that history and appends the corrected `program_v2` epoch; Prompt-era and
 `program_v1` learning rows are audit-only and promotion-ineligible.
 `20260822_0294` preserves both rows and appends the expert-quality `program_v3`
 epoch; Prompt-era, `program_v1`, and `program_v2` rows are audit-only for the
-then-current release chain. `20260822_0296` preserves v1-v3 and appends the
+then-current release chain. `20260822_0295` preserves v1-v3 and appends the
 D-generation `program_v4` epoch with factory/artifact v2; every earlier row is
 audit-only for the current compiler and release chain. A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
@@ -562,7 +563,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260822_0296`).
+append without rewrite access (current at migration `20260822_0297`).
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and

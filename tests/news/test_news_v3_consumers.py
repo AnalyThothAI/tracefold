@@ -335,11 +335,22 @@ def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkey
 
 
 # ---------------------------------------------------------------- Triage
-def _triage(news: RecordingNews, bus: FakeBus) -> TriageConsumer:
+class _RecordingJudge:
+    """Counts model calls so a test can assert one never happened."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def judge(self, context: Any) -> Any:
+        self.calls += 1
+        raise AssertionError("the model must not be called for this Event")
+
+
+def _triage(news: RecordingNews, bus: FakeBus, *, judge: Any = None) -> TriageConsumer:
     return TriageConsumer(
         bus=bus,
         db=FakeWorkerDatabase(news),
-        judge=None,
+        judge=judge,
         program_version=PROGRAM_VERSION,
         program_sha256=PROGRAM_SHA256,
         watchlist_symbols=WATCHLIST,
@@ -1869,3 +1880,126 @@ def test_recovery_without_a_history_client_still_settles_unavailable() -> None:
     asyncio.run(recovery._recover_pending())
 
     assert news.kwargs_of("complete_recovery")["status"] == "unavailable"
+
+
+# ---------------------------------------------------------------------------- OI telemetry lane (#137)
+_OI_TITLE = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+
+
+def _oi_card(**overrides: Any) -> dict[str, Any]:
+    card = _card(
+        event_id="ev-oi",
+        leader_title=_OI_TITLE,
+        admission="telemetry_deterministic",
+        engine_type="market",
+        family="market_telemetry",
+        grounded_assets=[],
+        watchlist_hits=[],
+        priority="normal",
+        provider_score_max=None,
+        storyline_key="macro:market_telemetry",
+        provider_metadata={"coins": [{"symbol": "TRUMP", "market_type": "cex"}]},
+        opened_at_ms=NOW_MS,
+    )
+    card.update(overrides)
+    return card
+
+
+def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() -> None:
+    """The whole design in one test: no judge call, no arm assignment, and the verdict lands in
+    `news_verdicts` through `_decide_and_persist` like any other Event."""
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_oi_card(),
+        insert_verdict=True,
+        recent_oi_signal_times=[],
+        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    )
+    bus = FakeBus()
+    judge = _RecordingJudge()
+
+    asyncio.run(_triage(news, bus, judge=judge).handle(_message("event", {"event_id": "ev-oi"})))
+
+    assert judge.calls == 0, "a telemetry frame must never reach the model"
+    assert "assign_agent_arm" not in news.names(), "no model call means no arm to assign"
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "model_push_actionable"
+    assert inserted["program_version"] == "news_oi_signal_v1" and inserted["degraded"] is False
+    assert inserted["verdict"]["event_type"] == "oi_spike"
+    assert inserted["verdict"]["headline_zh"] == "▲ TRUMP 持仓异动 4.55%"
+    # The rank ledger is written, and the card goes out on the one delivery lane there has ever been.
+    ledger = news.kwargs_of("insert_oi_signal")
+    assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]
+
+
+def test_telemetry_beyond_the_window_rank_is_held_by_the_noise_veto() -> None:
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_oi_card(),
+        insert_verdict=True,
+        recent_oi_signal_times=[NOW_MS - 1, NOW_MS - 2],
+        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    )
+    bus = FakeBus()
+
+    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-oi"})))
+
+    inserted = news.kwargs_of("insert_verdict")
+    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "noise"
+    assert news.kwargs_of("insert_oi_signal")["rank_in_window"] == 3
+    assert bus.published == []
+
+
+def test_telemetry_history_excludes_the_frame_itself_and_anything_after_it() -> None:
+    """Rank has to be a property of the frame, not of when or how often it was processed."""
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_oi_card(),
+        insert_verdict=True,
+        recent_oi_signal_times=[],
+        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    )
+    asyncio.run(_triage(news, FakeBus()).handle(_message("event", {"event_id": "ev-oi"})))
+
+    history = news.kwargs_of("recent_oi_signal_times")
+    assert history["exclude_event_id"] == "ev-oi" and history["before_ms"] == NOW_MS
+
+
+def test_an_unparseable_telemetry_frame_drops_without_reaching_the_model() -> None:
+    """Strategy 1019 is provider provenance, not a parser guarantee. A frame that is not the template
+    must not fall through to the model call the Gate admitted it specifically to avoid."""
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_oi_card(leader_title="HIP-3 has lost $820M in open interest over the past 5 days."),
+        insert_verdict=True,
+        latest_evidence_snapshot={"evidence_version": 1, "evidence_sha256": "e" * 64, "focus_fact_id": "fact-1"},
+    )
+    bus = FakeBus()
+    judge = _RecordingJudge()
+
+    asyncio.run(_triage(news, bus, judge=judge).handle(_message("event", {"event_id": "ev-oi"})))
+
+    assert judge.calls == 0
+    assert news.kwargs_of("insert_verdict")["final_decision"] == "drop"
+    assert "insert_oi_signal" not in news.names()
+    assert bus.published == []
+
+
+def test_a_redelivered_telemetry_verdict_republishes_through_the_existing_guard() -> None:
+    """The idempotency this lane relies on is the one Triage already had: the verdict row is the
+    durable decision, and an unpublished push is re-published on redelivery."""
+
+    news = RecordingNews(
+        get_verdict={"final_decision": "push", "published_at_ms": None},
+        event_card=_oi_card(),
+    )
+    bus = FakeBus()
+
+    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-oi"})))
+
+    assert "insert_verdict" not in news.names()
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]

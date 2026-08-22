@@ -61,6 +61,7 @@ NEWS_TABLES = (
     "news_symbol_aliases",
     "news_quote_snapshots",
     "news_event_reactions",
+    "news_oi_signals",
     "news_event_evidence_snapshots",
     "news_learning_epochs",
     "news_learning_artifacts",

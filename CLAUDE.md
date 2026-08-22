@@ -115,8 +115,16 @@ display-only and any unavailable/stale quote silently removes that line; no
 titles, enums, provider score, or AI label), drops instead of holding when
 a crash between send and ack terminalizes as ambiguous instead of resending.
 There is no operator pause/mute plane: `news_control_state` never withheld a
-card in the whole retained history and was removed rather than left unread. The
-Janitor
+card in the whole retained history and was removed rather than left unread.
+OpenNews strategy 1019 OI telemetry is the one Event the Program never sees: the
+Gate admits it as `telemetry_deterministic` off the frame's own metadata, and
+Triage judges it by arithmetic — `tracefold.news.oi_signals` parses the four
+numbers, ranks the frame against the symbol's others in a rolling 4 h, and
+returns an ordinary `TriageVerdict` so `decide()`, delivery, `event_outcome` and
+the feed all stay on one path. `news_oi_signals` is only the rank ledger; the
+decision lives in `news_verdicts` like any other. These Events are exempt from
+near-duplicate matching and excluded from ReviewDesk and the model-health
+denominators (#137). The Janitor
 republishes candidates that never left the process, expires bands, and snapshots
 broker depths. The instrument universe (`news_market_instruments` +
 `news_symbol_aliases`, #75, consolidated in #89) is a rebuildable provider fact
