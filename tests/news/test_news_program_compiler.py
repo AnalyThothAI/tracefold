@@ -19,11 +19,12 @@ from tracefold.news.agents.program_compiler import (
     _optimizer_config_receipt,
     accepted_review_metric,
 )
+from tracefold.news.agents.program_compiler_trusted import build_eligible_demo_bank
 from tracefold.news.agents.semantic_program import (
     DspyStrictJSONAdapter,
+    EligibleDemoBank,
     ExactProviderCallCapture,
     ExactProviderMetadata,
-    ProgramArtifactCodec,
     TriageContext,
     load_stable_program_artifact,
 )
@@ -34,9 +35,16 @@ class _MeteredFakeLM:
     cache = False
     num_retries = 0
 
-    def __init__(self, model: str, *, cost: float = 0.000001) -> None:
+    def __init__(
+        self,
+        model: str,
+        *,
+        cost: float = 0.000001,
+        api_base: str = "https://compiler.test/v1",
+    ) -> None:
         self.model = model
         self.cost = cost
+        self.kwargs = {"api_base": api_base}
         self.history: list[dict[str, Any]] = []
         self._capture: ExactProviderCallCapture | None = None
 
@@ -75,6 +83,8 @@ class _FakeGEPA:
         assert teacher is None
         assert trainset == valset
         assert len(trainset) == 1
+        assert trainset[0].evidence_json.startswith("<tracefold-untrusted-event-json-v1>\n")
+        assert trainset[0].evidence_json.endswith("\n</tracefold-untrusted-event-json-v1>")
         assert isinstance(dspy.settings.adapter, DspyStrictJSONAdapter)
         assert dspy.settings.disable_history is True
         dspy.settings.lm(prompt="task budget probe")
@@ -139,6 +149,7 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
             max_metric_calls=3,
             max_task_model_calls=max_calls,
             max_cost_microusd=20,
+            max_call_cost_microusd=5,
             seed=17,
         ),
     )
@@ -147,6 +158,7 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
 def _compiler(base: Any | None = None) -> ProgramCompiler:
     return ProgramCompiler(
         base_artifact=base or load_stable_program_artifact(),
+        eligible_demo_bank=EligibleDemoBank.issue(()),
         task_lm=_MeteredFakeLM("task/model", cost=0.000002),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model", cost=0.000003),  # type: ignore[arg-type]
         optimizer_factory=_FakeGEPA,
@@ -155,7 +167,15 @@ def _compiler(base: Any | None = None) -> ProgramCompiler:
 
 def test_compiler_budget_uses_exact_call_metadata_not_shared_history() -> None:
     lm = _MeteredFakeLM("task/model", cost=0.000002)
-    meter = _BudgetMeter(CompileBudget(max_metric_calls=1, max_task_model_calls=1, max_cost_microusd=10, seed=17))
+    meter = _BudgetMeter(
+        CompileBudget(
+            max_metric_calls=1,
+            max_task_model_calls=1,
+            max_cost_microusd=10,
+            max_call_cost_microusd=10,
+            seed=17,
+        )
+    )
 
     assert _BudgetedLM(lm, role="task", meter=meter)(prompt="probe") == ["unused"]  # type: ignore[arg-type]
     assert lm.history[-1]["cost"] == 0.5
@@ -169,7 +189,15 @@ def test_compiler_charges_a_provider_response_even_when_the_lm_raises_afterward(
             raise RuntimeError("parse failed after provider response")
 
     lm = ResponseThenErrorLM("task/model", cost=0.000004)
-    meter = _BudgetMeter(CompileBudget(max_metric_calls=1, max_task_model_calls=1, max_cost_microusd=10, seed=17))
+    meter = _BudgetMeter(
+        CompileBudget(
+            max_metric_calls=1,
+            max_task_model_calls=1,
+            max_cost_microusd=10,
+            max_call_cost_microusd=10,
+            seed=17,
+        )
+    )
 
     with pytest.raises(RuntimeError, match="parse failed"):
         _BudgetedLM(lm, role="task", meter=meter)(prompt="probe")  # type: ignore[arg-type]
@@ -177,10 +205,10 @@ def test_compiler_charges_a_provider_response_even_when_the_lm_raises_afterward(
     assert meter.actual_cost_microusd == 4
 
 
-def test_compile_is_bounded_development_only_and_writes_two_file_artifact(tmp_path) -> None:
+def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> None:
     _FakeGEPA.calls.clear()
 
-    result = _compiler().compile(_request(), artifact_root=tmp_path)
+    result = _compiler().compile(_request())
 
     kwargs = _FakeGEPA.calls[-1]
     assert kwargs["auto"] is None
@@ -188,53 +216,92 @@ def test_compile_is_bounded_development_only_and_writes_two_file_artifact(tmp_pa
     assert kwargs["max_metric_calls"] == 3
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
-    assert result.compile_provenance.development_dataset_sha == "d" * 64
-    assert result.compile_provenance.learning_epoch == "program_v3"
-    assert result.compile_provenance.optimizer == "dspy.GEPA@3.3.0/gepa@0.1.1"
-    assert result.compile_provenance.metric_calls == 2
-    assert result.compile_provenance.task_model_calls == 1
-    assert result.compile_provenance.reflection_model_calls == 1
-    assert result.compile_provenance.actual_cost_microusd == 5
-    assert result.compile_provenance.holdout_access_attestation is False
-    image = tmp_path / result.artifact.program_sha256
-    assert {path.name for path in image.iterdir()} == {"manifest.json", "state.json"}
-    assert ProgramArtifactCodec.load(str(image)) == result.artifact
-    assert result.proposal_input["target"] == "program"
-    assert result.proposal_input["failure_cluster_ids"] == ["cluster-1"]
-    assert result.proposal_input["target_dimensions"] == ["direction"]
-    assert result.proposal_input["candidate_patch_sha"] == canonical_sha(
-        {
-            "parent_program_sha256": result.artifact.parent_program_sha256,
-            "candidate_program_sha256": result.artifact.program_sha256,
-            "machine_diff": result.machine_diff,
-            "compile_provenance": result.compile_provenance.model_dump(mode="json"),
-        }
-    )
+    assert result.patch.learning_epoch == "program_v4"
+    assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
+    assert result.patch.patch_sha256 == result.patch.computed_sha256()
+    assert [strategy.predictor for strategy in result.patch.learned_strategies] == [
+        "event_semantics",
+        "reader_card",
+    ]
+    assert result.metric_calls == 2
+    assert result.task_model_calls == 1
+    assert result.reflection_model_calls == 1
+    assert result.actual_cost_microusd == 5
+    assert result.failure_cluster_ids == ("cluster-1",)
+    assert result.target_dimensions == ("direction",)
     receipts = result.receipt_payloads.model_dump(mode="json")
-    assert result.proposal_input["compile_receipt_payloads"] == receipts
-    assert canonical_sha(receipts["metric"]) == result.compile_provenance.metric_sha256
-    assert canonical_sha(receipts["optimizer_config"]) == result.compile_provenance.optimizer_config_sha256
-    assert canonical_sha(receipts["trajectory"]) == result.compile_provenance.trajectory_sha256
-    assert canonical_sha(receipts["checkpoint"]) == result.compile_provenance.checkpoint_sha256
     assert receipts["optimizer_config"]["dspy_context"]["disable_history"] is True
     assert "source" in receipts["metric"]["implementation"]
+    assert "artifact" not in type(result).model_fields
+    assert "proposal_input" not in type(result).model_fields
 
 
-def test_compiled_candidate_can_be_the_next_generation_parent(tmp_path) -> None:
-    first = _compiler().compile(_request(), artifact_root=tmp_path / "first")
+def test_eligible_demo_bank_uses_the_same_delimited_model_evidence_as_compile_examples() -> None:
+    episode = _request().episodes[0].model_dump(mode="json")
+    episode["accepted_review"] = {
+        "review_id": "review-1",
+        "should_push": "should_push",
+        "dimensions": {
+            "factual_fidelity": "pass",
+            "headline_fidelity": "pass",
+            "why_support": "pass",
+            "why_value": "pass",
+        },
+        "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+        "expected_correction": "",
+    }
+    episode["production_verdict"] = {
+        "novelty": "new_fact",
+        "restates": -1,
+        "event_type": "filing",
+        "assets": [],
+        "direction": "neutral",
+        "scope": "single_name",
+        "magnitude": 1,
+        "actionable": True,
+        "confidence": 0.8,
+        "decision": "push",
+        "audience": "us_equity",
+        "headline_zh": "发行人提交重大更新",
+        "why_zh": "时间表发生变化。",
+    }
+    case = {
+        "case_id": "case-1",
+        "cluster_id": "cluster-1",
+        "evidence_sha256": "e" * 64,
+    }
+    payload = {
+        "role": "development",
+        "learning_epoch": "program_v4",
+        "cases": [case],
+    }
+    dataset_sha = canonical_sha({"kind": "dataset", "payload": payload})
 
-    second = _compiler(first.artifact).compile(_request(), artifact_root=tmp_path / "second")
+    bank = build_eligible_demo_bank(
+        dataset_sha=dataset_sha,
+        dataset_payload=payload,
+        episodes=(episode,),
+    )
 
-    assert second.artifact.parent_program_sha256 == first.artifact.program_sha256
-    assert second.artifact.program_sha256 != first.artifact.program_sha256
+    assert len(bank.records) == 2
+    for record in bank.records:
+        evidence_json = record.signature_inputs["evidence_json"]
+        assert evidence_json.startswith("<tracefold-untrusted-event-json-v1>\n")
+        assert evidence_json.endswith("\n</tracefold-untrusted-event-json-v1>")
 
 
-def test_task_and_reflection_calls_share_one_explicit_call_budget(tmp_path) -> None:
+def test_non_root_program_cannot_be_a_compiler_parent() -> None:
+    non_root = load_stable_program_artifact().model_copy(update={"parent_program_sha256": "f" * 64})
+    with pytest.raises(ValueError, match="parent_must_be_exact_stable_root"):
+        _compiler(non_root)
+
+
+def test_task_and_reflection_calls_share_one_explicit_call_budget() -> None:
     with pytest.raises(CompileBudgetExceeded, match="task_model_call_budget_exhausted"):
-        _compiler().compile(_request(max_calls=1), artifact_root=tmp_path)
+        _compiler().compile(_request(max_calls=1))
 
 
-def test_non_json_trajectory_value_fails_closed(tmp_path) -> None:
+def test_non_json_trajectory_value_fails_closed() -> None:
     class _UnsafeGEPA(_FakeGEPA):
         def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
             student = super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
@@ -243,16 +310,17 @@ def test_non_json_trajectory_value_fails_closed(tmp_path) -> None:
 
     compiler = ProgramCompiler(
         base_artifact=load_stable_program_artifact(),
+        eligible_demo_bank=EligibleDemoBank.issue(()),
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
         optimizer_factory=_UnsafeGEPA,
     )
 
     with pytest.raises(TypeError, match="non_json_receipt_value"):
-        compiler.compile(_request(), artifact_root=tmp_path)
+        compiler.compile(_request())
 
 
-def test_nonfinite_trajectory_value_fails_closed(tmp_path) -> None:
+def test_nonfinite_trajectory_value_fails_closed() -> None:
     class _NonfiniteGEPA(_FakeGEPA):
         def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
             student = super().compile(student, trainset=trainset, teacher=teacher, valset=valset)
@@ -261,13 +329,14 @@ def test_nonfinite_trajectory_value_fails_closed(tmp_path) -> None:
 
     compiler = ProgramCompiler(
         base_artifact=load_stable_program_artifact(),
+        eligible_demo_bank=EligibleDemoBank.issue(()),
         task_lm=_MeteredFakeLM("task/model"),  # type: ignore[arg-type]
         reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
         optimizer_factory=_NonfiniteGEPA,
     )
 
     with pytest.raises(TypeError, match="nonfinite_receipt_value"):
-        compiler.compile(_request(), artifact_root=tmp_path)
+        compiler.compile(_request())
 
 
 def test_metric_receipt_hash_binds_the_executed_implementation_source() -> None:
@@ -314,6 +383,16 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         metric_sha256=metric_sha,
         example_count=1,
     )
+    changed_endpoint = _optimizer_config_receipt(
+        constructor=constructor,
+        task_lm=_MeteredFakeLM("task/model", api_base="https://other-compiler.test/v1"),  # type: ignore[arg-type]
+        reflection_lm=_MeteredFakeLM("reflection/model"),  # type: ignore[arg-type]
+        optimizer_factory=_FakeGEPA,
+        metric_sha256=metric_sha,
+        example_count=1,
+    )
 
     assert canonical_sha(base) != canonical_sha(changed_scalar)
     assert canonical_sha(base) != canonical_sha(changed_model)
+    assert canonical_sha(base) != canonical_sha(changed_endpoint)
+    assert "compiler.test" not in repr(base)

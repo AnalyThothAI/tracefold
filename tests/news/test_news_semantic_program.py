@@ -15,36 +15,48 @@ from typing import Any
 import dspy
 import pytest
 
+from tracefold.news import SemanticJudgeError
 from tracefold.news.agents import semantic_program as semantic_program_module
+from tracefold.news.agents.program_artifact_tool import (
+    generate_rollback_program_bundle,
+    verify_rollback_program_bundle,
+)
 from tracefold.news.agents.semantic_program import (
-    PROGRAM_DEMO_JSON_MAX_BYTES,
-    PROGRAM_DEMOS_MAX,
     PROGRAM_DEPENDENCY_LOCK_SHA256,
-    PROGRAM_INSTRUCTION_MAX_BYTES,
     PROGRAM_TOPOLOGY_SHA256,
     READER_CARD_SIGNATURE_SHA256,
     TOLD_MAX,
     TOLD_SAME_KEY_MAX,
-    CompileProvenance,
+    CompileReceipt,
+    DemoBank,
+    DemoRecord,
+    DemoRefOrder,
     DspyCompileProgram,
     DspyNewsSemanticProgram,
     DspyPredictorAdapter,
+    EligibleDemoBank,
     EventSemantics,
+    LearnedStrategy,
     PredictorAdapterError,
     PredictorRequest,
     PredictorResponse,
     ProgramArtifact,
     ProgramArtifactCodec,
+    ProgramPatchV2,
     ProviderCallObservation,
     ReaderCard,
     RecordReplayPredictorAdapter,
     ScriptedPredictorAdapter,
-    SemanticProgramError,
     TriageContext,
+    apply_program_patch_v2,
+    build_code_owned_program_artifact_v2,
+    extract_optimizer_patch,
     load_program_artifact,
     load_stable_program_artifact,
+    render_model_evidence_json,
 )
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
+from tracefold.news.models import TriageAsset, TriageVerdict
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:
@@ -100,10 +112,6 @@ def _context(*, told_rows: list[dict[str, Any]] | None = None) -> TriageContext:
     )
 
 
-def _evidence_json() -> str:
-    return canonical_json(_context().model_payload())
-
-
 def _program(
     primary: ScriptedPredictorAdapter,
     *,
@@ -119,29 +127,9 @@ def _program(
 
 def _artifact_with_execution(**updates: Any) -> ProgramArtifact:
     base = load_stable_program_artifact()
-    data = base.model_dump(mode="json")
-    data["execution"].update(updates)
-    manifest = {
-        key: value for key, value in data.items() if key not in {"program_sha256", "event_semantics", "reader_card"}
-    }
-    data["program_sha256"] = canonical_sha(manifest)
-    return ProgramArtifact.model_validate(data)
-
-
-def _artifact_documents_with_demo(
-    predictor: str,
-    demo: dict[str, Any],
-) -> tuple[str, str]:
-    manifest_document, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
-    manifest = json.loads(manifest_document)
-    state = json.loads(state_document)
-    state[predictor]["demos"] = [demo]
-    state[predictor]["demos_sha256"] = canonical_sha([demo])
-    manifest["state_sha256"] = canonical_sha(state)
-    manifest["program_sha256"] = canonical_sha(
-        {key: value for key, value in manifest.items() if key != "program_sha256"}
-    )
-    return canonical_json(manifest), canonical_json(state)
+    execution = base.execution.model_copy(update=updates)
+    artifact = base.model_copy(update={"execution": execution})
+    return artifact.model_copy(update={"program_sha256": artifact.computed_sha256()})
 
 
 def test_builtin_artifact_is_registered_and_canonical() -> None:
@@ -151,6 +139,90 @@ def test_builtin_artifact_is_registered_and_canonical() -> None:
     assert ProgramArtifactCodec.decode(manifest, state) == artifact
     assert artifact.program_sha256 == artifact.computed_sha256()
     assert artifact.state_sha256 == artifact.computed_state_sha256()
+
+
+def test_rollback_bundle_is_external_v2_only_and_read_only_verifiable(tmp_path: Path) -> None:
+    output = tmp_path / "program-v3-rollback-v2"
+    identity = generate_rollback_program_bundle(output_dir=output)
+    stable = load_stable_program_artifact()
+
+    assert verify_rollback_program_bundle(input_dir=output) == identity
+    assert identity != stable.program_sha256
+    with pytest.raises(ValueError, match="artifact_not_registered"):
+        load_program_artifact(identity)
+    assert {path.name for path in output.iterdir()} == {"registry.json", "profile.json", identity}
+    manifest = json.loads((output / identity / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "news_semantic_program_artifact_v2"
+    assert "artifact_v1" not in canonical_json(manifest)
+
+    alias = tmp_path / "rollback-alias"
+    alias.symlink_to(output, target_is_directory=True)
+    with pytest.raises(ValueError, match="rollback_input_invalid"):
+        verify_rollback_program_bundle(input_dir=alias)
+
+    registry_path = output / "registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry_path.write_text(
+        canonical_json({"images": ["../outside"], "stable": "../outside"}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="artifact_identity_invalid"):
+        verify_rollback_program_bundle(input_dir=output)
+    registry_path.write_text(canonical_json(registry) + "\n", encoding="utf-8")
+
+    profile_path = output / "profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["rollback_program_sha256"] = "0" * 64
+    profile_path.write_text(canonical_json(profile) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="profile_mismatch"):
+        verify_rollback_program_bundle(input_dir=output)
+
+
+def test_stable_root_is_the_d_generation_v2_ownership_contract() -> None:
+    artifact = load_stable_program_artifact()
+
+    assert artifact.schema_version == "news_semantic_program_artifact_v2"
+    assert artifact.factory_id == "tracefold.news.semantic_program.factory_v2"
+    assert artifact.program_version == "news_semantic_program_v2"
+    assert artifact.parent_program_sha256 is None
+    assert artifact.quality_kernel.factory_id == artifact.factory_id
+    assert [pack.order for pack in artifact.rule_packs] == list(range(1, 9))
+    assert {strategy.predictor for strategy in artifact.learned_strategies} == {
+        "event_semantics",
+        "reader_card",
+    }
+    assert artifact.demo_bank.records == ()
+    assert artifact.demo_bank.refs.event_semantics == ()
+    assert artifact.demo_bank.refs.reader_card == ()
+    assert [slot.slot for slot in artifact.route_spec.slots] == [
+        "event_semantics.primary",
+        "reader_card.primary",
+        "event_semantics.fallback",
+        "reader_card.fallback",
+    ]
+    assert set(artifact.state()) == {"rule_packs", "learned_strategies", "demo_bank"}
+
+
+def test_quality_kernel_hashes_every_package_owned_behavior_source_and_verdict_schema() -> None:
+    artifact = build_code_owned_program_artifact_v2()
+    news_root = importlib.resources.files("tracefold.news")
+    sources = {
+        "news/artifact_identity.py": ("artifact_identity.py",),
+        "news/semantic_contract.py": ("semantic_contract.py",),
+        "news/agents/quality_baseline.py": ("agents", "quality_baseline.py"),
+        "news/agents/semantic_program.py": ("agents", "semantic_program.py"),
+    }
+    expected_source = canonical_sha(
+        {name: hashlib.sha256(news_root.joinpath(*parts).read_bytes()).hexdigest() for name, parts in sources.items()}
+    )
+
+    assert artifact.quality_kernel.factory_source_sha256 == expected_source
+    assert artifact.quality_kernel.verdict_contract_sha256 == canonical_sha(
+        {
+            "TriageAsset": TriageAsset.model_json_schema(),
+            "TriageVerdict": TriageVerdict.model_json_schema(),
+        }
+    )
 
 
 def test_program_topology_identity_includes_the_deterministic_normalizer() -> None:
@@ -232,18 +304,18 @@ def test_codec_rejects_noncanonical_documents_and_nonfinite_numbers() -> None:
     with pytest.raises(ValueError, match="state_json_noncanonical"):
         ProgramArtifactCodec.decode(manifest_document, canonical_json(state) + "\n\n")
 
-    state["event_semantics"]["max_tokens"] = float("nan")
-    with pytest.raises(ValueError, match="state_json_invalid"):
-        ProgramArtifactCodec.decode(manifest_document, canonical_json(state))
-    state["event_semantics"]["max_tokens"] = float("inf")
-    with pytest.raises(ValueError, match="state_json_invalid"):
-        ProgramArtifactCodec.decode(manifest_document, canonical_json(state))
+    manifest["route_spec"]["event_semantics_max_tokens"] = float("nan")
+    with pytest.raises(ValueError, match="manifest_json_invalid"):
+        ProgramArtifactCodec.decode(canonical_json(manifest), state_document)
+    manifest["route_spec"]["event_semantics_max_tokens"] = float("inf")
+    with pytest.raises(ValueError, match="manifest_json_invalid"):
+        ProgramArtifactCodec.decode(canonical_json(manifest), state_document)
 
 
 def test_codec_rejects_coercive_state_that_cannot_round_trip_exactly() -> None:
     manifest_document, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
     state = json.loads(state_document)
-    state["event_semantics"]["max_tokens"] = str(state["event_semantics"]["max_tokens"])
+    state["rule_packs"][0]["order"] = str(state["rule_packs"][0]["order"])
 
     with pytest.raises(ValueError, match="artifact_round_trip_mismatch"):
         ProgramArtifactCodec.decode(manifest_document, canonical_json(state))
@@ -254,6 +326,8 @@ def test_codec_rejects_coercive_state_that_cannot_round_trip_exactly() -> None:
     [
         lambda manifest: manifest.update({"parent_program_sha256": "f" * 64}),
         lambda manifest: manifest["compile_receipt"].update({"accepted_by": "unaccepted_candidate"}),
+        lambda manifest: manifest["compile_receipt"].update({"compiler": "another_compiler"}),
+        lambda manifest: manifest["compile_receipt"].update({"source": "issue_134/unreviewed"}),
     ],
 )
 def test_baseline_parent_and_receipt_semantics_cannot_be_recombined(mutate: Any) -> None:
@@ -379,6 +453,18 @@ def test_two_predictors_assemble_one_verdict_and_trace_usage() -> None:
     assert judgment.trace.calls[1].upstream_sha256 == judgment.trace.event_semantics_sha256
 
 
+def test_v2_rollback_root_executes_the_same_two_call_graph_and_public_contract() -> None:
+    rollback = build_code_owned_program_artifact_v2(profile="program_v3_rollback")
+    judgment = asyncio.run(
+        _program(ScriptedPredictorAdapter([_semantics(), _card()]), artifact=rollback).judge(_context())
+    )
+
+    assert judgment.program_sha256 == rollback.program_sha256
+    assert judgment.usage.physical_call_count == 2
+    assert [call.predictor for call in judgment.trace.calls] == ["event_semantics", "reader_card"]
+    assert judgment.verdict.title_zh == ""
+
+
 def test_reader_card_schema_omits_title_but_public_verdict_keeps_empty_sentinel() -> None:
     reader_state = load_stable_program_artifact().reader_card
     assert reader_state.signature_id == "tracefold.news.ReaderCard.v2"
@@ -396,11 +482,10 @@ def test_reader_card_schema_omits_title_but_public_verdict_keeps_empty_sentinel(
 def test_codec_rejects_superseded_reader_card_signature_identity() -> None:
     manifest_document, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
     manifest = json.loads(manifest_document)
-    state = json.loads(state_document)
-    state["reader_card"].update(
+    manifest["quality_kernel"].update(
         {
-            "signature_id": "tracefold.news.ReaderCard.v1",
-            "signature_sha256": canonical_sha(
+            "reader_card_signature_id": "tracefold.news.ReaderCard.v1",
+            "reader_card_signature_sha256": canonical_sha(
                 {
                     "signature": "ReaderCard.v1",
                     "inputs": ["evidence_json", "semantics_json"],
@@ -409,13 +494,12 @@ def test_codec_rejects_superseded_reader_card_signature_identity() -> None:
             ),
         }
     )
-    manifest["state_sha256"] = canonical_sha(state)
     manifest["program_sha256"] = canonical_sha(
         {key: value for key, value in manifest.items() if key != "program_sha256"}
     )
 
     with pytest.raises(ValueError, match="artifact_schema_invalid"):
-        ProgramArtifactCodec.decode(canonical_json(manifest), canonical_json(state))
+        ProgramArtifactCodec.decode(canonical_json(manifest), state_document)
 
 
 @pytest.mark.parametrize(
@@ -552,7 +636,7 @@ def test_exhausted_invalid_restatement_retry_never_calls_reader_card(restates: i
         ]
     )
 
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(_program(adapter).judge(_context()))
 
     assert caught.value.code == "news_program_restatement_index_invalid"
@@ -565,7 +649,7 @@ def test_exhausted_invalid_restatement_retry_never_calls_reader_card(restates: i
 def test_chain_budget_is_six_calls_and_reports_partial_trace() -> None:
     primary = ScriptedPredictorAdapter([_semantics(), {"bad": True}, {"bad": True}])
     fallback = ScriptedPredictorAdapter([_semantics(), {"bad": True}, {"bad": True}])
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(_program(primary, fallback=fallback).judge(_context()))
     assert caught.value.attempts == 6
     assert caught.value.output_failure is True
@@ -575,7 +659,7 @@ def test_chain_budget_is_six_calls_and_reports_partial_trace() -> None:
 
 def test_truncation_never_fast_retries() -> None:
     adapter = ScriptedPredictorAdapter([PredictorResponse(output={"bad": True}, finish_reason="length"), _semantics()])
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(_program(adapter).judge(_context()))
     assert caught.value.code == "news_program_output_truncated"
     assert caught.value.attempts == 1
@@ -622,7 +706,7 @@ def test_record_replay_uses_full_request_identity_and_real_assembler() -> None:
     assert repeated.answering_model == "resolved-replay-card"
     assert [request.request_sha256 for request in replay.requests] == list(recordings)
 
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(
             DspyNewsSemanticProgram(
                 load_stable_program_artifact(), primary_adapter=RecordReplayPredictorAdapter({})
@@ -714,6 +798,10 @@ def test_usage_distinguishes_synthetic_trace_entries_from_provider_attempts() ->
     assert judgment.usage.call_count == 3
     assert judgment.usage.physical_call_count == 2
     assert [call.physical_provider_call for call in judgment.trace.calls] == [False, True, True]
+    forged = judgment.trace.calls[1].model_dump(mode="json")
+    forged["physical_provider_call"] = False
+    with pytest.raises(ValueError, match="synthetic_call_provider_usage_invalid"):
+        semantic_program_module.ProgramCallTrace.model_validate(forged)
 
 
 def test_transport_error_trace_has_elapsed_time_without_forged_provider_metadata() -> None:
@@ -726,7 +814,7 @@ def test_transport_error_trace_has_elapsed_time_without_forged_provider_metadata
             await asyncio.sleep(0.002)
             raise ConnectionError("provider unavailable")
 
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(
             DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=SlowTransportAdapter()).judge(
                 _context()
@@ -769,7 +857,7 @@ def test_route_deadline_is_shared_and_audited() -> None:
             return PredictorResponse(output=_semantics())
 
     artifact = _artifact_with_execution(route_deadline_seconds=1)
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=SlowAdapter()).judge(_context()))
     assert caught.value.code == "news_program_route_deadline"
     assert caught.value.retryable is True
@@ -790,7 +878,7 @@ def test_reader_card_deadline_is_attributed_to_reader_predictor() -> None:
             return PredictorResponse(output=_card())
 
     artifact = _artifact_with_execution(route_deadline_seconds=1)
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(
             DspyNewsSemanticProgram(
                 artifact,
@@ -1122,7 +1210,7 @@ def test_real_dspy_33_finish_reason_classifies_parse_failure_as_truncation() -> 
         },
     )
     program.event_semantics = TruncatedPredictor()  # type: ignore[assignment]
-    with pytest.raises(SemanticProgramError) as program_error:
+    with pytest.raises(SemanticJudgeError) as program_error:
         asyncio.run(program.judge(_context()))
     assert program_error.value.attempts == 1
     assert program_error.value.code == "news_program_output_truncated"
@@ -1166,7 +1254,7 @@ def test_real_dspy_parse_failure_trace_keeps_exact_usage_and_truncation_does_not
     adapter._lm.aforward = fake_aforward  # type: ignore[method-assign]
     program = DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=adapter)
 
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(program.judge(_context()))
 
     assert caught.value.attempts == expected_attempts
@@ -1316,13 +1404,12 @@ def test_artifact_rejects_tamper_unknown_binding_and_unregistered_identity(tmp_p
     manifest_document, state_document = ProgramArtifactCodec.encode(artifact)
     state = json.loads(state_document)
     manifest = json.loads(manifest_document)
-    state["event_semantics"]["model_bindings"]["primary"] = "https://evil.invalid/model"
-    manifest["state_sha256"] = canonical_sha(state)
+    manifest["route_spec"]["slots"][0]["endpoint"] = "https://evil.invalid/model"
     manifest["program_sha256"] = canonical_sha(
         {key: value for key, value in manifest.items() if key != "program_sha256"}
     )
-    with pytest.raises(ValueError):
-        ProgramArtifactCodec.decode(json.dumps(manifest), json.dumps(state))
+    with pytest.raises(ValueError, match="unsafe_state_key"):
+        ProgramArtifactCodec.decode(canonical_json(manifest), canonical_json(state))
     with pytest.raises(ValueError, match="not_registered"):
         load_program_artifact("0" * 64)
     with pytest.raises(ValueError, match="path_invalid"):
@@ -1368,125 +1455,248 @@ def test_artifact_rejects_tamper_unknown_binding_and_unregistered_identity(tmp_p
 def test_artifact_recursively_rejects_runtime_and_secret_key_variants(unsafe_key: str) -> None:
     manifest_document, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
     state = json.loads(state_document)
-    state["event_semantics"]["nestedRuntimeState"] = {unsafe_key: "must-not-load"}
+    state["demo_bank"]["nestedRuntimeState"] = {unsafe_key: "must-not-load"}
 
     with pytest.raises(ValueError, match="unsafe_state_key"):
         ProgramArtifactCodec.decode(manifest_document, canonical_json(state))
 
 
 @pytest.mark.parametrize(
-    "demo",
+    "secret",
     [
-        {"evidence_json": "{}", "semantics": _semantics(), "case_id": "extra"},
-        {"evidence_json": "{}"},
-        {"evidence_json": "{}", "semantics_json": "{}", "card": _card()},
+        "sk-1234567890abcdefghijklmnop",
+        "github_pat_1234567890abcdefghijklmnop",
+        "-".join(("xoxb", "1234567890", "abcdefghijklmnop")),
+        "Bearer abcdefghijklmnopqrstuvwxyz.123456",
+        "-----BEGIN PRIVATE KEY-----",
     ],
 )
-def test_artifact_demo_fields_are_exact_for_each_known_signature(demo: dict[str, Any]) -> None:
-    manifest, state = _artifact_documents_with_demo("event_semantics", demo)
+def test_artifact_recursively_rejects_high_confidence_secret_values(secret: str) -> None:
+    manifest_document, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
+    state = json.loads(state_document)
+    state["learned_strategies"][0]["text"] = secret
+    state["learned_strategies"][0]["text_sha256"] = canonical_sha(secret)
 
-    with pytest.raises(ValueError, match="artifact_schema_invalid"):
-        ProgramArtifactCodec.decode(manifest, state)
+    with pytest.raises(ValueError, match="secret_value"):
+        ProgramArtifactCodec.decode(manifest_document, canonical_json(state))
 
 
-def test_artifact_bounds_instruction_demo_count_and_canonical_demo_json() -> None:
-    def documents(state: dict[str, Any]) -> tuple[str, str]:
-        manifest_document, _ = ProgramArtifactCodec.encode(load_stable_program_artifact())
-        manifest = json.loads(manifest_document)
-        manifest["state_sha256"] = canonical_sha(state)
-        manifest["program_sha256"] = canonical_sha(
-            {key: value for key, value in manifest.items() if key != "program_sha256"}
+def test_artifact_dlp_rejects_secret_in_a_mapping_key_without_echoing_it() -> None:
+    manifest_document, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
+    state = json.loads(state_document)
+    secret = "sk-1234567890abcdefghijklmnop"
+    state[secret] = "must-not-load"
+
+    with pytest.raises(ValueError, match="secret_value") as caught:
+        ProgramArtifactCodec.decode(manifest_document, canonical_json(state))
+    assert secret not in str(caught.value)
+
+
+def test_demo_dlp_allows_ordinary_api_key_news_without_a_credential_value() -> None:
+    payload = _context().model_payload()
+    payload["event"]["content"] = "The company updated its API key rotation policy; no credential was disclosed."
+
+    record = DemoRecord.issue(
+        predictor="event_semantics",
+        signature_inputs={"evidence_json": render_model_evidence_json(payload)},
+        validated_output=_semantics(),
+        source_kind="accepted_development",
+        development_dataset_sha256="1" * 64,
+        case_sha256="2" * 64,
+        cluster_sha256="3" * 64,
+        review_sha256="4" * 64,
+        evidence_receipt_sha256="5" * 64,
+    )
+
+    assert "API key" in record.signature_inputs["evidence_json"]
+
+
+def _accepted_event_demo() -> DemoRecord:
+    return DemoRecord.issue(
+        predictor="event_semantics",
+        signature_inputs={"evidence_json": render_model_evidence_json(_context().model_payload())},
+        validated_output=_semantics(),
+        source_kind="accepted_development",
+        development_dataset_sha256="1" * 64,
+        case_sha256="2" * 64,
+        cluster_sha256="3" * 64,
+        review_sha256="4" * 64,
+        evidence_receipt_sha256="5" * 64,
+    )
+
+
+def test_demo_record_is_typed_delimited_and_contains_only_hashed_provenance() -> None:
+    record = _accepted_event_demo()
+
+    assert record.case_sha256 == "2" * 64
+    assert "case_id" not in record.model_dump()
+    assert "event-secret" not in canonical_json(record.model_dump(mode="json"))
+    assert record.dspy_demo()["evidence_json"].startswith("<tracefold-untrusted-event-json-v1>\n")
+
+    payload = record.model_dump(mode="json")
+    payload["case_id"] = "private-case-id"
+    with pytest.raises(ValueError):
+        DemoRecord.model_validate(payload)
+
+    with pytest.raises(ValueError, match="delimiter_invalid"):
+        DemoRecord.issue(
+            predictor="event_semantics",
+            signature_inputs={"evidence_json": canonical_json(_context().model_payload())},
+            validated_output=_semantics(),
+            source_kind="code_owned_expert",
         )
-        return canonical_json(manifest), canonical_json(state)
-
-    _, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
-    state = json.loads(state_document)
-    state["event_semantics"]["instruction"] = "x" * (PROGRAM_INSTRUCTION_MAX_BYTES + 1)
-    state["event_semantics"]["instruction_sha256"] = canonical_sha(state["event_semantics"]["instruction"])
-    with pytest.raises(ValueError, match="artifact_schema_invalid"):
-        ProgramArtifactCodec.decode(*documents(state))
-
-    state = json.loads(state_document)
-    demo = {"evidence_json": "{}", "semantics": _semantics()}
-    state["event_semantics"]["demos"] = [demo] * (PROGRAM_DEMOS_MAX + 1)
-    state["event_semantics"]["demos_sha256"] = canonical_sha(state["event_semantics"]["demos"])
-    with pytest.raises(ValueError, match="artifact_schema_invalid"):
-        ProgramArtifactCodec.decode(*documents(state))
-
-    oversized_evidence = canonical_json({"blob": "x" * PROGRAM_DEMO_JSON_MAX_BYTES})
-    manifest, state_document = _artifact_documents_with_demo(
-        "event_semantics",
-        {"evidence_json": oversized_evidence, "semantics": _semantics()},
-    )
-    with pytest.raises(ValueError, match="artifact_schema_invalid"):
-        ProgramArtifactCodec.decode(manifest, state_document)
-
-    manifest, state_document = _artifact_documents_with_demo(
-        "event_semantics",
-        {"evidence_json": '{ "noncanonical": true }', "semantics": _semantics()},
-    )
-    with pytest.raises(ValueError, match="artifact_schema_invalid"):
-        ProgramArtifactCodec.decode(manifest, state_document)
 
 
-@pytest.mark.parametrize(
-    ("container", "unsafe_key", "unsafe_value"),
-    [
-        (None, "event_id", "audit-event-must-not-reach-the-model"),
-        ("event", "endpoint", "https://evil.invalid"),
-        ("gate", "api_key", "sk-test-must-not-load"),
-    ],
-)
-def test_artifact_demo_evidence_rejects_audit_runtime_and_secret_fields(
-    container: str | None,
-    unsafe_key: str,
-    unsafe_value: str,
-) -> None:
-    evidence = _context().model_payload()
-    target = evidence if container is None else evidence[container]
-    target[unsafe_key] = unsafe_value
-    manifest, state_document = _artifact_documents_with_demo(
-        "event_semantics",
-        {"evidence_json": canonical_json(evidence), "semantics": _semantics()},
+def test_demo_bank_separates_full_eligible_root_from_selected_records() -> None:
+    record = _accepted_event_demo()
+    eligible = EligibleDemoBank.issue((record,))
+    selected_root = canonical_sha([record.model_dump(mode="json")])
+    bank = DemoBank(
+        records=(record,),
+        refs=DemoRefOrder(event_semantics=(record.demo_id,)),
+        selected_record_root_sha256=selected_root,
+        eligible_demo_bank_root_sha256=eligible.eligible_demo_bank_root_sha256,
     )
 
-    with pytest.raises(ValueError, match="artifact_schema_invalid"):
-        ProgramArtifactCodec.decode(manifest, state_document)
+    assert bank.selected_record_root_sha256 == selected_root
+    assert bank.eligible_demo_bank_root_sha256 == eligible.eligible_demo_bank_root_sha256
+    with pytest.raises(ValueError, match="unselected_record"):
+        DemoBank(
+            records=(record,),
+            refs=DemoRefOrder(),
+            selected_record_root_sha256=selected_root,
+            eligible_demo_bank_root_sha256=eligible.eligible_demo_bank_root_sha256,
+        )
 
 
-def test_compiled_module_uses_the_same_exact_demo_validation() -> None:
-    base = load_stable_program_artifact()
-    cold = DspyCompileProgram(base)
+def test_codec_hard_cuts_artifact_v1_before_schema_loading() -> None:
+    manifest = {
+        "schema_version": "news_semantic_program_artifact_v1",
+        "program_sha256": "0" * 64,
+    }
+    with pytest.raises(ValueError, match="artifact_version_unsupported"):
+        ProgramArtifactCodec.decode(canonical_json(manifest), canonical_json({}))
+
+
+def test_optimizer_extractor_sees_only_strategy_and_exact_eligible_demo_refs() -> None:
+    parent = load_stable_program_artifact()
+    record = _accepted_event_demo()
+    eligible = EligibleDemoBank.issue((record,))
+    cold = DspyCompileProgram(parent)
+    assert cold.event_semantics.signature.instructions == ""
+    assert cold.reader_card.signature.instructions == ""
+    assert "SEALED TRACEFOLD QUALITYKERNEL" not in cold.event_semantics.signature.instructions
+    cold.event_semantics.signature = cold.event_semantics.signature.with_instructions("Prefer explicit causal facts.")
+    cold.event_semantics.demos = [dspy.Example(**record.dspy_demo()).with_inputs("evidence_json")]
+
+    patch = extract_optimizer_patch(cold, parent, eligible)
+
+    assert patch.learned_strategies[0].text == "Prefer explicit causal facts."
+    assert patch.demo_refs.event_semantics == (record.demo_id,)
     cold.event_semantics.demos = [
-        dspy.Example(evidence_json="{}", semantics=_semantics(), unexpected="unsafe").with_inputs("evidence_json")
+        dspy.Example(
+            evidence_json=render_model_evidence_json(_context().model_payload()),
+            semantics={**_semantics(), "magnitude": 2},
+        ).with_inputs("evidence_json")
     ]
+    with pytest.raises(ValueError, match="demo_membership_ambiguous"):
+        extract_optimizer_patch(cold, parent, eligible)
 
-    with pytest.raises(ValueError, match="demo_fields_invalid"):
-        ProgramArtifactCodec.from_compiled_module(
-            cold,
-            base_artifact=base,
-            compiler="GEPA",
-            source="sealed-development-set",
-            compile_provenance=CompileProvenance(
-                mode="optimizer_candidate",
-                development_dataset_sha="1" * 64,
-                learning_epoch="epoch-1",
-                optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",
-                gepa_version="0.1.1",
-                metric_sha256="2" * 64,
-                optimizer_config_sha256="3" * 64,
-                seed=7,
-                max_metric_calls=20,
-                max_task_model_calls=30,
-                max_cost_microusd=10_000,
-                metric_calls=12,
-                task_model_calls=15,
-                reflection_model_calls=3,
-                actual_cost_microusd=9_000,
-                trajectory_sha256="4" * 64,
-                checkpoint_sha256="5" * 64,
+
+def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() -> None:
+    parent = load_stable_program_artifact()
+    record = _accepted_event_demo()
+    eligible = EligibleDemoBank.issue((record,))
+    patch = ProgramPatchV2.issue(
+        parent=parent,
+        learned_strategies=(
+            LearnedStrategy.issue(
+                predictor="event_semantics",
+                text="Prefer explicit causal facts.",
+                source="optimizer_patch",
             ),
-        )
+            LearnedStrategy.issue(
+                predictor="reader_card",
+                text="Keep the mechanism concrete.",
+                source="optimizer_patch",
+            ),
+        ),
+        demo_refs=DemoRefOrder(event_semantics=(record.demo_id,)),
+        eligible_demo_bank_root_sha256=eligible.eligible_demo_bank_root_sha256,
+    )
+
+    def sha(value: str) -> str:
+        return canonical_sha(value)
+
+    receipt = CompileReceipt(
+        mode="optimizer_candidate",
+        development_dataset_sha=sha("dataset"),
+        learning_epoch="program_v4",
+        learning_epoch_started_at_ms=1,
+        projection_schema_id="news_program_v4_projection_v1",
+        optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",
+        gepa_version="0.1.1",
+        metric_sha256=sha("metric"),
+        optimizer_config_sha256=sha("config"),
+        seed=7,
+        max_metric_calls=20,
+        max_task_model_calls=30,
+        max_cost_microusd=10_000,
+        max_call_cost_microusd=1_000,
+        metric_calls=12,
+        task_model_calls=15,
+        reflection_model_calls=3,
+        actual_cost_microusd=9_000,
+        trajectory_sha256=sha("trajectory"),
+        checkpoint_sha256=sha("checkpoint"),
+        parent_program_sha256=parent.program_sha256,
+        parent_state_sha256=parent.state_sha256,
+        quality_kernel_sha256=parent.quality_kernel.sha256,
+        rule_pack_root_sha256=parent.rule_pack_root_sha256,
+        development_dataset_payload_sha256=sha("dataset-payload"),
+        case_root_sha256=sha("cases"),
+        cluster_root_sha256=sha("clusters"),
+        episode_projection_root_sha256=sha("episodes"),
+        episode_count=1,
+        eligible_demo_bank_root_sha256=eligible.eligible_demo_bank_root_sha256,
+        patch_sha256=patch.patch_sha256,
+        receipt_payload_root_sha256=sha("receipts"),
+        sandbox_launch_receipt_sha256=sha("launch"),
+        target_runtime_manifest_sha256=sha("runtime"),
+        task_endpoint_identity_sha256=sha("task-endpoint"),
+        reflection_endpoint_identity_sha256=sha("reflection-endpoint"),
+        compiler_source_sha256=sha("compiler-source"),
+        compiler_lock_sha256=sha("compiler-lock"),
+        sandbox_policy_sha256=sha("sandbox-policy"),
+        compiler="tracefold.news.dspy_gepa_compiler_v2",
+        source="trusted_compiler_launcher_v2",
+        accepted_by="unaccepted_candidate",
+    )
+
+    candidate = apply_program_patch_v2(parent, patch, eligible, receipt)
+
+    assert candidate.parent_program_sha256 == parent.program_sha256
+    assert candidate.quality_kernel == parent.quality_kernel
+    assert candidate.rule_packs == parent.rule_packs
+    assert candidate.route_spec == parent.route_spec
+    assert candidate.execution == parent.execution
+    assert candidate.demo_bank.records == (record,)
+    assert candidate.compile_receipt.accepted_by == "unaccepted_candidate"
+    manifest, state = ProgramArtifactCodec.encode(candidate)
+    assert ProgramArtifactCodec.decode(manifest, state) == candidate
+
+    tampered_manifest = json.loads(manifest)
+    tampered_state = json.loads(state)
+    tampered_state["learned_strategies"][0]["text"] = "A different advisory strategy."
+    tampered_state["learned_strategies"][0]["text_sha256"] = canonical_sha(
+        tampered_state["learned_strategies"][0]["text"]
+    )
+    tampered_manifest["state_sha256"] = canonical_sha(tampered_state)
+    tampered_manifest["program_sha256"] = canonical_sha(
+        {key: value for key, value in tampered_manifest.items() if key != "program_sha256"}
+    )
+    with pytest.raises(ValueError, match="artifact_schema_invalid"):
+        ProgramArtifactCodec.decode(canonical_json(tampered_manifest), canonical_json(tampered_state))
 
 
 def test_production_registry_and_image_directories_reject_symlinks(
@@ -1528,61 +1738,11 @@ def test_production_registry_and_image_directories_reject_symlinks(
         load_program_artifact(artifact.program_sha256)
 
 
-def test_cold_compile_program_round_trips_only_predictor_state() -> None:
-    base = load_stable_program_artifact()
-    cold = DspyCompileProgram(base)
-    assert len(cold.named_predictors()) == 2
-    cold.event_semantics.signature = cold.event_semantics.signature.with_instructions(
-        "A reviewed candidate instruction"
-    )
-    cold.event_semantics.demos = [
-        dspy.Example(evidence_json=_evidence_json(), semantics=_semantics()).with_inputs("evidence_json")
-    ]
-    candidate = ProgramArtifactCodec.from_compiled_module(
-        cold,
-        base_artifact=base,
-        compiler="GEPA",
-        source="sealed-development-set",
-        compile_provenance=CompileProvenance(
-            mode="optimizer_candidate",
-            development_dataset_sha="1" * 64,
-            learning_epoch="epoch-1",
-            optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",
-            gepa_version="0.1.1",
-            metric_sha256="2" * 64,
-            optimizer_config_sha256="3" * 64,
-            seed=7,
-            max_metric_calls=20,
-            max_task_model_calls=30,
-            max_cost_microusd=10_000,
-            metric_calls=12,
-            task_model_calls=15,
-            reflection_model_calls=3,
-            actual_cost_microusd=9_000,
-            trajectory_sha256="4" * 64,
-            checkpoint_sha256="5" * 64,
-        ),
-    )
-    assert candidate.program_sha256 != base.program_sha256
-    assert candidate.parent_program_sha256 == base.program_sha256
-    assert candidate.compile_receipt.accepted_by == "unaccepted_candidate"
-    manifest, state = ProgramArtifactCodec.encode(candidate)
-    assert ProgramArtifactCodec.decode(manifest, state) == candidate
-    assert candidate.event_semantics.demos == ({"evidence_json": _evidence_json(), "semantics": _semantics()},)
-    candidate_manifest = json.loads(manifest)
-    candidate_manifest["parent_program_sha256"] = None
-    candidate_manifest["program_sha256"] = canonical_sha(
-        {key: value for key, value in candidate_manifest.items() if key != "program_sha256"}
-    )
-    with pytest.raises(ValueError, match="artifact_schema_invalid"):
-        ProgramArtifactCodec.decode(canonical_json(candidate_manifest), state)
-
-
 def test_adapter_error_is_domain_classified() -> None:
     adapter = ScriptedPredictorAdapter(
         [PredictorAdapterError("provider_busy", retryable=True), PredictorAdapterError("provider_busy", retryable=True)]
     )
-    with pytest.raises(SemanticProgramError) as caught:
+    with pytest.raises(SemanticJudgeError) as caught:
         asyncio.run(_program(adapter).judge(_context()))
     assert caught.value.retryable is True
     assert caught.value.output_failure is False

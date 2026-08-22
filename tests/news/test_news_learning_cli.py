@@ -26,6 +26,8 @@ def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
             "programs",
             "--out",
             "proposal.json",
+            "--compiler-image",
+            "sha256:" + "1" * 64,
             "--max-metric-calls",
             "30",
             "--max-task-model-calls",
@@ -38,6 +40,7 @@ def test_learning_compile_requires_all_three_budgets_and_seed() -> None:
     )
 
     assert args.learning_command == "compile"
+    assert args.compiler_image == "sha256:" + "1" * 64
     assert (args.max_metric_calls, args.max_task_model_calls, args.max_cost_microusd, args.seed) == (
         30,
         90,

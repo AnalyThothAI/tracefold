@@ -55,8 +55,10 @@ writes only `headline_zh` and `why_zh`. A deterministic assembler produces the
 exact `TriageVerdict` and retains public `title_zh=""` only as the legacy "same as
 `headline_zh`" sentinel (#101). A normal route is
 exactly two serial structured calls. The content-addressed, state-only
-`ProgramArtifact` pins topology, signatures, instructions, demos, Adapter,
-model slots, execution contract and dependency lock; DSPy cache and hidden
+`ProgramArtifact v2` separates code-owned QualityKernel/ordered RulePacks from
+bounded per-Predictor LearnedStrategy and a typed DemoBank; it also pins
+topology, signatures, renderer, four model slots, execution contract and
+dependency lock. Rendered prompts are derived bytes, and DSPy cache and hidden
 provider retries are disabled. One shared route deadline owns one fast retry;
 fallback restarts the whole graph, and the full primary+fallback chain can make
 at most six physical requests. This Program is the only semantic filter; the
@@ -132,17 +134,19 @@ removed real equities with no crypto perp, and listing/delisting facts arrive as
 provider frames (#72) that the snapshot diff could only have duplicated for the
 two venues we poll. The learning plane is immutable `EventEvidenceSnapshot`
 plus append-only multi-dimensional reviews/external misses and one
-`CandidateEvaluator`. The deployment-time `program_v3` epoch for the expert
-quality baseline and semantic normalization makes Prompt-era plus the
-superseded `program_v1`/`program_v2` baseline evidence audit-only and reaccrues
-release evidence from zero. It freezes accepted evidence, runs stable
+`CandidateEvaluator`. The deployment-time `program_v4` epoch for the
+D-generation factory/artifact and optimizer-ownership hard cut makes every
+earlier Prompt/Program cohort audit-only and reaccrues release evidence from
+zero. It freezes accepted evidence, runs stable
 and exactly one declared `program` or
 `policy` variable sequentially, then requires sealed future holdout, blind
 pairwise, shadow and deterministic one-arm canary evidence before promotion. A
-cold, manually invoked DSPy GEPA compiler reads only accepted development
-episodes under explicit metric-call, model-call, cost and seed budgets, emits a
-canonical state-only Program candidate, and can never read holdout evidence,
-accept, deploy, promote, or edit the trusted root. `news.retention` keeps raw
+cold, manually invoked DSPy GEPA workflow receives a trusted sealed development
+corpus without DB/holdout/application credentials, can emit only a bounded
+LearnedStrategy/Demo `ProgramPatchV2`, and runs under explicit metric/model/
+cost/resource/seed budgets. A trusted applier constructs the unaccepted
+Artifact; the optimizer can never accept, deploy, promote, or edit the trusted
+root. `news.retention` keeps raw
 Items 30 days and judged/reviewed ones 365. `/api/news/status.pipeline` reports
 where the last 24 h went
 (`suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,

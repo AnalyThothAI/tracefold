@@ -20,7 +20,14 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .agents.semantic_program import CompileProvenance, SemanticJudge, SemanticProgramError, TriageContext
+from tracefold.news import SemanticJudge, SemanticJudgeError, TriageContext
+
+from .agents.program_compiler_security import (
+    COMPILE_EPISODE_PROJECTION_SCHEMA,
+    OptimizerCompileProvenanceV2,
+    ProgramMachineDiffV2,
+    validate_compile_receipt_chain_v2,
+)
 from .artifact_identity import canonical_json, canonical_sha
 from .models import TriageVerdict
 from .recording_replay import RecordingReplayCapability, RecordingReplayMiss
@@ -31,8 +38,11 @@ from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
 LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
-LEARNING_EPOCH: Literal["program_v3"] = "program_v3"
-LEARNING_EPOCH_RESET_REASON = "expert_quality_baseline_and_semantic_normalization"
+LEARNING_EPOCH: Literal["program_v4"] = "program_v4"
+LEARNING_EPOCH_RESET_REASON = "d_generation_factory_and_optimizer_ownership_hard_cut"
+LEARNING_PROGRAM_FACTORY_ID = "tracefold.news.semantic_program.factory_v2"
+LEARNING_ARTIFACT_SCHEMA_VERSION = "news_semantic_program_artifact_v2"
+LEARNING_PROGRAM_VERSION = "news_semantic_program_v2"
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
@@ -102,7 +112,7 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v3"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v4"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
 
@@ -130,7 +140,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: Literal["program_v3"]
+    learning_epoch: Literal["program_v4"]
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
@@ -142,6 +152,16 @@ class DatasetManifest(BaseModel):
     seed_receipts: tuple[dict[str, Any], ...] = ()
     counts: dict[str, Any]
     hashes: dict[str, str]
+
+
+class DevelopmentCompileExport(BaseModel):
+    """Exact trusted corpus projection handed to the cold compiler seam."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_payload: dict[str, Any]
+    episodes: tuple[dict[str, Any], ...] = Field(min_length=1)
 
 
 class ArmManifest(BaseModel):
@@ -184,9 +204,9 @@ class ProposalReceipt(BaseModel):
     guardrails: tuple[str, ...] = ()
     program_parent_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     program_candidate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    program_state_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     program_machine_diff: dict[str, Any] | None = None
     compile_provenance: dict[str, Any] | None = None
-    holdout_access_attestation: Literal[False] = False
 
     @classmethod
     def issue(cls, **values: Any) -> ProposalReceipt:
@@ -211,6 +231,7 @@ class ProposalReceipt(BaseModel):
         program_fields = (
             self.program_parent_sha256,
             self.program_candidate_sha256,
+            self.program_state_sha256,
             self.program_machine_diff,
             self.compile_provenance,
         )
@@ -405,16 +426,12 @@ class CandidateEvaluator:
         artifact_sha = self._persist_artifact("dataset", payload)
         return DatasetManifest(artifact_sha=artifact_sha, **payload)
 
-    def development_compile_episodes(self, dataset_sha: str) -> tuple[dict[str, Any], ...]:
-        """Expose accepted development truth to a cold Program compiler.
-
-        This is the learning plane's only compiler-facing Interface. It keeps
-        dataset/epoch validation and told-ledger construction inside the
-        evaluator instead of making a CLI depend on private case loaders.
-        """
+    def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
+        """Seal the sole read-only development export for the cold compiler."""
 
         self._assert_active_stable()
-        dataset = self._load_dataset(dataset_sha)
+        dataset_payload = self._load_dataset_payload(dataset_sha)
+        dataset = self._validate_dataset_payload(dataset_sha, dataset_payload)
         if dataset.role != "development":
             raise ValueError("news_learning_compile_requires_development_dataset")
         if dataset.agent_cohort != self._agent_cohort():
@@ -465,7 +482,17 @@ class CandidateEvaluator:
                         headline_zh=verdict.headline_zh,
                     )
                 )
-        return tuple(episodes)
+        frozen_episodes = tuple(episodes)
+        return DevelopmentCompileExport(
+            dataset_sha=dataset_sha,
+            dataset_payload=dataset_payload,
+            episodes=frozen_episodes,
+        )
+
+    def development_compile_episodes(self, dataset_sha: str) -> tuple[dict[str, Any], ...]:
+        """Return the ordered episodes from the sealed compiler export."""
+
+        return self.development_compile_export(dataset_sha).episodes
 
     async def evaluate(
         self,
@@ -667,14 +694,16 @@ class CandidateEvaluator:
         return EvaluationReport(report_sha=report_sha, **report_payload)
 
     def _validate_candidate_static(self, candidate: CandidateManifest) -> None:
+        if self._stable.program_version != LEARNING_PROGRAM_VERSION:
+            raise ValueError("news_learning_program_v1_unsupported")
         if candidate.parent_stable_sha != self._stable.bundle_sha:
             raise ValueError("news_learning_candidate_parent_stable_mismatch")
+        if candidate.target == "program" and candidate.candidate_arm.program_version != LEARNING_PROGRAM_VERSION:
+            raise ValueError("news_learning_program_v1_unsupported")
         stable = self._stable.model_dump(mode="json")
         proposed = candidate.candidate_arm.model_dump(mode="json")
         changed = {key for key in stable if stable[key] != proposed[key]}
-        allowed = (
-            {"program_version", "program_sha256"} if candidate.target == "program" else {"policy", "policy_sha256"}
-        )
+        allowed = {"program_sha256"} if candidate.target == "program" else {"policy", "policy_sha256"}
         if not changed or not changed <= allowed:
             raise ValueError(f"news_learning_exact_one_variable_violation:{','.join(sorted(changed))}")
         receipt = candidate.proposal_receipt
@@ -689,35 +718,69 @@ class CandidateEvaluator:
                 raise ValueError("news_learning_program_candidate_mismatch")
             if not receipt.program_machine_diff:
                 raise ValueError("news_learning_program_machine_diff_required")
+            machine_diff = dict(receipt.program_machine_diff)
+            try:
+                parsed_diff = ProgramMachineDiffV2.model_validate(machine_diff)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("news_learning_program_machine_diff_invalid") from exc
+            if parsed_diff.model_dump(mode="json") != machine_diff:
+                raise ValueError("news_learning_program_machine_diff_invalid")
             provenance = dict(receipt.compile_provenance or {})
             try:
-                parsed_provenance = CompileProvenance.model_validate(provenance)
+                parsed_provenance = OptimizerCompileProvenanceV2.model_validate(provenance)
             except (TypeError, ValueError) as exc:
                 raise ValueError("news_learning_program_compile_provenance_invalid") from exc
             canonical_provenance = parsed_provenance.model_dump(mode="json")
-            if (
-                parsed_provenance.mode != "optimizer_candidate"
-                or canonical_provenance != provenance
-                or parsed_provenance.holdout_access_attestation is not False
-            ):
+            if parsed_provenance.mode != "optimizer_candidate" or canonical_provenance != provenance:
                 raise ValueError("news_learning_program_compile_provenance_invalid")
             if provenance.get("development_dataset_sha") != candidate.development_dataset_sha:
                 raise ValueError("news_learning_program_compile_dataset_mismatch")
-            expected_patch_sha = _sha(
-                {
-                    "parent_program_sha256": receipt.program_parent_sha256,
-                    "candidate_program_sha256": receipt.program_candidate_sha256,
-                    "machine_diff": receipt.program_machine_diff,
-                    "compile_provenance": provenance,
-                }
-            )
-            if receipt.candidate_patch_sha != expected_patch_sha:
+            if parsed_provenance.learning_epoch_started_at_ms != self._learning_epoch_started_at_ms():
+                raise ValueError("news_learning_program_compile_epoch_mismatch")
+            compile_export = self.development_compile_export(candidate.development_dataset_sha)
+            episode_payloads = list(compile_export.episodes)
+            case_ids = [str(episode["case_id"]) for episode in episode_payloads]
+            cluster_ids = [str(episode["cluster_id"]) for episode in episode_payloads]
+            if (
+                parsed_provenance.projection_schema_id != COMPILE_EPISODE_PROJECTION_SCHEMA
+                or parsed_provenance.development_dataset_payload_sha256 != _sha(compile_export.dataset_payload)
+                or parsed_provenance.case_root_sha256 != _sha(case_ids)
+                or parsed_provenance.cluster_root_sha256 != _sha(cluster_ids)
+                or parsed_provenance.episode_projection_root_sha256 != _sha(episode_payloads)
+                or parsed_provenance.episode_count != len(episode_payloads)
+            ):
+                raise ValueError("news_learning_program_compile_corpus_mismatch")
+            if parsed_provenance.parent_program_sha256 != receipt.program_parent_sha256:
+                raise ValueError("news_learning_program_compile_parent_mismatch")
+            if (
+                parsed_diff.parent_program_sha256 != receipt.program_parent_sha256
+                or parsed_diff.parent_state_sha256 != parsed_provenance.parent_state_sha256
+                or parsed_diff.candidate_program_sha256 != receipt.program_candidate_sha256
+                or parsed_diff.candidate_state_sha256 != receipt.program_state_sha256
+                or parsed_diff.immutable.quality_kernel_sha256 != parsed_provenance.quality_kernel_sha256
+                or parsed_diff.immutable.rule_pack_root_sha256 != parsed_provenance.rule_pack_root_sha256
+                or parsed_diff.eligible_demo_bank_root_sha256 != parsed_provenance.eligible_demo_bank_root_sha256
+            ):
+                raise ValueError("news_learning_program_machine_diff_identity_mismatch")
+            if (
+                parsed_provenance.target_runtime_manifest_sha256
+                != candidate.candidate_arm.runtime_model_bindings_sha256
+            ):
+                raise ValueError("news_learning_program_compile_runtime_manifest_mismatch")
+            if receipt.generator_execution_sha != _sha(provenance):
+                raise ValueError("news_learning_program_generator_execution_mismatch")
+            if parsed_provenance.patch_sha256 != receipt.candidate_patch_sha:
                 raise ValueError("news_learning_program_patch_sha_mismatch")
+            self._verify_compile_receipt_chain(
+                candidate=candidate,
+                provenance=parsed_provenance,
+            )
         elif any(
             value is not None
             for value in (
                 receipt.program_parent_sha256,
                 receipt.program_candidate_sha256,
+                receipt.program_state_sha256,
                 receipt.program_machine_diff,
                 receipt.compile_provenance,
             )
@@ -807,6 +870,7 @@ class CandidateEvaluator:
               JOIN news_reviews j ON j.review_id = a.accepts_review_id
               JOIN news_external_miss_snapshots x ON x.snapshot_id = j.external_snapshot_id
              WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'external_miss'
+               AND a.release_eligible AND j.release_eligible
                AND a.created_at_ms >= %s AND j.created_at_ms >= %s
                AND a.created_at_ms <= %s AND j.rubric_version = %s
                AND j.reader_contract_version = %s
@@ -1597,7 +1661,7 @@ class CandidateEvaluator:
                 if judge is None:  # pragma: no cover - guarded by the artifact-missing return above
                     raise RuntimeError("news_program_artifact_missing")
                 judgment = await judge.judge(context)
-        except SemanticProgramError as exc:
+        except SemanticJudgeError as exc:
             if "recording_missing" in exc.code:
                 raise RecordReplayMiss(exc.code) from exc
             partial_trace = exc.partial_trace.model_dump(mode="json") if exc.partial_trace is not None else {}
@@ -1619,6 +1683,7 @@ class CandidateEvaluator:
                 or judgment.program_sha256 != arm.program_sha256
                 or judgment.trace.program_version != arm.program_version
                 or judgment.trace.program_sha256 != arm.program_sha256
+                or judgment.trace.factory_id != LEARNING_PROGRAM_FACTORY_ID
             ):
                 raise ValueError("news_program_judgment_identity_mismatch")
             observation = judgment.model_dump(mode="json")
@@ -1723,6 +1788,7 @@ class CandidateEvaluator:
             "signature_sha256": signature_sha,
             "instruction_sha256": instruction_sha,
             "demos_sha256": demos_sha,
+            "adapter_sha256": trace.get("adapter_sha256"),
             "model_binding": model_binding,
             "runtime_provider": runtime_provider,
             "runtime_model": runtime_model,
@@ -2475,6 +2541,45 @@ class CandidateEvaluator:
         if _sha({"kind": "candidate_registration", "payload": payload}) != receipt.registration_receipt_sha:
             raise ValueError("news_learning_candidate_registration_hash_mismatch")
 
+    def _verify_compile_receipt_chain(
+        self,
+        *,
+        candidate: CandidateManifest,
+        provenance: OptimizerCompileProvenanceV2,
+    ) -> None:
+        rows = self._conn.execute(
+            "SELECT artifact_sha, parent_sha, payload FROM news_learning_artifacts "
+            "WHERE kind = 'compile_receipt' "
+            "AND payload ->> 'receipt_payload_root_sha256' = %s",
+            (provenance.receipt_payload_root_sha256,),
+        ).fetchall()
+        if not rows:
+            raise ValueError("news_learning_program_compile_receipt_missing")
+        if len(rows) != 1:
+            raise ValueError("news_learning_program_compile_receipt_ambiguous")
+        row = rows[0]
+        payload = dict(row["payload"] or {})
+        expected_artifact_sha = _sha({"kind": "compile_receipt", "payload": payload})
+        if str(row["artifact_sha"]) != expected_artifact_sha:
+            raise ValueError("news_learning_program_compile_receipt_artifact_hash_mismatch")
+        if str(row.get("parent_sha") or "") != candidate.development_dataset_sha:
+            raise ValueError("news_learning_program_compile_receipt_parent_mismatch")
+        receipt = candidate.proposal_receipt
+        try:
+            chain = validate_compile_receipt_chain_v2(
+                payload,
+                provenance=provenance,
+                patch_sha256=receipt.candidate_patch_sha,
+                parent_program_sha256=str(receipt.program_parent_sha256),
+                parent_state_sha256=provenance.parent_state_sha256,
+                eligible_demo_bank_root_sha256=provenance.eligible_demo_bank_root_sha256,
+                target_runtime_manifest_sha256=candidate.candidate_arm.runtime_model_bindings_sha256,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("news_learning_program_compile_receipt_invalid") from exc
+        if chain.model_dump(mode="json") != payload:
+            raise ValueError("news_learning_program_compile_receipt_noncanonical")
+
     def _candidate(self, candidate_sha: str) -> CandidateManifest:
         candidate = self._candidates.get(candidate_sha)
         if candidate is not None:
@@ -2501,25 +2606,46 @@ class CandidateEvaluator:
             raise ValueError("news_learning_candidate_registration_missing")
         return int(row["created_at_ms"])
 
-    def _load_dataset(self, artifact_sha: str) -> DatasetManifest:
+    def _load_dataset_payload(self, artifact_sha: str) -> dict[str, Any]:
         row = self._conn.execute(
             "SELECT payload FROM news_learning_artifacts WHERE artifact_sha = %s AND kind = 'dataset'", (artifact_sha,)
         ).fetchone()
         if row is None:
             raise ValueError("news_learning_dataset_not_found")
         payload = dict(row["payload"] or {})
-        if payload.get("learning_epoch") != LEARNING_EPOCH:
+        if _sha({"kind": "dataset", "payload": payload}) != artifact_sha:
+            raise ValueError("news_learning_dataset_artifact_hash_mismatch")
+        return payload
+
+    def _validate_dataset_payload(self, artifact_sha: str, payload: Mapping[str, Any]) -> DatasetManifest:
+        exact_payload = dict(payload)
+        if exact_payload.get("learning_epoch") != LEARNING_EPOCH:
             raise ValueError("news_learning_epoch_mismatch")
         epoch_started_at_ms = self._learning_epoch_started_at_ms()
-        if payload.get("learning_epoch_started_at_ms") != epoch_started_at_ms:
+        if exact_payload.get("learning_epoch_started_at_ms") != epoch_started_at_ms:
             raise ValueError("news_learning_epoch_deployment_mismatch")
-        hashes = dict(payload.get("hashes") or {})
+        hashes = dict(exact_payload.get("hashes") or {})
         expected_epoch_sha = _sha({"epoch": LEARNING_EPOCH, "started_at_ms": epoch_started_at_ms})
         if hashes.get("learning_epoch_sha") != expected_epoch_sha:
             raise ValueError("news_learning_epoch_hash_mismatch")
-        if payload.get("profile_id") != LEARNING_PROFILE_ID:
+        if exact_payload.get("profile_id") != LEARNING_PROFILE_ID:
             raise ValueError("news_learning_profile_mismatch")
-        return DatasetManifest(artifact_sha=artifact_sha, **payload)
+        expected_hashes = {
+            "trusted_root_sha": self._trusted_root_sha,
+            "learning_epoch_sha": expected_epoch_sha,
+            "rubric_sha": _text_sha(REVIEW_RUBRIC_VERSION),
+            "reader_contract_sha": READER_CONTRACT_SHA256,
+            "agent_bundle_sha": self._stable.bundle_sha,
+            "extraction_sha": _text_sha("news_learning_freeze_query_v1"),
+        }
+        if hashes != expected_hashes:
+            raise ValueError("news_learning_dataset_contract_hash_mismatch")
+        if exact_payload.get("reader_contract_version") != READER_CONTRACT_VERSION:
+            raise ValueError("news_learning_dataset_reader_contract_mismatch")
+        return DatasetManifest(artifact_sha=artifact_sha, **exact_payload)
+
+    def _load_dataset(self, artifact_sha: str) -> DatasetManifest:
+        return self._validate_dataset_payload(artifact_sha, self._load_dataset_payload(artifact_sha))
 
     def _load_production_observations(
         self,
@@ -2679,6 +2805,8 @@ class CandidateEvaluator:
         return str(row["stable_sha"])
 
     def _assert_active_stable(self) -> str:
+        if self._stable.program_version != LEARNING_PROGRAM_VERSION:
+            raise ValueError("news_learning_program_v1_unsupported")
         active_sha = self._active_stable_sha()
         if active_sha != self._stable.bundle_sha:
             raise ValueError("news_learning_active_stable_mismatch")
@@ -2695,15 +2823,16 @@ class CandidateEvaluator:
     def _learning_epoch_started_at_ms(self) -> int:
         row = self._conn.execute(
             "SELECT starts_at_ms, program_factory_id, artifact_schema_version, "
-            "prior_evidence_disposition, reset_reason "
+            "baseline_program_version, prior_evidence_disposition, reset_reason "
             "FROM news_learning_epochs WHERE epoch_id = %s",
             (LEARNING_EPOCH,),
         ).fetchone()
         if row is None:
             raise ValueError("news_learning_epoch_not_deployed")
         if (
-            str(row["program_factory_id"]) != "tracefold.news.semantic_program.factory_v1"
-            or str(row["artifact_schema_version"]) != "news_semantic_program_artifact_v1"
+            str(row["program_factory_id"]) != LEARNING_PROGRAM_FACTORY_ID
+            or str(row["artifact_schema_version"]) != LEARNING_ARTIFACT_SCHEMA_VERSION
+            or str(row["baseline_program_version"]) != LEARNING_PROGRAM_VERSION
             or str(row["prior_evidence_disposition"]) != "audit_only"
             or str(row["reset_reason"]) != LEARNING_EPOCH_RESET_REASON
         ):
@@ -2802,9 +2931,11 @@ def _program_call_provenance_complete(observation: Mapping[str, Any]) -> bool:
     trace = observation.get("trace") or {}
     calls = list(observation.get("calls") or (trace.get("calls") if isinstance(trace, Mapping) else ()) or [])
     physical_calls = [call for call in calls if isinstance(call, Mapping) and call.get("physical_provider_call")]
+    adapter_sha = str(trace.get("adapter_sha256") or "") if isinstance(trace, Mapping) else ""
     return (
         usage.get("physical_call_count") is not None
         and int(usage["physical_call_count"]) == len(physical_calls)
+        and (not physical_calls or (len(adapter_sha) == 64 and all(char in "0123456789abcdef" for char in adapter_sha)))
         and all(_program_call_identity_complete(call) for call in physical_calls)
     )
 
@@ -3262,6 +3393,7 @@ def _arm_exact_diff(
             "candidate_program_version": candidate.program_version,
             "stable_program_sha256": stable.program_sha256,
             "candidate_program_sha256": candidate.program_sha256,
+            "candidate_state_sha256": proposal.program_state_sha256,
             "machine_diff": dict(proposal.program_machine_diff or {}),
             "compile_provenance": dict(proposal.compile_provenance or {}),
         }

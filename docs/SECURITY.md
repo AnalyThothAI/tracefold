@@ -34,6 +34,8 @@ The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
 `llm.news_reader_card.api_key` (dedicated ReaderCard endpoint), the optional
 `llm.news_triage_fallback.api_key` (second Triage endpoint, issue #65),
+the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
+fallback endpoint),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, and the five PostgreSQL password files
 (bootstrap, Serve, Review, Workers, migrate).
@@ -71,7 +73,10 @@ audit trace contains every provider attempt.
 
 EventSemantics uses the primary Triage endpoint. ReaderCard inherits that
 endpoint unless the operator supplies the complete `llm.news_reader_card`
-triple. The two Predictors always receive separate Adapters and artifact-owned
+triple. The fallback route likewise aliases both Predictor slots only when
+`llm.news_reader_card_fallback` is absent; a requested dedicated Reader fallback
+must validate or the entire fallback route is disabled. The two Predictors
+always receive separate Adapters and artifact-owned
 token caps; endpoint credentials remain application configuration and never
 enter the content-addressed Program artifact or secret-free runtime identity.
 The identity includes only a one-way endpoint fingerprint beside provider and
@@ -90,15 +95,18 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 `decide()` and feed ordering remain deterministic.
 
 The only loadable semantic image is a canonical, content-addressed, state-only
-`ProgramArtifact` JSON manifest/state pair carried in the application image and
+`ProgramArtifact v2` JSON manifest/state pair carried in the application image and
 selected by its code-owned registry. The loader verifies schema, Program/state
-hashes, fixed factory/topology/signatures, source and dependency-lock identity,
-Adapter/assembler/input contracts, exact files and safe path shape before use.
+hashes, the QualityKernelRef, ordered code-owned RulePacks, bounded
+LearnedStrategy, typed DemoBank, four model slots, fixed factory/topology/
+Signatures, source and dependency-lock identity, Adapter/assembler/input
+contracts, exact files and safe path shape before use.
 The dependency-lock digest is a package-owned generated identity checked
 against `uv.lock` in development, so wheel loading never trusts or searches an
 ambient repository. Parsed demonstration JSON is recursively scanned and must
-match the exact model-visible input schema; audit `event_id`/fact ids, endpoints
-and secret keys cannot be smuggled through a JSON string. It fails closed on
+match the exact model-visible input schema; provenance is stored separately and
+audit ids, endpoints and secret keys cannot be smuggled into model-visible
+bytes. It fails closed on
 unknown or mismatched state. Pickle, cloudpickle, DSPy Flex,
 dynamic Python/classes, arbitrary callbacks/history, endpoints, credentials and
 secret-bearing headers are forbidden artifact state; a database candidate is
@@ -107,21 +115,39 @@ must pass normal code review and be shipped in the registry.
 There is no legacy Prompt executor or dynamic compatibility loader to bypass
 these checks; Prompt-era database fields are audit-only.
 
-The DSPy GEPA compiler is a cold manual development command, not a runtime
-Worker. It receives accepted `program_v3` development episodes only and must be
-given explicit metric-call, total task/reflection-model-call,
-provider-cost-in-microusd limits and a seed. It has no authority to read
-validation/holdout, write accepted truth, register, deploy or promote. Its
-output remains an unaccepted candidate until the ordinary release chain and
-code review carry it into an image.
+The DSPy GEPA compiler is a cold manual development workflow, not a runtime
+Worker. A trusted read-only exporter recomputes the current `program_v4`
+development artifact and ordered case/cluster/episode roots. An untrusted
+resource-bounded runner receives a read-only input bundle, no DB/holdout/
+application credentials, no ambient HOME or arbitrary egress, and provider
+access only through a metered proxy sidecar over a fresh named-volume Unix
+socket. The runner uses `--network none`; only the sidecar has provider egress
+and the short-lived provider secret. Before that secret is mounted, the trusted
+host verifies the exact local Docker image ID and independently hashes the
+image's News source tree and dependency lock without executing image code.
+Tags and registry manifest references are rejected. The sidecar reserves each
+call from the complete positive `llm.news_compiler_tariff`, forces the
+role-owned output/cache/timeout parameters, and records canonical per-call
+usage/cost/finish/error leaves. Missing actual provider cost or any mismatch
+fails before candidate construction. The optimizer can emit only a typed
+`ProgramPatchV2`: the two LearnedStrategy values and eligible Demo references.
+It cannot modify Kernel, RulePacks, topology, Signatures, execution, routes,
+policy or stable identity. The trusted side rehashes every receipt payload,
+applies the patch to the exact active stable root, and emits an unaccepted
+candidate. Timeout, denied access, missing cost, quota breach, invalid patch or
+extra output produces no Artifact. Bounded stdout/stderr capture and exact-name
+container/network/volume cleanup are part of the signed launch receipt; a
+Docker transport failure is never interpreted as proof of cleanup.
 
 Migration `0292` creates the append-only deployment-time `program_v1` learning
 epoch; `0293` preserves it and appends `program_v2` for the corrected semantic
 retry state machine and hardened restatement sentinel. `0294` preserves both
 rows and appends `program_v3` for the expert quality baseline and semantic
-normalization. Prompt-era, `program_v1`, and `program_v2` reviews, datasets,
-recordings and release receipts are retained as audit history but are never
-training, validation, holdout or promotion evidence for this Program factory.
+normalization. `0295` preserves v1-v3 and appends `program_v4` for factory/
+artifact v2 and the optimizer-ownership hard cut. Every earlier review,
+dataset, recording and release receipt is retained as audit history but is
+never training, DemoBank, validation, holdout or promotion evidence for the
+current Program factory.
 The reset is an eligibility hard cut, not permission for an optimizer to
 relabel old evidence or delete it.
 

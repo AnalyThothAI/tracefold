@@ -62,11 +62,24 @@ different direct endpoint. When absent, ReaderCard inherits the Triage endpoint.
 EventSemantics and ReaderCard still receive separate Adapters and their own
 artifact-owned `max_tokens`; changing this endpoint changes only the secret-free
 `reader_card.primary` runtime binding identity, not Program identity.
+`llm.news_compiler_tariff` is an optional, secret-free contract used only by
+the manual cold compiler. Its `tariff_id`, positive `input_token_overhead`, and
+positive task/reflection input/output micro-USD-per-million-token rates are all
+required together; a partial or zero-rate tariff fails configuration. It does
+not affect Workers or hot-path model calls. `tracefold config` reports only
+whether this tariff is configured and its non-secret ID. `learning compile`
+also requires an explicit local `--compiler-image sha256:<64 hex>`; tags and
+registry manifest references are rejected.
 `llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
 only valid next to a complete primary triple; issue #65) is a second direct
 endpoint used only when the primary Triage call fails — timeout, transport
 error, truncated or invalid output — or while the Program artifact's primary-
-route breaker is open. The shipped artifact owns that breaker plus each
+route breaker is open. `llm.news_reader_card_fallback` is an optional complete
+ReaderCard endpoint for that same fallback route and is valid only when
+`news_triage_fallback` is complete. When it is absent, the Reader fallback slot
+is an explicit alias of the EventSemantics fallback slot; when it is present but
+invalid, the whole fallback route is unavailable rather than silently using a
+different backend. The shipped artifact owns that breaker plus each
 route's deadline and retry/call budget; `deadline_seconds` is not a
 configuration field. The separate `news.triage.circuit_failures` /
 `circuit_open_seconds` settings govern the consumer's whole-chain breaker after
@@ -75,7 +88,8 @@ answered and the trace carries `model_fallback_from` (the primary's error code
 or `primary_circuit_open`) or, when both routes failed, `primary_error`.
 `/api/news/status.pipeline` and `tracefold config` report `triage_model`, the
 effective `reader_card_model`, whether it is dedicated, and
-`triage_fallback_model`. Internal `ReaderCard.v2` outputs only `headline_zh`
+`triage_fallback_model` plus the effective Reader fallback model/dedicated flag.
+Internal `ReaderCard.v2` outputs only `headline_zh`
 and `why_zh`; no other model or provider produces copy. Raw persisted
 `TriageVerdict.title_zh` is always `""` for the current Program. Feed and
 summary read models may expose the non-empty derived display value returned by
@@ -359,23 +373,28 @@ aggregate cost is unknown unless every billable call reported it.
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_semantic_program_v1`, `news_triage_policy_v7`, and
+`news_semantic_program_v2`, `news_triage_policy_v7`, and
 `news_delivery_card_v10`. The exact Program identity is its content SHA, not
 the display version alone.
 
-`ProgramArtifact` is the only executable semantic configuration. It is a
+`ProgramArtifact v2` is the only executable semantic configuration. It is a
 canonical, content-addressed, state-only JSON pair (`manifest.json` and
 `state.json`) carried in the application image and selected by the code-owned
-registry. The manifest binds the fixed factory/topology, DSPy and dependency
-lock, input/Adapter/normalizer/assembler contracts, execution budget,
-Predictor state hashes and compile receipt; state is limited to the two validated Predictor
-records (name/signature identity, instruction, demonstrations, model-binding
-slots, token cap and their hashes). Loading fails closed on an
+registry. Its `QualityKernelRef` binds the factory/topology, Signatures,
+renderer, validator/normalizer/assembler, Adapter, execution and dependency
+identities. Ordered code-owned RulePacks are authoritative; per-Predictor
+LearnedStrategy is bounded advisory text; the typed DemoBank separates
+model-visible input/output from provenance; and four logical model slots plus
+token caps are explicit. Rendered instructions are derived bytes, never a
+second editable truth. Loading fails closed on an
 unknown hash/version/factory/lock, a path or symlink violation, extra file, or
-unsafe state. The lock digest is carried by the package and must match the
+unsafe or secret-bearing state. The lock digest is carried by the package and must match the
 source `uv.lock`; it is not discovered by walking outside an installed wheel.
 Demo evidence is accepted only in the exact model-visible input schema, which
-excludes Event/fact audit ids, endpoints and credentials. Pickle, cloudpickle,
+excludes Event/fact audit ids, provenance, endpoints and credentials. The
+optimizer can emit only a typed patch to LearnedStrategy and eligible Demo
+references; the trusted side reconstructs the final Artifact from the exact
+active stable root. Pickle, cloudpickle,
 DSPy Flex state, dynamic Python/classes,
 endpoints and credentials are not artifact formats. DSPy cache and hidden
 provider retries are disabled; every provider attempt must appear in the trace.
@@ -448,7 +467,9 @@ that history and appends the corrected `program_v2` epoch; Prompt-era and
 `program_v1` learning rows are audit-only and promotion-ineligible.
 `20260822_0294` preserves both rows and appends the expert-quality `program_v3`
 epoch; Prompt-era, `program_v1`, and `program_v2` rows are audit-only for the
-current release chain. A database
+then-current release chain. `20260822_0295` preserves v1-v3 and appends the
+D-generation `program_v4` epoch with factory/artifact v2; every earlier row is
+audit-only for the current compiler and release chain. A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
 News base-table set plus four security-barrier review views is asserted by
@@ -539,7 +560,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260822_0294`).
+append without rewrite access (current at migration `20260822_0295`).
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
 News GET; the two ReviewDesk POST paths are explicitly catalogued as write
 routes rather than falsely EXPLAINed as reads. `/healthz`, `/metrics`, and
@@ -554,16 +575,19 @@ idempotency key.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
-the deployment-time `program_v3` epoch; Prompt-era, `program_v1`, and
-`program_v2` evidence are audit-only, and reviews plus acceptance receipts
-before the epoch cannot enter a dataset.
+the deployment-time `program_v4` epoch; every earlier Prompt/Program cohort is
+audit-only, and reviews plus acceptance receipts before the epoch cannot enter
+a dataset or DemoBank.
 `learning compile --development SHA --artifact-root DIR --out FILE
 --max-metric-calls N --max-task-model-calls N --max-cost-microusd N [--seed
-N]` is the manual cold DSPy GEPA compiler. It consumes accepted development
-episodes only, runs the fixed two-Predictor factory under three explicit limits
-plus the declared seed, and emits a content-addressed state-only Program artifact plus compile
-receipt/proposal input. It cannot read holdout, register, accept, deploy or
-promote its output.
+N]` is the manual cold DSPy GEPA workflow. A trusted exporter recomputes the
+development dataset and ordered episode roots, then launches an isolated runner
+without DB/holdout/application credentials. The runner is bounded by the
+declared calls, cost, seed and resource policy and can emit only a typed
+`ProgramPatchV2` for LearnedStrategy and eligible Demo references. A trusted
+applier validates the complete receipt chain and builds an unaccepted
+content-addressed Artifact from the exact stable root. The runner cannot read
+holdout, register, accept, deploy or promote its output.
 
 `learning propose` seals exactly one candidate variable (`program` or
 `policy`) against a development dataset. `learning evaluate` runs the

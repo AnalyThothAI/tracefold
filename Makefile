@@ -11,7 +11,7 @@ TRACEFOLD_WORKERS_URL ?= http://127.0.0.1:$(TRACEFOLD_WORKERS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
+.PHONY: help up _up-locked build-news-rollback-image deploy-image _deploy-image-locked status logs down preflight sync install uninstall tool-path test test-all test-slow lint compile check init config db-migrate db-health serve workers serve-shell workers-shell clean test-integration test-e2e test-golden test-architecture test-contract regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -140,6 +140,67 @@ _up-locked:
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) migrate serve workers || fail; \
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
+
+build-news-rollback-image: preflight ## build the reviewed program-v3-equivalent factory-v2 rollback image
+	@set -eu; \
+		git_dir=$$(git rev-parse --absolute-git-dir); \
+		git_common_dir=$$(git rev-parse --path-format=absolute --git-common-dir); \
+		branch=$$(git branch --show-current); \
+		if [ "$$git_dir" != "$$git_common_dir" ] || [ "$$branch" != "main" ]; then \
+			echo "build-news-rollback-image must run from the primary checkout on main." >&2; \
+			exit 2; \
+		fi; \
+		if ! git diff --quiet --ignore-submodules -- || \
+			! git diff --cached --quiet --ignore-submodules --; then \
+			echo "build-news-rollback-image refuses tracked or staged changes." >&2; \
+			exit 2; \
+		fi; \
+		relevant_untracked=$$(git ls-files --others --exclude-standard -- ':(exclude)docs/**'); \
+		ignored_deployment_inputs=$$(git ls-files --others -- \
+			Dockerfile .dockerignore deploy/news-program-v3-rollback); \
+		if [ -n "$$relevant_untracked" ] || [ -n "$$ignored_deployment_inputs" ]; then \
+			echo "build-news-rollback-image refuses untracked build inputs outside docs/." >&2; \
+			exit 2; \
+		fi; \
+		if ! origin_main=$$(git rev-parse --verify refs/remotes/origin/main 2>/dev/null); then \
+			echo "build-news-rollback-image requires a local origin/main ref." >&2; \
+			exit 2; \
+		fi; \
+		head=$$(git rev-parse --verify HEAD); \
+		if [ "$$head" != "$$origin_main" ]; then \
+			echo "build-news-rollback-image requires primary main HEAD to equal origin/main." >&2; \
+			exit 2; \
+		fi; \
+		bundle="$$(pwd -P)/deploy/news-program-v3-rollback"; \
+		rollback_sha=$$(uv run python -m tracefold.news.agents.program_artifact_tool \
+			--verify-profile program_v3_rollback --input "$$bundle"); \
+		token="$${GITHUB_TOKEN:-}"; \
+		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
+			token=$$(gh auth token 2>/dev/null || true); \
+		fi; \
+		GITHUB_TOKEN="$$token"; \
+		export GITHUB_TOKEN; \
+		tag="tracefold-app:program-v3-rollback-$$(printf '%s' "$$head" | cut -c1-12)"; \
+		DOCKER_BUILDKIT=1 docker build \
+			--secret id=github_token,env=GITHUB_TOKEN \
+			--build-arg TRACEFOLD_BUILD_REVISION="$$head" \
+			--build-arg TRACEFOLD_NEWS_PROGRAM_PROFILE=program_v3_rollback \
+			--tag "$$tag" .; \
+		image_id=$$(docker image inspect --format '{{.Id}}' "$$tag"); \
+		profile=$$(docker image inspect --format '{{index .Config.Labels "io.tracefold.news.program.profile"}}' "$$image_id"); \
+		revision=$$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$$image_id"); \
+		loaded_sha=$$(docker run --rm --entrypoint python "$$image_id" -c \
+			'from tracefold.news.agents.semantic_program import load_stable_program_artifact; print(load_stable_program_artifact().program_sha256)'); \
+		if [ "$$profile" != "program_v3_rollback" ] || [ "$$revision" != "$$head" ] || \
+			[ "$$loaded_sha" != "$$rollback_sha" ]; then \
+			echo "Rollback image identity verification failed." >&2; \
+			exit 2; \
+		fi; \
+		echo "Tracefold rollback image built and verified."; \
+		echo "  image_id=$$image_id"; \
+		echo "  program_sha256=$$loaded_sha"; \
+		echo "  source_revision=$$revision"; \
+		echo "Deploy only with: make deploy-image IMAGE_ID=$$image_id"
 
 deploy-image: preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _deploy-image-locked

@@ -114,11 +114,11 @@ deployments and rollback receipts live in `news_learning_artifacts` and
 Workers registers the runtime manifest and its linked active/deployment receipt
 as a synchronous startup barrier before its probe can become ready.
 `news_learning_epochs` records immutable deployment-time evidence epochs. The
-current `program_v3` epoch supersedes the first two Program baselines after the
-expert quality baseline and semantic normalization changed Program identity;
-Prompt-era, `program_v1`, and `program_v2` rows remain append-only audit history,
-but no current dataset or release gate may treat them as training or promotion
-evidence.
+current `program_v4` epoch hard-cuts to the D-generation factory: structured
+code-owned quality contracts are separate from optimizer-owned strategy/demo
+state, and every earlier Prompt/Program row remains append-only audit history.
+No current dataset, compiler, replay or release gate may treat pre-v4 evidence
+as training or promotion truth.
 `news_learning_retention_state` makes the bounded 90/365-day cold purge and
 its current backlog/error observable; the database function pins the current
 and previous distinct stable release chains. The exact `news_*` base-table set
@@ -141,7 +141,7 @@ tracefold.news
   price_repository.py quote snapshots, Event Reactions, and the bounded review aggregates
   facts.py            atomic fact units and immutable Event evidence snapshots
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-  candidate_evaluator.py content-addressed program_v3 datasets and stable/candidate evaluation workflow
+  candidate_evaluator.py content-addressed program_v4 datasets and stable/candidate evaluation workflow
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   events.py           the Deduper transaction (admit_item)
@@ -746,15 +746,17 @@ Issue #129 first starts the immutable `program_v1` learning epoch at migration
 deployment time. Corrective migration `0293` preserves that history and appends
 `program_v2` after fixing the semantic retry state machine. Issue #132 migration
 `0294` preserves both prior rows and appends `program_v3` for the expert quality
-baseline and semantic normalization. All Prompt-era, `program_v1`, and
-`program_v2` reviews, datasets, recordings, reports and release receipts remain
-readable audit evidence, but they are promotion-ineligible and cannot seed a
-new Program dataset. Evidence accumulation starts from zero: Event reviews and
-acceptance receipts must be created after the current epoch, and eligible
-verdicts must match the exact stable Program bundle.
+baseline and semantic normalization. Issue #134 migration `0295` preserves all
+three rows and appends `program_v4` for the D-generation factory/artifact and
+optimizer-ownership hard cut. All earlier reviews, datasets, recordings,
+reports and release receipts remain readable audit evidence, but they are
+promotion-ineligible and cannot seed a v4 Program or DemoBank. Evidence
+accumulation starts from zero: Event reviews and acceptance receipts must be
+created after the current epoch, and eligible verdicts must match the exact
+stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v3` evidence, compares stable with exactly one declared `program` or
+`program_v4` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -772,12 +774,15 @@ or injection obedience) is a release failure. Mean and peak delivery load are
 reported for operator impact analysis but are not candidate-release quotas;
 correctly recognizing many distinct facts cannot fail a release by count alone.
 The optional DSPy GEPA compiler is a cold, manual development tool, never a
-Workers loop. It reads accepted development episodes only, uses the fixed
-two-Predictor factory, and requires explicit metric-call, task/reflection-model
-call and provider-cost-in-microusd limits plus a seed. Its canonical compile receipt
-binds the dataset, metric, optimizer configuration, trajectory/checkpoint and
-machine diff. It cannot read validation/holdout, accept a review, register or
-deploy its own output, move a stable pointer, or promote a candidate.
+Workers loop. A trusted exporter seals current-epoch accepted development into
+an ordered corpus root; an untrusted, resource-bounded runner receives no DB,
+holdout or application credentials and can emit only `ProgramPatchV2`. That
+patch may change the two LearnedStrategy values and select/reorder eligible
+DemoBank references, never the QualityKernel, RulePacks, topology, Signatures,
+execution contract, model slots or policy. The trusted side revalidates every
+receipt payload and applies the patch to the exact active stable root. GEPA
+cannot accept a review, register/deploy its output, move a stable pointer, or
+promote a candidate.
 Automated optimizers may propose a Program candidate but cannot modify the
 reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
 or production assignment.
@@ -845,7 +850,9 @@ earlier Prompt-era learning evidence audit-only. `0293` preserves that row and
 appends the corrected `program_v2` epoch, making `program_v1` evidence
 audit-only for current release decisions. `0294` preserves both earlier Program
 epochs and appends the expert-quality `program_v3` epoch, making `program_v2`
-evidence audit-only for current release decisions. No
+evidence audit-only for current release decisions. `0295` preserves v1-v3 and
+appends the D-generation `program_v4` epoch with factory/artifact v2, making all
+earlier evidence audit-only for the current compiler and release chain. No
 chained revision has a downgrade. Earlier hard cuts live only in git history;
 a fresh database and a database upgraded through the chain reach
 byte-identical schemas.

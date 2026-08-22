@@ -167,12 +167,22 @@ def _rubric(*, why: str = "pass") -> EventRubricSubmission:
     )
 
 
-def _insert_learning_dataset(conn, dataset_sha: str, *, learning_epoch: str = LEARNING_EPOCH) -> None:
+def _insert_learning_dataset(
+    conn,
+    dataset_sha: str,
+    *,
+    learning_epoch: str = LEARNING_EPOCH,
+    bundle_sha: str = ACTIVE_BUNDLE,
+) -> None:
     conn.execute(
         "INSERT INTO news_learning_artifacts "
         "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
         "VALUES (%s, 'dataset', NULL, %s::jsonb, 'test', %s)",
-        (dataset_sha, json.dumps({"learning_epoch": learning_epoch}), NOW),
+        (
+            dataset_sha,
+            json.dumps({"learning_epoch": learning_epoch, "agent_cohort": {"bundle_sha": bundle_sha}}),
+            NOW,
+        ),
     )
 
 
@@ -270,15 +280,38 @@ def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
     )
     conn.execute("UPDATE news_events SET priority = 'high' WHERE event_id = ANY(%s)", ([first_event, second_event],))
 
-    coverage = ReviewDesk(conn, now_ms=review_now).open(DeskQuery(view="coverage"), principal=PRINCIPAL)
+    desk = ReviewDesk(conn, now_ms=review_now)
+    for event_id in (first_event, second_event):
+        task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+        with repositories_for_connection(conn).transaction():
+            desk.submit(
+                TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+                _rubric(),
+                principal=PRINCIPAL,
+                idempotency_key=str(uuid.uuid4()),
+            )
+
+    coverage = desk.open(DeskQuery(view="coverage"), principal=PRINCIPAL)
     by_cohort = {row["cohort"]: row for row in coverage["cohorts"]}
     assert set(by_cohort) == {first_bundle}
     assert by_cohort[first_bundle]["agent"]["bundle_sha"] == first_bundle
     assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {"news_semantic_program_test/v6/test-model"}
     assert coverage["funnel"]["total"] == 1
-    default_queue = ReviewDesk(conn, now_ms=review_now).open(DeskQuery(), principal=PRINCIPAL)
+    assert coverage["funnel"]["accepted"] == 1
+    eligibility = conn.execute(
+        "SELECT event_id, bool_and(release_eligible) AS release_eligible FROM news_reviews "
+        "WHERE event_id = ANY(%s) GROUP BY event_id",
+        ([first_event, second_event],),
+    ).fetchall()
+    assert {row["event_id"]: row["release_eligible"] for row in eligibility} == {
+        first_event: True,
+        second_event: False,
+    }
+    default_queue = ReviewDesk(conn, now_ms=review_now).open(DeskQuery(status="all"), principal=PRINCIPAL)
     assert {task["event_id"] for task in default_queue["tasks"]} == {first_event}
-    second_queue = ReviewDesk(conn, now_ms=review_now).open(DeskQuery(cohort=second_bundle), principal=PRINCIPAL)
+    second_queue = ReviewDesk(conn, now_ms=review_now).open(
+        DeskQuery(cohort=second_bundle, status="all"), principal=PRINCIPAL
+    )
     assert {task["event_id"] for task in second_queue["tasks"]} == {second_event}
 
 
@@ -330,25 +363,63 @@ def test_coverage_epoch_excludes_prior_events_reviews_and_external_misses(conn) 
             principal=PRINCIPAL,
             idempotency_key=str(uuid.uuid4()),
         )
-    conn.execute(
-        """
-        INSERT INTO news_external_miss_snapshots (
-          snapshot_id, evidence_sha256, source_url, title, body, occurred_at_ms,
-          observed_at_ms, provenance, snapshot, created_by, created_at_ms
-        ) VALUES (%s, %s, %s, %s, '', %s, %s, 'operator_reported', '{}'::jsonb, 'test', %s)
-        """,
-        (
-            "8" * 64,
-            "9" * 64,
-            "https://example.test/prior-epoch-miss",
-            "Prior epoch external miss",
-            epoch_start - 2,
-            epoch_start - 1,
-            epoch_start - 1,
-        ),
-    )
+    with repositories_for_connection(conn).transaction():
+        desk.submit(
+            None,
+            ExternalMissSubmission(
+                source_url="https://example.test/prior-epoch-miss",
+                title="Prior epoch external miss",
+                occurred_at_ms=epoch_start - 2,
+                rubric=_rubric(),
+            ),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
 
     coverage = desk.open(DeskQuery(view="coverage", hours=24), principal=PRINCIPAL)
+
+    eligibility = conn.execute(
+        "SELECT event_id, review_kind, release_eligible FROM news_reviews "
+        "WHERE event_id = ANY(%s) ORDER BY event_id, review_kind",
+        ([prior_event, current_event],),
+    ).fetchall()
+    by_event = {
+        event_id: {row["review_kind"]: row["release_eligible"] for row in eligibility if row["event_id"] == event_id}
+        for event_id in (prior_event, current_event)
+    }
+    assert by_event[prior_event] == {"acceptance": False, "judgment": False}
+    assert by_event[current_event] == {"acceptance": True, "judgment": True}
+    external_eligibility = conn.execute(
+        "SELECT source.source_url, review.review_kind, review.release_eligible "
+        "FROM news_reviews review JOIN news_external_miss_snapshots source "
+        "ON source.snapshot_id = review.external_snapshot_id "
+        "WHERE source.source_url = ANY(%s) ORDER BY source.source_url, review.review_kind",
+        (
+            [
+                "https://example.test/current-epoch-miss",
+                "https://example.test/prior-epoch-miss",
+            ],
+        ),
+    ).fetchall()
+    by_source = {
+        source_url: {
+            row["review_kind"]: row["release_eligible"]
+            for row in external_eligibility
+            if row["source_url"] == source_url
+        }
+        for source_url in (
+            "https://example.test/current-epoch-miss",
+            "https://example.test/prior-epoch-miss",
+        )
+    }
+    assert by_source["https://example.test/current-epoch-miss"] == {
+        "acceptance": True,
+        "judgment": True,
+    }
+    assert by_source["https://example.test/prior-epoch-miss"] == {
+        "acceptance": False,
+        "judgment": False,
+    }
 
     assert coverage["window"]["from_ms"] == epoch_start
     assert coverage["status"] == "ready"
@@ -594,12 +665,24 @@ def test_delivery_terminal_error_code_distinguishes_unknown_from_known_failure(c
 
 
 def test_external_miss_appends_snapshot_and_accepted_judgment_atomically(conn) -> None:
-    desk = ReviewDesk(conn, now_ms=NOW)
+    epoch_start = int(
+        conn.execute(
+            "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
+            (LEARNING_EPOCH,),
+        ).fetchone()["starts_at_ms"]
+    )
+    db_now = int(
+        conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
+            "now_ms"
+        ]
+    )
+    review_now = db_now + 1
+    desk = ReviewDesk(conn, now_ms=review_now)
     submission = ExternalMissSubmission(
         source_url="https://example.test/missed",
         title="A material source item the receiver never ingested",
         body="Primary source body",
-        occurred_at_ms=NOW - 10_000,
+        occurred_at_ms=max(epoch_start, db_now - 10_000),
         rubric=_rubric(),
     )
     key = str(uuid.uuid4())
@@ -613,7 +696,7 @@ def test_external_miss_appends_snapshot_and_accepted_judgment_atomically(conn) -
     assert counts == {"snapshots": 1, "reviews": 2}
     snapshot = conn.execute("SELECT provenance FROM news_external_miss_snapshots").fetchone()
     assert snapshot["provenance"] == "operator_reported"
-    coverage = ReviewDesk(conn).open(DeskQuery(view="coverage"), principal=PRINCIPAL)
+    coverage = desk.open(DeskQuery(view="coverage"), principal=PRINCIPAL)
     assert coverage["funnel"]["external_misses"] == 1
 
 
@@ -776,10 +859,10 @@ def test_superseded_epoch_proposal_and_receipts_are_visible_but_audit_only(conn)
         """,
         (
             old_dataset_sha,
-            json.dumps({"learning_epoch": "program_v1"}),
+            json.dumps({"learning_epoch": "program_v1", "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
             NOW - 8,
             current_dataset_sha,
-            json.dumps({"learning_epoch": LEARNING_EPOCH}),
+            json.dumps({"learning_epoch": LEARNING_EPOCH, "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
             NOW - 7,
             "7" * 64,
             json.dumps(
@@ -789,6 +872,7 @@ def test_superseded_epoch_proposal_and_receipts_are_visible_but_audit_only(conn)
                         "target": "program",
                         "hypothesis": "historical candidate",
                         "development_dataset_sha": old_dataset_sha,
+                        "parent_stable_sha": ACTIVE_BUNDLE,
                     },
                 }
             ),
@@ -801,6 +885,7 @@ def test_superseded_epoch_proposal_and_receipts_are_visible_but_audit_only(conn)
                         "target": "program",
                         "hypothesis": "current candidate",
                         "development_dataset_sha": current_dataset_sha,
+                        "parent_stable_sha": ACTIVE_BUNDLE,
                     },
                 }
             ),
@@ -857,6 +942,68 @@ def test_superseded_epoch_proposal_and_receipts_are_visible_but_audit_only(conn)
     assert current["timeline"][0]["evidence_disposition"] == "current"
 
 
+def test_current_epoch_proposal_from_inactive_parent_is_audit_only(conn) -> None:
+    dataset_sha, candidate_sha = "1" * 64, "2" * 64
+    _insert_learning_dataset(conn, dataset_sha)
+    conn.execute(
+        "INSERT INTO news_learning_artifacts "
+        "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
+        "VALUES (%s, 'candidate', NULL, %s::jsonb, 'test', %s)",
+        (
+            "3" * 64,
+            json.dumps(
+                {
+                    "candidate_sha": candidate_sha,
+                    "manifest": {
+                        "target": "program",
+                        "hypothesis": "stale parent candidate",
+                        "development_dataset_sha": dataset_sha,
+                        "parent_stable_sha": "f" * 64,
+                    },
+                }
+            ),
+            NOW,
+        ),
+    )
+
+    proposal = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="proposals"), principal=PRINCIPAL)["proposals"][0]
+
+    assert proposal["learning_epoch"] == LEARNING_EPOCH
+    assert proposal["evidence_disposition"] == "audit_only"
+    assert proposal["status"] == "audit_only"
+
+
+def test_current_epoch_proposal_from_inactive_dataset_bundle_is_audit_only(conn) -> None:
+    dataset_sha, candidate_sha = "1" * 64, "2" * 64
+    _insert_learning_dataset(conn, dataset_sha, bundle_sha="e" * 64)
+    conn.execute(
+        "INSERT INTO news_learning_artifacts "
+        "(artifact_sha, kind, parent_sha, payload, created_by, created_at_ms) "
+        "VALUES (%s, 'candidate', NULL, %s::jsonb, 'test', %s)",
+        (
+            "3" * 64,
+            json.dumps(
+                {
+                    "candidate_sha": candidate_sha,
+                    "manifest": {
+                        "target": "program",
+                        "hypothesis": "stale development cohort candidate",
+                        "development_dataset_sha": dataset_sha,
+                        "parent_stable_sha": ACTIVE_BUNDLE,
+                    },
+                }
+            ),
+            NOW,
+        ),
+    )
+
+    proposal = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="proposals"), principal=PRINCIPAL)["proposals"][0]
+
+    assert proposal["learning_epoch"] == LEARNING_EPOCH
+    assert proposal["evidence_disposition"] == "audit_only"
+    assert proposal["status"] == "audit_only"
+
+
 def test_coverage_holdout_denominator_excludes_superseded_epoch_cases(conn) -> None:
     old_dataset_sha, current_dataset_sha = "1" * 64, "2" * 64
     conn.execute(
@@ -869,10 +1016,10 @@ def test_coverage_holdout_denominator_excludes_superseded_epoch_cases(conn) -> N
         """,
         (
             old_dataset_sha,
-            json.dumps({"learning_epoch": "program_v1"}),
+            json.dumps({"learning_epoch": "program_v1", "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
             NOW - 2,
             current_dataset_sha,
-            json.dumps({"learning_epoch": LEARNING_EPOCH}),
+            json.dumps({"learning_epoch": LEARNING_EPOCH, "agent_cohort": {"bundle_sha": ACTIVE_BUNDLE}}),
             NOW - 1,
         ),
     )
@@ -1037,6 +1184,58 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
         ).fetchone()["n"]
         == 2
     )
+
+
+def test_inactive_bundle_pairwise_task_is_audit_only_inside_current_epoch(conn) -> None:
+    event_id = _open_event(conn)
+    source = conn.execute(
+        "SELECT evidence_version, evidence_sha256, opened_at_ms FROM news_review_task_source_v1 WHERE event_id = %s",
+        (event_id,),
+    ).fetchone()
+    dataset_sha, run_sha, case_id = "1" * 64, "2" * 64, "3" * 64
+    _insert_learning_dataset(conn, dataset_sha, bundle_sha="f" * 64)
+    conn.execute(
+        """
+        INSERT INTO news_learning_cases (
+          run_sha, case_id, dataset_sha, dataset_role, evaluation_stage, subject_kind, event_id, evidence_version,
+          review_id, opened_at_ms, evidence_sha256, cluster_id, stratum,
+          stable_observation, candidate_observation, comparison, created_at_ms
+        ) VALUES (
+          %s, %s, %s, 'validation', 'holdout', 'event', %s, %s, %s, %s, %s, 'inactive-cluster', 'critical',
+          '{}'::jsonb, '{}'::jsonb, %s::jsonb, %s
+        )
+        """,
+        (
+            run_sha,
+            case_id,
+            dataset_sha,
+            event_id,
+            source["evidence_version"],
+            "4" * 64,
+            source["opened_at_ms"],
+            source["evidence_sha256"],
+            json.dumps({"pair_order": "candidate_A", "review_eligible": True}),
+            NOW,
+        ),
+    )
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task_id = f"pair.{run_sha}.{case_id}"
+
+    assert desk.open(DeskQuery(mode="pairwise"), principal=PRINCIPAL)["tasks"] == []
+    audit_task = desk.open(DeskQuery(mode="pairwise", status="all"), principal=PRINCIPAL)["tasks"][0]
+    assert audit_task["task_id"] == task_id
+    assert audit_task["learning_epoch"] == LEARNING_EPOCH
+    assert audit_task["evidence_disposition"] == "audit_only"
+    with (
+        pytest.raises(ValueError, match="news_review_pairwise_task_audit_only"),
+        repositories_for_connection(conn).transaction(),
+    ):
+        desk.submit(
+            TaskRef(task_id=task_id, task_version=audit_task["task_version"]),
+            BlindPairwiseSubmission(preference="A", evidence_refs=["output:A", "output:B"]),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
 
 
 def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acceptance(conn) -> None:

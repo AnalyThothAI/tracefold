@@ -1,13 +1,19 @@
 """Public News module interface (V3: broker-driven Event pipeline)."""
 
-from .agents.semantic_program import (
+from .semantic_contract import (
+    TOLD_MAX,
+    TOLD_SAME_KEY_MAX,
+    TOLD_WINDOW_MS,
     ProgramTrace,
     ProgramUsage,
     SemanticJudge,
+    SemanticJudgeError,
     SemanticJudgment,
     TriageContext,
 )
-from .artifact_identity import canonical_sha
+
+# isort: split
+from .artifact_identity import canonical_json, canonical_sha
 from .canary import apply_canary_control, parse_canary_control
 from .candidate_evaluator import (
     LEARNING_EPOCH,
@@ -79,6 +85,9 @@ __all__ = [
     "REVIEW_DEFAULT_HOURS",
     "REVIEW_MAX_HOURS",
     "REVIEW_RUBRIC_VERSION",
+    "TOLD_MAX",
+    "TOLD_SAME_KEY_MAX",
+    "TOLD_WINDOW_MS",
     "TRIAGE_POLICY_VERSION",
     "TRUSTED_ROOT_SHA",
     "ArmManifest",
@@ -112,12 +121,14 @@ __all__ = [
     "ReviewDesk",
     "ReviewSubmission",
     "SemanticJudge",
+    "SemanticJudgeError",
     "SemanticJudgment",
     "TaskRef",
     "TriageContext",
     "TriageVerdict",
     "apply_canary_control",
     "apply_control",
+    "canonical_json",
     "canonical_sha",
     "evaluation_run_sha",
     "event_outcome",

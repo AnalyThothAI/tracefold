@@ -412,10 +412,18 @@ def _pairwise_queue_statement(
     if status == "pending":
         filters.append("accepted_pair.review_id IS NULL")
         filters.append("dataset.payload ->> 'learning_epoch' = %s")
+        filters.append(
+            "dataset.payload #>> '{agent_cohort,bundle_sha}' = "
+            "(SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)"
+        )
         params.append(learning_epoch)
     elif status == "accepted":
         filters.append("accepted_pair.review_id IS NOT NULL")
         filters.append("dataset.payload ->> 'learning_epoch' = %s")
+        filters.append(
+            "dataset.payload #>> '{agent_cohort,bundle_sha}' = "
+            "(SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)"
+        )
         params.append(learning_epoch)
     elif status != "all":
         raise ValueError("news_review_status_invalid")
@@ -432,7 +440,10 @@ def _pairwise_queue_statement(
                ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
             )
             SELECT c.*, accepted_pair.review_id AS accepted_review_id,
-                   dataset.payload ->> 'learning_epoch' AS learning_epoch
+                   dataset.payload ->> 'learning_epoch' AS learning_epoch,
+                   dataset.payload #>> '{{agent_cohort,bundle_sha}}' AS dataset_bundle_sha,
+                   (SELECT stable_sha FROM news_review_active_agent_v1
+                     ORDER BY created_at_ms DESC LIMIT 1) AS active_stable_sha
               FROM news_review_pairwise_tasks_v1 c
               LEFT JOIN news_learning_artifacts dataset
                 ON dataset.kind = 'dataset' AND dataset.artifact_sha = c.dataset_sha
@@ -451,7 +462,8 @@ def _proposal_candidates_statement(limit: int) -> ReviewReadStatement:
         name="news_review_proposal_candidates",
         sql="""
             SELECT candidate.artifact_sha, candidate.parent_sha, candidate.payload,
-                   candidate.created_at_ms, dataset.payload ->> 'learning_epoch' AS learning_epoch
+                   candidate.created_at_ms, dataset.payload ->> 'learning_epoch' AS learning_epoch,
+                   dataset.payload #>> '{agent_cohort,bundle_sha}' AS dataset_bundle_sha
               FROM news_learning_artifacts candidate
               LEFT JOIN news_learning_artifacts dataset
                 ON dataset.kind = 'dataset'
@@ -734,6 +746,7 @@ class ReviewDesk:
 
     def _proposals(self, query: DeskQuery) -> dict[str, Any]:
         current_epoch = _current_learning_epoch()
+        active_stable_sha = self._active_agent_cohort_sha()
         candidate_statement = _proposal_candidates_statement(query.limit)
         candidates = self._conn.execute(candidate_statement.sql, candidate_statement.params).fetchall()
         release_statement = _proposal_releases_statement()
@@ -758,7 +771,14 @@ class ReviewDesk:
             receipt = dict(manifest.get("proposal_receipt") or {})
             candidate_arm = dict(manifest.get("candidate_arm") or {})
             learning_epoch = str(row.get("learning_epoch") or "") or None
-            evidence_disposition = "current" if learning_epoch == current_epoch else "audit_only"
+            evidence_disposition = (
+                "current"
+                if learning_epoch == current_epoch
+                and active_stable_sha is not None
+                and str(manifest.get("parent_stable_sha") or "") == active_stable_sha
+                and str(row.get("dataset_bundle_sha") or "") == active_stable_sha
+                else "audit_only"
+            )
             timeline: list[dict[str, Any]] = []
             for release_row in releases:
                 release = dict(release_row["payload"] or {})
@@ -1008,8 +1028,8 @@ class ReviewDesk:
             SELECT count(source.snapshot_id) AS n, current_epoch.lower_ms
               FROM current_epoch
               LEFT JOIN news_review_external_source_v1 source
-                ON source.created_at_ms >= current_epoch.lower_ms
-               AND source.created_at_ms < %s
+                ON source.occurred_at_ms >= current_epoch.lower_ms
+               AND source.occurred_at_ms < %s
              GROUP BY current_epoch.lower_ms
             """,
             (lower, current_epoch, self._now_ms),
@@ -1043,6 +1063,12 @@ class ReviewDesk:
                 ON accepted_pair.pairwise_case_id = c.run_sha || ':' || c.case_id
              WHERE c.dataset_role = 'validation'
                AND dataset.payload ->> 'learning_epoch' = %s
+               AND dataset.payload #>> '{agent_cohort,bundle_sha}' = (
+                 SELECT stable_sha
+                   FROM news_review_active_agent_v1
+                  ORDER BY created_at_ms DESC
+                  LIMIT 1
+               )
             """,
             (_current_learning_epoch(),),
         ).fetchone()
@@ -1140,7 +1166,10 @@ class ReviewDesk:
     def _pairwise_task(self, task_id: str) -> _VirtualTask | None:
         run_sha, case_id = _parse_pairwise_task_id(task_id)
         row = self._conn.execute(
-            "SELECT c.*, dataset.payload ->> 'learning_epoch' AS learning_epoch "
+            "SELECT c.*, dataset.payload ->> 'learning_epoch' AS learning_epoch, "
+            "dataset.payload #>> '{agent_cohort,bundle_sha}' AS dataset_bundle_sha, "
+            "(SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1) "
+            "AS active_stable_sha "
             "FROM news_review_pairwise_tasks_v1 c "
             "LEFT JOIN news_learning_artifacts dataset "
             "ON dataset.kind = 'dataset' AND dataset.artifact_sha = c.dataset_sha "
@@ -1198,7 +1227,9 @@ class ReviewDesk:
         )
         accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
         release_eligible = (
-            bool(task.row.get("evidence_release_eligible")) and str(task.selection.get("stratum")) != "high_reaction"
+            bool(task.row.get("evidence_release_eligible"))
+            and str(task.selection.get("stratum")) != "high_reaction"
+            and self._event_matches_current_release(task)
         )
         self._conn.execute(
             """
@@ -1379,6 +1410,7 @@ class ReviewDesk:
             }
         )
         accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
+        release_eligible = self._timestamp_matches_current_epoch(submission.occurred_at_ms)
         self._conn.execute(
             """
             INSERT INTO news_external_miss_snapshots (
@@ -1410,7 +1442,7 @@ class ReviewDesk:
               expected_correction, note, selection, payload, release_eligible, created_at_ms
             ) VALUES (
               %s, %s, %s, 'judgment', 'external_miss', %s, %s, %s, %s, %s, %s,
-              %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, true, %s
+              %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb, %s, %s
             )
             """,
             (
@@ -1432,6 +1464,7 @@ class ReviewDesk:
                 rubric.note,
                 _json(selection),
                 _json(payload),
+                release_eligible,
                 created_at,
             ),
         )
@@ -1447,7 +1480,7 @@ class ReviewDesk:
             pairwise_case_id=None,
             principal=principal,
             created_at_ms=created_at,
-            release_eligible=True,
+            release_eligible=release_eligible,
         )
         return {
             "idempotent": False,
@@ -1543,16 +1576,56 @@ class ReviewDesk:
             return {}
         rows = self._conn.execute(
             """
+            WITH current_epoch AS (
+              SELECT starts_at_ms
+                FROM news_learning_epochs
+               WHERE epoch_id = %s
+            )
             SELECT DISTINCT ON (j.task_id, j.task_version) j.*, a.created_at_ms AS accepted_at_ms
               FROM news_review_records_v1 a
               JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
+              JOIN current_epoch ON true
              WHERE a.review_kind = 'acceptance' AND j.event_id = ANY(%s)
                AND j.reader_contract_version = %s
+               AND a.release_eligible AND j.release_eligible
+               AND a.created_at_ms >= current_epoch.starts_at_ms
+               AND j.created_at_ms >= current_epoch.starts_at_ms
              ORDER BY j.task_id, j.task_version, a.created_at_ms DESC, a.review_id DESC
             """,
-            (list(event_ids), READER_CONTRACT_VERSION),
+            (_current_learning_epoch(), list(event_ids), READER_CONTRACT_VERSION),
         ).fetchall()
         return {(str(row["task_id"]), str(row["task_version"])): _review_public(row) for row in rows}
+
+    def _event_matches_current_release(self, task: _VirtualTask) -> bool:
+        row = self._conn.execute(
+            """
+            WITH active_agent AS (
+              SELECT stable_sha
+                FROM news_review_active_agent_v1
+               ORDER BY created_at_ms DESC
+               LIMIT 1
+            )
+            SELECT epoch.starts_at_ms, active_agent.stable_sha
+              FROM news_learning_epochs epoch
+              JOIN active_agent ON true
+             WHERE epoch.epoch_id = %s
+            """,
+            (_current_learning_epoch(),),
+        ).fetchone()
+        if row is None:
+            return False
+        trace = dict(task.row.get("trace") or {})
+        assigned_bundle = str((trace.get("agent_assignment") or {}).get("bundle_sha") or "")
+        return int(task.row.get("opened_at_ms") or 0) >= int(row["starts_at_ms"]) and assigned_bundle == str(
+            row["stable_sha"]
+        )
+
+    def _timestamp_matches_current_epoch(self, at_ms: int) -> bool:
+        row = self._conn.execute(
+            "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
+            (_current_learning_epoch(),),
+        ).fetchone()
+        return row is not None and int(at_ms) >= int(row["starts_at_ms"])
 
     def _active_agent_cohort_sha(self) -> str | None:
         statement = _active_agent_statement()
@@ -1687,7 +1760,13 @@ def _pairwise_task_public(task: _VirtualTask, *, accepted: Mapping[str, Any] | N
 
 
 def _pairwise_evidence_disposition(row: Mapping[str, Any]) -> str:
-    return "current" if row.get("learning_epoch") == _current_learning_epoch() else "audit_only"
+    return (
+        "current"
+        if row.get("learning_epoch") == _current_learning_epoch()
+        and row.get("dataset_bundle_sha") == row.get("active_stable_sha")
+        and bool(row.get("active_stable_sha"))
+        else "audit_only"
+    )
 
 
 def _pairwise_evidence(
@@ -2125,7 +2204,7 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
         now_ms=int(now_ms),
         cohort=MarketReviewCohort(
             bundle_sha256="0" * 64,
-            program_version="news_semantic_program_v1",
+            program_version="news_semantic_program_v2",
             program_sha256="1" * 64,
             policy_version="news_triage_policy_v7",
             model="audit-model",

@@ -6,9 +6,10 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
-from tracefold.news import ArmManifest, CandidateManifest, canonical_sha
+from tracefold.news import ArmManifest, CandidateManifest, SemanticJudge, canonical_sha
 from tracefold.news.agents.semantic_program import (
     DspyNewsSemanticProgram,
     DspyPredictorAdapter,
@@ -29,6 +30,8 @@ class NewsProgramRuntimeComposition:
     reader_card_primary: ConfiguredLMEndpoint
     event_semantics_fallback: ConfiguredLMEndpoint | None
     reader_card_fallback: ConfiguredLMEndpoint | None
+    reader_card_primary_alias: bool
+    reader_card_fallback_alias: bool
 
     def secret_free_slot_identities(self) -> dict[str, dict[str, str] | None]:
         return {
@@ -38,12 +41,23 @@ class NewsProgramRuntimeComposition:
             "reader_card.fallback": _optional_endpoint_identity(self.reader_card_fallback),
         }
 
+    def slot_aliases(self) -> dict[str, str]:
+        """Name every deliberate endpoint alias instead of inferring it from equal hashes."""
+
+        aliases: dict[str, str] = {}
+        if self.reader_card_primary_alias:
+            aliases["reader_card.primary"] = "event_semantics.primary"
+        if self.reader_card_fallback_alias:
+            aliases["reader_card.fallback"] = "event_semantics.fallback"
+        return aliases
+
     @property
     def runtime_model_bindings_sha256(self) -> str:
         return canonical_sha(
             {
-                "identity_schema": "configured_runtime_binding_v1",
-                **self.secret_free_slot_identities(),
+                "identity_schema": "configured_runtime_binding_v2",
+                "slots": self.secret_free_slot_identities(),
+                "aliases": self.slot_aliases(),
             }
         )
 
@@ -52,7 +66,7 @@ class NewsProgramRuntimeComposition:
         artifact: ProgramArtifact,
         *,
         adapter_type: Any = DspyPredictorAdapter,
-    ) -> DspyNewsSemanticProgram | None:
+    ) -> SemanticJudge | None:
         """Bind artifact slot names to Predictor-local Adapters without changing the News Interface."""
 
         if not self.program_configured:
@@ -121,19 +135,32 @@ def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition
     reader_fallback: ConfiguredLMEndpoint | None = None
     if availability.triage_fallback_model:
         fallback_settings = settings.llm.news_triage_fallback
-        fallback_kwargs = {
-            "model_name": availability.triage_fallback_model,
-            "api_key": fallback_settings.api_key,
-            "base_url": fallback_settings.base_url,
-        }
-        event_fallback = configured_lm_endpoint(settings, **fallback_kwargs)
-        reader_fallback = configured_lm_endpoint(settings, **fallback_kwargs)
+        event_fallback = configured_lm_endpoint(
+            settings,
+            model_name=availability.triage_fallback_model,
+            api_key=fallback_settings.api_key,
+            base_url=fallback_settings.base_url,
+        )
+        reader_fallback_settings = settings.llm.news_reader_card_fallback
+        if availability.reader_card_fallback_dedicated and availability.reader_card_fallback_model:
+            reader_fallback = configured_lm_endpoint(
+                settings,
+                model_name=availability.reader_card_fallback_model,
+                api_key=reader_fallback_settings.api_key,
+                base_url=reader_fallback_settings.base_url,
+            )
+        elif not reader_fallback_settings.configured:
+            reader_fallback = event_fallback
     return NewsProgramRuntimeComposition(
         program_configured=availability.program_configured,
         event_semantics_primary=event_primary,
         reader_card_primary=reader_primary,
         event_semantics_fallback=event_fallback,
         reader_card_fallback=reader_fallback,
+        reader_card_primary_alias=not settings.llm.news_reader_card.configured,
+        reader_card_fallback_alias=bool(
+            event_fallback is not None and not settings.llm.news_reader_card_fallback.configured
+        ),
     )
 
 
@@ -231,7 +258,40 @@ def _endpoint_model_sha256(endpoint: ConfiguredLMEndpoint) -> str:
             "identity_schema": "configured_endpoint_model_v1",
             "provider": provider,
             "model": model,
-            "endpoint_sha256": canonical_sha({"api_base": str(endpoint.api_base)}),
+            "endpoint_sha256": _canonical_endpoint_sha256(endpoint.api_base),
+        }
+    )
+
+
+def _canonical_endpoint_sha256(value: str) -> str:
+    """Fingerprint an equivalent HTTP endpoint identically without retaining its URL."""
+
+    try:
+        parsed = urlsplit(str(value).strip())
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("news_runtime_model_endpoint_identity_invalid") from exc
+    scheme = parsed.scheme.casefold()
+    if (
+        scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("news_runtime_model_endpoint_identity_invalid")
+    host = parsed.hostname.casefold()
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    netloc = host if port is None or default_port else f"{host}:{port}"
+    path = parsed.path.rstrip("/") or "/"
+    canonical_endpoint = urlunsplit(SplitResult(scheme, netloc, path, "", ""))
+    return canonical_sha(
+        {
+            "identity_schema": "configured_endpoint_v1",
+            "canonical_endpoint": canonical_endpoint,
         }
     )
 

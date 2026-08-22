@@ -13,7 +13,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, NoReturn, cast
 
+from tracefold.news import SemanticJudgment, TriageContext
+
 from .agents.semantic_program import (
+    PROGRAM_FACTORY_ID,
+    PROGRAM_SCHEMA_VERSION,
+    PROGRAM_VERSION,
     DspyNewsSemanticProgram,
     PredictorAdapterError,
     PredictorRequest,
@@ -21,14 +26,12 @@ from .agents.semantic_program import (
     ProgramArtifact,
     ProviderCallObservation,
     RuntimeModelIdentity,
-    SemanticJudgment,
-    TriageContext,
 )
 from .artifact_identity import canonical_sha
 
 ArmName = Literal["stable", "candidate"]
 _CAPABILITY_ISSUER = object()
-_CORPUS_VERSION = "news_recording_corpus_v1"
+_CORPUS_VERSION = "news_recording_corpus_v2"
 
 
 class RecordingReplayError(ValueError):
@@ -159,6 +162,7 @@ class _ScopedRecordingAdapter:
             "signature_sha256",
             "instruction_sha256",
             "demos_sha256",
+            "adapter_sha256",
             "model_binding",
             "runtime_provider",
             "runtime_model",
@@ -167,6 +171,8 @@ class _ScopedRecordingAdapter:
             "upstream_sha256",
         )
         mismatched = [key for key in recorded_fields if expected.get(key) != request_payload.get(key)]
+        if expected.get("input_sha256") != canonical_sha(request.inputs):
+            mismatched.append("input_sha256")
         if request.request_sha256 != recording.request_sha256:
             mismatched.append("request_sha256")
         if mismatched:
@@ -292,6 +298,13 @@ def load_recording_replay_capability(
     specs = {spec.arm: spec for spec in arms}
     if set(specs) != {"stable", "candidate"} or len(specs) != len(arms):
         raise RecordingReplayError("news_learning_recording_replay_arms_invalid")
+    if any(
+        spec.artifact.schema_version != PROGRAM_SCHEMA_VERSION
+        or spec.artifact.factory_id != PROGRAM_FACTORY_ID
+        or spec.artifact.program_version != PROGRAM_VERSION
+        for spec in specs.values()
+    ):
+        raise RecordingReplayError("news_learning_recording_replay_program_v1_unsupported")
     rows = conn.execute(
         """
         SELECT recording_sha, run_sha, case_id, arm, trial, predictor_name, call_index, attempt, route,

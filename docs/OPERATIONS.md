@@ -56,10 +56,31 @@ Compose command whose exit status ignores an unhealthy Worker.
 
 An image rollback is a runtime replacement, not an Alembic downgrade. Use the
 repo-owned target only when the previous image carries the exact same Alembic
-head as the current source. After the #132 expert-quality epoch that means
-`20260822_0294`;
+head as the current source. After the #134 D-generation hard cut that means
+`20260822_0295`;
 after any future migration it means that newer current head, so an older-schema
 image is deliberately unavailable as a rollback target.
+
+The #134 deployment has one deliberate exception to “previous image”: the
+pre-0295 Program-v3 image cannot run against the new schema, so the merged
+source carries `deploy/news-program-v3-rollback`, a reviewed Program-v3-equivalent
+semantic state encoded by the same factory-v2/artifact-v2 executable as the D
+stable root. Before the first D deployment, build and retain its immutable image
+from the clean primary checkout:
+
+```bash
+cd ~/Documents/Code/tracefold
+make build-news-rollback-image
+```
+
+The target verifies the content-addressed rollback bundle, builds with the
+explicit `program_v3_rollback` profile, then executes the image loader and
+checks the exact Program SHA, source revision, and image profile label. It does
+not deploy or mutate PostgreSQL. Record the full `sha256:` image ID it prints;
+that ID, not its local tag, is the only accepted rollback input. The normal
+`make up` build contains only the D stable registry, while this separately built
+image contains only the v2 rollback registry. There is no runtime flag, dual
+loader, or artifact-v1 executable in either image.
 
 From the primary checkout on `main`, read the most recent recorded previous
 runtime image ID and verify that Docker still has it locally:
@@ -346,7 +367,10 @@ provider calls. One fast retry is
 shared across both Predictors, so one route makes at most three calls; the
 artifact's current 20-second deadline covers the whole route. If primary
 fails, a configured `llm.news_triage_fallback` restarts the full graph with its
-own retry/deadline budget, making one Program execution's maximum six. DSPy
+own retry/deadline budget. Its ReaderCard slot explicitly aliases the same
+endpoint unless a complete `llm.news_reader_card_fallback` endpoint is present;
+one missing or invalid fallback slot disables fallback instead of mixing
+routes. One Program execution's maximum remains six. DSPy
 cache and hidden provider retries are disabled, so every billable attempt is
 visible. There is still one persisted final semantic judgment and one card,
 not a restored Analyst stage. Capacity planning must account for the normal
@@ -357,10 +381,12 @@ ceiling and all superseded/failed work included in telemetry.
 
 By default both Predictors use the Triage endpoint, but each has its own
 Adapter and artifact-owned token cap. A complete `llm.news_reader_card`
-endpoint moves only ReaderCard's primary slot; the fallback route still uses
-the configured fallback endpoint for both slots and restarts the entire graph.
-`tracefold config` and `/api/news/status.pipeline` expose the effective model
-names and dedicated-Reader flag without exposing endpoints or credentials.
+endpoint moves only ReaderCard's primary slot. A complete
+`llm.news_reader_card_fallback` independently moves the ReaderCard fallback
+slot; otherwise that slot is an explicit alias of the EventSemantics fallback
+slot. `tracefold config` and `/api/news/status.pipeline` expose the effective
+model names and dedicated-Reader flags without exposing endpoints or
+credentials.
 
 A fast-retryable timeout, rate limit, connection error, or non-truncated
 schema/output failure can spend the route's one retry. A `max_tokens`
@@ -447,10 +473,14 @@ Diagnose News in this order:
 7. A change is a sealed candidate, not an edited production artifact. Freeze a
    post-epoch development dataset; for a Program candidate optionally run the
    manual `learning compile` with explicit metric-call, total model-call,
-   provider-cost limits and a seed; then `learning propose` exactly one
-   `program` or `policy` variable and run `learning evaluate`. The compiler may
-   read accepted development episodes only and cannot inspect holdout, register,
-   accept, deploy or promote. Production promotion additionally requires a
+   provider-cost limits, an exact local `--compiler-image sha256:<64 hex>`, and
+   a seed. The operator YAML must also carry one complete positive
+   `llm.news_compiler_tariff`; then `learning propose` exactly one
+   `program` or `policy` variable and run `learning evaluate`. The trusted
+   exporter seals accepted development only; the isolated compiler runner has
+   no DB/holdout/application credentials and can emit only a bounded
+   `ProgramPatchV2`; the trusted applier verifies all receipts before creating
+   an unaccepted candidate. Production promotion additionally requires a
    future temporal validation dataset, blind pairwise review, a sealed 24 h shadow
    observation, and then `learning canary arm`; inspect with `canary status`
    and use `canary trip` immediately on a schema/artifact/quality guardrail
@@ -473,10 +503,10 @@ Diagnose News in this order:
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-Issue #132 starts current evidence eligibility from zero at the deployment
-timestamp stored in `news_learning_epochs(program_v3)`. Prompt-era rows and the
-superseded `program_v1`/`program_v2` baselines remain readable audit history but
-cannot enter a dataset or satisfy a release stage. Do not
+Issue #134 starts current evidence eligibility from zero at the deployment
+timestamp stored in `news_learning_epochs(program_v4)`. Every earlier
+Prompt/Program baseline remains readable audit history but cannot enter a
+dataset, DemoBank or release stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
 two-Predictor trace as proof of higher quality; that claim begins only after
 post-epoch accepted reviews and future holdout/shadow/canary evidence exist.
@@ -552,7 +582,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260822_0294_program_v3_epoch`. The #112 chain
+the linear revisions through `20260822_0295_program_v4_epoch`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -563,7 +593,7 @@ chained revision
 Workers hold the steady lock).
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
-Before its first 0284–0294 upgrade, take a restorable volume backup, stop Serve
+Before its first 0284–0295 upgrade, take a restorable volume backup, stop Serve
 and Workers, run the normal migration, then deploy the matching image. The
 migration owns the narrow ReviewDesk grants; the existing Serve credential is
 unchanged.
@@ -623,7 +653,10 @@ audit-only and promotion-ineligible. `0293` preserves that row and appends
 hardening the restatement sentinel, making `program_v1` evidence audit-only as
 well. `0294` preserves both prior Program epochs and appends `program_v3` for
 the expert quality baseline and semantic normalization, making `program_v2`
-evidence audit-only for current release decisions. None of these migrations
+evidence audit-only for its release decisions. `0295` preserves v1-v3 and
+appends `program_v4` for the D-generation factory/artifact and optimizer
+ownership hard cut, making every earlier cohort audit-only for current release
+decisions. None of these migrations
 deletes history or claims a release PASS.
 
 Before applying 0278 remove `providers.macro_sources` and the
@@ -665,8 +698,8 @@ Learning evidence follows #118's separate deterministic policy:
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
 - `news_learning_epochs` is append-only permanent audit truth. The current
-  `program_v3` reset changes eligibility, not retention: Prompt-era,
-  `program_v1`, and `program_v2` evidence remain auditable until the existing deterministic
+  `program_v4` reset changes eligibility, not retention: all earlier evidence
+  remains auditable until the existing deterministic
   retention policy makes an otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;
 - every purge call deletes at most 500 recordings, 500 cases and 500 artifacts.

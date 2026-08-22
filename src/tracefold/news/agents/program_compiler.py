@@ -1,10 +1,9 @@
-"""Bounded cold compiler for News semantic Program candidates.
+"""Untrusted, bounded GEPA logic executed only by the compiler container.
 
-The compiler accepts only an
-already-frozen ``program_v3`` development corpus, runs the fixed two-Predictor
-factory through a bounded GEPA optimizer, and emits a state-only candidate
-image plus a proposal input.  It cannot read a holdout, register a candidate,
-promote a Program, or change Python topology.
+The trusted host seals the ``program_v4`` corpus and launches the runner.  This
+module has no database, artifact-writer, proposal or promotion authority.  It
+can return only ``ProgramPatchV2`` (two LearnedStrategies plus eligible demo
+references) and content-addressable optimizer receipt payloads.
 """
 
 from __future__ import annotations
@@ -13,33 +12,34 @@ import importlib.metadata
 import inspect
 import math
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
 from typing import Any, Literal, Protocol
-from uuid import uuid4
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..artifact_identity import canonical_json, canonical_sha
+from ..artifact_identity import canonical_sha
+from .program_compiler_security import CompileBudgetV2, CompilerEndpointIdentity
 from .semantic_program import (
-    CompileProvenance,
     DspyCompileProgram,
     DspyStrictJSONAdapter,
+    EligibleDemoBank,
     ExactMetadataDspyLM,
     ExactProviderCallCapture,
     ExactProviderMetadata,
     PredictorAdapterError,
     ProgramArtifact,
-    ProgramArtifactCodec,
-    RuntimeModelIdentity,
+    ProgramPatchV2,
     TriageContext,
+    extract_optimizer_patch,
+    load_stable_program_artifact,
+    render_model_evidence_json,
 )
 
-LEARNING_EPOCH = "program_v3"
-COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v1"
+LEARNING_EPOCH = "program_v4"
+COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v2"
 METRIC_ID = "tracefold.news.accepted_review_feedback_v1"
 _PROPOSAL_GUARDRAILS = (
-    "fixed_factory_v1",
+    "fixed_factory_v2",
     "development_only",
     "holdout_unseen",
     "no_dynamic_code",
@@ -51,13 +51,8 @@ class _ExactModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class CompileBudget(_ExactModel):
+class CompileBudget(CompileBudgetV2):
     """Three independent operator-owned limits for one cold compile."""
-
-    max_metric_calls: int = Field(gt=0)
-    max_task_model_calls: int = Field(gt=0)
-    max_cost_microusd: int = Field(gt=0)
-    seed: int = Field(ge=0)
 
 
 class DevelopmentEpisode(_ExactModel):
@@ -73,7 +68,7 @@ class DevelopmentEpisode(_ExactModel):
 
 class CompileRequest(_ExactModel):
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v3"] = "program_v3"
+    learning_epoch: Literal["program_v4"] = "program_v4"
     episodes: tuple[DevelopmentEpisode, ...] = Field(min_length=1)
     budget: CompileBudget
 
@@ -94,27 +89,28 @@ class CompileReceiptPayloads(_ExactModel):
 
 
 class ProgramCompileResult(_ExactModel):
-    artifact: ProgramArtifact
-    artifact_directory: str
-    compile_provenance: CompileProvenance
-    compile_provenance_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    """Untrusted runner output; trusted host still validates and applies it."""
+
+    patch: ProgramPatchV2
     receipt_payloads: CompileReceiptPayloads
-    machine_diff: dict[str, Any]
-    proposal_input: dict[str, Any]
+    failure_cluster_ids: tuple[str, ...] = Field(min_length=1)
+    target_dimensions: tuple[str, ...] = Field(min_length=1)
+    metric_calls: int = Field(ge=0)
+    task_model_calls: int = Field(ge=0)
+    reflection_model_calls: int = Field(ge=0)
+    actual_cost_microusd: int = Field(ge=0)
 
     @model_validator(mode="after")
-    def _provenance_identity_matches(self) -> ProgramCompileResult:
-        if self.compile_provenance_sha256 != canonical_sha(self.compile_provenance.model_dump(mode="json")):
-            raise ValueError("news_program_compile_provenance_hash_mismatch")
+    def _receipt_identities_match(self) -> ProgramCompileResult:
         hashes = {
-            "metric": self.compile_provenance.metric_sha256,
-            "optimizer_config": self.compile_provenance.optimizer_config_sha256,
-            "trajectory": self.compile_provenance.trajectory_sha256,
-            "checkpoint": self.compile_provenance.checkpoint_sha256,
+            "metric": canonical_sha(self.receipt_payloads.metric),
+            "optimizer_config": canonical_sha(self.receipt_payloads.optimizer_config),
+            "trajectory": canonical_sha(self.receipt_payloads.trajectory),
+            "checkpoint": canonical_sha(self.receipt_payloads.checkpoint),
         }
         payloads = self.receipt_payloads.model_dump(mode="json")
-        for name, expected in hashes.items():
-            if expected != canonical_sha(payloads[name]):
+        for name, actual in hashes.items():
+            if actual != canonical_sha(payloads[name]):
                 raise ValueError(f"news_program_compile_{name}_receipt_hash_mismatch")
         return self
 
@@ -151,8 +147,8 @@ class _BudgetMeter:
     def before(self, role: Literal["task", "reflection"]) -> None:
         if self.total_model_calls >= self.budget.max_task_model_calls:
             raise CompileBudgetExceeded("news_program_compile_task_model_call_budget_exhausted")
-        if self.actual_cost_microusd >= self.budget.max_cost_microusd:
-            raise CompileBudgetExceeded("news_program_compile_cost_budget_exhausted")
+        if (self.total_model_calls + 1) * self.budget.max_call_cost_microusd > self.budget.max_cost_microusd:
+            raise CompileBudgetExceeded("news_program_compile_cost_reservation_exhausted")
         if role == "task":
             self.task_model_calls += 1
         else:
@@ -161,12 +157,14 @@ class _BudgetMeter:
     def after(self, metadata: ExactProviderMetadata) -> None:
         if metadata.provider_cost_microusd is None:
             raise CompileBudgetExceeded("news_program_compile_provider_cost_unavailable")
+        if metadata.provider_cost_microusd > self.budget.max_call_cost_microusd:
+            raise CompileBudgetExceeded("news_program_compile_call_cost_reservation_exceeded")
         self.actual_cost_microusd += metadata.provider_cost_microusd
         if self.actual_cost_microusd > self.budget.max_cost_microusd:
             raise CompileBudgetExceeded("news_program_compile_cost_budget_exceeded")
 
 
-class _BudgetedLM:
+class _BudgetedLM(dspy.BaseLM):  # type: ignore[misc]
     """Transparent LM proxy that makes every provider attempt observable."""
 
     def __init__(self, lm: dspy.LM, *, role: Literal["task", "reflection"], meter: _BudgetMeter) -> None:
@@ -229,7 +227,7 @@ def build_compile_lm(
     overlap = owned.intersection(extras)
     if overlap:
         raise ValueError(f"news_program_compile_model_kwargs_owned:{','.join(sorted(overlap))}")
-    return ExactMetadataDspyLM(
+    lm = ExactMetadataDspyLM(
         str(model_name),
         api_key=str(api_key),
         api_base=str(api_base),
@@ -240,6 +238,10 @@ def build_compile_lm(
         num_retries=0,
         **extras,
     )
+    lm.tracefold_compiler_endpoint_identity = CompilerEndpointIdentity.issue(
+        model=str(model_name), api_base=str(api_base)
+    )
+    return lm
 
 
 def accepted_review_metric(
@@ -356,11 +358,15 @@ def _metric_receipt(metric: Callable[..., Any]) -> dict[str, Any]:
 
 
 def _compiler_model_identity(lm: dspy.LM) -> dict[str, Any]:
+    identity = getattr(lm, "tracefold_compiler_endpoint_identity", None)
+    if isinstance(identity, CompilerEndpointIdentity):
+        return identity.model_dump(mode="json")
     model = str(getattr(lm, "model", "")).strip()
-    if not model:
-        raise ValueError("news_program_compile_model_identity_unavailable")
-    provider = model.split("/", maxsplit=1)[0] if "/" in model else "unknown"
-    return RuntimeModelIdentity.issue(provider=provider, model=model).model_dump(mode="json")
+    kwargs = getattr(lm, "kwargs", None)
+    api_base = str(kwargs.get("api_base") or "") if isinstance(kwargs, Mapping) else ""
+    if not model or not api_base:
+        raise ValueError("news_program_compile_endpoint_identity_unavailable")
+    return CompilerEndpointIdentity.issue(model=model, api_base=api_base).model_dump(mode="json")
 
 
 def _optimizer_config_receipt(
@@ -400,22 +406,32 @@ def _optimizer_config_receipt(
 
 
 class ProgramCompiler:
-    """Bounded cold compiler for the fixed v1 semantic Program factory."""
+    """Bounded cold optimizer for the fixed v2 semantic Program factory."""
 
     def __init__(
         self,
         *,
         base_artifact: ProgramArtifact,
+        eligible_demo_bank: EligibleDemoBank,
         task_lm: dspy.LM,
         reflection_lm: dspy.LM,
         optimizer_factory: OptimizerFactory = dspy.GEPA,
     ) -> None:
+        active = load_stable_program_artifact()
+        if (
+            base_artifact.parent_program_sha256 is not None
+            or base_artifact.compile_receipt.accepted_by != "code_owner"
+            or base_artifact.program_sha256 != active.program_sha256
+            or base_artifact.state_sha256 != active.state_sha256
+        ):
+            raise ValueError("news_program_compile_parent_must_be_exact_stable_root")
         self._base = base_artifact
+        self._eligible_demo_bank = eligible_demo_bank
         self._task_lm = task_lm
         self._reflection_lm = reflection_lm
         self._optimizer_factory = optimizer_factory
 
-    def compile(self, request: CompileRequest, *, artifact_root: Path) -> ProgramCompileResult:
+    def compile(self, request: CompileRequest) -> ProgramCompileResult:
         if request.learning_epoch != LEARNING_EPOCH:
             raise ValueError("news_program_compile_epoch_mismatch")
         failure_clusters, target_dimensions = _failure_scope(request.episodes)
@@ -465,7 +481,6 @@ class ProgramCompiler:
             metric_sha256=metric_sha,
             example_count=len(examples),
         )
-        optimizer_config_sha = canonical_sha(optimizer_config_receipt)
         optimizer = self._optimizer_factory(
             accepted_review_metric,
             reflection_lm=reflection_lm,
@@ -486,94 +501,38 @@ class ProgramCompiler:
             raise ValueError("news_program_compile_metric_budget_unverifiable")
         trajectory_receipt = _trajectory_receipt(details)
         checkpoint_receipt = _checkpoint_receipt(compiled)
-        trajectory_sha = canonical_sha(trajectory_receipt)
-        checkpoint_sha = canonical_sha(checkpoint_receipt)
-        provenance = CompileProvenance(
-            mode="optimizer_candidate",
-            development_dataset_sha=request.development_dataset_sha,
-            learning_epoch=request.learning_epoch,
-            optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",
-            dspy_version=importlib.metadata.version("dspy"),
-            gepa_version=importlib.metadata.version("gepa"),
-            metric_sha256=metric_sha,
-            optimizer_config_sha256=optimizer_config_sha,
-            seed=request.budget.seed,
-            max_metric_calls=request.budget.max_metric_calls,
-            max_task_model_calls=request.budget.max_task_model_calls,
-            max_cost_microusd=request.budget.max_cost_microusd,
-            metric_calls=metric_calls,
-            task_model_calls=meter.task_model_calls,
-            reflection_model_calls=meter.reflection_model_calls,
-            actual_cost_microusd=meter.actual_cost_microusd,
-            trajectory_sha256=trajectory_sha,
-            checkpoint_sha256=checkpoint_sha,
-            holdout_access_attestation=False,
-        )
-        artifact = ProgramArtifactCodec.from_compiled_module(
+        patch = extract_optimizer_patch(
             compiled,
-            base_artifact=self._base,
-            compiler=COMPILER_ID,
-            source=request.development_dataset_sha,
-            compile_provenance=provenance,
+            self._base,
+            self._eligible_demo_bank,
         )
-        if artifact.program_sha256 == self._base.program_sha256:
+        if (
+            tuple(strategy.text for strategy in patch.learned_strategies)
+            == tuple(strategy.text for strategy in self._base.learned_strategies)
+            and patch.demo_refs == self._base.demo_bank.refs
+        ):
             raise ValueError("news_program_compile_no_program_change")
-        artifact_directory = _write_program_artifact(artifact, root=artifact_root)
-        machine_diff = program_machine_diff(self._base, artifact)
-        provenance_payload = provenance.model_dump(mode="json")
         receipt_payloads = CompileReceiptPayloads(
             metric=metric_receipt,
             optimizer_config=optimizer_config_receipt,
             trajectory=trajectory_receipt,
             checkpoint=checkpoint_receipt,
         )
-        receipt_payload = receipt_payloads.model_dump(mode="json")
-        patch_payload = {
-            "parent_program_sha256": self._base.program_sha256,
-            "candidate_program_sha256": artifact.program_sha256,
-            "machine_diff": machine_diff,
-            "compile_provenance": provenance_payload,
-        }
-        model_identity_sha = canonical_sha(
-            {
-                "task": str(getattr(self._task_lm, "model", "unknown")),
-                "reflection": str(getattr(self._reflection_lm, "model", "unknown")),
-            }
-        )
-        proposal_input = {
-            "target": "program",
-            "hypothesis": "Bounded GEPA improves accepted development failures while retaining reviewed passes.",
-            "target_dimensions": list(target_dimensions),
-            "failure_cluster_ids": list(failure_clusters),
-            "guardrails": list(_PROPOSAL_GUARDRAILS),
-            "generator_kind": "model",
-            "generator_prompt_sha": metric_sha,
-            "generator_model_sha": model_identity_sha,
-            "generator_execution_sha": canonical_sha(provenance_payload),
-            "program_version": artifact.program_version,
-            "program_sha256": artifact.program_sha256,
-            "program_parent_sha256": self._base.program_sha256,
-            "program_state_sha256": artifact.state_sha256,
-            "program_artifact_path": str(artifact_directory),
-            "program_machine_diff": machine_diff,
-            "compile_provenance": provenance_payload,
-            "compile_receipt_payloads": receipt_payload,
-            "candidate_patch_sha": canonical_sha(patch_payload),
-        }
         return ProgramCompileResult(
-            artifact=artifact,
-            artifact_directory=str(artifact_directory),
-            compile_provenance=provenance,
-            compile_provenance_sha256=canonical_sha(provenance_payload),
+            patch=patch,
             receipt_payloads=receipt_payloads,
-            machine_diff=machine_diff,
-            proposal_input=proposal_input,
+            failure_cluster_ids=failure_clusters,
+            target_dimensions=target_dimensions,
+            metric_calls=metric_calls,
+            task_model_calls=meter.task_model_calls,
+            reflection_model_calls=meter.reflection_model_calls,
+            actual_cost_microusd=meter.actual_cost_microusd,
         )
 
 
 def _compile_example(episode: DevelopmentEpisode) -> dspy.Example:
     return dspy.Example(
-        evidence_json=canonical_json(episode.context.model_payload()),
+        evidence_json=render_model_evidence_json(episode.context.model_payload()),
         told_count=len(episode.context.told.entries),
         case_id=episode.case_id,
         cluster_id=episode.cluster_id,
@@ -644,18 +603,6 @@ def _checkpoint_receipt(program: DspyCompileProgram) -> dict[str, Any]:
     }
 
 
-def program_machine_diff(parent: ProgramArtifact, candidate: ProgramArtifact) -> dict[str, Any]:
-    diff: dict[str, Any] = {}
-    for name in ("event_semantics", "reader_card"):
-        before = getattr(parent, name).model_dump(mode="json")
-        after = getattr(candidate, name).model_dump(mode="json")
-        if before != after:
-            diff[name] = {"before": before, "after": after}
-    if not diff:
-        raise ValueError("news_program_compile_machine_diff_empty")
-    return diff
-
-
 def _json_safe(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _json_safe(value.model_dump(mode="json"))
@@ -672,39 +619,6 @@ def _json_safe(value: Any) -> Any:
     raise TypeError(f"news_program_compile_non_json_receipt_value:{type(value).__name__}")
 
 
-def _write_program_artifact(artifact: ProgramArtifact, *, root: Path) -> Path:
-    root = root.resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    target = root / artifact.program_sha256
-    manifest, state = ProgramArtifactCodec.encode(artifact)
-    if target.exists():
-        existing = ProgramArtifactCodec.load(str(target))
-        if existing != artifact:
-            raise ValueError("news_program_compile_artifact_collision")
-        return target
-    temporary = root / f".{artifact.program_sha256}.{uuid4().hex}.tmp"
-    temporary.mkdir()
-    try:
-        (temporary / "manifest.json").write_text(manifest, encoding="utf-8")
-        (temporary / "state.json").write_text(state, encoding="utf-8")
-        ProgramArtifactCodec.decode(manifest, state)
-        try:
-            temporary.rename(target)
-        except FileExistsError:
-            existing = ProgramArtifactCodec.load(str(target))
-            if existing != artifact:
-                raise ValueError("news_program_compile_artifact_collision") from None
-    finally:
-        if temporary.exists():
-            for child in temporary.iterdir():
-                child.unlink()
-            temporary.rmdir()
-    verified = ProgramArtifactCodec.load(str(target))
-    if verified != artifact:
-        raise ValueError("news_program_compile_artifact_roundtrip_mismatch")
-    return target
-
-
 __all__ = [
     "COMPILER_ID",
     "LEARNING_EPOCH",
@@ -718,5 +632,4 @@ __all__ = [
     "ProgramCompiler",
     "accepted_review_metric",
     "build_compile_lm",
-    "program_machine_diff",
 ]
