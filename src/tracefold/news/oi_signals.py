@@ -35,6 +35,7 @@ METRIC_VERSION: Final = "oi_signal_v1"
 # The judge's identity on the verdict row, where a model-judged Event carries its ProgramArtifact sha.
 # Content-addressed the same way: change the rule and the identity changes with it.
 PROGRAM_VERSION: Final = "news_oi_signal_v1"
+READER_CONTRACT_VERSION: Final = "oi_card_v2"
 WINDOW_MS: Final = 4 * 3_600_000
 
 # Anchored on purpose: this must recognise the telemetry template and nothing that merely mentions
@@ -48,6 +49,7 @@ _TELEMETRY = re.compile(
 )
 _UNIT: Final[dict[str, int]] = {"": 1, "K": 10**3, "M": 10**6, "B": 10**9}
 _FALLING: Final = frozenset({"fall", "drop"})
+_INT64_MAX: Final = 2**63 - 1
 
 
 def _base_symbol(symbol: str) -> str:
@@ -147,17 +149,27 @@ def parse_oi_signal(title: str) -> OiSignal | None:
     if not symbol:
         return None
     # Integer math here for the same reason as `_bps`: `int(float("8.29") * 10**6)` is 8_289_999.
-    whole, _, frac = match.group("value").partition(".")
-    unit = _UNIT[match.group("unit").upper()]
-    scaled = int(whole or "0") * 1_000_000 + int((frac + "000000")[:6])
-    value_usd = scaled * unit // 1_000_000
+    try:
+        whole, _, frac = match.group("value").partition(".")
+        unit = _UNIT[match.group("unit").upper()]
+        scaled = int(whole or "0") * 1_000_000 + int((frac + "000000")[:6])
+        value_usd = scaled * unit // 1_000_000
+        change_bps = _bps(match.group("oi"))
+        profit_bps = _bps(match.group("profit"))
+        ratio_bps = _bps(match.group("ratio"))
+    except ValueError:
+        return None
+    # These four fields are persisted as PostgreSQL BIGINTs. Rejecting an out-of-contract provider frame is
+    # safer than constructing a verdict that can only fail later inside the transaction.
+    if value_usd > _INT64_MAX or any(abs(value) > _INT64_MAX for value in (change_bps, profit_bps, ratio_bps)):
+        return None
     return OiSignal(
         symbol=symbol,
         direction="fall" if match.group("direction").lower() in _FALLING else "rise",
-        oi_change_bps=_bps(match.group("oi")),
+        oi_change_bps=change_bps,
         oi_value_usd=value_usd,
-        whale_long_profit_bps=_bps(match.group("profit")),
-        whale_oi_ratio_bps=_bps(match.group("ratio")),
+        whale_long_profit_bps=profit_bps,
+        whale_oi_ratio_bps=ratio_bps,
     )
 
 
@@ -166,28 +178,76 @@ def program_sha256(policy: OiPolicy = DEFAULT_OI_POLICY) -> str:
 
     return hashlib.sha256(
         json.dumps(
-            {"program": PROGRAM_VERSION, "metric": METRIC_VERSION, "policy": policy.as_dict()},
+            {
+                "program": PROGRAM_VERSION,
+                "reader_contract": READER_CONTRACT_VERSION,
+                "metric": METRIC_VERSION,
+                "policy": policy.as_dict(),
+            },
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
 
 
-def _headline(signal: OiSignal) -> str:
+def _headline(signal: OiSignal, *, rank: int, window_ms: int) -> str:
+    """One complete deterministic reader title, with a bounded compact form for long tickers."""
+
     arrow = "▲" if signal.direction == "rise" else "▼"
-    return f"{arrow} {signal.symbol} 持仓异动 {abs(signal.oi_change_bps) / 100.0:.2f}%"
-
-
-def _why(signal: OiSignal, *, rank: int, window_ms: int) -> str:
     hours = max(1, int(window_ms) // 3_600_000)
-    return " · ".join(
-        (
-            f"持仓 {_usd_zh(signal.oi_value_usd)}",
-            f"鲸鱼占比 {signal.whale_oi_ratio_bps / 100.0:.1f}%",
-            f"鲸鱼多头盈利 {signal.whale_long_profit_bps / 100.0:.1f}%",
-            f"{hours}h 内第 {rank} 次",
-        )
+    change = f"{_fixed_bps(abs(signal.oi_change_bps), places=2)}%"
+    value = _usd_zh(signal.oi_value_usd).replace(" ", "")
+    ratio = f"{_fixed_bps(signal.whale_oi_ratio_bps, places=1)}%"
+    profit = f"{_fixed_bps(signal.whale_long_profit_bps, places=1)}%"
+    rich = (
+        f"{arrow} {signal.symbol} 持仓异动{change}｜持仓{value}｜鲸鱼占比{ratio}｜"
+        f"鲸鱼多头盈利{profit}｜{hours}h内第{rank}次"
     )
+    if len(rich) <= 60:
+        return rich
+    # TriageVerdict caps the reader headline at 60 characters. Preserve every measurement while shortening
+    # labels only; the common short-symbol path above keeps the fully-spelled reader contract.
+    compact = f"{arrow} {signal.symbol} OI{change}｜持仓{value}｜鲸鱼{ratio}｜盈利{profit}｜{hours}h#{rank}"
+    if len(compact) <= 60:
+        return compact
+    # Provider fields are BIGINT-backed. A one-significant-digit scientific form therefore bounds every
+    # numeric token while retaining the symbol, all four measurements, window and rank.
+    bounded = (
+        f"{arrow}{signal.symbol}Δ{_scientific(abs(signal.oi_change_bps), scale=2)}%/"
+        f"O{_scientific(signal.oi_value_usd)}/W{_scientific(signal.whale_oi_ratio_bps, scale=2)}%/"
+        f"P{_scientific(signal.whale_long_profit_bps, scale=2)}%/{_scientific(hours)}h#{_scientific(rank)}"
+    )
+    if len(bounded) > 60:  # Defensive against a direct caller bypassing the BIGINT/config contracts.
+        raise ValueError("oi_headline_inputs_out_of_contract")
+    return bounded
+
+
+def _fixed_bps(value: int, *, places: int) -> str:
+    divisor = 10 ** (2 - places)
+    absolute = abs(int(value))
+    units = (absolute + divisor // 2) // divisor
+    base = 10**places
+    whole, fraction = divmod(units, base)
+    sign = "-" if value < 0 else ""
+    return f"{sign}{whole}.{fraction:0{places}d}" if places else f"{sign}{whole}"
+
+
+def _scientific(value: int, *, scale: int = 0) -> str:
+    """One-significant-digit notation with a decimal scale; bounded for every PostgreSQL integer."""
+
+    absolute = abs(int(value))
+    if absolute == 0:
+        return "0"
+    if scale == 0 and absolute < 10_000:
+        return str(int(value))
+    digits = str(absolute)
+    exponent = len(digits) - 1 - int(scale)
+    leading = int(digits[0]) + (int(digits[1]) >= 5 if len(digits) > 1 else 0)
+    if leading == 10:
+        leading = 1
+        exponent += 1
+    sign = "-" if value < 0 else ""
+    return f"{sign}{leading}e{exponent}"
 
 
 def _usd_zh(value: int) -> str:
@@ -195,7 +255,8 @@ def _usd_zh(value: int) -> str:
 
     amount = int(value)
     if amount >= 100_000_000:
-        return f"{amount / 100_000_000:.2f} 亿"
+        hundredths = (amount * 100 + 50_000_000) // 100_000_000
+        return f"{hundredths // 100}.{hundredths % 100:02d} 亿"
     if amount >= 10_000:
         return f"{amount / 10_000:.0f} 万"
     return str(amount)
@@ -252,9 +313,11 @@ def evaluate_oi(
         confidence=1.0,
         decision="push" if qualifies else "drop",
         audience="crypto",
-        headline_zh=_headline(signal),
+        headline_zh=_headline(signal, rank=rank, window_ms=policy.window_ms),
         title_zh="",
-        why_zh=_why(signal, rank=rank, window_ms=policy.window_ms) if qualifies else "",
+        # All four deterministic measurements are already in the title. Repeating them as the body creates a
+        # two-line card that reads like two separate claims; unlike model-judged News there is no causal why.
+        why_zh="",
     )
     return OiJudgment(verdict=verdict, signal=signal, rank_in_window=rank, rule=rule)
 
@@ -263,6 +326,7 @@ __all__ = [
     "DEFAULT_OI_POLICY",
     "METRIC_VERSION",
     "PROGRAM_VERSION",
+    "READER_CONTRACT_VERSION",
     "WINDOW_MS",
     "OiJudgment",
     "OiPolicy",

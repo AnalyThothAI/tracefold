@@ -346,6 +346,17 @@ the Gate, Triage, `decide()`, a throttle key or a ranking signal. Since card v10
 any decision, and absent rather than approximated when no fresh value exists —
 68.7% of a week's cards carried one.
 
+OI telemetry has no provider coin tag and therefore no `news_event_assets` row.
+Its deterministic parser, `telemetry_deterministic` admission, matching
+`news_oi_signals(event_id, oi_signal_v1)` ledger row, and current OI Program
+version plus SHA (including reader contract and OI policy) together form an
+equivalent code-grounded reader asset. Deliverer uses that one
+verified asset list for both facts and quotes, while the Quote planner unions
+symbols from recent live OI ledger rows into its existing bounded working set.
+The price remains display-only: it cannot change OI judgment, policy, rank, or
+delivery eligibility, and a stale or unavailable quote silently removes the
+行情 line.
+
 The price and the day change are two questions on two cadences (#109). Binance
 answers "what is it worth now" in 45.5 kB (`ticker/price`, whole USD-M market,
 weight 2) and both questions in 270 kB (`ticker/24hr`, weight 42) — 92% of the
@@ -751,8 +762,11 @@ words — direction label, `新进展` when the verdict's `novelty` is `progress
 (#113: 28.8% of a week's cards advanced a story the reader already had one for
 and the card said nothing), magnitude label, the tickers the model called
 primary and the Gate grounded, source（N 条报道）, and the leader item's
-publication time in the reader's zone (UTC+8). The third body line is the
-market's own number for those same tickers — `行情 CL $86.43 24h +2.30%（永续）`
+publication time in the reader's zone (UTC+8). Ordinary News derives this list
+from model-primary ∩ Gate-grounded assets; deterministic OI derives one symbol
+from its matching rank-ledger row only when the admission and full OI Program
+identity also match. The third body line is the market's own number for those
+same verified tickers — `行情 CL $86.43 24h +2.30%（永续）`
 — and it exists only when `PriceRepository.quotes_for_symbols` answered `fresh`:
 a `stale`, `unavailable` or `unlisted` quote leaves no line, no placeholder and
 no zero. The change window is named from `change_basis` rather than assumed
@@ -767,7 +781,7 @@ mark on a mixed line cannot say whether it covers the last asset or all of them.
 The price/percentage formatting
 mirrors the console's `web/src/features/news/model/newsPrice.ts` character for
 character. The quotes are read in a separate short database session over
-exactly `card_assets()`, so the two lines cannot name different assets, and any
+exactly the code-verified `reader_assets()` result, so the two lines cannot name different assets, and any
 price failure degrades to no line: delivery never depends on the price plane.
 Then a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or
@@ -982,9 +996,10 @@ one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
 cascade-deleted with it. Two consequences of judging these frames rather than
 suppressing them are deliberate and worth stating: every 1019 frame now carries
 a verdict, so `news.retention` keeps its Item for 365 days instead of purging at
-30 (~70k small rows a year), and the card shows no ticker chip and no quote line
-because `card_assets()` intersects with the Gate's grounded assets and the Gate
-grounds nothing here — the symbol is in the headline instead. The decision itself lives in `news_verdicts` like every
+30 (~70k small rows a year), and the card may show the ledger-verified ticker
+plus a fresh Quote Snapshot without inventing a `news_event_assets` grounding
+row. A pre-reader-contract verdict, a mismatched Program SHA, or an unavailable
+quote leaves that ticker/行情 context absent. The decision itself lives in `news_verdicts` like every
 other decision, which is also where the lane's idempotency comes from — Triage
 already re-publishes an unpublished push on redelivery.
 

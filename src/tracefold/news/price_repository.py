@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from .instruments import REFERENCE_VENUES, normalize_symbol
+from .oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from .outcome import decision_zh, direction_zh, event_type_zh, magnitude_zh, override_rule_zh, throttled_by_zh
 from .pricing import (
     QUOTE_SOURCE_GROUP_MAX,
@@ -174,23 +175,35 @@ class PriceRepository:
 
     # ------------------------------------------------------------------ quote targets
     def quote_target_symbols(self, *, since_ms: int, limit: int = 1000) -> list[str]:
-        """Exact grounded assets on recent live Events, most recently opened first.
+        """Code-verified assets on recent live Events, most recently observed first.
 
         One symbol per row however many Events carried it: a hundred BTC Events are one Quote target, and the
-        provider work that follows is `O(source groups)`, never `O(Events x assets)` (#88 §13).
+        provider work that follows is `O(source groups)`, never `O(Events x assets)` (#88 §13). Deterministic
+        OI rows join the same bounded working set even though those Events intentionally have no Gate-grounded
+        asset tag.
         """
 
         rows = self.conn.execute(
             """
-            SELECT a.symbol, max(a.opened_at_ms) AS last_ms
-              FROM news_event_assets a
-              JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
-             WHERE a.opened_at_ms >= %s
-             GROUP BY a.symbol
+            WITH candidates AS (
+              SELECT a.symbol, a.opened_at_ms AS observed_at_ms
+                FROM news_event_assets a
+                JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+               WHERE a.opened_at_ms >= %s
+              UNION ALL
+              SELECT o.symbol, o.observed_at_ms
+                FROM news_oi_signals o
+                JOIN news_events e ON e.event_id = o.event_id AND e.ingest_mode = 'live'
+               WHERE o.observed_at_ms >= %s AND e.admission = 'telemetry_deterministic'
+                 AND o.metric_version = %s
+            )
+            SELECT symbol, max(observed_at_ms) AS last_ms
+              FROM candidates
+             GROUP BY symbol
              ORDER BY last_ms DESC
              LIMIT %s
             """,
-            (int(since_ms), int(limit)),
+            (int(since_ms), int(since_ms), OI_METRIC_VERSION, int(limit)),
         ).fetchall()
         return [str(row["symbol"]) for row in rows]
 
