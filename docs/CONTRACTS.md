@@ -373,7 +373,7 @@ aggregate cost is unknown unless every billable call reported it.
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_semantic_program_v2`, `news_triage_policy_v7`, and
+`news_semantic_program_v2`, `news_triage_policy_v8`, and
 `news_delivery_card_v10`. The exact Program identity is its content SHA, not
 the display version alone.
 
@@ -413,8 +413,10 @@ ledger re-ask is a separate execution with the same ceiling (normally another
 two calls), and both executions remain in the verdict audit.
 `news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
 `min_watchlist_magnitude`, `unclear_push_min_magnitude`,
-`unclear_push_event_types`, `restatement_drop`, `similarity_max`, and
-`high_priority_escalates`. There is no runtime reader quota. Retired quota keys
+`unclear_push_event_types`, `restatement_drop`, `similarity_max`,
+`high_priority_escalates`, and the policy v8 recall knobs
+`noise_veto_max_magnitude` (1), `noise_veto_respects_gate_priority` (true),
+`contested_push_min_magnitude` (2), and `listing_exempt_from_duplicate` (true). There is no runtime reader quota. Retired quota keys
 are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a

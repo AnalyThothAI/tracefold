@@ -1913,8 +1913,17 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
 def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
     verdict = dict(row.get("verdict") or {})
     final = str(row.get("final_decision") or "")
+    rule = str(row.get("override_rule") or "")
+    # The thresholds this verdict actually ran under, not today's defaults: a stored decision
+    # carries its own policy numbers (#81) so an older row is judged by the rules it obeyed.
+    policy = dict(dict(row.get("trace") or {}).get("policy") or {})
+    # These three flags encode invariants that policy v7 enforced unconditionally. Policy v8
+    # deliberately breaks each of them on a named rule, so a flag that still fired would mark a
+    # decision the policy meant to make and a reviewer could no longer tell a bug from a choice.
+    # They stay loud for every path the policy did not choose.
+    deliberate = rule in {"contested_high_priority", "high_priority_push"}
     flags: list[dict[str, str]] = []
-    if final in {"push", "escalate"} and verdict.get("actionable") is False:
+    if final in {"push", "escalate"} and verdict.get("actionable") is False and not deliberate:
         flags.append(
             {
                 "code": "pushed_non_actionable",
@@ -1923,19 +1932,43 @@ def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
             }
         )
     if verdict.get("event_type") == "noise" and final not in {"drop", "throttled"}:
+        # A noise label that reached the reader is only expected where the verdict outweighed it:
+        # the model asked to push, called it actionable, or weighed it above the veto ceiling.
+        # An absent key means the row ran under a policy where `noise` was an unconditional veto, so
+        # reaching the reader was a bug: default to "no contradiction" rather than to a ceiling of 0,
+        # which would downgrade exactly the rows that most need the critical flag.
+        ceiling = policy.get("noise_veto_max_magnitude")
+        contradicted = (
+            bool(verdict.get("actionable"))
+            or str(verdict.get("decision") or "") in {"push", "escalate"}
+            or (ceiling is not None and int(verdict.get("magnitude") or 0) > int(ceiling))
+            or deliberate
+        )
         flags.append(
             {
                 "code": "noise_not_held",
-                "severity": "critical",
-                "message_zh": "语义输出为 noise，但最终没有拦截。",
+                "severity": "warning" if contradicted else "critical",
+                "message_zh": (
+                    "语义输出为 noise，但该判断与自身的 magnitude/actionable/decision 不一致，按召回优先放行。"
+                    if contradicted
+                    else "语义输出为 noise，但最终没有拦截。"
+                ),
             }
         )
     if verdict.get("novelty") == "restatement" and final in {"push", "escalate"}:
+        # Only claim the exemption as the reason when the row actually ran under it.
+        listing_exempt = str(row.get("admission") or "") == "listing_deterministic" and bool(
+            policy.get("listing_exempt_from_duplicate")
+        )
         flags.append(
             {
                 "code": "restatement_delivered",
-                "severity": "warning",
-                "message_zh": "模型称为复述，但最终送达读者。",
+                "severity": "info" if listing_exempt else "warning",
+                "message_zh": (
+                    "模型称为复述，但这是交易所上/下架帧，按不同标的放行。"
+                    if listing_exempt
+                    else "模型称为复述，但最终送达读者。"
+                ),
             }
         )
     return flags

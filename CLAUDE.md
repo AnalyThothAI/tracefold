@@ -72,7 +72,18 @@ in a bucket that was not about them — every OKX listing notice in `asset:OKB`,
 Polish jets scrambling in `asset:BTC`); the pure `decide()` policy
 (`news.policy`: grounded restatement drop, model push intent at magnitude >= 1,
 unclear-but-clear-event push, watchlist rescue, content-based duplicate check,
-control mutes — every path names its rule) owns the final decision. Policy v7
+control mutes — every path names its rule) owns the final decision. Policy v8 is
+recall-first: `noise` drops a card only when the verdict agrees with itself
+(magnitude <= `noise_veto_max_magnitude`, not actionable, no push intent) and
+the Gate did not flag the Event high priority, because a verdict that calls an
+Event noise and then gives it magnitude 2 used to outrank every later rule;
+Gate high priority against a model hold intent at magnitude >=
+`contested_push_min_magnitude`, with a direction or macro scope, pushes as
+`contested_high_priority`; and a Gate-admitted listing/delisting frame skips the
+restatement drop and the similarity throttle only when the matched card names
+none of its instruments (`listing_exempt_from_duplicate`, compared as symbol
+sets, never as headline text) so one wire template cannot hide several
+instruments while a genuine re-send is still withheld. Policy v7
 has no hourly, 2 h asset, 4 h theme, or flood quota: historical counts remain
 metrics but cannot change a qualified push into a throttle. An ordinary push is
 compared with the sent-card ledger using character-bigram Jaccard under

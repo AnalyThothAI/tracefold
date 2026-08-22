@@ -565,12 +565,35 @@ values come from `news.policy`: mute -> drop; noise -> drop; a *grounded*
 restatement (the model cites a ledger entry it was shown and the direction did
 not flip against it; switch `restatement_drop`) -> drop (`restatement`);
 magnitude >= 3 with a direction or macro scope -> escalate; high priority +
-push -> escalate; model push/escalate intent, actionable, magnitude >=
+push -> escalate; Gate high priority against a model hold intent (no push or
+escalate) at magnitude >= `contested_push_min_magnitude` (2) with a direction or
+macro scope -> push (`contested_high_priority`);
+model push/escalate intent, actionable, magnitude >=
 `min_push_magnitude` (1) and a direction -> push (`model_push_actionable`);
 unclear direction with a clear event type (product, listing, delisting,
 regulation, hack, exploit, partnership, filing) at magnitude >= 2 -> push
 (`unclear_but_clear_event`); other unclear -> drop; watchlist primary at
-magnitude >= 1 -> push; else drop (`below_threshold`). Policy v7 deliberately
+magnitude >= 1 -> push; else drop (`below_threshold`).
+
+Policy v8 is recall-first: a miss costs more than a noise leak. `noise` is no
+longer a veto that returns before every other rule. It drops the card only when
+the verdict agrees with itself — magnitude at or below
+`noise_veto_max_magnitude` (1), not `actionable`, no push intent — and, while
+`noise_veto_respects_gate_priority` holds, only on an Event the Gate did not
+flag high priority. A verdict that calls an Event noise and then gives it
+magnitude 2 is contradicting itself — the instruction calls magnitude 2
+"clearly tradable" while still allowing noise at magnitude 1 — and that
+contradiction used to outrank magnitude 3, Gate priority and the watchlist:
+measured over 300 replayed Events, 14 noise drops carried magnitude >= 2,
+including a hijacked tanker in the Gulf of Aden that the Gate had flagged high
+priority. A Gate-admitted `listing_deterministic` frame
+(`listing_exempt_from_duplicate`) skips the restatement drop and the similarity
+throttle **only when the matched card names none of its instruments**, compared
+as symbol sets rather than as headline text: "Coinbase adds ALIGN" and "Upbit
+adds BICO" are different instruments inside one wire template, while a re-issued
+notice for the same instrument is still withheld.
+
+Policy v7 deliberately
 has **no hourly, two-hour, or four-hour reader quota**. Historical push counts
 remain observable metrics, but they are not included in the model input and
 cannot change `push`/`escalate` into `throttled`. Once the semantic conditions

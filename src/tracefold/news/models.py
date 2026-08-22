@@ -11,7 +11,7 @@ NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v4"
 GATE_POLICY_VERSION = "news_gate_v5"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
-TRIAGE_POLICY_VERSION = "news_triage_policy_v7"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v8"
 DELIVERY_CARD_VERSION = "news_delivery_card_v10"
 
 Admission = Literal[
