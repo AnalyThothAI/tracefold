@@ -413,8 +413,10 @@ ledger re-ask is a separate execution with the same ceiling (normally another
 two calls), and both executions remain in the verdict audit.
 `news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
 `min_watchlist_magnitude`, `unclear_push_min_magnitude`,
-`unclear_push_event_types`, `restatement_drop`, `similarity_max`, and
-`high_priority_escalates`. There is no runtime reader quota. Retired quota keys
+`unclear_push_event_types`, `restatement_drop`, `similarity_max`,
+`high_priority_escalates`, and the policy v8 recall knobs
+`noise_veto_max_magnitude` (1), `noise_veto_respects_gate_priority` (true),
+`contested_push_min_magnitude` (2), and `listing_exempt_from_duplicate` (true). There is no runtime reader quota. Retired quota keys
 are rejected as unknown configuration instead of being silently carried
 forward. `news.retention` keys are `raw_days` (30) and
 `judged_days` (365, >= `raw_days`): an Item behind an Event that carries a

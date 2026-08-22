@@ -48,14 +48,16 @@ class DecidePolicy:
     # Events keep pushing, it just no longer shouts.
     high_priority_escalates: bool = False
     # Policy v8 (recall-first). A `noise` label used to return before every other rule, so one
-    # mislabelled enum outranked magnitude 3, Gate priority and the watchlist. The Program's own
-    # instruction defines noise as magnitude 0 material, so a verdict that calls an Event noise while
-    # giving it magnitude >= 1, marking it actionable, or asking to push it is contradicting itself.
-    # Measured over 300 replayed Events (2026-08-22): 42% of the noise drops carried magnitude >= 1
-    # and 14 carried magnitude >= 2 — among them a hijacked tanker in the Gulf of Aden that the Gate
-    # had flagged high priority and the previous generation had delivered. Raising this ceiling lets
-    # `noise` veto louder verdicts again; it is the one knob that trades recall for quiet.
-    noise_veto_max_magnitude: int = 0
+    # mislabelled enum outranked magnitude 3, Gate priority and the watchlist. The ceiling is 1, not
+    # 0, because the Program instruction genuinely allows noise at magnitude 1: it calls magnitude 1
+    # "a routine update on one name that changes nothing" and its own worked example files a user
+    # milestone as magnitude 1 / drop. Magnitude 2 is where the instruction says "clearly tradable",
+    # so a verdict that says noise and 2 in the same breath is disagreeing with itself. Measured over
+    # 300 replayed Events (2026-08-22): 14 of v4's noise drops carried magnitude >= 2 — among them a
+    # hijacked tanker in the Gulf of Aden the Gate had flagged high priority and the previous
+    # generation had delivered. Raise this to let `noise` veto louder verdicts again; it is the one
+    # knob that trades recall for quiet.
+    noise_veto_max_magnitude: int = 1
     # A high-priority Event is never dropped by the `noise` label alone: priority is upstream Gate
     # evidence the model did not produce.
     noise_veto_respects_gate_priority: bool = True
@@ -164,7 +166,7 @@ def rule_baseline(facts: GateFacts, *, fail_open_high_priority: bool = True) -> 
     return "drop"
 
 
-def _noise_is_self_consistent(verdict: TriageVerdict, facts: GateFacts, policy: DecidePolicy) -> bool:
+def _noise_veto_applies(verdict: TriageVerdict, facts: GateFacts, policy: DecidePolicy) -> bool:
     """True when a ``noise`` label may drop the card on the strength of that label alone.
 
     ``noise`` is defined by the Program's own instruction as magnitude 0 material. Any verdict that
@@ -182,10 +184,37 @@ def _noise_is_self_consistent(verdict: TriageVerdict, facts: GateFacts, policy: 
     return not (policy.noise_veto_respects_gate_priority and facts.priority == "high")
 
 
-def _listing_fact(verdict: TriageVerdict, facts: GateFacts) -> bool:
-    """True for an exchange listing/delisting frame, by the model's type or the Gate's admission."""
+def _listing_fact(facts: GateFacts) -> bool:
+    """True for a Gate-admitted exchange listing/delisting frame.
 
-    return verdict.event_type in {"listing", "delisting"} or facts.admission == "listing_deterministic"
+    Only the Gate's admission counts. ``verdict.event_type`` is unverified model output, so trusting
+    it would let any story the model repeatedly types as ``listing`` — a recurring "X will support Y"
+    tease, an ETF-approval rumour thread — escape duplicate evidence on every repeat with no
+    corroboration. The admission is derived upstream from provider metadata (#72).
+    """
+
+    return facts.admission == "listing_deterministic"
+
+
+def _names_another_instrument(
+    listing_fact: bool,
+    symbols: set[str],
+    status: StorylineStatus,
+    index: int,
+) -> bool:
+    """True when a listing frame's closest match is a card about a *different* instrument.
+
+    Exchange notices share one wire template, so "Coinbase 将新增对 Aligned (ALIGN) 的支持" and
+    "Upbit 将新增对 BICO 的交易支持" score well above ``similarity_max`` on character bigrams while
+    naming different tradable things. Exempting the whole class from the similarity check would also
+    stop protecting the reader from a genuinely re-issued notice, so the exemption is narrowed to the
+    case it exists for: the matched card names none of the symbols this Event is about.
+    """
+
+    if not listing_fact or not symbols or not 0 <= index < len(status.seen_headlines):
+        return False
+    matched = status.seen_headlines[index].upper()
+    return not any(symbol and symbol in matched for symbol in symbols)
 
 
 def _seen_flip(direction: str, seen_directions: Sequence[str], index: int) -> bool:
@@ -239,9 +268,9 @@ def decide(
 
     if muted:
         return DecisionResult("drop", "muted", None, baseline, watch_hits)
-    if verdict.event_type == "noise" and _noise_is_self_consistent(verdict, facts, policy):
+    if verdict.event_type == "noise" and _noise_veto_applies(verdict, facts, policy):
         return DecisionResult("drop", "noise", None, baseline, watch_hits)
-    listing_fact = policy.listing_exempt_from_duplicate and _listing_fact(verdict, facts)
+    listing_fact = policy.listing_exempt_from_duplicate and _listing_fact(facts)
     if policy.restatement_drop and not listing_fact and grounded_restatement(verdict, status):
         return DecisionResult("drop", "restatement", None, baseline, watch_hits)
 
@@ -260,11 +289,17 @@ def decide(
         facts.priority == "high"
         and policy.contested_push_min_magnitude > 0
         and verdict.magnitude >= policy.contested_push_min_magnitude
+        and (verdict.actionable or verdict.direction in _DIRECTIONAL or verdict.scope == "macro")
     ):
         # The Gate called this Event high priority and the model itself weighed it at magnitude 2 or
         # more, then asked to hold it anyway. That is a disagreement between upstream evidence and a
         # single model field, not a considered hold, and recall-first it resolves toward the reader.
-        # The rule names itself so the trace says which of the two won.
+        # The last clause is what stops the Gate hint winning on its own: `priority` is
+        # `score >= 90 or watchlist or listing or macro lexicon`, which #77 calls an AMQP transport
+        # hint. Without it a provider-scored price-only frame the model rejected on every field —
+        # the instruction's own "Spot Palladium Rises Nearly 3%" negative example — would reach the
+        # reader. A verdict that is not actionable, carries no direction and is not macro is a
+        # considered hold, and this branch leaves it alone. The rule names itself in the trace.
         final, rule = "push", "contested_high_priority"
     elif (
         verdict.decision in _MODEL_WANTS_PUSH
@@ -290,13 +325,14 @@ def decide(
     seen_similarity: float | None = None
     seen_against = -1
     seen_scope = ""
-    if final == "push" and status is not None and not degraded and not listing_fact and policy.similarity_max > 0.0:
+    if final == "push" and status is not None and not degraded and policy.similarity_max > 0.0:
         seen_scope = "all"
         seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
         if (
             seen_against >= 0
             and seen_similarity >= policy.similarity_max
             and not _seen_flip(verdict.direction, status.seen_directions, seen_against)
+            and not _names_another_instrument(listing_fact, primaries | grounded, status, seen_against)
         ):
             return DecisionResult(
                 "throttled",

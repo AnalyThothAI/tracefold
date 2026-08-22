@@ -435,21 +435,31 @@ def test_noise_only_vetoes_when_the_verdict_agrees_with_itself() -> None:
     dropped = decide(quiet_noise, _FACTS, None)
     assert dropped.final == "drop" and dropped.override_rule == "noise"
 
-    # Weight the model gave the Event itself: magnitude, actionability, or a push intent.
-    for contradiction in (
-        {"magnitude": 1},
-        {"magnitude": 2, "decision": "push", "actionable": True},
-        {"actionable": True},
-        {"decision": "push"},
+    # Magnitude 1 is instruction-compliant for noise ("a routine update on one name that changes
+    # nothing"), so it must still be vetoed. The ceiling is where the instruction says "clearly
+    # tradable" instead.
+    routine = _verdict(event_type="noise", magnitude=1, actionable=False, decision="drop")
+    assert decide(routine, _FACTS, None).override_rule == "noise"
+
+    # Weight the model gave the Event itself: magnitude above the ceiling, actionability, push intent.
+    # Assert the outcome, not only the rule name: these fall through to real rules and the test has to
+    # record which one, or a drop -> push change could pass unnoticed.
+    for contradiction, expected in (
+        ({"magnitude": 2}, ("push", "watchlist")),
+        ({"magnitude": 2, "decision": "push", "actionable": True}, ("push", "model_push_actionable")),
+        ({"actionable": True}, ("drop", "below_threshold")),
+        ({"decision": "push"}, ("drop", "below_threshold")),
     ):
         fields = {"event_type": "noise", "magnitude": 0, "actionable": False, "decision": "drop", **contradiction}
-        assert decide(_verdict(**fields), _FACTS, None).override_rule != "noise", contradiction
+        result = decide(_verdict(**fields), _FACTS, None)
+        assert (result.final, result.override_rule) == expected, contradiction
 
     # Gate priority is upstream evidence the model did not produce; it survives a noise label.
     assert decide(quiet_noise, replace(_FACTS, priority="high"), None).override_rule != "noise"
 
     # Both halves stay operator-owned: raising the ceiling restores the pre-v8 veto.
     loud_noise = _verdict(event_type="noise", magnitude=2, actionable=False, decision="drop")
+    assert decide(loud_noise, _FACTS, None).override_rule != "noise"
     restored = decide(loud_noise, _FACTS, None, policy=replace(DEFAULT_POLICY, noise_veto_max_magnitude=3))
     assert restored.final == "drop" and restored.override_rule == "noise"
     ignored = decide(
@@ -498,37 +508,41 @@ def test_contested_high_priority_resolves_toward_the_reader() -> None:
     )
 
 
-def test_listing_frames_are_exempt_from_duplicate_evidence() -> None:
-    """ "Coinbase adds ALIGN" and "Upbit adds BICO" are different instruments in one wire template,
-    so restatement and bigram similarity both read the second as a repeat. #72 admits these frames
-    deterministically; policy v8 stops that admission being undone one step later."""
+def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instruments() -> None:
+    """ "Coinbase adds ALIGN" and "Upbit adds BICO" are different instruments in one wire template, so
+    restatement and bigram similarity both read the second as a repeat. #72 admits these frames
+    deterministically; policy v8 stops that admission being undone one step later — but only for the
+    different-instrument case, so a genuinely re-issued notice is still withheld."""
 
     told = [{"dir": "bullish", "headline_zh": "Coinbase 将新增对 Aligned (ALIGN) 的支持"}]
     status = storyline_status("asset:ALIGN", told=told)
-    listing = _verdict(
+    admitted = replace(_FACTS, admission="listing_deterministic", grounded_assets=("BICO",))
+    other_instrument = _verdict(
         event_type="listing",
         novelty="restatement",
         restates=0,
         headline_zh="Upbit 将新增对 BICO 的交易支持",
         direction="bullish",
+        assets=[TriageAsset(symbol="BICO", role="primary")],
     )
-    assert decide(listing, _FACTS, status).final == "push"
+    assert decide(other_instrument, admitted, status).final == "push"
 
-    # A Gate-admitted listing frame is exempt even when the model typed it as something else.
-    typed_away = _verdict(
-        event_type="product",
-        novelty="restatement",
-        restates=0,
-        headline_zh="Upbit 将新增对 BICO 的交易支持",
-        direction="bullish",
+    # The same instrument the reader already saw is still duplicate evidence: the exemption skips the
+    # restatement drop but the similarity check still runs, so the card is withheld and the trace
+    # names the ledger entry it matched rather than the model's novelty claim.
+    same_instrument = other_instrument.model_copy(update={"headline_zh": "Coinbase 将新增对 Aligned (ALIGN) 的支持"})
+    repeat = decide(same_instrument, replace(admitted, grounded_assets=("ALIGN",)), status)
+    assert repeat.final == "throttled" and repeat.throttled_by == "storyline:asset:ALIGN:seen"
+
+    # The model's own `event_type` is not evidence of a listing frame: only the Gate's admission is,
+    # or any story the model keeps typing as `listing` escapes duplicate evidence on every repeat.
+    typed_only = decide(other_instrument, replace(_FACTS, grounded_assets=("BICO",)), status)
+    assert typed_only.final == "drop" and typed_only.override_rule == "restatement"
+
+    # The exemption stays operator-owned.
+    kept = decide(
+        other_instrument, admitted, status, policy=replace(DEFAULT_POLICY, listing_exempt_from_duplicate=False)
     )
-    admitted = replace(_FACTS, admission="listing_deterministic")
-    assert decide(typed_away, admitted, status).final == "push"
-
-    # Everything else still obeys duplicate evidence, and the exemption is operator-owned.
-    non_listing = _verdict(novelty="restatement", restates=0, headline_zh="Coinbase 将新增对 Aligned (ALIGN) 的支持")
-    assert decide(non_listing, _FACTS, status).final == "drop"
-    kept = decide(listing, _FACTS, status, policy=replace(DEFAULT_POLICY, listing_exempt_from_duplicate=False))
     assert kept.final == "drop" and kept.override_rule == "restatement"
 
 

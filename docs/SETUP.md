@@ -188,6 +188,10 @@ news:
     restatement_drop: true      # a restatement of a card the reader already received never pushes
     similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
     high_priority_escalates: false  # true = the Gate's AMQP priority also earns the ⚡ header (pre-v4, #77)
+    noise_veto_max_magnitude: 1     # `noise` drops on its own only at or below this magnitude (policy v8)
+    noise_veto_respects_gate_priority: true   # false = a `noise` label may drop a Gate high-priority Event
+    contested_push_min_magnitude: 2 # Gate high priority beats a model hold at this magnitude; 0 disables
+    listing_exempt_from_duplicate: true  # exchange listing frames are duplicates only per instrument
   retention:
     raw_days: 30                # an Item nobody judged is storage
     judged_days: 365            # an Item behind a verdict or accepted review is retained as learning evidence
