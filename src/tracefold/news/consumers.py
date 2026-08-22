@@ -45,8 +45,9 @@ from .bus import (
     now_ms,
 )
 from .canary import CanaryRuntimeArm
-from .delivery import card_assets, render_first_card
+from .delivery import reader_assets, render_first_card
 from .events import admit_frame
+from .liquidation_loops import LiquidationSnapshotLoop
 from .models import (
     ADMITTED_ADMISSIONS,
     GATE_POLICY_VERSION,
@@ -1649,7 +1650,7 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row = bundle
+        card, triage_row, oi_signal = bundle
         tv = dict(triage_row.get("verdict") or {})
         if triage_row["final_decision"] not in {"push", "escalate"}:
             return
@@ -1658,12 +1659,20 @@ class DelivererConsumer:
             return
         # Only query a quote after every policy return above. A quote failure
         # never changes the delivery decision.
-        quotes = await self._quotes(card, tv, stamp)
+        shown = reader_assets(
+            event=card,
+            verdict=tv,
+            grounded_assets=list(card.get("grounded_assets") or []),
+            program_version=str(triage_row.get("program_version") or ""),
+            oi_signal=oi_signal,
+        )
+        quotes = await self._quotes(shown, stamp)
         card_payload = render_first_card(
             event=card,
             verdict=tv,
             decision=str(triage_row["final_decision"]),
             grounded_assets=list(card.get("grounded_assets") or []),
+            assets=shown,
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
@@ -1725,16 +1734,14 @@ class DelivererConsumer:
 
         await self.db.tx("news_delivery_settle_direct", _fn)
 
-    async def _quotes(self, card: Mapping[str, Any], verdict: Mapping[str, Any], stamp: int) -> list[Any]:
+    async def _quotes(self, shown: Sequence[str], stamp: int) -> list[Any]:
         """Fresh prices for exactly the assets rendered on the card.
 
-        `card_assets()` is shared with the renderer, so the facts and quote
-        lines cannot describe different symbols. Resolution remains owned by
-        PriceRepository. Every price-plane failure returns an empty display
-        value and leaves the already-made send decision untouched.
+        The caller passes the same `reader_assets()` result to the renderer, so the facts and quote lines
+        cannot describe different symbols. Resolution remains owned by PriceRepository. Every price-plane
+        failure returns an empty display value and leaves the already-made send decision untouched.
         """
 
-        shown = card_assets(dict(verdict), list(card.get("grounded_assets") or []))
         if not shown:
             return []
         try:
@@ -1749,11 +1756,18 @@ class DelivererConsumer:
 
     @staticmethod
     def _load(repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
+        del stamp
         card = repos.news.event_card(event_id)
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if card is None or triage is None:
             return None
-        return card, triage
+        oi_signal = None
+        if (
+            str(card.get("admission") or "") == "telemetry_deterministic"
+            and str(triage.get("program_version") or "") == OI_PROGRAM_VERSION
+        ):
+            oi_signal = repos.news.oi_signal(event_id=event_id, metric_version=OI_METRIC_VERSION)
+        return card, triage, oi_signal
 
     async def close(self) -> None:
         if self.sender is not None:
@@ -1990,6 +2004,9 @@ class NewsPipeline:
     # and every one of them may be absent without the pipeline changing shape.
     quotes: QuoteSnapshotLoop | None = None
     reactions: EventReactionLoop | None = None
+    # #144: slow, single-pair CoinGlass shadow. It writes only its latest-only read model and never reaches
+    # Gate, Triage, `decide()` or Deliverer.
+    liquidations: LiquidationSnapshotLoop | None = None
     tasks: list[tuple[str, Callable[..., Any]]] = field(default_factory=list)
 
     async def register_runtime_manifest(self) -> None:
@@ -2015,6 +2032,8 @@ class NewsPipeline:
             out.append(("news-quotes", lambda stop: self.quotes.run(stop_event=stop)))  # type: ignore[union-attr]
         if self.reactions is not None:
             out.append(("news-reactions", lambda stop: self.reactions.run(stop_event=stop)))  # type: ignore[union-attr]
+        if self.liquidations is not None:
+            out.append(("news-liquidations", lambda stop: self.liquidations.run(stop_event=stop)))  # type: ignore[union-attr]
         return out
 
     async def close(self) -> None:
@@ -2027,6 +2046,7 @@ __all__ = [
     "EventReactionLoop",
     "InstrumentSnapshotLoop",
     "JanitorLoop",
+    "LiquidationSnapshotLoop",
     "NewsPipeline",
     "OpenNewsReceiver",
     "QuoteSnapshotLoop",

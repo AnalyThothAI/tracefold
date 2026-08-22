@@ -173,21 +173,24 @@ def program_sha256(policy: OiPolicy = DEFAULT_OI_POLICY) -> str:
     ).hexdigest()
 
 
-def _headline(signal: OiSignal) -> str:
+def _headline(signal: OiSignal, *, rank: int, window_ms: int) -> str:
+    """One complete deterministic reader title, with a bounded compact form for long tickers."""
+
     arrow = "▲" if signal.direction == "rise" else "▼"
-    return f"{arrow} {signal.symbol} 持仓异动 {abs(signal.oi_change_bps) / 100.0:.2f}%"
-
-
-def _why(signal: OiSignal, *, rank: int, window_ms: int) -> str:
     hours = max(1, int(window_ms) // 3_600_000)
-    return " · ".join(
-        (
-            f"持仓 {_usd_zh(signal.oi_value_usd)}",
-            f"鲸鱼占比 {signal.whale_oi_ratio_bps / 100.0:.1f}%",
-            f"鲸鱼多头盈利 {signal.whale_long_profit_bps / 100.0:.1f}%",
-            f"{hours}h 内第 {rank} 次",
-        )
+    change = f"{abs(signal.oi_change_bps) / 100.0:.2f}%"
+    value = _usd_zh(signal.oi_value_usd).replace(" ", "")
+    ratio = f"{signal.whale_oi_ratio_bps / 100.0:.1f}%"
+    profit = f"{signal.whale_long_profit_bps / 100.0:.1f}%"
+    rich = (
+        f"{arrow} {signal.symbol} 持仓异动{change}｜持仓{value}｜鲸鱼占比{ratio}｜"
+        f"鲸鱼多头盈利{profit}｜{hours}h内第{rank}次"
     )
+    if len(rich) <= 60:
+        return rich
+    # TriageVerdict caps the reader headline at 60 characters. Preserve every measurement while shortening
+    # labels only; the common short-symbol path above keeps the fully-spelled reader contract.
+    return f"{arrow} {signal.symbol} OI{change}｜持仓{value}｜鲸鱼{ratio}｜盈利{profit}｜{hours}h#{rank}"
 
 
 def _usd_zh(value: int) -> str:
@@ -252,9 +255,11 @@ def evaluate_oi(
         confidence=1.0,
         decision="push" if qualifies else "drop",
         audience="crypto",
-        headline_zh=_headline(signal),
+        headline_zh=_headline(signal, rank=rank, window_ms=policy.window_ms),
         title_zh="",
-        why_zh=_why(signal, rank=rank, window_ms=policy.window_ms) if qualifies else "",
+        # All four deterministic measurements are already in the title. Repeating them as the body creates a
+        # two-line card that reads like two separate claims; unlike model-judged News there is no causal why.
+        why_zh="",
     )
     return OiJudgment(verdict=verdict, signal=signal, rank_in_window=rank, rule=rule)
 

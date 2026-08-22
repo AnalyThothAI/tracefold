@@ -648,6 +648,34 @@ class NewsPriceStatusData(ExactApiSchema):
     reaction_unavailable_7d: int = 0
 
 
+class NewsLiquidationSnapshotStatusData(ExactApiSchema):
+    provider: str
+    venue: str
+    venue_symbol: str
+    base_symbol: str
+    model_version: str
+    range_key: str
+    zone_count: int = 0
+    source_at_ms: int | None = None
+    received_at_ms: int | None = None
+    last_success_at_ms: int | None = None
+    last_attempt_at_ms: int
+    age_ms: int | None = None
+    freshness: Literal["fresh", "stale", "unavailable"]
+    degraded: bool
+    error_class: str | None = None
+
+
+class NewsLiquidationStatusData(ExactApiSchema):
+    """#144 shadow-only provider state; this surface exposes no card or decision input."""
+
+    provider: str = "coinglass_web"
+    shadow: bool = True
+    snapshots: list[NewsLiquidationSnapshotStatusData] = Field(default_factory=list)
+    fresh: int = 0
+    degraded: int = 0
+
+
 class NewsIncidentData(ExactApiSchema):
     incident_id: int
     cause_class: str
@@ -807,6 +835,7 @@ class NewsStatusData(ExactApiSchema):
     watchlist: list[str] = Field(default_factory=list)
     instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
     price: NewsPriceStatusData = Field(default_factory=NewsPriceStatusData)
+    liquidation: NewsLiquidationStatusData = Field(default_factory=NewsLiquidationStatusData)
     measured_at_ms: int
 
 
@@ -831,6 +860,8 @@ __all__ = [
     "NewsIncidentData",
     "NewsIngestStatusData",
     "NewsLearningRetentionStatusData",
+    "NewsLiquidationSnapshotStatusData",
+    "NewsLiquidationStatusData",
     "NewsOutcomeData",
     "NewsPipelineStatusData",
     "NewsPriceStatusData",

@@ -41,6 +41,7 @@ def _clean(conn):
     for table in (
         "news_event_reactions",
         "news_quote_snapshots",
+        "news_oi_signals",
         "news_event_assets",
         "news_verdicts",
         "news_deliveries",
@@ -188,6 +189,29 @@ def test_an_alias_still_resolves_a_tag_that_names_nothing_on_its_own(conn) -> No
     conn.commit()
     resolved = repositories_for_connection(conn).price.resolve_instruments(["XAU"])
     assert resolved["XAU"].venue_symbol == "GOLDUSDT"
+
+
+def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
+    _universe(conn, _instrument("binance.perp", "DOGEUSDT", "DOGE"))
+    _event(conn, "ev-oi", symbols=(), opened_at_ms=NOW, delivered=False)
+    conn.execute(
+        "UPDATE news_events SET admission = 'telemetry_deterministic', storyline_key = 'asset:DOGE' "
+        "WHERE event_id = 'ev-oi'"
+    )
+    conn.execute(
+        """
+        INSERT INTO news_oi_signals (
+          event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
+          whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms
+        ) VALUES ('ev-oi', 'oi_signal_v1', 'DOGE', 'rise', 864, 73010000, 8060, 21097, %s, 1, %s)
+        """,
+        (NOW, NOW),
+    )
+    conn.commit()
+
+    symbols = repositories_for_connection(conn).price.quote_target_symbols(since_ms=NOW - HOUR)
+
+    assert symbols == ["DOGE"]
 
 
 # ---------------------------------------------------------------------------- quotes

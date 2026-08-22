@@ -270,11 +270,17 @@ class _FakePriceRepository:
         }
 
 
+class _FakeLiquidationRepository:
+    def status(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"provider": "coinglass_web", "shadow": True, "snapshots": [], "fresh": 0, "degraded": 0}
+
+
 class _FakeRepositories:
     def __init__(self, news: _FakeNewsRepository) -> None:
         self.news = news
         self.instruments = _FakeInstrumentsRepository()
         self.price = _FakePriceRepository()
+        self.liquidation = _FakeLiquidationRepository()
         self.conn = _FakeConnection()
 
 
@@ -406,6 +412,8 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "instruments",
         # #88 §11: per-source quote freshness and Reaction backlog, beside the pipeline's own health.
         "price",
+        # #144: provider health for the shadow-only liquidation read model.
+        "liquidation",
         "measured_at_ms",
     }
     assert set(schemas_news.NewsIngestStatusData.model_fields) == {
@@ -616,8 +624,7 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
     monkeypatch.setattr(routes_news, "ReviewDesk", _FakeReviewDesk)
     app.state.service = _FakeRuntime(settings, _FakeNewsRepository())
 
-    with TestClient(app) as http:
-        response = http.get("/api/news/status", params={"token": TOKEN})
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
 
     assert response.status_code == 200
     data = response.json()["data"]
@@ -724,3 +731,10 @@ def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     # The backlog SLO has to be *served*, not merely declared: the envelope drops unset fields, so a schema
     # default with no repository value disappears from the response entirely.
     assert data["price"]["oldest_due_age_ms"] == 0
+    assert data["liquidation"] == {
+        "provider": "coinglass_web",
+        "shadow": True,
+        "snapshots": [],
+        "fresh": 0,
+        "degraded": 0,
+    }

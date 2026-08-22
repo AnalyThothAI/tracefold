@@ -111,6 +111,13 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_status_learning_retention",
             sql="SELECT * FROM news_learning_retention_state WHERE singleton",
         ),
+        ReadQuerySpec(
+            name="news_liquidation_status",
+            sql="SELECT provider, venue, venue_symbol, base_symbol, model_version, range_key, "
+            "jsonb_array_length(zones) AS zone_count, source_at_ms, received_at_ms, last_success_at_ms, "
+            "last_attempt_at_ms, freshness, degraded, error_class FROM news_liquidation_snapshots "
+            "ORDER BY provider, venue, venue_symbol, model_version, range_key LIMIT 16",
+        ),
         # #88 price plane. The due scan and the review aggregates are the two reads that could grow without
         # anyone noticing, so both are in the EXPLAIN registry with their real predicates.
         # #137: the rank read runs on every telemetry frame.

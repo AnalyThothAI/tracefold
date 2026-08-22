@@ -1001,6 +1001,47 @@ def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
     assert sender.cards[0]["elements"][0]["content"].splitlines()[-1] == "行情 NVDA $217.32 24h +1.50%（永续）"
 
 
+def test_deliverer_prices_the_verified_asset_on_an_oi_card() -> None:
+    price = RecordingPrice(
+        quotes=[
+            {
+                "symbol": "DOGE",
+                "price": "0.2143",
+                "change_pct": 8.64,
+                "change_basis": "rolling_24h",
+                "instrument_class": "crypto",
+                "state": "fresh",
+            }
+        ]
+    )
+    news = _delivery_news(
+        event_card=_card(admission="telemetry_deterministic", grounded_assets=[]),
+        latest_verdict=lambda *, event_id, stage: {
+            "final_decision": "push",
+            "program_version": "news_oi_signal_v1",
+            "verdict": {
+                "direction": "bullish",
+                "magnitude": 2,
+                "headline_zh": "▲ DOGE 持仓异动8.64%｜持仓7301万｜鲸鱼占比211.0%｜鲸鱼多头盈利80.6%｜4h内第1次",
+                "assets": [{"symbol": "DOGE", "role": "primary", "market_type": "perp"}],
+            },
+        },
+        oi_signal={"symbol": "DOGE", "metric_version": "oi_signal_v1"},
+    )
+    sender = RecordingSender()
+
+    asyncio.run(
+        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
+            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
+        )
+    )
+
+    assert price.requested == [["DOGE"]]
+    lines = sender.cards[0]["elements"][0]["content"].splitlines()
+    assert "DOGE" in lines[0]
+    assert lines[-1] == "行情 DOGE $0.2143 24h +8.64%"
+
+
 def test_deliverer_delivers_when_the_price_plane_fails() -> None:
     news = _delivery_news()
     sender = RecordingSender()
@@ -2036,7 +2077,10 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
     assert inserted["final_decision"] == "push" and inserted["override_rule"] == "model_push_actionable"
     assert inserted["program_version"] == "news_oi_signal_v1" and inserted["degraded"] is False
     assert inserted["verdict"]["event_type"] == "oi_spike"
-    assert inserted["verdict"]["headline_zh"] == "▲ TRUMP 持仓异动 4.55%"
+    assert inserted["verdict"]["headline_zh"] == (
+        "▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%｜4h内第1次"
+    )
+    assert inserted["verdict"]["why_zh"] == ""
     # The rank ledger is written, and the card goes out on the one delivery lane there has ever been.
     ledger = news.kwargs_of("insert_oi_signal")
     assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1

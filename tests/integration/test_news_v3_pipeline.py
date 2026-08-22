@@ -53,6 +53,8 @@ NEWS_TABLES = {
     "news_quote_snapshots",
     "news_event_reactions",
     "news_oi_signals",
+    # #144 latest-only potential-liquidation shadow, never a card/decision input.
+    "news_liquidation_snapshots",
     # #112 immutable evidence actually read by the SemanticJudge.
     "news_event_evidence_snapshots",
 }

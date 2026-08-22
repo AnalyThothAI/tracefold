@@ -478,7 +478,8 @@ epoch; Prompt-era, `program_v1`, and `program_v2` rows are audit-only for the
 then-current release chain. `20260822_0295` preserves v1-v3 and appends the
 `program_v5` epoch with factory v3 on the artifact-v2 envelope; every earlier row is
 audit-only for the current compiler and release chain. A database
-at an earlier revision upgrades with `tracefold db migrate`; a fresh database
+at an earlier revision upgrades through `20260822_0299`, which adds the
+latest-only liquidation shadow table; a fresh database
 runs the complete chain. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
@@ -545,6 +546,11 @@ reader/writer.
 - `/api/news/status.price` reports per-source quote freshness (source key,
   target and quote counts, age, state) and the Reaction backlog
   (partial/complete/unavailable over 7 days) beside the pipeline's own health.
+- `/api/news/status.liquidation` reports the shadow-only CoinGlass acquisition
+  state: provider, exact venue pair, model/range identity, retained zone count,
+  provider/receipt/success/attempt clocks, age, `fresh|stale|unavailable`,
+  degraded flag and error class. It exposes no zones, liquidation amount,
+  inferred position side, card input or decision input.
 
 ## CLI
 

@@ -37,6 +37,7 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     },
     "src/tracefold/app/repositories.py": {
         "tracefold.news.instruments_repository",
+        "tracefold.news.liquidation_repository",
         "tracefold.news.price_repository",
         "tracefold.news.repository",
     },

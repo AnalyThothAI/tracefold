@@ -27,6 +27,7 @@ RUN npm run build
 FROM python:3.13-slim-bookworm AS python-deps
 
 ARG TRACEFOLD_NEWS_PROGRAM_PROFILE=d_stable
+ARG COINGLASS_CLI_COMMIT=dc8f9d253a8dc1fded6fabcef93c96feeaa4b826
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -84,8 +85,15 @@ RUN --mount=type=secret,id=github_token \
         git config --global url."https://x-access-token:${token}@github.com/".insteadOf "https://github.com/"; \
     fi; \
     for attempt in 1 2 3 4 5; do \
-        UV_HTTP_TIMEOUT=300 UV_CONCURRENT_DOWNLOADS=1 uv sync --frozen --no-dev \
-        && exit 0; \
+        if UV_HTTP_TIMEOUT=300 UV_CONCURRENT_DOWNLOADS=1 uv sync --frozen --no-dev \
+            && python -m venv /opt/coinglass-cli \
+            && UV_HTTP_TIMEOUT=300 UV_CONCURRENT_DOWNLOADS=1 uv pip install \
+                --python /opt/coinglass-cli/bin/python \
+                "git+https://github.com/AnalyThothAI/coinglass-cli.git@${COINGLASS_CLI_COMMIT}" \
+            && /opt/coinglass-cli/bin/python -c 'import coinglass_cli'; then \
+            exit 0; \
+        fi; \
+        rm -rf /opt/coinglass-cli; \
         sleep "$((attempt * 5))"; \
     done; \
     exit 1
@@ -115,6 +123,7 @@ LABEL org.opencontainers.image.revision=${TRACEFOLD_BUILD_REVISION} \
 WORKDIR /app
 
 COPY --from=python-deps /app /app
+COPY --from=python-deps /opt/coinglass-cli /opt/coinglass-cli
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
