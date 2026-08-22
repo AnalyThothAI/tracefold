@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -12,11 +13,15 @@ from tracefold.news.agents.program_compiler import (
     CompileBudget,
     CompileBudgetExceeded,
     CompileRequest,
+    DevelopmentEpisode,
     ProgramCompiler,
     _BudgetedLM,
     _BudgetMeter,
+    _honest_split,
     _metric_receipt,
     _optimizer_config_receipt,
+    _production_action,
+    _retrieval_receipt,
     accepted_review_metric,
 )
 from tracefold.news.agents.program_compiler_trusted import build_eligible_demo_bank
@@ -29,6 +34,7 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.semantic_contract import ToldLedgerEntry
 
 
 class _MeteredFakeLM:
@@ -81,8 +87,10 @@ class _FakeGEPA:
 
     def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
         assert teacher is None
-        assert trainset == valset
-        assert len(trainset) == 1
+        # The whole point of the split: GEPA optimizes on one set and picks the winner on another.
+        assert trainset and valset
+        assert {example.case_id for example in trainset}.isdisjoint({example.case_id for example in valset})
+        assert {example.cluster_id for example in trainset}.isdisjoint({example.cluster_id for example in valset})
         assert trainset[0].evidence_json.startswith("<tracefold-untrusted-event-json-v1>\n")
         assert trainset[0].evidence_json.endswith("\n</tracefold-untrusted-event-json-v1>")
         assert isinstance(dspy.settings.adapter, DspyStrictJSONAdapter)
@@ -126,14 +134,25 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
     )
     return CompileRequest(
         development_dataset_sha="d" * 64,
-        episodes=(
+        episodes=tuple(
             {
-                "case_id": "case-1",
-                "cluster_id": "cluster-1",
+                "case_id": f"case-{cluster}-{name}",
+                "cluster_id": f"cluster-{cluster}",
                 "stratum": "review_failure",
                 "context": context,
+                "policy_metric": {
+                    "gate": {
+                        "grounded_assets": ["ABC"],
+                        "watchlist_symbols": [],
+                        "provider_score": 90,
+                        "priority": "normal",
+                        "admission": "candidate",
+                    },
+                    "storyline": {"title": "Issuer files a material update", "family": "filing"},
+                    "seen": [],
+                },
                 "accepted_review": {
-                    "should_push": "should_push",
+                    "should_push": should_push,
                     "dimensions": {"direction": "fail", "factual_fidelity": "pass"},
                     "novelty": {"judgment": "new_fact", "duplicate_of": ""},
                     "expected_correction": "The direction must follow the filing's actual mechanism.",
@@ -143,7 +162,11 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
                     "novelty": "new_fact",
                     "direction": "neutral",
                 },
-            },
+            }
+            # Two clusters so the split is possible, and both halves carry every required stratum:
+            # a safety/positive case and a safety/negative one. Anything less fails closed.
+            for cluster in (1, 2)
+            for name, should_push in (("push", "must_push"), ("hold", "must_hold"))
         ),
         budget=CompileBudget(
             max_metric_calls=3,
@@ -227,8 +250,8 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert result.task_model_calls == 1
     assert result.reflection_model_calls == 1
     assert result.actual_cost_microusd == 5
-    assert result.failure_cluster_ids == ("cluster-1",)
-    assert result.target_dimensions == ("direction",)
+    assert result.failure_cluster_ids == ("cluster-1", "cluster-2")
+    assert result.target_dimensions == ("direction", "should_push")
     receipts = result.receipt_payloads.model_dump(mode="json")
     assert receipts["optimizer_config"]["dspy_context"]["disable_history"] is True
     assert "source" in receipts["metric"]["implementation"]
@@ -266,8 +289,8 @@ def test_eligible_demo_bank_uses_the_same_delimited_model_evidence_as_compile_ex
         "why_zh": "时间表发生变化。",
     }
     case = {
-        "case_id": "case-1",
-        "cluster_id": "cluster-1",
+        "case_id": episode["case_id"],
+        "cluster_id": episode["cluster_id"],
         "evidence_sha256": "e" * 64,
     }
     payload = {
@@ -366,6 +389,8 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         optimizer_factory=_FakeGEPA,
         metric_sha256=metric_sha,
         example_count=1,
+        train_count=1,
+        val_count=1,
     )
     changed_scalar = _optimizer_config_receipt(
         constructor={**constructor, "seed": 18},
@@ -374,6 +399,8 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         optimizer_factory=_FakeGEPA,
         metric_sha256=metric_sha,
         example_count=1,
+        train_count=1,
+        val_count=1,
     )
     changed_model = _optimizer_config_receipt(
         constructor=constructor,
@@ -382,6 +409,8 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         optimizer_factory=_FakeGEPA,
         metric_sha256=metric_sha,
         example_count=1,
+        train_count=1,
+        val_count=1,
     )
     changed_endpoint = _optimizer_config_receipt(
         constructor=constructor,
@@ -390,9 +419,258 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         optimizer_factory=_FakeGEPA,
         metric_sha256=metric_sha,
         example_count=1,
+        train_count=1,
+        val_count=1,
     )
 
     assert canonical_sha(base) != canonical_sha(changed_scalar)
     assert canonical_sha(base) != canonical_sha(changed_model)
     assert canonical_sha(base) != canonical_sha(changed_endpoint)
     assert "compiler.test" not in repr(base)
+
+
+# ---------------------------------------------------------------- production-action metric
+def _metric_gold(**overrides: Any) -> Any:
+    gold: dict[str, Any] = {
+        "accepted_review": {
+            "should_push": "should_push",
+            "dimensions": {},
+            "novelty": {"judgment": "uncertain", "duplicate_of": ""},
+        },
+        "production_verdict": {},
+        "policy_metric": {
+            "gate": {
+                "grounded_assets": ["ABC"],
+                "watchlist_symbols": [],
+                "provider_score": 90,
+                "priority": "normal",
+                "admission": "candidate",
+            },
+            "storyline": {"title": "Issuer files a material update", "family": "filing"},
+            "seen": [],
+            "told": [],
+        },
+    }
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(gold.get(key), dict):
+            gold[key] = {**gold[key], **value}
+        else:
+            gold[key] = value
+    return dspy.Example(**gold)
+
+
+def _metric_verdict(**overrides: Any) -> dict[str, Any]:
+    verdict: dict[str, Any] = {
+        "decision": "push",
+        "novelty": "new_fact",
+        "restates": -1,
+        "event_type": "filing",
+        "assets": [{"symbol": "ABC", "role": "primary"}],
+        "direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 2,
+        "actionable": True,
+        "confidence": 0.8,
+        "audience": "us_equity",
+        "headline_zh": "发行人提交重大更新",
+        "title_zh": "",
+        "why_zh": "时间表发生变化。",
+    }
+    verdict.update(overrides)
+    return verdict
+
+
+def _score(gold: Any, verdict: dict[str, Any], pred_name: str | None = None) -> Any:
+    return accepted_review_metric(gold, dspy.Prediction(verdict=verdict), None, pred_name, None, None)
+
+
+def test_metric_scores_the_production_action_not_the_models_intent() -> None:
+    """`decision` is an intent `decide()` routinely overrides. A grounded restatement is dropped whatever the
+    model asked for, so a metric reading `decision` would reward a card the reader never receives."""
+
+    told = [
+        {"i": 0, "event_id": "prior", "dir": "bullish", "headline_zh": "发行人提交重大更新", "grounded_assets": ["ABC"]}
+    ]
+    gold = _metric_gold(
+        accepted_review={"should_push": "should_hold"},
+        policy_metric={"told": told, "seen": [dict(told[0], direction="bullish")]},
+    )
+    # The model asks to push; the policy drops it as a grounded restatement, which is what the reviewer wanted.
+    restatement = _metric_verdict(decision="push", novelty="restatement", restates=0)
+    assert _score(gold, restatement).score == 1.0
+
+    # The same verdict scored against the old contract — the model's own `decision` — would have failed it.
+    assert restatement["decision"] == "push"
+
+
+def test_metric_hard_gates_cannot_be_averaged_away_by_retention_anchors() -> None:
+    gold = _metric_gold(
+        accepted_review={
+            "should_push": "must_push",
+            "dimensions": {"headline_fidelity": "pass", "why_support": "pass", "direction": "pass"},
+        },
+        production_verdict=_metric_verdict(),
+    )
+    # Four accepted dimensions agree, but the reader never gets a fact the reviewer marked `must_push`.
+    missed = _metric_verdict(event_type="noise", magnitude=0, actionable=False, decision="drop")
+    result = _score(gold, missed)
+    assert result.score == 0.0
+    assert "must receive" in result.feedback
+
+
+def test_metric_rejects_an_ungrounded_primary_asset_outright() -> None:
+    gold = _metric_gold()
+    hallucinated = _metric_verdict(assets=[{"symbol": "XYZ", "role": "primary"}])
+    result = _score(gold, hallucinated)
+    assert result.score == 0.0 and "XYZ" in result.feedback
+
+
+def test_metric_excludes_unlabelled_dimensions_from_their_component_denominator() -> None:
+    """An `uncertain` label is not a pass. Counting it as one would dilute the failures beside it."""
+
+    production = _metric_verdict(direction="neutral")
+    labelled = _metric_gold(
+        accepted_review={"should_push": "uncertain", "dimensions": {"direction": "fail", "magnitude": "uncertain"}},
+        production_verdict=production,
+    )
+    # `direction` changed away from the value the reviewer rejected: the only labelled dimension passes.
+    assert _score(labelled, _metric_verdict(direction="bullish")).score == 1.0
+    assert _score(labelled, _metric_verdict(direction="neutral")).score == 0.0
+
+
+def test_metric_feedback_never_asks_a_predictor_to_repair_what_it_cannot_cause() -> None:
+    gold = _metric_gold(
+        accepted_review={
+            "should_push": "should_push",
+            "dimensions": {"asset_grounding": "fail", "why_support": "fail"},
+            "novelty": {"judgment": "restatement", "duplicate_of": "prior"},
+        },
+        production_verdict=_metric_verdict(),
+    )
+    semantics = _score(gold, _metric_verdict(), "event_semantics").feedback
+    card = _score(gold, _metric_verdict(), "reader_card").feedback
+    assert "asset_grounding" in semantics and "why_support" not in semantics
+    assert "why_support" in card and "asset_grounding" not in card
+    # Novelty is EventSemantics' job; ReaderCard is never told about it.
+    assert "novelty" in semantics.lower() and "novelty" not in card.lower()
+
+
+def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
+    receipt = _metric_receipt(accepted_review_metric)
+    assert receipt["weights"] == {"final_action": 0.50, "event_semantics": 0.35, "reader_card": 0.15}
+    assert receipt["action_source"]["policy"] == "tracefold.news.triage_rules.decide"
+    assert receipt["action_source"]["operational_controls"] == "excluded"
+    assert receipt["action_source"]["policy_values"]["similarity_max"] is not None
+    assert receipt["review_rubric_version"]
+    # Reweighting, repointing at another policy, or moving rubric all move the receipt hash.
+    assert canonical_sha({**receipt, "weights": {"final_action": 1.0}}) != canonical_sha(receipt)
+
+
+def test_operational_mute_never_teaches_the_program_that_news_is_noise() -> None:
+    """A card silenced for operational reasons is not evidence that its editorial judgment was wrong."""
+
+    source = inspect.getsource(_production_action)
+    assert "muted=False" in source
+    assert "control" not in _metric_gold()["policy_metric"]
+
+
+# ---------------------------------------------------------------- honest split
+def _split_episode(cluster: str, case: str, should_push: str, order: int) -> Any:
+    return DevelopmentEpisode.model_validate(
+        {
+            "case_id": case,
+            "cluster_id": cluster,
+            "stratum": "review_failure",
+            "context": _request().episodes[0].context,
+            "accepted_review": {
+                "should_push": should_push,
+                "dimensions": {"factual_fidelity": "pass"},
+                "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+            },
+            "production_verdict": {"decision": "push"},
+            "policy_metric": {"seen": [], "told": []},
+        }
+    )
+
+
+def _balanced(cluster: str, index: int) -> list[Any]:
+    return [
+        _split_episode(cluster, f"{cluster}-push", "must_push", index),
+        _split_episode(cluster, f"{cluster}-hold", "must_hold", index),
+    ]
+
+
+def test_split_is_disjoint_time_ordered_and_never_divides_a_fact_cluster() -> None:
+    episodes = [*_balanced("c1", 0), *_balanced("c2", 1), *_balanced("c3", 2), *_balanced("c4", 3)]
+    train, val, receipt = _honest_split(episodes)
+
+    train_clusters = {episode.cluster_id for episode in train}
+    val_clusters = {episode.cluster_id for episode in val}
+    assert train_clusters.isdisjoint(val_clusters)
+    assert {episode.case_id for episode in train}.isdisjoint({episode.case_id for episode in val})
+    # Earliest clusters train, latest select. No shuffle, no seed.
+    assert train_clusters == {"c1", "c2", "c3"} and val_clusters == {"c4"}
+    assert receipt["train"]["cluster_n"] == 3 and receipt["development_selection"]["cluster_n"] == 1
+    assert receipt["disjointness"]["shared_case_ids"] == 0
+    assert len(receipt["train"]["cluster_root_sha256"]) == 64
+    # Deterministic: the same episodes in any input order produce the same split.
+    assert _honest_split(list(reversed(episodes)))[2] == receipt
+
+
+def test_split_fails_closed_when_a_half_cannot_detect_the_regressions_it_exists_for() -> None:
+    # Every cluster is a push case, so neither half can catch a must-hold regression.
+    episodes = [_split_episode(f"c{i}", f"c{i}-push", "must_push", i) for i in range(4)]
+    with pytest.raises(ValueError, match="split_coverage_incomplete"):
+        _honest_split(episodes)
+
+    with pytest.raises(ValueError, match="split_requires_two_clusters"):
+        _honest_split(_balanced("only", 0))
+
+
+def test_retrieval_is_reported_separately_so_a_scalar_score_cannot_hide_a_recall_failure() -> None:
+    """ "The model called it new" and "the model was never shown the card" are different defects."""
+
+    context = _request().episodes[0].context
+    shown = context.model_copy(
+        update={
+            "told": context.told.model_copy(
+                update={
+                    "entries": (
+                        ToldLedgerEntry(
+                            i=0, event_id="prior", at_ms=1, ago_min=1, magnitude=1, direction="bullish", headline_zh="x"
+                        ),
+                    )
+                }
+            )
+        }
+    )
+
+    def episode(ctx: Any, target: str) -> Any:
+        return DevelopmentEpisode.model_validate(
+            {
+                "case_id": f"case-{target}-{id(ctx)}",
+                "cluster_id": "c1",
+                "stratum": "s",
+                "context": ctx,
+                "accepted_review": {"novelty": {"judgment": "restatement", "duplicate_of": target}},
+                "policy_metric": {"seen": [{"event_id": "prior"}], "told": []},
+            }
+        )
+
+    receipt = _retrieval_receipt([episode(shown, "prior"), episode(context, "prior")])
+    assert receipt["accepted_restatements_in_window"] == 2
+    assert receipt["target_recall_n"] == 1 and receipt["target_recall"] == 0.5
+    assert receipt["selected_ranks"] == [0]
+
+    # A target that was never in the bounded window is not a retrieval failure and is not counted.
+    outside = DevelopmentEpisode.model_validate(
+        {
+            "case_id": "case-outside",
+            "cluster_id": "c1",
+            "stratum": "s",
+            "context": context,
+            "accepted_review": {"novelty": {"judgment": "restatement", "duplicate_of": "long-gone"}},
+            "policy_metric": {"seen": [{"event_id": "prior"}], "told": []},
+        }
+    )
+    assert _retrieval_receipt([outside])["accepted_restatements_in_window"] == 0

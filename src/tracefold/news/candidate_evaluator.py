@@ -479,6 +479,7 @@ class CandidateEvaluator:
                     "cluster_id": case_ref.cluster_id,
                     "stratum": case_ref.stratum,
                     "context": context.model_dump(mode="json"),
+                    "policy_metric": self._policy_metric_projection(case, state),
                     "accepted_review": {
                         "review_id": case_ref.review_id,
                         "should_push": review.get("should_push"),
@@ -505,6 +506,10 @@ class CandidateEvaluator:
                         magnitude=verdict.magnitude,
                         direction=verdict.direction,
                         headline_zh=verdict.headline_zh,
+                        comparison_title=str(card.get("comparison_title") or ""),
+                        event_type=verdict.event_type,
+                        grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ()),
+                        assets=tuple(asset.symbol for asset in verdict.assets),
                     )
                 )
         frozen_episodes = tuple(episodes)
@@ -513,6 +518,32 @@ class CandidateEvaluator:
             dataset_payload=dataset_payload,
             episodes=frozen_episodes,
         )
+
+    def _policy_metric_projection(self, case: Mapping[str, Any], state: _ArmState) -> dict[str, Any]:
+        """Everything the cold metric needs to run the exact production ``decide()``, and nothing else.
+
+        The optimizer scores the action the reader would have seen, not the model's intermediate ``decision``
+        field, so the compiler needs the Gate facts and the ordered sent ledger that ``decide()`` reads. None of
+        it is model-visible: it never reaches a rendered payload, and it carries no control state — operational
+        mute and pause are excluded on purpose, because a card muted for operational reasons must not teach the
+        Program that its editorial judgment was wrong.
+        """
+
+        event = dict((case.get("snapshot") or {}).get("card") or {})
+        return {
+            "gate": {
+                "grounded_assets": [str(value) for value in event.get("grounded_assets") or ()],
+                "watchlist_symbols": sorted(str(value) for value in case.get("watchlist") or ()),
+                "provider_score": event.get("provider_score_max"),
+                "priority": str(event.get("priority") or "normal"),
+                "admission": str(event.get("admission") or "candidate"),
+            },
+            "storyline": {
+                "title": str(event.get("leader_title") or ""),
+                "family": str(event.get("family") or "general"),
+            },
+            "seen": [receipt.as_told_row() for receipt in reversed(state.receipts)],
+        }
 
     def development_compile_episodes(self, dataset_sha: str) -> tuple[dict[str, Any], ...]:
         """Return the ordered episodes from the sealed compiler export."""

@@ -18,6 +18,10 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_sha
+from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
+from ..review import REVIEW_RUBRIC_VERSION
+from ..storyline import final_storyline_key
+from ..triage_rules import DEFAULT_POLICY, GateFacts, decide, storyline_status
 from .program_compiler_security import CompileBudgetV2, CompilerEndpointIdentity
 from .semantic_program import (
     DspyCompileProgram,
@@ -37,7 +41,7 @@ from .semantic_program import (
 
 LEARNING_EPOCH = "program_v5"
 COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v2"
-METRIC_ID = "tracefold.news.accepted_review_feedback_v1"
+METRIC_ID = "tracefold.news.production_action_feedback_v1"
 _PROPOSAL_GUARDRAILS = (
     "fixed_factory_v2",
     "development_only",
@@ -64,6 +68,9 @@ class DevelopmentEpisode(_ExactModel):
     context: TriageContext
     accepted_review: dict[str, Any]
     production_verdict: dict[str, Any] | None = None
+    # Frozen Gate facts plus the ordered sent ledger `decide()` reads. Never rendered, never model-visible,
+    # and carrying no control state: the metric evaluates editorial judgment, not operator silence.
+    policy_metric: dict[str, Any] = Field(default_factory=dict)
 
 
 class CompileRequest(_ExactModel):
@@ -80,10 +87,21 @@ class CompileReceiptPayloads(_ExactModel):
     optimizer_config: dict[str, Any]
     trajectory: dict[str, Any]
     checkpoint: dict[str, Any]
+    # The two things a scalar score cannot answer: was the winner picked on examples it never trained on,
+    # and did the model even see the card it was supposed to recognise.
+    split: dict[str, Any] = Field(default_factory=dict)
+    retrieval: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _all_payloads_are_finite_json(self) -> CompileReceiptPayloads:
-        for payload in (self.metric, self.optimizer_config, self.trajectory, self.checkpoint):
+        for payload in (
+            self.metric,
+            self.optimizer_config,
+            self.trajectory,
+            self.checkpoint,
+            self.split,
+            self.retrieval,
+        ):
             _json_safe(payload)
         return self
 
@@ -107,6 +125,8 @@ class ProgramCompileResult(_ExactModel):
             "optimizer_config": canonical_sha(self.receipt_payloads.optimizer_config),
             "trajectory": canonical_sha(self.receipt_payloads.trajectory),
             "checkpoint": canonical_sha(self.receipt_payloads.checkpoint),
+            "split": canonical_sha(self.receipt_payloads.split),
+            "retrieval": canonical_sha(self.receipt_payloads.retrieval),
         }
         payloads = self.receipt_payloads.model_dump(mode="json")
         for name, actual in hashes.items():
@@ -244,6 +264,99 @@ def build_compile_lm(
     return lm
 
 
+# The three components of the candidate-selection score. Code-owned and content-addressed: they are hashed into
+# the metric receipt, so an optimizer run cannot silently reweight what "better" means.
+_ACTION_WEIGHT = 0.50
+_SEMANTICS_WEIGHT = 0.35
+_CARD_WEIGHT = 0.15
+
+# EventSemantics owns interpretation; ReaderCard owns copy. Feedback is routed the same way, so a Predictor is
+# never asked to repair a failure it cannot cause.
+_SEMANTICS_DIMENSIONS = ("asset_grounding", "novelty", "event_type", "direction", "magnitude", "actionable")
+_CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
+_DIMENSION_FIELD = {
+    "asset_grounding": "assets",
+    "novelty": "novelty",
+    "event_type": "event_type",
+    "direction": "direction",
+    "magnitude": "magnitude",
+    "actionable": "actionable",
+    "headline_fidelity": "headline_zh",
+    "why_support": "why_zh",
+    "why_value": "why_zh",
+}
+
+
+def _production_action(verdict: TriageVerdict, projection: Mapping[str, Any]) -> str:
+    """The action the reader would actually have seen, from the exact frozen production policy.
+
+    Operational mute and pause are deliberately off. A card withheld because an operator silenced a storyline
+    is not evidence that its editorial judgment was wrong, and teaching that into a Prompt would make the
+    Program quieter for reasons that have nothing to do with the news.
+    """
+
+    gate = dict(projection.get("gate") or {})
+    storyline = dict(projection.get("storyline") or {})
+    seen = list(projection.get("seen") or ())
+    told = list(projection.get("told") or ())
+    grounded = tuple(str(value) for value in gate.get("grounded_assets") or ())
+    key = final_storyline_key(
+        title=str(storyline.get("title") or ""),
+        headline_zh=verdict.headline_zh,
+        scope=verdict.scope,
+        verdict_primaries=[asset.symbol for asset in verdict.assets if asset.role == "primary"],
+        grounded_assets=grounded,
+        family=str(storyline.get("family") or "general"),
+    )
+    decision = decide(
+        verdict,
+        GateFacts(
+            grounded_assets=grounded,
+            watchlist_symbols=frozenset(str(value) for value in gate.get("watchlist_symbols") or ()),
+            provider_score=gate.get("provider_score"),
+            priority=str(gate.get("priority") or "normal"),
+            admission=str(gate.get("admission") or "candidate"),
+        ),
+        storyline_status(key, told=told, seen=seen),
+        muted=False,
+        policy=DEFAULT_POLICY,
+    )
+    return decision.final
+
+
+def _labelled(dimensions: Mapping[str, Any], names: Sequence[str]) -> list[tuple[str, str]]:
+    """Only dimensions a reviewer actually decided. A missing or ``uncertain`` label leaves the component
+    denominator, rather than counting as a pass and diluting the failures next to it."""
+
+    return [(name, str(dimensions[name])) for name in names if str(dimensions.get(name) or "") in {"pass", "fail"}]
+
+
+def _component(
+    dimensions: Mapping[str, Any],
+    names: Sequence[str],
+    verdict: Mapping[str, Any],
+    production: Mapping[str, Any],
+) -> float | None:
+    """Score one Predictor's accepted dimensions, or ``None`` when the reviewer labelled none of them.
+
+    A ``pass`` is a retention anchor: keep what the reviewer accepted. A ``fail`` is proof the prior value was
+    wrong, so changing it scores — whether the change is *better* is for blind review, not for this metric.
+    """
+
+    labelled = _labelled(dimensions, names)
+    if not labelled:
+        return None
+    hits = 0
+    for name, label in labelled:
+        field = _DIMENSION_FIELD.get(name)
+        if field is None or field not in production:
+            hits += label == "pass"
+            continue
+        same = verdict.get(field) == production.get(field)
+        hits += same if label == "pass" else not same
+    return hits / len(labelled)
+
+
 def accepted_review_metric(
     gold: dspy.Example,
     pred: dspy.Prediction,
@@ -252,17 +365,22 @@ def accepted_review_metric(
     pred_trace: Any,
     program_trace: Any = None,
 ) -> dspy.Prediction:
-    """Conservative feedback metric over accepted development truth only.
+    """Score the reader-facing action, then the two Predictors, over accepted development truth only.
 
-    Failed rubric dimensions provide reflection feedback, while fields the
-    reviewer accepted act as retention anchors.  This metric proposes a
-    candidate; it is intentionally not a release decision and never sees the
-    future holdout.
+    The predecessor compared the model's intermediate ``decision`` field and averaged every check flat. Both
+    were wrong in the same direction: ``decision`` is an intent that ``decide()`` routinely overrides — a
+    grounded restatement drop, a similarity throttle, a contested high-priority rescue, a watchlist rescue —
+    so an offline gain could not predict what the reader would see, and a `must_push` miss could be averaged
+    away by four retention anchors agreeing.
+
+    Hard gates come first and are not averaged with anything. This metric proposes a candidate; it is never a
+    release decision and never sees the future holdout.
     """
 
     del trace, pred_trace, program_trace
     review = dict(gold.get("accepted_review") or {})
     production = dict(gold.get("production_verdict") or {})
+    projection = dict(gold.get("policy_metric") or {})
     try:
         verdict_value = pred.get("verdict")
         verdict = (
@@ -270,70 +388,81 @@ def accepted_review_metric(
         )
         if not verdict:
             raise ValueError("verdict_missing")
+        typed = TriageVerdict.model_validate(verdict)
     except Exception:
         return dspy.Prediction(score=0.0, feedback="Return one complete, schema-valid semantic verdict and card.")
 
-    checks: list[bool] = []
-    feedback: list[str] = []
+    dimensions = dict(review.get("dimensions") or {})
     should_push = str(review.get("should_push") or "uncertain")
-    if should_push in {"must_push", "should_push"}:
-        checks.append(str(verdict.get("decision")) in {"push", "escalate"})
-        if not checks[-1]:
-            feedback.append("Accepted review says this fact should reach the reader.")
-    elif should_push in {"must_hold", "should_hold"}:
-        checks.append(str(verdict.get("decision")) == "drop")
-        if not checks[-1]:
-            feedback.append("Accepted review says this fact should be held.")
+    feedback: list[str] = []
 
+    action = _production_action(typed, projection) if projection else str(verdict.get("decision") or "")
+    reaches_reader = action in {"push", "escalate"}
+
+    # ---- hard gates: a dangerous miss cannot be averaged away ----
+    if should_push == "must_push" and not reaches_reader:
+        return dspy.Prediction(
+            score=0.0,
+            feedback=f"The reader must receive this fact; the production policy resolved it to {action}.",
+        )
+    if should_push == "must_hold" and reaches_reader:
+        return dspy.Prediction(
+            score=0.0, feedback=f"The reader must not receive this fact; the production policy resolved it to {action}."
+        )
+    if dimensions.get("factual_fidelity") == "fail" and production and verdict == production:
+        return dspy.Prediction(
+            score=0.0, feedback="The accepted review calls this card factually wrong; it is unchanged."
+        )
+    grounded = {str(value).upper() for value in (projection.get("gate") or {}).get("grounded_assets") or ()}
+    ungrounded = sorted(
+        asset.symbol
+        for asset in typed.assets
+        if asset.role == "primary" and grounded and asset.symbol.upper() not in grounded
+    )
+    if ungrounded:
+        return dspy.Prediction(
+            score=0.0, feedback=f"Primary assets must be grounded in the evidence; {', '.join(ungrounded)} are not."
+        )
+
+    # ---- weighted score over what the reviewer actually labelled ----
+    if should_push in {"must_push", "should_push"}:
+        action_score: float | None = float(reaches_reader)
+        if not reaches_reader:
+            feedback.append(f"Accepted review says this fact should reach the reader; policy resolved it to {action}.")
+    elif should_push in {"must_hold", "should_hold"}:
+        action_score = float(not reaches_reader)
+        if reaches_reader:
+            feedback.append(f"Accepted review says this fact should be held; policy resolved it to {action}.")
+    else:
+        action_score = None
+
+    semantics_score = _component(dimensions, _SEMANTICS_DIMENSIONS, verdict, production)
+    card_score = _component(dimensions, _CARD_DIMENSIONS, verdict, production)
+    components = [
+        (_ACTION_WEIGHT, action_score),
+        (_SEMANTICS_WEIGHT, semantics_score),
+        (_CARD_WEIGHT, card_score),
+    ]
+    present = [(weight, value) for weight, value in components if value is not None]
+    score = sum(weight * value for weight, value in present) / sum(weight for weight, _ in present) if present else 0.0
+
+    # ---- per-Predictor feedback: never ask a Predictor to repair what it cannot cause ----
+    owned = _SEMANTICS_DIMENSIONS if pred_name == "event_semantics" else _CARD_DIMENSIONS if pred_name else None
+    failed = sorted(name for name, label in dimensions.items() if label == "fail" and (owned is None or name in owned))
+    if failed:
+        feedback.append(f"Repair accepted failed dimensions: {', '.join(failed)}.")
     novelty = dict(review.get("novelty") or {})
     expected_novelty = str(novelty.get("judgment") or "uncertain")
-    if expected_novelty != "uncertain":
-        checks.append(str(verdict.get("novelty")) == expected_novelty)
-        if not checks[-1]:
-            feedback.append(f"Accepted novelty is {expected_novelty}.")
-
-    dimensions = dict(review.get("dimensions") or {})
-    retention_fields = {
-        "asset_grounding": "assets",
-        "direction": "direction",
-        "magnitude": "magnitude",
-        "headline_fidelity": "headline_zh",
-        "why_support": "why_zh",
-    }
-    for dimension, field in retention_fields.items():
-        if dimensions.get(dimension) == "pass" and field in production:
-            checks.append(verdict.get(field) == production.get(field))
-            if not checks[-1]:
-                feedback.append(f"Preserve the accepted {dimension} behavior from the prior verdict.")
-
-    failed = sorted(key for key, value in dimensions.items() if value == "fail")
-    if failed:
-        focus = f" for predictor {pred_name}" if pred_name else ""
-        feedback.append(f"Repair accepted failed dimensions{focus}: {', '.join(failed)}.")
-        failed_fields = {
-            "asset_grounding": "assets",
-            "direction": "direction",
-            "magnitude": "magnitude",
-            "headline_fidelity": "headline_zh",
-            "why_support": "why_zh",
-            "why_value": "why_zh",
-            "novelty": "novelty",
-        }
-        for dimension in failed:
-            failed_field = failed_fields.get(dimension)
-            if failed_field is not None and failed_field in production:
-                # The accepted review proves the prior value is wrong. A
-                # changed value is only a proposal signal; future blind review
-                # still decides whether that change is actually better.
-                checks.append(verdict.get(failed_field) != production.get(failed_field))
-        if "factual_fidelity" in failed and production:
-            checks.append(verdict != production)
+    if (
+        expected_novelty != "uncertain"
+        and str(verdict.get("novelty")) != expected_novelty
+        and owned != _CARD_DIMENSIONS
+    ):
+        feedback.append(f"Accepted novelty is {expected_novelty}.")
     correction = str(review.get("expected_correction") or "").strip()
     if correction:
         feedback.append(f"Reviewer correction: {correction}")
-    if not checks:
-        checks.append(bool(verdict))
-    score = sum(checks) / len(checks)
+
     return dspy.Prediction(
         score=round(score, 6),
         feedback=" ".join(feedback) or "Retain the accepted behavior while making the output more precise.",
@@ -346,13 +475,32 @@ def _metric_receipt(metric: Callable[..., Any]) -> dict[str, Any]:
     except (OSError, TypeError) as exc:
         raise ValueError("news_program_compile_metric_source_unavailable") from exc
     return {
-        "schema": "tracefold.news.compile_metric_receipt.v1",
+        "schema": "tracefold.news.compile_metric_receipt.v2",
         "metric_id": METRIC_ID,
         "implementation": {
             "module": str(metric.__module__),
             "qualname": str(metric.__qualname__),
             "source": source,
         },
+        # What "better" means, pinned. An optimizer run cannot reweight the components, swap the policy it is
+        # scored against, or move to a different review rubric without changing this hash.
+        "weights": {"final_action": _ACTION_WEIGHT, "event_semantics": _SEMANTICS_WEIGHT, "reader_card": _CARD_WEIGHT},
+        "dimensions": {"event_semantics": list(_SEMANTICS_DIMENSIONS), "reader_card": list(_CARD_DIMENSIONS)},
+        "hard_gates": [
+            "must_push_miss",
+            "must_hold_send",
+            "schema_invalid",
+            "factual_contradiction_unchanged",
+            "ungrounded_primary_asset",
+        ],
+        "action_source": {
+            "policy": "tracefold.news.triage_rules.decide",
+            "policy_version": TRIAGE_POLICY_VERSION,
+            "policy_values": DEFAULT_POLICY.as_dict(),
+            "storyline": "tracefold.news.storyline.final_storyline_key",
+            "operational_controls": "excluded",
+        },
+        "review_rubric_version": REVIEW_RUBRIC_VERSION,
         "dspy_version": importlib.metadata.version("dspy"),
     }
 
@@ -377,6 +525,8 @@ def _optimizer_config_receipt(
     optimizer_factory: OptimizerFactory,
     metric_sha256: str,
     example_count: int,
+    train_count: int,
+    val_count: int,
 ) -> dict[str, Any]:
     return {
         "schema": "tracefold.news.compile_optimizer_config_receipt.v1",
@@ -398,10 +548,137 @@ def _optimizer_config_receipt(
         },
         "compile_call": {
             "teacher": None,
-            "trainset_count": example_count,
-            "valset_count": example_count,
-            "valset_identity": "same_object_as_trainset",
+            "example_count": example_count,
+            "trainset_count": train_count,
+            "valset_count": val_count,
+            "valset_identity": "disjoint_cluster_split",
         },
+    }
+
+
+# GEPA optimizes on one set and picks the winner on another. Handing it the same object for both proved
+# nothing about generalization, and the receipt said so in as many words ("same_object_as_trainset").
+_TRAIN_SHARE = 0.70
+# A split that leaves one side without safety cases, without both action labels, or without novelty cases
+# cannot detect the regressions it exists to detect.
+_REQUIRED_STRATA = ("safety", "positive_action", "negative_action", "novelty")
+
+
+def _episode_strata(episode: DevelopmentEpisode) -> frozenset[str]:
+    review = dict(episode.accepted_review or {})
+    dimensions = dict(review.get("dimensions") or {})
+    should_push = str(review.get("should_push") or "uncertain")
+    novelty = str((review.get("novelty") or {}).get("judgment") or "uncertain")
+    found: set[str] = set()
+    if should_push in {"must_push", "must_hold"} or dimensions.get("factual_fidelity") == "fail":
+        found.add("safety")
+    if should_push in {"must_push", "should_push"}:
+        found.add("positive_action")
+    if should_push in {"must_hold", "should_hold"}:
+        found.add("negative_action")
+    if novelty != "uncertain":
+        found.add("novelty")
+    return frozenset(found)
+
+
+def _honest_split(
+    episodes: Sequence[DevelopmentEpisode],
+) -> tuple[list[DevelopmentEpisode], list[DevelopmentEpisode], dict[str, Any]]:
+    """Split accepted development into disjoint train / development-selection halves by fact cluster and time.
+
+    A cluster is never split: the same fact appearing on both sides would let GEPA pick a winner using an
+    example it just optimized against. Clusters are ordered by their latest Event time and then by the stable
+    cluster id — no shuffle, no seed — so the earlier 70% trains and the later 30% selects, which is also the
+    only ordering that resembles how the Program meets news.
+    """
+
+    latest: dict[str, int] = {}
+    members: dict[str, list[DevelopmentEpisode]] = {}
+    for episode in episodes:
+        cluster = episode.cluster_id
+        # The Event's own time, not its position in the export: the receipt has to be reproducible from the
+        # sealed data, not from the order it happened to arrive in.
+        latest[cluster] = max(latest.get(cluster, 0), episode.context.now_ms)
+        members.setdefault(cluster, []).append(episode)
+    ordered = sorted(members, key=lambda cluster: (latest[cluster], cluster))
+    for cluster_members in members.values():
+        cluster_members.sort(key=lambda episode: (episode.context.now_ms, episode.case_id))
+    cut = max(1, min(len(ordered) - 1, round(len(ordered) * _TRAIN_SHARE))) if len(ordered) > 1 else 0
+    if cut <= 0:
+        raise ValueError("news_program_compile_split_requires_two_clusters")
+    train_roots, val_roots = ordered[:cut], ordered[cut:]
+    train = [episode for cluster in train_roots for episode in members[cluster]]
+    val = [episode for cluster in val_roots for episode in members[cluster]]
+
+    coverage: dict[str, dict[str, int]] = {}
+    for name, half in (("train", train), ("development_selection", val)):
+        seen: dict[str, int] = dict.fromkeys(_REQUIRED_STRATA, 0)
+        for episode in half:
+            for stratum in _episode_strata(episode):
+                seen[stratum] += 1
+        missing = sorted(stratum for stratum, count in seen.items() if count == 0)
+        if missing:
+            raise ValueError(f"news_program_compile_split_coverage_incomplete:{name}:{','.join(missing)}")
+        coverage[name] = seen
+
+    train_ids = {episode.case_id for episode in train}
+    val_ids = {episode.case_id for episode in val}
+    if train_ids & val_ids or set(train_roots) & set(val_roots):
+        raise ValueError("news_program_compile_split_not_disjoint")
+    receipt = {
+        "schema": "tracefold.news.compile_split_receipt.v1",
+        "policy": {"share": _TRAIN_SHARE, "unit": "connected_fact_cluster", "order": ["latest_case", "cluster_id"]},
+        "train": {
+            "cluster_n": len(train_roots),
+            "case_n": len(train),
+            "cluster_root_sha256": canonical_sha(list(train_roots)),
+            "case_root_sha256": canonical_sha(sorted(train_ids)),
+            "coverage": coverage["train"],
+        },
+        "development_selection": {
+            "cluster_n": len(val_roots),
+            "case_n": len(val),
+            "cluster_root_sha256": canonical_sha(list(val_roots)),
+            "case_root_sha256": canonical_sha(sorted(val_ids)),
+            "coverage": coverage["development_selection"],
+        },
+        "disjointness": {
+            "shared_case_ids": 0,
+            "shared_clusters": 0,
+            "proof": "cluster is the split unit; a cluster's cases are never divided",
+        },
+    }
+    return train, val, receipt
+
+
+def _retrieval_receipt(episodes: Sequence[DevelopmentEpisode]) -> dict[str, Any]:
+    """Score retrieval on its own. A scalar candidate score must not be able to hide a recall failure:
+    "the model called it new" and "the model was never shown the card" are different defects with different
+    fixes, and only this separation tells them apart."""
+
+    considered = 0
+    recalled = 0
+    ranks: list[int] = []
+    for episode in episodes:
+        review = dict(episode.accepted_review or {})
+        novelty = dict(review.get("novelty") or {})
+        if str(novelty.get("judgment") or "") != "restatement":
+            continue
+        target = str(novelty.get("duplicate_of") or "")
+        source = {str(row.get("event_id") or "") for row in (episode.policy_metric.get("seen") or ())}
+        if not target or target not in source:
+            continue  # outside the bounded window: not a retrieval failure
+        considered += 1
+        hit = next((entry for entry in episode.context.told.entries if entry.event_id == target), None)
+        if hit is not None:
+            recalled += 1
+            ranks.append(hit.i)
+    return {
+        "schema": "tracefold.news.compile_retrieval_receipt.v1",
+        "accepted_restatements_in_window": considered,
+        "target_recall_n": recalled,
+        "target_recall": round(recalled / considered, 6) if considered else None,
+        "selected_ranks": ranks,
     }
 
 
@@ -437,7 +714,11 @@ class ProgramCompiler:
         failure_clusters, target_dimensions = _failure_scope(request.episodes)
         if not failure_clusters:
             raise ValueError("news_program_compile_no_verified_failure_clusters")
-        examples = [_compile_example(episode) for episode in request.episodes]
+        train_episodes, val_episodes, split_receipt = _honest_split(request.episodes)
+        train_examples = [_compile_example(episode) for episode in train_episodes]
+        val_examples = [_compile_example(episode) for episode in val_episodes]
+        examples = train_examples + val_examples
+        retrieval_receipt = _retrieval_receipt(request.episodes)
         meter = _BudgetMeter(request.budget)
         task_lm = _BudgetedLM(self._task_lm, role="task", meter=meter)
         reflection_lm = _BudgetedLM(self._reflection_lm, role="reflection", meter=meter)
@@ -451,7 +732,7 @@ class ProgramCompiler:
             "auto": None,
             "max_full_evals": None,
             "max_metric_calls": request.budget.max_metric_calls,
-            "reflection_minibatch_size": min(3, len(examples)),
+            "reflection_minibatch_size": min(3, len(train_examples)),
             "candidate_selection_strategy": "pareto",
             "skip_perfect_score": True,
             "add_format_failure_as_feedback": True,
@@ -480,6 +761,8 @@ class ProgramCompiler:
             optimizer_factory=self._optimizer_factory,
             metric_sha256=metric_sha,
             example_count=len(examples),
+            train_count=len(train_examples),
+            val_count=len(val_examples),
         )
         optimizer = self._optimizer_factory(
             accepted_review_metric,
@@ -492,7 +775,7 @@ class ProgramCompiler:
             track_usage=True,
             disable_history=True,
         ):
-            compiled = optimizer.compile(student, trainset=examples, teacher=None, valset=examples)
+            compiled = optimizer.compile(student, trainset=train_examples, teacher=None, valset=val_examples)
         if not isinstance(compiled, DspyCompileProgram):
             raise TypeError("news_program_compile_result_type_invalid")
         details = getattr(compiled, "detailed_results", None)
@@ -517,6 +800,8 @@ class ProgramCompiler:
             optimizer_config=optimizer_config_receipt,
             trajectory=trajectory_receipt,
             checkpoint=checkpoint_receipt,
+            split=split_receipt,
+            retrieval=retrieval_receipt,
         )
         return ProgramCompileResult(
             patch=patch,
@@ -530,6 +815,21 @@ class ProgramCompiler:
         )
 
 
+def _told_rows(context: TriageContext) -> list[dict[str, Any]]:
+    """The selected context in the exact order and index the model saw, which is what ``restates`` points at."""
+
+    return [
+        {
+            "i": entry.i,
+            "event_id": entry.event_id,
+            "dir": entry.direction,
+            "headline_zh": entry.headline_zh,
+            "grounded_assets": list(entry.symbols),
+        }
+        for entry in context.told.entries
+    ]
+
+
 def _compile_example(episode: DevelopmentEpisode) -> dspy.Example:
     return dspy.Example(
         evidence_json=render_model_evidence_json(
@@ -541,6 +841,7 @@ def _compile_example(episode: DevelopmentEpisode) -> dspy.Example:
         cluster_id=episode.cluster_id,
         accepted_review=episode.accepted_review,
         production_verdict=episode.production_verdict,
+        policy_metric={**episode.policy_metric, "told": _told_rows(episode.context)},
     ).with_inputs("evidence_json", "card_evidence_json", "told_count")
 
 

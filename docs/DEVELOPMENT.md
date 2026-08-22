@@ -183,6 +183,43 @@ evidence begins at zero.
 and not a release gate. The trusted side seals the exact current development
 corpus; an isolated runner sees neither DB nor holdout and can write only a
 bounded `ProgramPatchV2` for LearnedStrategy and eligible Demo references.
+
+The metric scores the **reader-facing action**, not the model's intermediate
+`decision` field. Each sealed episode carries a frozen policy projection — Gate
+facts plus the ordered sent ledger — so the metric assembles the predicted
+verdict, computes the final storyline key, and runs the exact production
+`decide()` with operational mute and pause off, because a card silenced by an
+operator is not evidence that its editorial judgment was wrong. `decision` is
+only an intent: a grounded restatement drop, a similarity throttle, a contested
+high-priority rescue or a watchlist rescue all override it, so an offline gain
+measured on `decision` could not predict what the reader would see.
+
+Hard gates come first and are not averaged with anything: a `must_push` miss, a
+`must_hold` send, a schema failure, an unchanged card the reviewer called
+factually wrong, or an ungrounded primary asset each score the example zero. The
+predecessor averaged every check flat, so four retention anchors agreeing could
+outweigh a dangerous miss. What survives the gates is weighted 50% final action,
+35% accepted `EventSemantics` dimensions, 15% accepted `ReaderCard` fidelity;
+a missing or `uncertain` label leaves that component's denominator rather than
+counting as a pass. Feedback is routed per Predictor, so neither is asked to
+repair a failure it cannot cause. The metric receipt binds the weights, the
+policy identity and values, and the review rubric version.
+
+Accepted development is split into disjoint halves by connected fact cluster:
+clusters ordered by their own latest Event time then by stable cluster id, the
+earlier 70% to GEPA's `trainset` and the later 30% to its `valset` — no shuffle,
+no seed, and a cluster is never divided. The predecessor passed the same list
+object to both and said so in its own receipt (`same_object_as_trainset`), which
+proves nothing about generalization. Both halves must independently carry safety
+cases, both action labels and novelty cases; a half that cannot detect the
+regressions it exists for fails the compile closed. The receipt records counts,
+cluster roots, coverage and an explicit disjointness proof.
+
+Retrieval is scored on its own and cannot be hidden by the scalar: for every
+accepted `restatement` whose `duplicate_of` was inside the bounded window, the
+receipt reports target recall and the selected rank. "The model called it new"
+and "the model was never shown the card" are different defects with different
+fixes.
 The operator config must contain one complete, positive
 `llm.news_compiler_tariff`; every invocation pins the exact local compiler
 image ID and states metric/model/total-cost and resource limits plus a seed. The
