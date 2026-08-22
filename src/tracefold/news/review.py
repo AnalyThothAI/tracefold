@@ -1934,10 +1934,14 @@ def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
     if verdict.get("event_type") == "noise" and final not in {"drop", "throttled"}:
         # A noise label that reached the reader is only expected where the verdict outweighed it:
         # the model asked to push, called it actionable, or weighed it above the veto ceiling.
+        # An absent key means the row ran under a policy where `noise` was an unconditional veto, so
+        # reaching the reader was a bug: default to "no contradiction" rather than to a ceiling of 0,
+        # which would downgrade exactly the rows that most need the critical flag.
+        ceiling = policy.get("noise_veto_max_magnitude")
         contradicted = (
             bool(verdict.get("actionable"))
             or str(verdict.get("decision") or "") in {"push", "escalate"}
-            or int(verdict.get("magnitude") or 0) > int(policy.get("noise_veto_max_magnitude", 0))
+            or (ceiling is not None and int(verdict.get("magnitude") or 0) > int(ceiling))
             or deliberate
         )
         flags.append(
@@ -1952,7 +1956,10 @@ def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
             }
         )
     if verdict.get("novelty") == "restatement" and final in {"push", "escalate"}:
-        listing_exempt = str(row.get("admission") or "") == "listing_deterministic"
+        # Only claim the exemption as the reason when the row actually ran under it.
+        listing_exempt = str(row.get("admission") or "") == "listing_deterministic" and bool(
+            policy.get("listing_exempt_from_duplicate")
+        )
         flags.append(
             {
                 "code": "restatement_delivered",

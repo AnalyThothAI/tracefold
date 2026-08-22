@@ -763,7 +763,11 @@ class NewsRepository:
             SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
                    (v.verdict ->> 'magnitude')::int AS magnitude, v.verdict ->> 'direction' AS direction,
                    COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh')
-                     AS headline_zh
+                     AS headline_zh,
+                   -- The instruments the card was about. `headline_zh` is Chinese reader prose with
+                   -- parenthesised tickers stripped by contract, so it cannot answer "same asset?".
+                   COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
+                   COALESCE(v.verdict -> 'assets', '[]'::jsonb) AS assets
               FROM news_verdicts v
               JOIN news_events e ON e.event_id = v.event_id
               JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first' AND d.state = 'sent'

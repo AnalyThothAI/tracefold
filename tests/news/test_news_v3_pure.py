@@ -512,27 +512,38 @@ def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instrumen
     """ "Coinbase adds ALIGN" and "Upbit adds BICO" are different instruments in one wire template, so
     restatement and bigram similarity both read the second as a repeat. #72 admits these frames
     deterministically; policy v8 stops that admission being undone one step later — but only for the
-    different-instrument case, so a genuinely re-issued notice is still withheld."""
+    different-instrument case, so a genuinely re-issued notice is still withheld.
 
-    told = [{"dir": "bullish", "headline_zh": "Coinbase 将新增对 Aligned (ALIGN) 的支持"}]
-    status = storyline_status("asset:ALIGN", told=told)
+    The comparison is between symbol sets. Reader headlines are Chinese with parenthesised tickers
+    stripped by contract, so a ticker-in-headline test would be inert in production and would also
+    fire by accident (``BASE`` inside "Coinbase").
+    """
+
+    # A ledger entry whose rendered headline names no ticker at all — the production shape.
+    told = [{"dir": "bullish", "headline_zh": "Coinbase 将上线狗狗币", "grounded_assets": ["DOGE"]}]
+    status = storyline_status("asset:DOGE", told=told)
     admitted = replace(_FACTS, admission="listing_deterministic", grounded_assets=("BICO",))
     other_instrument = _verdict(
         event_type="listing",
         novelty="restatement",
         restates=0,
-        headline_zh="Upbit 将新增对 BICO 的交易支持",
+        headline_zh="Upbit 将上线 BICO 等三个币种",
         direction="bullish",
         assets=[TriageAsset(symbol="BICO", role="primary")],
     )
     assert decide(other_instrument, admitted, status).final == "push"
 
-    # The same instrument the reader already saw is still duplicate evidence: the exemption skips the
-    # restatement drop but the similarity check still runs, so the card is withheld and the trace
-    # names the ledger entry it matched rather than the model's novelty claim.
-    same_instrument = other_instrument.model_copy(update={"headline_zh": "Coinbase 将新增对 Aligned (ALIGN) 的支持"})
-    repeat = decide(same_instrument, replace(admitted, grounded_assets=("ALIGN",)), status)
-    assert repeat.final == "throttled" and repeat.throttled_by == "storyline:asset:ALIGN:seen"
+    # A byte-identical re-send of the card the reader already received. The model itself called it a
+    # restatement of the entry it was shown, and it must not reach the reader twice.
+    same_instrument = other_instrument.model_copy(
+        update={"headline_zh": "Coinbase 将上线狗狗币", "assets": [TriageAsset(symbol="DOGE", role="primary")]}
+    )
+    repeat = decide(same_instrument, replace(admitted, grounded_assets=("DOGE",)), status)
+    assert repeat.final == "drop" and repeat.override_rule == "restatement"
+
+    # A ledger row that carries no assets is not evidence of a different instrument.
+    blind = storyline_status("asset:DOGE", told=[{"dir": "bullish", "headline_zh": "Coinbase 将上线狗狗币"}])
+    assert decide(other_instrument, admitted, blind).override_rule == "restatement"
 
     # The model's own `event_type` is not evidence of a listing frame: only the Gate's admission is,
     # or any story the model keeps typing as `listing` escapes duplicate evidence on every repeat.
@@ -544,6 +555,29 @@ def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instrumen
         other_instrument, admitted, status, policy=replace(DEFAULT_POLICY, listing_exempt_from_duplicate=False)
     )
     assert kept.final == "drop" and kept.override_rule == "restatement"
+
+
+def test_contested_high_priority_never_steals_a_model_push() -> None:
+    """The rule is about a *hold* intent, so a model that asked to push or escalate keeps its own
+    rule name — `pushed_by_rule` is the number this policy will be judged by."""
+
+    high = replace(_FACTS, priority="high")
+    assert decide(_verdict(decision="push"), high, None).override_rule == "high_priority_push"
+    assert decide(_verdict(decision="escalate"), high, None).override_rule == "model_push_actionable"
+
+    # And it does not sit above `unclear_direction`: an unclear event type outside
+    # `unclear_push_event_types` still drops rather than riding Gate priority into the feed.
+    unclear_rumor = _verdict(
+        event_type="rumor",
+        direction="unclear",
+        magnitude=2,
+        decision="drop",
+        actionable=True,
+        assets=[TriageAsset(symbol="SPY", role="primary")],
+    )
+    off_watchlist = replace(high, grounded_assets=("SPY",), watchlist_symbols=frozenset())
+    result = decide(unclear_rumor, off_watchlist, None)
+    assert result.final == "drop" and result.override_rule == "unclear_direction"
 
 
 def test_decide_rules_and_throttle() -> None:
@@ -680,9 +714,11 @@ def test_storyline_status_carries_only_content_evidence() -> None:
     assert {item.name for item in fields(StorylineStatus)} == {
         "key",
         "told_directions",
+        "told_assets",
         "seen_headlines",
         "seen_event_ids",
         "seen_directions",
+        "seen_assets",
     }
 
 

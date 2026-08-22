@@ -108,6 +108,9 @@ class StorylineStatus:
 
     key: str
     told_directions: tuple[str, ...] = ()
+    # Same order as ``told_directions``: the instruments each shown ledger entry was about, so a
+    # restatement claim can be checked against the asset it cites rather than its rendered prose.
+    told_assets: tuple[frozenset[str], ...] = ()
     # Every card the reader actually received in the comparison window, newest first — not the <= 12 entries the
     # status bar showed the model. The two differ by design: the model gets a readable ledger, ``decide()`` gets
     # the whole window, and the wider set measurably catches more repeats (#81).
@@ -117,6 +120,10 @@ class StorylineStatus:
     # shares almost every character bigram with it ("SEC 批准…" vs "SEC 拒绝…" scores 0.60), so the duplicate
     # defence has to be able to tell the two apart.
     seen_directions: tuple[str, ...] = ()
+    # The instruments each remembered card was about, same order. `headline_zh` is Chinese reader prose and the
+    # reader contract strips parenthesised tickers, so the rendered text cannot answer "is this the same asset?";
+    # only a structured field can. Empty for a caller that did not supply assets, which never grants an exemption.
+    seen_assets: tuple[frozenset[str], ...] = ()
 
     @property
     def told_count(self) -> int:
@@ -199,22 +206,26 @@ def _listing_fact(facts: GateFacts) -> bool:
 def _names_another_instrument(
     listing_fact: bool,
     symbols: set[str],
-    status: StorylineStatus,
+    seen_assets: Sequence[frozenset[str]],
     index: int,
 ) -> bool:
     """True when a listing frame's closest match is a card about a *different* instrument.
 
-    Exchange notices share one wire template, so "Coinbase 将新增对 Aligned (ALIGN) 的支持" and
-    "Upbit 将新增对 BICO 的交易支持" score well above ``similarity_max`` on character bigrams while
-    naming different tradable things. Exempting the whole class from the similarity check would also
-    stop protecting the reader from a genuinely re-issued notice, so the exemption is narrowed to the
-    case it exists for: the matched card names none of the symbols this Event is about.
+    Exchange notices share one wire template, so "Coinbase 将新增对 ALIGN 的支持" and "Upbit 将新增对
+    BICO 的交易支持" score well above ``similarity_max`` on character bigrams while naming different
+    tradable things. Exempting the whole class would stop protecting the reader from a genuinely
+    re-issued notice, so the exemption is narrowed to the case it exists for.
+
+    The comparison is between symbol sets, never between a ticker and rendered headline text: the
+    reader contract tells the model to strip parenthesised tickers and write Chinese, so a substring
+    test would both miss the common case and fire by accident (``BASE`` inside "Coinbase"). A ledger
+    row that carries no assets is not evidence of a different instrument and never exempts.
     """
 
-    if not listing_fact or not symbols or not 0 <= index < len(status.seen_headlines):
+    if not listing_fact or not symbols or not 0 <= index < len(seen_assets):
         return False
-    matched = status.seen_headlines[index].upper()
-    return not any(symbol and symbol in matched for symbol in symbols)
+    matched = seen_assets[index]
+    return bool(matched) and matched.isdisjoint(symbols)
 
 
 def _seen_flip(direction: str, seen_directions: Sequence[str], index: int) -> bool:
@@ -271,7 +282,13 @@ def decide(
     if verdict.event_type == "noise" and _noise_veto_applies(verdict, facts, policy):
         return DecisionResult("drop", "noise", None, baseline, watch_hits)
     listing_fact = policy.listing_exempt_from_duplicate and _listing_fact(facts)
-    if policy.restatement_drop and not listing_fact and grounded_restatement(verdict, status):
+    # The restatement bypass is narrowed the same way the similarity one is. Exempting the class
+    # outright left a listing frame with no duplicate defence at all whenever the similarity check
+    # never ran — an `escalate`, or a deployment with `similarity_max: 0`.
+    listing_restates_other = listing_fact and _names_another_instrument(
+        listing_fact, primaries | grounded, status.told_assets if status else (), verdict.restates
+    )
+    if policy.restatement_drop and not listing_restates_other and grounded_restatement(verdict, status):
         return DecisionResult("drop", "restatement", None, baseline, watch_hits)
 
     final: Decision
@@ -289,17 +306,21 @@ def decide(
         facts.priority == "high"
         and policy.contested_push_min_magnitude > 0
         and verdict.magnitude >= policy.contested_push_min_magnitude
-        and (verdict.actionable or verdict.direction in _DIRECTIONAL or verdict.scope == "macro")
+        and verdict.decision not in _MODEL_WANTS_PUSH
+        and (verdict.direction in _DIRECTIONAL or verdict.scope == "macro")
     ):
         # The Gate called this Event high priority and the model itself weighed it at magnitude 2 or
         # more, then asked to hold it anyway. That is a disagreement between upstream evidence and a
         # single model field, not a considered hold, and recall-first it resolves toward the reader.
-        # The last clause is what stops the Gate hint winning on its own: `priority` is
+        # Two guards keep this from being a Gate-priority push. `priority` is
         # `score >= 90 or watchlist or listing or macro lexicon`, which #77 calls an AMQP transport
-        # hint. Without it a provider-scored price-only frame the model rejected on every field —
-        # the instruction's own "Spot Palladium Rises Nearly 3%" negative example — would reach the
-        # reader. A verdict that is not actionable, carries no direction and is not macro is a
-        # considered hold, and this branch leaves it alone. The rule names itself in the trace.
+        # hint, so without them a provider-scored price-only frame the model rejected on every field
+        # — the instruction's own "Spot Palladium Rises Nearly 3%" negative example — would reach
+        # the reader. The rule is about a *hold* intent, so a verdict that asked to push or escalate
+        # belongs to `high_priority_push`/`model_push_actionable` and keeps their attribution.
+        # Requiring a direction or macro scope (rather than `actionable`) also keeps this branch from
+        # sitting above `unclear_direction` and quietly bypassing `unclear_push_event_types`.
+        # The rule names itself in the trace so the operator sees which of the two won.
         final, rule = "push", "contested_high_priority"
     elif (
         verdict.decision in _MODEL_WANTS_PUSH
@@ -332,7 +353,7 @@ def decide(
             seen_against >= 0
             and seen_similarity >= policy.similarity_max
             and not _seen_flip(verdict.direction, status.seen_directions, seen_against)
-            and not _names_another_instrument(listing_fact, primaries | grounded, status, seen_against)
+            and not _names_another_instrument(listing_fact, primaries | grounded, status.seen_assets, seen_against)
         ):
             return DecisionResult(
                 "throttled",
@@ -370,6 +391,17 @@ def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> t
     return verdict, DecisionResult(baseline, "fail_closed_fallback", None, baseline)
 
 
+def _row_symbols(row: Mapping[str, Any]) -> frozenset[str]:
+    """Every symbol a ledger row was about, from the Gate's grounded tags and the verdict's assets."""
+
+    symbols = {_base(str(value)) for value in row.get("grounded_assets") or () if value}
+    for asset in row.get("assets") or ():
+        symbol = asset.get("symbol") if isinstance(asset, Mapping) else asset
+        if symbol:
+            symbols.add(_base(str(symbol)))
+    return frozenset(symbol for symbol in symbols if symbol)
+
+
 def storyline_status(
     key: str,
     *,
@@ -384,18 +416,22 @@ def storyline_status(
     """
 
     told_directions = tuple(str(t.get("dir") or "") for t in told)
+    told_assets = tuple(_row_symbols(t) for t in told)
     rows = list(told if seen is None else seen)
     seen_headlines = tuple(str(r.get("headline_zh") or "") for r in rows)
     seen_event_ids = tuple(str(r.get("event_id") or "") for r in rows)
     # `told` rows spell the direction `dir`, ledger rows spell it `direction`; a row that carries neither leaves
     # an empty string, which `_seen_flip` reads as "no opinion" and never exempts on.
     seen_directions = tuple(str(r.get("direction") or r.get("dir") or "") for r in rows)
+    seen_assets = tuple(_row_symbols(r) for r in rows)
     return StorylineStatus(
         key=key,
         told_directions=told_directions,
+        told_assets=told_assets,
         seen_headlines=seen_headlines,
         seen_event_ids=seen_event_ids,
         seen_directions=seen_directions,
+        seen_assets=seen_assets,
     )
 
 
