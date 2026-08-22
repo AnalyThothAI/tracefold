@@ -18,8 +18,7 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_sha
-from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
-from ..review import REVIEW_RUBRIC_VERSION
+from ..models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
 from ..storyline import final_storyline_key
 from ..triage_rules import DEFAULT_POLICY, GateFacts, decide, storyline_status
 from .program_compiler_security import CompileBudgetV2, CompilerEndpointIdentity
@@ -76,6 +75,9 @@ class DevelopmentEpisode(_ExactModel):
 class CompileRequest(_ExactModel):
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
     learning_epoch: Literal["program_v5"] = "program_v5"
+    # Declared by the trusted host in the sealed corpus receipt. The compiler records it; it never looks it up,
+    # so the untrusted side does not import the review plane to obtain one string.
+    review_rubric_version: str = Field(min_length=1, max_length=64)
     episodes: tuple[DevelopmentEpisode, ...] = Field(min_length=1)
     budget: CompileBudget
 
@@ -272,15 +274,16 @@ _CARD_WEIGHT = 0.15
 
 # EventSemantics owns interpretation; ReaderCard owns copy. Feedback is routed the same way, so a Predictor is
 # never asked to repair a failure it cannot cause.
-_SEMANTICS_DIMENSIONS = ("asset_grounding", "novelty", "event_type", "direction", "magnitude", "actionable")
+#
+# These are exactly the names `review._DIMENSIONS` accepts. Inventing plausible extras (`novelty`, `event_type`,
+# `actionable`) would leave dead entries no reviewer can ever label, and publish them in the metric receipt as
+# if they were scored. Novelty is a separate accepted field, not a rubric dimension, and is scored below.
+_SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude", "timeliness")
 _CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 _DIMENSION_FIELD = {
     "asset_grounding": "assets",
-    "novelty": "novelty",
-    "event_type": "event_type",
     "direction": "direction",
     "magnitude": "magnitude",
-    "actionable": "actionable",
     "headline_fidelity": "headline_zh",
     "why_support": "why_zh",
     "why_value": "why_zh",
@@ -349,10 +352,16 @@ def _component(
     hits = 0
     for name, label in labelled:
         field = _DIMENSION_FIELD.get(name)
-        if field is None or field not in production:
+        if field is None:
+            # `factual_fidelity` and `timeliness` are judgments about the whole card, not one field. A `fail`
+            # is repaired by producing a different card; scoring them as an automatic pass would leave GEPA no
+            # gradient between a candidate that fixed the fact and one that changed nothing.
+            same = bool(production) and verdict == production
+        elif field not in production:
             hits += label == "pass"
             continue
-        same = verdict.get(field) == production.get(field)
+        else:
+            same = verdict.get(field) == production.get(field)
         hits += same if label == "pass" else not same
     return hits / len(labelled)
 
@@ -413,11 +422,13 @@ def accepted_review_metric(
         return dspy.Prediction(
             score=0.0, feedback="The accepted review calls this card factually wrong; it is unchanged."
         )
-    grounded = {str(value).upper() for value in (projection.get("gate") or {}).get("grounded_assets") or ()}
+    # Symbol sets, canonicalized on both sides. Gate grounding carries the provider's raw tag (`XYZ-CL`), and
+    # a raw `.upper()` comparison would zero a candidate that correctly named `CL`.
+    grounded = {base_symbol(str(value)) for value in (projection.get("gate") or {}).get("grounded_assets") or ()}
     ungrounded = sorted(
         asset.symbol
         for asset in typed.assets
-        if asset.role == "primary" and grounded and asset.symbol.upper() not in grounded
+        if asset.role == "primary" and grounded and base_symbol(asset.symbol) not in grounded
     )
     if ungrounded:
         return dspy.Prediction(
@@ -436,7 +447,15 @@ def accepted_review_metric(
     else:
         action_score = None
 
+    # Novelty is the epoch's whole subject: a candidate that answers `new_fact` for every accepted
+    # `restatement` must not score the same as one that gets it right, and on an `uncertain` action label
+    # nothing else would notice.
+    novelty = dict(review.get("novelty") or {})
+    expected_novelty = str(novelty.get("judgment") or "uncertain")
+    novelty_score = None if expected_novelty == "uncertain" else float(str(verdict.get("novelty")) == expected_novelty)
     semantics_score = _component(dimensions, _SEMANTICS_DIMENSIONS, verdict, production)
+    if novelty_score is not None:
+        semantics_score = novelty_score if semantics_score is None else (semantics_score + novelty_score) / 2
     card_score = _component(dimensions, _CARD_DIMENSIONS, verdict, production)
     components = [
         (_ACTION_WEIGHT, action_score),
@@ -451,8 +470,6 @@ def accepted_review_metric(
     failed = sorted(name for name, label in dimensions.items() if label == "fail" and (owned is None or name in owned))
     if failed:
         feedback.append(f"Repair accepted failed dimensions: {', '.join(failed)}.")
-    novelty = dict(review.get("novelty") or {})
-    expected_novelty = str(novelty.get("judgment") or "uncertain")
     if (
         expected_novelty != "uncertain"
         and str(verdict.get("novelty")) != expected_novelty
@@ -469,7 +486,7 @@ def accepted_review_metric(
     )
 
 
-def _metric_receipt(metric: Callable[..., Any]) -> dict[str, Any]:
+def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -> dict[str, Any]:
     try:
         source = inspect.getsource(metric).replace("\r\n", "\n")
     except (OSError, TypeError) as exc:
@@ -485,7 +502,10 @@ def _metric_receipt(metric: Callable[..., Any]) -> dict[str, Any]:
         # What "better" means, pinned. An optimizer run cannot reweight the components, swap the policy it is
         # scored against, or move to a different review rubric without changing this hash.
         "weights": {"final_action": _ACTION_WEIGHT, "event_semantics": _SEMANTICS_WEIGHT, "reader_card": _CARD_WEIGHT},
-        "dimensions": {"event_semantics": list(_SEMANTICS_DIMENSIONS), "reader_card": list(_CARD_DIMENSIONS)},
+        "dimensions": {
+            "event_semantics": [*_SEMANTICS_DIMENSIONS, "novelty(accepted_field)"],
+            "reader_card": list(_CARD_DIMENSIONS),
+        },
         "hard_gates": [
             "must_push_miss",
             "must_hold_send",
@@ -500,7 +520,7 @@ def _metric_receipt(metric: Callable[..., Any]) -> dict[str, Any]:
             "storyline": "tracefold.news.storyline.final_storyline_key",
             "operational_controls": "excluded",
         },
-        "review_rubric_version": REVIEW_RUBRIC_VERSION,
+        "review_rubric_version": review_rubric_version,
         "dspy_version": importlib.metadata.version("dspy"),
     }
 
@@ -726,7 +746,7 @@ class ProgramCompiler:
         if tuple(name for name, _ in student.named_predictors()) != ("event_semantics", "reader_card"):
             raise ValueError("news_program_compile_factory_topology_mismatch")
 
-        metric_receipt = _metric_receipt(accepted_review_metric)
+        metric_receipt = _metric_receipt(accepted_review_metric, review_rubric_version=request.review_rubric_version)
         metric_sha = canonical_sha(metric_receipt)
         optimizer_constructor = {
             "auto": None,

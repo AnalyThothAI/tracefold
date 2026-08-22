@@ -165,6 +165,9 @@ class CompileCorpusReceipt(_ExactModel):
     cluster_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
+    # The rubric the trusted side accepted this corpus under. The untrusted compiler records it in the metric
+    # receipt but must not choose it, and must not reach into the review plane to look it up.
+    review_rubric_version: str = Field(min_length=1, max_length=64)
 
 
 class CompileBudgetV2(_ExactModel):
@@ -873,6 +876,7 @@ def seal_compile_input(
     proxy_config_sha256: str,
     tariff_sha256: str,
     proxy_tariff: CompilerProxyTariff,
+    review_rubric_version: str,
     task_max_output_tokens: int,
     reflection_max_output_tokens: int,
     task_timeout_seconds: float,
@@ -931,6 +935,7 @@ def seal_compile_input(
         cluster_root_sha256=canonical_sha(cluster_ids),
         episode_projection_root_sha256=canonical_sha(list(episode_payloads)),
         episode_count=len(episode_payloads),
+        review_rubric_version=review_rubric_version,
     )
     return CompileInputBundle.issue(
         parent_program_sha256=parent_program_sha256,

@@ -88,6 +88,7 @@ def _input() -> tuple[str, str, CompilerProxySecretConfig]:
         dataset_sha=canonical_sha({"kind": "dataset", "payload": payload}),
         dataset_payload=payload,
         episodes=({"case_id": "case-1", "cluster_id": "cluster-1"},),
+        review_rubric_version="news_review_v2",
         parent_program_sha256="6" * 64,
         parent_state_sha256="7" * 64,
         stable_bundle_sha256="a" * 64,

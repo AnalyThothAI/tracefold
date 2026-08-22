@@ -67,6 +67,7 @@ def _sealed_bundle() -> CompileInputBundle:
         dataset_sha=canonical_sha({"kind": "dataset", "payload": payload}),
         dataset_payload=payload,
         episodes=_episodes(),
+        review_rubric_version="news_review_v2",
         parent_program_sha256="a" * 64,
         parent_state_sha256="b" * 64,
         stable_bundle_sha256="e" * 64,
@@ -165,6 +166,7 @@ def test_sealed_compile_input_rejects_forged_dataset_and_episode_membership() ->
         "compiler_source_sha256": "3" * 64,
         "proxy_source_sha256": "4" * 64,
         "compiler_lock_sha256": "5" * 64,
+        "review_rubric_version": "news_review_v2",
         "sandbox_policy_sha256": "6" * 64,
         "compiler_image_digest": "sha256:" + "7" * 64,
         "budget": CompileBudgetV2(

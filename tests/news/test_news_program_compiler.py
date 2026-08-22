@@ -134,6 +134,7 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
     )
     return CompileRequest(
         development_dataset_sha="d" * 64,
+        review_rubric_version="news_review_v2",
         episodes=tuple(
             {
                 "case_id": f"case-{cluster}-{name}",
@@ -367,8 +368,8 @@ def test_metric_receipt_hash_binds_the_executed_implementation_source() -> None:
         del args, kwargs
         return dspy.Prediction(score=0.5, feedback="changed")
 
-    original = _metric_receipt(accepted_review_metric)
-    changed = _metric_receipt(changed_metric)
+    original = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v2")
+    changed = _metric_receipt(changed_metric, review_rubric_version="news_review_v2")
 
     assert original["metric_id"] == changed["metric_id"]
     assert canonical_sha(original) != canonical_sha(changed)
@@ -556,7 +557,7 @@ def test_metric_feedback_never_asks_a_predictor_to_repair_what_it_cannot_cause()
 
 
 def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
-    receipt = _metric_receipt(accepted_review_metric)
+    receipt = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v2")
     assert receipt["weights"] == {"final_action": 0.50, "event_semantics": 0.35, "reader_card": 0.15}
     assert receipt["action_source"]["policy"] == "tracefold.news.triage_rules.decide"
     assert receipt["action_source"]["operational_controls"] == "excluded"
