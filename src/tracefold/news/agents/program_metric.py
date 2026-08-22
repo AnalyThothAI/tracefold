@@ -13,6 +13,7 @@ Nothing here has database, artifact-writer, proposal or promotion authority.
 
 from __future__ import annotations
 
+import functools
 import importlib.metadata
 import inspect
 import math
@@ -163,12 +164,48 @@ def _observed_value(verdict: Mapping[str, Any], name: str) -> Any:
     return verdict.get(_DIMENSION_FIELD.get(name, ""), _NO_GOLD)
 
 
+# Dimensions whose accepted value is a whole Chinese sentence, so "did the candidate keep it?" cannot be
+# answered by `==`. `timeliness` is here for a different reason: it is a statement about *when* the Event
+# arrived, which no rewriting can change, so a text edit must not cost its anchor.
+_FREE_TEXT_DIMENSIONS = ("headline_fidelity", "why_support", "why_value", "factual_fidelity")
+
+
+def _same_value(field: str | None, verdict: Mapping[str, Any], production: Mapping[str, Any]) -> bool:
+    """Literal equality. A `None` field means the dimension judges the whole card, not one value."""
+
+    if field is None:
+        return bool(production) and verdict == production
+    return bool(verdict.get(field) == production.get(field))
+
+
+def _retains(
+    name: str,
+    field: str | None,
+    verdict: Mapping[str, Any],
+    production: Mapping[str, Any],
+    judge: Any,
+) -> bool:
+    """Whether the candidate kept a reviewer's `pass` on one dimension."""
+
+    if name == "timeliness":
+        # Timeliness is about delivery timing, not copy. The Program cannot change when an Event arrived, so
+        # losing this anchor because the wording changed would charge the candidate for something it does not
+        # control. (Identical in `recorded` mode, where the texts match anyway.)
+        return True
+    literal = _same_value(field, verdict, production)
+    if literal or judge is None or name not in _FREE_TEXT_DIMENSIONS:
+        return literal
+    # Only now is a model call worth making: the texts differ, and the question is whether they mean the same.
+    return bool(judge.retains(name, production, verdict))
+
+
 def _component(
     dimensions: Mapping[str, Any],
     names: Sequence[str],
     verdict: Mapping[str, Any],
     production: Mapping[str, Any],
     expected: Mapping[str, Any] | None = None,
+    judge: Any = None,
 ) -> tuple[float, int, int] | None:
     """Score one Predictor's accepted dimensions, or ``None`` when the reviewer labelled none of them.
 
@@ -199,17 +236,19 @@ def _component(
                 gold_scored += 1
                 hits += float(_observed_value(verdict, name) == wanted)
                 continue
-        if field is None:
-            # `factual_fidelity` and `timeliness` are judgments about the whole card, not one field. A `fail`
-            # is repaired by producing a different card; scoring them as an automatic pass would leave GEPA no
-            # gradient between a candidate that fixed the fact and one that changed nothing.
-            same = bool(production) and verdict == production
-        elif field not in production:
+        if field is not None and field not in production:
             hits += label == "pass"
             continue
-        else:
-            same = verdict.get(field) == production.get(field)
-        hits += same if label == "pass" else not same
+        if label == "pass":
+            hits += _retains(name, field, verdict, production, judge)
+            continue
+        # A `fail` with no gold: any change scores. `factual_fidelity` and `timeliness` are judgments about the
+        # whole card, not one field, so "changed" means the card changed at all — scoring them as an automatic
+        # pass would leave GEPA no gradient between a candidate that fixed the fact and one that changed
+        # nothing. The judge is not consulted here: it answers "is this still the same?", and the reviewer has
+        # already said the old value was wrong.
+        same = _same_value(field, verdict, production)
+        hits += not same
     return hits / len(labelled), gold_scored, len(labelled)
 
 
@@ -220,6 +259,8 @@ def accepted_review_metric(
     pred_name: str | None = None,
     pred_trace: Any = None,
     program_trace: Any = None,
+    *,
+    judge: Any = None,
 ) -> dspy.Prediction:
     """Score the reader-facing action, then the two Predictors, over accepted development truth only.
 
@@ -321,8 +362,8 @@ def accepted_review_metric(
     novelty = dict(review.get("novelty") or {})
     expected_novelty = str(novelty.get("judgment") or "uncertain")
     novelty_score = None if expected_novelty == "uncertain" else float(str(verdict.get("novelty")) == expected_novelty)
-    semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, verdict, production, expected)
-    card = _component(dimensions, _CARD_DIMENSIONS, verdict, production, expected)
+    semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, verdict, production, expected, judge)
+    card = _component(dimensions, _CARD_DIMENSIONS, verdict, production, expected, judge)
     gold_scored = (semantics[1] if semantics else 0) + (card[1] if card else 0)
     labelled_n = (semantics[2] if semantics else 0) + (card[2] if card else 0)
     semantics_score = semantics[0] if semantics else None
@@ -378,7 +419,20 @@ def accepted_review_metric(
     )
 
 
+def bind_metric(judge: Any) -> Callable[..., Any]:
+    """The metric with a semantic judge attached, still matching GEPA's 5-argument protocol.
+
+    A `functools.partial` rather than a closure so `_metric_receipt` can reach the one underlying function and
+    keep hashing the same bytes: the number an operator reads and the number GEPA maximizes must stay the same
+    implementation, judge or no judge.
+    """
+
+    return functools.partial(accepted_review_metric, judge=judge)
+
+
 def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -> dict[str, Any]:
+    judge = getattr(metric, "keywords", {}).get("judge") if isinstance(metric, functools.partial) else None
+    metric = metric.func if isinstance(metric, functools.partial) else metric
     try:
         source = inspect.getsource(metric).replace("\r\n", "\n")
     except (OSError, TypeError) as exc:
@@ -387,6 +441,9 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
         "schema": "tracefold.news.compile_metric_receipt.v2",
         "metric_id": METRIC_ID,
         "gold_source": "news_reviews.payload.expected (news_review_v3); absent on v2 rows",
+        # Which ruler measured the free-text retention anchors. Two runs judged differently are not comparable,
+        # and `null` means the strict byte-equality rule that predates #148.
+        "semantic_judge": judge.identity if judge is not None else None,
         "implementation": {
             "module": str(metric.__module__),
             "qualname": str(metric.__qualname__),
@@ -601,6 +658,7 @@ __all__ = [
     "METRIC_ID",
     "DevelopmentEpisode",
     "accepted_review_metric",
+    "bind_metric",
     "build_compile_example",
     "development_split",
     "metric_receipt",

@@ -36,12 +36,13 @@ from ..artifact_identity import canonical_sha
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
 from ..semantic_contract import TriageContext
 from ..triage_rules import DEFAULT_POLICY
+from .program_judge import CardEquivalenceJudge
 from .program_metric import (
     _CARD_DIMENSIONS,
     _SEMANTICS_DIMENSIONS,
     METRIC_ID,
     DevelopmentEpisode,
-    accepted_review_metric,
+    bind_metric,
     build_compile_example,
     metric_receipt,
     retrieval_receipt,
@@ -97,6 +98,8 @@ class BaselineReport(BaseModel):
     gold_coverage: dict[str, Any]
     retrieval: dict[str, Any]
     provider_failure_n: int = 0
+    # How much of the score the judge actually decided. Empty when scoring on byte equality alone.
+    semantic_judge: dict[str, Any] = Field(default_factory=dict)
     latency_ms: dict[str, Any] = Field(default_factory=dict)
     cases: tuple[CaseResult, ...] = ()
 
@@ -184,6 +187,34 @@ def build_runtime_lm(
     )
 
 
+def build_judge(
+    *,
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    timeout: float = 120.0,
+    # Three booleans is a tiny answer, but a reasoning model spends its output budget thinking first: at 512
+    # every verdict truncated, and a truncated verdict degrades to "not equivalent" — silently turning the
+    # judge back into the byte-equality rule it exists to replace.
+    max_tokens: int = 8_192,
+) -> CardEquivalenceJudge:
+    """The semantic-equivalence judge, built here so the CLI layer never imports DSPy."""
+
+    return CardEquivalenceJudge(
+        dspy.LM(
+            str(model_name),
+            api_key=str(api_key),
+            api_base=str(api_base),
+            timeout=float(timeout),
+            max_tokens=int(max_tokens),
+            temperature=0,
+            cache=False,
+            num_retries=0,
+        ),
+        max_tokens=int(max_tokens),
+    )
+
+
 def run_baseline(
     cases: Sequence[BaselineCase],
     *,
@@ -191,6 +222,7 @@ def run_baseline(
     artifact: ProgramArtifact,
     program_factory: Callable[[ProgramArtifact], dspy.Module] | None = None,
     lm: dspy.LM | None = None,
+    judge: CardEquivalenceJudge | None = None,
     runtime_identity: Mapping[str, Any] | None = None,
     num_threads: int = 1,
 ) -> BaselineReport:
@@ -202,6 +234,7 @@ def run_baseline(
         # Without this the run "succeeds": every case raises `No LM is loaded`, `Evaluate` swallows it, and the
         # receipt reads as a measured 0.0 baseline instead of a run that made no requests at all.
         raise ValueError("news_program_baseline_requires_lm")
+    metric = bind_metric(judge)
     examples = [_gold_example(case) for case in cases]
     by_case = {case.episode.case_id: case for case in cases}
 
@@ -211,21 +244,30 @@ def run_baseline(
 
     if mode == "recorded":
         for case, example in zip(cases, examples, strict=True):
-            outcome = accepted_review_metric(example, _stored_prediction(case), None, None, None)
+            outcome = metric(example, _stored_prediction(case), None, None, None)
             results.append(_case_result(case, outcome, latency_ms=0))
     else:
         if program_factory is None:
             raise ValueError("news_program_baseline_requires_program_factory")
         program = program_factory(artifact)
-        captured: dict[str, dict[str, Any]] = {}
+        captured: dict[str, Any] = {}
+        strict_scores: dict[str, float] = {}
 
-        def metric(gold: dspy.Example, pred: dspy.Prediction, *args: Any, **kwargs: Any) -> float:
-            captured[str(gold.get("case_id"))] = accepted_review_metric(gold, pred, None, None, None)
-            return float(captured[str(gold.get("case_id"))].score)
+        strict = bind_metric(None) if judge is not None else None
+
+        def scored_metric(gold: dspy.Example, pred: dspy.Prediction, *args: Any, **kwargs: Any) -> float:
+            case_id = str(gold.get("case_id"))
+            captured[case_id] = metric(gold, pred, None, None, None)
+            if strict is not None:
+                # The same predictions scored the old way. Running the Program twice to compare rulers would
+                # measure model noise as well; scoring one set of outputs twice measures only the ruler, and
+                # the second pass is pure arithmetic — the judge's verdicts are already cached.
+                strict_scores[case_id] = float(strict(gold, pred, None, None, None).score)
+            return float(captured[case_id].score)
 
         evaluate = dspy.Evaluate(
             devset=examples,
-            metric=metric,
+            metric=scored_metric,
             num_threads=num_threads,
             display_progress=False,
             failure_score=0.0,
@@ -239,8 +281,10 @@ def run_baseline(
         # The Program's Predictors carry no `lm` of their own — they resolve `dspy.settings.lm` — and its
         # outputs are only parseable by the same strict JSON adapter production uses. Both have to be in
         # context or every case fails identically and silently.
-        with dspy.context(lm=lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False)) if lm else (
-            dspy.context(adapter=DspyStrictJSONAdapter(use_native_function_calling=False))
+        with (
+            dspy.context(lm=lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False))
+            if lm
+            else (dspy.context(adapter=DspyStrictJSONAdapter(use_native_function_calling=False)))
         ):
             evaluation = evaluate(program)
         wall_ms = int((time.monotonic() - started) * 1000)
@@ -302,7 +346,7 @@ def run_baseline(
         "state_sha256": artifact.state_sha256,
         "policy_version": TRIAGE_POLICY_VERSION,
         "policy_values": DEFAULT_POLICY.as_dict(),
-        "metric": metric_receipt(accepted_review_metric, review_rubric_version="news_review_v2+v3"),
+        "metric": metric_receipt(metric, review_rubric_version="news_review_v2+v3"),
         "metric_id": METRIC_ID,
         "runtime_model": dict(runtime_identity or {}),
         "case_root_sha256": canonical_sha(sorted(case.episode.case_id for case in cases)),
@@ -330,6 +374,18 @@ def run_baseline(
             "note": "share of scored dimensions decided against a stated correct value rather than 'any change scores'",
         },
         retrieval=retrieval_receipt([case.episode for case in cases]),
+        semantic_judge=(
+            {
+                **judge.stats,
+                **judge.identity,
+                # What the ruler change is worth on these exact outputs. Byte equality is the pre-#148 rule.
+                "score_byte_equality": round(statistics.fmean(strict_scores[r.case_id] for r in scored), 6)
+                if strict_scores and scored
+                else None,
+            }
+            if judge is not None
+            else {}
+        ),
         provider_failure_n=provider_failures,
         latency_ms=latency,
         cases=tuple(results),
@@ -385,6 +441,7 @@ __all__ = [
     "TriageContext",
     "TriageVerdict",
     "build_baseline_cases",
+    "build_judge",
     "compile_program_factory",
     "render_model_evidence_json",
     "run_baseline",

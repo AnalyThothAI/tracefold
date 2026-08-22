@@ -18,6 +18,9 @@ ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
         # #143: the offline baseline harness. The CLI reads the corpus and prints the receipt; DSPy stays
         # behind this module, so the "no dspy in the CLI layer" boundary is unaffected.
         "tracefold.news.agents.program_baseline",
+        # #148: model-drafted rubrics. Proposals only — the CLI writes them to a file, and a human accepts
+        # each one through the existing ReviewDesk submit path.
+        "tracefold.news.agents.program_review_drafter",
         "tracefold.news.agents.program_compiler_launcher",
         "tracefold.news.agents.program_compiler_proxy",
         "tracefold.news.agents.program_compiler_sandbox",

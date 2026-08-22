@@ -259,6 +259,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
         stable = active_arm_manifest(settings)
         if action == "baseline":
             return _handle_learning_baseline(args, settings, stable)
+        if action == "draft-reviews":
+            return _handle_learning_draft_reviews(args, settings, stable)
         if action == "compile":
             from tracefold.app.learning_runtime import compose_news_program_runtime
             from tracefold.news.agents.program_compiler_launcher import ProgramCompilerLauncher
@@ -872,6 +874,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     from tracefold.news import CandidateEvaluator, ClosedWindow
     from tracefold.news.agents.program_baseline import (
         build_baseline_cases,
+        build_judge,
         build_runtime_lm,
         compile_program_factory,
         run_baseline,
@@ -903,12 +906,23 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             max_tokens=max(artifact.route_spec.event_semantics_max_tokens, artifact.route_spec.reader_card_max_tokens),
             model_kwargs=endpoint.model_kwargs,
         )
+    judge_model = str(args.semantic_judge).strip()
+    judge = None
+    if judge_model:
+        # The judge belongs to the metric, not the Program, so it gets its own endpoint rather than the task
+        # route: the compiler reflection endpoint when configured, otherwise the Triage fallback.
+        reflection = getattr(settings.llm, "news_compiler_reflection", None)
+        source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+        if not source.configured:
+            raise ValueError("news_program_baseline_judge_endpoint_not_configured")
+        judge = build_judge(model_name=judge_model, api_key=source.api_key, api_base=source.base_url)
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
         mode=mode,
         artifact=artifact,
         program_factory=compile_program_factory if mode != "recorded" else None,
         lm=lm,
+        judge=judge,
         runtime_identity={"model": getattr(lm, "model", None)} if lm else {},
     )
     payload = report.model_dump(mode="json")
@@ -918,6 +932,84 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     summary = {key: value for key, value in payload.items() if key != "cases"}
     summary["cases_written_to"] = str(args.out) or None
     return 0, {"ok": True, "data": summary}
+
+
+def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+    """Propose `news_review_v3` rubrics with gold. Read-only: the output is a file, never a review.
+
+    `ReviewDesk.submit` appends an acceptance row unconditionally, so a draft written through that path would
+    be accepted release evidence the instant it landed. The human stays the acceptance authority; this only
+    turns "compose a judgment from scratch" into "confirm or reject one".
+    """
+
+    from tracefold.app.repositories import postgres_connection
+    from tracefold.news import CandidateEvaluator, ClosedWindow, canonical_json
+    from tracefold.news.agents.program_baseline import build_baseline_cases, build_judge
+    from tracefold.news.agents.program_review_drafter import ReviewDrafter, build_draft_batch
+    from tracefold.news.agents.semantic_program import render_model_evidence_json
+
+    reflection = getattr(settings.llm, "news_compiler_reflection", None)
+    source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+    if not source.configured:
+        raise ValueError("news_review_drafter_endpoint_not_configured")
+
+    window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
+    with postgres_connection(settings, role="serve") as conn:
+        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+        episodes = evaluator.baseline_episodes(window, cohort=False, limit=int(args.limit))
+    if not episodes:
+        return 2, {"ok": False, "error": {"code": "news_review_drafter_no_events_in_window"}}
+
+    cases = build_baseline_cases(episodes, action_source="recorded")
+    tasks: list[dict[str, Any]] = []
+    for case, raw in zip(cases, episodes, strict=True):
+        episode = case.episode
+        if bool(args.skip_reviewed) and episode.accepted_review.get("should_push"):
+            continue
+        verdict = dict(episode.production_verdict or {})
+        tasks.append(
+            {
+                # The task identity a human needs for `review submit`; `evidence_version` comes from the
+                # snapshot the episode was projected from.
+                "task_id": f"evt.{raw.get('event_id') or ''}.{episode.context.event.evidence_version}",
+                "task_version": str(episode.context.event.evidence_sha256 or ""),
+                "event_id": str(raw.get("event_id") or ""),
+                "headline_zh": str(verdict.get("headline_zh") or ""),
+                "evidence_json": render_model_evidence_json(
+                    episode.context.event_semantics_payload(), predictor="event_semantics"
+                ),
+                "card_json": canonical_json(verdict),
+                "told_json": canonical_json(list(episode.policy_metric.get("told") or ())),
+            }
+        )
+    if not tasks:
+        return 2, {"ok": False, "error": {"code": "news_review_drafter_nothing_to_draft"}}
+
+    # Same endpoint plumbing as the judge: a drafting model is a metric-side tool, not a Program route.
+    batch = build_draft_batch(
+        ReviewDrafter(
+            build_judge(model_name=str(args.model), api_key=source.api_key, api_base=source.base_url).lm
+        ),
+        tasks,
+    )
+    payload = batch.model_dump(mode="json")
+    payload["batch_sha256"] = batch.batch_sha256
+    _write_json(str(args.out), payload)
+    drafted = [entry for entry in batch.drafts if entry.error is None]
+    with_gold = [entry for entry in drafted if entry.draft.expected is not None]
+    return 0, {
+        "ok": True,
+        "data": {
+            "drafts_written_to": str(args.out),
+            "batch_sha256": batch.batch_sha256,
+            "drafter": batch.drafter,
+            "tasks": len(tasks),
+            "drafted": len(drafted),
+            "with_gold": len(with_gold),
+            "failed": len(batch.drafts) - len(drafted),
+            "note": "proposals only — a human must accept each one through `tracefold news review submit`",
+        },
+    }
 
 
 def _load_candidate_bundle(path: str) -> tuple[Any | None, dict[str, str]]:
