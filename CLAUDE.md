@@ -123,8 +123,9 @@ numbers, ranks the frame against the symbol's others in a rolling 4 h, and
 returns an ordinary `TriageVerdict` so `decide()`, delivery, `event_outcome` and
 the feed all stay on one path. `news_oi_signals` is only the rank ledger; the
 decision lives in `news_verdicts` like any other. These Events are exempt from
-near-duplicate matching and excluded from ReviewDesk and the model-health
-denominators (#137). The Janitor
+near-duplicate matching, share the per-instrument duplicate exemption listing
+frames got in #72 (one template, different instruments), and are excluded from
+ReviewDesk and the model-health denominators (#137). The Janitor
 republishes candidates that never left the process, expires bands, and snapshots
 broker depths. The instrument universe (`news_market_instruments` +
 `news_symbol_aliases`, #75, consolidated in #89) is a rebuildable provider fact

@@ -1287,8 +1287,7 @@ class TriageConsumer:
         """
 
         title = str(card.get("leader_title") or "")
-        coins = list((card.get("provider_metadata") or {}).get("coins") or ())
-        signal = parse_oi_signal(title, coins)
+        signal = parse_oi_signal(title)
         observed = int(card.get("opened_at_ms") or card.get("leader_published_at_ms") or stamp)
         trace: dict[str, Any] = {
             "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
@@ -1347,25 +1346,26 @@ class TriageConsumer:
                 "rule": judgment.rule,
                 "policy": self.oi_policy.as_dict(),
             }
-            # The rank ledger. Written before the verdict so a crash between the two can only make the
-            # next frame rank itself higher, never lower — the safe direction for a recall-first rule.
-            with contextlib.suppress(TransientError, DeferError):
-                await self.db.tx(
-                    "news_signal_record",
-                    lambda repos: repos.news.insert_oi_signal(
-                        event_id=event_id,
-                        metric_version=OI_METRIC_VERSION,
-                        symbol=signal.symbol,
-                        direction=signal.direction,
-                        oi_change_bps=signal.oi_change_bps,
-                        oi_value_usd=signal.oi_value_usd,
-                        whale_long_profit_bps=signal.whale_long_profit_bps,
-                        whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
-                        observed_at_ms=observed,
-                        rank_in_window=judgment.rank_in_window,
-                        now_ms=stamp,
-                    ),
-                )
+            # The rank ledger, written before the verdict. The failure is not swallowed: losing the
+            # row would let the *next* frame rank itself lower and push when it should not, which is
+            # the unsafe direction. Letting it propagate retries the message, and the insert is
+            # idempotent (`ON CONFLICT DO NOTHING`, and the rank read excludes this Event).
+            await self.db.tx(
+                "news_signal_record",
+                lambda repos: repos.news.insert_oi_signal(
+                    event_id=event_id,
+                    metric_version=OI_METRIC_VERSION,
+                    symbol=signal.symbol,
+                    direction=signal.direction,
+                    oi_change_bps=signal.oi_change_bps,
+                    oi_value_usd=signal.oi_value_usd,
+                    whale_long_profit_bps=signal.whale_long_profit_bps,
+                    whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
+                    observed_at_ms=observed,
+                    rank_in_window=judgment.rank_in_window,
+                    now_ms=stamp,
+                ),
+            )
         final_key = final_storyline_key(
             title=title,
             headline_zh=verdict.headline_zh,

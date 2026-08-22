@@ -6,6 +6,8 @@ single-character tickers (`S`, `4`) and the prose sentence about open interest t
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from tracefold.news.oi_signals import (
@@ -16,7 +18,10 @@ from tracefold.news.oi_signals import (
     evaluate_oi,
     parse_oi_signal,
 )
-from tracefold.news.triage_rules import GateFacts, decide, storyline_status
+from tracefold.news.similarity import similarity
+from tracefold.news.triage_rules import DEFAULT_POLICY, GateFacts, decide, storyline_status
+
+DEFAULT_POLICY_SIMILARITY = DEFAULT_POLICY.similarity_max
 
 FRAME = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
 
@@ -35,7 +40,7 @@ def _signal(**over: object) -> OiSignal:
 
 
 def test_parses_the_production_template_into_exact_basis_points() -> None:
-    signal = parse_oi_signal(FRAME, [{"symbol": "TRUMP", "market_type": "cex"}])
+    signal = parse_oi_signal(FRAME)
     assert signal == _signal()
 
 
@@ -47,18 +52,24 @@ def test_percentages_are_exact_integers_not_floats(percent: str, bps: int) -> No
     """These numbers key a stored read model and a threshold comparison; 0.1 + 0.2 must not appear."""
 
     frame = f"BTC OI Rise {percent}%, OI Value 1M, Whale Long Profit 1%, Whale/OI Ratio 1%"
-    signal = parse_oi_signal(frame, [])
+    signal = parse_oi_signal(frame)
     assert signal is not None and signal.oi_change_bps == bps
 
 
-def test_symbol_comes_from_provider_metadata_not_the_title() -> None:
-    """The title's leading token is a fallback: the provider's tag is the structured answer, and this
-    feed really does carry one-character tickers that a title regex would have to guess at."""
+def test_the_symbol_is_the_titles_own_subject_normalized() -> None:
+    """The title's leading token decides, and the `XYZ-` prefix is stripped the way every other
+    consumer of provider coin tags strips it.
 
-    tagged = parse_oi_signal(FRAME, [{"symbol": "trump"}])
-    assert tagged is not None and tagged.symbol == "TRUMP"
-    untagged = parse_oi_signal("S OI Rise 3.04%, OI Value 3.86M, Whale Long Profit 92.31%, Whale/OI Ratio 31.42%", [])
-    assert untagged is not None and untagged.symbol == "S"
+    A provider tag is not preferred over it: the two agree in this feed, and when they did not, the
+    tag would key the row and the card header to an asset the frame is not about. Provider tags are
+    also unbounded where `TriageAsset.symbol` is capped at 16 characters.
+    """
+
+    assert parse_oi_signal(FRAME) == _signal()
+    prefixed = parse_oi_signal("XYZ-UNITREE OI Rise 1%, OI Value 1M, Whale Long Profit 1%, Whale/OI Ratio 1%")
+    assert prefixed is not None and prefixed.symbol == "UNITREE"
+    single = parse_oi_signal("S OI Rise 3.04%, OI Value 3.86M, Whale Long Profit 92.31%, Whale/OI Ratio 31.42%")
+    assert single is not None and single.symbol == "S"
 
 
 @pytest.mark.parametrize(
@@ -73,13 +84,13 @@ def test_symbol_comes_from_provider_metadata_not_the_title() -> None:
 def test_anything_that_is_not_the_template_is_not_a_signal(title: str) -> None:
     """Prose *about* open interest carries no numbers this lane can act on, and must reach nothing."""
 
-    assert parse_oi_signal(title, []) is None
+    assert parse_oi_signal(title) is None
 
 
 def test_units_scale_to_whole_dollars() -> None:
     for unit, expected in (("K", 3_860), ("M", 3_860_000), ("B", 3_860_000_000)):
         frame = f"BTC OI Rise 1%, OI Value 3.86{unit}, Whale Long Profit 1%, Whale/OI Ratio 1%"
-        signal = parse_oi_signal(frame, [])
+        signal = parse_oi_signal(frame)
         assert signal is not None and signal.oi_value_usd == expected
 
 
@@ -114,7 +125,7 @@ def test_whale_concentration_is_a_strict_threshold() -> None:
 def test_every_threshold_is_operator_owned() -> None:
     quiet = _signal(whale_oi_ratio_bps=3_000)
     assert evaluate_oi(quiet, earlier_at_ms=[], now_ms=0).verdict.decision == "drop"
-    loud = evaluate_oi(quiet, earlier_at_ms=[], now_ms=0, policy=OiPolicy(min_whale_oi_ratio_bps=0))
+    loud = evaluate_oi(quiet, earlier_at_ms=[], now_ms=0, policy=OiPolicy(whale_oi_ratio_above_bps=0))
     assert loud.verdict.decision == "push"
     crowded = [1, 2, 3, 4]
     assert evaluate_oi(_signal(), earlier_at_ms=crowded, now_ms=5).verdict.decision == "drop"
@@ -158,24 +169,43 @@ def test_reader_text_carries_the_numbers_and_the_position_in_the_run() -> None:
     assert "AI" not in verdict.why_zh and "模型" not in verdict.why_zh
 
 
-def test_duplicate_protection_comes_free_and_is_per_instrument() -> None:
-    """Two cards from one template are only duplicates when they name the same instrument.
+def test_two_symbols_are_not_duplicates_of_each_other() -> None:
+    """Every telemetry headline is one template, so bigram similarity reads two unrelated symbols as a
+    repeat. Measured: `▲ BTC 持仓异动 4.55%` against `▲ ETH 持仓异动 4.51%` scores 0.33 against the 0.25
+    threshold, and with a seven-card ledger 78% of qualifying frames would be withheld as duplicates of
+    a card about something else.
 
-    Measured on the real headlines: two symbols score 0.12 against the 0.25 threshold and both send,
-    while two frames for one symbol score 0.65 and the second is withheld. That is the existing
-    `decide()` check doing the work — this lane needs no exemption of its own.
+    An earlier version of this test asserted the opposite from one favourable pair — TRUMP against
+    PENGU with far apart numbers scores 0.12 — and the claim did not generalise. Short symbols are the
+    common case and they are the ones that collide, so the fixture uses them.
     """
 
-    first = evaluate_oi(_signal(), earlier_at_ms=[], now_ms=0).verdict
-    told = [{"dir": "bullish", "headline_zh": first.headline_zh, "grounded_assets": ["TRUMP"]}]
-    status = storyline_status("asset:TRUMP", told=told)
+    first = evaluate_oi(_signal(symbol="BTC"), earlier_at_ms=[], now_ms=0).verdict
+    second = evaluate_oi(_signal(symbol="ETH", oi_change_bps=451), earlier_at_ms=[], now_ms=0).verdict
+    assert similarity(first.headline_zh, second.headline_zh) >= DEFAULT_POLICY_SIMILARITY
 
-    other = evaluate_oi(_signal(symbol="PENGU", oi_change_bps=329), earlier_at_ms=[], now_ms=0).verdict
-    assert decide(other, _FACTS, status).final == "push"
+    told = [{"dir": "bullish", "headline_zh": first.headline_zh, "assets": [{"symbol": "BTC", "role": "primary"}]}]
+    status = storyline_status("asset:BTC", told=told)
+    facts = replace(_FACTS, grounded_assets=())
+    other = decide(second, facts, status)
+    assert other.final == "push", "a card about ETH is not a duplicate of a card about BTC"
 
-    same = evaluate_oi(_signal(oi_change_bps=460), earlier_at_ms=[], now_ms=0).verdict
-    repeat = decide(same, _FACTS, status)
-    assert repeat.final == "throttled" and repeat.throttled_by == "storyline:asset:TRUMP:seen"
+    # The same symbol still is one, and the trace names the ledger entry it matched.
+    repeat_verdict = evaluate_oi(_signal(symbol="BTC", oi_change_bps=460), earlier_at_ms=[], now_ms=0).verdict
+    repeat = decide(repeat_verdict, facts, status)
+    assert repeat.final == "throttled" and repeat.throttled_by == "storyline:asset:BTC:seen"
+
+
+def test_the_exemption_needs_the_gate_admission_not_the_shape_of_the_text() -> None:
+    """A frame that merely looks like telemetry gets no exemption: the admission is Gate-derived from
+    the provider's strategy id, and the text is not evidence of anything."""
+
+    first = evaluate_oi(_signal(symbol="BTC"), earlier_at_ms=[], now_ms=0).verdict
+    second = evaluate_oi(_signal(symbol="ETH", oi_change_bps=451), earlier_at_ms=[], now_ms=0).verdict
+    told = [{"dir": "bullish", "headline_zh": first.headline_zh, "assets": [{"symbol": "BTC", "role": "primary"}]}]
+    status = storyline_status("asset:BTC", told=told)
+    unadmitted = replace(_FACTS, admission="candidate", grounded_assets=())
+    assert decide(second, unadmitted, status).final == "throttled"
 
 
 def test_default_policy_is_the_measured_one() -> None:
@@ -185,6 +215,6 @@ def test_default_policy_is_the_measured_one() -> None:
     assert DEFAULT_OI_POLICY.as_dict() == {
         "window_ms": 4 * 3_600_000,
         "max_rank_in_window": 2,
-        "min_whale_oi_ratio_bps": 8_000,
-        "min_oi_change_bps": 0,
+        "whale_oi_ratio_above_bps": 8_000,
+        "oi_change_at_least_bps": 0,
     }

@@ -191,25 +191,36 @@ def _noise_veto_applies(verdict: TriageVerdict, facts: GateFacts, policy: Decide
     return not (policy.noise_veto_respects_gate_priority and facts.priority == "high")
 
 
-def _listing_fact(facts: GateFacts) -> bool:
-    """True for a Gate-admitted exchange listing/delisting frame.
+# Admissions whose frames are one wire template carrying different instruments. Their headlines are
+# near-identical by construction, so character-bigram similarity reads two different facts as a repeat.
+_TEMPLATE_ADMISSIONS: Final = frozenset({"listing_deterministic", "telemetry_deterministic"})
+
+
+def _template_fact(facts: GateFacts) -> bool:
+    """True for a Gate-admitted frame whose text is a template rather than prose.
+
+    Exchange listing notices (#72) and open-interest telemetry (#137) both look like this: "Coinbase
+    adds ALIGN" against "Upbit adds BICO", "▲ BTC 持仓异动 4.55%" against "▲ ETH 持仓异动 4.51%".
+    Measured on real headlines, two telemetry cards for unrelated symbols score 0.33 against a 0.25
+    threshold, and with a seven-card ledger 78% of qualifying frames would be withheld as duplicates
+    of a card about something else.
 
     Only the Gate's admission counts. ``verdict.event_type`` is unverified model output, so trusting
     it would let any story the model repeatedly types as ``listing`` — a recurring "X will support Y"
     tease, an ETF-approval rumour thread — escape duplicate evidence on every repeat with no
-    corroboration. The admission is derived upstream from provider metadata (#72).
+    corroboration. The admission is derived upstream from provider metadata.
     """
 
-    return facts.admission == "listing_deterministic"
+    return facts.admission in _TEMPLATE_ADMISSIONS
 
 
 def _names_another_instrument(
-    listing_fact: bool,
+    template_fact: bool,
     symbols: set[str],
     seen_assets: Sequence[frozenset[str]],
     index: int,
 ) -> bool:
-    """True when a listing frame's closest match is a card about a *different* instrument.
+    """True when a template frame's closest match is a card about a *different* instrument.
 
     Exchange notices share one wire template, so "Coinbase 将新增对 ALIGN 的支持" and "Upbit 将新增对
     BICO 的交易支持" score well above ``similarity_max`` on character bigrams while naming different
@@ -222,7 +233,7 @@ def _names_another_instrument(
     row that carries no assets is not evidence of a different instrument and never exempts.
     """
 
-    if not listing_fact or not symbols or not 0 <= index < len(seen_assets):
+    if not template_fact or not symbols or not 0 <= index < len(seen_assets):
         return False
     matched = seen_assets[index]
     return bool(matched) and matched.isdisjoint(symbols)
@@ -278,14 +289,14 @@ def decide(
 
     if verdict.event_type == "noise" and _noise_veto_applies(verdict, facts, policy):
         return DecisionResult("drop", "noise", None, baseline, watch_hits)
-    listing_fact = policy.listing_exempt_from_duplicate and _listing_fact(facts)
+    template_fact = policy.listing_exempt_from_duplicate and _template_fact(facts)
     # The restatement bypass is narrowed the same way the similarity one is. Exempting the class
     # outright left a listing frame with no duplicate defence at all whenever the similarity check
     # never ran — an `escalate`, or a deployment with `similarity_max: 0`.
-    listing_restates_other = listing_fact and _names_another_instrument(
-        listing_fact, primaries | grounded, status.told_assets if status else (), verdict.restates
+    template_restates_other = template_fact and _names_another_instrument(
+        template_fact, primaries | grounded, status.told_assets if status else (), verdict.restates
     )
-    if policy.restatement_drop and not listing_restates_other and grounded_restatement(verdict, status):
+    if policy.restatement_drop and not template_restates_other and grounded_restatement(verdict, status):
         return DecisionResult("drop", "restatement", None, baseline, watch_hits)
 
     final: Decision
@@ -350,7 +361,7 @@ def decide(
             seen_against >= 0
             and seen_similarity >= policy.similarity_max
             and not _seen_flip(verdict.direction, status.seen_directions, seen_against)
-            and not _names_another_instrument(listing_fact, primaries | grounded, status.seen_assets, seen_against)
+            and not _names_another_instrument(template_fact, primaries | grounded, status.seen_assets, seen_against)
         ):
             return DecisionResult(
                 "throttled",

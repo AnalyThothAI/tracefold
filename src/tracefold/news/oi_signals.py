@@ -15,9 +15,9 @@ capacity field. Counting *here* and handing ``decide()`` a verdict it already un
 decision plane instead of two, and keeps delivery, receipts, outcome, feed, counters and audit on the
 single path they were built for.
 
-The symbol comes from the provider's structured ``coins[].symbol`` where there is one, and the title's
-leading token only as a fallback: real tickers in this feed include single characters (``S``, ``4``)
-that no title regex should have to guess at.
+The symbol is the title's own leading token, normalized the way every other consumer of provider coin
+tags normalizes one. Real tickers in this feed include single characters (``S``, ``4``), so the
+template's capture is deliberately permissive about length and strict about position.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -75,20 +75,22 @@ class OiPolicy:
     window_ms: int = WINDOW_MS
     # The reader wants the opening moves of a run, not every tick of it.
     max_rank_in_window: int = 2
-    # Whale exposure relative to total open interest. Measured over 24 h of live frames the
-    # distribution is min 30% / p50 51% / p90 196%, so this removes about two thirds; the rank
-    # ceiling above is what does most of the filtering (128 -> 40 frames a day, together).
-    min_whale_oi_ratio_bps: int = 8_000
-    # A frame whose open interest barely moved is not a move. Zero disables the rule, which is the
-    # shipped default: the provider only emits a frame once its own trigger fired.
-    min_oi_change_bps: int = 0
+    # Whale exposure relative to total open interest. The name carries the inclusivity because the
+    # rule is 大于 80%: a frame must *exceed* this, so exactly 8000 bps does not qualify. Measured over
+    # 24 h of live frames the distribution is min 30% / p50 51% / p90 196%, so this removes about two
+    # thirds; the rank ceiling above does most of the filtering (130 -> 40 frames a day, together).
+    whale_oi_ratio_above_bps: int = 8_000
+    # A frame whose open interest barely moved is not a move; the name carries the inclusivity here
+    # too. Zero disables the rule, which is the shipped default: the provider only emits a frame once
+    # its own trigger fired.
+    oi_change_at_least_bps: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "window_ms": self.window_ms,
             "max_rank_in_window": self.max_rank_in_window,
-            "min_whale_oi_ratio_bps": self.min_whale_oi_ratio_bps,
-            "min_oi_change_bps": self.min_oi_change_bps,
+            "whale_oi_ratio_above_bps": self.whale_oi_ratio_above_bps,
+            "oi_change_at_least_bps": self.oi_change_at_least_bps,
         }
 
 
@@ -119,26 +121,24 @@ def _bps(value: str) -> int:
     return sign * ((scaled + 50) // 100)
 
 
-def parse_oi_signal(title: str, coins: Sequence[Mapping[str, Any]] | None = None) -> OiSignal | None:
+def parse_oi_signal(title: str) -> OiSignal | None:
     """Parse one telemetry frame, or return None for anything that is not one.
 
-    ``coins`` is the provider's structured tag list and wins over the title's leading token, which is
-    only a fallback for a frame that arrived without metadata.
+    Anything that is not the template returns ``None``: prose *about* open interest carries no numbers
+    this rule can act on.
     """
 
     match = _TELEMETRY.match(str(title or ""))
     if match is None:
         return None
-    # The provider ships one instrument under two tags (`UNITREE` and `XYZ-UNITREE`), and every other
-    # consumer of coin tags strips the prefix. Without it the two spellings key two rolling windows and
-    # the symbol gets twice its share of pushes, with `XYZ-` rendered into the card header.
-    title_symbol = _base_symbol(match.group("symbol"))
-    tagged = [_base_symbol(str(coin.get("symbol") or "")) for coin in coins or () if isinstance(coin, Mapping)]
-    tagged = [candidate for candidate in tagged if candidate]
-    # A multi-coin tag list must not key the row to an asset this frame is not about: prefer the tag the
-    # title itself names, and fall back to the title when no tag matches it.
-    symbol = next((candidate for candidate in tagged if candidate == title_symbol), "")
-    symbol = symbol or (tagged[0] if len(tagged) == 1 else title_symbol)
+    # The title's leading token is the frame's own subject, so it decides. Preferring a provider tag
+    # would key the row to an asset the frame is not about whenever the two disagree, and provider tags
+    # are unbounded where `TriageAsset.symbol` is capped at 16 — a longer tag would raise inside the
+    # verdict and dead-letter the message instead of dropping cleanly. The `XYZ-` prefix is stripped
+    # because the provider ships one instrument under both spellings (`UNITREE`, `XYZ-UNITREE`) and
+    # every other consumer of coin tags strips it; leaving it in would key two rolling windows for one
+    # symbol and render `XYZ-` into the card header.
+    symbol = _base_symbol(match.group("symbol"))
     if not symbol:
         return None
     # Integer math here for the same reason as `_bps`: `int(float("8.29") * 10**6)` is 8_289_999.
@@ -222,9 +222,9 @@ def evaluate_oi(
 
     cutoff = int(now_ms) - policy.window_ms
     rank = sum(1 for at in earlier_at_ms if at > cutoff) + 1
-    if signal.whale_oi_ratio_bps <= policy.min_whale_oi_ratio_bps:
+    if signal.whale_oi_ratio_bps <= policy.whale_oi_ratio_above_bps:
         rule = "whale_ratio_below_threshold"
-    elif abs(signal.oi_change_bps) < policy.min_oi_change_bps:
+    elif abs(signal.oi_change_bps) < policy.oi_change_at_least_bps:
         rule = "oi_change_below_threshold"
     elif rank > policy.max_rank_in_window:
         rule = "beyond_window_rank"

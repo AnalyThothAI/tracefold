@@ -287,7 +287,7 @@ def admit_item(
         # sources become two Events, two model calls and possibly two cards.
         candidates = (
             ()
-            if parse_oi_signal(title, coins) is not None
+            if parse_oi_signal(title) is not None
             else news.find_band_candidates(family=family, band_keys=keys, now_ms=now_ms)
         )
         for cand in candidates:
@@ -373,7 +373,10 @@ def admit_item(
     )
 
 
-_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "recovery"})
+# Admissions a stronger member may not overwrite. `telemetry_deterministic` is decided by the
+# provider's strategy id, and upgrading it to `candidate` would route a fixed-format frame back into
+# the model call the admission exists to avoid (#137).
+_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "telemetry_deterministic", "recovery"})
 _STRONG_MEMBER_SCORE = 80.0
 
 

@@ -907,14 +907,25 @@ reader quota and `StorylineStatus` is tested to carry no capacity field.
 Counting inside the evaluator and handing `decide()` a verdict it already knows
 how to rule on keeps one decision plane, and keeps delivery, receipts,
 `event_outcome`, the feed, the counters and the audit trail on the single path
-they were built for — including duplicate protection, which needs no exemption
-here: two telemetry headlines for different symbols score 0.12 against the 0.25
-threshold and both send, while two frames for one symbol score 0.65 and the
-second is withheld.
+they were built for.
+
+Duplicate protection needs the same per-instrument exemption listing frames got
+in #72, and for the same reason: every telemetry headline is one template, so
+two cards about unrelated symbols score 0.33 against the 0.25 threshold — with a
+seven-card ledger, 78% of qualifying frames would otherwise be withheld as
+duplicates of a card about something else. `_TEMPLATE_ADMISSIONS` covers both
+admissions, and the exemption still applies only when the matched card names
+none of this Event's instruments, so a genuine repeat for one symbol is still
+withheld.
 
 `news_oi_signals` is the rank ledger and nothing more: a derived read model with
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
-cascade-deleted with it. The decision itself lives in `news_verdicts` like every
+cascade-deleted with it. Two consequences of judging these frames rather than
+suppressing them are deliberate and worth stating: every 1019 frame now carries
+a verdict, so `news.retention` keeps its Item for 365 days instead of purging at
+30 (~70k small rows a year), and the card shows no ticker chip and no quote line
+because `card_assets()` intersects with the Gate's grounded assets and the Gate
+grounds nothing here — the symbol is in the headline instead. The decision itself lives in `news_verdicts` like every
 other decision, which is also where the lane's idempotency comes from — Triage
 already re-publishes an unpublished push on redelivery.
 

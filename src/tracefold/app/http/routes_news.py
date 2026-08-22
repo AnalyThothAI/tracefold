@@ -42,6 +42,7 @@ _ReviewSubmitEnvelope = api_schemas.ApiEnvelope[schemas_news.NewsReviewSubmitDat
 _ADMISSIONS = {
     "candidate",
     "listing_deterministic",
+    "telemetry_deterministic",
     "suppressed_pr_template",
     "suppressed_low_signal",
     "recovery",

@@ -12,7 +12,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from .models import ReaderReceipt, display_title
+from .models import ADMITTED_ADMISSIONS, ReaderReceipt, display_title
 from .outcome import (
     audience_zh,
     decision_zh,
@@ -34,6 +34,16 @@ _STORYLINE_LOCK_NAMESPACE = 0x4E455753
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=_JSON_SEPARATORS, default=str)
+
+
+_ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
+"""SQL literal for `ADMITTED_ADMISSIONS`, derived rather than repeated.
+
+Every predicate below means the same thing — "the Gate sent this Event to Triage" — and each used to
+spell the list out. A new admission then had to be found in six places by review, which is how #137's
+first pass left the outbox rescue, the give-up count, the funnel and the feed's outcome tabs all
+disagreeing with `event_outcome()`. The values are code-owned members of a `Literal`, never input.
+"""
 
 
 class NewsRepository:
@@ -439,9 +449,9 @@ class NewsRepository:
         """
 
         rows = self.conn.execute(
-            """
+            f"""
             SELECT event_id FROM news_events
-             WHERE published_at_ms IS NULL AND admission IN ('candidate', 'listing_deterministic')
+             WHERE published_at_ms IS NULL AND admission IN ({_ADMITTED_SQL})
                AND opened_at_ms <= %s AND opened_at_ms >= %s
              ORDER BY opened_at_ms LIMIT %s
             """,
@@ -467,9 +477,9 @@ class NewsRepository:
         """Admitted Events the catch-up has given up on — surfaced so the ceiling is never silent (#76)."""
 
         row = self.conn.execute(
-            """
+            f"""
             SELECT count(*) AS n FROM news_events
-             WHERE published_at_ms IS NULL AND admission IN ('candidate', 'listing_deterministic')
+             WHERE published_at_ms IS NULL AND admission IN ({_ADMITTED_SQL})
                AND opened_at_ms < %s
             """,
             (int(older_than_ms),),
@@ -1887,9 +1897,9 @@ class NewsRepository:
         """Where the last 24 h of Events went, by named reason: Gate admissions, decide() rules, storyline keys."""
 
         suppressed = self.conn.execute(
-            """
+            f"""
             SELECT admission, count(*) AS n FROM news_events
-             WHERE opened_at_ms >= %s AND admission NOT IN ('candidate', 'listing_deterministic')
+             WHERE opened_at_ms >= %s AND admission NOT IN ({_ADMITTED_SQL})
              GROUP BY admission ORDER BY n DESC
             """,
             (day_ago,),
@@ -1946,9 +1956,9 @@ class NewsRepository:
             (day_ago,),
         ).fetchone()
         totals = self.conn.execute(
-            """
+            f"""
             SELECT count(*) AS events,
-                   count(*) FILTER (WHERE admission IN ('candidate', 'listing_deterministic')) AS admitted
+                   count(*) FILTER (WHERE admission IN ({_ADMITTED_SQL})) AS admitted
               FROM news_events WHERE opened_at_ms >= %s
             """,
             (day_ago,),
@@ -1974,7 +1984,7 @@ class NewsRepository:
 # pushed = the first card was sent; pending = still moving (not yet triaged, or decided push and not yet settled);
 # held = everything that stopped short of a sent card (gate, drop, throttle, fallback drop, delivery failure).
 _PENDING_CORE_SQL: Final = (
-    "e.admission IN ('candidate', 'listing_deterministic')"
+    f"e.admission IN ({_ADMITTED_SQL})"
     " AND (t.final_decision IS NULL"
     "      OR (t.final_decision IN ('push', 'escalate') AND (d.state IS NULL OR d.state = 'sending')))"
 )
