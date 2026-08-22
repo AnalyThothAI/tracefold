@@ -348,7 +348,12 @@ async def _stop_process(process: asyncio.subprocess.Process) -> None:
     if process.returncode is None:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
-    await process.wait()
+    # `wait()` alone can deadlock when a killed child left bytes in a PIPE. Kill first, then let
+    # `communicate()` drain and discard only what was already buffered; no child can add bytes after SIGKILL.
+    if process.stdout is not None:
+        await process.communicate()
+    else:
+        await process.wait()
 
 
 __all__ = ["CoinglassCliLiquidationProvider", "snapshot_from_envelope"]

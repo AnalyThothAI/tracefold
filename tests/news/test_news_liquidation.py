@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import contextmanager, nullcontext
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from tracefold.integrations.coinglass import snapshot_from_envelope
+from tracefold.integrations import coinglass
+from tracefold.integrations.coinglass import CoinglassCliLiquidationProvider, snapshot_from_envelope
 from tracefold.news.liquidation import (
     LIQUIDATION_LEVEL_MAX,
     LIQUIDATION_MODEL_VERSION,
@@ -118,6 +121,66 @@ def test_coinglass_missing_health_or_provider_timestamp_is_never_reported_fresh(
 
     assert snapshot.freshness == "unavailable" and snapshot.degraded is True
     assert snapshot.error_class in {"provider_contract_drift", "provider_timestamp_missing"}
+
+
+def test_coinglass_overflow_kills_and_reaps_the_real_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "overflow-provider"
+    executable.write_text(
+        "#!/usr/bin/env python3\nimport os\nos.write(1, b'x' * (6 * 1024 * 1024))\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    monkeypatch.setattr(coinglass, "_PACKAGED_EXECUTABLE", str(executable))
+
+    snapshot = asyncio.run(
+        CoinglassCliLiquidationProvider(timeout_seconds=5).fetch(
+            LIQUIDATION_TARGETS[0],
+            model_version=LIQUIDATION_MODEL_VERSION,
+            range_key=LIQUIDATION_RANGE,
+        )
+    )
+
+    assert snapshot.freshness == "unavailable" and snapshot.error_class == "payload_too_large"
+
+
+def test_coinglass_cancellation_kills_and_reaps_the_real_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid_path = tmp_path / "provider.pid"
+    executable = tmp_path / "never-ending-provider"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        f"open({str(pid_path)!r}, 'w', encoding='utf-8').write(str(os.getpid()))\n"
+        "while True:\n    os.write(1, b'x' * 65536)\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    monkeypatch.setattr(coinglass, "_PACKAGED_EXECUTABLE", str(executable))
+
+    async def _cancel() -> int:
+        task = asyncio.create_task(
+            CoinglassCliLiquidationProvider(timeout_seconds=30).fetch(
+                LIQUIDATION_TARGETS[0],
+                model_version=LIQUIDATION_MODEL_VERSION,
+                range_key=LIQUIDATION_RANGE,
+            )
+        )
+        for _ in range(100):
+            if await asyncio.to_thread(pid_path.exists):
+                break
+            await asyncio.sleep(0.01)
+        pid = int(await asyncio.to_thread(pid_path.read_text, encoding="utf-8"))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+        return pid
+
+    pid = asyncio.run(_cancel())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 class _LiquidationRepo:
