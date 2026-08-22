@@ -49,6 +49,9 @@ class _DevelopmentEpisode(_ExactModel):
     context: TriageContext
     accepted_review: dict[str, Any]
     production_verdict: dict[str, Any] | None = None
+    # Sealed policy-metric projection. The demo builder ignores it; it exists so this validator does not
+    # reject the same sealed episode the compiler reads.
+    policy_metric: dict[str, Any] = Field(default_factory=dict)
 
 
 def build_eligible_demo_bank(

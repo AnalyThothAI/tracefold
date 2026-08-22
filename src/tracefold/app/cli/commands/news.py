@@ -209,6 +209,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repositories import postgres_connection
     from tracefold.news import (
         LEARNING_EPOCH,
+        REVIEW_RUBRIC_VERSION,
         CandidateEvaluator,
         CandidateManifest,
         ClosedWindow,
@@ -371,6 +372,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 dataset_sha=compile_export.dataset_sha,
                 dataset_payload=compile_export.dataset_payload,
                 episodes=compile_export.episodes,
+                # Declared here, on the trusted host. The compiler records the rubric its corpus was accepted
+                # under; it never looks one up, so the review plane stays out of its import graph.
+                review_rubric_version=REVIEW_RUBRIC_VERSION,
                 parent_program_sha256=parent.program_sha256,
                 parent_state_sha256=parent.state_sha256,
                 stable_bundle_sha256=stable.bundle_sha,

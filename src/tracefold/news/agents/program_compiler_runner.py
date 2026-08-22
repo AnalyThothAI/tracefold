@@ -151,6 +151,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
 
     request = CompileRequest(
         development_dataset_sha=bundle.corpus.development_dataset_sha,
+        review_rubric_version=bundle.corpus.review_rubric_version,
         episodes=episodes,
         budget=CompileBudget.model_validate(bundle.budget.model_dump(mode="json")),
     )
