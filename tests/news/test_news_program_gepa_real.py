@@ -206,8 +206,12 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
     assert any(text.strip() for text in learned.values()), "GEPA produced no advisory at all"
     # GEPA checks its own budget between steps, so a completed run legitimately overshoots by up to one full
     # valset evaluation; the compiler allows exactly that and no more.
+    # A completed run overshoots by whatever the step in flight consumed: one reflection minibatch plus, on
+    # acceptance, one full valset evaluation. Derived, not guessed — this bound was wrong twice and each time
+    # it destroyed a finished run after the work was done.
     val_n = result.receipt_payloads.split["development_selection"]["case_n"]
-    assert 0 < result.metric_calls <= 40 + val_n
+    minibatch = result.receipt_payloads.optimizer_config["constructor_scalar_arguments"]["reflection_minibatch_size"]
+    assert 0 < result.metric_calls <= 40 + val_n + minibatch
     assert result.reflection_model_calls > 0, "the reflection endpoint was never used"
 
     # `dspy.GEPA` only rewrites instructions — `build_program` never touches `predictor.demos`. The DemoBank

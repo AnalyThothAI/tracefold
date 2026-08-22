@@ -605,15 +605,20 @@ class ProgramCompiler:
             raise TypeError("news_program_compile_result_type_invalid")
         details = getattr(compiled, "detailed_results", None)
         metric_calls = int(getattr(details, "total_metric_calls", -1))
-        # GEPA reports `state.total_num_evals` and checks its own budget *between* steps, so a run legitimately
-        # finishes up to one full valset evaluation past `max_metric_calls`. Demanding an exact ceiling rejected
-        # a completed run that had already produced a better candidate — the first real GEPA run did exactly
-        # that, at 5 iterations with a valset-aggregate improvement, and threw the work away.
+        # GEPA reports `state.total_num_evals` and checks its own budget *between* steps, so a completed run
+        # legitimately finishes past `max_metric_calls` by whatever the step in flight consumes: one reflection
+        # minibatch plus, if that candidate is accepted, one full valset evaluation.
         #
-        # The spend that actually needs bounding is physical provider calls and cost, and `_BudgetMeter` bounds
-        # those on every single request. This check exists to prove the reported figure is present and sane, so
-        # it allows the documented overshoot and names both numbers when it does refuse.
-        metric_call_ceiling = request.budget.max_metric_calls + len(val_examples)
+        # This bound has been wrong twice, and each time it destroyed a finished 30-minute run after the work
+        # was already done — first as an exact ceiling, then as `+ valset` (observed 316 against a 314 bound).
+        # So it is derived from the configuration rather than guessed, and generously: the spend that actually
+        # needs bounding is physical provider calls and cost, and `_BudgetMeter` bounds those on every single
+        # request, before it is made. This check only proves the reported figure is present and sane.
+        metric_call_ceiling = (
+            request.budget.max_metric_calls
+            + len(val_examples)
+            + int(optimizer_constructor["reflection_minibatch_size"])
+        )
         if metric_calls < 0 or metric_calls > metric_call_ceiling:
             raise ValueError(
                 "news_program_compile_metric_budget_unverifiable:"
