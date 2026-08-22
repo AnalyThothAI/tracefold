@@ -152,9 +152,9 @@ def test_coinglass_cancellation_kills_and_reaps_the_real_subprocess(
     executable = tmp_path / "never-ending-provider"
     executable.write_text(
         "#!/usr/bin/env python3\n"
-        "import os\n"
+        "import os, time\n"
         f"open({str(pid_path)!r}, 'w', encoding='utf-8').write(str(os.getpid()))\n"
-        "while True:\n    os.write(1, b'x' * 65536)\n",
+        "time.sleep(60)\n",
         encoding="utf-8",
     )
     executable.chmod(0o700)
