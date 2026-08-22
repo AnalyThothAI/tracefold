@@ -599,6 +599,39 @@ def test_status_reports_unavailable_without_broker_or_token(client) -> None:
     assert isinstance(data["watchlist"], list)
 
 
+def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "shared-model",
+                "news_reader_card": {
+                    "api_key": "reader-key",
+                    "base_url": "ftp://reader.test/v1",
+                    "model": "shared-model",
+                },
+            },
+        }
+    )
+    app = create_app(settings=settings)
+    monkeypatch.setattr(routes_news, "ReviewDesk", _FakeReviewDesk)
+    app.state.service = _FakeRuntime(settings, _FakeNewsRepository())
+
+    with TestClient(app) as http:
+        response = http.get("/api/news/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["pipeline"]["reader_card_model"] is None
+    assert data["health"]["model"] == {
+        "level": "bad",
+        "summary_zh": "Reader 模型不可用",
+        "detail_zh": "ReaderCard 配置无效；所有事件按规则兜底",
+    }
+
+
 def test_news_routes_require_the_operator_token(client) -> None:
     http, _ = client
 

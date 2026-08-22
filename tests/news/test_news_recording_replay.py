@@ -47,7 +47,6 @@ def _semantics(**updates: Any) -> dict[str, Any]:
 def _card() -> dict[str, Any]:
     return {
         "headline_zh": "比特币出现新进展",
-        "title_zh": "比特币出现新进展",
         "why_zh": "值得关注。",
     }
 

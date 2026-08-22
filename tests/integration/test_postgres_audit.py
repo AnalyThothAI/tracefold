@@ -184,7 +184,7 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
     assert payload["migration_status"] == "ready"
     assert set(payload["counts"]) == set(NEWS_TABLES)
     assert all(count >= 0 for count in payload["counts"].values())
-    assert payload["counts"]["news_learning_epochs"] == 2
+    assert payload["counts"]["news_learning_epochs"] == 3
     assert payload["news_schema"] == {
         "expected_tables": list(NEWS_TABLES),
         "actual_tables": sorted(NEWS_TABLES),

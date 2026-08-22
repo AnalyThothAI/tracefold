@@ -23,10 +23,10 @@ from tracefold.app.learning_runtime import (
     UNVERSIONED,
     active_arm_manifest,
     candidate_program_artifact,
+    compose_news_program_runtime,
     runtime_identity,
     runtime_manifest_sha,
 )
-from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
@@ -45,12 +45,7 @@ from tracefold.integrations.venues import (
     fetch_us_reference_instruments,
 )
 from tracefold.news import CandidateManifest, DecidePolicy
-from tracefold.news.agents.semantic_program import (
-    DspyNewsSemanticProgram,
-    DspyPredictorAdapter,
-    ProgramArtifact,
-    load_stable_program_artifact,
-)
+from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.canary import CanaryRuntimeArm
 from tracefold.news.consumers import (
     DeduperConsumer,
@@ -66,7 +61,6 @@ from tracefold.news.consumers import (
 )
 from tracefold.platform.config.settings import (
     Settings,
-    news_model_availability,
     news_push_availability,
 )
 from tracefold.platform.observability import TelemetryRegistry
@@ -82,50 +76,6 @@ _CONTROL_TIMEOUT_SECONDS = 1.0
 _CONTROL_RETRY_SECONDS = 0.250
 _CONTROL_HEARTBEAT_STALE_SECONDS = 15.0
 _NEWS_OLLAMA_BASE_URL = "http://host.docker.internal:11434/v1"
-
-
-def _configured_semantic_program(
-    settings: Settings, artifact: ProgramArtifact, models: Any
-) -> DspyNewsSemanticProgram | None:
-    """Compose one arm-local Program from an image-carried artifact and operator-owned endpoints."""
-
-    if not models.triage_configured or not models.triage_model:
-        return None
-    route_timeout = float(artifact.execution.route_deadline_seconds)
-    max_tokens = max(artifact.event_semantics.max_tokens, artifact.reader_card.max_tokens)
-    primary = configured_lm_endpoint(
-        settings,
-        model_name=models.triage_model,
-    )
-    fallback_adapter: DspyPredictorAdapter | None = None
-    if models.triage_fallback_model:
-        endpoint = settings.llm.news_triage_fallback
-        fallback = configured_lm_endpoint(
-            settings,
-            model_name=models.triage_fallback_model,
-            api_key=endpoint.api_key,
-            base_url=endpoint.base_url,
-        )
-        fallback_adapter = DspyPredictorAdapter.from_runtime(
-            model_name=fallback.model_name,
-            api_key=fallback.api_key,
-            api_base=fallback.api_base,
-            timeout=route_timeout,
-            max_tokens=max_tokens,
-            model_kwargs=fallback.model_kwargs,
-        )
-    return DspyNewsSemanticProgram(
-        artifact,
-        primary_adapter=DspyPredictorAdapter.from_runtime(
-            model_name=primary.model_name,
-            api_key=primary.api_key,
-            api_base=primary.api_base,
-            timeout=route_timeout,
-            max_tokens=max_tokens,
-            model_kwargs=primary.model_kwargs,
-        ),
-        fallback_adapter=fallback_adapter,
-    )
 
 
 class _FreshRuntimeRowExists(RuntimeError):
@@ -632,9 +582,9 @@ async def _wire_news_pipeline(
         else None
     )
 
-    models = news_model_availability(settings)
+    runtime_composition = compose_news_program_runtime(settings)
     identity = runtime_identity()
-    stable_arm = active_arm_manifest(settings)
+    stable_arm = active_arm_manifest(settings, runtime_composition=runtime_composition)
     compiled_candidates: dict[str, CandidateManifest] = {}
     candidate_failures: dict[str, str] = {}
     for index, document in enumerate(candidate_programs.COMPILED_CANDIDATE_DOCUMENTS):
@@ -655,7 +605,7 @@ async def _wire_news_pipeline(
         or stable_artifact.program_sha256 != stable_arm.program_sha256
     ):
         raise RuntimeError("news_stable_program_manifest_mismatch")
-    semantic_judge = _configured_semantic_program(settings, stable_artifact, models)
+    semantic_judge = runtime_composition.semantic_judge(stable_artifact)
     if semantic_judge is not None:
         for candidate in compiled_candidates.values():
             if candidate.parent_stable_sha != stable_arm.bundle_sha:
@@ -675,7 +625,7 @@ async def _wire_news_pipeline(
                 logger.error("candidate Program artifact rejected program={} error={}", arm.program_sha256, exc)
                 continue
             try:
-                candidate_program = _configured_semantic_program(settings, candidate_artifact, models)
+                candidate_program = runtime_composition.semantic_judge(candidate_artifact)
             except (TypeError, ValueError) as exc:
                 candidate_failures[candidate.candidate_sha] = "candidate_runtime_invalid"
                 logger.error("candidate Program composition rejected program={} error={}", arm.program_sha256, exc)

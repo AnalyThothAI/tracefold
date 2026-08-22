@@ -582,7 +582,6 @@ def _learning_program_judges(
 ) -> dict[tuple[str, str], Any]:
     from tracefold.news.agents.semantic_program import (
         DspyNewsSemanticProgram,
-        DspyPredictorAdapter,
         RecordReplayPredictorAdapter,
     )
 
@@ -593,12 +592,7 @@ def _learning_program_judges(
     )
     if live:
         return {
-            (arm_name, arm.bundle_sha): _configured_program_judge(
-                settings,
-                artifact,
-                DspyNewsSemanticProgram,
-                DspyPredictorAdapter,
-            )
+            (arm_name, arm.bundle_sha): _configured_program_judge(settings, artifact)
             for arm_name, arm, artifact in arm_artifacts
         }
     rows = conn.execute(
@@ -682,42 +676,13 @@ def _learning_program_arm_artifacts(
     )
 
 
-def _configured_program_judge(settings: Any, artifact: Any, program_type: Any, adapter_type: Any) -> Any:
-    from tracefold.app.llm import configured_lm_endpoint
-    from tracefold.platform.config.settings import news_model_availability
+def _configured_program_judge(settings: Any, artifact: Any) -> Any:
+    from tracefold.app.learning_runtime import compose_news_program_runtime
 
-    availability = news_model_availability(settings)
-    if not availability.triage_configured or not availability.triage_model:
+    program = compose_news_program_runtime(settings).semantic_judge(artifact)
+    if program is None:
         raise ValueError("news_learning_live_program_not_configured")
-    max_tokens = max(artifact.event_semantics.max_tokens, artifact.reader_card.max_tokens)
-    timeout = float(artifact.execution.route_deadline_seconds)
-    primary = configured_lm_endpoint(settings, model_name=availability.triage_model)
-    primary_adapter = adapter_type.from_runtime(
-        model_name=primary.model_name,
-        api_key=primary.api_key,
-        api_base=primary.api_base,
-        timeout=timeout,
-        max_tokens=max_tokens,
-        model_kwargs=primary.model_kwargs,
-    )
-    fallback_adapter = None
-    if availability.triage_fallback_model:
-        endpoint = settings.llm.news_triage_fallback
-        fallback = configured_lm_endpoint(
-            settings,
-            model_name=availability.triage_fallback_model,
-            api_key=endpoint.api_key,
-            base_url=endpoint.base_url,
-        )
-        fallback_adapter = adapter_type.from_runtime(
-            model_name=fallback.model_name,
-            api_key=fallback.api_key,
-            api_base=fallback.api_base,
-            timeout=timeout,
-            max_tokens=max_tokens,
-            model_kwargs=fallback.model_kwargs,
-        )
-    return program_type(artifact, primary_adapter=primary_adapter, fallback_adapter=fallback_adapter)
+    return program
 
 
 def _insert_learning_artifact(

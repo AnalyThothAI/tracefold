@@ -60,12 +60,12 @@ class StorageConfig(BaseModel):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
 
 
-class LlmFallbackConfig(BaseModel):
-    """A second direct endpoint used only when the primary Triage call fails (issue #65); all-or-nothing."""
+class _LlmEndpointConfig(BaseModel):
+    """One complete direct model endpoint."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    api_key: str | None = None
+    api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
     model: str | None = None
 
@@ -84,15 +84,31 @@ class LlmFallbackConfig(BaseModel):
         return normalized or None
 
     @model_validator(mode="after")
-    def require_complete_configuration(self) -> LlmFallbackConfig:
+    def require_complete_configuration(self) -> _LlmEndpointConfig:
         configured = (self.api_key, self.base_url, self.model)
         if any(configured) and not all(configured):
-            raise ValueError("llm_fallback_configuration_incomplete")
+            raise ValueError(self.incomplete_error_code)
         return self
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key and self.base_url and self.model)
+
+    @property
+    def incomplete_error_code(self) -> str:
+        return "llm_endpoint_configuration_incomplete"
+
+
+class LlmFallbackConfig(_LlmEndpointConfig):
+    """A second endpoint used only when the primary Program route fails (issue #65)."""
+
+    @property
+    def incomplete_error_code(self) -> str:
+        return "llm_fallback_configuration_incomplete"
+
+
+class LlmReaderCardConfig(_LlmEndpointConfig):
+    """Optional primary endpoint dedicated to the ReaderCard Predictor."""
 
 
 class LlmConfig(BaseModel):
@@ -101,6 +117,7 @@ class LlmConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     news_triage_model: str | None = None
+    news_reader_card: LlmReaderCardConfig = Field(default_factory=LlmReaderCardConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
 
     @field_validator("api_key", "news_triage_model", mode="before")
@@ -124,6 +141,8 @@ class LlmConfig(BaseModel):
             raise ValueError("llm_direct_configuration_incomplete")
         if self.news_triage_fallback.configured and not all(configured):
             raise ValueError("llm_fallback_without_primary")
+        if self.news_reader_card.configured and not all(configured):
+            raise ValueError("llm_reader_card_without_primary")
         return self
 
 
@@ -412,17 +431,29 @@ def news_push_availability(settings: Settings) -> NewsPushAvailability:
 class NewsModelAvailability:
     triage_configured: bool
     triage_model: str | None
+    reader_card_model: str | None
+    reader_card_dedicated: bool
     triage_fallback_model: str | None = None
+
+    @property
+    def program_configured(self) -> bool:
+        return bool(self.triage_configured and self.triage_model and self.reader_card_model)
 
 
 def news_model_availability(settings: Settings) -> NewsModelAvailability:
     direct = bool(settings.llm.api_key and _is_http_base_url(settings.llm.base_url))
     triage = direct and bool(settings.llm.news_triage_model)
+    reader = settings.llm.news_reader_card
+    reader_ok = triage and reader.configured and _is_http_base_url(reader.base_url)
     fallback = settings.llm.news_triage_fallback
     fallback_ok = triage and fallback.configured and _is_http_base_url(fallback.base_url)
     return NewsModelAvailability(
         triage_configured=triage,
         triage_model=settings.llm.news_triage_model if triage else None,
+        reader_card_model=(
+            reader.model if reader_ok else settings.llm.news_triage_model if triage and not reader.configured else None
+        ),
+        reader_card_dedicated=bool(reader_ok),
         triage_fallback_model=fallback.model if fallback_ok else None,
     )
 
@@ -518,6 +549,10 @@ llm:
   api_key:
   base_url:
   news_triage_model:
+  news_reader_card:
+    api_key:
+    base_url:
+    model:
   news_triage_fallback:
     api_key:
     base_url:

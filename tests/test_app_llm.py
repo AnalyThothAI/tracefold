@@ -6,10 +6,14 @@ from types import SimpleNamespace
 from typing import Any
 
 from tracefold.app import learning_runtime, workers
-from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
+from tracefold.app.llm import configured_lm_endpoint
 from tracefold.news import DecidePolicy, canonical_sha
 from tracefold.news.agents.programs import candidates as candidate_programs
-from tracefold.news.agents.semantic_program import RuntimeModelIdentity
+from tracefold.news.agents.semantic_program import (
+    ScriptedPredictorAdapter,
+    TriageContext,
+    load_stable_program_artifact,
+)
 from tracefold.news.candidate_evaluator import ArmManifest, CandidateManifest, ProposalReceipt
 from tracefold.platform.config.settings import Settings
 
@@ -65,116 +69,163 @@ def test_endpoint_override_targets_the_fallback_gateway() -> None:
     assert endpoint.api_key == "remote-key"
 
 
-def test_active_arm_hashes_the_exact_secret_free_runtime_bindings(monkeypatch: Any) -> None:
-    artifact = SimpleNamespace(program_version="program-v1", program_sha256="a" * 64)
-    availability = SimpleNamespace(
-        triage_model="primary-model",
-        triage_fallback_model="fallback-model",
-    )
-    monkeypatch.setattr(learning_runtime, "load_stable_program_artifact", lambda: artifact)
-    monkeypatch.setattr(learning_runtime, "news_model_availability", lambda _settings: availability)
-    settings = SimpleNamespace(
-        llm=SimpleNamespace(
-            api_key="primary-key",
-            base_url="https://primary.test/v1",
-            news_triage_model="primary-model",
-            news_triage_fallback=SimpleNamespace(
-                api_key="fallback-key",
-                base_url="https://fallback.test/v1",
-            ),
-        ),
-        news=SimpleNamespace(policy=SimpleNamespace(model_dump=lambda **_kwargs: {"similarity_max": 0.6})),
-    )
-
-    arm = learning_runtime.active_arm_manifest(settings)
-
-    primary = RuntimeModelIdentity.issue(provider="openai", model="openai/primary-model").model_dump(mode="json")
-    fallback = RuntimeModelIdentity.issue(provider="openai", model="openai/fallback-model").model_dump(mode="json")
-    assert arm.runtime_model_bindings_sha256 == canonical_sha(
+def test_active_arm_uses_the_composed_secret_free_runtime_bindings() -> None:
+    settings = Settings.model_validate(
         {
-            "identity_schema": "configured_runtime_binding_v1",
-            "event_semantics.primary": primary,
-            "reader_card.primary": primary,
-            "event_semantics.fallback": fallback,
-            "reader_card.fallback": fallback,
+            "llm": {
+                "api_key": "primary-key",
+                "base_url": "https://primary.test/v1",
+                "news_triage_model": "primary-model",
+                "news_triage_fallback": {
+                    "api_key": "fallback-key",
+                    "base_url": "https://fallback.test/v1",
+                    "model": "fallback-model",
+                },
+            }
         }
     )
 
+    composition = learning_runtime.compose_news_program_runtime(settings)
+    arm = learning_runtime.active_arm_manifest(settings, runtime_composition=composition)
+    slots = composition.secret_free_slot_identities()
 
-def test_worker_composes_an_arm_local_program_with_primary_and_fallback_adapters(monkeypatch: Any) -> None:
-    configured: list[dict[str, Any]] = []
+    assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
+    assert slots["event_semantics.primary"] == slots["reader_card.primary"]
+    assert slots["event_semantics.fallback"] == slots["reader_card.fallback"]
+    assert "primary-key" not in repr(slots) and "fallback-key" not in repr(slots)
+    assert "primary.test" not in repr(slots) and "fallback.test" not in repr(slots)
 
-    def fake_configured_endpoint(_settings: Any, **kwargs: Any) -> ConfiguredLMEndpoint:
-        configured.append(kwargs)
-        return ConfiguredLMEndpoint(
-            model_name=f"effective:{kwargs['model_name']}",
-            api_key=str(kwargs.get("api_key") or "primary-key"),
-            api_base=str(kwargs.get("base_url") or "https://primary.test/v1"),
-            model_kwargs={},
-        )
 
-    class FakeAdapter:
+def test_different_reader_backend_changes_same_named_model_identity() -> None:
+    inherited = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "shared-model",
+            }
+        }
+    )
+    dedicated = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "shared-model",
+                "news_reader_card": {
+                    "api_key": "reader-key",
+                    "base_url": "https://reader.test/v1",
+                    "model": "shared-model",
+                },
+            }
+        }
+    )
+
+    inherited_composition = learning_runtime.compose_news_program_runtime(inherited)
+    dedicated_composition = learning_runtime.compose_news_program_runtime(dedicated)
+    inherited_slots = inherited_composition.secret_free_slot_identities()
+    dedicated_slots = dedicated_composition.secret_free_slot_identities()
+
+    assert inherited_slots["event_semantics.primary"] == dedicated_slots["event_semantics.primary"]
+    assert inherited_slots["reader_card.primary"] != dedicated_slots["reader_card.primary"]
+    assert inherited_composition.runtime_model_bindings_sha256 != dedicated_composition.runtime_model_bindings_sha256
+
+
+def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
+    created: list[tuple[str, int, ScriptedPredictorAdapter]] = []
+    semantics = {
+        "novelty": "new_fact",
+        "restates": -1,
+        "event_type": "listing",
+        "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
+        "direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 1,
+        "actionable": True,
+        "confidence": 0.8,
+        "decision": "push",
+        "audience": "crypto",
+    }
+    card = {"headline_zh": "比特币将在新交易所上线", "why_zh": "新增交易渠道可扩大现货流动性。"}
+
+    class ScriptedFactory:
         @classmethod
-        def from_runtime(cls, **kwargs: Any) -> Any:
-            instance = cls()
-            instance.runtime = kwargs
-            return instance
+        def from_runtime(cls, **kwargs: Any) -> ScriptedPredictorAdapter:
+            model_name = str(kwargs["model_name"])
+            step = card if "reader-model" in model_name else semantics
+            adapter = ScriptedPredictorAdapter(
+                [step],
+                model_name=model_name,
+                provider="openai",
+                model_sha256=str(kwargs["model_sha256"]),
+            )
+            created.append((model_name, int(kwargs["max_tokens"]), adapter))
+            return adapter
 
-    class FakeProgram:
-        def __init__(self, artifact: object, *, primary_adapter: Any, fallback_adapter: Any) -> None:
-            self.artifact = artifact
-            self.primary_adapter = primary_adapter
-            self.fallback_adapter = fallback_adapter
-
-    monkeypatch.setattr(workers, "configured_lm_endpoint", fake_configured_endpoint)
-    monkeypatch.setattr(workers, "DspyPredictorAdapter", FakeAdapter)
-    monkeypatch.setattr(workers, "DspyNewsSemanticProgram", FakeProgram)
-    settings = SimpleNamespace(
-        llm=SimpleNamespace(
-            news_triage_fallback=SimpleNamespace(api_key="fallback-key", base_url="https://fallback.test/v1")
-        ),
-    )
-    models = SimpleNamespace(
-        triage_configured=True,
-        triage_model="primary-model",
-        triage_fallback_model="fallback-model",
-    )
-    artifact = SimpleNamespace(
-        execution=SimpleNamespace(route_deadline_seconds=18),
-        event_semantics=SimpleNamespace(max_tokens=600),
-        reader_card=SimpleNamespace(max_tokens=720),
-    )
-
-    program = workers._configured_semantic_program(settings, artifact, models)
-
-    assert isinstance(program, FakeProgram)
-    assert program.artifact is artifact
-    assert program.primary_adapter.runtime == {
-        "model_name": "effective:primary-model",
-        "api_key": "primary-key",
-        "api_base": "https://primary.test/v1",
-        "timeout": 18.0,
-        "max_tokens": 720,
-        "model_kwargs": {},
-    }
-    assert program.fallback_adapter.runtime == {
-        "model_name": "effective:fallback-model",
-        "api_key": "fallback-key",
-        "api_base": "https://fallback.test/v1",
-        "timeout": 18.0,
-        "max_tokens": 720,
-        "model_kwargs": {},
-    }
-    assert configured == [
+    settings = Settings.model_validate(
         {
-            "model_name": "primary-model",
-        },
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+                "news_reader_card": {
+                    "api_key": "reader-key",
+                    "base_url": "https://reader.test/v1",
+                    "model": "reader-model",
+                },
+            }
+        }
+    )
+    artifact = load_stable_program_artifact()
+    composition = learning_runtime.compose_news_program_runtime(settings)
+    judge = composition.semantic_judge(artifact, adapter_type=ScriptedFactory)
+    assert judge is not None
+    context = TriageContext.from_card(
         {
-            "model_name": "fallback-model",
-            "api_key": "fallback-key",
-            "base_url": "https://fallback.test/v1",
+            "event_id": "event-1",
+            "evidence_version": 1,
+            "evidence_sha256": "e" * 64,
+            "focus_fact_id": "fact-1",
+            "leader_title": "BTC listed on Example Exchange",
+            "raw_first_line": "$BTC listing",
+            "leader_description": "Trading starts tomorrow.",
+            "opened_at_ms": 1_000_000,
+            "grounded_assets": ["BTC"],
+            "asset_class": "crypto",
+            "storyline_key": "asset:BTC",
         },
+        watchlist=(),
+        told_rows=(),
+        now_ms=1_010_000,
+        queue_lag_ms=0,
+    )
+
+    judgment = asyncio.run(judge.judge(context))
+
+    assert judgment.usage.physical_call_count == 2
+    assert [(call.predictor, call.model) for call in judgment.trace.calls] == [
+        ("event_semantics", "openai/triage-model"),
+        ("reader_card", "openai/reader-model"),
     ]
+    slots = composition.secret_free_slot_identities()
+    event_identity = slots["event_semantics.primary"]
+    reader_identity = slots["reader_card.primary"]
+    assert event_identity is not None and reader_identity is not None
+    assert [call.runtime_binding_sha256 for call in judgment.trace.calls] == [
+        event_identity["binding_sha256"],
+        reader_identity["binding_sha256"],
+    ]
+    assert [(model, cap) for model, cap, _adapter in created] == [
+        ("openai/triage-model", artifact.event_semantics.max_tokens),
+        ("openai/reader-model", artifact.reader_card.max_tokens),
+    ]
+    assert (
+        composition.runtime_model_bindings_sha256
+        == learning_runtime.active_arm_manifest(
+            settings,
+            runtime_composition=composition,
+        ).runtime_model_bindings_sha256
+    )
 
 
 def test_policy_canary_reuses_stable_artifact_without_becoming_a_program_candidate(monkeypatch: Any) -> None:
@@ -373,9 +424,10 @@ def _wire_startup_test(
     )
     database = _StartupDatabase(news)
     monkeypatch.setattr("tracefold.integrations.rabbitmq.RabbitMQBus", _StartupBus)
-    monkeypatch.setattr(workers, "active_arm_manifest", lambda _settings: stable_arm)
+    composition = SimpleNamespace(semantic_judge=lambda _artifact: stable_program)
+    monkeypatch.setattr(workers, "compose_news_program_runtime", lambda _settings: composition)
+    monkeypatch.setattr(workers, "active_arm_manifest", lambda _settings, **_kwargs: stable_arm)
     monkeypatch.setattr(workers, "load_stable_program_artifact", lambda: stable_artifact)
-    monkeypatch.setattr(workers, "_configured_semantic_program", lambda *_args: stable_program)
     monkeypatch.setattr(
         workers,
         "runtime_identity",

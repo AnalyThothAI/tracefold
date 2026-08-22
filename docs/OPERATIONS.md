@@ -56,8 +56,8 @@ Compose command whose exit status ignores an unhealthy Worker.
 
 An image rollback is a runtime replacement, not an Alembic downgrade. Use the
 repo-owned target only when the previous image carries the exact same Alembic
-head as the current source. After the #129 retry correction that means
-`20260822_0293`;
+head as the current source. After the #132 expert-quality epoch that means
+`20260822_0294`;
 after any future migration it means that newer current head, so an older-schema
 image is deliberately unavailable as a rollback target.
 
@@ -285,7 +285,8 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
   -> q:news.raw [SAC] Deduper: Item upsert -> title/identity -> Event new|member
      -> Gate -> storyline key -> publish event.<family>.<priority> for candidates
   -> q:news.triage Triage (prefetch news.triage.concurrency):
-     SemanticJudge.judge(TriageContext) -> EventSemantics -> ReaderCard
+     SemanticJudge.judge(TriageContext) -> EventSemantics -> SemanticNormalizer
+     -> ReaderCard.v2
      -> deterministic assembler -> decide() -> news_verdicts
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
   -> q:news.deliver [SAC] Deliverer: one Feishu attempt per Event (kind first);
@@ -334,8 +335,14 @@ is visible in `/api/news/status.control`.
 Model failure: Triage's sole Interface is
 `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The production
 Adapter runs the code-owned DSPy Program
-`EventSemantics -> ReaderCard -> deterministic assembler`. A successful
-primary route normally makes two serial provider calls. One fast retry is
+`EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
+deterministic assembler`. The normalizer changes a stray non-negative
+`restates` value on `new_fact`/`progression` to `-1`, records both values on the
+EventSemantics trace, and spends no provider call or fast retry. ReaderCard.v2
+produces only `headline_zh` and `why_zh`; the assembler retains public
+`title_zh=""` as a
+compatibility sentinel. A successful primary route normally makes two serial
+provider calls. One fast retry is
 shared across both Predictors, so one route makes at most three calls; the
 artifact's current 20-second deadline covers the whole route. If primary
 fails, a configured `llm.news_triage_fallback` restarts the full graph with its
@@ -347,6 +354,13 @@ not a restored Analyst stage. Capacity planning must account for the normal
 Program execution:
 normally four calls total for that Event, with the same per-execution six-call
 ceiling and all superseded/failed work included in telemetry.
+
+By default both Predictors use the Triage endpoint, but each has its own
+Adapter and artifact-owned token cap. A complete `llm.news_reader_card`
+endpoint moves only ReaderCard's primary slot; the fallback route still uses
+the configured fallback endpoint for both slots and restarts the entire graph.
+`tracefold config` and `/api/news/status.pipeline` expose the effective model
+names and dedicated-Reader flag without exposing endpoints or credentials.
 
 A fast-retryable timeout, rate limit, connection error, or non-truncated
 schema/output failure can spend the route's one retry. A `max_tokens`
@@ -368,7 +382,8 @@ primaries, score >= 80 with a grounded asset, high-priority Events, and
 deterministic exchange notices; everything else drops with `degraded=true` and
 is counted in `triage_degraded_24h`. Each Program call records Predictor,
 route/attempt, resolved provider/model identity, request/input/instruction/demo/
-output hashes, finish reason, latency, input/output/cached/total tokens and
+output hashes, validated output and deterministic normalizations, finish reason,
+latency, input/output/cached/total tokens and
 provider cost in microusd when the provider reports it. `program_executions`
 preserves initial and stale-ledger re-ask executions, including
 failed/superseded work, while
@@ -458,10 +473,10 @@ Diagnose News in this order:
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
-Issue #129 starts current evidence eligibility from zero at the deployment
-timestamp stored in `news_learning_epochs(program_v2)`. Prompt-era rows and the
-superseded `program_v1` baseline remain readable audit history but cannot enter
-a dataset or satisfy a release stage. Do not
+Issue #132 starts current evidence eligibility from zero at the deployment
+timestamp stored in `news_learning_epochs(program_v3)`. Prompt-era rows and the
+superseded `program_v1`/`program_v2` baselines remain readable audit history but
+cannot enter a dataset or satisfy a release stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
 two-Predictor trace as proof of higher quality; that claim begins only after
 post-epoch accepted reviews and future holdout/shadow/canary evidence exist.
@@ -537,7 +552,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260822_0293_program_v2_epoch`. The #112 chain
+the linear revisions through `20260822_0294_program_v3_epoch`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -548,7 +563,7 @@ chained revision
 Workers hold the steady lock).
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
-Before its first 0284–0293 upgrade, take a restorable volume backup, stop Serve
+Before its first 0284–0294 upgrade, take a restorable volume backup, stop Serve
 and Workers, run the normal migration, then deploy the matching image. The
 migration owns the narrow ReviewDesk grants; the existing Serve credential is
 unchanged.
@@ -606,7 +621,10 @@ attempt/route usage and cost fields to model recordings, and the append-only
 audit-only and promotion-ineligible. `0293` preserves that row and appends
 `program_v2` after correcting the semantic fast-retry state machine and
 hardening the restatement sentinel, making `program_v1` evidence audit-only as
-well. Neither migration deletes history or claims a release PASS.
+well. `0294` preserves both prior Program epochs and appends `program_v3` for
+the expert quality baseline and semantic normalization, making `program_v2`
+evidence audit-only for current release decisions. None of these migrations
+deletes history or claims a release PASS.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
@@ -647,8 +665,8 @@ Learning evidence follows #118's separate deterministic policy:
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
 - `news_learning_epochs` is append-only permanent audit truth. The current
-  `program_v2` reset changes eligibility, not retention: Prompt-era and
-  `program_v1` evidence remain auditable until the existing deterministic
+  `program_v3` reset changes eligibility, not retention: Prompt-era,
+  `program_v1`, and `program_v2` evidence remain auditable until the existing deterministic
   retention policy makes an otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;
 - every purge call deletes at most 500 recordings, 500 cases and 500 artifacts.

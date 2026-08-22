@@ -21,6 +21,8 @@ from tracefold.news.agents.semantic_program import (
     PROGRAM_DEMOS_MAX,
     PROGRAM_DEPENDENCY_LOCK_SHA256,
     PROGRAM_INSTRUCTION_MAX_BYTES,
+    PROGRAM_TOPOLOGY_SHA256,
+    READER_CARD_SIGNATURE_SHA256,
     TOLD_MAX,
     TOLD_SAME_KEY_MAX,
     CompileProvenance,
@@ -34,6 +36,7 @@ from tracefold.news.agents.semantic_program import (
     ProgramArtifact,
     ProgramArtifactCodec,
     ProviderCallObservation,
+    ReaderCard,
     RecordReplayPredictorAdapter,
     ScriptedPredictorAdapter,
     SemanticProgramError,
@@ -63,7 +66,7 @@ def _semantics(**updates: Any) -> dict[str, Any]:
 
 
 def _card(**updates: Any) -> dict[str, Any]:
-    value = {"headline_zh": "比特币出现新进展", "title_zh": "比特币出现新进展", "why_zh": "值得关注。"}
+    value = {"headline_zh": "比特币出现新进展", "why_zh": "值得关注。"}
     value.update(updates)
     return value
 
@@ -150,16 +153,25 @@ def test_builtin_artifact_is_registered_and_canonical() -> None:
     assert artifact.state_sha256 == artifact.computed_state_sha256()
 
 
+def test_program_topology_identity_includes_the_deterministic_normalizer() -> None:
+    expected = canonical_sha(
+        {
+            "nodes": ["event_semantics", "semantic_normalizer", "reader_card", "verdict_assembler"],
+            "edges": [[0, 1], [1, 2], [2, 3]],
+        }
+    )
+    assert expected == PROGRAM_TOPOLOGY_SHA256
+
+
 def test_stable_artifact_encodes_the_restatement_index_contract() -> None:
     restates_schema = EventSemantics.model_json_schema()["properties"]["restates"]
     assert restates_schema["description"] == (
         "Visible event_status.told index if and only if novelty is restatement; -1 for new_fact or progression."
     )
     instruction = load_stable_program_artifact().event_semantics.instruction
-    assert (
-        "Set restates to a visible told index if and only if novelty is restatement. "
-        "new_fact and progression always use -1, even when progression follows a prior card."
-    ) in instruction
+    assert "progression: told covers the story but this event adds a material development" in instruction
+    assert "restates=-1 even when it follows an earlier card" in instruction
+    assert "Set restates to that visible i and decision=drop" in instruction
 
 
 def test_packaged_dependency_lock_identity_matches_the_source_lock() -> None:
@@ -367,6 +379,45 @@ def test_two_predictors_assemble_one_verdict_and_trace_usage() -> None:
     assert judgment.trace.calls[1].upstream_sha256 == judgment.trace.event_semantics_sha256
 
 
+def test_reader_card_schema_omits_title_but_public_verdict_keeps_empty_sentinel() -> None:
+    reader_state = load_stable_program_artifact().reader_card
+    assert reader_state.signature_id == "tracefold.news.ReaderCard.v2"
+    assert reader_state.signature_sha256 == READER_CARD_SIGNATURE_SHA256
+    assert "title_zh" not in ReaderCard.model_json_schema()["properties"]
+
+    judgment = asyncio.run(_program(ScriptedPredictorAdapter([_semantics(), _card()])).judge(_context()))
+
+    assert judgment.verdict.title_zh == ""
+    reader_output = judgment.trace.calls[1].validated_output
+    assert reader_output is not None
+    assert "title_zh" not in reader_output
+
+
+def test_codec_rejects_superseded_reader_card_signature_identity() -> None:
+    manifest_document, state_document = ProgramArtifactCodec.encode(load_stable_program_artifact())
+    manifest = json.loads(manifest_document)
+    state = json.loads(state_document)
+    state["reader_card"].update(
+        {
+            "signature_id": "tracefold.news.ReaderCard.v1",
+            "signature_sha256": canonical_sha(
+                {
+                    "signature": "ReaderCard.v1",
+                    "inputs": ["evidence_json", "semantics_json"],
+                    "outputs": ["card"],
+                }
+            ),
+        }
+    )
+    manifest["state_sha256"] = canonical_sha(state)
+    manifest["program_sha256"] = canonical_sha(
+        {key: value for key, value in manifest.items() if key != "program_sha256"}
+    )
+
+    with pytest.raises(ValueError, match="artifact_schema_invalid"):
+        ProgramArtifactCodec.decode(canonical_json(manifest), canonical_json(state))
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -414,11 +465,11 @@ def test_one_retry_is_shared_by_route_and_fallback_restarts_graph() -> None:
     assert judgment.usage.call_count == 5
 
 
-def test_cross_field_semantics_retry_reenters_semantics_before_reader_card() -> None:
+@pytest.mark.parametrize("novelty", ["new_fact", "progression"])
+def test_non_restatement_index_is_normalized_before_reader_without_retry(novelty: str) -> None:
     adapter = ScriptedPredictorAdapter(
         [
-            _semantics(novelty="progression", restates=0),
-            _semantics(novelty="progression", restates=-1),
+            _semantics(novelty=novelty, restates=0),
             _card(),
         ]
     )
@@ -439,18 +490,64 @@ def test_cross_field_semantics_retry_reenters_semantics_before_reader_card() -> 
 
     assert [(request.predictor, request.attempt) for request in adapter.requests] == [
         ("event_semantics", 1),
-        ("event_semantics", 2),
         ("reader_card", 1),
     ]
-    assert judgment.verdict.novelty == "progression"
+    assert judgment.usage.call_count == 2
+    assert judgment.usage.physical_call_count == 2
+    assert judgment.verdict.novelty == novelty
     assert judgment.verdict.restates == -1
+    semantic_call = judgment.trace.calls[0]
+    assert semantic_call.validated_output == _semantics(novelty=novelty, restates=0)
+    assert [normalization.model_dump(mode="json") for normalization in semantic_call.normalizations] == [
+        {
+            "normalizer_id": "semantic_normalizer_v1",
+            "field": "restates",
+            "reason": "non_restatement_index_ignored",
+            "input_value": 0,
+            "output_value": -1,
+        }
+    ]
+    assert semantic_call.output_sha256 == canonical_sha(_semantics(novelty=novelty, restates=0))
+    assert judgment.trace.event_semantics_sha256 == canonical_sha(_semantics(novelty=novelty, restates=-1))
+    assert adapter.requests[1].inputs["semantics_json"] == canonical_json(_semantics(novelty=novelty, restates=-1))
 
 
-def test_exhausted_cross_field_semantics_retry_never_calls_reader_card() -> None:
+def test_valid_restatement_preserves_visible_index_without_normalization() -> None:
     adapter = ScriptedPredictorAdapter(
         [
-            _semantics(novelty="progression", restates=0),
-            _semantics(novelty="progression", restates=0),
+            _semantics(novelty="restatement", restates=0),
+            _card(),
+        ]
+    )
+    context = _context(
+        told_rows=[
+            {
+                "event_id": "prior-card",
+                "at_ms": 1_005_000,
+                "storyline_key": "asset:BTC",
+                "magnitude": 1,
+                "direction": "bullish",
+                "headline_zh": "比特币此前进展",
+            }
+        ]
+    )
+
+    judgment = asyncio.run(_program(adapter).judge(context))
+
+    assert judgment.verdict.restates == 0
+    assert judgment.trace.calls[0].normalizations == ()
+    assert [request.predictor for request in adapter.requests] == ["event_semantics", "reader_card"]
+
+
+@pytest.mark.parametrize("restates", [None, 1])
+def test_exhausted_invalid_restatement_retry_never_calls_reader_card(restates: int | None) -> None:
+    invalid_semantics = _semantics(novelty="restatement", restates=restates)
+    if restates is None:
+        invalid_semantics.pop("restates")
+    adapter = ScriptedPredictorAdapter(
+        [
+            invalid_semantics,
+            invalid_semantics,
             _card(),
         ]
     )
@@ -458,7 +555,7 @@ def test_exhausted_cross_field_semantics_retry_never_calls_reader_card() -> None
     with pytest.raises(SemanticProgramError) as caught:
         asyncio.run(_program(adapter).judge(_context()))
 
-    assert caught.value.code == "news_program_non_restatement_index_invalid"
+    assert caught.value.code == "news_program_restatement_index_invalid"
     assert [(request.predictor, request.attempt) for request in adapter.requests] == [
         ("event_semantics", 1),
         ("event_semantics", 2),

@@ -2652,6 +2652,22 @@
             ],
             "title": "Queue Lag P95 Ms"
           },
+          "reader_card_dedicated": {
+            "default": false,
+            "title": "Reader Card Dedicated",
+            "type": "boolean"
+          },
+          "reader_card_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Card Model"
+          },
           "reasked_24h": {
             "default": 0,
             "title": "Reasked 24H",

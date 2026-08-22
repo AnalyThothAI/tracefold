@@ -256,6 +256,8 @@ class CliTests(unittest.TestCase):
         self.assertFalse(news["broker"]["url_configured"])
         self.assertTrue(news["models"]["triage_configured"])
         self.assertEqual(news["models"]["triage_model"], "deepseek-chat")
+        self.assertEqual(news["models"]["reader_card_model"], "deepseek-chat")
+        self.assertIs(news["models"]["reader_card_dedicated"], False)
         self.assertIsInstance(news["watchlist"], list)
         self.assertNotIn("hourly_cap", news["push"])
         self.assertNotIn("rss_enabled", news)
@@ -282,6 +284,10 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("rss_enabled", payload["news"])
         self.assertNotIn("title_presentation", payload["news"])
         self.assertNotIn("news_brief_model", payload.get("llm") or {})
+        self.assertEqual(
+            payload["llm"]["news_reader_card"],
+            {"api_key": None, "base_url": None, "model": None},
+        )
         self.assertNotIn("opennews_strategy_ids", payload["news"])
         self.assertEqual(payload["news"]["broker"]["url"], "amqp://tracefold:tracefold@rabbitmq:5672/")
         self.assertEqual(settings.news.broker.name_prefix, "")

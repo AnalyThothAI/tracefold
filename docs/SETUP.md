@@ -102,7 +102,7 @@ contract is not valid.
 The credentials a live deployment can hold are exactly: the OpenNews token
 (`news.opennews_token`), the direct model triple (`llm.api_key`,
 `llm.base_url`, `llm.news_triage_model`, plus the optional
-`llm.news_triage_fallback` triple), the RabbitMQ URL (`news.broker.url`), the
+`llm.news_reader_card` and `llm.news_triage_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
 Feishu webhook and optional signing secret (`news.push.*`), and the PostgreSQL
 role password files.
 
@@ -143,6 +143,11 @@ llm:
   api_key: "<operator model secret>"
   base_url: "https://api.deepseek.com/v1"
   news_triage_model: "deepseek-v4-flash"
+  # Optional: omit this complete triple to run ReaderCard on the Triage endpoint.
+  news_reader_card:
+    api_key: "<reader model secret>"
+    base_url: "https://reader.example/v1"
+    model: "reader-model"
 
 news:
   enabled: true
@@ -189,7 +194,8 @@ and — behind `suppress_low_signal` — low-score ungrounded social posts skip
 Program execution; exchange listing/delisting frames are admitted and judged like any
 candidate), Triage is the semantic filter, and
 `decide()` applies these thresholds. Semantic generation is the code-owned
-`EventSemantics -> ReaderCard -> deterministic assembler` Program behind
+`EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
+deterministic assembler` Program behind
 `SemanticJudge.judge(TriageContext)`. A normal judgment makes two serial
 provider calls; the Program artifact owns the route deadline and retry/call
 budget, so `deadline_seconds` is not an operator setting. Changes are
@@ -202,8 +208,10 @@ accepted development episodes only; it requires explicit metric-call,
 model-call and provider-cost limits plus a seed, and cannot inspect holdout,
 accept, deploy or promote. Migration `0292` records the initial `program_v1`
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
-epoch. Prompt-era and `program_v1` evidence remain audit-only, and quality
-evidence restarts from zero at the `program_v2` deployment. The hard cut itself
+epoch; migration `0294` preserves both prior rows and starts the expert-quality
+`program_v3` epoch. Prompt-era, `program_v1`, and `program_v2` evidence remain
+audit-only, and quality evidence restarts from zero at the `program_v3`
+deployment. The hard cut itself
 does not prove a quality uplift; it
 creates future per-Predictor feedback, demo, routing and fine-tuning leverage
 at the immediate cost of the normal call count increasing from one to two.
@@ -229,9 +237,10 @@ chooses nor filters them.
 
 Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain only the News credentials above; the `llm` block
-owns one all-or-none direct DeepSeek triple (`api_key`, `base_url`,
-`news_triage_model`); there is no environment-variable credential path or
-inferred URL/model. Configs written before the GMGN lane removal must drop the
+owns one all-or-none direct Triage triple (`api_key`, `base_url`,
+`news_triage_model`) and may own one all-or-none `news_reader_card` endpoint;
+an absent Reader endpoint inherits Triage. There is no environment-variable
+credential path or inferred URL/model. Configs written before the GMGN lane removal must drop the
 `gmgn`, `upstream`, `providers.binance`, `api.heartbeat_interval`, and
 `api.replay_limit` keys, and configs written before the Analyst lane removal
 (#57) must drop `news.analyst.*` and `llm.news_analyst_model`; the schema
@@ -271,7 +280,7 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 The Alembic chain starts at the `20260818_0275` current-schema baseline and is
-linear through `20260822_0293_program_v2_epoch`. A new empty database applies
+linear through `20260822_0294_program_v3_epoch`. A new empty database applies
 the complete chain without replaying retired runtime tables. A database
 stamped at an earlier revision migrates forward with `tracefold db migrate`;
 all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers
