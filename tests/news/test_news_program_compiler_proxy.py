@@ -325,6 +325,7 @@ def test_real_compile_program_adapter_can_use_proxy_without_forwarding_generatio
         ):
             prediction = program(
                 evidence_json=("<tracefold-untrusted-event-json-v1>\n{}\n</tracefold-untrusted-event-json-v1>"),
+                card_evidence_json=("<tracefold-untrusted-event-json-v1>\n{}\n</tracefold-untrusted-event-json-v1>"),
                 told_count=0,
             )
 

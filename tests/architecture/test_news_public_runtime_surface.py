@@ -31,7 +31,10 @@ PUBLIC_NEWS_INTERFACE = {
     "LEARNING_EPOCH",
     "TRUSTED_ROOT_SHA",
     "TOLD_MAX",
-    "TOLD_SAME_KEY_MAX",
+    "TOLD_SELECTOR_ID",
+    "TOLD_SELECTOR_SHA256",
+    "TOLD_SOURCE_MAX",
+    "TOLD_STORYLINE_TIER_MAX",
     "TOLD_WINDOW_MS",
     "ArmManifest",
     "BlindPairwiseSubmission",
@@ -278,8 +281,9 @@ def test_semantic_judge_contract_has_public_locality() -> None:
         assert symbol in news.__all__
         assert getattr(news, symbol) is not None
         assert not hasattr(news_agents, symbol)
-    assert news.TOLD_MAX == 12
-    assert news.TOLD_SAME_KEY_MAX == 6
+    assert news.TOLD_MAX == 16 and news.TOLD_STORYLINE_TIER_MAX == 8
+    assert news.TOLD_SOURCE_MAX == 128
+    assert len(news.TOLD_SELECTOR_SHA256) == 64
     assert news.TOLD_WINDOW_MS == 4 * 3_600_000
 
 

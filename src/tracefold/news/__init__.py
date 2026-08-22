@@ -2,7 +2,10 @@
 
 from .semantic_contract import (
     TOLD_MAX,
-    TOLD_SAME_KEY_MAX,
+    TOLD_SELECTOR_ID,
+    TOLD_SELECTOR_SHA256,
+    TOLD_SOURCE_MAX,
+    TOLD_STORYLINE_TIER_MAX,
     TOLD_WINDOW_MS,
     ProgramTrace,
     ProgramUsage,
@@ -87,7 +90,10 @@ __all__ = [
     "REVIEW_MAX_HOURS",
     "REVIEW_RUBRIC_VERSION",
     "TOLD_MAX",
-    "TOLD_SAME_KEY_MAX",
+    "TOLD_SELECTOR_ID",
+    "TOLD_SELECTOR_SHA256",
+    "TOLD_SOURCE_MAX",
+    "TOLD_STORYLINE_TIER_MAX",
     "TOLD_WINDOW_MS",
     "TRIAGE_POLICY_VERSION",
     "TRUSTED_ROOT_SHA",

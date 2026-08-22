@@ -116,7 +116,7 @@ There is no legacy Prompt executor or dynamic compatibility loader to bypass
 these checks; Prompt-era database fields are audit-only.
 
 The DSPy GEPA compiler is a cold manual development workflow, not a runtime
-Worker. A trusted read-only exporter recomputes the current `program_v4`
+Worker. A trusted read-only exporter recomputes the current `program_v5`
 development artifact and ordered case/cluster/episode roots. An untrusted
 resource-bounded runner receives a read-only input bundle, no DB/holdout/
 application credentials, no ambient HOME or arbitrary egress, and provider
@@ -143,7 +143,7 @@ Migration `0292` creates the append-only deployment-time `program_v1` learning
 epoch; `0293` preserves it and appends `program_v2` for the corrected semantic
 retry state machine and hardened restatement sentinel. `0294` preserves both
 rows and appends `program_v3` for the expert quality baseline and semantic
-normalization. `0295` preserves v1-v3 and appends `program_v4` for factory/
+normalization. `0296` preserves v1-v4 and appends `program_v5` for factory/
 artifact v2 and the optimizer-ownership hard cut. Every earlier review,
 dataset, recording and release receipt is retained as audit history but is
 never training, DemoBank, validation, holdout or promotion evidence for the

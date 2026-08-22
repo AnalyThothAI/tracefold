@@ -29,7 +29,7 @@ from .agents.program_compiler_security import (
     validate_compile_receipt_chain_v2,
 )
 from .artifact_identity import canonical_json, canonical_sha
-from .models import TriageVerdict
+from .models import TriageVerdict, base_symbol
 from .recording_replay import RecordingReplayCapability, RecordingReplayMiss
 from .review import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .storyline import final_storyline_key
@@ -38,11 +38,11 @@ from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
 LEARNING_PROFILE_ID: Literal["news_learning_release_v1"] = "news_learning_release_v1"
 DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
 EVALUATOR_VERSION = "news_candidate_evaluator_v1"
-LEARNING_EPOCH: Literal["program_v4"] = "program_v4"
-LEARNING_EPOCH_RESET_REASON = "d_generation_factory_and_optimizer_ownership_hard_cut"
-LEARNING_PROGRAM_FACTORY_ID = "tracefold.news.semantic_program.factory_v2"
+LEARNING_EPOCH: Literal["program_v5"] = "program_v5"
+LEARNING_EPOCH_RESET_REASON = "candidate_conditioned_told_context_and_predictor_input_partition"
+LEARNING_PROGRAM_FACTORY_ID = "tracefold.news.semantic_program.factory_v3"
 LEARNING_ARTIFACT_SCHEMA_VERSION = "news_semantic_program_artifact_v2"
-LEARNING_PROGRAM_VERSION = "news_semantic_program_v2"
+LEARNING_PROGRAM_VERSION = "news_semantic_program_v3"
 SETTLEMENT_GRACE_MS = 10 * 60_000
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
@@ -112,7 +112,7 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v1"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v4"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v5"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
 
@@ -140,7 +140,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: Literal["program_v4"]
+    learning_epoch: Literal["program_v5"]
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
@@ -326,12 +326,37 @@ def evaluation_run_sha(
 
 @dataclass(slots=True)
 class _Receipt:
+    """One arm-local card that would have reached the reader.
+
+    The projection is the told-context selector's input contract, not a convenience subset: production and this
+    evaluator have to rank the same ledger the same way, so a receipt that cannot answer "same instrument?" or
+    "same fact?" would silently give the offline arm a different selected context from the online one.
+    """
+
     event_id: str
     at_ms: int
     storyline_key: str
     magnitude: int
     direction: str
     headline_zh: str
+    comparison_title: str = ""
+    event_type: str = ""
+    grounded_assets: tuple[str, ...] = ()
+    assets: tuple[str, ...] = ()
+
+    def as_told_row(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "at_ms": self.at_ms,
+            "storyline_key": self.storyline_key,
+            "comparison_title": self.comparison_title,
+            "event_type": self.event_type,
+            "magnitude": self.magnitude,
+            "direction": self.direction,
+            "headline_zh": self.headline_zh,
+            "grounded_assets": list(self.grounded_assets),
+            "assets": list(self.assets),
+        }
 
 
 @dataclass(slots=True)
@@ -1004,10 +1029,13 @@ class CandidateEvaluator:
         rows = self._conn.execute(
             """
             SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
+                   COALESCE(e.comparison_title, '') AS comparison_title,
+                   COALESCE(v.verdict ->> 'event_type', '') AS event_type,
                    COALESCE((v.verdict ->> 'magnitude')::int, 0) AS magnitude,
                    COALESCE(v.verdict ->> 'direction', 'unclear') AS direction,
                    COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh', '')
-                     AS headline_zh
+                     AS headline_zh,
+                   COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets
               FROM news_deliveries d
               JOIN news_verdicts v ON v.event_id = d.event_id AND v.stage = 'triage'
               JOIN news_events e ON e.event_id = d.event_id
@@ -1057,6 +1085,9 @@ class CandidateEvaluator:
                 # for each arm because their simulated reader ledgers can
                 # diverge and therefore change the next model input.
                 frozen_policy_screen = candidate.target == "policy" and dataset.role == "development"
+                # Both branches need it: the policy screen skips the model, not the told context, because
+                # `decide()` reads the same selected ledger the model would have been shown.
+                context = self._build_context(case, state)
                 if frozen_policy_screen:
                     verdict = case.get("production_verdict")
                     program_observations: list[dict[str, Any]] = []
@@ -1064,7 +1095,6 @@ class CandidateEvaluator:
                         case_outputs[arm_name] = {"error_code": "frozen_verdict_missing", "delivered": False}
                         continue
                 else:
-                    context = self._build_context(case, state)
                     first = await self._invoke_and_record(
                         run_sha=run_sha,
                         case_id=case_ref.case_id,
@@ -1084,7 +1114,7 @@ class CandidateEvaluator:
                             "program": [first],
                         }
                         continue
-                result = self._apply_policy(case, verdict, state, arm)
+                result = self._apply_policy(case, verdict, state, arm, context)
                 result["program"] = list(program_observations)
                 case_outputs[arm_name] = result
             # A pre-registered stability subset plus every first-trial disagreement gets k=3.
@@ -1132,6 +1162,7 @@ class CandidateEvaluator:
                                 trial_observation["verdict"],
                                 state,
                                 arms[arm_name],
+                                self._build_context(case, state),
                             )
                             trial_result.update(
                                 delivered=bool(replayed.get("delivered")),
@@ -1166,6 +1197,14 @@ class CandidateEvaluator:
                             magnitude=int(verdict.get("magnitude") or 0),
                             direction=str(verdict.get("direction") or "unclear"),
                             headline_zh=str(verdict.get("headline_zh") or ""),
+                            comparison_title=str(output.get("comparison_title") or ""),
+                            event_type=str(verdict.get("event_type") or ""),
+                            grounded_assets=tuple(str(value) for value in output.get("grounded_assets") or ()),
+                            assets=tuple(
+                                str(asset.get("symbol") or "")
+                                for asset in verdict.get("assets") or ()
+                                if isinstance(asset, Mapping)
+                            ),
                         )
                     )
                 state.observations.append(output)
@@ -1356,6 +1395,7 @@ class CandidateEvaluator:
                     program_observation["verdict"],
                     state,
                     candidate.candidate_arm,
+                    context,
                 )
                 candidate_output["execution"] = "live"
                 candidate_output["program"] = [program_observation]
@@ -1369,6 +1409,14 @@ class CandidateEvaluator:
                         magnitude=int(verdict.get("magnitude") or 0),
                         direction=str(verdict.get("direction") or "unclear"),
                         headline_zh=str(verdict.get("headline_zh") or ""),
+                        comparison_title=str(candidate_output.get("comparison_title") or ""),
+                        event_type=str(verdict.get("event_type") or ""),
+                        grounded_assets=tuple(str(value) for value in candidate_output.get("grounded_assets") or ()),
+                        assets=tuple(
+                            str(asset.get("symbol") or "")
+                            for asset in verdict.get("assets") or ()
+                            if isinstance(asset, Mapping)
+                        ),
                     )
                 )
             observations.append(
@@ -1546,17 +1594,7 @@ class CandidateEvaluator:
         event["focus_fact_id"] = focus.get("fact_id")
         event["leader_title"] = focus.get("text") or event.get("leader_title")
         event["leader_description"] = focus.get("context") or event.get("leader_description")
-        told_rows = [
-            {
-                "event_id": receipt.event_id,
-                "at_ms": receipt.at_ms,
-                "storyline_key": receipt.storyline_key,
-                "magnitude": receipt.magnitude,
-                "direction": receipt.direction,
-                "headline_zh": receipt.headline_zh,
-            }
-            for receipt in reversed(state.receipts)
-        ]
+        told_rows = [receipt.as_told_row() for receipt in reversed(state.receipts)]
         return TriageContext.from_card(
             event,
             watchlist=tuple(str(value) for value in case.get("watchlist") or ()),
@@ -1566,7 +1604,12 @@ class CandidateEvaluator:
         )
 
     def _apply_policy(
-        self, case: Mapping[str, Any], raw_verdict: Mapping[str, Any], state: _ArmState, arm: ArmManifest
+        self,
+        case: Mapping[str, Any],
+        raw_verdict: Mapping[str, Any],
+        state: _ArmState,
+        arm: ArmManifest,
+        context: TriageContext,
     ) -> dict[str, Any]:
         try:
             verdict = TriageVerdict.model_validate(raw_verdict)
@@ -1584,7 +1627,7 @@ class CandidateEvaluator:
             grounded_assets=grounded,
             family=str(event.get("family") or "general"),
         )
-        status = self._status(state, storyline)
+        status = self._status(state, storyline, context)
         facts = GateFacts(
             grounded_assets=grounded,
             watchlist_symbols=frozenset(str(value) for value in case.get("watchlist") or ()),
@@ -1605,20 +1648,32 @@ class CandidateEvaluator:
             "override_rule": decision.override_rule,
             "throttled_by": decision.throttled_by,
             "storyline_key": storyline,
+            "comparison_title": str(event.get("comparison_title") or ""),
+            "grounded_assets": list(grounded),
             "delivered": delivered,
             "execution": "simulated",
             "delivery": "simulated",
         }
 
     @staticmethod
-    def _status(state: _ArmState, storyline_key: str) -> StorylineStatus:
+    def _status(state: _ArmState, storyline_key: str, context: TriageContext) -> StorylineStatus:
+        """The same two ledgers production uses, built from the same facts.
+
+        ``told_*`` follows the *selected* context in the exact order the model saw it, because that is what
+        ``verdict.restates`` indexes; taking "the newest twelve receipts" instead would resolve a different
+        card offline than online. ``seen_*`` stays the whole arm-local window, which is what governs duplicates.
+        """
+
         seen = list(reversed(state.receipts))
+        told = context.told.entries
         return StorylineStatus(
             key=storyline_key,
-            told_directions=tuple(r.direction for r in seen[:12]),
+            told_directions=tuple(entry.direction for entry in told),
+            told_assets=tuple(frozenset(entry.symbols) for entry in told),
             seen_headlines=tuple(r.headline_zh for r in seen),
             seen_event_ids=tuple(r.event_id for r in seen),
             seen_directions=tuple(r.direction for r in seen),
+            seen_assets=tuple(frozenset(base_symbol(x) for x in (*r.grounded_assets, *r.assets) if x) for r in seen),
         )
 
     async def _invoke_and_record(

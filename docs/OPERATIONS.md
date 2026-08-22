@@ -499,7 +499,7 @@ Diagnose News in this order:
    Deduper+Gate on a saved provider payload without broker or model.
 
 Issue #134 starts current evidence eligibility from zero at the deployment
-timestamp stored in `news_learning_epochs(program_v4)`. Every earlier
+timestamp stored in `news_learning_epochs(program_v5)`. Every earlier
 Prompt/Program baseline remains readable audit history but cannot enter a
 dataset, DemoBank or release stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
@@ -577,7 +577,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260822_0297_news_oi_signals`. The #112 chain
+the linear revisions through `20260822_0298_program_v5_epoch`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -649,7 +649,7 @@ hardening the restatement sentinel, making `program_v1` evidence audit-only as
 well. `0294` preserves both prior Program epochs and appends `program_v3` for
 the expert quality baseline and semantic normalization, making `program_v2`
 evidence audit-only for its release decisions. `0295` preserves v1-v3 and
-appends `program_v4` for the D-generation factory/artifact and optimizer
+appends `program_v5` for the candidate-conditioned ToldContext factory and
 ownership hard cut, making every earlier cohort audit-only for current release
 decisions. None of these migrations
 deletes history or claims a release PASS.
@@ -693,7 +693,7 @@ Learning evidence follows #118's separate deterministic policy:
   bundles, plus an armed/active canary, pins its candidate, datasets, reports,
   observations, per-case rows and exact model recordings regardless of age;
 - `news_learning_epochs` is append-only permanent audit truth. The current
-  `program_v4` reset changes eligibility, not retention: all earlier evidence
+  `program_v5` reset changes eligibility, not retention: all earlier evidence
   remains auditable until the existing deterministic
   retention policy makes an otherwise-unpinned row eligible;
 - `active_agent`, deployment and rollback receipts are permanent audit truth;

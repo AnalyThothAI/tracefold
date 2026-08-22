@@ -333,7 +333,7 @@ Fingerprints of at most two tokens never share an Event.
 Verdict identity is `(event_id, stage, policy_version)`. `TriageVerdict` is
 `novelty` (`new_fact` / `progression` / `restatement`, judged against the told
 ledger in the status bar; required in the tool schema, replayed as `new_fact`
-for pre-v7 rows), `restates` (told-ledger index a restatement points at, -1
+for pre-v7 rows), `restates` (told-context index a restatement points at, -1
 otherwise), `event_type`, `assets[{symbol, market_type?, role}]`, `direction`,
 `scope`, `magnitude 0..3`, `actionable`, `confidence`, `decision` (model
 intent), `audience`, `headline_zh` (the card header: a complete headline that
@@ -350,8 +350,11 @@ cap keys remain readable on old rows), `degraded`, `error_code`, and `trace`.
 The trace binds the Program version/SHA, every `DecidePolicy` value,
 `gate_policy_version`, selected `input_sha256`, `storyline_key_preliminary`, `status`,
 `status_final`, `storyline_key`, `told[{i, event_id, at_ms, m, dir,
-headline_zh}]`, `told_count`, `seen_count`, `seen_similarity`, `seen_against
-{event_id, headline_zh}`, `restates_event_id`, `reask_reason`, either
+headline_zh, tier, similarity}]` (the selected told context in the exact order
+the Program saw it, each row naming the deterministic tier that selected it),
+`told_count`, `selected_context_sha256`, `novelty_context_sha256`, `seen_count`, `seen_similarity`,
+`seen_against {event_id, headline_zh}`, `restates_event_id`, `reask_reason`,
+either
 `reasked_after_told_change` or `reasked_after_evidence_change`, `first_verdict`,
 `first_input_sha256`, `reask_failed`, and `novelty_defaulted`.
 `program_executions[]` preserves every initial/re-ask
@@ -373,7 +376,7 @@ aggregate cost is unknown unless every billable call reported it.
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_semantic_program_v2` (or `news_oi_signal_v1` for a deterministic
+`news_semantic_program_v3` (or `news_oi_signal_v1` for a deterministic
 telemetry judgment, #137), `news_triage_policy_v8`, and
 `news_delivery_card_v10`. The exact Program identity is its content SHA, not
 the display version alone.
@@ -473,7 +476,7 @@ that history and appends the corrected `program_v2` epoch; Prompt-era and
 `20260822_0294` preserves both rows and appends the expert-quality `program_v3`
 epoch; Prompt-era, `program_v1`, and `program_v2` rows are audit-only for the
 then-current release chain. `20260822_0295` preserves v1-v3 and appends the
-D-generation `program_v4` epoch with factory/artifact v2; every earlier row is
+`program_v5` epoch with factory v3 on the artifact-v2 envelope; every earlier row is
 audit-only for the current compiler and release chain. A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -579,7 +582,7 @@ idempotency key.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
-the deployment-time `program_v4` epoch; every earlier Prompt/Program cohort is
+the deployment-time `program_v5` epoch; every earlier Prompt/Program cohort is
 audit-only, and reviews plus acceptance receipts before the epoch cannot enter
 a dataset or DemoBank.
 `learning compile --development SHA --artifact-root DIR --out FILE

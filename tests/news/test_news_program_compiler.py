@@ -216,7 +216,7 @@ def test_compile_is_bounded_development_only_and_returns_only_typed_patch() -> N
     assert kwargs["max_metric_calls"] == 3
     assert kwargs["track_stats"] is True
     assert kwargs["track_best_outputs"] is False
-    assert result.patch.learning_epoch == "program_v4"
+    assert result.patch.learning_epoch == "program_v5"
     assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
     assert result.patch.patch_sha256 == result.patch.computed_sha256()
     assert [strategy.predictor for strategy in result.patch.learned_strategies] == [
@@ -272,7 +272,7 @@ def test_eligible_demo_bank_uses_the_same_delimited_model_evidence_as_compile_ex
     }
     payload = {
         "role": "development",
-        "learning_epoch": "program_v4",
+        "learning_epoch": "program_v5",
         "cases": [case],
     }
     dataset_sha = canonical_sha({"kind": "dataset", "payload": payload})

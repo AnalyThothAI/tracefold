@@ -91,7 +91,7 @@ class ReviewDesk(_ReviewDesk):
 def test_arm_manifest_identity_is_program_native() -> None:
     policy = DEFAULT_POLICY.as_dict()
     arm = ArmManifest(
-        program_version="news_semantic_program_v2",
+        program_version="news_semantic_program_v3",
         program_sha256="a" * 64,
         runtime_model_bindings_sha256="c" * 64,
         retrieval_sha256="b" * 64,
@@ -453,21 +453,21 @@ def _epoch_started_at_ms(conn: object) -> int:
     return int(row["starts_at_ms"])
 
 
-def test_candidate_evaluator_pins_the_program_v4_epoch_contract(conn) -> None:
+def test_candidate_evaluator_pins_the_program_v5_epoch_contract(conn) -> None:
     row = conn.execute(
         "SELECT program_factory_id, artifact_schema_version, baseline_program_version, "
         "prior_evidence_disposition, reset_reason FROM news_learning_epochs WHERE epoch_id = %s",
         (LEARNING_EPOCH,),
     ).fetchone()
 
-    assert LEARNING_EPOCH == "program_v4"
+    assert LEARNING_EPOCH == "program_v5"
     assert candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON == (
-        "d_generation_factory_and_optimizer_ownership_hard_cut"
+        "candidate_conditioned_told_context_and_predictor_input_partition"
     )
     assert dict(row) == {
-        "program_factory_id": "tracefold.news.semantic_program.factory_v2",
+        "program_factory_id": "tracefold.news.semantic_program.factory_v3",
         "artifact_schema_version": "news_semantic_program_artifact_v2",
-        "baseline_program_version": "news_semantic_program_v2",
+        "baseline_program_version": "news_semantic_program_v3",
         "prior_evidence_disposition": "audit_only",
         "reset_reason": candidate_evaluator_module.LEARNING_EPOCH_RESET_REASON,
     }
@@ -477,7 +477,7 @@ def test_candidate_evaluator_pins_the_program_v4_epoch_contract(conn) -> None:
 def _arm(
     *,
     policy: dict[str, object] | None = None,
-    program_version: str = "news_semantic_program_v2",
+    program_version: str = "news_semantic_program_v3",
     program_sha256: str | None = None,
 ) -> ArmManifest:
     selected_policy = policy or DEFAULT_POLICY.as_dict()
@@ -581,7 +581,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
         program_version=arm.program_version,
         program_sha256=arm.program_sha256,
         context_sha256=context_sha,
-        factory_id="tracefold.news.semantic_program.factory_v2",
+        factory_id="tracefold.news.semantic_program.factory_v3",
         topology_sha256=_sha("topology"),
         adapter_sha256=_sha("adapter"),
         assembler_sha256=_sha("assembler"),
@@ -1014,7 +1014,7 @@ def _program_candidate(
 ) -> CandidateManifest:
     arm_payload = stable.model_dump(mode="json")
     arm_payload.update(
-        program_version=program_version or "news_semantic_program_v2",
+        program_version=program_version or "news_semantic_program_v3",
         program_sha256=program_sha256 or _sha({"program": "candidate", "cluster_id": cluster_id}),
     )
     candidate_arm = ArmManifest.model_validate(arm_payload)
@@ -1036,7 +1036,7 @@ def _program_candidate(
         "candidate_program_sha256": candidate_arm.program_sha256,
         "candidate_state_sha256": candidate_state_sha,
         "immutable": {
-            "factory_id": "tracefold.news.semantic_program.factory_v2",
+            "factory_id": "tracefold.news.semantic_program.factory_v3",
             "quality_kernel_sha256": str(compile_provenance.get("quality_kernel_sha256") or "d" * 64),
             "rule_pack_root_sha256": str(compile_provenance.get("rule_pack_root_sha256") or "e" * 64),
             "route_spec_sha256": "1" * 64,
@@ -1271,7 +1271,7 @@ def _open_event(
                 "program_version": effective_program_version,
                 "program_sha256": effective_program_sha,
                 "context_sha256": _sha(context),
-                "factory_id": "tracefold.news.semantic_program.factory_v2",
+                "factory_id": "tracefold.news.semantic_program.factory_v3",
                 "topology_sha256": _sha("topology"),
                 "adapter_sha256": _sha("adapter"),
                 "assembler_sha256": _sha("assembler"),

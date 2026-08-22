@@ -165,6 +165,16 @@ class TriageVerdict(BaseModel):
     why_zh: str = Field(default="", max_length=140)
 
 
+def base_symbol(symbol: str) -> str:
+    """The canonical instrument identity used wherever two symbol sets are compared.
+
+    One definition, shared by ``decide()`` and the told-context selector, so retrieval and policy can never
+    disagree about whether two cards are about the same instrument.
+    """
+
+    return str(symbol or "").upper().replace("XYZ-", "")
+
+
 def display_title(verdict: Mapping[str, Any]) -> str:
     """The Chinese title an operator surface should show for a verdict.
 
@@ -209,6 +219,7 @@ __all__ = [
     "ReaderReceiptState",
     "TriageAsset",
     "TriageVerdict",
+    "base_symbol",
     "display_title",
     "json_ready",
 ]
