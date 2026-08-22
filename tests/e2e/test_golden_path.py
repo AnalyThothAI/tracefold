@@ -37,7 +37,9 @@ def test_golden_path_status_and_news_read_surfaces(e2e_uvicorn: str, e2e_ws_toke
     news = httpx.get(f"{e2e_uvicorn}/api/news/status", headers=_headers(e2e_ws_token), timeout=5.0)
     assert news.status_code == 200, news.text
     news_data = news.json()["data"]
-    assert {"state", "ingest", "broker", "pipeline", "delivery", "control"} <= set(news_data)
+    # `control` was removed with the pause/mute plane (#137); the golden path kept asserting it.
+    assert {"state", "ingest", "broker", "pipeline", "delivery"} <= set(news_data)
+    assert "control" not in news_data
 
 
 @pytest.mark.e2e

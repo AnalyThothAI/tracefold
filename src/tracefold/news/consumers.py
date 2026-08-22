@@ -614,20 +614,33 @@ def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _told_from_context(context: TriageContext) -> list[dict[str, Any]]:
-    """Return the exact ledger order/index visible to the Program in the shape used by policy and audit."""
+def _told_from_context(context: TriageContext, ledger_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Return the exact ledger order/index visible to the Program in the shape used by policy and audit.
 
-    return [
-        {
-            "i": entry.i,
-            "event_id": entry.event_id,
-            "at_ms": entry.at_ms,
-            "m": entry.magnitude,
-            "dir": entry.direction,
-            "headline_zh": entry.headline_zh,
-        }
-        for entry in context.told.entries
-    ]
+    The instruments each shown entry was about come back from the source ledger row, keyed by event id.
+    ``ToldLedgerEntry`` deliberately carries only what the Program may read, but ``decide()`` needs the
+    symbols: ``_names_another_instrument`` compares symbol sets, and a told row with no assets is read as
+    "not evidence of a different instrument" — which silently disabled the listing exemption in production
+    while its unit test supplied the symbols by hand.
+    """
+
+    assets_by_event = {str(row.get("event_id") or ""): row for row in ledger_rows}
+    told: list[dict[str, Any]] = []
+    for entry in context.told.entries:
+        source = assets_by_event.get(entry.event_id) or {}
+        told.append(
+            {
+                "i": entry.i,
+                "event_id": entry.event_id,
+                "at_ms": entry.at_ms,
+                "m": entry.magnitude,
+                "dir": entry.direction,
+                "headline_zh": entry.headline_zh,
+                "grounded_assets": list(source.get("grounded_assets") or ()),
+                "assets": list(source.get("assets") or ()),
+            }
+        )
+    return told
 
 
 def _usage_from_partial_trace(program_trace: ProgramTrace | None, *, attempts: int) -> dict[str, Any]:
@@ -955,7 +968,7 @@ class TriageConsumer:
             now_ms=stamp,
             queue_lag_ms=max(0, stamp - int(message.occurred_at_ms or stamp)),
         )
-        told = _told_from_context(context)
+        told = _told_from_context(context, ledger_rows)
         told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         trace: dict[str, Any] = {
@@ -1241,7 +1254,7 @@ class TriageConsumer:
                     now_ms=stamp,
                     queue_lag_ms=queue_lag_ms,
                 )
-                told = _told_from_context(context)
+                told = _told_from_context(context, ledger_rows)
                 told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
                 trace["status"] = {
                     "storyline_key": prelim_key,
