@@ -29,9 +29,14 @@ from .agents.program_compiler_security import (
     validate_compile_receipt_chain_v2,
 )
 from .artifact_identity import canonical_json, canonical_sha
-from .models import TriageVerdict, base_symbol
+from .models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
 from .recording_replay import RecordingReplayCapability, RecordingReplayMiss
-from .review import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
+from .review import (
+    READER_CONTRACT_SHA256,
+    READER_CONTRACT_VERSION,
+    REVIEW_RUBRIC_VERSION,
+    REVIEW_RUBRIC_VERSIONS,
+)
 from .storyline import final_storyline_key
 from .triage_rules import DecidePolicy, GateFacts, StorylineStatus, decide
 
@@ -462,10 +467,159 @@ class CandidateEvaluator:
         if dataset.agent_cohort != self._agent_cohort():
             raise ValueError("news_learning_dataset_agent_cohort_mismatch")
 
-        state = _ArmState(deque(_Receipt(**receipt) for receipt in dataset.seed_receipts))
+        episodes = self._project_episodes(
+            sorted(dataset.cases, key=lambda item: (item.opened_at_ms, item.case_id)),
+            dataset.seed_receipts,
+        )
+        frozen_episodes = tuple(episodes)
+        return DevelopmentCompileExport(
+            dataset_sha=dataset_sha,
+            dataset_payload=dataset_payload,
+            episodes=frozen_episodes,
+        )
+
+    def baseline_episodes(
+        self,
+        window: ClosedWindow,
+        *,
+        cohort: bool = True,
+        limit: int = 500,
+    ) -> tuple[dict[str, Any], ...]:
+        """Project accepted reviews in a window for the offline baseline. Freezes nothing, writes nothing.
+
+        ``cohort=True`` applies the release-plane eligibility (this Program and this policy) — the population a
+        candidate would later be judged on. ``cohort=False`` drops it and takes every accepted event review in
+        the window, which is what a metric-wiring proof needs: the only labelled corpus this project has was
+        produced by an arm that has since been retired, and refusing to read it would mean the baseline could
+        never be checked against a known number.
+
+        Each episode carries ``recorded_action`` — the action that actually reached the reader — so a caller
+        can score history as it happened instead of as today's ``decide()`` would replay it.
+        """
+
+        if limit <= 0:
+            raise ValueError("news_program_baseline_limit_invalid")
+        epoch_started_at_ms = self._learning_epoch_started_at_ms() if cohort else 0
+        cases = (
+            self._accepted_cases(window, freeze_as_of_ms=self._db_now_ms(), epoch_started_at_ms=epoch_started_at_ms)
+            if cohort
+            else self._baseline_cases(window)
+        )
+        cases = tuple(sorted(cases, key=lambda case: (case.opened_at_ms, case.case_id))[:limit])
+        if not cases:
+            return ()
+        seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms, cohort=cohort)
+        actions = self._recorded_actions([case.event_id for case in cases if case.event_id])
+        return tuple(
+            {**episode, "recorded_action": actions.get(str(episode.get("event_id") or ""), "")}
+            if episode.get("event_id")
+            else episode
+            for episode in self._with_event_ids(cases, self._project_episodes(cases, seed))
+        )
+
+    @staticmethod
+    def _with_event_ids(
+        cases: Sequence[DatasetCaseRef], episodes: Sequence[Mapping[str, Any]]
+    ) -> tuple[dict[str, Any], ...]:
+        by_case = {case.case_id: case for case in cases}
+        return tuple(
+            {**dict(episode), "event_id": by_case[str(episode["case_id"])].event_id or ""} for episode in episodes
+        )
+
+    def _recorded_actions(self, event_ids: Sequence[str]) -> dict[str, str]:
+        """What each Event's persisted verdict actually resolved to, whatever policy was live at the time."""
+
+        if not event_ids:
+            return {}
+        rows = self._conn.execute(
+            "SELECT event_id, final_decision FROM news_verdicts WHERE stage = 'triage' AND event_id = ANY(%s)",
+            (list(event_ids),),
+        ).fetchall()
+        return {str(row["event_id"]): str(row["final_decision"] or "") for row in rows}
+
+    def _baseline_cases(self, window: ClosedWindow) -> tuple[DatasetCaseRef, ...]:
+        """Every accepted event review in the window, with no cohort filter. Baseline-only."""
+
+        rows = self._conn.execute(
+            """
+            WITH accepted AS (
+              SELECT DISTINCT ON (j.event_id) j.*
+                FROM news_reviews a
+                JOIN news_reviews j ON j.review_id = a.accepts_review_id
+               WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
+                 AND a.release_eligible AND j.release_eligible
+                 AND j.rubric_version = ANY(%s) AND j.reader_contract_version = %s
+               ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
+            )
+            SELECT accepted.*, source.evidence_sha256, source.opened_at_ms,
+                   source.final_decision, source.delivery_state, source.evidence_snapshot
+              FROM accepted
+              JOIN news_review_task_source_v1 source
+                ON source.event_id = accepted.event_id
+               AND source.evidence_version = accepted.evidence_version
+             WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s AND source.ingest_mode = 'live'
+            """,
+            (list(REVIEW_RUBRIC_VERSIONS), READER_CONTRACT_VERSION, window.from_ms, window.to_ms),
+        ).fetchall()
+        drafts: list[tuple[DatasetCaseRef, str, str]] = []
+        for row in rows:
+            snapshot = dict(row["evidence_snapshot"] or {})
+            selection = dict(row.get("selection") or {})
+            case_id = _sha(
+                {
+                    "subject_kind": "event",
+                    "event_id": row.get("event_id"),
+                    "external_snapshot_id": None,
+                    "evidence_sha256": row["evidence_sha256"],
+                    "review_id": row["review_id"],
+                }
+            )
+            novelty = dict(row.get("novelty") or {})
+            drafts.append(
+                (
+                    DatasetCaseRef(
+                        case_id=case_id,
+                        subject_kind="event",
+                        event_id=row.get("event_id"),
+                        evidence_version=row.get("evidence_version"),
+                        evidence_sha256=row["evidence_sha256"],
+                        review_id=row["review_id"],
+                        cluster_id=_fact_cluster(str((snapshot.get("focus_fact") or {}).get("text") or "")),
+                        stratum=str(selection.get("stratum") or "eventless_miss"),
+                        should_push=str(row.get("should_push") or "uncertain"),
+                        opened_at_ms=int(row["opened_at_ms"]),
+                        delivery_truth=(
+                            "observed_sent" if str(row.get("delivery_state") or "") == "sent" else "observed_not_sent"
+                        ),
+                    ),
+                    str(novelty.get("duplicate_of") or "")
+                    if str(novelty.get("judgment") or "") == "restatement"
+                    else "",
+                    _sha(
+                        {
+                            "url": (snapshot.get("card") or {}).get("leader_url"),
+                            "focus_fact_id": (snapshot.get("focus_fact") or {}).get("fact_id"),
+                        }
+                    ),
+                )
+            )
+        return tuple(_connected_fact_clusters(drafts))
+
+    def _project_episodes(
+        self,
+        cases: Sequence[DatasetCaseRef],
+        seed_receipts: Sequence[Mapping[str, Any]],
+    ) -> tuple[dict[str, Any], ...]:
+        """Replay the sent ledger forward over ordered cases and project each one for scoring.
+
+        The compiler export and the offline baseline both call this. Two implementations would let the number
+        an operator reads drift from the number GEPA maximizes, which is the whole reason #143 exists.
+        """
+
+        state = _ArmState(deque(_Receipt(**receipt) for receipt in seed_receipts))
         pending: list[_Receipt] = []
         episodes: list[dict[str, Any]] = []
-        for case_ref in sorted(dataset.cases, key=lambda item: (item.opened_at_ms, item.case_id)):
+        for case_ref in sorted(cases, key=lambda item: (item.opened_at_ms, item.case_id)):
             ready = [receipt for receipt in pending if receipt.at_ms <= case_ref.opened_at_ms]
             pending = [receipt for receipt in pending if receipt.at_ms > case_ref.opened_at_ms]
             state.receipts.extend(sorted(ready, key=lambda item: (item.at_ms, item.event_id)))
@@ -487,6 +641,7 @@ class CandidateEvaluator:
                         "novelty": dict(review.get("novelty") or {}),
                         "first_bad_owner": review.get("first_bad_owner"),
                         "evidence_refs": list(review.get("evidence_refs") or []),
+                        "expected": dict((dict(review.get("payload") or {}).get("expected")) or {}),
                         "expected_correction": str(review.get("expected_correction") or ""),
                         "note": str(review.get("note") or ""),
                     },
@@ -512,12 +667,7 @@ class CandidateEvaluator:
                         assets=tuple(asset.symbol for asset in verdict.assets),
                     )
                 )
-        frozen_episodes = tuple(episodes)
-        return DevelopmentCompileExport(
-            dataset_sha=dataset_sha,
-            dataset_payload=dataset_payload,
-            episodes=frozen_episodes,
-        )
+        return tuple(episodes)
 
     def _policy_metric_projection(self, case: Mapping[str, Any], state: _ArmState) -> dict[str, Any]:
         """Everything the cold metric needs to run the exact production ``decide()``, and nothing else.
@@ -881,7 +1031,7 @@ class CandidateEvaluator:
                WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
                  AND a.release_eligible AND j.release_eligible
                  AND a.created_at_ms >= %s AND j.created_at_ms >= %s
-                 AND a.created_at_ms <= %s AND j.rubric_version = %s
+                 AND a.created_at_ms <= %s AND j.rubric_version = ANY(%s)
                  AND j.reader_contract_version = %s
                ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
             )
@@ -894,8 +1044,8 @@ class CandidateEvaluator:
                AND source.evidence_version = accepted.evidence_version
              WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s
                AND source.ingest_mode = 'live' AND source.evidence_release_eligible
-               AND source.trace #>> '{agent_assignment,bundle_sha}' = %s
                AND source.program_version = %s AND source.program_sha256 = %s
+               AND source.policy_version = %s
                AND NOT (
                  source.final_decision IN ('push', 'escalate')
                  AND COALESCE(source.delivery_state, '') NOT IN ('sent', 'terminal')
@@ -909,13 +1059,13 @@ class CandidateEvaluator:
                 epoch_started_at_ms,
                 epoch_started_at_ms,
                 freeze_as_of_ms,
-                REVIEW_RUBRIC_VERSION,
+                list(REVIEW_RUBRIC_VERSIONS),
                 READER_CONTRACT_VERSION,
                 window.from_ms,
                 window.to_ms,
-                self._stable.bundle_sha,
                 self._stable.program_version,
                 self._stable.program_sha256,
+                TRIAGE_POLICY_VERSION,
             ),
         ).fetchall()
         external = self._conn.execute(
@@ -928,7 +1078,7 @@ class CandidateEvaluator:
              WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'external_miss'
                AND a.release_eligible AND j.release_eligible
                AND a.created_at_ms >= %s AND j.created_at_ms >= %s
-               AND a.created_at_ms <= %s AND j.rubric_version = %s
+               AND a.created_at_ms <= %s AND j.rubric_version = ANY(%s)
                AND j.reader_contract_version = %s
                AND x.created_at_ms >= %s
                AND x.occurred_at_ms >= %s AND x.occurred_at_ms < %s
@@ -938,7 +1088,7 @@ class CandidateEvaluator:
                 epoch_started_at_ms,
                 epoch_started_at_ms,
                 freeze_as_of_ms,
-                REVIEW_RUBRIC_VERSION,
+                list(REVIEW_RUBRIC_VERSIONS),
                 READER_CONTRACT_VERSION,
                 epoch_started_at_ms,
                 window.from_ms,
@@ -1029,19 +1179,38 @@ class CandidateEvaluator:
                 safety.add(case.cluster_id)
             strata.add(case.stratum)
             days.add(case.opened_at_ms // 86_400_000)
+        # Eligibility is the semantic arm — Program plus the policy `decide()` actually ran — and no longer the
+        # whole runtime bundle. `bundle_sha` also hashes the runtime model bindings and the retrieval identity,
+        # so a `similarity_max` edit or a model rebind used to void every accepted review in the window: four
+        # days of production produced seven bundles and never once reached the 200-event development floor.
+        # Retrieval quality is measured on its own (`retrieval_receipt`), and the bundles a window actually
+        # spans are reported below rather than silently excluded.
         eligible = self._conn.execute(
             "SELECT count(*) AS n FROM news_review_task_source_v1 "
             "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
-            "AND trace #>> '{agent_assignment,bundle_sha}' = %s "
-            "AND program_version = %s AND program_sha256 = %s",
+            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s",
             (
                 spec.window.from_ms,
                 spec.window.to_ms,
-                self._stable.bundle_sha,
                 self._stable.program_version,
                 self._stable.program_sha256,
+                TRIAGE_POLICY_VERSION,
             ),
         ).fetchone()
+        bundles = self._conn.execute(
+            "SELECT COALESCE(trace #>> '{agent_assignment,bundle_sha}', '') AS bundle_sha, count(*) AS n "
+            "FROM news_review_task_source_v1 "
+            "WHERE opened_at_ms >= %s AND opened_at_ms < %s AND ingest_mode = 'live' "
+            "AND program_version = %s AND program_sha256 = %s AND policy_version = %s "
+            "GROUP BY 1 ORDER BY 2 DESC, 1",
+            (
+                spec.window.from_ms,
+                spec.window.to_ms,
+                self._stable.program_version,
+                self._stable.program_sha256,
+                TRIAGE_POLICY_VERSION,
+            ),
+        ).fetchall()
         return {
             "case_n": len(cases),
             "independent_cluster_n": len({case.cluster_id for case in cases}),
@@ -1053,10 +1222,31 @@ class CandidateEvaluator:
             "stratum_n": len(strata),
             "strata": sorted(strata),
             "eligible_event_n": int(eligible["n"] or 0),
+            "eligibility": {
+                "unit": "program_sha256+policy_version",
+                "program_sha256": self._stable.program_sha256,
+                "policy_version": TRIAGE_POLICY_VERSION,
+                "rubric_versions": list(REVIEW_RUBRIC_VERSIONS),
+                # What the window actually spans. Runtime rebinds no longer void a review, so the receipt has
+                # to say which runtimes are mixed into the number above.
+                "runtime_bundles": [
+                    {"bundle_sha": str(row["bundle_sha"]), "event_n": int(row["n"])} for row in bundles
+                ],
+            },
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }
 
-    def _seed_receipts(self, from_ms: int, *, epoch_started_at_ms: int) -> tuple[dict[str, Any], ...]:
+    def _seed_receipts(
+        self, from_ms: int, *, epoch_started_at_ms: int, cohort: bool = True
+    ) -> tuple[dict[str, Any], ...]:
+        """The 4 h sent ledger the first cases replay against.
+
+        `cohort=False` drops the arm filter for the same reason `_baseline_cases` does. The ledger is what
+        `decide()` reads for the restatement drop and the similarity throttle; scoping it to the current arm
+        while the corpus is not would hand the earliest cases an empty ledger and bias every
+        `--action-source policy` score toward push, silently.
+        """
+
         rows = self._conn.execute(
             """
             SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
@@ -1081,13 +1271,16 @@ class CandidateEvaluator:
               JOIN news_events e ON e.event_id = d.event_id
              WHERE d.kind = 'first' AND d.state = 'sent'
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-               AND v.program_version = %s AND v.program_sha256 = %s
-               AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
+               AND (%s IS FALSE OR (
+                     v.program_version = %s AND v.program_sha256 = %s
+                     AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
+                   ))
              ORDER BY d.settled_at_ms, v.event_id
             """,
             (
                 max(epoch_started_at_ms, from_ms - 4 * 3_600_000),
                 from_ms,
+                cohort,
                 self._stable.program_version,
                 self._stable.program_sha256,
                 self._stable.bundle_sha,

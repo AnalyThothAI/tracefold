@@ -15,6 +15,9 @@ ALLOWED_BUSINESS_DEPENDENCIES = {
 # product callers or compatibility interfaces; every new edge must be named.
 ALLOWED_INTERNAL_BUSINESS_IMPORTS = {
     "src/tracefold/app/cli/commands/news.py": {
+        # #143: the offline baseline harness. The CLI reads the corpus and prints the receipt; DSPy stays
+        # behind this module, so the "no dspy in the CLI layer" boundary is unaffected.
+        "tracefold.news.agents.program_baseline",
         "tracefold.news.agents.program_compiler_launcher",
         "tracefold.news.agents.program_compiler_proxy",
         "tracefold.news.agents.program_compiler_sandbox",

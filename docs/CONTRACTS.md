@@ -580,6 +580,31 @@ per-queue message/consumer counts.
 ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.
 
+`news learning baseline --from-ms N --to-ms N [--mode recorded|live]
+[--action-source recorded|policy] [--all-cohorts] [--limit N] [--out FILE]`
+scores the stable Program over accepted reviews and returns one
+content-addressed report: total score, action agreement, per-dimension pass
+rates, hard-gate counts with reasons, `gold_coverage`, the retrieval receipt,
+provider failures, latency and the full subject identity (program, state,
+policy, metric, corpus roots). It is read-only — no dataset, sandbox, tariff or
+container, and no writes to any table. `--mode recorded` scores the persisted
+verdict against the action that actually shipped and makes no provider call;
+`--all-cohorts` drops release-plane eligibility — for the seed sent ledger too,
+not only the cases — so a retired arm's corpus is measured against the ledger
+`decide()` would actually have read. A `replay` mode over a recorded Predictor
+corpus exists in the harness but is deliberately not offered by the CLI: nothing
+builds that corpus yet, and a flag that silently reaches a live provider is
+worse than a missing one. Reviews whose `evidence_version` has been superseded are not
+replayable and are excluded, the same rule `_load_case` already enforced.
+
+Reviews are accepted under `news_review_v3`, which adds one optional `expected`
+object (magnitude, direction, assets, novelty, should_reach_reader) stating the
+correct value for a dimension the reviewer failed. Reads accept both
+`news_review_v2` and `news_review_v3`, so a rubric revision does not void the
+accepted corpus. Without gold the metric can only ask whether a failed field
+changed, which scores a coin flip like a repair; `gold_coverage` reports what
+share of the score rests on stated correct values.
+
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
 the deployment-time `program_v5` epoch; every earlier Prompt/Program cohort is

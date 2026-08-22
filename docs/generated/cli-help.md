@@ -269,12 +269,14 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {compile,propose,freeze,evaluate,shadow,canary} ...
+                               {compile,baseline,propose,freeze,evaluate,shadow,canary} ...
 
 positional arguments:
-  {compile,propose,freeze,evaluate,shadow,canary}
+  {compile,baseline,propose,freeze,evaluate,shadow,canary}
     compile             compile a bounded DSPy Program candidate from accepted
                         development evidence
+    baseline            score the stable Program over accepted reviews (no
+                        sandbox, no tariff, no writes)
     propose             seal a Program or policy candidate manifest
     freeze              freeze accepted reviews into a dataset
     evaluate            run the evaluate release-evidence gate
@@ -311,6 +313,32 @@ options:
   --max-task-model-calls MAX_TASK_MODEL_CALLS
   --max-cost-microusd MAX_COST_MICROUSD
   --seed SEED
+
+```
+
+## `news learning baseline`
+
+```
+usage: tracefold news learning baseline [-h] --from-ms FROM_MS --to-ms TO_MS
+                                        [--mode {recorded,live}]
+                                        [--action-source {recorded,policy}]
+                                        [--all-cohorts] [--limit LIMIT]
+                                        [--out OUT]
+
+options:
+  -h, --help            show this help message and exit
+  --from-ms FROM_MS
+  --to-ms TO_MS
+  --mode {recorded,live}
+                        recorded: score the persisted verdict, no model call;
+                        live: re-run the Program against the provider
+  --action-source {recorded,policy}
+                        recorded: the action that shipped; policy: re-run
+                        decide(). Defaults to recorded for --mode recorded
+  --all-cohorts         drop release-plane eligibility and score every
+                        accepted review in the window
+  --limit LIMIT
+  --out OUT             write the baseline report JSON
 
 ```
 
