@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -20,7 +19,6 @@ from tracefold.news.agents.program_compiler import (
     _honest_split,
     _metric_receipt,
     _optimizer_config_receipt,
-    _production_action,
     _retrieval_receipt,
     accepted_review_metric,
 )
@@ -560,18 +558,25 @@ def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
     receipt = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v2")
     assert receipt["weights"] == {"final_action": 0.50, "event_semantics": 0.35, "reader_card": 0.15}
     assert receipt["action_source"]["policy"] == "tracefold.news.triage_rules.decide"
-    assert receipt["action_source"]["operational_controls"] == "excluded"
+    assert receipt["action_source"]["operational_controls"].startswith("none_")
     assert receipt["action_source"]["policy_values"]["similarity_max"] is not None
     assert receipt["review_rubric_version"]
     # Reweighting, repointing at another policy, or moving rubric all move the receipt hash.
     assert canonical_sha({**receipt, "weights": {"final_action": 1.0}}) != canonical_sha(receipt)
 
 
-def test_operational_mute_never_teaches_the_program_that_news_is_noise() -> None:
-    """A card silenced for operational reasons is not evidence that its editorial judgment was wrong."""
+def test_the_metric_scores_editorial_judgment_with_no_operational_input() -> None:
+    """A card silenced for operational reasons would not be evidence that its editorial judgment was wrong.
 
-    source = inspect.getsource(_production_action)
-    assert "muted=False" in source
+    #137 removed the pause/mute plane, so there is nothing left for `decide()` to exclude — but the sealed
+    projection must still carry no control state, or a future control plane could leak into the reward.
+    """
+
+    import inspect as _inspect
+
+    from tracefold.news.triage_rules import decide as _decide
+
+    assert "muted" not in _inspect.signature(_decide).parameters
     assert "control" not in _metric_gold()["policy_metric"]
 
 

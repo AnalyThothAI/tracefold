@@ -293,9 +293,10 @@ _DIMENSION_FIELD = {
 def _production_action(verdict: TriageVerdict, projection: Mapping[str, Any]) -> str:
     """The action the reader would actually have seen, from the exact frozen production policy.
 
-    Operational mute and pause are deliberately off. A card withheld because an operator silenced a storyline
-    is not evidence that its editorial judgment was wrong, and teaching that into a Prompt would make the
-    Program quieter for reasons that have nothing to do with the news.
+    ``decide()`` has no operational input to exclude any more: #137 removed the pause/mute plane outright, so
+    every path it takes is editorial. That is the property the metric needs — a card withheld because an
+    operator silenced a storyline would not be evidence that its editorial judgment was wrong, and teaching
+    that into a Prompt would make the Program quieter for reasons that have nothing to do with the news.
     """
 
     gate = dict(projection.get("gate") or {})
@@ -321,7 +322,6 @@ def _production_action(verdict: TriageVerdict, projection: Mapping[str, Any]) ->
             admission=str(gate.get("admission") or "candidate"),
         ),
         storyline_status(key, told=told, seen=seen),
-        muted=False,
         policy=DEFAULT_POLICY,
     )
     return decision.final
@@ -518,7 +518,7 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             "policy_version": TRIAGE_POLICY_VERSION,
             "policy_values": DEFAULT_POLICY.as_dict(),
             "storyline": "tracefold.news.storyline.final_storyline_key",
-            "operational_controls": "excluded",
+            "operational_controls": "none_the_pause_mute_plane_was_removed_in_137",
         },
         "review_rubric_version": review_rubric_version,
         "dspy_version": importlib.metadata.version("dspy"),

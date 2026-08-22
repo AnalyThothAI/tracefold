@@ -188,8 +188,10 @@ The metric scores the **reader-facing action**, not the model's intermediate
 `decision` field. Each sealed episode carries a frozen policy projection — Gate
 facts plus the ordered sent ledger — so the metric assembles the predicted
 verdict, computes the final storyline key, and runs the exact production
-`decide()` with operational mute and pause off, because a card silenced by an
-operator is not evidence that its editorial judgment was wrong. `decision` is
+`decide()`, which since #137 has no operational input at all — every path it
+takes is editorial, which is exactly the property the metric needs, because a
+card silenced by an operator would not be evidence that its editorial judgment
+was wrong. The sealed projection carries no control state either. `decision` is
 only an intent: a grounded restatement drop, a similarity throttle, a contested
 high-priority rescue or a watchlist rescue all override it, so an offline gain
 measured on `decision` could not predict what the reader would see.
