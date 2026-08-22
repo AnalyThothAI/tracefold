@@ -171,7 +171,7 @@ def run_baseline(
 
     results: list[CaseResult] = []
     provider_failures = 0
-    latencies: list[int] = []
+    latency: dict[str, Any] = {}
 
     if mode == "recorded":
         for case, example in zip(cases, examples, strict=True):
@@ -184,13 +184,8 @@ def run_baseline(
         captured: dict[str, dict[str, Any]] = {}
 
         def metric(gold: dspy.Example, pred: dspy.Prediction, *args: Any, **kwargs: Any) -> float:
-            started = time.monotonic()
-            outcome = accepted_review_metric(gold, pred, None, None, None)
-            captured[str(gold.get("case_id"))] = {
-                "outcome": outcome,
-                "latency_ms": int((time.monotonic() - started) * 1000),
-            }
-            return float(outcome.score)
+            captured[str(gold.get("case_id"))] = accepted_review_metric(gold, pred, None, None, None)
+            return float(captured[str(gold.get("case_id"))].score)
 
         evaluate = dspy.Evaluate(
             devset=examples,
@@ -206,12 +201,17 @@ def run_baseline(
         )
         started = time.monotonic()
         evaluation = evaluate(program)
-        elapsed = int((time.monotonic() - started) * 1000)
-        for index, entry in enumerate(evaluation.results):
+        wall_ms = int((time.monotonic() - started) * 1000)
+        latency = {
+            "wall_ms": wall_ms,
+            "per_case_mean_ms": round(wall_ms / max(1, len(examples)), 1),
+            "num_threads": num_threads,
+        }
+        for entry in evaluation.results:
             example = entry[0]
             case = by_case[str(example.get("case_id"))]
-            record = captured.get(case.episode.case_id)
-            if record is None:
+            outcome = captured.get(case.episode.case_id)
+            if outcome is None:
                 # `Evaluate` swallowed the failure. A provider that did not answer is not evidence that the
                 # Program is wrong, so it is counted separately instead of averaged in as a zero.
                 provider_failures += 1
@@ -228,9 +228,10 @@ def run_baseline(
                     )
                 )
                 continue
-            latency = int(record["latency_ms"]) if index else elapsed // max(1, len(examples))
-            latencies.append(latency)
-            results.append(_case_result(case, record["outcome"], latency_ms=latency))
+            # No per-case latency. `Evaluate` owns the program call, so the only interval this loop could
+            # observe is the metric's own arithmetic; reporting that as "case latency" would read as a
+            # provider timing and be wrong by three orders of magnitude. The wall clock is reported instead.
+            results.append(_case_result(case, outcome, latency_ms=0))
 
     scored = [result for result in results if result.error_code is None]
     score = round(statistics.fmean(result.score for result in scored), 6) if scored else 0.0
@@ -284,15 +285,7 @@ def run_baseline(
         },
         retrieval=retrieval_receipt([case.episode for case in cases]),
         provider_failure_n=provider_failures,
-        latency_ms=(
-            {
-                "mean": round(statistics.fmean(latencies), 1),
-                "p95": sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)],
-                "max": max(latencies),
-            }
-            if latencies
-            else {}
-        ),
+        latency_ms=latency,
         cases=tuple(results),
     )
 
