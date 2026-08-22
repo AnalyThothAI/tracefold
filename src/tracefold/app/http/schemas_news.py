@@ -682,8 +682,11 @@ class NewsPipelineStatusData(ExactApiSchema):
     events_24h: int = 0
     candidates_24h: int = 0
     triage_24h: int = 0
+    # The funnel counts every judgment; model health counts only the model's (#137).
+    model_triage_24h: int = 0
     triage_degraded_24h: int = 0
     decided_push_24h: int = 0
+    telemetry_push_24h: int = 0
     throttled_24h: int = 0
     triage_p50_ms: float | None = None
     triage_p95_ms: float | None = None

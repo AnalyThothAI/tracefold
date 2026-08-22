@@ -15,6 +15,8 @@ NEWS_ROOT = SRC / "news"
 PUBLIC_NEWS_INTERFACE = {
     "FACT_UNIT_VERSION",
     "DEFAULT_POLICY",
+    "DEFAULT_OI_POLICY",
+    "OiPolicy",
     "GATE_POLICY_VERSION",
     "OPENNEWS_SOURCE_ID",
     # #88: the public bounds of `/api/news/quotes` and `/api/news/review`, read by the HTTP layer from the

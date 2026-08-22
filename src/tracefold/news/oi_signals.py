@@ -70,7 +70,12 @@ class OiSignal:
 
 @dataclass(frozen=True, slots=True)
 class OiPolicy:
-    """Operator-owned thresholds for the OI lane; nothing here is shared with `news.policy`."""
+    """Operator-owned thresholds for the OI lane, from `news.oi`; nothing is shared with `news.policy`.
+
+    These are the numbers the volume rests on — the shipped defaults push 40 of 190 daily frames — so
+    they are config rather than code: tuning them should not need a deploy, and a stored verdict
+    carries the values it ran under in its trace.
+    """
 
     window_ms: int = WINDOW_MS
     # The reader wants the opening moves of a run, not every tick of it.

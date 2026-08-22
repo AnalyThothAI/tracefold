@@ -412,6 +412,9 @@ deadline covers one whole route. One Event still persists one final
 SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
 ledger re-ask is a separate execution with the same ceiling (normally another
 two calls), and both executions remain in the verdict audit.
+`news.oi` keys are `window_ms` (4 h), `max_rank_in_window` (2),
+`whale_oi_ratio_above_bps` (8000, exceeded not met) and `oi_change_at_least_bps`
+(0, disabled): the deterministic open-interest lane's thresholds (#137).
 `news.policy` keys are `escalate_magnitude`, `min_push_magnitude`,
 `min_watchlist_magnitude`, `unclear_push_min_magnitude`,
 `unclear_push_event_types`, `restatement_drop`, `similarity_max`,
@@ -445,8 +448,7 @@ lane and dead-letters after 3 attempts, `DeferError` requeues uncounted when
 the News DB lane cannot admit the message, and `PermanentError` or a handler
 crash dead-letters. There is no operator control plane: pause and mute were
 removed with `news_control_state`, which had never withheld a card, so the only
-things that can withhold one are `decide()` and duplicate evidence on
-every message.
+things that can withhold one are `decide()` and duplicate evidence.
 
 The Alembic chain is `20260818_0275` (the root baseline: it executes
 `current_schema_20260818_0275.sql` plus `runtime_roles.sql`) followed by

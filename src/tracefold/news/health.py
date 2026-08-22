@@ -133,7 +133,10 @@ def model_health(
         return HealthItem("bad", "未配置 Triage 模型", "所有事件按规则兜底")
     if "triage_circuit_open" in open_causes:
         return HealthItem("bad", "模型熔断中", "连续调用失败后暂停调用；此期间所有事件按规则兜底")
-    total = int(pipeline.get("triage_24h") or 0)
+    # The model's own denominator, not the funnel's: a deterministic telemetry judgment is never
+    # degraded, so counting ~190 of them a day here would dilute the share and make the model look
+    # healthier than it is (#137). `triage_24h` stays inclusive because the funnel is the reader's view.
+    total = int(pipeline.get("model_triage_24h") or pipeline.get("triage_24h") or 0)
     degraded = int(pipeline.get("triage_degraded_24h") or 0)
     by_code = dict(pipeline.get("triage_degraded_by_code_24h") or {})
     ranked = sorted(by_code.items(), key=lambda kv: -kv[1])

@@ -39,6 +39,7 @@ from .models import (
     ReaderReceipt,
     TriageVerdict,
 )
+from .oi_signals import DEFAULT_OI_POLICY, OiPolicy
 from .opennews import (
     OPENNEWS_SOURCE_ID,
     OpenNewsEvent,
@@ -73,6 +74,7 @@ from .review import (
 from .triage_rules import DEFAULT_POLICY, DecidePolicy
 
 __all__ = [
+    "DEFAULT_OI_POLICY",
     "DEFAULT_POLICY",
     "FACT_UNIT_VERSION",
     "GATE_POLICY_VERSION",
@@ -104,6 +106,7 @@ __all__ = [
     "ExternalMissSubmission",
     "FactUnit",
     "NewsFeedEntry",
+    "OiPolicy",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",

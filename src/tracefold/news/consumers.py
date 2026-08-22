@@ -1281,9 +1281,13 @@ class TriageConsumer:
 
         No model call, so no arm assignment, no circuit breaker and no Program identity: the verdict
         carries `OI_PROGRAM_VERSION` instead, which is what the trace, `news why` and the release
-        cohorts read. The rank counts this symbol's other frames inside the window — counting lives
-        here because `decide()` deliberately cannot count, and what `decide()` receives is an ordinary
-        verdict it already knows how to rule on.
+        cohorts read.
+
+        Rank, ledger and verdict are one transaction under one storyline lock. The rank is a count of
+        this symbol's other frames in the window, so reading it outside the lock lets two frames for
+        one symbol both see a history without the other, both claim the same rank, and both qualify —
+        three cards in a window that allows two. The lock is the same key `_decide_and_persist` takes,
+        and `pg_advisory_xact_lock` is re-entrant within a transaction, so it takes it again for free.
         """
 
         title = str(card.get("leader_title") or "")
@@ -1321,38 +1325,31 @@ class TriageConsumer:
                 why_zh="",
             )
             trace["oi_signal"] = {"parsed": False}
+            settle = self._telemetry_settle(
+                event_id=event_id,
+                card=card,
+                facts=facts,
+                verdict=verdict,
+                ledger_rows=ledger_rows,
+                trace=trace,
+                stamp=stamp,
+            )
+            outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
         else:
-            earlier = await self.db.read(
-                "news_signal_history",
-                lambda repos: repos.news.recent_oi_signal_times(
+
+            def _rank_and_settle(repos: Any) -> _TriageOutcome:
+                # The key is a pure function of the symbol for this admission, so it is known before
+                # the verdict exists and can be locked first.
+                repos.news.lock_storyline(f"asset:{signal.symbol}")
+                earlier = repos.news.recent_oi_signal_times(
                     symbol=signal.symbol,
                     metric_version=OI_METRIC_VERSION,
                     since_ms=observed - self.oi_policy.window_ms,
                     before_ms=observed,
                     exclude_event_id=event_id,
-                ),
-            )
-            judgment = evaluate_oi(signal, earlier_at_ms=earlier, now_ms=observed, policy=self.oi_policy)
-            verdict = judgment.verdict
-            trace["oi_signal"] = {
-                "parsed": True,
-                "symbol": signal.symbol,
-                "direction": signal.direction,
-                "oi_change_bps": signal.oi_change_bps,
-                "oi_value_usd": signal.oi_value_usd,
-                "whale_long_profit_bps": signal.whale_long_profit_bps,
-                "whale_oi_ratio_bps": signal.whale_oi_ratio_bps,
-                "rank_in_window": judgment.rank_in_window,
-                "rule": judgment.rule,
-                "policy": self.oi_policy.as_dict(),
-            }
-            # The rank ledger, written before the verdict. The failure is not swallowed: losing the
-            # row would let the *next* frame rank itself lower and push when it should not, which is
-            # the unsafe direction. Letting it propagate retries the message, and the insert is
-            # idempotent (`ON CONFLICT DO NOTHING`, and the rank read excludes this Event).
-            await self.db.tx(
-                "news_signal_record",
-                lambda repos: repos.news.insert_oi_signal(
+                )
+                judgment = evaluate_oi(signal, earlier_at_ms=earlier, now_ms=observed, policy=self.oi_policy)
+                repos.news.insert_oi_signal(
                     event_id=event_id,
                     metric_version=OI_METRIC_VERSION,
                     symbol=signal.symbol,
@@ -1364,26 +1361,66 @@ class TriageConsumer:
                     observed_at_ms=observed,
                     rank_in_window=judgment.rank_in_window,
                     now_ms=stamp,
-                ),
+                )
+                trace["oi_signal"] = {
+                    "parsed": True,
+                    "symbol": signal.symbol,
+                    "direction": signal.direction,
+                    "oi_change_bps": signal.oi_change_bps,
+                    "oi_value_usd": signal.oi_value_usd,
+                    "whale_long_profit_bps": signal.whale_long_profit_bps,
+                    "whale_oi_ratio_bps": signal.whale_oi_ratio_bps,
+                    "rank_in_window": judgment.rank_in_window,
+                    "rule": judgment.rule,
+                    "policy": self.oi_policy.as_dict(),
+                }
+                return self._decide_and_persist(
+                    repos,
+                    s=self._telemetry_settle(
+                        event_id=event_id,
+                        card=card,
+                        facts=facts,
+                        verdict=judgment.verdict,
+                        ledger_rows=ledger_rows,
+                        trace=trace,
+                        stamp=stamp,
+                    ),
+                )
+
+            outcome = await self.db.tx("news_signal_judge", _rank_and_settle)
+        if outcome.final in {"push", "escalate"}:
+            await self._publish_decision(
+                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
             )
-        final_key = final_storyline_key(
-            title=title,
-            headline_zh=verdict.headline_zh,
-            scope=verdict.scope,
-            verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
-            grounded_assets=facts.grounded_assets,
-            family=str(card.get("family") or "general"),
-            aliases=self._aliases,
-            degraded=False,
-        )
-        settle = _TriageSettle(
+
+    def _telemetry_settle(
+        self,
+        *,
+        event_id: str,
+        card: Mapping[str, Any],
+        facts: GateFacts,
+        verdict: TriageVerdict,
+        ledger_rows: Sequence[Mapping[str, Any]],
+        trace: dict[str, Any],
+        stamp: int,
+    ) -> _TriageSettle:
+        return _TriageSettle(
             event_id=event_id,
             evidence_version=int(card.get("evidence_version") or 0),
             evidence_sha256=str(card.get("evidence_sha256") or ""),
             focus_fact_id=str(card.get("focus_fact_id") or ""),
             verdict=verdict,
             facts=facts,
-            final_key=final_key,
+            final_key=final_storyline_key(
+                title=str(card.get("leader_title") or ""),
+                headline_zh=verdict.headline_zh,
+                scope=verdict.scope,
+                verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
+                grounded_assets=facts.grounded_assets,
+                family=str(card.get("family") or "general"),
+                aliases=self._aliases,
+                degraded=False,
+            ),
             told=[],
             seen=ledger_rows,
             told_seen=frozenset(str(r.get("event_id") or "") for r in ledger_rows),
@@ -1394,15 +1431,10 @@ class TriageConsumer:
             program_sha256=program_sha256(self.oi_policy),
             policy=self.policy,
             trace=trace,
-            stamp=stamp,
             # No model was thinking, so no card can have landed while it was: nothing to re-ask.
             allow_stale=False,
+            stamp=stamp,
         )
-        outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
-        if outcome.final in {"push", "escalate"}:
-            await self._publish_decision(
-                event_id, outcome.final, trace_id=message.trace_id, amqp_priority=message.priority
-            )
 
     def _decide_and_persist(self, repos: Any, s: _TriageSettle) -> _TriageOutcome:
         """Inside one transaction, under the storyline's advisory lock: re-read the newest reader evidence and

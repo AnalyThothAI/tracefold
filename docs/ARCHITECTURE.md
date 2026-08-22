@@ -739,7 +739,7 @@ was removed after never withholding a single card in the whole retained history,
 and an unread singleton that two hot-path consumers still SELECT is how a second
 decision plane grows beside `decide()`. Policy v7 has
 no hourly, two-hour, or four-hour reader quota: a push/escalate decision reaches
-the Deliverer regardless of how many earlier cards were sent. Control state
+the Deliverer regardless of how many earlier cards were sent.
 
 Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
 backpressure/unavailability, and Triage circuit opens are rows in
@@ -897,7 +897,8 @@ arithmetic instead of spending two structured model calls re-reading them.
 `tracefold.news.oi_signals` parses it, ranks it against the symbol's other
 frames in a rolling `window_ms` (4 h), and returns an ordinary `TriageVerdict`:
 a qualifying frame — inside `max_rank_in_window` (2) with `whale_oi_ratio_bps`
-above `min_whale_oi_ratio_bps` (8000 = 80%) — is an actionable, directional
+above `whale_oi_ratio_above_bps` (8000, which the frame must exceed) — is an
+actionable, directional
 magnitude-2 `oi_spike` with a push intent, and a rejected one is a
 self-consistent magnitude-0 `noise` that policy v8's veto still holds.
 
@@ -909,14 +910,22 @@ how to rule on keeps one decision plane, and keeps delivery, receipts,
 `event_outcome`, the feed, the counters and the audit trail on the single path
 they were built for.
 
-Duplicate protection needs the same per-instrument exemption listing frames got
-in #72, and for the same reason: every telemetry headline is one template, so
-two cards about unrelated symbols score 0.33 against the 0.25 threshold — with a
-seven-card ledger, 78% of qualifying frames would otherwise be withheld as
-duplicates of a card about something else. `_TEMPLATE_ADMISSIONS` covers both
-admissions, and the exemption still applies only when the matched card names
-none of this Event's instruments, so a genuine repeat for one symbol is still
-withheld.
+Duplicate protection for this lane *is* the rank ceiling, so `decide()`'s content
+check is skipped for it entirely. Every telemetry headline is one template: two
+cards about unrelated symbols score 0.33 against the 0.25 threshold, and two
+frames for one symbol score 0.41. `WINDOW_MS` and `TOLD_WINDOW_MS` are both 4 h,
+so a rank-2 frame is always inside its rank-1 sibling's ledger — running the
+content check as well would have shipped "the first two per symbol" as "one per
+symbol". Two frames for one symbol are two different observations, and the
+reader asked for the opening ones by count; a byte-identical repeat is still
+collapsed upstream by the exact fingerprint. Listing frames keep the different
+exemption they were given in #72, which is per instrument rather than blanket,
+because two notices for the same instrument really are one fact.
+
+Rank, ledger row and verdict are written in one transaction under the storyline's
+advisory lock. The rank is a count of the symbol's other frames, so reading it
+outside the lock lets two frames for one symbol both see a history without the
+other and both claim the same rank.
 
 `news_oi_signals` is the rank ledger and nothing more: a derived read model with
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and

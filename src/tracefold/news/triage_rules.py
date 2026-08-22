@@ -191,19 +191,23 @@ def _noise_veto_applies(verdict: TriageVerdict, facts: GateFacts, policy: Decide
     return not (policy.noise_veto_respects_gate_priority and facts.priority == "high")
 
 
-# Admissions whose frames are one wire template carrying different instruments. Their headlines are
-# near-identical by construction, so character-bigram similarity reads two different facts as a repeat.
-_TEMPLATE_ADMISSIONS: Final = frozenset({"listing_deterministic", "telemetry_deterministic"})
+# Exchange listing notices: one wire template carrying different instruments. "Coinbase adds ALIGN"
+# and "Upbit adds BICO" share almost every character bigram while naming different tradable things,
+# so the duplicate check needs the instrument, not the prose (#72).
+_TEMPLATE_ADMISSIONS: Final = frozenset({"listing_deterministic"})
+
+# Open-interest telemetry: repeats are already bounded, by the rank ceiling inside the lane's own
+# evaluator (#137). Two frames for one symbol are two different observations — different change,
+# different value, different rank — and the reader asked for the opening ones by count. Running the
+# content check over them as well would silently halve that count: `WINDOW_MS` and `TOLD_WINDOW_MS`
+# are both 4 h, so a rank-2 frame is always inside its rank-1 sibling's ledger, and the two headlines
+# score 0.41 against a 0.25 threshold. The measured "first two per symbol" would have shipped as
+# "one per symbol". A byte-identical repeat is still collapsed upstream by the exact fingerprint.
+_RANK_BOUNDED_ADMISSIONS: Final = frozenset({"telemetry_deterministic"})
 
 
 def _template_fact(facts: GateFacts) -> bool:
-    """True for a Gate-admitted frame whose text is a template rather than prose.
-
-    Exchange listing notices (#72) and open-interest telemetry (#137) both look like this: "Coinbase
-    adds ALIGN" against "Upbit adds BICO", "▲ BTC 持仓异动 4.55%" against "▲ ETH 持仓异动 4.51%".
-    Measured on real headlines, two telemetry cards for unrelated symbols score 0.33 against a 0.25
-    threshold, and with a seven-card ledger 78% of qualifying frames would be withheld as duplicates
-    of a card about something else.
+    """True for a Gate-admitted frame whose text is a template carrying an instrument.
 
     Only the Gate's admission counts. ``verdict.event_type`` is unverified model output, so trusting
     it would let any story the model repeatedly types as ``listing`` — a recurring "X will support Y"
@@ -354,7 +358,8 @@ def decide(
     seen_similarity: float | None = None
     seen_against = -1
     seen_scope = ""
-    if final == "push" and status is not None and not degraded and policy.similarity_max > 0.0:
+    rank_bounded = facts.admission in _RANK_BOUNDED_ADMISSIONS
+    if final == "push" and status is not None and not degraded and not rank_bounded and policy.similarity_max > 0.0:
         seen_scope = "all"
         seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
         if (

@@ -814,14 +814,15 @@ class NewsRepository:
         The rank rule counts frames, not pushes: a frame the rule rejected still happened and still
         moves the next one further down the run. ``before_ms`` is the judged frame's own timestamp, so
         a frame processed out of order — the outbox rescue, or the retry lane — is not ranked behind
-        frames that arrived after it, and ``exclude_event_id`` keeps a redelivery out of its own
-        history.
+        frames that arrived after it. It is inclusive because the provider can stamp two frames for one
+        symbol with the same publication millisecond, and the earlier one still happened;
+        ``exclude_event_id`` is what keeps a redelivery out of its own history.
         """
 
         rows = self.conn.execute(
             "SELECT observed_at_ms FROM news_oi_signals "
             "WHERE metric_version = %s AND symbol = %s "
-            "AND observed_at_ms > %s AND observed_at_ms < %s AND event_id <> %s "
+            "AND observed_at_ms > %s AND observed_at_ms <= %s AND event_id <> %s "
             "ORDER BY observed_at_ms DESC LIMIT 64",
             (metric_version, symbol, int(since_ms), int(before_ms), exclude_event_id),
         ).fetchall()
@@ -1769,19 +1770,25 @@ class NewsRepository:
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s) AS events_1h,
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s) AS events_24h,
               (SELECT count(*) FROM news_events WHERE opened_at_ms >= %s AND admission = 'candidate') AS candidates_24h,
-              -- Model health only: a deterministic telemetry judgment is never degraded, so counting
-              -- ~190 of them a day in this denominator would quietly make the degraded share look
-              -- healthier than the model actually is. The reader funnel below still counts their
-              -- pushes, because a telemetry push is a card the reader received (#137).
+              -- Two denominators on purpose. The funnel is the reader's view — 收到 ⊇ 送审 ⊇ 模型判断
+              -- ⊇ 决定推送 ⊇ 已送达, subtracted band by band by the console — and a telemetry judgment
+              -- is a judgment and its push is a card the reader received, so both count here or the
+              -- containment breaks at one end or the other. Model health is a different question and
+              -- gets its own denominator below: ~190 arithmetic judgments a day, never degraded,
+              -- would otherwise dilute the degraded share and make the model look healthier than it is.
+              (SELECT count(*) FROM news_verdicts WHERE stage = 'triage' AND created_at_ms >= %s) AS triage_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND created_at_ms >= %s
-                  AND program_version IS DISTINCT FROM 'news_oi_signal_v1') AS triage_24h,
+                  AND program_version IS DISTINCT FROM 'news_oi_signal_v1') AS model_triage_24h,
               (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND degraded AND created_at_ms >= %s
-                  AND program_version IS DISTINCT FROM 'news_oi_signal_v1') AS triage_degraded_24h,
+                WHERE stage = 'triage' AND degraded AND created_at_ms >= %s) AS triage_degraded_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
                   AND created_at_ms >= %s) AS decided_push_24h,
+              (SELECT count(*) FROM news_verdicts
+                WHERE stage = 'triage' AND final_decision IN ('push','escalate')
+                  AND created_at_ms >= %s
+                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision = 'throttled' AND created_at_ms >= %s) AS throttled_24h,
               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY (trace ->> 'latency_ms')::double precision)
@@ -1800,7 +1807,7 @@ class NewsRepository:
                 WHERE stage = 'triage' AND created_at_ms >= %s
                   AND COALESCE((trace ->> 'novelty_defaulted')::boolean, false)) AS novelty_defaulted_24h
             """,
-            (hour_ago, *([day_ago] * 11)),
+            (hour_ago, *([day_ago] * 13)),
         ).fetchone()
         delivery = self.conn.execute(
             """

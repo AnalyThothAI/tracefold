@@ -1240,6 +1240,11 @@ export interface components {
              */
             grounded_24h: number;
             /**
+             * Model Triage 24H
+             * @default 0
+             */
+            model_triage_24h: number;
+            /**
              * Novelty Defaulted 24H
              * @default 0
              */
@@ -1288,6 +1293,11 @@ export interface components {
              * @default 0
              */
             tagged_24h: number;
+            /**
+             * Telemetry Push 24H
+             * @default 0
+             */
+            telemetry_push_24h: number;
             /**
              * Throttled 24H
              * @default 0

@@ -169,34 +169,42 @@ def test_reader_text_carries_the_numbers_and_the_position_in_the_run() -> None:
     assert "AI" not in verdict.why_zh and "模型" not in verdict.why_zh
 
 
-def test_two_symbols_are_not_duplicates_of_each_other() -> None:
-    """Every telemetry headline is one template, so bigram similarity reads two unrelated symbols as a
-    repeat. Measured: `▲ BTC 持仓异动 4.55%` against `▲ ETH 持仓异动 4.51%` scores 0.33 against the 0.25
-    threshold, and with a seven-card ledger 78% of qualifying frames would be withheld as duplicates of
-    a card about something else.
+def test_repeats_are_bounded_by_the_rank_ceiling_not_by_content_similarity() -> None:
+    """The rank ceiling *is* this lane's duplicate protection, and running the content check as well
+    would silently halve it.
 
-    An earlier version of this test asserted the opposite from one favourable pair — TRUMP against
-    PENGU with far apart numbers scores 0.12 — and the claim did not generalise. Short symbols are the
-    common case and they are the ones that collide, so the fixture uses them.
+    Every telemetry headline is one template, so bigram similarity reads unrelated frames as repeats:
+    two symbols score 0.33 and two frames for one symbol score 0.41, both above the 0.25 threshold.
+    `WINDOW_MS` and `TOLD_WINDOW_MS` are both 4 h, so a rank-2 frame is *always* inside its rank-1
+    sibling's ledger — "the first two per symbol" would have shipped as "one per symbol", and the
+    40-a-day measurement would not have held.
+
+    An earlier version of this test asserted the throttle instead, from a fixture that happened to
+    agree with it. Two frames for one symbol are two different observations, and the reader asked for
+    the opening ones by count.
     """
 
+    facts = replace(_FACTS, grounded_assets=())
     first = evaluate_oi(_signal(symbol="BTC"), earlier_at_ms=[], now_ms=0).verdict
-    second = evaluate_oi(_signal(symbol="ETH", oi_change_bps=451), earlier_at_ms=[], now_ms=0).verdict
-    assert similarity(first.headline_zh, second.headline_zh) >= DEFAULT_POLICY_SIMILARITY
-
     told = [{"dir": "bullish", "headline_zh": first.headline_zh, "assets": [{"symbol": "BTC", "role": "primary"}]}]
     status = storyline_status("asset:BTC", told=told)
-    facts = replace(_FACTS, grounded_assets=())
-    other = decide(second, facts, status)
-    assert other.final == "push", "a card about ETH is not a duplicate of a card about BTC"
 
-    # The same symbol still is one, and the trace names the ledger entry it matched.
-    repeat_verdict = evaluate_oi(_signal(symbol="BTC", oi_change_bps=460), earlier_at_ms=[], now_ms=0).verdict
-    repeat = decide(repeat_verdict, facts, status)
-    assert repeat.final == "throttled" and repeat.throttled_by == "storyline:asset:BTC:seen"
+    other_symbol = evaluate_oi(_signal(symbol="ETH", oi_change_bps=451), earlier_at_ms=[], now_ms=0).verdict
+    assert similarity(first.headline_zh, other_symbol.headline_zh) >= DEFAULT_POLICY_SIMILARITY
+    assert decide(other_symbol, facts, status).final == "push"
+
+    second = evaluate_oi(_signal(symbol="BTC", oi_change_bps=620), earlier_at_ms=[1], now_ms=2)
+    assert similarity(first.headline_zh, second.verdict.headline_zh) >= DEFAULT_POLICY_SIMILARITY
+    assert second.rank_in_window == 2
+    assert decide(second.verdict, facts, status).final == "push", "the reader asked for the first two"
+
+    third = evaluate_oi(_signal(symbol="BTC", oi_change_bps=700), earlier_at_ms=[1, 2], now_ms=3)
+    held = decide(third.verdict, facts, status)
+    assert third.rank_in_window == 3
+    assert held.final == "drop" and held.override_rule == "noise", "the ceiling is what stops the run"
 
 
-def test_the_exemption_needs_the_gate_admission_not_the_shape_of_the_text() -> None:
+def test_only_the_gate_admission_earns_the_exemption() -> None:
     """A frame that merely looks like telemetry gets no exemption: the admission is Gate-derived from
     the provider's strategy id, and the text is not evidence of anything."""
 
