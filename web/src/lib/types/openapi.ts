@@ -365,6 +365,7 @@ export interface components {
             };
             /** Evidence Refs */
             evidence_refs?: string[];
+            expected?: components["schemas"]["ExpectedCorrection"] | null;
             /**
              * Expected Correction
              * @default
@@ -389,6 +390,38 @@ export interface components {
              * @enum {string}
              */
             should_push: "must_push" | "should_push" | "should_hold" | "must_hold" | "uncertain";
+        };
+        /** ExpectedAsset */
+        ExpectedAsset: {
+            /**
+             * Role
+             * @default primary
+             * @enum {string}
+             */
+            role: "primary" | "mentioned";
+            /** Symbol */
+            symbol: string;
+        };
+        /**
+         * ExpectedCorrection
+         * @description The reviewer's stated correct values — `news_review_v3` gold.
+         *
+         *     Without this the metric can only ask "did the candidate change the field the reviewer failed?", which
+         *     scores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one
+         *     answer and not the others, and because the copy dimensions (`why_*`, `headline_fidelity`) have no value a
+         *     rubric could hold — "the correct Chinese sentence" is not a label.
+         */
+        ExpectedCorrection: {
+            /** Assets */
+            assets?: components["schemas"]["ExpectedAsset"][] | null;
+            /** Direction */
+            direction?: ("bullish" | "bearish" | "neutral" | "unclear") | null;
+            /** Magnitude */
+            magnitude?: number | null;
+            /** Novelty */
+            novelty?: ("new_fact" | "progression" | "restatement") | null;
+            /** Should Reach Reader */
+            should_reach_reader?: boolean | null;
         };
         /** ExternalMissSubmission */
         ExternalMissSubmission: {

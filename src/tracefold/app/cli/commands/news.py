@@ -257,6 +257,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return 0, {"ok": True, "data": result}
 
         stable = active_arm_manifest(settings)
+        if action == "baseline":
+            return _handle_learning_baseline(args, settings, stable)
         if action == "compile":
             from tracefold.app.learning_runtime import compose_news_program_runtime
             from tracefold.news.agents.program_compiler_launcher import ProgramCompilerLauncher
@@ -281,6 +283,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 proxy_source_sha256,
             )
             from tracefold.news.agents.program_compiler_trusted import (
+                REFLECTION_MAX_TOKENS,
+                REFLECTION_TIMEOUT_SECONDS,
                 ProgramPatchV2,
                 apply_trusted_program_patch,
                 build_eligible_demo_bank,
@@ -335,16 +339,34 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if configured_tariff is None or not bool(getattr(configured_tariff, "configured", False)):
                 raise ValueError("news_learning_compile_tariff_not_configured")
             tariff = CompilerProxyTariff.model_validate(configured_tariff.model_dump(mode="json"))
+            # #143: the reflection endpoint is its own configuration. Passing the task endpoint for both made
+            # the student its own teacher (DSPy's guidance is to reflect with a *larger* model when optimizing a
+            # small one), gave the reflection call the task route's token ceiling and deadline, and pointed a
+            # multi-hour optimization at the same single-slot GPU that serves production Triage.
+            configured_reflection = getattr(settings.llm, "news_compiler_reflection", None)
+            if configured_reflection is None or not bool(getattr(configured_reflection, "configured", False)):
+                raise ValueError("news_learning_compile_reflection_not_configured")
+            reflection_secret = CompilerProviderEndpointSecret(
+                model=str(configured_reflection.model),
+                api_key=str(configured_reflection.api_key),
+                api_base=str(configured_reflection.base_url),
+                timeout=REFLECTION_TIMEOUT_SECONDS,
+                max_tokens=REFLECTION_MAX_TOKENS,
+                model_kwargs={},
+            )
             proxy_secrets = CompilerProxySecretConfig(
                 task=endpoint_secret,
-                reflection=endpoint_secret,
+                reflection=reflection_secret,
                 tariff=tariff,
             )
             task_identity = CompilerEndpointIdentity.issue(
                 model=endpoint_secret.model,
                 api_base=endpoint_secret.api_base,
             )
-            reflection_identity = task_identity
+            reflection_identity = CompilerEndpointIdentity.issue(
+                model=reflection_secret.model,
+                api_base=reflection_secret.api_base,
+            )
             source_sha = compiler_source_sha256()
             proxy_source_sha = proxy_source_sha256()
             sandbox_policy = CompilerSandboxPolicy.issue()
@@ -355,9 +377,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 max_cost_microusd=int(args.max_cost_microusd),
                 tariff=tariff,
                 task_max_output_tokens=endpoint_secret.max_tokens,
-                reflection_max_output_tokens=endpoint_secret.max_tokens,
+                reflection_max_output_tokens=reflection_secret.max_tokens,
                 task_timeout_seconds=endpoint_secret.timeout,
-                reflection_timeout_seconds=endpoint_secret.timeout,
+                reflection_timeout_seconds=reflection_secret.timeout,
                 proxy_config_sha256=proxy_secrets.secret_free_config_sha256,
                 proxy_source_sha256=proxy_source_sha,
             )
@@ -836,6 +858,45 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return code, {"ok": report.gate_outcome == "pass", "data": {"path": args.out, **payload}}
     except (ValueError, PermissionError, RuntimeError) as exc:
         return 2, {"ok": False, "error": str(exc)}
+
+
+def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+    """Score the stable Program offline. Read-only: no sandbox, no tariff, no container, no writes.
+
+    DSPy lives behind `program_baseline`; this layer only reads the corpus and prints the receipt, so the
+    architecture boundary that keeps DSPy out of the CLI still holds.
+    """
+
+    from tracefold.app.repositories import postgres_connection
+    from tracefold.news import CandidateEvaluator, ClosedWindow
+    from tracefold.news.agents.program_baseline import build_baseline_cases, compile_program_factory, run_baseline
+    from tracefold.news.agents.semantic_program import load_program_artifact
+
+    mode = str(args.mode)
+    action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
+    if mode == "recorded" and action_source != "recorded":
+        # Scoring a retired arm's verdict against today's `decide()` compares two things that never coexisted.
+        raise ValueError("news_program_baseline_recorded_mode_requires_recorded_action")
+    window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
+    with postgres_connection(settings, role="serve") as conn:
+        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+        episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=int(args.limit))
+    if not episodes:
+        return 2, {"ok": False, "error": {"code": "news_program_baseline_no_accepted_reviews_in_window"}}
+    artifact = load_program_artifact(stable.program_sha256)
+    report = run_baseline(
+        build_baseline_cases(episodes, action_source=action_source),
+        mode=mode,
+        artifact=artifact,
+        program_factory=compile_program_factory if mode != "recorded" else None,
+    )
+    payload = report.model_dump(mode="json")
+    payload["report_sha256"] = report.report_sha256
+    if str(args.out):
+        _write_json(str(args.out), payload)
+    summary = {key: value for key, value in payload.items() if key != "cases"}
+    summary["cases_written_to"] = str(args.out) or None
+    return 0, {"ok": True, "data": summary}
 
 
 def _load_candidate_bundle(path: str) -> tuple[Any | None, dict[str, str]]:

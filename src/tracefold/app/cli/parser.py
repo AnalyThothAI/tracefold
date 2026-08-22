@@ -97,6 +97,30 @@ def build_parser() -> argparse.ArgumentParser:
     learning_compile.add_argument("--max-task-model-calls", type=_positive_int, required=True)
     learning_compile.add_argument("--max-cost-microusd", type=_positive_int, required=True)
     learning_compile.add_argument("--seed", type=_nonnegative_int, default=129)
+    learning_baseline = learning_subcommands.add_parser(
+        "baseline", help="score the stable Program over accepted reviews (no sandbox, no tariff, no writes)"
+    )
+    learning_baseline.add_argument("--from-ms", type=_nonnegative_int, required=True)
+    learning_baseline.add_argument("--to-ms", type=_positive_int, required=True)
+    learning_baseline.add_argument(
+        "--mode",
+        choices=("recorded", "replay", "live"),
+        default="recorded",
+        help="recorded: score the persisted verdict, no model call; replay: recorded Predictor corpus; live: provider",
+    )
+    learning_baseline.add_argument(
+        "--action-source",
+        choices=("recorded", "policy"),
+        default="",
+        help="recorded: the action that shipped; policy: re-run decide(). Defaults to recorded for --mode recorded",
+    )
+    learning_baseline.add_argument(
+        "--all-cohorts",
+        action="store_true",
+        help="drop release-plane eligibility and score every accepted review in the window",
+    )
+    learning_baseline.add_argument("--limit", type=_positive_int, default=500)
+    learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
     learning_propose = learning_subcommands.add_parser("propose", help="seal a Program or policy candidate manifest")
     learning_propose.add_argument("--development", required=True, help="development dataset artifact SHA")
     learning_propose.add_argument("--file", required=True, help="candidate proposal JSON/YAML")
