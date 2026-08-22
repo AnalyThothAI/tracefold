@@ -78,6 +78,7 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "watchlist": "命中关注列表",
     "magnitude3": "重大事件",
     "high_priority_push": "高优先级来源，模型建议推送",
+    "contested_high_priority": "高优先级来源，模型判断有分歧，按召回优先推送",
     "fail_closed_fallback": "模型不可用，按规则兜底",
     "restatement": "重复：读者已收到同一事实",
     "distinct_bypass": "与读者刚收到的卡片都不同，放行",

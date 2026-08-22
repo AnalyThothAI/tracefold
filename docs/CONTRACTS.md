@@ -373,7 +373,7 @@ aggregate cost is unknown unless every billable call reported it.
 stage written; the retired Analyst lane's `deep` rows survive as history
 (issue #57). The current versions are `news_title_norm_v2`, `news_gate_v4`
 (lexicon `news_gate_lexicon_v2`), `news_storyline_v3`,
-`news_semantic_program_v2`, `news_triage_policy_v7`, and
+`news_semantic_program_v2`, `news_triage_policy_v8`, and
 `news_delivery_card_v10`. The exact Program identity is its content SHA, not
 the display version alone.
 

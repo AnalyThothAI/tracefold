@@ -47,6 +47,29 @@ class DecidePolicy:
     # as loud as a missile strike. `escalate` is now magnitude-driven only; the rule still exists so the same
     # Events keep pushing, it just no longer shouts.
     high_priority_escalates: bool = False
+    # Policy v8 (recall-first). A `noise` label used to return before every other rule, so one
+    # mislabelled enum outranked magnitude 3, Gate priority and the watchlist. The Program's own
+    # instruction defines noise as magnitude 0 material, so a verdict that calls an Event noise while
+    # giving it magnitude >= 1, marking it actionable, or asking to push it is contradicting itself.
+    # Measured over 300 replayed Events (2026-08-22): 42% of the noise drops carried magnitude >= 1
+    # and 14 carried magnitude >= 2 — among them a hijacked tanker in the Gulf of Aden that the Gate
+    # had flagged high priority and the previous generation had delivered. Raising this ceiling lets
+    # `noise` veto louder verdicts again; it is the one knob that trades recall for quiet.
+    noise_veto_max_magnitude: int = 0
+    # A high-priority Event is never dropped by the `noise` label alone: priority is upstream Gate
+    # evidence the model did not produce.
+    noise_veto_respects_gate_priority: bool = True
+    # The Gate flagged the Event high priority and the model itself assigned this magnitude or more
+    # while still asking to hold. Recall-first, that disagreement resolves toward the reader. Zero
+    # disables the rule, and it never fires on a normal-priority Event.
+    contested_push_min_magnitude: int = 2
+    # Exchange listing/delisting frames are independent facts wearing one template: "Coinbase adds
+    # ALIGN" and "Upbit adds BICO" name different instruments but share almost every character
+    # bigram, so both the model's restatement judgment and the deterministic similarity check read
+    # the second one as a repeat. #72 admits these frames deterministically; this stops that
+    # admission from being undone one step later. The trade is explicit: a genuine re-send of the
+    # same notice is no longer withheld by content.
+    listing_exempt_from_duplicate: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         """Every tunable, by name. A stored decision has to carry the numbers that produced it: without this the
@@ -141,6 +164,30 @@ def rule_baseline(facts: GateFacts, *, fail_open_high_priority: bool = True) -> 
     return "drop"
 
 
+def _noise_is_self_consistent(verdict: TriageVerdict, facts: GateFacts, policy: DecidePolicy) -> bool:
+    """True when a ``noise`` label may drop the card on the strength of that label alone.
+
+    ``noise`` is defined by the Program's own instruction as magnitude 0 material. Any verdict that
+    labels an Event noise and then gives it weight — magnitude above the veto ceiling, ``actionable``,
+    or a push intent — is disagreeing with itself, and a self-contradicting enum must not outrank the
+    rules below it. The Gate's high priority is treated the same way: it is upstream evidence the
+    model did not produce, so it survives a noise label unless the operator turns that off.
+    """
+
+    if verdict.magnitude > policy.noise_veto_max_magnitude:
+        return False
+    if verdict.actionable or verdict.decision in _MODEL_WANTS_PUSH:
+        return False
+    # Gate priority is upstream evidence the model did not produce, so it survives a noise label.
+    return not (policy.noise_veto_respects_gate_priority and facts.priority == "high")
+
+
+def _listing_fact(verdict: TriageVerdict, facts: GateFacts) -> bool:
+    """True for an exchange listing/delisting frame, by the model's type or the Gate's admission."""
+
+    return verdict.event_type in {"listing", "delisting"} or facts.admission == "listing_deterministic"
+
+
 def _seen_flip(direction: str, seen_directions: Sequence[str], index: int) -> bool:
     """True when the card resembles a ledger entry it *contradicts* — the reader was told bullish and this is
     bearish, or the other way round. Only a directional pair counts: neutral/unclear on either side is not a
@@ -192,9 +239,10 @@ def decide(
 
     if muted:
         return DecisionResult("drop", "muted", None, baseline, watch_hits)
-    if verdict.event_type == "noise":
+    if verdict.event_type == "noise" and _noise_is_self_consistent(verdict, facts, policy):
         return DecisionResult("drop", "noise", None, baseline, watch_hits)
-    if policy.restatement_drop and grounded_restatement(verdict, status):
+    listing_fact = policy.listing_exempt_from_duplicate and _listing_fact(verdict, facts)
+    if policy.restatement_drop and not listing_fact and grounded_restatement(verdict, status):
         return DecisionResult("drop", "restatement", None, baseline, watch_hits)
 
     final: Decision
@@ -208,6 +256,16 @@ def decide(
         # so it must stay a branch. Only its loudness changes (#77).
         final = "escalate" if policy.high_priority_escalates else "push"
         rule = "high_priority_push"
+    elif (
+        facts.priority == "high"
+        and policy.contested_push_min_magnitude > 0
+        and verdict.magnitude >= policy.contested_push_min_magnitude
+    ):
+        # The Gate called this Event high priority and the model itself weighed it at magnitude 2 or
+        # more, then asked to hold it anyway. That is a disagreement between upstream evidence and a
+        # single model field, not a considered hold, and recall-first it resolves toward the reader.
+        # The rule names itself so the trace says which of the two won.
+        final, rule = "push", "contested_high_priority"
     elif (
         verdict.decision in _MODEL_WANTS_PUSH
         and verdict.actionable
@@ -232,7 +290,7 @@ def decide(
     seen_similarity: float | None = None
     seen_against = -1
     seen_scope = ""
-    if final == "push" and status is not None and not degraded and policy.similarity_max > 0.0:
+    if final == "push" and status is not None and not degraded and not listing_fact and policy.similarity_max > 0.0:
         seen_scope = "all"
         seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
         if (

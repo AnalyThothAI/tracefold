@@ -421,9 +421,124 @@ def test_high_priority_pushes_without_shouting() -> None:
     assert decide(_verdict(magnitude=3), _FACTS, None).final == "escalate"
 
 
+def replace_magnitude(verdict: TriageVerdict, magnitude: int) -> TriageVerdict:
+    return verdict.model_copy(update={"magnitude": magnitude})
+
+
+def test_noise_only_vetoes_when_the_verdict_agrees_with_itself() -> None:
+    """Policy v8: `noise` returned before every other rule, so one mislabelled enum outranked
+    magnitude 3, Gate priority and the watchlist. The instruction defines noise as magnitude 0
+    material, so a verdict that calls an Event noise and then gives it weight is contradicting
+    itself and must fall through to the rules below instead of dropping on that label alone."""
+
+    quiet_noise = _verdict(event_type="noise", magnitude=0, actionable=False, decision="drop")
+    dropped = decide(quiet_noise, _FACTS, None)
+    assert dropped.final == "drop" and dropped.override_rule == "noise"
+
+    # Weight the model gave the Event itself: magnitude, actionability, or a push intent.
+    for contradiction in (
+        {"magnitude": 1},
+        {"magnitude": 2, "decision": "push", "actionable": True},
+        {"actionable": True},
+        {"decision": "push"},
+    ):
+        fields = {"event_type": "noise", "magnitude": 0, "actionable": False, "decision": "drop", **contradiction}
+        assert decide(_verdict(**fields), _FACTS, None).override_rule != "noise", contradiction
+
+    # Gate priority is upstream evidence the model did not produce; it survives a noise label.
+    assert decide(quiet_noise, replace(_FACTS, priority="high"), None).override_rule != "noise"
+
+    # Both halves stay operator-owned: raising the ceiling restores the pre-v8 veto.
+    loud_noise = _verdict(event_type="noise", magnitude=2, actionable=False, decision="drop")
+    restored = decide(loud_noise, _FACTS, None, policy=replace(DEFAULT_POLICY, noise_veto_max_magnitude=3))
+    assert restored.final == "drop" and restored.override_rule == "noise"
+    ignored = decide(
+        quiet_noise,
+        replace(_FACTS, priority="high"),
+        None,
+        policy=replace(DEFAULT_POLICY, noise_veto_respects_gate_priority=False),
+    )
+    assert ignored.override_rule == "noise"
+
+
+def test_contested_high_priority_resolves_toward_the_reader() -> None:
+    """Gate high priority plus the model's own magnitude >= 2, against the model's hold intent."""
+
+    high = replace(_FACTS, priority="high")
+    # No watchlist hit, so nothing else in decide() can carry this Event.
+    off_watchlist = GateFacts(
+        grounded_assets=("SPY",),
+        watchlist_symbols=frozenset(),
+        provider_score=40.0,
+        priority="high",
+        admission="candidate",
+    )
+    contested = _verdict(
+        magnitude=2,
+        decision="drop",
+        actionable=False,
+        event_type="macro",
+        assets=[TriageAsset(symbol="SPY", role="primary")],
+    )
+    result = decide(contested, off_watchlist, None)
+    assert result.final == "push" and result.override_rule == "contested_high_priority"
+
+    # Never fires on a normal-priority Event, and never below the declared magnitude.
+    assert decide(contested, replace(off_watchlist, priority="normal"), None).final == "drop"
+    assert decide(replace_magnitude(contested, 1), off_watchlist, None).final == "drop"
+
+    # Zero disables the rule without touching the older high_priority_push branch.
+    off = decide(contested, off_watchlist, None, policy=replace(DEFAULT_POLICY, contested_push_min_magnitude=0))
+    assert off.final == "drop"
+    assert (
+        decide(
+            _verdict(decision="push"), high, None, policy=replace(DEFAULT_POLICY, contested_push_min_magnitude=0)
+        ).override_rule
+        == "high_priority_push"
+    )
+
+
+def test_listing_frames_are_exempt_from_duplicate_evidence() -> None:
+    """ "Coinbase adds ALIGN" and "Upbit adds BICO" are different instruments in one wire template,
+    so restatement and bigram similarity both read the second as a repeat. #72 admits these frames
+    deterministically; policy v8 stops that admission being undone one step later."""
+
+    told = [{"dir": "bullish", "headline_zh": "Coinbase 将新增对 Aligned (ALIGN) 的支持"}]
+    status = storyline_status("asset:ALIGN", told=told)
+    listing = _verdict(
+        event_type="listing",
+        novelty="restatement",
+        restates=0,
+        headline_zh="Upbit 将新增对 BICO 的交易支持",
+        direction="bullish",
+    )
+    assert decide(listing, _FACTS, status).final == "push"
+
+    # A Gate-admitted listing frame is exempt even when the model typed it as something else.
+    typed_away = _verdict(
+        event_type="product",
+        novelty="restatement",
+        restates=0,
+        headline_zh="Upbit 将新增对 BICO 的交易支持",
+        direction="bullish",
+    )
+    admitted = replace(_FACTS, admission="listing_deterministic")
+    assert decide(typed_away, admitted, status).final == "push"
+
+    # Everything else still obeys duplicate evidence, and the exemption is operator-owned.
+    non_listing = _verdict(novelty="restatement", restates=0, headline_zh="Coinbase 将新增对 Aligned (ALIGN) 的支持")
+    assert decide(non_listing, _FACTS, status).final == "drop"
+    kept = decide(listing, _FACTS, status, policy=replace(DEFAULT_POLICY, listing_exempt_from_duplicate=False))
+    assert kept.final == "drop" and kept.override_rule == "restatement"
+
+
 def test_decide_rules_and_throttle() -> None:
     assert decide(_verdict(), _FACTS, None).final == "push"
-    assert decide(_verdict(event_type="noise"), _FACTS, None).final == "drop"
+    # Policy v8: the default verdict is magnitude 2 / actionable / push, so a `noise` label on it is
+    # self-contradicting and no longer vetoes. A noise verdict that agrees with itself still drops.
+    assert decide(_verdict(event_type="noise"), _FACTS, None).final == "push"
+    quiet_noise = decide(_verdict(event_type="noise", magnitude=0, actionable=False, decision="drop"), _FACTS, None)
+    assert quiet_noise.final == "drop" and quiet_noise.override_rule == "noise"
     assert decide(_verdict(magnitude=3), _FACTS, None).final == "escalate"
     # Policy v2: the model's push intent on an actionable m1 single-name event is honoured.
     m1 = decide(_verdict(magnitude=1, assets=[TriageAsset(symbol="AMD", role="primary")]), _FACTS, None)
@@ -483,11 +598,12 @@ def test_decide_restatement_drop_is_grounded() -> None:
         decide(_verdict(novelty="restatement", restates=0), _FACTS, StorylineStatus(key="asset:NVDA")).final == "push"
     )
     assert decide(_verdict(novelty="restatement", restates=0), _FACTS, None).final == "push"
-    # An m3 restatement (the duplicated 4.75% yield escalate) drops too; noise stays noise; muted stays muted.
+    # An m3 restatement (the duplicated 4.75% yield escalate) drops too; muted stays muted.
     assert decide(_verdict(novelty="restatement", restates=0, magnitude=3), _FACTS, quiet).final == "drop"
-    assert (
-        decide(_verdict(novelty="restatement", restates=0, event_type="noise"), _FACTS, quiet).override_rule == "noise"
-    )
+    # Policy v8: `noise` no longer outranks restatement on a magnitude-2 actionable verdict. The card
+    # still drops — the trace now names the rule that actually applies to it.
+    noisy_repeat = decide(_verdict(novelty="restatement", restates=0, event_type="noise"), _FACTS, quiet)
+    assert noisy_repeat.final == "drop" and noisy_repeat.override_rule == "restatement"
     assert decide(_verdict(novelty="restatement", restates=0), _FACTS, quiet, muted=True).override_rule == "muted"
     # The switch.
     assert (

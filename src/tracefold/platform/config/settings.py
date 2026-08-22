@@ -276,6 +276,17 @@ class NewsPolicySettings(BaseModel):
     similarity_max: float = 0.25
     # #77: the Gate's AMQP priority no longer decides the ⚡ header. Set true to restore the pre-v4 behaviour.
     high_priority_escalates: bool = False
+    # Policy v8 (recall-first): `noise` only vetoes at or below this magnitude, so a verdict that
+    # calls an Event noise and then gives it weight can no longer drop it on that label alone.
+    noise_veto_max_magnitude: int = 0
+    # A Gate high-priority Event is never dropped by the `noise` label alone.
+    noise_veto_respects_gate_priority: bool = True
+    # Gate high priority plus the model's own magnitude >= this, against the model's hold intent,
+    # pushes. Zero disables the rule.
+    contested_push_min_magnitude: int = 2
+    # Exchange listing/delisting frames share one wire template but name different instruments, so
+    # they are exempt from the restatement drop and the similarity throttle.
+    listing_exempt_from_duplicate: bool = True
 
     @field_validator("unclear_push_event_types", mode="before")
     @classmethod

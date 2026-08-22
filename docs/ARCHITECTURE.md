@@ -565,12 +565,30 @@ values come from `news.policy`: mute -> drop; noise -> drop; a *grounded*
 restatement (the model cites a ledger entry it was shown and the direction did
 not flip against it; switch `restatement_drop`) -> drop (`restatement`);
 magnitude >= 3 with a direction or macro scope -> escalate; high priority +
-push -> escalate; model push/escalate intent, actionable, magnitude >=
+push -> escalate; Gate high priority against a hold intent at magnitude >=
+`contested_push_min_magnitude` (2) -> push (`contested_high_priority`);
+model push/escalate intent, actionable, magnitude >=
 `min_push_magnitude` (1) and a direction -> push (`model_push_actionable`);
 unclear direction with a clear event type (product, listing, delisting,
 regulation, hack, exploit, partnership, filing) at magnitude >= 2 -> push
 (`unclear_but_clear_event`); other unclear -> drop; watchlist primary at
-magnitude >= 1 -> push; else drop (`below_threshold`). Policy v7 deliberately
+magnitude >= 1 -> push; else drop (`below_threshold`).
+
+Policy v8 is recall-first: a miss costs more than a noise leak. `noise` is no
+longer a veto that returns before every other rule. It drops the card only when
+the verdict agrees with itself — magnitude at or below
+`noise_veto_max_magnitude` (0), not `actionable`, no push intent — and, while
+`noise_veto_respects_gate_priority` holds, only on an Event the Gate did not
+flag high priority. A verdict that calls an Event noise and then gives it
+magnitude 2 is contradicting itself, and that contradiction used to outrank
+magnitude 3, Gate priority and the watchlist: measured over 300 replayed
+Events, 42% of noise drops carried magnitude >= 1, including a hijacked tanker
+in the Gulf of Aden that the Gate had flagged high priority. Exchange
+listing/delisting frames (`listing_exempt_from_duplicate`) are exempt from the
+restatement drop and the similarity throttle, because "Coinbase adds ALIGN" and
+"Upbit adds BICO" name different instruments inside one wire template.
+
+Policy v7 deliberately
 has **no hourly, two-hour, or four-hour reader quota**. Historical push counts
 remain observable metrics, but they are not included in the model input and
 cannot change `push`/`escalate` into `throttled`. Once the semantic conditions
