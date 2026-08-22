@@ -266,6 +266,38 @@ class _FeedbackCompileProgram(DspyCompileProgram):
             trace[before + offset] = (named[offset], entry[1], entry[2])
 
 
+def _generated_default_instruction(predictor: dspy.Predict) -> str:
+    """What DSPy writes into a signature when it is handed an empty instruction."""
+
+    return str(predictor.signature.with_instructions("").instructions or "")
+
+
+def _restore_empty_advisories(compiled: DspyCompileProgram) -> None:
+    """Map DSPy's auto-generated default instruction back to the empty advisory it stands for.
+
+    The empty advisory cannot survive a GEPA round-trip on its own. `Signature.with_instructions("")` does not
+    store an empty instruction — DSPy substitutes a generated one, ``"Given the fields `evidence_json`, produce
+    the fields `semantics`."`` The Artifact's code-owned baseline is empty, so GEPA's seed candidate is `""`,
+    and the very first `build_program(seed)` therefore rebuilt the student with that boilerplate in the
+    advisory slot.
+
+    Two things went wrong from there. The optimizer never evaluated the true baseline, and — worse — when the
+    Pareto front kept the seed, `extract_optimizer_patch` read the boilerplate back out as a *learned* strategy.
+    `news_program_compile_no_program_change` did not fire, because the text genuinely differs from the parent's
+    empty string. A run that learned nothing produced a patch that looked like it had, carrying a meaningless
+    "produce the fields" line into a prompt that already has eight RulePacks.
+
+    One blank character is the canonical empty instruction (`with_instructions(" ")` stores `""`), which is how
+    the factory builds the baseline in the first place; this restores that representation before the patch is
+    extracted.
+    """
+
+    for name in ("event_semantics", "reader_card"):
+        predictor = getattr(compiled, name)
+        if str(predictor.signature.instructions or "") == _generated_default_instruction(predictor):
+            predictor.signature = predictor.signature.with_instructions(" ")
+
+
 def _is_transport_failure(exc: BaseException) -> bool:
     """The Program's own classifier, so "the provider did not answer" means one thing in both planes."""
 
@@ -583,6 +615,7 @@ class ProgramCompiler:
             )
         trajectory_receipt = _trajectory_receipt(details)
         checkpoint_receipt = _checkpoint_receipt(compiled)
+        _restore_empty_advisories(compiled)
         patch = extract_optimizer_patch(
             compiled,
             self._base,

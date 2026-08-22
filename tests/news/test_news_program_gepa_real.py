@@ -49,6 +49,7 @@ _SEMANTICS = {
     "decision": "push",
     "confidence": 0.9,
 }
+_ADVISORY = "Prefer the stated accepted magnitude when the evidence names a concrete product."
 _CARD = {"headline_zh": "特斯拉发布 Cybercab", "why_zh": "新车型进入量产排程，改变该名字的交付预期"}
 
 
@@ -94,9 +95,14 @@ class _ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
         text = json.dumps(prompt if isinstance(prompt, str) else messages)
         self.calls.append(text)
         if self._reflection:
-            return ["```\nPrefer the stated accepted magnitude when the evidence names a concrete product.\n```"]
+            return [f"```\n{_ADVISORY}\n```"]
         field = "card" if "semantics_json" in text else "semantics"
-        return [json.dumps({field: _CARD if field == "card" else _SEMANTICS})]
+        if field == "card":
+            return [json.dumps({"card": _CARD})]
+        # The advisory has to actually change the answer, or GEPA correctly keeps the seed and the compile
+        # refuses as `no_program_change`. The accepted gold for the failing cases is magnitude 2.
+        magnitude = 2 if _ADVISORY in text else 0
+        return [json.dumps({"semantics": {**_SEMANTICS, "magnitude": magnitude}})]
 
 
 def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool) -> DevelopmentEpisode:
@@ -198,7 +204,10 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
 
     learned = {strategy.predictor: strategy.text for strategy in result.patch.learned_strategies}
     assert any(text.strip() for text in learned.values()), "GEPA produced no advisory at all"
-    assert 0 < result.metric_calls <= 40
+    # GEPA checks its own budget between steps, so a completed run legitimately overshoots by up to one full
+    # valset evaluation; the compiler allows exactly that and no more.
+    val_n = result.receipt_payloads.split["development_selection"]["case_n"]
+    assert 0 < result.metric_calls <= 40 + val_n
     assert result.reflection_model_calls > 0, "the reflection endpoint was never used"
 
     # `dspy.GEPA` only rewrites instructions — `build_program` never touches `predictor.demos`. The DemoBank
@@ -291,3 +300,72 @@ def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) ->
     )
     assert meter.actual_cost_microusd > 0
     assert meter.imputed_cost_calls == (1 if cost is None else 0)
+
+
+def test_empty_advisory_survives_a_gepa_round_trip() -> None:
+    """A run that learned nothing must not emit DSPy boilerplate as a learned strategy.
+
+    `Signature.with_instructions("")` does not store an empty instruction — DSPy substitutes a generated one.
+    The Artifact's baseline advisory is empty, so GEPA's seed candidate is `""` and its first `build_program`
+    put "Given the fields ... produce the fields ..." into the advisory slot. When the Pareto front then kept
+    the seed, that boilerplate came back out as a *learned* strategy and `no_program_change` did not fire.
+    """
+
+    from tracefold.news.agents.program_compiler import _generated_default_instruction, _restore_empty_advisories
+
+    artifact = load_stable_program_artifact()
+    program = _FeedbackCompileProgram(artifact)
+    seed = {name: pred.signature.instructions for name, pred in program.named_predictors()}
+    assert seed == {"event_semantics": "", "reader_card": ""}, "the baseline advisory is not empty"
+
+    # Exactly what GEPA's `build_program` does with its own seed candidate.
+    for name, pred in program.named_predictors():
+        pred.signature = pred.signature.with_instructions(seed[name])
+    polluted = {name: pred.signature.instructions for name, pred in program.named_predictors()}
+    assert polluted["event_semantics"] == _generated_default_instruction(program.event_semantics)
+    assert "produce the fields" in polluted["event_semantics"]
+
+    _restore_empty_advisories(program)
+    assert {name: pred.signature.instructions for name, pred in program.named_predictors()} == seed
+
+
+def test_a_run_that_learns_nothing_is_refused_as_no_program_change() -> None:
+    """The guard only works once the empty advisory round-trips; before the fix it never fired."""
+
+    class _SeedOnlyGEPA:
+        """Stands in for a GEPA run whose Pareto front keeps the seed program."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.detailed_results = type(
+                "R", (), {"total_metric_calls": 3, "candidates": [], "val_aggregate_scores": []}
+            )()
+
+        def compile(self, student: Any, *, trainset: Any, teacher: Any, valset: Any) -> Any:
+            for _name, pred in student.named_predictors():
+                pred.signature = pred.signature.with_instructions(pred.signature.instructions)
+            student.detailed_results = self.detailed_results
+            return student
+
+    compiler = ProgramCompiler(
+        base_artifact=load_stable_program_artifact(),
+        eligible_demo_bank=EligibleDemoBank.issue(()),
+        task_lm=_ScriptedLM("scripted/task"),  # type: ignore[arg-type]
+        reflection_lm=_ScriptedLM("scripted/reflection", reflection=True),  # type: ignore[arg-type]
+        optimizer_factory=_SeedOnlyGEPA,
+        tariff=_TARIFF,
+    )
+    with pytest.raises(ValueError, match="news_program_compile_no_program_change"):
+        compiler.compile(
+            CompileRequest(
+                development_dataset_sha="0" * 64,
+                review_rubric_version="news_review_v3",
+                episodes=_corpus(),
+                budget=CompileBudget(
+                    max_metric_calls=40,
+                    max_task_model_calls=400,
+                    max_cost_microusd=400_000,
+                    max_call_cost_microusd=1_000,
+                    seed=143,
+                ),
+            )
+        )
