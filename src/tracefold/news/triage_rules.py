@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any, Final
 
-from .models import Decision, TriageVerdict
+from .models import Decision, TriageVerdict, base_symbol
 from .similarity import max_similarity
 
 _DIRECTIONAL = frozenset({"bullish", "bearish"})
@@ -146,8 +146,7 @@ class DecisionResult:
     seen_scope: str = ""
 
 
-def _base(symbol: str) -> str:
-    return symbol.upper().replace("XYZ-", "")
+_base = base_symbol
 
 
 _BASELINE_MIN_SCORE: Final = 80.0

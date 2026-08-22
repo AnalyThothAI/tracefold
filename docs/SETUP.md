@@ -237,8 +237,8 @@ deploy or promote. Migration
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality
 `program_v3` epoch; migration `0295` preserves v1-v3 and starts D-generation
-`program_v4`. Every earlier cohort remains audit-only, and quality evidence
-restarts from zero at the `program_v4`
+`program_v5`. Every earlier cohort remains audit-only, and quality evidence
+restarts from zero at the `program_v5`
 deployment. The hard cut itself
 does not prove a quality uplift; it
 creates future per-Predictor feedback, demo, routing and fine-tuning leverage
@@ -311,7 +311,7 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 The Alembic chain starts at the `20260818_0275` current-schema baseline and is
-linear through `20260822_0297_news_oi_signals`. A new empty database applies
+linear through `20260822_0298_program_v5_epoch`. A new empty database applies
 the complete chain without replaying retired runtime tables. A database
 stamped at an earlier revision migrates forward with `tracefold db migrate`;
 all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers

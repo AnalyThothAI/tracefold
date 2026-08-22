@@ -59,12 +59,12 @@ def _input() -> tuple[str, str, CompilerProxySecretConfig]:
     secrets = _secret_config()
     payload = {
         "role": "development",
-        "learning_epoch": "program_v4",
+        "learning_epoch": "program_v5",
         "learning_epoch_started_at_ms": 1_800_000_000_000,
         "agent_cohort": {
             "bundle_sha": "a" * 64,
-            "learning_epoch": "program_v4",
-            "program_version": "news_semantic_program_v2",
+            "learning_epoch": "program_v5",
+            "program_version": "news_semantic_program_v3",
             "program_sha256": "6" * 64,
             "runtime_model_bindings_sha256": "8" * 64,
         },

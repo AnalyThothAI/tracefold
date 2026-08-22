@@ -33,7 +33,7 @@ COMPILER_RECEIPT_CHAIN_SCHEMA: Literal["tracefold.news.compile_receipt_chain.v2"
 COMPILER_RUNNER_RECEIPTS_SCHEMA: Literal["tracefold.news.compiler_runner_receipts.v2"] = (
     "tracefold.news.compiler_runner_receipts.v2"
 )
-LEARNING_EPOCH: Literal["program_v4"] = "program_v4"
+LEARNING_EPOCH: Literal["program_v5"] = "program_v5"
 COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v2"] = (
     "tracefold.news.development_compile_episode.v2"
 )
@@ -156,7 +156,7 @@ class CompileCorpusReceipt(_ExactModel):
     """Trusted roots proving which accepted development projection was exported."""
 
     schema_version: Literal["tracefold.news.compile_corpus_receipt.v2"] = COMPILER_CORPUS_SCHEMA
-    learning_epoch: Literal["program_v4"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v5"] = LEARNING_EPOCH
     development_dataset_sha: str = Field(pattern=_SHA256_PATTERN)
     development_dataset_payload_sha256: str = Field(pattern=_SHA256_PATTERN)
     learning_epoch_started_at_ms: int = Field(ge=0)
@@ -227,7 +227,7 @@ class OptimizerCompileProvenanceV2(_ExactModel):
 
     mode: Literal["optimizer_candidate"] = "optimizer_candidate"
     development_dataset_sha: str = Field(pattern=_SHA256_PATTERN)
-    learning_epoch: Literal["program_v4"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v5"] = LEARNING_EPOCH
     learning_epoch_started_at_ms: int = Field(ge=0)
     projection_schema_id: str = Field(min_length=1)
     optimizer: Literal["dspy.GEPA@3.3.0/gepa@0.1.1"] = "dspy.GEPA@3.3.0/gepa@0.1.1"
@@ -311,7 +311,7 @@ class ProgramDemoRefDiffV2(_ExactModel):
 
 
 class ProgramImmutableDiffV2(_ExactModel):
-    factory_id: Literal["tracefold.news.semantic_program.factory_v2"]
+    factory_id: Literal["tracefold.news.semantic_program.factory_v3"]
     quality_kernel_sha256: str = Field(pattern=_SHA256_PATTERN)
     rule_pack_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     route_spec_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -899,7 +899,7 @@ def seal_compile_input(
         raise ValueError("news_program_compile_dataset_agent_cohort_invalid")
     if (
         cohort.get("bundle_sha") != stable_bundle_sha256
-        or cohort.get("program_version") != "news_semantic_program_v2"
+        or cohort.get("program_version") != "news_semantic_program_v3"
         or cohort.get("program_sha256") != parent_program_sha256
         or cohort.get("runtime_model_bindings_sha256") != target_runtime_manifest_sha256
         or cohort.get("learning_epoch") != LEARNING_EPOCH

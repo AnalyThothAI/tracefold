@@ -114,7 +114,7 @@ deployments and rollback receipts live in `news_learning_artifacts` and
 Workers registers the runtime manifest and its linked active/deployment receipt
 as a synchronous startup barrier before its probe can become ready.
 `news_learning_epochs` records immutable deployment-time evidence epochs. The
-current `program_v4` epoch hard-cuts to the D-generation factory: structured
+current `program_v5` epoch hard-cuts to the candidate-conditioned factory: structured
 code-owned quality contracts are separate from optimizer-owned strategy/demo
 state, and every earlier Prompt/Program row remains append-only audit history.
 No current dataset, compiler, replay or release gate may treat pre-v4 evidence
@@ -141,7 +141,7 @@ tracefold.news
   price_repository.py quote snapshots, Event Reactions, and the bounded review aggregates
   facts.py            atomic fact units and immutable Event evidence snapshots
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-  candidate_evaluator.py content-addressed program_v4 datasets and stable/candidate evaluation workflow
+  candidate_evaluator.py content-addressed program_v5 datasets and stable/candidate evaluation workflow
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   canary.py           deterministic one-arm assignment and durable trip/close control
   events.py           the Deduper transaction (admit_item)
@@ -535,16 +535,51 @@ reviewed state without allowing a data row to become Python control flow.
 There is no LangChain Prompt executor, dual-run mode, legacy Adapter, or
 compatibility fallback; Prompt-era columns/rows are read-only audit history.
 
-The Module never retrieves. The worker builds reader context from settled sent
-cards, and the consumer adds the **told ledger** — the cards the reader
-actually received
-in the last 4 h (`repository.told_ledger`: newest push/escalate verdicts whose
-first delivery has a durable `sent` receipt, no degraded fallbacks, plus the preliminary
-storyline's own newest cards fetched separately; at most 12 entries in the
-status bar, up to six same-storyline slots reserved, the rest the newest
-cross-storyline cards, each with index `i`, age, magnitude, direction,
-`headline_zh`) — in the immutable `TriageContext`. Both Predictor instructions
-are English. `ReaderCard.v2` has exactly two Chinese text outputs:
+The Module never retrieves from a network; it ranks one bounded local ledger.
+The worker builds reader context from settled sent cards, and the consumer adds
+the **told context** — the cards the reader actually received in the last 4 h
+(`repository.told_ledger`: the newest 128 push/escalate verdicts whose first
+delivery has a durable `sent` receipt, no degraded fallbacks, one row per Event,
+newest first). `ToldLedgerSnapshot.select` is a pure, deterministic,
+candidate-conditioned selector — not a Retriever service, Protocol or Adapter —
+that ranks that ledger against *this* Event and shows the Program at most 16
+rows. Its tiers are exact storyline, then shared instrument (canonical symbol
+sets), then positive same-fact similarity over the Deduper's normalized
+`comparison_title`, then recency. Inside a tier the order is similarity desc,
+sent time newest-first, then the stable Event identity, so the same ledger
+always produces the same selection whatever order the database returned it in.
+The storyline tier is capped at 8 of the 16 rows and its overflow yields to the
+tiers below before filling what is left, because ranking storyline first with no
+cap starves everything under it: a dense storyline puts 14-17 same-key cards in
+one window, and measured on the accepted corpus that scored *below* the
+predecessor.
+
+Two numbers were measured, not chosen. Against every accepted `restatement`
+whose duplicate target was inside the 4 h ledger (n=22), target recall@N was:
+predecessor 19/22; strict tier order at 12 rows 18/22; capped tiers at 12 rows
+19/22; capped tiers at 16 rows **21/22**. The binding constraint on the
+predecessor was never the ranking — no ordering recovers what the cap excludes —
+so the row budget moved with it, paid for by `ReaderCard` no longer receiving
+the ledger at all (the two-call total moves about +2%). The single remaining
+miss is a cross-lingual paraphrase naming a different instrument, which no
+deterministic primitive reaches; it is evidence for a future retrieval Issue,
+not for this one. Each model-visible
+entry carries index `i`, age, final storyline key, event type, instrument
+symbols, magnitude, direction and `headline_zh`; the Event id, sent time,
+selection tier and similarity stay audit-only. `TOLD_SELECTOR_SHA256` binds the
+ledger truth and its projection, the window, the 128-row source cap, the tier
+order, the comparison primitives, the 12-entry cap and the model-visible schema,
+and *is* the arm's `retrieval_sha256` — a selector edit cannot ship as the same
+bundle.
+
+The two Predictors do not read the same input. `EventSemantics` receives the
+Event evidence, Gate facts, watchlist and the selected told context;
+`ReaderCard` receives the Event evidence and Gate facts only. The boundary is
+the schema rather than a prompt reminder: `ModelVisibleCardInput` has no
+`event_status` field and forbids extras, so a card payload or recorded demo
+carrying told history is rejected at the renderer. Novelty is
+`EventSemantics`' job; a copy step that can re-read old cards can re-interpret
+them. Both Predictor instructions are English. `ReaderCard.v2` has exactly two Chinese text outputs:
 `headline_zh` (the card header — a complete headline that keeps the decisive
 fact, not a stub) and `why_zh` (the one card sentence adding what the headline
 does not say). It has no `title_zh` output. The public `TriageVerdict` retains
@@ -645,11 +680,25 @@ persists in one transaction under a per-storyline advisory lock on the final
 key (`repository.lock_storyline`; `pg_advisory_xact_lock('NEWS', hashtext(key))`),
 re-reading the reader evidence inside the lock so two same-key Events in flight
 cannot both send the same fact (the lock raises the lane's 250 ms
-`lock_timeout` for that transaction only); when a card the model was not
-shown has landed in the ledger by then (compared by event id, not by clock —
-verdict rows carry their handler's start stamp), the consumer reloads sent
-content evidence and control under a fresh stamp and calls the full Program once
-more. The trace distinguishes a stale sent ledger
+`lock_timeout` for that transaction only). The wide sent ledger is always
+re-read inside that lock, because `decide()` must measure this card against
+every card the reader received including one that landed while the model was
+thinking. Only the *selected* told context decides whether the judgment itself
+is stale: the consumer rebuilds it from the refreshed ledger with the same
+selector and compares `novelty_context_sha256` — the hash of the shown rows that
+are evidence *about this candidate* (storyline, instrument, same-fact), which
+deliberately excludes the recency filler. Filler is there so a sparse candidate
+still sees what the reader has been reading; a card at the top of it cannot turn
+this Event into a restatement of anything, and hashing it would put the whole
+selection back under "any delivery invalidates the judgment", which is the rule
+this replaced. A card that joins on storyline, instrument or same fact does
+change the question, so the consumer reloads sent content evidence under a fresh
+stamp and calls the full Program once more. `selected_context_sha256` records
+the whole selection for replay identity. The old rule compared the raw recent
+event-id set, so any delivery anywhere in the window forced a re-ask; in the
+fixed production cohort that fired on 16% of judgments, of which only 3 of 11
+were actually ledger-driven — the other 8 were Event evidence changing, which
+still re-asks. The trace distinguishes a stale sent ledger
 (`reask_reason=told`, `reasked_after_told_change`) from changed Event evidence
 (`reask_reason=evidence`, `reasked_after_evidence_change`). If a ledger-only
 re-ask fails, the first judgment is still bound to the same evidence and is
@@ -668,7 +717,8 @@ replayable trace (Program version/SHA, runtime provider/model identity,
 per-Predictor request/input/instruction/demo/output hashes, finish reason,
 latency, tokens and provider-reported cost (or explicit unknown), the
 preliminary storyline key, the preliminary and final status-bar snapshots,
-the told ledger as shown with event ids, `told_count`, `restates_event_id`,
+the told context as shown with event ids, selection tier and similarity,
+`told_count`, `selected_context_sha256`, `restates_event_id`,
 every initial/re-ask Program execution and which one was selected (when the
 persisted verdict came from the Program), `reask_reason`,
 `first_verdict`/`first_input_sha256`/`reask_failed` when re-asked,
@@ -770,7 +820,7 @@ deployment time. Corrective migration `0293` preserves that history and appends
 `program_v2` after fixing the semantic retry state machine. Issue #132 migration
 `0294` preserves both prior rows and appends `program_v3` for the expert quality
 baseline and semantic normalization. Issue #134 migration `0295` preserves all
-three rows and appends `program_v4` for the D-generation factory/artifact and
+four rows and appends `program_v5` for the candidate-conditioned ToldContext factory and
 optimizer-ownership hard cut. All earlier reviews, datasets, recordings,
 reports and release receipts remain readable audit evidence, but they are
 promotion-ineligible and cannot seed a v4 Program or DemoBank. Evidence
@@ -779,7 +829,7 @@ created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v4` evidence, compares stable with exactly one declared `program` or
+`program_v5` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -874,7 +924,7 @@ appends the corrected `program_v2` epoch, making `program_v1` evidence
 audit-only for current release decisions. `0294` preserves both earlier Program
 epochs and appends the expert-quality `program_v3` epoch, making `program_v2`
 evidence audit-only for current release decisions. `0295` preserves v1-v3 and
-appends the D-generation `program_v4` epoch with factory/artifact v2, making all
+appends the `program_v5` epoch with factory v3 on the artifact-v2 envelope, making all
 earlier evidence audit-only for the current compiler and release chain. No
 chained revision has a downgrade. Earlier hard cuts live only in git history;
 a fresh database and a database upgraded through the chain reach

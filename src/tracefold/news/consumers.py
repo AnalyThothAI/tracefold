@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tracefold.news import (
-    TOLD_MAX,
+    TOLD_SOURCE_MAX,
     TOLD_WINDOW_MS,
     ProgramTrace,
     ProgramUsage,
@@ -87,11 +87,12 @@ _WS_RECONNECT_SECONDS = 3.0
 _OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
 _DAY_MS = 24 * 3600_000
-# The Program ledger shows the reader's last TOLD_MAX cards; decide() measures a duplicate candidate against
-# a wider, bounded sent ledger. Replaying the stored corpus, widening the comparison set from the 12-entry status
-# bar caught 14 more duplicate pairs and 11 more facts the reader never received (#81). This is a memory bound,
-# not a reader quota: a ledger filled with distinct facts never blocks the next distinct fact.
-_SEEN_LEDGER_MAX = 128
+# The Program sees the TOLD_MAX rows the selector ranked for this candidate; decide() measures a duplicate
+# candidate against the whole bounded sent ledger the selector read from. Replaying the stored corpus, widening
+# the comparison set from the 12-entry status bar caught 14 more duplicate pairs and 11 more facts the reader
+# never received (#81). This is a memory bound, not a reader quota: a ledger filled with distinct facts never
+# blocks the next distinct fact.
+_SEEN_LEDGER_MAX = TOLD_SOURCE_MAX
 # Instrument universe (#75): the Gate's cached copy, and how often the snapshot loop asks the venues.
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
 _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS = 6 * 3600.0
@@ -569,7 +570,10 @@ class _TriageSettle:
     final_key: str
     told: Sequence[Mapping[str, Any]]
     seen: Sequence[Mapping[str, Any]]
-    told_seen: frozenset[str]
+    selected_context_sha: str
+    novelty_context_sha: str
+    prelim_key: str
+    card: Mapping[str, Any]
     degraded: bool
     error_code: str | None
     model_name: str | None
@@ -609,38 +613,35 @@ def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             "m": int(t.get("m") or 0),
             "dir": str(t.get("dir") or ""),
             "headline_zh": str(t.get("headline_zh") or ""),
+            "tier": str(t.get("tier") or ""),
+            "similarity": float(t.get("similarity") or 0.0),
         }
         for i, t in enumerate(told)
     ]
 
 
-def _told_from_context(context: TriageContext, ledger_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _told_from_context(context: TriageContext) -> list[dict[str, Any]]:
     """Return the exact ledger order/index visible to the Program in the shape used by policy and audit.
 
-    The instruments each shown entry was about come back from the source ledger row, keyed by event id.
-    ``ToldLedgerEntry`` deliberately carries only what the Program may read, but ``decide()`` needs the
-    symbols: ``_names_another_instrument`` compares symbol sets, and a told row with no assets is read as
-    "not evidence of a different instrument" — which silently disabled the listing exemption in production
-    while its unit test supplied the symbols by hand.
+    ``grounded_assets`` carries the symbols the selector already resolved for each shown entry.  ``decide()``
+    needs them: ``_names_another_instrument`` compares symbol sets, and a told row with no assets is read as
+    "not evidence of a different instrument", which silently disabled the listing exemption in production.
     """
 
-    assets_by_event = {str(row.get("event_id") or ""): row for row in ledger_rows}
-    told: list[dict[str, Any]] = []
-    for entry in context.told.entries:
-        source = assets_by_event.get(entry.event_id) or {}
-        told.append(
-            {
-                "i": entry.i,
-                "event_id": entry.event_id,
-                "at_ms": entry.at_ms,
-                "m": entry.magnitude,
-                "dir": entry.direction,
-                "headline_zh": entry.headline_zh,
-                "grounded_assets": list(source.get("grounded_assets") or ()),
-                "assets": list(source.get("assets") or ()),
-            }
-        )
-    return told
+    return [
+        {
+            "i": entry.i,
+            "event_id": entry.event_id,
+            "at_ms": entry.at_ms,
+            "m": entry.magnitude,
+            "dir": entry.direction,
+            "headline_zh": entry.headline_zh,
+            "grounded_assets": list(entry.symbols),
+            "tier": entry.tier,
+            "similarity": entry.similarity,
+        }
+        for entry in context.told.entries
+    ]
 
 
 def _usage_from_partial_trace(program_trace: ProgramTrace | None, *, attempts: int) -> dict[str, Any]:
@@ -958,9 +959,9 @@ class TriageConsumer:
             else self.circuit
         )
         prelim_key = str(card.get("storyline_key") or "")
-        # The told ledger: what the reader already received (newest first, same preliminary storyline first). The
-        # model judges novelty against it; ``told_seen`` (event ids) is the snapshot the persist step compares against
-        # — ids, not clocks, because verdict rows carry their handler's start stamp, not commit time.
+        # The told context: the <= TOLD_MAX cards the selector ranked against *this* candidate out of the bounded sent
+        # ledger.  The model judges novelty against it, and its SHA — not the raw ledger's event-id set — is what
+        # the persist step compares, so only a change to what the model saw can make the judgment stale.
         context = TriageContext.from_card(
             card,
             watchlist=tuple(self.watchlist),
@@ -968,8 +969,9 @@ class TriageConsumer:
             now_ms=stamp,
             queue_lag_ms=max(0, stamp - int(message.occurred_at_ms or stamp)),
         )
-        told = _told_from_context(context, ledger_rows)
-        told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
+        told = _told_from_context(context)
+        selected_context_sha = context.selected_context_sha256()
+        novelty_context_sha = context.novelty_context_sha256()
         queue_lag_ms = max(0, stamp - int(message.occurred_at_ms or stamp))
         trace: dict[str, Any] = {
             "queue_lag_ms": queue_lag_ms,
@@ -1187,7 +1189,10 @@ class TriageConsumer:
                 final_key=final_key,
                 told=told,
                 seen=ledger_rows,
-                told_seen=told_seen,
+                selected_context_sha=selected_context_sha,
+                novelty_context_sha=novelty_context_sha,
+                prelim_key=prelim_key,
+                card=card,
                 degraded=degraded,
                 error_code=error_code,
                 model_name=model_name,
@@ -1254,8 +1259,9 @@ class TriageConsumer:
                     now_ms=stamp,
                     queue_lag_ms=queue_lag_ms,
                 )
-                told = _told_from_context(context, ledger_rows)
-                told_seen = frozenset(str(r.get("event_id") or "") for r in ledger_rows)
+                told = _told_from_context(context)
+                selected_context_sha = context.selected_context_sha256()
+                novelty_context_sha = context.novelty_context_sha256()
                 trace["status"] = {
                     "storyline_key": prelim_key,
                     "preliminary": True,
@@ -1436,7 +1442,12 @@ class TriageConsumer:
             ),
             told=[],
             seen=ledger_rows,
-            told_seen=frozenset(str(r.get("event_id") or "") for r in ledger_rows),
+            # An arithmetic judgment reads no ledger, so there is no selected context to go stale. The wide
+            # ledger is still refreshed inside the lock, because `decide()` measures duplicates against it.
+            selected_context_sha="",
+            novelty_context_sha="",
+            prelim_key=str(card.get("storyline_key") or ""),
+            card=card,
             degraded=False,
             error_code=None,
             model_name=None,
@@ -1469,11 +1480,16 @@ class TriageConsumer:
             # already-produced verdict.  Reconsume after the durable retry lane
             # rather than publishing a judgment over evidence it did not read.
             raise TransientError("news_event_evidence_changed")
+        # The wide ledger is always re-read: `decide()` must measure this card against every card the reader
+        # received, including one that landed while the model was thinking.  Only the *selected* context — the
+        # bounded set of rows the model actually saw — decides whether the judgment is stale, so an unrelated new card
+        # costs a cheap query instead of a second paid two-Predictor execution.
+        seen = repos.news.told_ledger(now_ms=s.stamp, window_ms=TOLD_WINDOW_MS, limit=_SEEN_LEDGER_MAX)
         if s.allow_stale:
-            fresh = repos.news.told_ledger(now_ms=s.stamp, window_ms=TOLD_WINDOW_MS, limit=TOLD_MAX * 2)
-            if any(str(r.get("event_id") or "") not in s.told_seen for r in fresh):
+            refreshed = TriageContext.from_card(s.card, watchlist=(), told_rows=seen, now_ms=s.stamp, queue_lag_ms=0)
+            if refreshed.novelty_context_sha256() != s.novelty_context_sha:
                 return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
-        status = storyline_status(s.final_key, told=s.told, seen=s.seen)
+        status = storyline_status(s.final_key, told=s.told, seen=seen)
         trace = s.trace
         decision = decide(
             s.verdict,
@@ -1489,15 +1505,17 @@ class TriageConsumer:
         trace["status_final"] = {"storyline_key": s.final_key}
         trace["storyline_key"] = s.final_key
         trace["seen_count"] = len(status.seen_headlines)
+        trace["selected_context_sha256"] = s.selected_context_sha
+        trace["novelty_context_sha256"] = s.novelty_context_sha
         if decision.seen_similarity is not None:
             # What the duplicate check actually measured, so `news why` can name the card this one resembled instead of
             # reporting a bare rule (#81). ``seen_scope=all`` means the normal
             # push path was compared with the received-card ledger.
             trace["seen_similarity"] = round(float(decision.seen_similarity), 4)
             trace["seen_scope"] = decision.seen_scope
-            if 0 <= decision.seen_against < len(s.seen):
-                # `seen_headlines` was built from `s.seen` in order, so the index names that ledger row.
-                row = s.seen[decision.seen_against]
+            if 0 <= decision.seen_against < len(seen):
+                # `seen_headlines` was built from `seen` in order, so the index names that ledger row.
+                row = seen[decision.seen_against]
                 trace["seen_against"] = {
                     "event_id": str(row.get("event_id") or ""),
                     "headline_zh": str(row.get("headline_zh") or ""),
@@ -1563,12 +1581,7 @@ class TriageConsumer:
         card = repos.news.event_card(event_id)
         if card is None:
             return None
-        ledger = repos.news.told_ledger(
-            now_ms=stamp,
-            window_ms=TOLD_WINDOW_MS,
-            limit=_SEEN_LEDGER_MAX,
-            prefer_key=str(card.get("storyline_key") or "") or None,
-        )
+        ledger = repos.news.told_ledger(now_ms=stamp, window_ms=TOLD_WINDOW_MS, limit=_SEEN_LEDGER_MAX)
         return card, ledger
 
     async def _publish_decision(self, event_id: str, final: str, *, trace_id: str, amqp_priority: int) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
@@ -719,42 +720,202 @@ def test_storyline_status_carries_only_content_evidence() -> None:
     }
 
 
-def test_told_ledger_snapshot_reserves_same_key_slots_and_keeps_cross_key_cards() -> None:
-    from tracefold.news.agents.semantic_program import TOLD_MAX, TOLD_SAME_KEY_MAX, ToldLedgerSnapshot
+def _told_row(event_id: str, at_ms: int, **overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "event_id": event_id,
+        "at_ms": at_ms,
+        "storyline_key": "asset:BTC",
+        "comparison_title": "",
+        "event_type": "macro",
+        "magnitude": 2,
+        "direction": "bullish",
+        "headline_zh": event_id,
+        "grounded_assets": [],
+        "assets": [],
+    }
+    row.update(overrides)
+    return row
 
-    now = 1_800_000_000_000
-    same = [
+
+def _select(rows: Sequence[Mapping[str, Any]], **overrides: Any) -> Any:
+    from tracefold.news.semantic_contract import ToldLedgerSnapshot
+
+    kwargs: dict[str, Any] = {
+        "now_ms": _NOW,
+        "storyline_key": "theme:rates",
+        "symbols": (),
+        "comparison_title": "",
+        "exclude_event_id": "self",
+    }
+    kwargs.update(overrides)
+    return ToldLedgerSnapshot.select(rows, **kwargs)
+
+
+_NOW = 1_800_000_000_000
+
+
+def test_compacting_the_model_context_never_narrows_the_rule_side_duplicate_evidence() -> None:
+    """The Program sees <= 12 selected rows; `decide()` measures duplicates against the whole bounded window.
+
+    #81 widened that comparison on purpose. #138 changes only which rows the model reads, so a card that
+    resembles the 40th-newest sent card must still be withheld even though the model never saw it.
+    """
+
+    seen = [
+        {"headline_zh": f"无关卡片 {i}", "direction": "neutral", "event_id": f"e{i}", "grounded_assets": []}
+        for i in range(40)
+    ] + [
         {
-            "event_id": f"s{i}",
-            "at_ms": now - i * 60_000,
-            "storyline_key": "theme:rates",
-            "magnitude": 2,
-            "direction": "bearish",
-            "headline_zh": f"同 {i}",
-        }
-        for i in range(10)
-    ]
-    other = [
-        {
-            "event_id": f"o{i}",
-            "at_ms": now - (20 + i) * 60_000,
-            "storyline_key": "asset:BTC",
-            "magnitude": 2,
+            "headline_zh": "英伟达投资 OpenAI 数据中心",
             "direction": "bullish",
-            "headline_zh": f"他 {i}",
+            "event_id": "old",
+            "grounded_assets": ["NVDA"],
         }
-        for i in range(5)
     ]
-    told = ToldLedgerSnapshot.from_rows(same + other, now_ms=now, storyline_key="theme:rates").entries
-    assert len(told) == TOLD_MAX
-    same_ids = [entry.event_id for entry in told if entry.event_id.startswith("s")]
-    other_ids = [entry.event_id for entry in told if entry.event_id.startswith("o")]
-    # Six same-key slots reserved, all five cross-key cards kept, one more same-key card tops up to twelve.
-    assert len(other_ids) == 5 and len(same_ids) == TOLD_MAX - 5 >= TOLD_SAME_KEY_MAX
-    assert [entry.i for entry in told] == list(range(TOLD_MAX))
-    assert told[0].ago_min == 0 and told[0].headline_zh == "同 0"
-    # Newest-first regardless of key.
-    assert [entry.at_ms for entry in told] == sorted((entry.at_ms for entry in told), reverse=True)
+    told = seen[:12]
+
+    status = storyline_status("asset:NVDA", told=told, seen=seen)
+    repeat = _verdict(headline_zh="英伟达投资 OpenAI 数据中心", direction="bullish", novelty="new_fact")
+    decision = decide(repeat, _FACTS, status)
+
+    assert decision.final == "throttled" and decision.throttled_by.endswith(":seen")
+    assert decision.seen_against == 40 and len(status.seen_headlines) == 41
+    # The model-visible slice is unchanged by that: it stays the selector's twelve.
+    assert len(status.told_directions) == 12
+
+
+def test_told_selector_ranks_the_candidates_own_storyline_above_every_unrelated_recent_card() -> None:
+    """The old selector reserved six same-key slots and filled the rest by recency. In production that reserve
+    was saturated on 61% of judgments: the model was shown unrelated cards while a same-storyline card it
+    needed for novelty stayed outside the window. Tiers are an ordered union, not a quota."""
+
+    from tracefold.news.semantic_contract import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
+
+    same = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(10)]
+    unrelated = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(10)]
+
+    entries = _select(unrelated + same).entries
+    assert len(entries) == TOLD_MAX
+    # The storyline tier wins the top slots even though every unrelated card is newer, but it is capped so the
+    # tiers below it stay reachable. Its overflow is then offered the remaining slots *before* any recency
+    # filler: filler must never displace evidence, or an unrelated delivery would change what the model saw.
+    assert [entry.event_id for entry in entries[:TOLD_STORYLINE_TIER_MAX]] == [
+        f"s{i}" for i in range(TOLD_STORYLINE_TIER_MAX)
+    ]
+    assert [entry.event_id for entry in entries[TOLD_STORYLINE_TIER_MAX:10]] == ["s8", "s9"]
+    assert [entry.event_id for entry in entries[10:]] == [f"o{i}" for i in range(TOLD_MAX - 10)]
+    assert [entry.i for entry in entries] == list(range(TOLD_MAX))
+
+
+def test_recency_filler_never_displaces_evidence_the_model_needs() -> None:
+    """A dense storyline plus a trickle of unrelated cards: every slot goes to evidence.
+
+    This is what keeps an unrelated delivery from buying a second paid execution — if filler could take a slot
+    an evidence row wanted, a new unrelated card would change the evidence set and force a re-ask.
+    """
+
+    from tracefold.news.semantic_contract import TOLD_MAX
+
+    dense = [_told_row(f"s{i}", _NOW - (30 + i) * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
+    filler = [_told_row(f"o{i}", _NOW - i * 60_000, storyline_key="macro:general") for i in range(3)]
+    entries = _select(filler + dense).entries
+    assert [entry.tier for entry in entries] == ["storyline"] * TOLD_MAX
+    # Adding one more unrelated card changes nothing the model sees.
+    grew = _select([_told_row("new", _NOW, storyline_key="macro:general"), *filler, *dense]).entries
+    assert [entry.event_id for entry in grew] == [entry.event_id for entry in entries]
+
+
+def test_told_selector_overflow_from_a_capped_tier_still_fills_leftover_slots() -> None:
+    """The cap yields to other tiers; it does not throw rows away."""
+
+    from tracefold.news.semantic_contract import TOLD_MAX, TOLD_STORYLINE_TIER_MAX
+
+    same = [_told_row(f"s{i}", _NOW - i * 60_000, storyline_key="theme:rates") for i in range(TOLD_MAX + 4)]
+    entries = _select(same).entries
+    assert len(entries) == TOLD_MAX
+    assert [entry.event_id for entry in entries] == [f"s{i}" for i in range(TOLD_MAX)]
+    assert all(entry.tier == "storyline" for entry in entries)
+    assert TOLD_STORYLINE_TIER_MAX < TOLD_MAX
+
+
+def test_told_selector_finds_the_same_instrument_under_a_different_storyline_key() -> None:
+    """16% of judgments end on a different final storyline key than the preliminary one they were selected
+    with, and a prior card about the same instrument can sit under any of them. Symbol sets answer that;
+    storyline keys alone do not."""
+
+    rows = [_told_row(f"noise{i}", _NOW - i * 60_000, storyline_key="theme:trade") for i in range(11)] + [
+        _told_row("oil", _NOW - 60 * 60_000, storyline_key="theme:mideast_energy", grounded_assets=["CL"])
+    ]
+
+    entries = _select(rows, storyline_key="macro:general", symbols=("CL", "XYZ-CL")).entries
+    matched = next(entry for entry in entries if entry.event_id == "oil")
+    assert matched.tier == "asset_overlap"
+    # An hour-old card about this instrument outranks every fresher unrelated one.
+    assert entries[0].event_id == "oil"
+    assert matched.symbols == ("CL",)
+
+
+def test_told_selector_uses_normalized_comparison_titles_not_reader_headlines() -> None:
+    rows = [_told_row(f"noise{i}", _NOW - i * 60_000, storyline_key="theme:trade") for i in range(12)] + [
+        _told_row(
+            "same-fact",
+            _NOW - 90 * 60_000,
+            storyline_key="asset:NVDA",
+            comparison_title="nvidia to invest usd_100000000000 in openai data centre",
+            headline_zh="英伟达投资 OpenAI",
+        )
+    ]
+    entries = _select(
+        rows,
+        storyline_key="macro:general",
+        comparison_title="nvidia to invest usd_100000000000 in openai data centre",
+    ).entries
+    assert entries[0].event_id == "same-fact" and entries[0].tier == "fact_similarity"
+    assert entries[0].similarity == 1.0
+    # Below the retrieval threshold nothing is promoted out of the recency tail.
+    weak = _select(rows, storyline_key="macro:general", comparison_title="an entirely unrelated sentence").entries
+    assert all(entry.tier == "recency" for entry in weak)
+
+
+def test_told_selector_drops_expired_duplicate_and_self_rows_before_ranking() -> None:
+    rows = [
+        _told_row("keep", _NOW - 60_000),
+        _told_row("keep", _NOW - 120_000),  # same Event twice in the ledger
+        _told_row("expired", _NOW - 5 * 3_600_000),
+        _told_row("self", _NOW - 30_000),
+        _told_row("", _NOW - 30_000),
+    ]
+    snapshot = _select(rows)
+    assert [entry.event_id for entry in snapshot.entries] == ["keep"]
+    assert snapshot.source_count == 1
+
+
+def test_told_selector_is_deterministic_under_equal_timestamps_and_input_order() -> None:
+    rows = [_told_row(f"e{i}", _NOW - 60_000) for i in range(20)]
+    first = _select(rows).entries
+    second = _select(list(reversed(rows))).entries
+    assert [entry.event_id for entry in first] == [entry.event_id for entry in second]
+    # Equal tier, equal similarity, equal time: the stable Event identity breaks the tie.
+    assert [entry.event_id for entry in first] == sorted(entry.event_id for entry in first)
+
+
+def test_told_selector_identity_binds_every_behaviour_that_changes_what_the_model_sees() -> None:
+    """`retrieval_sha256` is this hash. A literal describing the selector could not tell a tier-order or
+    projection edit from a no-op, and the arm would have shipped as the same bundle."""
+
+    import tracefold.news.semantic_contract as contract
+    from tracefold.news.artifact_identity import canonical_sha
+
+    assert len(contract.TOLD_SELECTOR_SHA256) == 64
+    payload = {
+        "tier_order": list(contract.TOLD_TIER_ORDER),
+        "source_max": contract.TOLD_SOURCE_MAX,
+        "visible_cap": contract.TOLD_MAX,
+        "similarity_min": contract.TOLD_FACT_SIMILARITY_MIN,
+        "window_ms": contract.TOLD_WINDOW_MS,
+    }
+    # Every one of these is inside the hashed payload, so changing any of them moves the bundle identity.
+    assert all(canonical_sha({**payload, key: "changed"}) != canonical_sha(payload) for key in payload)
 
 
 def test_storyline_status_carries_told_directions() -> None:

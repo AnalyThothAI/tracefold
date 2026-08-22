@@ -297,7 +297,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 parent.program_sha256 != stable.program_sha256
                 or parent.parent_program_sha256 is not None
                 or parent.schema_version != "news_semantic_program_artifact_v2"
-                or parent.factory_id != "tracefold.news.semantic_program.factory_v2"
+                or parent.factory_id != "tracefold.news.semantic_program.factory_v3"
             ):
                 raise ValueError("news_learning_compile_stable_program_mismatch")
             # This is the only DB contact in the compile path.  It ends before
@@ -465,7 +465,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             provenance = OptimizerCompileProvenanceV2(
                 development_dataset_sha=bundle.corpus.development_dataset_sha,
-                learning_epoch="program_v4",
+                learning_epoch="program_v5",
                 learning_epoch_started_at_ms=bundle.corpus.learning_epoch_started_at_ms,
                 projection_schema_id=bundle.corpus.projection_schema_id,
                 metric_sha256=canonical_sha(runner.metric),
@@ -514,7 +514,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             machine_diff = program_machine_diff(parent, candidate_artifact)
             payload = {
                 "target": "program",
-                "hypothesis": "Repair the accepted program_v4 failure clusters with bounded DSPy GEPA.",
+                "hypothesis": "Repair the accepted program_v5 failure clusters with bounded DSPy GEPA.",
                 "target_dimensions": list(runner.target_dimensions),
                 "failure_cluster_ids": list(runner.failure_cluster_ids),
                 "guardrails": [

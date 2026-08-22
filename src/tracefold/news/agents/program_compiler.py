@@ -1,6 +1,6 @@
 """Untrusted, bounded GEPA logic executed only by the compiler container.
 
-The trusted host seals the ``program_v4`` corpus and launches the runner.  This
+The trusted host seals the ``program_v5`` corpus and launches the runner.  This
 module has no database, artifact-writer, proposal or promotion authority.  It
 can return only ``ProgramPatchV2`` (two LearnedStrategies plus eligible demo
 references) and content-addressable optimizer receipt payloads.
@@ -35,7 +35,7 @@ from .semantic_program import (
     render_model_evidence_json,
 )
 
-LEARNING_EPOCH = "program_v4"
+LEARNING_EPOCH = "program_v5"
 COMPILER_ID = "tracefold.news.dspy_gepa_compiler_v2"
 METRIC_ID = "tracefold.news.accepted_review_feedback_v1"
 _PROPOSAL_GUARDRAILS = (
@@ -68,7 +68,7 @@ class DevelopmentEpisode(_ExactModel):
 
 class CompileRequest(_ExactModel):
     development_dataset_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v4"] = "program_v4"
+    learning_epoch: Literal["program_v5"] = "program_v5"
     episodes: tuple[DevelopmentEpisode, ...] = Field(min_length=1)
     budget: CompileBudget
 
@@ -532,13 +532,16 @@ class ProgramCompiler:
 
 def _compile_example(episode: DevelopmentEpisode) -> dspy.Example:
     return dspy.Example(
-        evidence_json=render_model_evidence_json(episode.context.model_payload()),
+        evidence_json=render_model_evidence_json(
+            episode.context.event_semantics_payload(), predictor="event_semantics"
+        ),
+        card_evidence_json=render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card"),
         told_count=len(episode.context.told.entries),
         case_id=episode.case_id,
         cluster_id=episode.cluster_id,
         accepted_review=episode.accepted_review,
         production_verdict=episode.production_verdict,
-    ).with_inputs("evidence_json", "told_count")
+    ).with_inputs("evidence_json", "card_evidence_json", "told_count")
 
 
 def _failure_scope(episodes: Sequence[DevelopmentEpisode]) -> tuple[tuple[str, ...], tuple[str, ...]]:

@@ -14,6 +14,7 @@ from typing import Any
 
 import dspy
 import pytest
+from pydantic import ValidationError
 
 from tracefold.news import SemanticJudgeError
 from tracefold.news.agents import semantic_program as semantic_program_module
@@ -26,7 +27,7 @@ from tracefold.news.agents.semantic_program import (
     PROGRAM_TOPOLOGY_SHA256,
     READER_CARD_SIGNATURE_SHA256,
     TOLD_MAX,
-    TOLD_SAME_KEY_MAX,
+    TOLD_STORYLINE_TIER_MAX,
     CompileReceipt,
     DemoBank,
     DemoRecord,
@@ -182,8 +183,8 @@ def test_stable_root_is_the_d_generation_v2_ownership_contract() -> None:
     artifact = load_stable_program_artifact()
 
     assert artifact.schema_version == "news_semantic_program_artifact_v2"
-    assert artifact.factory_id == "tracefold.news.semantic_program.factory_v2"
-    assert artifact.program_version == "news_semantic_program_v2"
+    assert artifact.factory_id == "tracefold.news.semantic_program.factory_v3"
+    assert artifact.program_version == "news_semantic_program_v3"
     assert artifact.parent_program_sha256 is None
     assert artifact.quality_kernel.factory_id == artifact.factory_id
     assert [pack.order for pack in artifact.rule_packs] == list(range(1, 9))
@@ -355,7 +356,7 @@ def test_context_hides_audit_ids_from_both_predictors() -> None:
             }
         ]
     )
-    visible = json.dumps(context.model_payload(), ensure_ascii=False)
+    visible = json.dumps(context.event_semantics_payload(), ensure_ascii=False)
     assert "event-secret" not in visible
     assert "fact-secret" not in visible
     assert "told-secret" not in visible
@@ -386,13 +387,15 @@ def test_context_caps_every_variable_length_model_input() -> None:
     assert context.evidence.strategies == tuple(f"strategy-{index}" for index in range(16))
     assert context.gate.grounded_assets == tuple(f"ASSET{index}" for index in range(16))
     assert context.watchlist == tuple(f"WATCH{index}" for index in range(64))
-    payload = context.model_payload()
+    payload = context.event_semantics_payload()
     assert len(payload["event"]["strategies"]) == 16
     assert len(payload["gate"]["grounded_assets"]) == 16
     assert len(payload["gate"]["watchlist"]) == 64
 
 
-def test_told_selection_reserves_same_key_and_preserves_cross_key() -> None:
+def test_told_selection_is_candidate_conditioned_not_a_recency_quota() -> None:
+    """The candidate's own storyline outranks recency, and nothing is reserved for unrelated recent cards."""
+
     rows = [
         {
             "event_id": f"same-{index}",
@@ -406,8 +409,8 @@ def test_told_selection_reserves_same_key_and_preserves_cross_key() -> None:
     ] + [
         {
             "event_id": f"other-{index}",
-            "at_ms": 1_008_000 - index,
-            "storyline_key": "macro:rates",
+            "at_ms": 1_009_900 - index,
+            "storyline_key": "macro:general",
             "magnitude": 1,
             "direction": "neutral",
             "headline_zh": "other",
@@ -416,8 +419,89 @@ def test_told_selection_reserves_same_key_and_preserves_cross_key() -> None:
     ]
     entries = _context(told_rows=rows).told.entries
     assert len(entries) == TOLD_MAX
-    assert sum(entry.event_id.startswith("same-") for entry in entries) == TOLD_SAME_KEY_MAX
+    # The candidate's own storyline comes first even though all ten unrelated cards are newer — but it is
+    # capped, so the tiers below it can still be reached. Ranking storyline first with no cap scored below the
+    # predecessor on the accepted corpus for exactly this reason.
+    assert [entry.event_id for entry in entries[:TOLD_STORYLINE_TIER_MAX]] == [
+        f"same-{index}" for index in range(TOLD_STORYLINE_TIER_MAX)
+    ]
+    assert all(entry.tier == "storyline" for entry in entries[:TOLD_STORYLINE_TIER_MAX])
+    # The cap's overflow is offered the remaining slots before any recency filler: filler must never displace
+    # evidence, or an unrelated delivery would change the evidence set and buy a second paid execution.
+    assert [entry.event_id for entry in entries[TOLD_STORYLINE_TIER_MAX:10]] == ["same-8", "same-9"]
+    assert [entry.tier for entry in entries[10:]] == ["recency"] * (TOLD_MAX - 10)
     assert [entry.i for entry in entries] == list(range(TOLD_MAX))
+
+
+def test_reader_card_input_cannot_carry_told_history_at_all() -> None:
+    """#138: the two Predictors used to receive one payload, so the copy step could re-read old cards.
+
+    The boundary is the schema, not a prompt reminder: ``ModelVisibleCardInput`` has no ``event_status`` field
+    and forbids extras, so a payload or a recorded demo that carries told history is rejected here.
+    """
+
+    context = _context(
+        told_rows=[
+            {
+                "event_id": "told-secret",
+                "at_ms": 1_005_000,
+                "storyline_key": "asset:BTC",
+                "magnitude": 1,
+                "direction": "bullish",
+                "headline_zh": "旧卡片",
+            }
+        ]
+    )
+    semantics_payload = context.event_semantics_payload()
+    card_payload = context.reader_card_payload()
+
+    assert semantics_payload["event_status"]["told"][0]["headline_zh"] == "旧卡片"
+    assert set(card_payload) == {"event", "gate"}
+    assert "旧卡片" not in json.dumps(card_payload, ensure_ascii=False)
+
+    with pytest.raises(ValidationError):
+        render_model_evidence_json(semantics_payload, predictor="reader_card")
+
+
+def test_neither_predictor_ever_receives_an_audit_identity() -> None:
+    context = _context(
+        told_rows=[
+            {
+                "event_id": "told-secret",
+                "at_ms": 1_005_000,
+                "storyline_key": "asset:BTC",
+                "magnitude": 1,
+                "direction": "bullish",
+                "headline_zh": "旧卡片",
+            }
+        ]
+    )
+    for payload in (context.event_semantics_payload(), context.reader_card_payload()):
+        rendered = json.dumps(payload, ensure_ascii=False)
+        assert "event-secret" not in rendered
+        assert "fact-secret" not in rendered
+        assert "told-secret" not in rendered
+        assert "a" * 64 not in rendered
+    # The selector keeps the identity for `news why` and `restates_event_id`, on the audit side only.
+    assert context.told.entries[0].event_id == "told-secret"
+
+
+def test_selected_context_sha_moves_only_when_the_model_visible_selection_moves() -> None:
+    rows = [
+        {
+            "event_id": f"e{index}",
+            "at_ms": 1_009_000 - index * 1_000,
+            "storyline_key": "asset:BTC",
+            "magnitude": 1,
+            "direction": "bullish",
+            "headline_zh": f"卡 {index}",
+        }
+        for index in range(3)
+    ]
+    base = _context(told_rows=rows).selected_context_sha256()
+    assert _context(told_rows=list(reversed(rows))).selected_context_sha256() == base
+    grew = [*rows, dict(rows[0], event_id="new", at_ms=1_009_500)]
+    assert _context(told_rows=grew).selected_context_sha256() != base
 
 
 def test_two_predictors_assemble_one_verdict_and_trace_usage() -> None:
@@ -1493,12 +1577,12 @@ def test_artifact_dlp_rejects_secret_in_a_mapping_key_without_echoing_it() -> No
 
 
 def test_demo_dlp_allows_ordinary_api_key_news_without_a_credential_value() -> None:
-    payload = _context().model_payload()
+    payload = _context().event_semantics_payload()
     payload["event"]["content"] = "The company updated its API key rotation policy; no credential was disclosed."
 
     record = DemoRecord.issue(
         predictor="event_semantics",
-        signature_inputs={"evidence_json": render_model_evidence_json(payload)},
+        signature_inputs={"evidence_json": render_model_evidence_json(payload, predictor="event_semantics")},
         validated_output=_semantics(),
         source_kind="accepted_development",
         development_dataset_sha256="1" * 64,
@@ -1514,7 +1598,11 @@ def test_demo_dlp_allows_ordinary_api_key_news_without_a_credential_value() -> N
 def _accepted_event_demo() -> DemoRecord:
     return DemoRecord.issue(
         predictor="event_semantics",
-        signature_inputs={"evidence_json": render_model_evidence_json(_context().model_payload())},
+        signature_inputs={
+            "evidence_json": render_model_evidence_json(
+                _context().event_semantics_payload(), predictor="event_semantics"
+            )
+        },
         validated_output=_semantics(),
         source_kind="accepted_development",
         development_dataset_sha256="1" * 64,
@@ -1541,7 +1629,7 @@ def test_demo_record_is_typed_delimited_and_contains_only_hashed_provenance() ->
     with pytest.raises(ValueError, match="delimiter_invalid"):
         DemoRecord.issue(
             predictor="event_semantics",
-            signature_inputs={"evidence_json": canonical_json(_context().model_payload())},
+            signature_inputs={"evidence_json": canonical_json(_context().event_semantics_payload())},
             validated_output=_semantics(),
             source_kind="code_owned_expert",
         )
@@ -1595,7 +1683,7 @@ def test_optimizer_extractor_sees_only_strategy_and_exact_eligible_demo_refs() -
     assert patch.demo_refs.event_semantics == (record.demo_id,)
     cold.event_semantics.demos = [
         dspy.Example(
-            evidence_json=render_model_evidence_json(_context().model_payload()),
+            evidence_json=render_model_evidence_json(_context().event_semantics_payload(), predictor="event_semantics"),
             semantics={**_semantics(), "magnitude": 2},
         ).with_inputs("evidence_json")
     ]
@@ -1631,7 +1719,7 @@ def test_trusted_patch_applier_changes_only_strategies_and_selected_demo_refs() 
     receipt = CompileReceipt(
         mode="optimizer_candidate",
         development_dataset_sha=sha("dataset"),
-        learning_epoch="program_v4",
+        learning_epoch="program_v5",
         learning_epoch_started_at_ms=1,
         projection_schema_id="news_program_v4_projection_v1",
         optimizer="dspy.GEPA@3.3.0/gepa@0.1.1",

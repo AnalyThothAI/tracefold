@@ -46,10 +46,14 @@ from ..artifact_identity import canonical_json, canonical_sha
 from ..models import TriageAsset, TriageVerdict
 from ..semantic_contract import (
     TOLD_MAX,
-    TOLD_SAME_KEY_MAX,
+    TOLD_SELECTOR_ID,
+    TOLD_SELECTOR_SHA256,
+    TOLD_SOURCE_MAX,
+    TOLD_STORYLINE_TIER_MAX,
     TOLD_WINDOW_MS,
     FrozenEventEvidence,
-    ModelVisibleTriageInput,
+    ModelVisibleCardInput,
+    ModelVisibleSemanticsInput,
     ProgramCallTrace,
     ProgramNormalizationTrace,
     ProgramTrace,
@@ -77,9 +81,11 @@ PROGRAM_DEMO_BANK_MAX_BYTES: Final[int] = 262_144
 PROGRAM_DEPENDENCY_LOCK_SHA256: Final[str] = "defdd610578ecd1f1f667f5eaf0ebf0b94ae866b16fd5cdd41ba3fc793ab4b37"
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_semantic_program_artifact_v2"
-PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.semantic_program.factory_v2"
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v2"
-PROGRAM_LEARNING_EPOCH: Final[str] = "program_v4"
+PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.semantic_program.factory_v3"
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v3"
+# The learning epoch counts input/metric contracts, the factory counts topologies; they have never been in
+# step.  `program_v3_rollback` below is an *epoch*-v3 rollback profile, not this factory version.
+PROGRAM_LEARNING_EPOCH: Final[str] = "program_v5"
 PROGRAM_TOPOLOGY_SHA256: Final[str] = canonical_sha(
     {
         "nodes": ["event_semantics", "semantic_normalizer", "reader_card", "verdict_assembler"],
@@ -88,7 +94,7 @@ PROGRAM_TOPOLOGY_SHA256: Final[str] = canonical_sha(
 )
 PROGRAM_ADAPTER_SHA256: Final[str] = canonical_sha(
     {
-        "adapter": "predictor_adapter_v2",
+        "adapter": "predictor_adapter_v3",
         "cache": False,
         "history": False,
         "hidden_retry": False,
@@ -107,8 +113,12 @@ PROGRAM_ASSEMBLER_SHA256: Final[str] = canonical_sha(
 )
 PROGRAM_INPUT_CONTRACT_SHA256: Final[str] = canonical_sha(
     {
-        "context": "tracefold.news.TriageContext.v2",
-        "model_payload": "bounded_without_audit_ids.v2",
+        "context": "tracefold.news.TriageContext.v3",
+        # Two payloads, not one.  EventSemantics interprets the Event against the selected ledger; ReaderCard
+        # only ever sees the Event.
+        "event_semantics_payload": "bounded_with_selected_told_context.v1",
+        "reader_card_payload": "bounded_evidence_only.v1",
+        "told_selector": TOLD_SELECTOR_SHA256,
         "untrusted_delimiter": "tracefold-untrusted-event-json-v1",
     }
 )
@@ -128,7 +138,9 @@ PROGRAM_RENDERER_SHA256: Final[str] = canonical_sha(
 )
 PROGRAM_CONTEXT_RENDERER_SHA256: Final[str] = canonical_sha(
     {
-        "renderer": "triage_context_model_payload_v2",
+        "renderer": "triage_context_per_predictor_payload_v1",
+        "event_semantics": "TriageContext.event_semantics_payload",
+        "reader_card": "TriageContext.reader_card_payload",
         "canonical_json": True,
         "audit_ids": "excluded",
         "untrusted_delimiter": "tracefold-untrusted-event-json-v1",
@@ -497,7 +509,7 @@ def _estimated_tokens(value: str) -> int:
 class QualityKernelRef(_ExactModel):
     """References to code-owned behavior; never executable Artifact data."""
 
-    factory_id: Literal["tracefold.news.semantic_program.factory_v2"] = "tracefold.news.semantic_program.factory_v2"
+    factory_id: Literal["tracefold.news.semantic_program.factory_v3"] = "tracefold.news.semantic_program.factory_v3"
     factory_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     topology_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     input_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -508,6 +520,8 @@ class QualityKernelRef(_ExactModel):
     verdict_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     renderer_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     context_renderer_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    told_selector_id: Literal["told_context_selector_v1"] = "told_context_selector_v1"
+    told_selector_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     untrusted_data_delimiter_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     semantic_validator_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     normalizer_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -648,7 +662,7 @@ class DemoRecord(_ExactModel):
     cluster_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     review_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     evidence_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v4"] = "program_v4"
+    learning_epoch: Literal["program_v5"] = "program_v5"
     model_visible_projection_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     provenance_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -744,7 +758,7 @@ class DemoRecord(_ExactModel):
             field="evidence_json",
             index=0,
         )
-        ModelVisibleTriageInput.model_validate(evidence)
+        _VISIBLE_INPUT[self.predictor].model_validate(evidence)
         if self.predictor == "event_semantics":
             EventSemantics.model_validate(self.validated_output)
         else:
@@ -1125,11 +1139,11 @@ class ProgramArtifact(_ExactModel):
     """Immutable v2 root with code-owned and optimizer-owned state separated."""
 
     schema_version: Literal["news_semantic_program_artifact_v2"] = "news_semantic_program_artifact_v2"
-    program_version: Literal["news_semantic_program_v2"] = "news_semantic_program_v2"
+    program_version: Literal["news_semantic_program_v3"] = "news_semantic_program_v3"
     program_sha256: str
     state_sha256: str
     parent_program_sha256: str | None = None
-    factory_id: Literal["tracefold.news.semantic_program.factory_v2"] = "tracefold.news.semantic_program.factory_v2"
+    factory_id: Literal["tracefold.news.semantic_program.factory_v3"] = "tracefold.news.semantic_program.factory_v3"
     quality_kernel: QualityKernelRef
     route_spec: ModelRouteSpec
     execution: ExecutionContract
@@ -1281,11 +1295,11 @@ class ProgramArtifact(_ExactModel):
 
 class _ProgramManifest(_ExactModel):
     schema_version: Literal["news_semantic_program_artifact_v2"]
-    program_version: Literal["news_semantic_program_v2"]
+    program_version: Literal["news_semantic_program_v3"]
     program_sha256: str
     state_sha256: str
     parent_program_sha256: str | None = None
-    factory_id: Literal["tracefold.news.semantic_program.factory_v2"]
+    factory_id: Literal["tracefold.news.semantic_program.factory_v3"]
     quality_kernel: QualityKernelRef
     route_spec: ModelRouteSpec
     execution: ExecutionContract
@@ -1362,6 +1376,8 @@ def _build_quality_kernel_ref(execution: ExecutionContract) -> QualityKernelRef:
         ),
         renderer_sha256=PROGRAM_RENDERER_SHA256,
         context_renderer_sha256=PROGRAM_CONTEXT_RENDERER_SHA256,
+        told_selector_id=TOLD_SELECTOR_ID,
+        told_selector_sha256=TOLD_SELECTOR_SHA256,
         untrusted_data_delimiter_sha256=PROGRAM_UNTRUSTED_DELIMITER_SHA256,
         semantic_validator_sha256=PROGRAM_SEMANTIC_VALIDATOR_SHA256,
         normalizer_sha256=PROGRAM_NORMALIZER_SHA256,
@@ -1443,10 +1459,20 @@ def render_predictor_instruction(artifact: ProgramArtifact, predictor: Predictor
     return rendered
 
 
-def render_model_evidence_json(payload: Mapping[str, Any]) -> str:
-    """Canonicalize and visibly delimit the sole untrusted Event payload."""
+_VISIBLE_INPUT: Final[dict[str, type[BaseModel]]] = {
+    "event_semantics": ModelVisibleSemanticsInput,
+    "reader_card": ModelVisibleCardInput,
+}
 
-    visible = ModelVisibleTriageInput.model_validate(payload).model_dump(mode="json")
+
+def render_model_evidence_json(payload: Mapping[str, Any], *, predictor: PredictorName) -> str:
+    """Canonicalize and visibly delimit the untrusted Event payload for exactly one Predictor.
+
+    ``ModelVisibleCardInput`` forbids extra fields and has no ``event_status``, so a ReaderCard payload or
+    recording that carries told history is rejected here rather than being caught by review later.
+    """
+
+    visible = _VISIBLE_INPUT[predictor].model_validate(payload).model_dump(mode="json")
     return f"{_UNTRUSTED_EVENT_OPEN}\n{canonical_json(visible)}\n{_UNTRUSTED_EVENT_CLOSE}"
 
 
@@ -1456,7 +1482,7 @@ class ProgramPatchV2(_ExactModel):
     schema_version: Literal["news_semantic_program_patch_v2"] = "news_semantic_program_patch_v2"
     parent_program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     parent_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    learning_epoch: Literal["program_v4"] = "program_v4"
+    learning_epoch: Literal["program_v5"] = "program_v5"
     learned_strategies: tuple[LearnedStrategy, ...] = Field(min_length=2, max_length=2)
     demo_refs: DemoRefOrder
     eligible_demo_bank_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1682,7 +1708,7 @@ def _reject_unsafe_state(value: Any, *, path: str = "artifact") -> None:
         raise ValueError(f"news_program_secret_value:{path}")
 
 
-def _validate_predictor_demos(name: str, demos: Sequence[Mapping[str, Any]]) -> None:
+def _validate_predictor_demos(name: PredictorName, demos: Sequence[Mapping[str, Any]]) -> None:
     expected = _DEMO_FIELDS.get(name)
     if expected is None:
         raise ValueError("news_program_demo_predictor_unknown")
@@ -1698,8 +1724,11 @@ def _validate_predictor_demos(name: str, demos: Sequence[Mapping[str, Any]]) -> 
         )
         _reject_unsafe_state(evidence, path=f"state.{name}.demos[{index}].evidence_json")
         try:
-            visible_input = ModelVisibleTriageInput.model_validate(evidence)
-            if render_model_evidence_json(visible_input.model_dump(mode="json")) != demo["evidence_json"]:
+            visible_input = _VISIBLE_INPUT[name].model_validate(evidence)
+            if (
+                render_model_evidence_json(visible_input.model_dump(mode="json"), predictor=name)
+                != demo["evidence_json"]
+            ):
                 raise ValueError("evidence_json_not_typed_canonical")
             if name == "event_semantics":
                 EventSemantics.model_validate(demo["semantics"])
@@ -2638,13 +2667,13 @@ class DspyCompileProgram(dspy.Module):  # type: ignore[misc]
         self.event_semantics = _OptimizerOwnedPredictor(artifact, "event_semantics")
         self.reader_card = _OptimizerOwnedPredictor(artifact, "reader_card")
 
-    def forward(self, evidence_json: str, told_count: int) -> dspy.Prediction:
+    def forward(self, evidence_json: str, card_evidence_json: str, told_count: int) -> dspy.Prediction:
         semantics_prediction = self.event_semantics(evidence_json=evidence_json)
         semantics = EventSemantics.model_validate(_unwrap_output(semantics_prediction.toDict(), "semantics"))
         semantics, _ = _normalize_semantics(semantics)
         _validate_semantic_context(semantics, told_count=max(0, int(told_count)))
         card_prediction = self.reader_card(
-            evidence_json=evidence_json,
+            evidence_json=card_evidence_json,
             semantics_json=canonical_json(semantics.model_dump(mode="json")),
         )
         card = ReaderCard.model_validate(_unwrap_output(card_prediction.toDict(), "card"))
@@ -2757,7 +2786,10 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
             context = TriageContext.model_validate(context)
         started = time.perf_counter()
         context_sha = canonical_sha(context.model_dump(mode="json"))
-        evidence_json = render_model_evidence_json(context.model_payload())
+        semantics_json_input = render_model_evidence_json(
+            context.event_semantics_payload(), predictor="event_semantics"
+        )
+        card_json_input = render_model_evidence_json(context.reader_card_payload(), predictor="reader_card")
         calls: list[ProgramCallTrace] = []
         primary_failure: _CallFailure | None = None
         if time.monotonic() < self._primary_open_until:
@@ -2769,7 +2801,8 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     adapter_pool=self.primary_adapter,
                     context=context,
                     context_sha=context_sha,
-                    evidence_json=evidence_json,
+                    semantics_evidence_json=semantics_json_input,
+                    card_evidence_json=card_json_input,
                     calls=calls,
                 )
             except _CallFailure as exc:
@@ -2788,7 +2821,8 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     adapter_pool=self.fallback_adapter,
                     context=context,
                     context_sha=context_sha,
-                    evidence_json=evidence_json,
+                    semantics_evidence_json=semantics_json_input,
+                    card_evidence_json=card_json_input,
                     calls=calls,
                 )
             except _CallFailure as fallback_exc:
@@ -2868,7 +2902,8 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         adapter_pool: AdapterPool,
         context: TriageContext,
         context_sha: str,
-        evidence_json: str,
+        semantics_evidence_json: str,
+        card_evidence_json: str,
         calls: list[ProgramCallTrace],
     ) -> tuple[EventSemantics, ReaderCard, TriageVerdict, Literal["primary", "fallback"], str | None, bool]:
         route_call_start = len(calls)
@@ -2879,7 +2914,8 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     adapter_pool=adapter_pool,
                     context=context,
                     context_sha=context_sha,
-                    evidence_json=evidence_json,
+                    semantics_evidence_json=semantics_evidence_json,
+                    card_evidence_json=card_evidence_json,
                     calls=calls,
                 )
         except TimeoutError as exc:
@@ -2894,7 +2930,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     request_sha256=canonical_sha(
                         {"program_sha256": self.artifact.program_sha256, "context_sha256": context_sha, "route": route}
                     ),
-                    input_sha256=canonical_sha({"evidence_json": evidence_json}),
+                    input_sha256=canonical_sha({"evidence_json": semantics_evidence_json}),
                     signature_sha256=state.signature_sha256,
                     instruction_sha256=state.instruction_sha256,
                     demos_sha256=state.demos_sha256,
@@ -2931,7 +2967,8 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
         adapter_pool: AdapterPool,
         context: TriageContext,
         context_sha: str,
-        evidence_json: str,
+        semantics_evidence_json: str,
+        card_evidence_json: str,
         calls: list[ProgramCallTrace],
     ) -> tuple[EventSemantics, ReaderCard, TriageVerdict, Literal["primary", "fallback"], str | None, bool]:
         retry_available = True
@@ -2947,7 +2984,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     route=route,
                     attempt=semantics_attempt,
                     context_sha=context_sha,
-                    inputs={"evidence_json": evidence_json},
+                    inputs={"evidence_json": semantics_evidence_json},
                     upstream_sha=None,
                     output_field="semantics",
                     output_model=EventSemantics,
@@ -3012,7 +3049,7 @@ class DspyNewsSemanticProgram(dspy.Module):  # type: ignore[misc]
                     attempt=card_attempt,
                     context_sha=context_sha,
                     inputs={
-                        "evidence_json": evidence_json,
+                        "evidence_json": card_evidence_json,
                         "semantics_json": canonical_json(semantics.model_dump(mode="json")),
                     },
                     upstream_sha=semantics_sha,
@@ -3416,7 +3453,10 @@ __all__ = [
     "PROGRAM_SCHEMA_VERSION",
     "PROGRAM_VERSION",
     "TOLD_MAX",
-    "TOLD_SAME_KEY_MAX",
+    "TOLD_SELECTOR_ID",
+    "TOLD_SELECTOR_SHA256",
+    "TOLD_SOURCE_MAX",
+    "TOLD_STORYLINE_TIER_MAX",
     "TOLD_WINDOW_MS",
     "CompileProvenance",
     "CompileReceipt",

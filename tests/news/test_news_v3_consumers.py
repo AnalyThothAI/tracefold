@@ -1349,6 +1349,59 @@ def test_triage_told_ledger_reaches_the_model_and_the_trace_and_grounds_a_restat
     assert bus.published == []
 
 
+def test_triage_does_not_reask_when_an_unrelated_card_lands_but_the_selection_is_unchanged() -> None:
+    """The old rule re-asked whenever any new event id appeared in the recent ledger. In the fixed production
+    cohort that fired on 16% of judgments and each one paid for a second full two-Predictor execution.
+
+    Staleness is a property of the evidence the model was shown about *this* candidate. A card that shares no
+    storyline, no instrument and no fact lands in the recency filler and cannot turn this Event into a
+    restatement of anything, so the first judgment stands. `decide()` still measures the card against the
+    refreshed wide ledger, so the duplicate defence loses nothing.
+    """
+
+    ledger_calls = {"n": 0}
+    unrelated = _ledger_row("ev-unrelated", NOW_MS - 1_000, key="theme:trade", headline="完全无关的新卡片")
+
+    def told_ledger(*, now_ms: int, window_ms: int, limit: int, **_: Any) -> list[dict[str, Any]]:
+        del now_ms, window_ms
+        ledger_calls["n"] += 1
+        related = [_ledger_row(f"ev-{i}", NOW_MS - (10 + i) * 1_000) for i in range(4)]
+        filler = [_ledger_row(f"bg-{i}", NOW_MS - (30 + i) * 1_000, key="theme:trade") for i in range(6)]
+        return ([unrelated, *related, *filler] if ledger_calls["n"] > 1 else [*related, *filler])[:limit]
+
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, told_ledger=told_ledger)
+    model = _ScriptedSemanticJudge([_model_verdict(novelty="new_fact")])
+    triage = _triage_with_judge(news, FakeBus(), model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert len(model.inputs) == 1, "an unrelated card must not buy a second paid execution"
+    trace = news.kwargs_of("insert_verdict")["trace"]
+    assert "reasked_after_told_change" not in trace
+    # The wide ledger decide() measured against was re-read and does contain the new card.
+    assert trace["seen_count"] == 11
+    assert len(trace["selected_context_sha256"]) == 64 and len(trace["novelty_context_sha256"]) == 64
+
+
+def test_triage_does_not_reask_when_only_the_source_row_order_changed() -> None:
+    ledger_calls = {"n": 0}
+    rows = [_ledger_row(f"ev-{i}", NOW_MS - (10 + i) * 1_000) for i in range(3)]
+
+    def told_ledger(*, now_ms: int, window_ms: int, limit: int, **_: Any) -> list[dict[str, Any]]:
+        del now_ms, window_ms
+        ledger_calls["n"] += 1
+        return (rows if ledger_calls["n"] == 1 else list(reversed(rows)))[:limit]
+
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, told_ledger=told_ledger)
+    model = _ScriptedSemanticJudge([_model_verdict(novelty="new_fact")])
+    triage = _triage_with_judge(news, FakeBus(), model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert len(model.inputs) == 1
+    assert "reasked_after_told_change" not in news.kwargs_of("insert_verdict")["trace"]
+
+
 def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() -> None:
     """A push committed between the ledger snapshot and the persist step means the model judged novelty against a
     stale ledger: the consumer asks once more with the fresh ledger and persists that verdict."""
@@ -1356,10 +1409,8 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     fresh_push = _ledger_row("ev-just-pushed", NOW_MS - 1_000)
     ledger_calls = {"n": 0}
 
-    def told_ledger(
-        *, now_ms: int, window_ms: int, limit: int, prefer_key: str | None = None, **_: Any
-    ) -> list[dict[str, Any]]:
-        del now_ms, window_ms, prefer_key
+    def told_ledger(*, now_ms: int, window_ms: int, limit: int, **_: Any) -> list[dict[str, Any]]:
+        del now_ms, window_ms
         ledger_calls["n"] += 1
         # First read (load): nothing yet. Every later read (in-lock check, reload) sees the new card.
         if ledger_calls["n"] == 1:

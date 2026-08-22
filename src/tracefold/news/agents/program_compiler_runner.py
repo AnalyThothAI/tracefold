@@ -98,7 +98,7 @@ def _run(input_path: Path, output_path: Path, policy_path: Path, proxy_path: Pat
         or parent.state_sha256 != bundle.parent_state_sha256
         or parent.parent_program_sha256 is not None
         or parent.schema_version != "news_semantic_program_artifact_v2"
-        or parent.factory_id != "tracefold.news.semantic_program.factory_v2"
+        or parent.factory_id != "tracefold.news.semantic_program.factory_v3"
         or parent.quality_kernel.dependency_lock_sha256 != bundle.compiler_lock_sha256
         or policy.policy_sha256 != bundle.sandbox_policy_sha256
         or compiler_source_sha256() != bundle.compiler_source_sha256

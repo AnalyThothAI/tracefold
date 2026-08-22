@@ -9,7 +9,13 @@ from typing import Any, NamedTuple
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
-from tracefold.news import ArmManifest, CandidateManifest, SemanticJudge, canonical_sha
+from tracefold.news import (
+    TOLD_SELECTOR_SHA256,
+    ArmManifest,
+    CandidateManifest,
+    SemanticJudge,
+    canonical_sha,
+)
 from tracefold.news.agents.semantic_program import (
     DspyNewsSemanticProgram,
     DspyPredictorAdapter,
@@ -178,9 +184,9 @@ def active_arm_manifest(
         program_version=artifact.program_version,
         program_sha256=artifact.program_sha256,
         runtime_model_bindings_sha256=composition.runtime_model_bindings_sha256,
-        retrieval_sha256=canonical_sha(
-            {"contract": "event_evidence_v1+told_sent_ledger_v2", "told_limit": 12, "window_hours": 4}
-        ),
+        # The selector's own identity, not a label describing it: a hand-written literal could not tell a
+        # tier-order or projection edit from a no-op, and the arm would have shipped as the same bundle.
+        retrieval_sha256=TOLD_SELECTOR_SHA256,
         policy=policy,
         policy_sha256=canonical_sha(policy),
     )

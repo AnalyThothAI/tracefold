@@ -35,7 +35,7 @@ from .semantic_program import (
     apply_program_patch_v2 as _apply_program_patch_v2,
 )
 
-LEARNING_EPOCH: Literal["program_v4"] = "program_v4"
+LEARNING_EPOCH: Literal["program_v5"] = "program_v5"
 
 
 class _ExactModel(BaseModel):
@@ -100,7 +100,10 @@ def build_eligible_demo_bank(
             continue
         semantics = EventSemantics.model_validate({name: verdict_payload[name] for name in EventSemantics.model_fields})
         card = ReaderCard.model_validate({name: verdict_payload[name] for name in ReaderCard.model_fields})
-        evidence_json = render_model_evidence_json(episode.context.model_payload())
+        semantics_evidence_json = render_model_evidence_json(
+            episode.context.event_semantics_payload(), predictor="event_semantics"
+        )
+        card_evidence_json = render_model_evidence_json(episode.context.reader_card_payload(), predictor="reader_card")
         case_evidence_sha = str(case.get("evidence_sha256") or "")
         if not _is_sha256(case_evidence_sha):
             raise ValueError("news_program_compile_demo_evidence_receipt_invalid")
@@ -116,7 +119,7 @@ def build_eligible_demo_bank(
         records.append(
             DemoRecord.issue(
                 predictor="event_semantics",
-                signature_inputs={"evidence_json": evidence_json},
+                signature_inputs={"evidence_json": semantics_evidence_json},
                 validated_output=semantics_payload,
                 source_kind="accepted_development",
                 development_dataset_sha256=dataset_sha,
@@ -130,7 +133,7 @@ def build_eligible_demo_bank(
             DemoRecord.issue(
                 predictor="reader_card",
                 signature_inputs={
-                    "evidence_json": evidence_json,
+                    "evidence_json": card_evidence_json,
                     "semantics_json": canonical_json(semantics_payload),
                 },
                 validated_output=card.model_dump(mode="json"),
@@ -186,7 +189,7 @@ def load_exact_stable_program() -> ProgramArtifact:
     if (
         parent.parent_program_sha256 is not None
         or parent.schema_version != "news_semantic_program_artifact_v2"
-        or parent.factory_id != "tracefold.news.semantic_program.factory_v2"
+        or parent.factory_id != "tracefold.news.semantic_program.factory_v3"
         or parent.compile_receipt.accepted_by != "code_owner"
     ):
         raise ValueError("news_program_compile_parent_must_be_exact_stable_root")

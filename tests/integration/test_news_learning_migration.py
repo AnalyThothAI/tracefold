@@ -66,7 +66,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260822_0297"
+        assert revision["version_num"] == "20260822_0298"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -170,7 +170,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0297"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0298"
     finally:
         if conn is not None:
             conn.close()
@@ -212,7 +212,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0297"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0298"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -355,10 +355,10 @@ def test_0293_to_0294_appends_program_v3_epoch_without_rewriting_prior_epochs() 
             restore.close()
 
 
-def test_0294_to_head_appends_program_v4_epoch_without_rewriting_prior_epochs() -> None:
+def test_0297_to_head_appends_program_v5_epoch_without_rewriting_prior_epochs() -> None:
     conn: Any | None = None
     try:
-        _fresh_schema_at("20260822_0294")
+        _fresh_schema_at("20260822_0297")
         conn = connect_postgres_test(read_only=False)
         prior_epochs = {
             row["epoch_id"]: dict(row)
@@ -379,8 +379,8 @@ def test_0294_to_head_appends_program_v4_epoch_without_rewriting_prior_epochs() 
                 "d" * 64,
                 "e" * 64,
                 "f" * 64,
-                prior_epochs["program_v3"]["starts_at_ms"],
-                prior_epochs["program_v3"]["starts_at_ms"],
+                prior_epochs["program_v4"]["starts_at_ms"],
+                prior_epochs["program_v4"]["starts_at_ms"],
             ),
         )
         conn.commit()
@@ -392,30 +392,30 @@ def test_0294_to_head_appends_program_v4_epoch_without_rewriting_prior_epochs() 
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0297"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260822_0298"
         epochs = conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
-        assert len(epochs) == 4
+        assert len(epochs) == 5
         for epoch_id, prior in prior_epochs.items():
             assert dict(next(row for row in epochs if row["epoch_id"] == epoch_id)) == prior
-        program_v4 = next(row for row in epochs if row["epoch_id"] == "program_v4")
-        assert deployed_after_ms <= program_v4["starts_at_ms"] <= deployed_before_ms
-        assert program_v4["created_at_ms"] == program_v4["starts_at_ms"]
-        assert program_v4["starts_at_ms"] > prior_epochs["program_v3"]["starts_at_ms"]
-        assert program_v4["source_issue"] == "https://github.com/AnalyThothAI/tracefold/issues/134"
-        assert program_v4["prior_evidence_disposition"] == "audit_only"
-        assert program_v4["reset_reason"] == "d_generation_factory_and_optimizer_ownership_hard_cut"
-        assert program_v4["program_factory_id"] == "tracefold.news.semantic_program.factory_v2"
-        assert program_v4["artifact_schema_version"] == "news_semantic_program_artifact_v2"
-        assert program_v4["baseline_program_version"] == "news_semantic_program_v2"
-        assert program_v4["baseline_program_sha256"] == load_stable_program_artifact().program_sha256
+        program_v5 = next(row for row in epochs if row["epoch_id"] == "program_v5")
+        assert deployed_after_ms <= program_v5["starts_at_ms"] <= deployed_before_ms
+        assert program_v5["created_at_ms"] == program_v5["starts_at_ms"]
+        assert program_v5["starts_at_ms"] > prior_epochs["program_v4"]["starts_at_ms"]
+        assert program_v5["source_issue"] == "https://github.com/AnalyThothAI/tracefold/issues/138"
+        assert program_v5["prior_evidence_disposition"] == "audit_only"
+        assert program_v5["reset_reason"] == "candidate_conditioned_told_context_and_predictor_input_partition"
+        assert program_v5["program_factory_id"] == "tracefold.news.semantic_program.factory_v3"
+        assert program_v5["artifact_schema_version"] == "news_semantic_program_artifact_v2"
+        assert program_v5["baseline_program_version"] == "news_semantic_program_v3"
+        assert program_v5["baseline_program_sha256"] == load_stable_program_artifact().program_sha256
         canary = conn.execute(
             "SELECT state, revision, trip_reason, tripped_at_ms FROM news_canary_activations WHERE activation_id = %s",
             ("a" * 32,),
         ).fetchone()
         assert canary["state"] == "tripped"
         assert canary["revision"] == 2
-        assert canary["trip_reason"] == "program_v4_hard_cut"
-        assert canary["tripped_at_ms"] == program_v4["starts_at_ms"]
+        assert canary["trip_reason"] == "program_v5_hard_cut"
+        assert canary["tripped_at_ms"] == program_v5["starts_at_ms"]
     finally:
         if conn is not None:
             conn.close()

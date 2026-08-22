@@ -258,9 +258,9 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     assert [t["event_id"] for t in told] == [row["event_id"]]
     assert told[0]["headline_zh"] == "测试" and told[0]["magnitude"] == 2 and told[0]["direction"] == "bullish"
     assert told[0]["storyline_key"] == row["storyline_key"] and told[0]["at_ms"] == now_ms + 20
-    preferred = repos.news.told_ledger(now_ms=later, window_ms=window, limit=1, prefer_key=row["storyline_key"])
-    assert [t["event_id"] for t in preferred] == [row["event_id"]]
-    assert len(repos.news.told_ledger(now_ms=later, window_ms=window, limit=12, prefer_key="asset:NOPE")) == 1
+    # The projection is the selector's input contract: everything it ranks on comes from this one query.
+    assert told[0]["comparison_title"] and told[0]["event_type"] == "macro"
+    assert list(told[0]["grounded_assets"]) == list(row["grounded_assets"])
     with repos.transaction():
         conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
     # A grounded restatement of that card drops, and the storyline lock is a plain transaction-scoped advisory lock.
