@@ -74,12 +74,46 @@ class _DirectDb:
         return fn(repositories_for_connection(self._conn))
 
 
-@pytest.fixture()
-def conn():
+@pytest.fixture(scope="module")
+def _database():
+    """Migrate once for the module, not once per test.
+
+    A per-test `DROP SCHEMA public CASCADE` is far more churn than any other integration module
+    creates, and it races other modules' lingering connections in a full-suite run — the tests then
+    fail on `alembic_version already exists` rather than on anything they assert. One migration plus a
+    cheap per-test truncation isolates just as well and is an order of magnitude faster.
+    """
+
     connection = connect_postgres_test(read_only=False)
     migrate(connection)
     yield connection
     connection.close()
+
+
+@pytest.fixture()
+def conn(_database):
+    _reset(_database)
+    return _database
+
+
+def _reset(conn: Any) -> None:
+    conn.execute("TRUNCATE trading_order_observations, trading_orders, trading_cases CASCADE")
+    conn.execute("TRUNCATE news_oi_signals, news_verdicts, news_events, news_items CASCADE")
+    conn.execute("DELETE FROM news_market_instruments")
+    conn.execute("DELETE FROM trading_symbol_blacklist")
+    # The deny-list seeds are migration state, so restoring them is part of restoring the schema.
+    conn.execute(
+        "INSERT INTO trading_symbol_blacklist (base_symbol, reason, expires_at_ms, created_at_ms, updated_at_ms) "
+        "VALUES ('BTC', 'benchmark_large_cap', NULL, %s, %s), ('ETH', 'benchmark_large_cap', NULL, %s, %s), "
+        "('CL', 'commodity_not_target', NULL, %s, %s)",
+        (NOW, NOW, NOW, NOW, NOW, NOW),
+    )
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'RUNNING', day_key = '', orders_today = 0, "
+        "dspy_calls_today = 0, funnel = '{}'::jsonb, updated_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
+    conn.commit()
 
 
 def _repos(conn: Any) -> Any:
@@ -834,7 +868,7 @@ def test_close_only_and_paused_both_refuse_to_submit_an_approved_entry(conn) -> 
     """The reconciler reading the control state at all is the fix; before this neither reached it."""
 
     for control in ("PAUSED", "CLOSE_ONLY"):
-        conn.execute("TRUNCATE trading_orders, trading_cases CASCADE")
+        _reset(conn)
         _repos(conn).trading.set_control(control=control, now_ms=NOW)
         conn.commit()
         _case(conn, case_id="c1", source_key="k1")

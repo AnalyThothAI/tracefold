@@ -165,6 +165,14 @@ def upgrade() -> None:
           CONSTRAINT trading_orders_exchange_check
             CHECK (exchange_id IN ('binance', 'hyperliquid', 'paper')),
           CONSTRAINT trading_orders_side_check CHECK (side IN ('buy', 'sell')),
+          -- `trading_cases` has always had one; `trading_orders` did not, so a typo in a state string
+          -- would have been accepted and then matched no reconcile branch — an order stuck outside
+          -- the state machine while still inside the active-underlying index.
+          CONSTRAINT trading_orders_state_check CHECK (state IN (
+            'PREPARED', 'AWAITING_APPROVAL', 'APPROVED', 'REJECTED_BY_OPERATOR', 'SUBMITTING', 'REJECTED',
+            'ACKNOWLEDGED', 'PARTIAL', 'OPEN', 'UNPROTECTED', 'SAFETY_CLOSING', 'AMBIGUOUS', 'RECONCILING',
+            'MANUAL_REVIEW_REQUIRED', 'CLOSED'
+          )),
           CONSTRAINT trading_orders_mode_check
             CHECK (mode IN ('paper', 'live_reviewed', 'live_bounded')),
           -- The one protection against a double write: OpenTrade has no client idempotency key, so the

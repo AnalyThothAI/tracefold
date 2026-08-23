@@ -422,23 +422,29 @@ class TradingRepository:
                        updated_at_ms = %s
                  WHERE order_id = %s
                    AND exit_attempt_count = 0
-                   AND exit_attempt_total < %(ceiling)s
+                   AND exit_attempt_total < 3
                    AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL')
             """
         else:  # pragma: no cover - the caller passes a literal
             raise ValueError(f"trading_attempt_kind_invalid:{kind}")
-        cursor = self.conn.execute(sql.replace("%(ceiling)s", str(_MAX_EXIT_ATTEMPTS)), (int(now_ms), order_id))
+        cursor = self.conn.execute(sql, (int(now_ms), order_id))
         if int(getattr(cursor, "rowcount", 0) or 0) > 0:
             return "claimed"
         row = self.conn.execute(
-            "SELECT state, provider_attempt_count, exit_attempt_total FROM trading_orders WHERE order_id = %s",
+            "SELECT state, provider_attempt_count, exit_attempt_count, exit_attempt_total "
+            "FROM trading_orders WHERE order_id = %s",
             (order_id,),
         ).fetchone()
         if row is None:
             return "missing"
         if kind == "exit" and int(row["exit_attempt_total"]) >= _MAX_EXIT_ATTEMPTS:
             return "exhausted"
-        return "already_spent"
+        if kind == "entry" and int(row["provider_attempt_count"]) > 0:
+            return "already_spent"
+        if kind == "exit" and int(row["exit_attempt_count"]) > 0:
+            return "already_spent"
+        # The counter is free but the row is not in a state this leg may be claimed from.
+        return "wrong_state"
 
     def release_exit_attempt(self, *, order_id: str, now_ms: int) -> bool:
         """Let the exit be attempted again, because a read proved the position is still open.
@@ -499,6 +505,25 @@ class TradingRepository:
             )
         else:  # pragma: no cover - the CLI constrains the choices
             raise ValueError(f"trading_manual_resolution_invalid:{outcome}")
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def promote_acknowledged(self, *, order_id: str, now_ms: int) -> bool:
+        """`ACKNOWLEDGED -> OPEN`, guarded on the state it expects like every other transition here.
+
+        The reconcile loop is sequential and this is the only handler for ACKNOWLEDGED, so an
+        unguarded write would be safe today — but "guarded unless there is a reason not to be" is the
+        rule the rest of this class follows, and the unguarded exception is what a future concurrent
+        reader would copy.
+        """
+
+        cursor = self.conn.execute(
+            """
+            UPDATE trading_orders
+               SET state = 'OPEN', state_reason = 'observed_open', updated_at_ms = %s
+             WHERE order_id = %s AND state = 'ACKNOWLEDGED'
+            """,
+            (int(now_ms), order_id),
+        )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
     def reschedule_order(self, *, order_id: str, expected_state: str, next_reconcile_at_ms: int, now_ms: int) -> bool:

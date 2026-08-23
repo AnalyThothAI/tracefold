@@ -92,8 +92,6 @@ _PREPARED_TTL_MS = 900_000
 # How long a frozen case may wait to be decided. Its own budget, separate from the freshness the
 # candidate rules already spent, so queueing behind another case's model call cannot discard a signal.
 _CASE_DECISION_TTL_MS = 300_000
-# The exit's bounded retry, mirrored from the schema CHECK so the runner can name the exhaustion.
-_MAX_EXIT_ATTEMPTS = 3
 # What still stops a News-only case even though it has no quadrant: no price to enter at, and the
 # measured chasing bucket above the pre-move ceiling.
 _NEWS_ONLY_BLOCKING_REASONS = frozenset({"no_price_fail_closed", "move_above_band_chasing"})
@@ -1181,13 +1179,7 @@ class ReconcileRunner:
             # positions as ACKNOWLEDGED and the documented machine no longer matched the code.
             await self._db.tx(
                 "trading_reconcile_open",
-                lambda repos: repos.trading.update_order(
-                    order_id=order_id,
-                    state=OrderState.OPEN.value,
-                    state_reason="observed_open",
-                    next_reconcile_at_ms=now,
-                    now_ms=now,
-                ),
+                lambda repos: repos.trading.promote_acknowledged(order_id=order_id, now_ms=now),
                 timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
             )
             # The batch snapshot is now behind the row. Every later guarded write in this call has to
@@ -1228,7 +1220,7 @@ class ReconcileRunner:
                 # itself, not from the batch snapshot — that copy of `exit_attempt_total` predates the
                 # increment the claim just tested, so it was always one behind the value it guarded.
                 await self._escalate(order_id, "exit_attempts_exhausted", now)
-            elif claim == "already_spent":
+            elif claim in ("already_spent", "wrong_state"):
                 await self._defer(order_id, current_state, now)
             return True
         if receipt.state == "AMBIGUOUS":
