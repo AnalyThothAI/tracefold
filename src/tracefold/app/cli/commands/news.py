@@ -1011,6 +1011,12 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     if mode == "recorded" and action_source != "recorded":
         # Scoring a retired arm's verdict against today's `decide()` compares two things that never coexisted.
         raise ValueError("news_program_baseline_recorded_mode_requires_recorded_action")
+    if mode != "recorded" and action_source == "recorded":
+        # The other direction is worse, because it looks like it works. `recorded_action` short-circuits
+        # `_production_action`, so a live mode would generate a fresh verdict and then score it against the
+        # action a *different* verdict shipped — silently zeroing the meaning of the metric's heaviest
+        # component (0.50) while every `action` in the report reads as a real result.
+        raise ValueError("news_program_baseline_live_mode_requires_policy_action")
     window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
     with postgres_connection(settings, role="serve") as conn:
         evaluator = CandidateEvaluator(conn, stable=stable, judges={})

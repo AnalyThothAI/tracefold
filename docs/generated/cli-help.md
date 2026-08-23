@@ -371,8 +371,10 @@ options:
                         (excludes consumer transaction, advisory lock, stale
                         re-ask, degraded wire card, broker and delivery)
   --action-source {recorded,policy}
-                        recorded: the action that shipped; policy: re-run
-                        decide(). Defaults to recorded for --mode recorded
+                        recorded: the action that shipped, valid only with
+                        --mode recorded; policy: re-run decide(), required by
+                        the live modes. Defaults to the only valid value for
+                        the chosen mode
   --all-cohorts         drop release-plane eligibility and score every
                         accepted review in the window
   --semantic-judge MODEL

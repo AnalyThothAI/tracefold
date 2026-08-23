@@ -267,3 +267,58 @@ def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> 
         stable_judge._record_primary_failure()
     assert stable_judge._primary_open_until > 0
     assert candidate_judge._primary_open_until == 0
+
+
+def _baseline_args(**updates: Any) -> SimpleNamespace:
+    args = {
+        "learning_command": "baseline",
+        "from_ms": 1,
+        "to_ms": 2,
+        "mode": "recorded",
+        "action_source": "",
+        "all_cohorts": False,
+        "semantic_judge": "",
+        "limit": 10,
+        "out": "",
+    }
+    args.update(updates)
+    return SimpleNamespace(**args)
+
+
+@pytest.mark.parametrize(
+    ("mode", "action_source", "error"),
+    [
+        ("recorded", "policy", "news_program_baseline_recorded_mode_requires_recorded_action"),
+        ("compile_live", "recorded", "news_program_baseline_live_mode_requires_policy_action"),
+        ("runtime_live", "recorded", "news_program_baseline_live_mode_requires_policy_action"),
+    ],
+)
+def test_baseline_refuses_a_mode_and_action_source_that_measure_nothing(
+    monkeypatch: Any, mode: str, action_source: str, error: str
+) -> None:
+    """Both directions are wrong, and the second one is the dangerous one because it looks like it works.
+
+    `recorded_action` short-circuits `_production_action`, so a live mode with `--action-source recorded`
+    would generate a fresh verdict and score it against the action a *different* verdict shipped. The metric's
+    heaviest component (0.50) would be measuring nothing while every `action` in the report read as real.
+    """
+
+    def refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("the guard must fail before the corpus is read")
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repositories.postgres_connection", refuse)
+
+    code, payload = _handle_learning(_baseline_args(mode=mode, action_source=action_source))
+    assert code == 2
+    assert payload["error"] == error
+
+
+def test_baseline_defaults_each_mode_to_its_only_valid_action_source() -> None:
+    parser = build_parser()
+    for mode in ("recorded", "compile_live", "runtime_live"):
+        args = parser.parse_args(["news", "learning", "baseline", "--from-ms", "1", "--to-ms", "2", "--mode", mode])
+        assert args.action_source == "", "the handler resolves the default, so the parser must not guess"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["news", "learning", "baseline", "--from-ms", "1", "--to-ms", "2", "--mode", "live"])

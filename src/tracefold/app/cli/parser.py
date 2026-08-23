@@ -153,7 +153,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--action-source",
         choices=("recorded", "policy"),
         default="",
-        help="recorded: the action that shipped; policy: re-run decide(). Defaults to recorded for --mode recorded",
+        help=(
+            "recorded: the action that shipped, valid only with --mode recorded; policy: re-run decide(), "
+            "required by the live modes. Defaults to the only valid value for the chosen mode"
+        ),
     )
     learning_baseline.add_argument(
         "--all-cohorts",
