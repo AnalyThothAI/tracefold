@@ -571,3 +571,58 @@ def test_the_clock_closes_an_open_position_without_news_or_a_model(conn) -> None
     # Both taker legs charged: entry and exit were both 102, so the receipt is the round-trip cost.
     assert int(order["realized_bps"]) == -10
     assert _repos(conn).trading.active_underlyings() == []
+
+
+# ---------------------------------------------------------------------------- role privileges
+def test_the_http_facing_role_can_only_read_the_trading_tables(conn) -> None:
+    """`tracefold_serve` is reachable from the internet and the deny-list is a safety control.
+
+    The one precedent for a serve write in this schema is append-only `INSERT` on `news_reviews`.
+    Nothing here may give that role `UPDATE` or `DELETE`, least of all on the deny-list: a bug or an
+    injection anywhere in the read path would then be able to erase the rule that keeps BTC/ETH/CL
+    out of the order book.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT table_name, privilege_type
+          FROM information_schema.role_table_grants
+         WHERE grantee = 'tracefold_serve' AND table_name LIKE 'trading\\_%'
+        """
+    ).fetchall()
+    granted = {(str(row["table_name"]), str(row["privilege_type"])) for row in rows}
+    assert granted, "serve must be able to read the trading tables"
+    assert {privilege for _, privilege in granted} == {"SELECT"}
+
+
+def test_the_workers_role_owns_every_trading_mutation(conn) -> None:
+    rows = conn.execute(
+        """
+        SELECT table_name, privilege_type
+          FROM information_schema.role_table_grants
+         WHERE grantee = 'tracefold_workers' AND table_name LIKE 'trading\\_%'
+        """
+    ).fetchall()
+    granted: dict[str, set[str]] = {}
+    for row in rows:
+        granted.setdefault(str(row["table_name"]), set()).add(str(row["privilege_type"]))
+    assert granted["trading_symbol_blacklist"] >= {"SELECT", "INSERT", "UPDATE", "DELETE"}
+    for table in ("trading_runtime_state", "trading_cases", "trading_orders", "trading_order_observations"):
+        assert granted[table] >= {"SELECT", "INSERT", "UPDATE"}
+        # Ledger rows are never deleted: an order that existed is audit, not garbage.
+        assert "DELETE" not in granted[table]
+
+
+def test_a_read_only_transaction_cannot_touch_the_deny_list(conn) -> None:
+    """The failure the CLI would have hit in production, made explicit.
+
+    `tracefold_serve` carries `default_transaction_read_only = on`, so routing an operator mutation
+    through it does not merely over-grant — it does not work at all.
+    """
+
+    conn.execute("SET default_transaction_read_only = on")
+    with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+        conn.execute("DELETE FROM trading_symbol_blacklist WHERE base_symbol = 'BTC'")
+    conn.rollback()
+    conn.execute("SET default_transaction_read_only = off")
+    conn.commit()

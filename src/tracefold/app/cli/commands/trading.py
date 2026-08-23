@@ -4,13 +4,16 @@ Read-mostly. The three writes it does have are deliberately narrow: the deny-lis
 and an approval bound to an exact frozen payload digest. There is no command that places, amends or
 cancels an order — a human deciding to trade is a human editing the mandate, not a CLI flag.
 
-Every command runs as the `serve` role, so nothing here can write a News table.
+Reads run as the read-only `serve` role. The three operator mutations run as `workers`, because
+`tracefold_serve` is the HTTP-facing role, it carries `default_transaction_read_only = on`, and the
+deny-list is a safety control the internet-facing role must not be able to rewrite or erase. Neither
+role can write a News table from here.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from tracefold.app.repositories import repositories
 from tracefold.platform.config.settings import load_settings
@@ -18,6 +21,7 @@ from tracefold.trading import canonical_base_symbol
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
 _STATUS_WINDOW_MS = 24 * 3_600_000
+_READ_COMMANDS = frozenset({"status", "cases", "show"})
 
 
 def _now_ms() -> int:
@@ -28,8 +32,10 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     command = str(getattr(args, "trading_command", "") or "")
     now = _now_ms()
+    listing_only = command == "blacklist" and str(getattr(args, "blacklist_action", "list") or "list") == "list"
+    role: Literal["serve", "workers"] = "serve" if (command in _READ_COMMANDS or listing_only) else "workers"
 
-    with repositories(settings, role="serve") as repos:
+    with repositories(settings, role=role) as repos:
         trading = repos.trading
 
         if command == "status":

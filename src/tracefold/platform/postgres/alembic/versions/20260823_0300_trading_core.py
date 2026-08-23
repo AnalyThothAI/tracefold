@@ -196,6 +196,11 @@ def upgrade() -> None:
         """
     )
 
+    # `tracefold_serve` is the HTTP-facing role and it runs `default_transaction_read_only = on`. It
+    # gets SELECT and nothing else on every table here. The deny-list is a *safety control*: the role
+    # reachable from the internet must not be able to rewrite or erase it, and the one precedent for a
+    # serve write (`news_reviews`) is append-only INSERT for exactly that reason. Operator mutations —
+    # deny-list, control state, order approval — run as `tracefold_workers` from the CLI instead.
     op.execute(
         "GRANT SELECT ON trading_symbol_blacklist, trading_runtime_state, trading_cases, "
         "trading_orders, trading_order_observations TO tracefold_serve"
@@ -204,9 +209,7 @@ def upgrade() -> None:
         "GRANT SELECT, INSERT, UPDATE ON trading_symbol_blacklist, trading_runtime_state, "
         "trading_cases, trading_orders, trading_order_observations TO tracefold_workers"
     )
-    # The blacklist is operator state, and `tracefold trading blacklist remove` runs as the serve role.
-    op.execute("GRANT INSERT, UPDATE, DELETE ON trading_symbol_blacklist TO tracefold_serve")
-    op.execute("GRANT UPDATE ON trading_runtime_state TO tracefold_serve")
+    op.execute("GRANT DELETE ON trading_symbol_blacklist TO tracefold_workers")
 
     op.execute(
         """

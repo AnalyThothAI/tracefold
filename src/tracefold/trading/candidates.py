@@ -26,6 +26,7 @@ from .models import (
 
 _NATIVE_PERP_VENUE: Mapping[str, str] = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
 _LIVE_DECISIONS = frozenset({"push", "escalate"})
+_KNOWN_VENUES = frozenset({"binance", "hyperliquid"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,10 +115,13 @@ def oi_candidate(
     if blocked is not None:
         return _no(f"blacklisted:{blocked.reason}", symbol)
 
+    # The frame's `source` is provider text. It is carried on the candidate as-is because the research
+    # keys on it, but the funnel is one bounded JSONB document in one row — an arbitrary provider
+    # string there would make its key set unbounded, so the counter uses a closed vocabulary.
     venue = str(row.get("venue") or "").strip().lower()
     if funnel is not None:
         funnel.count("oi_eligible")
-        funnel.count(f"oi_eligible_venue:{venue or 'unknown'}")
+        funnel.count(f"oi_eligible_venue:{venue if venue in _KNOWN_VENUES else 'other'}")
     return OiTradeCandidate(
         event_id=str(row.get("event_id") or ""),
         observed_at_ms=observed,
