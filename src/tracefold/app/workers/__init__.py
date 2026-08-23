@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+import dspy  # type: ignore[import-untyped]
 import uvicorn
 from loguru import logger
 from psycopg import OperationalError
@@ -27,6 +28,7 @@ from tracefold.app.learning_runtime import (
     runtime_identity,
     runtime_manifest_sha,
 )
+from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.runtime import WORKERS_RUNTIME_VERSION, WorkersRuntimeRepository
@@ -68,6 +70,8 @@ from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.trading import DEFAULT_DEADLINE_SECONDS as TRADING_DECISION_DEADLINE_SECONDS
+from tracefold.trading import DEFAULT_MAX_TOKENS as TRADING_DECISION_MAX_TOKENS
 from tracefold.trading import Bar as TradingBar
 from tracefold.trading import (
     EligibilityPolicy,
@@ -652,18 +656,39 @@ def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> Any | N
 
     program = None
     if settings.llm.trading_decision_model and settings.llm.api_key and settings.llm.base_url:
-        program = TradingDecisionProgram.build(
-            model_name=settings.llm.trading_decision_model,
-            api_key=settings.llm.api_key,
-            api_base=settings.llm.base_url,
+        # Same endpoint composition as every other DSPy call site: the LiteLLM provider prefix and the
+        # provider-specific thinking switches come from `configured_lm_endpoint`, not from a bare model
+        # string. Cache and hidden retries stay off for the same reason News pins them off.
+        endpoint = configured_lm_endpoint(settings, model_name=settings.llm.trading_decision_model)
+        program = TradingDecisionProgram(
+            lm=dspy.LM(
+                endpoint.model_name,
+                api_key=endpoint.api_key,
+                api_base=endpoint.api_base,
+                temperature=0,
+                max_tokens=TRADING_DECISION_MAX_TOKENS,
+                timeout=TRADING_DECISION_DEADLINE_SECONDS,
+                cache=False,
+                num_retries=0,
+                **dict(endpoint.model_kwargs or {}),
+            ),
+            model_name=endpoint.model_name,
+            deadline_seconds=TRADING_DECISION_DEADLINE_SECONDS,
         )
 
-    return build_trading_pipeline(
-        db=_TradingColdDb(db),
-        config=trading_config_from_settings(settings),
-        bars=_trading_bar_fetcher(settings),
-        program=program,
-    )
+    try:
+        return build_trading_pipeline(
+            db=_TradingColdDb(db),
+            config=trading_config_from_settings(settings),
+            bars=_trading_bar_fetcher(settings),
+            program=program,
+        )
+    except Exception:
+        # Trading's failure is local by construction, and that has to include its own composition. A
+        # config-valid live mode with no execution adapter raised out of here into the unguarded
+        # `_wire_components` and crash-looped the whole Workers process, so News never started either.
+        logger.exception("trading pipeline wiring failed; Trading stays disabled for this process")
+        return None
 
 
 def _trading_bar_fetcher(settings: Any) -> Any:
@@ -674,10 +699,15 @@ def _trading_bar_fetcher(settings: Any) -> Any:
     """
 
     venue_for = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
+    # One switch for one decision. Reading `news.venues` here was a second switch for the same
+    # question the router already answers from `trading.venues`: with the two disagreeing, routing
+    # picked a venue whose fetcher returned None and every case died at `no_price_fail_closed` with
+    # nothing naming the contradiction. Same shape #126 removed from the Strategy allowlist.
+    enabled = set(settings.trading.venues.enabled)
 
     def factory(exchange_id: str) -> Any | None:
         venue = venue_for.get(str(exchange_id))
-        if venue is None or not _price_venue_enabled(settings, venue):
+        if venue is None or str(exchange_id) not in enabled:
             return None
 
         async def fetch(provider_symbol: str, start_ms: int, end_ms: int) -> Any:

@@ -144,6 +144,7 @@ def upgrade() -> None:
           state                  TEXT    NOT NULL,
           state_reason           TEXT,
           provider_attempt_count INTEGER NOT NULL DEFAULT 0,
+          exit_attempt_count     INTEGER NOT NULL DEFAULT 0,
           remote_order_id        TEXT,
           filled_quantity        NUMERIC,
           average_price          NUMERIC,
@@ -151,6 +152,7 @@ def upgrade() -> None:
           exit_reason            TEXT,
           realized_bps           INTEGER,
           position_opened_at_ms  BIGINT,
+          position_closed_at_ms  BIGINT,
           must_close_at_ms       BIGINT,
           next_reconcile_at_ms   BIGINT,
           closed_at_ms           BIGINT,
@@ -164,9 +166,12 @@ def upgrade() -> None:
           CONSTRAINT trading_orders_side_check CHECK (side IN ('buy', 'sell')),
           CONSTRAINT trading_orders_mode_check
             CHECK (mode IN ('paper', 'live_reviewed', 'live_bounded')),
-          -- The one protection against a double order: OpenTrade has no client idempotency key, so the
-          -- ledger, not the provider, is what makes a second write impossible.
+          -- The one protection against a double write: OpenTrade has no client idempotency key, so the
+          -- ledger, not the provider, is what makes a second attempt impossible. The exit needs its own
+          -- counter rather than sharing the entry's — the entry has already spent that one by the time
+          -- a position can be closed, so a shared counter would leave the exit with no protection at all.
           CONSTRAINT trading_orders_one_attempt CHECK (provider_attempt_count <= 1),
+          CONSTRAINT trading_orders_one_exit_attempt CHECK (exit_attempt_count <= 1),
           CONSTRAINT trading_orders_quantity_positive CHECK (quantity > 0),
           CONSTRAINT trading_orders_notional_positive CHECK (notional_usd > 0)
         )

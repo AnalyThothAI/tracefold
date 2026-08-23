@@ -183,3 +183,70 @@ def test_the_worst_case_daily_envelope_is_derivable_from_configuration_alone() -
     order = TradingOrderSettings()
     # notional 50 x 200 bps x 4 orders = 4 USD. An operator can sign off on a multiplication.
     assert order.worst_case_daily_loss_usd == Decimal("4")
+
+
+def test_a_trading_wiring_failure_never_takes_the_workers_process_down() -> None:
+    """Trading's failure being local has to include its own composition.
+
+    A `live_reviewed` mode with an OpenTrade base URL and token file is config-valid and documented,
+    but no execution adapter ships yet, so `build_pipeline` raises. Unguarded, that propagated out of
+    `_wire_components` into the fatal path and crash-looped the process — News never started either.
+    """
+
+    from tracefold.app import workers as workers_module
+
+    calls: list[str] = []
+
+    def _boom(**_: object) -> object:
+        calls.append("built")
+        raise ValueError("trading_live_mode_requires_execution_adapter")
+
+    original = workers_module.build_trading_pipeline
+    workers_module.build_trading_pipeline = _boom  # type: ignore[assignment]
+    try:
+        settings = _live_reviewed_settings()
+        assert workers_module._wire_trading_pipeline(settings=settings, db=_FakeDb()) is None
+    finally:
+        workers_module.build_trading_pipeline = original  # type: ignore[assignment]
+    assert calls == ["built"]
+
+
+def test_the_bar_fetcher_reads_the_same_venue_switch_the_router_reads() -> None:
+    """Two switches for one decision is the shape #126 removed from the Strategy allowlist.
+
+    Routing read `trading.venues`; candle fetching read `news.venues`. With the two disagreeing the
+    router picked a venue whose fetcher returned None and every case died at `no_price_fail_closed`
+    with nothing naming the contradiction.
+    """
+
+    from tracefold.app.workers import _trading_bar_fetcher
+    from tracefold.platform.config.settings import Settings
+
+    settings = Settings.model_validate(
+        {
+            "news": {"venues": {"binance": False, "hyperliquid": False}},
+            "trading": {"enabled": True, "venues": {"binance_enabled": True, "hyperliquid_enabled": False}},
+        }
+    )
+    factory = _trading_bar_fetcher(settings)
+    assert factory("binance") is not None
+    assert factory("hyperliquid") is None
+
+
+class _FakeDb:
+    def heavy_business(self) -> object:  # pragma: no cover - only the attribute is needed
+        return self
+
+
+def _live_reviewed_settings() -> object:
+    from tracefold.platform.config.settings import Settings
+
+    return Settings.model_validate(
+        {
+            "trading": {
+                "enabled": True,
+                "mode": "live_reviewed",
+                "opentrade": {"base_url": "https://example.invalid", "token_file": "opentrade_token"},
+            }
+        }
+    )

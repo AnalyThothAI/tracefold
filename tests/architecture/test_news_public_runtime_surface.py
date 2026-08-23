@@ -274,6 +274,10 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
         # that calls a model, and it lives in its own capability rather than being smuggled into a
         # News module. DeepAgents/LangGraph/ReAct stay absent tree-wide, which the next assertion keeps.
         SRC / "trading" / "decision_program.py",
+        # #104: the composition root builds the Trading LM the same way it builds the News ones — via
+        # `configured_lm_endpoint`, so the LiteLLM prefix and the provider thinking switches apply.
+        # The Trading package itself never constructs one.
+        SRC / "app" / "workers" / "__init__.py",
     }
     dspy_offenders = sorted(
         str(path.relative_to(ROOT))

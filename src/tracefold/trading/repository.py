@@ -320,8 +320,14 @@ class TradingRepository:
         return [str(row["underlying_key"]) for row in rows]
 
     def last_close_at_ms(self, *, underlying_key: str) -> int | None:
+        """The last time a *position* actually closed. Four paths write `closed_at_ms`; only one is an exit.
+
+        Keying the cooldown on row terminalisation made a transient venue rejection — which never held
+        exposure — block the symbol for the full cooldown.
+        """
+
         row = self.conn.execute(
-            "SELECT max(closed_at_ms) AS closed_at_ms FROM trading_orders WHERE underlying_key = %s",
+            "SELECT max(position_closed_at_ms) AS closed_at_ms FROM trading_orders WHERE underlying_key = %s",
             (underlying_key,),
         ).fetchone()
         value = None if row is None else row["closed_at_ms"]
@@ -385,24 +391,55 @@ class TradingRepository:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def mark_submitting(self, *, order_id: str, now_ms: int) -> bool:
-        """Record the attempt *before* the network call, and only ever once.
+    def claim_attempt(self, *, order_id: str, kind: str, now_ms: int) -> bool:
+        """Record one capital write *before* the network call, and only ever once for that leg.
 
-        The `provider_attempt_count = 0` predicate plus the schema CHECK is what makes a second write
-        unrecordable: a caller that somehow tried again would find zero rows updated and must not call.
+        The counter predicate plus the schema CHECK is what makes a second write unrecordable: a caller
+        that somehow tried again finds zero rows updated and must not call. Entry and exit have
+        separate counters because by the time a position can be closed the entry has already spent
+        its one — a shared counter would leave the exit with no protection at all.
+        """
+
+        if kind == "entry":
+            sql = """
+                UPDATE trading_orders
+                   SET state = 'SUBMITTING',
+                       provider_attempt_count = provider_attempt_count + 1,
+                       updated_at_ms = %s
+                 WHERE order_id = %s
+                   AND provider_attempt_count = 0
+                   AND state IN ('PREPARED', 'APPROVED')
+            """
+        elif kind == "exit":
+            sql = """
+                UPDATE trading_orders
+                   SET state = 'SAFETY_CLOSING',
+                       exit_attempt_count = exit_attempt_count + 1,
+                       updated_at_ms = %s
+                 WHERE order_id = %s
+                   AND exit_attempt_count = 0
+                   AND state IN ('ACKNOWLEDGED', 'OPEN', 'PARTIAL')
+            """
+        else:  # pragma: no cover - the caller passes a literal
+            raise ValueError(f"trading_attempt_kind_invalid:{kind}")
+        cursor = self.conn.execute(sql, (int(now_ms), order_id))
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def reschedule_order(self, *, order_id: str, expected_state: str, next_reconcile_at_ms: int, now_ms: int) -> bool:
+        """Push a due order out without touching its state.
+
+        `update_order` writes `state` unconditionally, so a deferral computed from a state read at the
+        top of a 32-row batch could blind-write a stale state back over one the commit path had since
+        advanced — a live position whose row says `PREPARED` is invisible to `_manage_open` forever.
         """
 
         cursor = self.conn.execute(
             """
             UPDATE trading_orders
-               SET state = 'SUBMITTING',
-                   provider_attempt_count = provider_attempt_count + 1,
-                   updated_at_ms = %s
-             WHERE order_id = %s
-               AND provider_attempt_count = 0
-               AND state IN ('PREPARED', 'APPROVED')
+               SET next_reconcile_at_ms = %s, updated_at_ms = %s
+             WHERE order_id = %s AND state = %s
             """,
-            (int(now_ms), order_id),
+            (int(next_reconcile_at_ms), int(now_ms), order_id, expected_state),
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
@@ -419,6 +456,7 @@ class TradingRepository:
         exit_reason: str | None = None,
         realized_bps: int | None = None,
         position_opened_at_ms: int | None = None,
+        position_closed_at_ms: int | None = None,
         must_close_at_ms: int | None = None,
         next_reconcile_at_ms: int | None = None,
         closed_at_ms: int | None = None,
@@ -436,6 +474,7 @@ class TradingRepository:
                    exit_reason = coalesce(%s, exit_reason),
                    realized_bps = coalesce(%s, realized_bps),
                    position_opened_at_ms = coalesce(%s, position_opened_at_ms),
+                   position_closed_at_ms = coalesce(%s, position_closed_at_ms),
                    must_close_at_ms = coalesce(%s, must_close_at_ms),
                    next_reconcile_at_ms = %s,
                    closed_at_ms = coalesce(%s, closed_at_ms),
@@ -452,6 +491,7 @@ class TradingRepository:
                 exit_reason,
                 realized_bps,
                 position_opened_at_ms,
+                position_closed_at_ms,
                 must_close_at_ms,
                 next_reconcile_at_ms,
                 closed_at_ms,
@@ -553,9 +593,11 @@ class TradingRepository:
             "SELECT case_kind, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY case_kind",
             (int(since_ms),),
         ).fetchall()
+        # Only real exits enter the realised-PnL denominator. Counting operator rejections and
+        # never-submitted intents alongside them turned one +150 bps winner into a reported mean of 37.5.
         realized = self.conn.execute(
             "SELECT count(*) AS n, coalesce(sum(realized_bps), 0) AS total_bps "
-            "FROM trading_orders WHERE closed_at_ms IS NOT NULL AND closed_at_ms >= %s",
+            "FROM trading_orders WHERE position_closed_at_ms IS NOT NULL AND position_closed_at_ms >= %s",
             (int(since_ms),),
         ).fetchone()
         return {

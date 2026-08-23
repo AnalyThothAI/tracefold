@@ -511,6 +511,7 @@
 | `state` | `TEXT` | False | `None` |
 | `state_reason` | `TEXT` | True | `None` |
 | `provider_attempt_count` | `INTEGER` | False | `0` |
+| `exit_attempt_count` | `INTEGER` | False | `0` |
 | `remote_order_id` | `TEXT` | True | `None` |
 | `filled_quantity` | `NUMERIC` | True | `None` |
 | `average_price` | `NUMERIC` | True | `None` |
@@ -518,6 +519,7 @@
 | `exit_reason` | `TEXT` | True | `None` |
 | `realized_bps` | `INTEGER` | True | `None` |
 | `position_opened_at_ms` | `BIGINT` | True | `None` |
+| `position_closed_at_ms` | `BIGINT` | True | `None` |
 | `must_close_at_ms` | `BIGINT` | True | `None` |
 | `next_reconcile_at_ms` | `BIGINT` | True | `None` |
 | `closed_at_ms` | `BIGINT` | True | `None` |

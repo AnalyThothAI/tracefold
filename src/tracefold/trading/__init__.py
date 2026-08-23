@@ -19,11 +19,14 @@ from .candidates import (
     Rejected,
     attach_news,
     attach_oi,
+    blacklist_rule,
     news_candidate,
     oi_candidate,
     resolve_instrument,
 )
 from .decision_program import (
+    DEFAULT_DEADLINE_SECONDS,
+    DEFAULT_MAX_TOKENS,
     NewsOiTradeDecision,
     ProgramIdentity,
     TradingDecisionProgram,
@@ -81,13 +84,15 @@ from .pipeline import (
     build_pipeline,
     commit_order,
 )
-from .policy import DEFAULT_TRADE_POLICY, TradePolicy, decide, side_to_order_side
+from .policy import DEFAULT_TRADE_POLICY, TradePolicy, decide, deterministic_side, pre_model_reject, side_to_order_side
 from .regime import DEFAULT_REGIME_POLICY, RegimePolicy, assess, permits_entry, pre_move_bps, regime_side
 from .repository import TradingRepository
 
 __all__ = [
     "ACTIVE_ORDER_STATES",
+    "DEFAULT_DEADLINE_SECONDS",
     "DEFAULT_ELIGIBILITY",
+    "DEFAULT_MAX_TOKENS",
     "DEFAULT_ORDER_POLICY",
     "DEFAULT_REGIME_POLICY",
     "DEFAULT_TRADE_POLICY",
@@ -141,6 +146,7 @@ __all__ = [
     "assess",
     "attach_news",
     "attach_oi",
+    "blacklist_rule",
     "build_inputs",
     "build_payload",
     "build_pipeline",
@@ -148,11 +154,13 @@ __all__ = [
     "canonical_sha256",
     "commit_order",
     "decide",
+    "deterministic_side",
     "evaluate_paper_exit",
     "must_close_at",
     "news_candidate",
     "oi_candidate",
     "permits_entry",
+    "pre_model_reject",
     "pre_move_bps",
     "realized_bps",
     "regime_side",

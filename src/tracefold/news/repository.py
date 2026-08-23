@@ -1087,6 +1087,14 @@ class NewsRepository:
                AND venue = ANY(%s)
                AND status = 'trading'
                AND instrument_class = 'crypto'
+             -- Deterministic, because the caller freezes the first row per venue into an immutable
+             -- payload. `binance.perp` is snapshotted without a quote filter, so DOGEUSDT, DOGEUSDC and
+             -- any dated contract all match; unspecified row order would let two identical manifests
+             -- resolve to different books and break "replayable from the case row alone".
+             ORDER BY venue,
+                      CASE quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
+                      length(venue_symbol),
+                      venue_symbol
             """,
             (str(base_symbol or "").strip().upper(), list(venues)),
         ).fetchall()

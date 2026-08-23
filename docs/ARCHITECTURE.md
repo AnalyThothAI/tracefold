@@ -1071,15 +1071,37 @@ yet turn out to carry — exposure. The predicate deliberately includes
 not know whether Binance filled it" is exactly when a Hyperliquid entry must be
 blocked.
 
-**Two deterministic exits.** The venue-side protective stop rides with the
-entry so it survives this process dying; `max_holding_seconds` closes the
-lifecycle through the same durable one-attempt contract, without another News
-event and without a model.
+**Two deterministic exits, and the exit is a capital write like any other.** The
+venue-side protective stop rides with the entry so it survives this process
+dying; `max_holding_seconds` closes the lifecycle without another News event and
+without a model. The close goes through the *same* durable one-attempt contract
+as the entry — `claim_attempt("exit")` before the network call, its own
+`exit_attempt_count` CHECKed at one (the entry has already spent its counter by
+the time a position can close), and any exception terminalising as `AMBIGUOUS`.
+An exit ambiguity is not an entry ambiguity: a close that filled with its answer
+lost is a completed round trip, so observing no position escalates to a human
+rather than recording the entry as never having landed. A venue that *refuses*
+the close leaves the position open and escalates; it never books a result.
+
+**Three case kinds, three authorities for the side.** `oi_only` takes its side
+from the quadrant. `news_only` has no OI frame and therefore no quadrant, so the
+**model** owns the side — tolerable only because the kind is paper-only. `news_oi`
+requires both to agree. Fusion is computed once per underlying from that
+underlying's newest frame and newest verdict, in whichever order they fired;
+planning them in two passes made the News-driven direction unreachable.
+
+**Deterministic gates run before the model call.** `pre_model_reject()` holds
+every rejection that needs no model answer — quadrant, long-only, the whale and
+OI floors — and both the freeze step and the runner apply it before charging the
+daily budget. `decide()` re-applies all of it, so the ordering is an
+optimisation and never the thing that makes the policy correct.
 
 **Five tables**, all `trading_*`: `trading_symbol_blacklist`,
 `trading_runtime_state` (control, daily counters, the day's funnel),
-`trading_cases`, `trading_orders`, `trading_order_observations`. The scanner
-keeps no cursor — it re-reads a bounded overlap window and lets
+`trading_cases`, `trading_orders`, `trading_order_observations`. `closed_at_ms`
+says a row is terminal and four paths write it; `position_closed_at_ms` is a
+real exit and is the only thing the symbol cooldown and the realised-PnL
+denominator read. The scanner keeps no cursor — it re-reads a bounded overlap window and lets
 `trading_cases.primary_source_key` reject what it has already seen, which is
 what makes a crash or a redeploy idempotent without a checkpoint to corrupt.
 

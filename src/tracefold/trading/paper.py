@@ -111,11 +111,23 @@ def evaluate_paper_exit(
     """Walk closed bars in order; the first trigger wins, and the stop wins a tie.
 
     Only closed bars are consulted and only the close is used. A high/low fill would be a claim about
-    an intrabar path the 1-minute feed cannot support, and being optimistic about the exit is the easiest
-    way to manufacture an edge that does not exist.
+    an intrabar path the feed cannot support, and being optimistic about the exit is the easiest way to
+    manufacture an edge that does not exist.
+
+    "Closed" has to be checked against the clock, not inferred from the bar. Both venue adapters
+    synthesise `close_at_ms = open_at_ms + interval`, so the candle currently forming already advertises
+    a close in the future: without the `close_at_ms <= now_ms` filter a 30-minute hold ended on the bar
+    opening at +25 min, truncating every position ~17% early at a partial price and stamping the exit
+    with a timestamp that had not happened yet.
+
+    Returning None with no usable bars is deliberate — the caller owns the "deadline reached and the
+    feed cannot price it" path, and escalates rather than inventing an exit.
     """
 
-    ordered = sorted((bar for bar in bars if bar.open_at_ms >= opened_at_ms), key=lambda bar: bar.close_at_ms)
+    ordered = sorted(
+        (bar for bar in bars if bar.open_at_ms >= opened_at_ms and bar.close_at_ms <= now_ms),
+        key=lambda bar: bar.close_at_ms,
+    )
     for bar in ordered:
         stopped = bar.close <= stop_price if side == "buy" else bar.close >= stop_price
         if stopped:
@@ -127,8 +139,8 @@ def evaluate_paper_exit(
         if bar.close_at_ms >= must_close_at_ms:
             return PaperExit(exit_price=bar.close, exit_at_ms=bar.close_at_ms, reason="max_holding")
     if now_ms >= must_close_at_ms and ordered:
-        # The deadline passed but no bar closed after it — close on the last price that exists rather
-        # than holding a paper position open forever because the feed was thin.
+        # The deadline passed but no bar closed after it — close on the last price that actually
+        # exists rather than holding a paper position open because the feed was thin.
         last = ordered[-1]
         return PaperExit(
             exit_price=last.close,

@@ -173,6 +173,15 @@ class TradingDecisionProgram:
         model_name: str,
         deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
     ) -> None:
+        """The LM is composed by `tracefold.app` and injected; this package never builds one.
+
+        Constructing a bare `dspy.LM` here bypassed `configured_lm_endpoint`, which is what applies the
+        LiteLLM provider prefix and the qwen/deepseek thinking switches every other DSPy call site in
+        the project gets. A bare `llm.trading_decision_model` — the same spelling `news_triage_model`
+        uses — then failed provider resolution or spent the whole token budget reasoning, and both
+        collapsed into a silent no-trade *after* the daily budget had already been charged.
+        """
+
         self._lm = lm
         self._model_name = str(model_name)
         self._deadline = float(deadline_seconds)
@@ -183,30 +192,6 @@ class TradingDecisionProgram:
             sha256=program_sha256(model_name=self._model_name, instruction=self._instruction),
             model=self._model_name,
         )
-
-    @classmethod
-    def build(
-        cls,
-        *,
-        model_name: str,
-        api_key: str,
-        api_base: str,
-        deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-    ) -> TradingDecisionProgram:
-        lm = dspy.LM(
-            str(model_name),
-            api_key=str(api_key),
-            api_base=str(api_base),
-            temperature=0,
-            max_tokens=int(max_tokens),
-            timeout=float(deadline_seconds),
-            # The same two switches News pins: a cached answer is not a decision, and a hidden retry is
-            # a second physical call the budget never authorised.
-            cache=False,
-            num_retries=0,
-        )
-        return cls(lm=lm, model_name=model_name, deadline_seconds=deadline_seconds)
 
     @property
     def identity(self) -> ProgramIdentity:

@@ -27,6 +27,15 @@ from .models import (
 _NATIVE_PERP_VENUE: Mapping[str, str] = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
 _LIVE_DECISIONS = frozenset({"push", "escalate"})
 _KNOWN_VENUES = frozenset({"binance", "hyperliquid"})
+# The reasons the code itself writes. An operator's `--reason` is free text and every distinct string
+# would become another key in the single funnel document, which is exactly the unbounded key set the
+# closed venue vocabulary exists to prevent three lines below.
+_KNOWN_BLACKLIST_REASONS = frozenset({"benchmark_large_cap", "commodity_not_target", "blacklist_unavailable"})
+
+
+def blacklist_rule(reason: str) -> str:
+    normalized = str(reason or "").strip().lower()
+    return f"blacklisted:{normalized if normalized in _KNOWN_BLACKLIST_REASONS else 'operator'}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +207,7 @@ def news_candidate(
 
     blocked = blacklist.blocked(symbol, now_ms=now_ms)
     if blocked is not None:
-        return _no(f"blacklisted:{blocked.reason}", symbol)
+        return _no(blacklist_rule(blocked.reason), symbol)
 
     decision = str(row.get("final_decision") or "")
     if decision not in _LIVE_DECISIONS:
@@ -319,6 +328,7 @@ __all__ = [
     "Rejected",
     "attach_news",
     "attach_oi",
+    "blacklist_rule",
     "news_candidate",
     "oi_candidate",
     "resolve_instrument",

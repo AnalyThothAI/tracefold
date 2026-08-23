@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from .blacklist import Blacklist
 from .candidates import (
@@ -32,6 +32,7 @@ from .candidates import (
     Funnel,
     attach_news,
     attach_oi,
+    blacklist_rule,
     news_candidate,
     oi_candidate,
     resolve_instrument,
@@ -42,6 +43,7 @@ from .models import (
     CaseKind,
     CaseState,
     ExchangeId,
+    ExecutionReceipt,
     InstrumentRef,
     MarketContext,
     NewsTradeCandidate,
@@ -67,7 +69,7 @@ from .order import (
     size_order,
 )
 from .paper import PaperAdapter, evaluate_paper_exit
-from .policy import DEFAULT_TRADE_POLICY, TradePolicy, decide, side_to_order_side
+from .policy import DEFAULT_TRADE_POLICY, TradePolicy, decide, pre_model_reject, side_to_order_side
 from .regime import DEFAULT_REGIME_POLICY, RegimePolicy, assess, pre_move_bps, select_bar
 from .repository import TradingRepository
 
@@ -84,6 +86,9 @@ _MAX_CASES_PER_TURN = 4
 _RECONCILE_PERIOD_SECONDS = 30.0
 _RECONCILE_BATCH = 32
 _RECONCILE_BACKOFF_MS = 30_000
+# A prepared intent that never reached the network is provably harmless after this, and terminalising
+# it is the only way a crash between the insert and the attempt claim gives back its underlying slot.
+_PREPARED_TTL_MS = 900_000
 # Five-minute bars: the interval the venue adapters already fetch for the News reaction plane. Coarse
 # for a 30-minute holding window, and deliberately so — asking for a finer feed would mean a second
 # request cadence and a tick history the project does not have.
@@ -133,6 +138,65 @@ class _Plan:
     news: NewsTradeCandidate | None
     source_key: str
     supplemental: tuple[str, ...]
+
+
+def _fuse(
+    oi: OiTradeCandidate | None,
+    news: NewsTradeCandidate | None,
+    *,
+    policy: EligibilityPolicy,
+) -> _Plan | None:
+    """Reduce one underlying's newest OI frame and newest News verdict to at most one plan.
+
+    Whichever fired later is the primary, and the other is attached only when it falls inside its own
+    lookback and **at or before** the primary's trigger. Point-in-time in both directions: attaching a
+    counterpart from after the cutoff would put the future into a frozen manifest.
+    """
+
+    if news is None:
+        if oi is None:  # pragma: no cover - the caller only passes keys that have at least one side
+            return None
+        return _Plan(
+            kind="oi_only",
+            base_symbol=oi.base_symbol,
+            observed_at_ms=oi.observed_at_ms,
+            oi=oi,
+            news=None,
+            source_key=oi.source_key,
+            supplemental=(),
+        )
+    if oi is None:
+        return _Plan(
+            kind="news_only",
+            base_symbol=news.base_symbol,
+            observed_at_ms=news.verdict_created_at_ms,
+            oi=None,
+            news=news,
+            source_key=news.source_key,
+            supplemental=(),
+        )
+
+    if news.verdict_created_at_ms <= oi.observed_at_ms:
+        attached = attach_news(oi, [news], policy=policy)
+        return _Plan(
+            kind="news_oi" if attached is not None else "oi_only",
+            base_symbol=oi.base_symbol,
+            observed_at_ms=oi.observed_at_ms,
+            oi=oi,
+            news=attached,
+            source_key=oi.source_key,
+            supplemental=(attached.source_key,) if attached is not None else (),
+        )
+    attached_oi = attach_oi(news, [oi], policy=policy)
+    return _Plan(
+        kind="news_oi" if attached_oi is not None else "news_only",
+        base_symbol=news.base_symbol,
+        observed_at_ms=news.verdict_created_at_ms,
+        oi=attached_oi,
+        news=news,
+        source_key=news.source_key,
+        supplemental=(attached_oi.source_key,) if attached_oi is not None else (),
+    )
 
 
 class CandidateRunner:
@@ -275,41 +339,32 @@ class CandidateRunner:
             funnel.count("scan_skipped:max_open_underlyings")
             return []
 
+        # One pass per underlying, not two loops over two lists. The two-loop shape had a fatal
+        # property: the News loop skipped any underlying the OI loop had already planned, so
+        # `attach_oi` could only ever be reached for an underlying with no OI candidate — which is
+        # exactly when it must return None. `oi_lookback_seconds` was dead configuration and the News
+        # loop could emit nothing but `news_only`.
+        newest_oi: dict[str, OiTradeCandidate] = {}
+        for candidate in oi_all:
+            key = underlying_key(candidate.base_symbol)
+            current = newest_oi.get(key)
+            if current is None or candidate.observed_at_ms > current.observed_at_ms:
+                newest_oi[key] = candidate
+        newest_news: dict[str, NewsTradeCandidate] = {}
+        for item in news_all:
+            key = underlying_key(item.base_symbol)
+            seen = newest_news.get(key)
+            if seen is None or item.verdict_created_at_ms > seen.verdict_created_at_ms:
+                newest_news[key] = item
+
         plans: dict[str, _Plan] = {}
-        for signal_candidate in sorted(oi_all, key=lambda item: item.observed_at_ms, reverse=True):
-            key = underlying_key(signal_candidate.base_symbol)
+        for key in sorted(set(newest_oi) | set(newest_news)):
             if key in active:
                 funnel.count("plan_reject:active_underlying")
                 continue
-            if key in plans:
-                continue
-            news = attach_news(signal_candidate, news_all, policy=elig)
-            plans[key] = _Plan(
-                kind="news_oi" if news is not None else "oi_only",
-                base_symbol=signal_candidate.base_symbol,
-                observed_at_ms=signal_candidate.observed_at_ms,
-                oi=signal_candidate,
-                news=news,
-                source_key=signal_candidate.source_key,
-                supplemental=(news.source_key,) if news is not None else (),
-            )
-        for news_item in sorted(news_all, key=lambda item: item.verdict_created_at_ms, reverse=True):
-            key = underlying_key(news_item.base_symbol)
-            if key in active:
-                funnel.count("plan_reject:active_underlying")
-                continue
-            if key in plans:
-                continue
-            signal = attach_oi(news_item, oi_all, policy=elig)
-            plans[key] = _Plan(
-                kind="news_oi" if signal is not None else "news_only",
-                base_symbol=news_item.base_symbol,
-                observed_at_ms=news_item.verdict_created_at_ms,
-                oi=signal,
-                news=news_item,
-                source_key=news_item.source_key,
-                supplemental=(signal.source_key,) if signal is not None else (),
-            )
+            plan = _fuse(newest_oi.get(key), newest_news.get(key), policy=elig)
+            if plan is not None:
+                plans[key] = plan
         for plan in plans.values():
             funnel.count(f"plan_kind:{plan.kind}")
         return sorted(plans.values(), key=lambda item: item.observed_at_ms, reverse=True)
@@ -353,8 +408,14 @@ class CandidateRunner:
             policy=self._config.regime,
         )
         funnel.count(f"regime:{regime.regime.value}")
-        if regime.regime is OiRegime.UNCLEAR:
+        if plan.kind != "news_only" and regime.regime is OiRegime.UNCLEAR:
             funnel.count(f"freeze_reject:regime_{regime.reason}")
+            return False
+        if plan.kind == "news_only" and regime.reason == "no_price_fail_closed":
+            # A News-only case has no OI frame and therefore no quadrant — rejecting it on UNCLEAR is
+            # what made the kind structurally unreachable. It still needs a price at the cutoff: the
+            # model owns the side, but nothing owns an entry without one.
+            funnel.count("freeze_reject:regime_no_price_fail_closed")
             return False
 
         # The mark is the bar closed at or before the cutoff, not the newest bar fetched. The manifest
@@ -379,6 +440,20 @@ class CandidateRunner:
             mark_price=mark,
             pre_move_bps=move,
         )
+        blocked = pre_model_reject(
+            case_kind=plan.kind,
+            mode=self._config.mode,
+            regime=regime.regime,
+            whale_long_profit_bps=plan.oi.whale_long_profit_bps if plan.oi is not None else None,
+            oi_value_usd=plan.oi.oi_value_usd if plan.oi is not None else None,
+            policy=self._config.trade,
+        )
+        if blocked is not None:
+            # Cheapest possible refusal: no case row, no claim, no model budget. `decide()` re-applies
+            # every one of these, so this is an ordering optimisation and never the correctness gate.
+            funnel.count(f"freeze_reject:policy_{blocked.rule}")
+            return False
+
         digest = manifest.digest()
 
         def _insert(repos: Any) -> bool:
@@ -433,10 +508,40 @@ class CandidateRunner:
         manifest = TradingCaseManifest.model_validate(claimed["manifest"])
         kind: CaseKind = str(claimed["case_kind"])  # type: ignore[assignment]
 
+        # A case carries a mark frozen at its cutoff. `max_age_ms` gates *creation*; nothing gated how
+        # long a created case could sit unclaimed, so a paused lane resumed hours later would size and
+        # stop off a stale bar close and book the whole interim move as free PnL.
+        if now - int(claimed["observed_at_ms"]) > self._config.eligibility.max_age_ms:
+            funnel.count("advance_reject:case_stale")
+            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "case_stale", now=now)
+            return "case_stale"
+
+        # #21: the mode frozen into the case, not today's configuration. An operator who edits
+        # `mode` while cases are pending must not have a manifest frozen under paper submitted live.
+        case_mode: TradingMode = str(claimed["mode"])  # type: ignore[assignment]
+        if case_mode != self._config.mode:
+            funnel.count("advance_reject:mode_changed")
+            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "mode_changed_since_freeze", now=now)
+            return "mode_changed"
+
         decision: TradeDecision | None = None
         program_version: str | None = None
         program_sha256: str | None = None
         program_output: dict[str, Any] | None = None
+
+        frozen_regime = OiRegime(str(claimed["regime"] or OiRegime.UNCLEAR.value))
+        early = pre_model_reject(
+            case_kind=kind,
+            mode=case_mode,
+            regime=frozen_regime,
+            whale_long_profit_bps=manifest.oi.whale_long_profit_bps if manifest.oi is not None else None,
+            oi_value_usd=manifest.oi.oi_value_usd if manifest.oi is not None else None,
+            policy=self._config.trade,
+        )
+        if early is not None:
+            funnel.count(f"policy:{early.rule}")
+            await self._settle(case_id, CaseState.POLICY_REJECTED, "no_trade", early.rule, now=now)
+            return early.rule
 
         if kind in ("news_only", "news_oi"):
             budget = await self._db.read(
@@ -467,8 +572,8 @@ class CandidateRunner:
 
         outcome = decide(
             case_kind=kind,
-            mode=self._config.mode,
-            regime=OiRegime(str(claimed["regime"] or OiRegime.UNCLEAR.value)),
+            mode=case_mode,
+            regime=frozen_regime,
             decision=decision,
             whale_long_profit_bps=manifest.oi.whale_long_profit_bps if manifest.oi is not None else None,
             oi_value_usd=manifest.oi.oi_value_usd if manifest.oi is not None else None,
@@ -493,6 +598,7 @@ class CandidateRunner:
             case_id=case_id,
             manifest=manifest,
             decision_side=outcome.decision,
+            mode=case_mode,
             funnel=funnel,
             now=now,
         )
@@ -543,6 +649,7 @@ class CandidateRunner:
         case_id: str,
         manifest: TradingCaseManifest,
         decision_side: str,
+        mode: TradingMode,
         funnel: Funnel,
         now: int,
     ) -> bool:
@@ -559,7 +666,7 @@ class CandidateRunner:
             spread_bps=None,
             spread_available=False,
         )
-        sized = size_order(side=side, market=market, mode=self._config.mode, policy=self._config.order)
+        sized = size_order(side=side, market=market, mode=mode, policy=self._config.order)
         if isinstance(sized, RiskRejection):
             funnel.count(f"risk_reject:{sized.rule}")
             return False
@@ -574,10 +681,22 @@ class CandidateRunner:
             take_profit_price=sized.take_profit_price,
             hedged=False,
         )
-        state = OrderState.AWAITING_APPROVAL if self._config.mode == "live_reviewed" else OrderState.PREPARED
+        state = OrderState.AWAITING_APPROVAL if mode == "live_reviewed" else OrderState.PREPARED
 
         def _insert(repos: Any) -> bool:
             repos.trading.lock_account(self._config.account_ref)
+            # The deny-list is re-read here, not only at the top of the turn. `trading blacklist add`
+            # landing a second after a case was frozen used to have no effect on that in-flight case:
+            # the only per-symbol operator lever could not stop work already planned.
+            try:
+                deny = Blacklist.from_rows(repos.trading.blacklist_rows())
+            except Exception:
+                log.exception("trading blacklist re-read failed")
+                deny = Blacklist.unavailable()
+            blocked = deny.blocked(manifest.base_symbol, now_ms=now)
+            if blocked is not None:
+                funnel.count(f"risk_reject:{blacklist_rule(blocked.reason)}")
+                return False
             # Re-check the two count caps *here*, under the account lock and inside the transaction
             # that inserts. `_plan` reads them once at the top of a turn, which bounds how many cases
             # are created but not how many orders a single turn places: four cases claimed in one turn
@@ -600,7 +719,7 @@ class CandidateRunner:
                     exchange_id=manifest.instrument.exchange_id,
                     provider_symbol=manifest.instrument.provider_symbol,
                     account_ref=self._config.account_ref,
-                    mode=self._config.mode,
+                    mode=mode,
                     side=side,
                     notional_usd=str(sized.notional_usd),
                     quantity=str(sized.quantity),
@@ -634,7 +753,7 @@ class CandidateRunner:
             case_id=case_id,
             underlying_key=manifest.underlying_key,
             instrument=manifest.instrument,
-            mode=self._config.mode,
+            mode=mode,
             side=side,
             notional_usd=sized.notional_usd,
             quantity=sized.quantity,
@@ -654,6 +773,56 @@ class CandidateRunner:
         )
 
 
+async def _one_attempt(
+    *,
+    db: Any,
+    order: PreparedOrder,
+    kind: Literal["entry", "exit"],
+    call: Callable[[], Awaitable[ExecutionReceipt]],
+    now: int,
+) -> ExecutionReceipt | None:
+    """The durable one-attempt contract, shared by the entry and the exit.
+
+    OpenTrade publishes no client idempotency key, so nothing downstream can deduplicate a resend.
+    The protection is entirely local and has three parts, and **both** capital writes need all three:
+
+    1. the ledger records the attempt and the transaction **commits before** the network call, so a
+       crash between them leaves evidence that an attempt may exist;
+    2. the claim is conditional, so a second caller finds zero rows updated and must not call;
+    3. any exception terminalises as `AMBIGUOUS`, whose only legal successor is a read.
+
+    The exit used to have none of them: `adapter.close()` was called bare, so an exception left the row
+    untouched and the same close was re-issued every thirty seconds forever.
+    """
+
+    claimed = await db.tx(
+        "trading_attempt_claim",
+        lambda repos: repos.trading.claim_attempt(order_id=order.order_id, kind=kind, now_ms=now),
+        timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+    )
+    if not claimed:
+        log.info("trading %s attempt already spent order=%s", kind, order.order_id)
+        return None
+
+    try:
+        return await call()
+    except Exception as exc:
+        reason = f"provider_exception:{type(exc).__name__}"
+        log.warning("trading %s attempt did not answer: %s", kind, type(exc).__name__)
+        await db.tx(
+            "trading_attempt_ambiguous",
+            lambda repos: repos.trading.update_order(
+                order_id=order.order_id,
+                state=OrderState.AMBIGUOUS.value,
+                state_reason=f"{kind}_{reason}",
+                next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
+                now_ms=now,
+            ),
+            timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+        )
+        return None
+
+
 async def commit_order(
     *,
     db: Any,
@@ -663,40 +832,21 @@ async def commit_order(
     funnel: Funnel | None = None,
     now: int,
 ) -> bool:
-    """Durable intent, then exactly one provider attempt, then whatever the answer turns out to be.
+    """Durable intent, then exactly one provider attempt, then whatever the answer turns out to be."""
 
-    The `SUBMITTING` transaction commits **before** the network call. That ordering is the entire
-    protection: a crash between the two leaves a row that says an attempt may exist, and the only legal
-    successor of "may exist" is a read.
-    """
-
-    claimed = await db.tx(
-        "trading_order_submitting",
-        lambda repos: repos.trading.mark_submitting(order_id=order.order_id, now_ms=now),
-        timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+    receipt = await _one_attempt(
+        db=db,
+        order=order,
+        kind="entry",
+        call=lambda: adapter.submit(order),
+        now=now,
     )
-    if not claimed:
-        # Either someone already attempted it or the state moved. Never a second write.
-        if funnel is not None:
-            funnel.count("commit_reject:already_attempted")
-        return False
-
-    try:
-        receipt = await adapter.submit(order)
-    except Exception as exc:
-        # Bind the name before the block ends: an exception whose write may already have left is the
-        # definition of ambiguity, and the reason has to survive into the transaction that records it.
-        reason = f"provider_exception:{type(exc).__name__}"
-        log.warning("trading provider attempt did not answer: %s", type(exc).__name__)
+    if receipt is None:
+        # Either the attempt was already spent, or it raised and is now recorded AMBIGUOUS. Both
+        # count against the day: an order that may exist at the venue is exposure.
         await db.tx(
-            "trading_order_ambiguous",
-            lambda repos: repos.trading.update_order(
-                order_id=order.order_id,
-                state=OrderState.AMBIGUOUS.value,
-                state_reason=reason,
-                next_reconcile_at_ms=now,
-                now_ms=now,
-            ),
+            "trading_order_day_count",
+            lambda repos: repos.trading.bump_orders_today(day_key=_day_key(now), now_ms=now),
             timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
         )
         if funnel is not None:
@@ -728,8 +878,7 @@ async def commit_order(
             content=receipt.model_dump(mode="json"),
             now_ms=now,
         )
-        if state is not OrderState.REJECTED:
-            repos.trading.bump_orders_today(day_key=_day_key(now), now_ms=now)
+        repos.trading.bump_orders_today(day_key=_day_key(now), now_ms=now)
 
     await db.tx("trading_order_receipt", _apply, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
     if funnel is not None:
@@ -765,43 +914,78 @@ class ReconcileRunner:
 
     async def turn(self) -> dict[str, Any]:
         now = self._clock()
-        due = await self._db.read(
+        scan = await self._db.read(
             "trading_reconcile_scan",
-            lambda repos: repos.trading.due_orders(now_ms=now, limit=_RECONCILE_BATCH),
+            lambda repos: (
+                repos.trading.due_orders(now_ms=now, limit=_RECONCILE_BATCH),
+                (repos.trading.runtime_state() or {}).get("control", "RUNNING"),
+            ),
             timeout_seconds=_COLD_READ_TIMEOUT_SECONDS,
         )
+        due, control = scan
         resolved = 0
         for row in due:
             try:
-                if await self._reconcile(row, now=now):
+                if await self._reconcile(row, control=str(control), now=now):
                     resolved += 1
             except Exception:
                 log.exception("trading reconcile failed order=%s", row.get("order_id"))
-        return {"due": len(due), "resolved": resolved}
+        return {"due": len(due), "control": control, "resolved": resolved}
 
-    async def _reconcile(self, row: dict[str, Any], *, now: int) -> bool:
+    async def _reconcile(self, row: dict[str, Any], *, control: str, now: int) -> bool:
         order_id = str(row["order_id"])
         state = str(row["state"])
         order = _order_from_row(row, max_holding_ms=self._config.order.max_holding_ms)
 
         if state in (OrderState.AMBIGUOUS.value, OrderState.RECONCILING.value):
             return await self._resolve_ambiguity(order, row, now=now)
+
         if state == OrderState.AWAITING_APPROVAL.value:
             await self._defer(order_id, state, now)
             return False
-        if state in (OrderState.ACKNOWLEDGED.value, OrderState.OPEN.value, OrderState.PARTIAL.value):
-            return await self._manage_open(order, row, now=now)
-        if state in (OrderState.PREPARED.value, OrderState.APPROVED.value, OrderState.SUBMITTING.value):
-            if state == OrderState.SUBMITTING.value:
-                # A `SUBMITTING` row that survived a restart is not a pending call — it is an attempt
-                # whose answer was lost. Never resent, and never rerouted to the other venue.
+
+        if state == OrderState.APPROVED.value:
+            if control in ("PAUSED", "CLOSE_ONLY"):
+                # Both block *new* exposure and an approved-but-unsubmitted order is new exposure.
+                # The reconciler reading the control state at all is the fix: before this, no control
+                # setting reached it, so `close-only` and `paused` were indistinguishable and neither
+                # could stop an approved entry from being submitted.
+                await self._defer(order_id, state, now)
+                return False
+            # The one place an approved order becomes a provider write. Without this transition
+            # `APPROVED` was a terminal state that still held the active-underlying slot.
+            await commit_order(db=self._db, adapter=self._adapter, order=order, policy=self._config.order, now=now)
+            return True
+
+        if state == OrderState.SUBMITTING.value:
+            # A `SUBMITTING` row that survived a restart is not a pending call — it is an attempt
+            # whose answer was lost. Never resent, and never rerouted to the other venue.
+            await self._db.tx(
+                "trading_reconcile_orphan",
+                lambda repos: repos.trading.update_order(
+                    order_id=order_id,
+                    state=OrderState.AMBIGUOUS.value,
+                    state_reason="entry_submitting_after_restart",
+                    next_reconcile_at_ms=now,
+                    now_ms=now,
+                ),
+                timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
+            )
+            return True
+
+        if state == OrderState.PREPARED.value:
+            # `provider_attempt_count = 0` proves no network call ever left, so an expired prepared
+            # intent is provably harmless to terminalise. Without this a crash between the insert and
+            # the attempt claim held one of `max_open_underlyings` forever with no CLI able to clear it.
+            if int(row.get("provider_attempt_count") or 0) == 0 and now - int(row["created_at_ms"]) > _PREPARED_TTL_MS:
                 await self._db.tx(
-                    "trading_reconcile_orphan",
+                    "trading_reconcile_expire_prepared",
                     lambda repos: repos.trading.update_order(
                         order_id=order_id,
-                        state=OrderState.AMBIGUOUS.value,
-                        state_reason="submitting_after_restart",
-                        next_reconcile_at_ms=now,
+                        state=OrderState.REJECTED.value,
+                        state_reason="prepared_expired_never_submitted",
+                        closed_at_ms=now,
+                        next_reconcile_at_ms=None,
                         now_ms=now,
                     ),
                     timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
@@ -809,15 +993,19 @@ class ReconcileRunner:
                 return True
             await self._defer(order_id, state, now)
             return False
+
+        if state in (OrderState.ACKNOWLEDGED.value, OrderState.OPEN.value, OrderState.PARTIAL.value):
+            return await self._manage_open(order, row, now=now)
+
         await self._defer(order_id, state, now)
         return False
 
     async def _defer(self, order_id: str, state: str, now: int) -> None:
         await self._db.tx(
             "trading_reconcile_defer",
-            lambda repos: repos.trading.update_order(
+            lambda repos: repos.trading.reschedule_order(
                 order_id=order_id,
-                state=state,
+                expected_state=state,
                 next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
                 now_ms=now,
             ),
@@ -826,6 +1014,9 @@ class ReconcileRunner:
 
     async def _resolve_ambiguity(self, order: PreparedOrder, row: dict[str, Any], *, now: int) -> bool:
         """Read, never resend. A read that cannot prove either answer escalates to a human."""
+
+        reason = str(row.get("state_reason") or "")
+        exiting = reason.startswith("exit_") or reason == "close_ambiguous"
 
         observe = getattr(self._adapter, "observe", None)
         if observe is None:
@@ -838,6 +1029,12 @@ class ReconcileRunner:
             return False
 
         if observation is None:
+            if exiting:
+                # An ambiguous *exit* that observes no position is the close having landed, not the
+                # entry never having existed. Reading it as `proven_absent` recorded a completed round
+                # trip as though nothing happened and discarded its realised PnL.
+                await self._escalate(order.order_id, "exit_ambiguous_position_absent", now)
+                return True
             # Proven absent by a successful read: the intent never landed, so the underlying is free.
             await self._db.tx(
                 "trading_reconcile_absent",
@@ -851,6 +1048,12 @@ class ReconcileRunner:
                 ),
                 timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
             )
+            return True
+
+        if observation.state != "ACKNOWLEDGED":
+            # The venue answered, but not with a live order. Adopting any non-None observation as OPEN
+            # would book a position that the provider is telling us does not exist.
+            await self._escalate(order.order_id, f"observed_{observation.state.lower()}", now)
             return True
 
         # The position existed at least as early as the attempt. Using `now` would silently extend the
@@ -895,11 +1098,13 @@ class ReconcileRunner:
         )
 
     async def _manage_open(self, order: PreparedOrder, row: dict[str, Any], *, now: int) -> bool:
+        order_id = str(row["order_id"])
         if str(row["mode"]) != "paper":
             # A live position's fill, stop and close are provider facts. Simulating them from candles
             # would be a local opinion about an account this lane cannot yet read (PR-C).
-            await self._defer(str(row["order_id"]), str(row["state"]), now)
+            await self._defer(order_id, str(row["state"]), now)
             return False
+
         opened = int(row.get("position_opened_at_ms") or now)
         deadline = int(row.get("must_close_at_ms") or must_close_at(opened_at_ms=opened, policy=self._config.order))
         fetcher = self._bars(str(row["exchange_id"]))
@@ -908,8 +1113,9 @@ class ReconcileRunner:
             try:
                 bars = await fetcher(str(row["provider_symbol"]), opened, now + _BAR_INTERVAL_MS)
             except Exception:
-                log.warning("trading reconcile bar fetch failed order=%s", row["order_id"])
+                log.warning("trading reconcile bar fetch failed order=%s", order_id)
                 bars = ()
+
         exit_at = evaluate_paper_exit(
             side=cast(OrderSide, row["side"]),
             entry=Decimal(str(row["entry_reference"])),
@@ -921,22 +1127,40 @@ class ReconcileRunner:
             now_ms=now,
         )
         if exit_at is None:
-            await self._defer(str(row["order_id"]), OrderState.OPEN.value, now)
+            if now >= deadline:
+                # The clock says close and the feed cannot price it. Deferring forever would hold the
+                # active-underlying slot with no alarm, so the deadline escalates instead of waiting.
+                await self._escalate(order_id, "max_holding_without_price", now)
+                return True
+            await self._defer(order_id, OrderState.OPEN.value, now)
             return False
 
-        receipt = await self._adapter.close(order, quantity=order.quantity)
+        receipt = await _one_attempt(
+            db=self._db,
+            order=order,
+            kind="exit",
+            call=lambda: self._adapter.close(order, quantity=order.quantity),
+            now=now,
+        )
+        if receipt is None:
+            return True
         if receipt.state == "AMBIGUOUS":
             await self._db.tx(
                 "trading_close_ambiguous",
                 lambda repos: repos.trading.update_order(
-                    order_id=order.order_id,
+                    order_id=order_id,
                     state=OrderState.AMBIGUOUS.value,
-                    state_reason="close_ambiguous",
+                    state_reason="exit_close_ambiguous",
                     next_reconcile_at_ms=now + _RECONCILE_BACKOFF_MS,
                     now_ms=now,
                 ),
                 timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS,
             )
+            return True
+        if receipt.state == "REJECTED":
+            # The venue refused the close, so the position is still open. Writing CLOSED here booked a
+            # fabricated PnL and freed the underlying for a second order on top of a live position.
+            await self._escalate(order_id, f"exit_rejected:{receipt.reason}", now)
             return True
 
         bps = realized_bps(
@@ -948,19 +1172,23 @@ class ReconcileRunner:
 
         def _close(repos: Any) -> None:
             repos.trading.record_observation(
-                order_id=order.order_id,
+                order_id=order_id,
                 observation_kind="close",
                 content_sha256=canonical_sha256(receipt.model_dump(mode="json")),
                 content=receipt.model_dump(mode="json"),
                 now_ms=now,
             )
             repos.trading.update_order(
-                order_id=order.order_id,
+                order_id=order_id,
                 state=OrderState.CLOSED.value,
                 state_reason=exit_at.reason,
                 exit_price=str(exit_at.exit_price),
                 exit_reason=exit_at.reason,
                 realized_bps=bps,
+                # Two timestamps on purpose: `position_closed_at_ms` is a real exit and is what the
+                # cooldown and the realised-PnL denominator read; `closed_at_ms` only says the row is
+                # terminal, and four different paths write it.
+                position_closed_at_ms=exit_at.exit_at_ms,
                 closed_at_ms=exit_at.exit_at_ms,
                 next_reconcile_at_ms=None,
                 now_ms=now,

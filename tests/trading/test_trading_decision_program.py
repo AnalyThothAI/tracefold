@@ -16,6 +16,7 @@ from dspy.utils.dummies import DummyLM
 
 from tracefold.trading import (
     InstrumentRef,
+    NewsTradeCandidate,
     OiRegime,
     OiTradeCandidate,
     RegimeAssessment,
@@ -41,7 +42,31 @@ _ANSWER = {
 }
 
 
-def _manifest(kind: str = "news_oi") -> TradingCaseManifest:
+_NEWS = NewsTradeCandidate(
+    event_id="n1",
+    verdict_created_at_ms=NOW,
+    opened_at_ms=NOW,
+    base_symbol="DOGE",
+    evidence_version=3,
+    evidence_sha256="abc",
+    focus_fact_id="f1",
+    comparison_fingerprint="fp",
+    source_artifact_id="x:123",
+    source_published_at_ms=NOW,
+    final_decision="push",
+    event_type="listing",
+    risk_direction="bullish",
+    scope="single_name",
+    magnitude=2,
+    novelty="new_fact",
+    headline_zh="币安上线 DOGE 永续",
+    why_zh="新增可交易场所带来增量需求",
+    program_version="program_v5",
+    policy_version="news_triage_policy_v9",
+)
+
+
+def _manifest(kind: str = "news_oi", *, news: NewsTradeCandidate | None = None) -> TradingCaseManifest:
     return TradingCaseManifest(
         case_kind=kind,  # type: ignore[arg-type]
         underlying_key="crypto:DOGE",
@@ -61,7 +86,7 @@ def _manifest(kind: str = "news_oi") -> TradingCaseManifest:
             metric_version="oi_signal_v1",
             program_version="news_oi_signal_v1",
         ),
-        news=None,
+        news=news,
         regime=RegimeAssessment(regime=OiRegime.BUILDUP_UP, reason="quadrant", pre_move_bps=210, oi_direction="rise"),
         instrument=InstrumentRef(
             exchange_id="binance",
@@ -104,8 +129,19 @@ def _program(result: Any) -> tuple[TradingDecisionProgram, _CountingPredictor]:
 
 
 # ---------------------------------------------------------------------------- what the model may see
-def test_the_model_never_receives_an_account_credential_or_order_field() -> None:
-    inputs = build_inputs(_manifest())
+@pytest.mark.parametrize("news", [None, _NEWS], ids=["oi_only", "with_news_evidence"])
+def test_the_model_never_receives_an_account_credential_or_order_field(news: NewsTradeCandidate | None) -> None:
+    """Both shapes, because the original test only ever built the empty one.
+
+    It declared `kind="news_oi"` while passing `news=None` — a combination `_freeze` cannot produce —
+    so `news_snapshot_json` was the literal `"{}"` and the only document carrying real evidence text
+    was never scanned. Renaming any `NewsTradeCandidate` field into `_FORBIDDEN_INPUT_KEYS` would have
+    left this green while every real case raised inside `decide()` and degraded to a silent no-trade.
+    """
+
+    inputs = build_inputs(_manifest(news=news))
+    if news is not None:
+        assert inputs["news_snapshot_json"] != "{}"
     blob = " ".join(inputs.values()).lower()
     for forbidden in ("account", "api_key", "balance", "quantity", "notional", "stop_price", "hedged", "token"):
         assert forbidden not in blob, forbidden
@@ -175,6 +211,21 @@ def test_an_answer_outside_the_enumeration_is_a_no_trade() -> None:
     program, _ = _program(_Prediction(**{**_ANSWER, "alignment": "maybe"}))
     result = asyncio.run(program.decide(_manifest()))
     assert result.decision.decision == "no_trade"
+
+
+def test_the_package_never_builds_its_own_language_model() -> None:
+    """The endpoint is composed by `tracefold.app` via `configured_lm_endpoint` and injected.
+
+    A bare `dspy.LM` here lost the LiteLLM provider prefix and the qwen/deepseek thinking switches, so
+    a model name spelled the way `news_triage_model` is spelled failed resolution and every News case
+    degraded to a no-trade — after the daily budget had been charged.
+    """
+
+    import tracefold.trading.decision_program as module
+
+    assert not hasattr(TradingDecisionProgram, "build")
+    text = Path(module.__file__ or "").read_text(encoding="utf-8")
+    assert "dspy.LM(" not in text
 
 
 def test_the_program_holds_no_tools_and_no_agent_framework() -> None:
