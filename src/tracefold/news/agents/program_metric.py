@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..artifact_identity import canonical_sha
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
 from ..storyline import final_storyline_key
-from ..triage_rules import DEFAULT_POLICY, GateFacts, decide, storyline_status
+from ..triage_rules import DecidePolicy, GateFacts, decide, storyline_status
 from .semantic_program import TriageContext, render_model_evidence_json
 
 METRIC_ID = "tracefold.news.production_action_feedback_v2"
@@ -62,7 +62,13 @@ _CARD_WEIGHT = 0.15
 # These are exactly the names `review._DIMENSIONS` accepts. Inventing plausible extras (`novelty`, `event_type`,
 # `actionable`) would leave dead entries no reviewer can ever label, and publish them in the metric receipt as
 # if they were scored. Novelty is a separate accepted field, not a rubric dimension, and is scored below.
-_SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude", "timeliness")
+# `timeliness` is absent on purpose. The canonical ReviewDesk owner map assigns it to `delivery`, and
+# `TriageVerdict` has no timeliness field — so scoring it here fell through to "did the whole verdict change?"
+# and handed EventSemantics feedback about delivery latency it cannot repair. It stays in the corpus label
+# distribution under its real owner; giving the model a freshness judgment needs a typed output and a gold
+# contract of its own, not a borrowed one.
+_SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude")
+_DELIVERY_DIMENSIONS = ("timeliness",)
 _CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 # A sentinel, because `None` is a legitimate absence of a reviewer opinion and must not read as "gold = null".
 _NO_GOLD: Final = object()
@@ -78,6 +84,33 @@ _DIMENSION_FIELD = {
     "why_support": "why_zh",
     "why_value": "why_zh",
 }
+
+
+def _frozen_policy(projection: Mapping[str, Any]) -> DecidePolicy:
+    """The exact policy the arm ran, carried by the episode — never process-global ambient state.
+
+    Production builds `DecidePolicy(**arm.policy)` from the active `ArmManifest`; this metric used to import
+    `DEFAULT_POLICY` and call itself a "production-action metric" anyway. `news.policy` is operator-owned, so
+    changing `similarity_max` or `noise_veto_max_magnitude` would have made every offline score silently
+    describe a policy production did not run.
+
+    Fails closed. A policy-scored example without a verified policy is not a cheap approximation of the right
+    answer; it is a different question, and answering it under the same name is how a receipt starts lying.
+    """
+
+    values = projection.get("policy_values")
+    if not isinstance(values, Mapping) or not values:
+        raise ValueError("news_program_metric_policy_values_missing")
+    expected = str(projection.get("policy_sha256") or "")
+    if not expected:
+        raise ValueError("news_program_metric_policy_sha256_missing")
+    actual = canonical_sha(dict(values))
+    if actual != expected:
+        raise ValueError(f"news_program_metric_policy_sha256_mismatch:{actual[:16]}!={expected[:16]}")
+    try:
+        return DecidePolicy(**dict(values))
+    except Exception as exc:
+        raise ValueError("news_program_metric_policy_values_invalid") from exc
 
 
 def _production_action(verdict: TriageVerdict, projection: Mapping[str, Any]) -> str:
@@ -97,6 +130,7 @@ def _production_action(verdict: TriageVerdict, projection: Mapping[str, Any]) ->
     recorded = str(projection.get("recorded_action") or "")
     if recorded:
         return recorded
+    policy = _frozen_policy(projection)
     gate = dict(projection.get("gate") or {})
     storyline = dict(projection.get("storyline") or {})
     seen = list(projection.get("seen") or ())
@@ -123,7 +157,7 @@ def _production_action(verdict: TriageVerdict, projection: Mapping[str, Any]) ->
             source_age_s=gate.get("source_age_s"),
         ),
         storyline_status(key, told=told, seen=seen),
-        policy=DEFAULT_POLICY,
+        policy=policy,
     )
     return decision.final
 
@@ -215,6 +249,7 @@ def _component(
     production: Mapping[str, Any],
     expected: Mapping[str, Any] | None = None,
     judge: Any = None,
+    outcomes: list[tuple[str, str]] | None = None,
 ) -> tuple[float, int, int] | None:
     """Score one Predictor's accepted dimensions, or ``None`` when the reviewer labelled none of them.
 
@@ -234,6 +269,7 @@ def _component(
     labelled = _labelled(dimensions, names)
     if not labelled:
         return None
+    outcomes = [] if outcomes is None else outcomes
     gold = dict(expected or {})
     hits = 0.0
     gold_scored = 0
@@ -243,13 +279,18 @@ def _component(
             wanted = _gold_value(gold, name)
             if wanted is not _NO_GOLD:
                 gold_scored += 1
-                hits += float(_observed_value(verdict, name) == wanted)
+                hit = _observed_value(verdict, name) == wanted
+                hits += float(hit)
+                outcomes.append((name, "gold_hit" if hit else "gold_miss"))
                 continue
         if field is not None and field not in production:
             hits += label == "pass"
+            outcomes.append((name, "field_absent"))
             continue
         if label == "pass":
-            hits += _retains(name, field, verdict, production, judge)
+            kept = _retains(name, field, verdict, production, judge)
+            hits += kept
+            outcomes.append((name, "retention_hit" if kept else "retention_miss"))
             continue
         # A `fail` with no gold: any change scores. `factual_fidelity` and `timeliness` are judgments about the
         # whole card, not one field, so "changed" means the card changed at all — scoring them as an automatic
@@ -258,6 +299,7 @@ def _component(
         # already said the old value was wrong.
         same = _same_value(field, verdict, production)
         hits += not same
+        outcomes.append((name, "ungolded_change" if not same else "ungolded_unchanged"))
     return hits / len(labelled), gold_scored, len(labelled)
 
 
@@ -371,8 +413,9 @@ def accepted_review_metric(
     novelty = dict(review.get("novelty") or {})
     expected_novelty = str(novelty.get("judgment") or "uncertain")
     novelty_score = None if expected_novelty == "uncertain" else float(str(verdict.get("novelty")) == expected_novelty)
-    semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, verdict, production, expected, judge)
-    card = _component(dimensions, _CARD_DIMENSIONS, verdict, production, expected, judge)
+    outcomes: list[tuple[str, str]] = []
+    semantics = _component(dimensions, _SEMANTICS_DIMENSIONS, verdict, production, expected, judge, outcomes)
+    card = _component(dimensions, _CARD_DIMENSIONS, verdict, production, expected, judge, outcomes)
     gold_scored = (semantics[1] if semantics else 0) + (card[1] if card else 0)
     labelled_n = (semantics[2] if semantics else 0) + (card[2] if card else 0)
     semantics_score = semantics[0] if semantics else None
@@ -425,6 +468,9 @@ def accepted_review_metric(
         gold_scored_n=gold_scored,
         labelled_n=labelled_n,
         production_action=action,
+        # What the candidate actually did, dimension by dimension. Without this a report can only publish the
+        # corpus's own label distribution, which is byte-identical however the predictions change.
+        dimension_outcomes=tuple(outcomes),
     )
 
 
@@ -475,7 +521,11 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
         "action_source": {
             "policy": "tracefold.news.triage_rules.decide",
             "policy_version": TRIAGE_POLICY_VERSION,
-            "policy_values": DEFAULT_POLICY.as_dict(),
+            # Deliberately not a value. The policy that scores an example travels with that example
+            # (`policy_metric.policy_values` / `policy_sha256`), because the metric must follow the arm that
+            # actually ran rather than whatever this process happened to import. The report pins the exact
+            # values it used; recording them here too would only invite the two to disagree.
+            "policy_values": "per_example: policy_metric.policy_values, verified against policy_sha256",
             "storyline": "tracefold.news.storyline.final_storyline_key",
             "operational_controls": "none_the_pause_mute_plane_was_removed_in_137",
         },

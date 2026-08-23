@@ -1018,11 +1018,14 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     if not episodes:
         return 2, {"ok": False, "error": {"code": "news_program_baseline_no_accepted_reviews_in_window"}}
     artifact = load_program_artifact(stable.program_sha256)
+    composition = compose_news_program_runtime(settings) if mode != "recorded" else None
     lm = None
-    if mode != "recorded":
-        # The production task endpoint and route budget, so a live baseline measures the arm that actually
-        # runs rather than some other binding.
-        endpoint = compose_news_program_runtime(settings).event_semantics_primary
+    semantic_judge = None
+    runtime_identity: dict[str, Any] = {}
+    if mode == "compile_live":
+        # One task endpoint driving the graph GEPA optimizes. Deliberately *not* the production route: this
+        # measures what the optimizer maximizes, and the report says so in `execution_scope`.
+        endpoint = composition.event_semantics_primary
         lm = build_runtime_lm(
             model_name=endpoint.model_name,
             api_key=endpoint.api_key,
@@ -1031,6 +1034,19 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             max_tokens=max(artifact.route_spec.event_semantics_max_tokens, artifact.route_spec.reader_card_max_tokens),
             model_kwargs=endpoint.model_kwargs,
         )
+        runtime_identity = {"compile_task_model": endpoint.model_name}
+    elif mode == "runtime_live":
+        # The configured four-slot Program with its own retry, fallback, deadline and circuit — built by the
+        # same seam the Workers use, so a dedicated ReaderCard binding is honoured rather than silently
+        # aliased to the EventSemantics primary.
+        semantic_judge = composition.semantic_judge(artifact)
+        if semantic_judge is None:
+            raise ValueError("news_program_baseline_runtime_route_not_configured")
+        runtime_identity = {
+            "slots": composition.secret_free_slot_identities(),
+            "aliases": composition.slot_aliases(),
+            "runtime_model_bindings_sha256": composition.runtime_model_bindings_sha256,
+        }
     judge_model = str(args.semantic_judge).strip()
     judge = None
     if judge_model:
@@ -1053,10 +1069,11 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         build_baseline_cases(episodes, action_source=action_source),
         mode=mode,
         artifact=artifact,
-        program_factory=compile_program_factory if mode != "recorded" else None,
+        program_factory=compile_program_factory if mode == "compile_live" else None,
         lm=lm,
         judge=judge,
-        runtime_identity={"model": getattr(lm, "model", None)} if lm else {},
+        semantic_judge=semantic_judge,
+        runtime_identity=runtime_identity,
     )
     payload = report.model_dump(mode="json")
     payload["report_sha256"] = report.report_sha256

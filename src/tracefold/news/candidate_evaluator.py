@@ -696,6 +696,14 @@ class CandidateEvaluator:
                 "family": str(event.get("family") or "general"),
             },
             "seen": [receipt.as_told_row() for receipt in reversed(state.receipts)],
+            # The exact policy this arm ran, frozen into the example. Production builds
+            # `DecidePolicy(**arm.policy)`; the metric used to import `DEFAULT_POLICY` and call itself a
+            # production-action metric regardless, so an operator changing `similarity_max` would have made
+            # every offline score describe a policy production never used.
+            "policy_version": TRIAGE_POLICY_VERSION,
+            "policy_values": dict(self._stable.policy),
+            # The manifest already validated this against its own `policy`; reusing it keeps one convention.
+            "policy_sha256": self._stable.policy_sha256,
         }
 
     def development_compile_episodes(self, dataset_sha: str) -> tuple[dict[str, Any], ...]:

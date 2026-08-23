@@ -27,6 +27,26 @@ from tracefold.news.agents.program_proposer import RulePackAwareProposer
 from tracefold.news.agents.semantic_program import EligibleDemoBank, load_stable_program_artifact
 from tracefold.news.semantic_contract import TriageContext
 
+
+def _frozen_policy_projection() -> dict[str, object]:
+    """The exact-policy fields `_production_action` now requires of any policy-scored example.
+
+    The metric no longer falls back to `DEFAULT_POLICY`: an example that cannot prove which policy scored it
+    is a different question wearing the same name. Tests carry the defaults explicitly, so a fixture that
+    forgets them fails loudly instead of quietly scoring the wrong arm.
+    """
+
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.triage_rules import DEFAULT_POLICY
+
+    values = DEFAULT_POLICY.as_dict()
+    return {
+        "policy_version": "news_triage_policy_v8",
+        "policy_values": values,
+        "policy_sha256": canonical_sha(values),
+    }
+
+
 _TARIFF = CompilerProxyTariff(
     tariff_id="test",
     input_token_overhead=1_000,
@@ -157,6 +177,7 @@ def _episode(index: int, *, should_push: str, novelty: str, magnitude_fail: bool
             "gate": {"grounded_assets": ["TSLA"], "priority": "normal", "admission": "candidate"},
             "storyline": {"title": f"Tesla ships product {index}", "family": "general"},
             "seen": [],
+            **_frozen_policy_projection(),
         },
     )
 

@@ -584,22 +584,77 @@ per-queue message/consumer counts.
 ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.
 
-`news learning baseline --from-ms N --to-ms N [--mode recorded|live]
-[--action-source recorded|policy] [--all-cohorts] [--limit N] [--out FILE]`
-scores the stable Program over accepted reviews and returns one
-content-addressed report: total score, action agreement, per-dimension pass
-rates, hard-gate counts with reasons, `gold_coverage`, the retrieval receipt,
-provider failures, latency and the full subject identity (program, state,
-policy, metric, corpus roots). It is read-only — no dataset, sandbox, tariff or
-container, and no writes to any table. `--mode recorded` scores the persisted
-verdict against the action that actually shipped and makes no provider call;
-`--all-cohorts` drops release-plane eligibility — for the seed sent ledger too,
-not only the cases — so a retired arm's corpus is measured against the ledger
-`decide()` would actually have read. A `replay` mode over a recorded Predictor
-corpus exists in the harness but is deliberately not offered by the CLI: nothing
-builds that corpus yet, and a flag that silently reaches a live provider is
-worse than a missing one. Reviews whose `evidence_version` has been superseded are not
-replayable and are excluded, the same rule `_load_case` already enforced.
+`news learning baseline --from-ms N --to-ms N [--mode
+recorded|compile_live|runtime_live] [--action-source recorded|policy]
+[--all-cohorts] [--semantic-judge MODEL] [--limit N] [--out FILE]` scores the
+stable Program over accepted reviews and returns one content-addressed
+`tracefold.news.program_baseline_report.v2`. It is read-only — no dataset,
+sandbox, tariff or container, no write to any table, and the only database
+contact is one `serve` connection that closes before the first model call.
+
+The three modes answer three different questions and are never interchangeable
+(#150 removed the single ambiguous `live`, with no alias):
+
+| Mode | Executes | Question |
+| --- | --- | --- |
+| `recorded` | the persisted verdict against the action that shipped | is metric wiring reproducible over history? |
+| `compile_live` | `DspyCompileProgram` on one task endpoint | what baseline does GEPA optimize against? |
+| `runtime_live` | the configured four-slot `DspyNewsSemanticProgram` | does the production Program route answer these cases? |
+
+`compile_live` is exactly the graph GEPA maximizes and deliberately has no
+fallback route, no fast retry, no per-route deadline and no circuit breaker, so
+its failure rate is not the reader's. `runtime_live` is built by the same seam
+the Workers use — a dedicated ReaderCard binding is honoured rather than
+silently aliased to the EventSemantics primary — and runs cases sequentially in
+`(opened_at_ms, case_id)` order so circuit state is a property of the run rather
+than of scheduling. It is a **Program-route** replay only: `execution_scope`
+names what it still excludes (the consumer transaction, the advisory lock,
+stale-evidence re-ask, the degraded wire-card fallback, the broker and
+delivery).
+
+The report has no single ambiguous `score`. A provider failure is an outcome,
+not an absence, so it is published twice: `scores.case_macro_answered` is
+quality given an answer and `scores.case_macro_failure_as_zero` is the
+end-to-end lower bound, with the same pair at connected-fact-cluster grain
+(one cluster, one vote) plus a deterministic bootstrap interval on the release
+evaluator's seed/replicate convention. `population` carries
+requested/answered/failure counts, `failures.by_code` keeps each error code
+separate, and `action_confusion` splits agreement by `must_push`,
+`should_push`, `must_hold` and `should_hold`. `review_label_distribution` is
+corpus metadata (what reviewers labelled); `prediction_dimensions` is what this
+candidate did — gold hit/miss, accepted-retention hit/miss including #148
+semantic-equivalence decisions, the ungolded-change proxy and not-labelled — and
+moves when predictions move. `runtime_live` adds `route` (primary/fallback,
+call and physical-call counts, input/output tokens, known provider cost and
+`cost_unknown_n` rather than a fabricated zero) and `latency_ms` p50/p95/max;
+`compile_live` reports wall clock only, because in that mode `dspy.Evaluate`
+owns the program call and per-case provider timing is not observable. Neither
+receipt contains a credential or an endpoint URL.
+
+Policy is frozen into each scored example rather than read from process-global
+state: `policy_metric` carries the exact `policy_values` and `policy_sha256` of
+the arm, `_production_action()` builds `DecidePolicy(**policy_values)` and
+verifies the hash, and a missing or mismatched policy fails closed instead of
+falling back to `DEFAULT_POLICY`. A report spanning two policies is refused
+rather than labelled with one of them. `recorded` returns before policy replay,
+so a retired cohort's shipped action stays reproducible after the policy it ran
+under was replaced, and its `identity.policy_sha256` is an explicit `null`.
+
+`--mode recorded` makes no provider call; `--all-cohorts` drops release-plane
+eligibility — for the seed sent ledger too, not only the cases — so a retired
+arm's corpus is measured against the ledger `decide()` would actually have read.
+`--semantic-judge MODEL` scores free-text retention anchors by meaning instead of
+byte equality (#148); enum dimensions stay exact and the strict byte-equality
+mean is reported alongside as `scores.case_macro_answered_byte_equality`.
+Reviews whose `evidence_version` has been superseded are not replayable and are
+excluded, the same rule `_load_case` already enforced.
+
+The recorded calibration is pinned to a checked-in corpus
+(`tests/fixtures/news_baseline_calibration_v1.json.gz`), not to the live
+database, so it proves metric wiring rather than tracking corpus growth. Its
+free text is redacted by an equality-preserving map, which keeps every
+comparison the recorded metric makes and is why the fixture is valid for
+`--mode recorded` only.
 
 Reviews are accepted under `news_review_v3`, which adds one optional `expected`
 object (magnitude, direction, assets, novelty, should_reach_reader) stating the
