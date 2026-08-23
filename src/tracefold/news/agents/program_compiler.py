@@ -617,7 +617,7 @@ class ProgramCompiler:
         metric_call_ceiling = (
             request.budget.max_metric_calls
             + len(val_examples)
-            + int(optimizer_constructor["reflection_minibatch_size"])
+            + cast(int, optimizer_constructor["reflection_minibatch_size"])
         )
         if metric_calls < 0 or metric_calls > metric_call_ceiling:
             raise ValueError(

@@ -660,6 +660,7 @@ async def _wire_news_pipeline(
         if push.delivery_available
         else None
     )
+    oi_policy = OiPolicy(**settings.news.oi.model_dump())
     pipeline = NewsPipeline(
         receiver=receiver,
         recovery=recovery,
@@ -681,7 +682,7 @@ async def _wire_news_pipeline(
             circuit_failures=settings.news.triage.circuit_failures,
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
             policy=DecidePolicy(**settings.news.policy.model_dump()),
-            oi_policy=OiPolicy(**settings.news.oi.model_dump()),
+            oi_policy=oi_policy,
             stable_bundle_sha=stable_arm.bundle_sha,
             canary_arms=canary_arms,
             runtime_manifest={
@@ -704,6 +705,7 @@ async def _wire_news_pipeline(
             sender=sender,
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
+            oi_policy=oi_policy,
         ),
         janitor=JanitorLoop(
             db=db,

@@ -19,7 +19,7 @@ import threading
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -824,7 +824,8 @@ class TrustedCompilerModelProxy:
                 "news_program_compile_proxy_provider_usage_unavailable",
                 metadata=metadata,
             )
-        if metadata.provider_cost_microusd > reservation_microusd:
+        provider_cost_microusd = cast(int, metadata.provider_cost_microusd)
+        if provider_cost_microusd > reservation_microusd:
             return self._failure(
                 request,
                 "news_program_compile_proxy_call_cost_reservation_exceeded",

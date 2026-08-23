@@ -1341,7 +1341,7 @@ def _open_event(
         assert repos.news.insert_verdict(
             event_id=opened.event_id,
             stage="triage",
-            policy_version="v6",
+            policy_version=candidate_evaluator_module.TRIAGE_POLICY_VERSION,
             model_decision="push",
             rule_baseline_decision="push",
             final_decision="push",

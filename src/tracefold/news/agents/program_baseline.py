@@ -56,7 +56,7 @@ from .semantic_program import (
 )
 
 BaselineMode = Literal["recorded", "replay", "live"]
-BASELINE_SCHEMA = "tracefold.news.program_baseline_report.v1"
+BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v1"] = "tracefold.news.program_baseline_report.v1"
 
 
 class BaselineCase(BaseModel):
@@ -250,7 +250,7 @@ def run_baseline(
         if program_factory is None:
             raise ValueError("news_program_baseline_requires_program_factory")
         program = program_factory(artifact)
-        captured: dict[str, Any] = {}
+        captured: dict[str, dspy.Prediction] = {}
         strict_scores: dict[str, float] = {}
 
         strict = bind_metric(None) if judge is not None else None
