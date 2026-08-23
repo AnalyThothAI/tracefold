@@ -47,10 +47,11 @@ For each dimension answer pass / fail / not_applicable:
   builds or earns; 2 clearly tradable (earnings, a company's own product/capacity/pricing move, listing or
   delisting, regulation landing, security incident, notable ETF flow, macro well off consensus); 3 macro
   turning point, systemic risk or geopolitical escalation.
-- why_support: is every claim in why_zh supported by the evidence, with no invented mechanism or consequence?
-- why_value: does why_zh add the concrete mechanism the headline does not already state — who is exposed and
-  what changes for them? Restating the headline, or closing with a verdict about the news, is a fail.
 - timeliness: not_applicable unless the evidence shows the card was late enough to matter.
+
+Do NOT judge why_support or why_value. Leave them out of `dimensions` entirely — the human reviewer writes
+those. Measured against 25 human-reviewed Events you agree with a reviewer 76-88% of the time on the
+dimensions above, but only 42-43% on those two, and 27 of 46 total false failures came from them alone.
 
 should_push: must_push / should_push / should_hold / must_hold / uncertain — whether a trader needed this.
 Reserve `must_*` for cases where the opposite decision would be a real failure (a security incident missed,
@@ -89,6 +90,17 @@ class DraftNovelty(BaseModel):
 
     judgment: Literal["new_fact", "progression", "restatement", "uncertain"]
     duplicate_of: str = Field(default="", max_length=128)
+
+
+# What the drafter is allowed to judge, measured rather than assumed. Agreement with a human reviewer over 25
+# Events they both saw: direction 88%, factual_fidelity 84%, headline_fidelity 84%, magnitude 76%,
+# asset_grounding 70% — against why_support 43% and why_value 42%. Those two also produced 27 of the 46
+# "human passed it, the draft failed it" disagreements, so letting the model touch them would push a large
+# number of failures a reviewer disagrees with into the corpus, where the optimizer would learn from them.
+# They also carry no gold: "the correct Chinese sentence" is not a value a rubric can hold.
+DRAFTABLE_DIMENSIONS = frozenset(
+    {"factual_fidelity", "headline_fidelity", "asset_grounding", "direction", "magnitude", "timeliness"}
+)
 
 
 class ReviewDraft(BaseModel):
@@ -192,7 +204,8 @@ def submission_payload(draft: ReviewDraft) -> dict[str, Any]:
     # Every label the rubric accepts, `not_applicable` included. Filtering to pass/fail looks tidier and is
     # wrong: `should_push` of `must_push`/`should_push` *requires* a `timeliness` entry, and that entry is
     # `not_applicable` on most Events — dropping it makes the majority of drafts unsubmittable.
-    dimensions = dict(draft.dimensions)
+    # A model that answers anyway is silently dropped rather than trusted: the reviewer owns `why_*`.
+    dimensions = {name: label for name, label in draft.dimensions.items() if name in DRAFTABLE_DIMENSIONS}
     expected = draft.expected.model_dump(mode="json", exclude_none=True) if draft.expected else {}
     payload: dict[str, Any] = {
         "kind": "event_rubric",
@@ -249,6 +262,7 @@ _EMPTY_DRAFT = ReviewDraft(
 
 
 __all__ = [
+    "DRAFTABLE_DIMENSIONS",
     "DRAFTER_ID",
     "DRAFT_SCHEMA",
     "DraftedReview",

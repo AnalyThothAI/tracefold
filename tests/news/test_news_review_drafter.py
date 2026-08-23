@@ -141,3 +141,21 @@ def test_submission_payload_keeps_the_labels_the_rubric_requires() -> None:
     payload = submission_payload(ReviewDraft.model_validate(_GOOD))
     assert payload["dimensions"]["timeliness"] == "not_applicable"
     assert EventRubricSubmission(**payload).should_push == "should_push"
+
+
+def test_the_drafter_cannot_judge_the_dimensions_it_disagrees_with_humans_on() -> None:
+    """Measured, not assumed: over 25 Events both saw, agreement was 43%/42% on `why_*` against 70-88%
+    elsewhere, and those two produced 27 of the 46 "human passed it, the draft failed it" disagreements."""
+
+    from tracefold.news.agents.program_review_drafter import DRAFTABLE_DIMENSIONS
+
+    assert "why_support" not in DRAFTABLE_DIMENSIONS
+    assert "why_value" not in DRAFTABLE_DIMENSIONS
+    # A model that answers anyway must not reach the submission.
+    draft = ReviewDraft.model_validate(
+        {**_GOOD, "dimensions": {**_GOOD["dimensions"], "why_support": "fail", "why_value": "fail"}}
+    )
+    payload = submission_payload(draft)
+    assert "why_support" not in payload["dimensions"]
+    assert "why_value" not in payload["dimensions"]
+    assert payload["dimensions"]["magnitude"] == "fail", "the draftable failures still come through"
