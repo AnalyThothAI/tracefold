@@ -676,7 +676,9 @@ class NewsRepository:
                 )
             }
         )
-        # The SemanticJudge sees one question, never the parent digest.
+        # The SemanticJudge sees one question, never the parent digest.  `raw_first_line` exists to recover a
+        # subject that title normalization dropped; on a split digest `leader_title` is already the bullet's own
+        # unnormalized text, and the parent's first line is a *different* bullet — it can only mislead.
         snapshot_card.update(
             {
                 "leader_title": focus["text"],
@@ -684,6 +686,8 @@ class NewsRepository:
                 "focus_fact_id": focus["fact_id"],
             }
         )
+        if focus.get("method") == "explicit_numbered":
+            snapshot_card["raw_first_line"] = ""
         snapshot = {
             "schema_version": "news_event_evidence_v1",
             "event_id": event_id,

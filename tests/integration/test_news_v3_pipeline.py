@@ -509,7 +509,9 @@ def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> No
     rows = conn.execute(
         """
         SELECT e.event_id, e.focus_fact_id, e.focus_fact_text, e.focus_fact_method,
-               s.evidence_version, s.snapshot #>> '{card,leader_description}' AS content
+               s.evidence_version, s.snapshot #>> '{card,leader_description}' AS content,
+               s.snapshot #>> '{card,leader_title}' AS model_title,
+               s.snapshot #>> '{card,raw_first_line}' AS model_raw_first_line
           FROM news_events e
           JOIN news_event_evidence_snapshots s
             ON s.event_id = e.event_id AND s.evidence_version = 1
@@ -522,6 +524,75 @@ def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> No
     assert {int(row["evidence_version"]) for row in rows} == {1}
     assert all(row["content"] == "市场快讯：" for row in rows)
     assert any(str(row["focus_fact_text"]).startswith("Moderna") for row in rows)
+    # #152: the parent's first line here is the header, which `content` already carries; `leader_title` is the
+    # bullet's own unnormalized text, so `raw_first_line` has nothing left to recover and is blanked.
+    assert all(row["model_raw_first_line"] == "" for row in rows)
+    assert {row["model_title"] for row in rows} == {str(row["focus_fact_text"]) for row in rows}
+    conn.commit()
+
+
+def test_a_bare_numbered_digest_never_grounds_one_bullet_on_another(conn) -> None:
+    """#152: with no preamble the parent's first line *is* bullet 1.
+
+    The Gate reads `title + raw_first_line` for cashtags and for the macro/energy/PR lexicons, so bullet 1's
+    `$TSLA` used to ground every sibling. There is no shared lead in this shape, so each bullet is judged and
+    grounded on itself alone.
+
+    The tag is graded `C` on purpose: a B+/A/A+ tag grounds the whole Item by design and would hide the leak.
+    """
+
+    repos = repositories_for_connection(conn)
+    raw = (
+        "1. 特斯拉 $TSLA 盘前上涨 6%，公司上调全年交付指引。<br/>"
+        "2. 美国航空航天局称将于下周向宇航员颁发荣誉勋章。<br/>"
+        "3. 印度政府表示正密切关注国内糖价上涨的情况。"
+    )
+    event = parse_opennews_message(
+        {
+            "method": "strategy.triggered",
+            "params": _hit(
+                hit_id=920002,
+                text=raw,
+                engine="news",
+                score=80,
+                coins=[{"symbol": "TSLA", "market_type": "cex", "grade": "C", "score": 10}],
+                source="wire",
+                ts="2026-08-18T22:00:00+08:00",
+            ),
+        },
+    )
+    assert event is not None
+    stamp = int(event.entry.published_at_ms or 0) + 1000
+    with repos.transaction():
+        batch = admit_frame(
+            repos,
+            event=event,
+            ingest_mode="live",
+            observed_at_ms=stamp,
+            trace_id="bare-digest",
+            watchlist_symbols=frozenset(),
+            now_ms=stamp,
+        )
+    assert len(batch.results) == 3
+    rows = conn.execute(
+        """
+        SELECT e.focus_fact_text, e.focus_fact_context, e.grounded_assets,
+               s.snapshot #>> '{card,raw_first_line}' AS model_raw_first_line
+          FROM news_events e
+          JOIN news_event_evidence_snapshots s
+            ON s.event_id = e.event_id AND s.evidence_version = 1
+         WHERE e.leader_item_id = %s ORDER BY e.focus_fact_text
+        """,
+        (batch.item_id,),
+    ).fetchall()
+    assert len(rows) == 3
+    # No preamble exists, so no unit gets one — and the first bullet is not promoted into that role.
+    assert all(row["focus_fact_context"] == "" for row in rows)
+    assert all(row["model_raw_first_line"] == "" for row in rows)
+    by_text = {str(row["focus_fact_text"])[:4]: row for row in rows}
+    assert list(by_text["特斯拉 $TS"[:4]]["grounded_assets"]) == ["TSLA"]
+    for other in ("美国航空航天局", "印度政府表示"):
+        assert list(by_text[other[:4]]["grounded_assets"]) == []
     conn.commit()
 
 
