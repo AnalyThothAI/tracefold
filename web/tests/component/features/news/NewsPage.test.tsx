@@ -80,7 +80,7 @@ describe("NewsPage", () => {
     expect(screen.getByText("1 / 320 条")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "时间范围" })).toHaveValue("24");
     await waitFor(() => expect(observed.hours).toBe("24"));
-    expect(observed.sort).toBe("latest");
+    expect(observed.sort).toBeNull();
     expect(observed.limit).toBe("25");
     expect(observed.outcome).toBeNull();
     expect(observed.priority).toBeNull();
@@ -121,15 +121,12 @@ describe("NewsPage", () => {
     // #87: the row carries no buttons of its own — copy, label and open-original all live on the Event.
     expect(inRow.queryByRole("link", { name: "打开原文" })).toBeNull();
     expect(inRow.queryByRole("button", { name: "复制标题" })).toBeNull();
-    // Exactly one outcome badge; its reason travels as the title, not as a second label. A normal-priority
-    // push states itself as a word — the filled capsule is reserved for the high-priority one.
+    // Exactly one outcome badge; queue scheduling metadata never changes its reader-facing loudness.
     const badges = row!.querySelectorAll(".news-outcome");
     expect(badges).toHaveLength(1);
     expect(badges[0]).toHaveTextContent("已推送");
-    // This fixture is the high-priority push, the one place a filled capsule is allowed; an ordinary push
-    // states itself as a word so a screenful of rows does not become a vertical band of pills.
-    expect(row).toHaveAttribute("data-priority", "high");
-    expect(badges[0]).toHaveAttribute("data-variant", "chip");
+    expect(row).not.toHaveAttribute("data-priority");
+    expect(badges[0]).toHaveAttribute("data-variant", "text");
     expect(badges[0]).toHaveAttribute("title", "模型判断值得推送");
     expect(inRow.getByText(/推送于/)).toBeInTheDocument();
     for (const raw of ["model_push_actionable", "candidate", "asset:BTC", "escalate", "general"]) {
@@ -255,22 +252,12 @@ describe("NewsPage", () => {
     expect(heading.closest("[data-page-archetype='scan']")).not.toBeNull();
   });
 
-  it("keeps outcome tab, time window, search, family, admission, priority, decision, symbol, and sort in URL-owned server state", async () => {
+  it("keeps outcome tab, time window, search, family, admission, decision, and symbol in URL-owned server state", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        for (const name of [
-          "q",
-          "family",
-          "admission",
-          "priority",
-          "decision",
-          "symbol",
-          "sort",
-          "outcome",
-          "hours",
-        ]) {
+        for (const name of ["q", "family", "admission", "decision", "symbol", "outcome", "hours"]) {
           observed[name] = params.get(name);
         }
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
@@ -279,7 +266,7 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?q=bitcoin&family=general&admission=candidate&priority=high&decision=push&symbol=btc&sort=priority&outcome=held&hours=6",
+      "/news?q=bitcoin&family=general&admission=candidate&decision=push&symbol=btc&outcome=held&hours=6",
     );
 
     await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
@@ -290,17 +277,15 @@ describe("NewsPage", () => {
       family: "general",
       hours: "6",
       outcome: "held",
-      priority: "high",
       q: "bitcoin",
-      sort: "priority",
       symbol: "BTC",
     });
     expect(screen.getByRole("tab", { name: "被拦截" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("combobox", { name: "时间范围" })).toHaveValue("6");
-    expect(screen.getByRole("combobox", { name: "事件排序" })).toHaveValue("priority");
+    expect(screen.queryByRole("combobox", { name: "事件排序" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "事件家族" })).toHaveValue("general");
     expect(screen.getByRole("combobox", { name: "事件准入" })).toHaveValue("candidate");
-    expect(screen.getByRole("combobox", { name: "事件优先级" })).toHaveValue("high");
+    expect(screen.queryByRole("combobox", { name: "事件优先级" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Triage 判定" })).toHaveValue("push");
     expect(screen.getByRole("textbox", { name: "落地资产" })).toHaveValue("BTC");
     const chips = screen.getByRole("group", { name: "已启用筛选" });
@@ -308,18 +293,10 @@ describe("NewsPage", () => {
       within(chips)
         .getAllByRole("button")
         .map((chip) => chip.textContent),
-    ).toEqual([
-      "搜索：bitcoin",
-      "来源类别：综合",
-      "门禁：已送审",
-      "优先级：高优先级",
-      "决策：推送",
-      "资产：BTC",
-    ]);
+    ).toEqual(["搜索：bitcoin", "来源类别：综合", "门禁：已送审", "决策：推送", "资产：BTC"]);
 
     fireEvent.click(within(chips).getByRole("button", { name: "移除决策：推送" }));
     await waitFor(() => expect(observed.decision).toBeNull());
-    expect(screen.getByTestId("location")).toHaveTextContent("priority=high");
     expect(screen.getByTestId("location")).toHaveTextContent("outcome=held");
     expect(screen.getByTestId("location")).not.toHaveTextContent("decision=");
 
@@ -332,22 +309,14 @@ describe("NewsPage", () => {
     });
     await waitFor(() => expect(observed.hours).toBeNull());
     expect(screen.getByTestId("location")).toHaveTextContent("hours=all");
-    fireEvent.change(screen.getByRole("combobox", { name: "事件优先级" }), {
-      target: { value: "" },
-    });
-    await waitFor(() => expect(observed.priority).toBeNull());
-    fireEvent.change(screen.getByRole("combobox", { name: "事件排序" }), {
-      target: { value: "latest" },
-    });
-    await waitFor(() => expect(observed.sort).toBe("latest"));
   });
 
-  it("ignores unknown priority, decision, outcome, and hours values instead of forwarding them", async () => {
+  it("does not forward retired priority/sort or unknown decision, outcome, and hours values", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        for (const name of ["priority", "decision", "outcome", "hours"])
+        for (const name of ["priority", "sort", "decision", "outcome", "hours"])
           observed[name] = params.get(name);
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
       }),
@@ -355,15 +324,21 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?priority=urgent&decision=maybe&outcome=whatever&hours=999",
+      "/news?priority=high&sort=priority&decision=maybe&outcome=whatever&hours=999",
     );
 
     await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
     expect(observed.priority).toBeNull();
+    expect(observed.sort).toBeNull();
     expect(observed.decision).toBeNull();
     expect(observed.outcome).toBeNull();
     expect(observed.hours).toBe("24");
     expect(screen.queryByRole("group", { name: "已启用筛选" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "时间范围" }), {
+      target: { value: "6" },
+    });
+    await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("priority="));
+    expect(screen.getByTestId("location")).not.toHaveTextContent("sort=");
   });
 
   it("loads the next cursor and deduplicates repeated Event ids", async () => {
@@ -557,8 +532,9 @@ describe("NewsPage", () => {
       "ok",
       "warn",
     ]);
-    expect(cards[3]).toHaveTextContent("推送已暂停");
-    expect(cards[3]).toHaveTextContent("暂停期间应推的事件直接丢弃，不会补发");
+    expect(cards[3]).toHaveTextContent("Delivery注意");
+    expect(cards[3]).toHaveTextContent("24 小时 10/100 条未送达");
+    expect(cards[3]).toHaveTextContent("feishu_http_500");
     expect(cards[2]).toHaveTextContent("模型正常，24 小时降级 2/175");
 
     const funnel = screen.getByRole("region", { name: "过去 24 小时漏斗" });

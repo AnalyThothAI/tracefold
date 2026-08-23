@@ -4,9 +4,7 @@ export type NewsFeedQueryKeyFilters = {
   family: string | null;
   hours: number | null;
   outcome: string | null;
-  priority: string | null;
   q: string;
-  sort: "latest" | "priority";
   symbol: string | null;
 };
 
@@ -15,10 +13,8 @@ export const newsFeedIdentity = (filters: NewsFeedQueryKeyFilters) =>
     filters.q,
     filters.family ?? "",
     filters.admission ?? "",
-    filters.priority ?? "",
     filters.decision ?? "",
     filters.symbol ?? "",
-    filters.sort,
     filters.outcome ?? "",
     filters.hours == null ? "" : String(filters.hours),
   ] as const;

@@ -103,8 +103,6 @@ def event_timeline(
 
     admission = str(event.get("admission") or "")
     gate_bits = [admission_zh(admission)]
-    if event.get("priority") == "high":
-        gate_bits.append("高优先级")
     grounded = list(event.get("grounded_assets") or [])
     shown = list(dict.fromkeys(str(s).replace("XYZ-", "") for s in grounded))
     if shown:
@@ -119,7 +117,6 @@ def event_timeline(
             "summary_zh": " · ".join(gate_bits),
             "facts": {
                 "admission": admission,
-                "priority": event.get("priority"),
                 "asset_class": event.get("asset_class"),
                 "grounded_assets": grounded,
                 "watchlist_hits": list(event.get("watchlist_hits") or []),

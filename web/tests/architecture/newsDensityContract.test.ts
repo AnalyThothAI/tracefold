@@ -18,18 +18,15 @@ describe("News console contract", () => {
 
     /*
      * Roughly three quarters of a day's Events stop short of a card. A capsule on each made a screenful of
-     * equals, so the desktop row states its outcome as a *word* and keeps the filled chip for the one thing
-     * worth shouting: a high-priority push. The phone card drops the held badge entirely (see the media
-     * query below), where a grey capsule on three cards out of four is pure noise. Either way it is exactly
-     * one badge, and `outcome` is still what decides.
+     * equals, so the desktop row states its outcome as a *word*. The phone card drops the held badge entirely
+     * (see the media query below), where a grey label on three cards out of four is pure noise. Either way it
+     * is exactly one badge, and queue scheduling metadata has no reader-facing authority.
      */
     expect(row.match(/<NewsOutcomeBadge/g)).toHaveLength(1);
     expect(row).toContain("data-outcome-group={event.outcome.group}");
-    // The capsule is a high-priority *push*, not merely "not held": an Event still in the delivery queue
-    // must not take the one loud thing on the screenful before anything reached a reader.
-    expect(row).toMatch(
-      /variant=\{event\.priority === "high" && event\.outcome\.group === "pushed" \? "chip" : "text"\}/,
-    );
+    expect(row).toContain('variant="text"');
+    expect(row).not.toContain("event.priority");
+    expect(row).not.toContain("data-priority");
     expect(rowCss).toMatch(
       /@media \(max-width: 767px\)[\s\S]*?\.news-event-row\[data-outcome-group="held"\] \.news-event-badge \{[^}]*display: none;/,
     );

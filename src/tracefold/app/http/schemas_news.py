@@ -111,7 +111,6 @@ class NewsEventData(ExactApiSchema):
     last_member_at_ms: int
     member_count: int
     admission: str
-    priority: str
     provider_score_max: float | None = None
     engine_type: str
     asset_class: str
@@ -141,11 +140,9 @@ class NewsFeedEventData(NewsEventData):
 class NewsFeedFiltersData(ExactApiSchema):
     family: str | None = None
     admission: str | None = None
-    priority: str | None = None
     decision: str | None = None
     symbol: str | None = None
     q: str | None = None
-    sort: Literal["latest", "priority"]
     limit: int
     outcome: Literal["pushed", "held", "pending"] | None = None
     hours: int | None = None

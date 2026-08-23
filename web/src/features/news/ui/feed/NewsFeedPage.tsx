@@ -98,19 +98,19 @@ export function NewsFeedPage({ token }: { token: string }) {
   const quotes = Object.fromEntries(
     (quotesQuery.data?.quotes ?? []).map((quote) => [quote.requested_symbol, quote]),
   );
-  const feedSearch = searchParams.toString();
+  const feedSearch = nextFeedParams(filters, {}).toString();
   const wideEnoughForDrawer = useMediaQuery(DRAWER_QUERY);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [drawerId, setDrawerId] = useState<string | null>(null);
 
   const updateFeedParams = (changes: FeedFilterChanges) => {
-    setSearchParams(nextFeedParams(searchParams, filters, changes), { replace: true });
+    setSearchParams(nextFeedParams(filters, changes), { replace: true });
   };
 
   const toggleExpanded = (eventId: string) =>
     setExpandedId((current) => (current === eventId ? null : eventId));
 
-  const groups = groupByHour(events, filters.sort === "latest");
+  const groups = groupByHour(events);
   return (
     <NewsPageShell archetype="scan" className="news-feed-shell" label="新闻事件流">
       <NewsPageHeader subtitle="每条新闻的判定与去向，动作都在详情页。" title="新闻事件流">
@@ -151,7 +151,6 @@ export function NewsFeedPage({ token }: { token: string }) {
                     decision: null,
                     family: null,
                     hours: null,
-                    priority: null,
                     q: null,
                     symbol: null,
                   })
@@ -240,12 +239,10 @@ type FeedGroup = { events: NewsFeedEvent[]; key: string; label: string };
 /**
  * Consecutive Events bucketed by the hour they were published (design proposal ⑤).
  *
- * Only when the list is chronological: `sort=priority` interleaves hours by design, and a heading over a
- * non-chronological run would claim an order the server did not produce. The grouping is presentational —
- * the rows, their order and their count all come from the server exactly as they arrived.
+ * The grouping is presentational — the rows, their order and their count all come from the server exactly
+ * as they arrived.
  */
-function groupByHour(events: NewsFeedEvent[], enabled: boolean): FeedGroup[] {
-  if (!enabled) return [{ events, key: "all", label: "" }];
+function groupByHour(events: NewsFeedEvent[]): FeedGroup[] {
   const groups: FeedGroup[] = [];
   let day: string | null = null;
   for (const event of events) {

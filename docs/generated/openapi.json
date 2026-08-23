@@ -623,7 +623,7 @@
       },
       "ExpectedCorrection": {
         "additionalProperties": false,
-        "description": "The reviewer's stated correct values \u2014 `news_review_v3` gold.\n\nWithout this the metric can only ask \"did the candidate change the field the reviewer failed?\", which\nscores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one\nanswer and not the others, and because the copy dimensions (`why_*`, `headline_fidelity`) have no value a\nrubric could hold \u2014 \"the correct Chinese sentence\" is not a label.",
+        "description": "The reviewer's stated correct values \u2014 `news_review_v4` exact gold.\n\nWithout this the metric can only ask \"did the candidate change the field the reviewer failed?\", which\nscores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one\nanswer and not the others, and because the copy dimensions (`why_*`, `headline_fidelity`) have no value a\nrubric could hold \u2014 \"the correct Chinese sentence\" is not a label.",
         "properties": {
           "assets": {
             "anyOf": [
@@ -669,6 +669,145 @@
               }
             ],
             "title": "Magnitude"
+          },
+          "reader_value": {
+            "anyOf": [
+              {
+                "enum": [
+                  "escalate",
+                  "realtime",
+                  "background",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Value"
+          },
+          "trade_affected_markets": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "crypto_broad",
+                    "us_equity_broad",
+                    "rates",
+                    "fx",
+                    "energy",
+                    "metals",
+                    "single_asset"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 4,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Affected Markets"
+          },
+          "trade_channels": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "rates",
+                    "liquidity",
+                    "risk_premium",
+                    "energy_supply",
+                    "commodity_supply",
+                    "commodity_demand",
+                    "regulation",
+                    "exchange_access",
+                    "earnings_cashflow",
+                    "positioning_flow",
+                    "security_incident"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 4,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Channels"
+          },
+          "trade_development_delta": {
+            "anyOf": [
+              {
+                "enum": [
+                  "state_change",
+                  "material_detail",
+                  "color_only",
+                  "scheduled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Development Delta"
+          },
+          "trade_impact_breadth": {
+            "anyOf": [
+              {
+                "enum": [
+                  "none",
+                  "single_instrument",
+                  "sector",
+                  "regional",
+                  "cross_asset",
+                  "global_systemic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Impact Breadth"
+          },
+          "trade_surprise": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unscheduled",
+                  "material_vs_expectation",
+                  "in_line",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Surprise"
+          },
+          "trade_tradability": {
+            "anyOf": [
+              {
+                "enum": [
+                  "direct",
+                  "second_order",
+                  "contextual",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Tradability"
           }
         },
         "title": "ExpectedCorrection",
@@ -1245,10 +1384,6 @@
             "title": "Opened At Ms",
             "type": "integer"
           },
-          "priority": {
-            "title": "Priority",
-            "type": "string"
-          },
           "provenance": {
             "items": {
               "type": "string"
@@ -1304,7 +1439,6 @@
           "last_member_at_ms",
           "member_count",
           "admission",
-          "priority",
           "engine_type",
           "asset_class",
           "ingest_mode"
@@ -1958,10 +2092,6 @@
           "outcome": {
             "$ref": "#/components/schemas/NewsOutcomeData"
           },
-          "priority": {
-            "title": "Priority",
-            "type": "string"
-          },
           "provenance": {
             "items": {
               "type": "string"
@@ -2048,7 +2178,6 @@
           "last_member_at_ms",
           "member_count",
           "admission",
-          "priority",
           "engine_type",
           "asset_class",
           "ingest_mode",
@@ -2124,17 +2253,6 @@
             ],
             "title": "Outcome"
           },
-          "priority": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Priority"
-          },
           "q": {
             "anyOf": [
               {
@@ -2145,14 +2263,6 @@
               }
             ],
             "title": "Q"
-          },
-          "sort": {
-            "enum": [
-              "latest",
-              "priority"
-            ],
-            "title": "Sort",
-            "type": "string"
           },
           "symbol": {
             "anyOf": [
@@ -2167,7 +2277,6 @@
           }
         },
         "required": [
-          "sort",
           "limit"
         ],
         "title": "NewsFeedFiltersData",
@@ -6006,17 +6115,6 @@
           },
           {
             "in": "query",
-            "name": "priority",
-            "required": false,
-            "schema": {
-              "default": "",
-              "pattern": "^(high|normal)?$",
-              "title": "Priority",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
             "name": "decision",
             "required": false,
             "schema": {
@@ -6045,17 +6143,6 @@
               "default": "",
               "maxLength": 200,
               "title": "Q",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "sort",
-            "required": false,
-            "schema": {
-              "default": "latest",
-              "pattern": "^(latest|priority)$",
-              "title": "Sort",
               "type": "string"
             }
           },

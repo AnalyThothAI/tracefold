@@ -22,25 +22,22 @@ const baseFilters = {
   family: null,
   hours: null,
   outcome: null,
-  priority: null,
   q: "",
-  sort: "latest",
   symbol: null,
 } as const;
 
 describe("useNewsFeedWithToken", () => {
   it("separates Feed cache identities by every server filter", () => {
     const latest = queryKeys.newsFeed(baseFilters);
-    const priority = queryKeys.newsFeed({ ...baseFilters, priority: "high", sort: "priority" });
+    const pushed = queryKeys.newsFeed({ ...baseFilters, decision: "push" });
 
-    expect(latest).not.toEqual(priority);
+    expect(latest).not.toEqual(pushed);
     expect(latest[0]).toBe("news-feed");
-    expect(priority[4]).toBe("high");
-    expect(priority[7]).toBe("priority");
+    expect(pushed[4]).toBe("push");
     const held = queryKeys.newsFeed({ ...baseFilters, hours: 6, outcome: "held" });
     expect(held).not.toEqual(latest);
-    expect(held[8]).toBe("held");
-    expect(held[9]).toBe("6");
+    expect(held[6]).toBe("held");
+    expect(held[7]).toBe("6");
   });
 
   it("reads the Event Feed endpoint with exact server filter names", async () => {
@@ -53,9 +50,7 @@ describe("useNewsFeedWithToken", () => {
           "decision",
           "family",
           "limit",
-          "priority",
           "q",
-          "sort",
           "symbol",
           "cursor",
           "outcome",
@@ -74,9 +69,7 @@ describe("useNewsFeedWithToken", () => {
           family: "general",
           hours: 24,
           outcome: "pushed",
-          priority: "high",
           q: "bitcoin",
-          sort: "priority",
           symbol: "BTC",
         }),
       { wrapper: wrapper() },
@@ -90,9 +83,7 @@ describe("useNewsFeedWithToken", () => {
       hours: "24",
       limit: "25",
       outcome: "pushed",
-      priority: "high",
       q: "bitcoin",
-      sort: "priority",
       symbol: "BTC",
     });
     expect(result.current.data?.events[0].triage?.final_decision).toBe("push");
