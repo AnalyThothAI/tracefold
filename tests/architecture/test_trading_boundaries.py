@@ -125,13 +125,7 @@ def test_the_public_interface_is_the_package_root() -> None:
 
     assert "TradingRepository" in trading.__all__
     assert "decide" in trading.__all__
-    # Every name the composition root uses comes from the root, with one named repository seam that
-    # the backend-boundary allowlist records explicitly.
-    workers = (SRC / "app" / "workers" / "__init__.py").read_text(encoding="utf-8")
-    submodule_imports = set(re.findall(r"from tracefold\.trading\.([a-z_]+) import", workers))
-    assert submodule_imports == set()
-    repositories = (SRC / "app" / "repositories.py").read_text(encoding="utf-8")
-    assert set(re.findall(r"from tracefold\.trading\.([a-z_]+) import", repositories)) == {"repository"}
+    assert "__getattr__" not in trading.__dict__
 
 
 def test_a_disabled_trading_context_constructs_nothing() -> None:

@@ -256,6 +256,10 @@ def test_analyst_lane_is_retired() -> None:
 def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> None:
     """#129: callers depend on SemanticJudge; only Program/compiler implementation may import DSPy."""
 
+    workers_root = SRC / "app" / "workers" / "root.py"
+    workers_dspy_wiring = set((SRC / "app" / "workers" / "wiring").rglob("*.py"))
+    if not workers_root.exists():
+        workers_dspy_wiring.add(SRC / "app" / "workers" / "__init__.py")
     allowed = {
         NEWS_ROOT / "agents" / "semantic_program.py",
         NEWS_ROOT / "agents" / "program_compiler.py",
@@ -278,11 +282,9 @@ def test_dspy_is_local_to_program_implementation_and_langchain_is_retired() -> N
         # that calls a model, and it lives in its own capability rather than being smuggled into a
         # News module. DeepAgents/LangGraph/ReAct stay absent tree-wide, which the next assertion keeps.
         SRC / "trading" / "decision_program.py",
-        # #104: the composition root builds the Trading LM the same way it builds the News ones — via
-        # `configured_lm_endpoint`, so the LiteLLM prefix and the provider thinking switches apply.
-        # The Trading package itself never constructs one.
-        SRC / "app" / "workers" / "__init__.py",
-    }
+        # #104: the App wiring builds the Trading LM the same way it builds the News ones. The Workers
+        # lifecycle root is intentionally excluded; PR 2 moves construction under `workers/wiring/`.
+    } | workers_dspy_wiring
     dspy_offenders = sorted(
         str(path.relative_to(ROOT))
         for path in SRC.rglob("*.py")
@@ -355,15 +357,10 @@ def test_serve_news_routes_are_read_only_and_broker_free() -> None:
 
 
 def test_opennews_production_has_no_subscription_or_rest_search_path() -> None:
-    integration_root = SRC / "integrations" / "opennews"
     production_text = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (
-            integration_root / "__init__.py",
-            integration_root / "client.py",
-            SRC / "app" / "workers" / "__init__.py",
-            NEWS_ROOT / "consumers.py",
-        )
+        for root in (SRC / "integrations" / "opennews", SRC / "app" / "workers", NEWS_ROOT)
+        for path in sorted(root.rglob("*.py"))
     )
     assert "news.subscribe" not in production_text
     assert "OpenNewsRestClient" not in production_text

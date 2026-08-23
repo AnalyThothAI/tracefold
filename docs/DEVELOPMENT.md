@@ -25,17 +25,27 @@ outputs, or evaluation control planes require an explicit current need.
 
 ## Package design
 
-The business capability is exported from `tracefold.news`. Code outside the
-owning package imports only that root.
-Keep internal modules cohesive and move behavior behind the root interface
-instead of adding forwarding modules, aliases, or compatibility packages.
+The sibling business capabilities are exported from `tracefold.news` and
+`tracefold.trading`; neither package imports the other or reaches the other's
+tables. Code outside an owning package uses its root interface. The one
+exception is `tracefold.app`, the composition seam that wires concrete internal
+implementations from both capabilities. Only the App composition families and
+provider-adapter families declared by the architecture harness may import a
+private business contract, and only from the contract families named there.
 
-Private application composition and concrete provider adapters may use only
-the exact package-private implementation seams named in the architecture
-harness—for example, to construct an owned repository or reuse a pinned parser
-behind a public protocol. This is implementation wiring, not a caller-facing
-interface: public models/protocols still come from the package root, and new
-private import edges fail until deliberately reviewed and enumerated.
+Inside a business package, use relative module imports rather than importing
+back through the package root. Keep modules cohesive and move behavior behind a
+narrow interface instead of adding forwarding modules, aliases, compatibility
+packages, or a port for an internal object with only one adapter.
+
+Package roots are declarative: imports, constants, and a narrow `__all__`, with
+no runner lifecycle, SQL, network work, DSPy graph, provider construction, or
+import-time side effects.
+
+Issue #162's size harness is a ratchet, not a global cleanup gate. Existing
+oversized modules/functions may shrink or disappear but cannot grow; new
+production modules default to 800 lines and new functions to 100 lines. A pure
+file rename does not inherit an oversized-module exception.
 
 PostgreSQL material facts and public HTTP/CLI contracts are migration
 boundaries. Internal Python imports are not compatibility contracts. Hard cuts
