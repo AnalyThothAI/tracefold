@@ -492,6 +492,54 @@ def test_a_submitting_row_that_survived_a_restart_becomes_ambiguous_not_a_resend
     assert adapter.attempts == 0
 
 
+def test_the_frozen_row_records_the_venue_that_was_chosen_even_in_paper(conn) -> None:
+    """`mode` says whether the write was real; `exchange_id` says where the intent was routed.
+
+    Collapsing the two would erase the venue choice from the ledger, and the venue choice is the one
+    thing the cross-venue invariant and the reconcile price read both need.
+    """
+
+    now = NOW
+    _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=now - MINUTE)
+    asyncio.run(_runner(conn, adapter=PaperAdapter(), now=now).turn())
+    order = conn.execute("SELECT * FROM trading_orders").fetchone()
+    assert order["exchange_id"] == "binance"
+    assert order["mode"] == "paper"
+    assert order["payload"]["exchangeId"] == "binance"
+
+
+def test_a_live_position_is_never_closed_from_a_simulated_exit(conn) -> None:
+    """Fill, stop and close are provider facts. Candles are a local opinion about someone's account."""
+
+    _case(conn, case_id="c1", source_key="k1")
+    _order(conn, order_id="o1", case_id="c1", underlying="crypto:DOGE", exchange_id="binance", state="OPEN")
+    conn.execute(
+        "UPDATE trading_orders SET mode = 'live_bounded', position_opened_at_ms = %s WHERE order_id = 'o1'",
+        (NOW - 10_000_000,),
+    )
+    conn.commit()
+
+    stopped_out = (Bar(open_at_ms=NOW - 600_000, close_at_ms=NOW - 300_000, close=Decimal("1")),)
+
+    def bars(_venue: str) -> Any:
+        async def fetch(_symbol: str, _start: int, _end: int) -> Any:
+            return stopped_out
+
+        return fetch
+
+    reconcile = ReconcileRunner(
+        db=_DirectDb(conn),
+        config=_config(),
+        bars=bars,
+        adapter=PaperAdapter(),
+        clock=lambda: NOW,
+    )
+    asyncio.run(reconcile.turn())
+    order = conn.execute("SELECT * FROM trading_orders").fetchone()
+    assert order["state"] == "OPEN"
+    assert order["exit_reason"] is None
+
+
 def test_the_clock_closes_an_open_position_without_news_or_a_model(conn) -> None:
     now = NOW
     _seed_oi_event(conn, event_id="e1", symbol="DOGE", observed_at_ms=now - MINUTE)

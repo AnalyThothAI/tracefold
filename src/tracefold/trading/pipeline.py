@@ -575,7 +575,10 @@ class CandidateRunner:
                     order_id=order_id,
                     case_id=case_id,
                     underlying_key=manifest.underlying_key,
-                    exchange_id=manifest.instrument.exchange_id if self._config.mode != "paper" else "paper",
+                    # The venue is part of the frozen intent, so the row records the one that was
+                    # chosen even in paper. `mode` is what says whether the write was real; storing
+                    # "paper" here would erase which venue the case actually routed to.
+                    exchange_id=manifest.instrument.exchange_id,
                     provider_symbol=manifest.instrument.provider_symbol,
                     account_ref=self._config.account_ref,
                     mode=self._config.mode,
@@ -831,7 +834,9 @@ class ReconcileRunner:
             )
             return True
 
-        opened = int(row.get("position_opened_at_ms") or now)
+        # The position existed at least as early as the attempt. Using `now` would silently extend the
+        # holding deadline by however long reconciliation took to prove it.
+        opened = int(row.get("position_opened_at_ms") or row.get("created_at_ms") or now)
 
         def _adopt(repos: Any) -> None:
             repos.trading.record_observation(
@@ -871,9 +876,14 @@ class ReconcileRunner:
         )
 
     async def _manage_open(self, order: PreparedOrder, row: dict[str, Any], *, now: int) -> bool:
+        if str(row["mode"]) != "paper":
+            # A live position's fill, stop and close are provider facts. Simulating them from candles
+            # would be a local opinion about an account this lane cannot yet read (PR-C).
+            await self._defer(str(row["order_id"]), str(row["state"]), now)
+            return False
         opened = int(row.get("position_opened_at_ms") or now)
         deadline = int(row.get("must_close_at_ms") or must_close_at(opened_at_ms=opened, policy=self._config.order))
-        fetcher = self._bars(str(row["exchange_id"]) if str(row["exchange_id"]) != "paper" else self._paper_venue(row))
+        fetcher = self._bars(str(row["exchange_id"]))
         bars: Sequence[Bar] = ()
         if fetcher is not None:
             try:
@@ -939,12 +949,6 @@ class ReconcileRunner:
 
         await self._db.tx("trading_close", _close, timeout_seconds=_COLD_WRITE_TIMEOUT_SECONDS)
         return True
-
-    def _paper_venue(self, row: dict[str, Any]) -> str:
-        """Paper stores `exchange_id='paper'`; prices still come from the venue whose symbol it froze."""
-
-        symbol = str(row.get("provider_symbol") or "")
-        return "binance" if symbol.upper().endswith(("USDT", "USDC")) else "hyperliquid"
 
 
 def _order_from_row(row: dict[str, Any], *, max_holding_ms: int) -> PreparedOrder:
