@@ -165,8 +165,8 @@ def _observed_value(verdict: Mapping[str, Any], name: str) -> Any:
 
 
 # Dimensions whose accepted value is a whole Chinese sentence, so "did the candidate keep it?" cannot be
-# answered by `==`. `timeliness` is here for a different reason: it is a statement about *when* the Event
-# arrived, which no rewriting can change, so a text edit must not cost its anchor.
+# answered by `==`. `timeliness` is not one of them — it is handled separately in `_retains`, and only when a
+# judge is present, so that the no-judge arm stays byte-for-byte the pre-#148 rule.
 _FREE_TEXT_DIMENSIONS = ("headline_fidelity", "why_support", "why_value", "factual_fidelity")
 
 
@@ -187,14 +187,20 @@ def _retains(
 ) -> bool:
     """Whether the candidate kept a reviewer's `pass` on one dimension."""
 
-    if name == "timeliness":
-        # Timeliness is about delivery timing, not copy. The Program cannot change when an Event arrived, so
-        # losing this anchor because the wording changed would charge the candidate for something it does not
-        # control. (Identical in `recorded` mode, where the texts match anyway.)
-        return True
     literal = _same_value(field, verdict, production)
-    if literal or judge is None or name not in _FREE_TEXT_DIMENSIONS:
-        return literal
+    if literal:
+        return True
+    if judge is None:
+        # No judge means the pre-#148 rule, exactly. Relaxing anything here would silently change what
+        # `bind_metric(None)` measures, and that arm is what the receipt reports as `score_byte_equality`
+        # and what every baseline recorded before this change was scored with.
+        return False
+    if name == "timeliness":
+        # Timeliness is about when the Event arrived, not about copy: no rewriting can change it, so losing
+        # the anchor over wording would charge the candidate for something it does not control.
+        return True
+    if name not in _FREE_TEXT_DIMENSIONS:
+        return False
     # Only now is a model call worth making: the texts differ, and the question is whether they mean the same.
     return bool(judge.retains(name, production, verdict))
 

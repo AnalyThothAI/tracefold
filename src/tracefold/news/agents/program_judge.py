@@ -26,13 +26,14 @@ Deliberately narrow:
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 from typing import Any, Literal
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..artifact_identity import canonical_sha
+from ..artifact_identity import canonical_json, canonical_sha
 
 JUDGE_ID = "tracefold.news.card_equivalence_judge_v1"
 
@@ -51,9 +52,11 @@ For each question answer only whether the candidate still carries the same subst
   mechanism, a vaguer restatement of the headline, or an added consequence the accepted text did not claim is
   NOT equivalent.
 - facts_preserved: does the candidate contradict the accepted card on any fact — a number, an entity, a
-  direction, a causal link? Answer true when nothing is contradicted, even if the candidate says less.
+  direction, a causal link? You are also given each side's structured judgment (magnitude, direction, assets,
+  event type). A candidate whose structured judgment contradicts the accepted one — the opposite direction, a
+  different primary instrument — is NOT preserving the facts, even when the two texts read the same.
 
-Judge only the two texts you are given. Do not use outside knowledge about the event."""
+Judge only what you are given. Do not use outside knowledge about the event."""
 
 
 class CardEquivalence(BaseModel):
@@ -69,9 +72,20 @@ class CardEquivalence(BaseModel):
 class _CardEquivalenceSignature(dspy.Signature):  # type: ignore[misc]
     accepted_headline_zh: str = dspy.InputField(desc="Headline the reviewer accepted")
     accepted_why_zh: str = dspy.InputField(desc="Explanation the reviewer accepted")
+    accepted_semantics_json: str = dspy.InputField(desc="Accepted structured judgment")
     candidate_headline_zh: str = dspy.InputField(desc="Headline the candidate produced")
     candidate_why_zh: str = dspy.InputField(desc="Explanation the candidate produced")
+    candidate_semantics_json: str = dspy.InputField(desc="Candidate structured judgment")
     verdict: CardEquivalence = dspy.OutputField(desc="Per-dimension equivalence, no prose")
+
+
+# `factual_fidelity` is a judgment about the whole card, so text alone cannot answer it: a candidate can copy
+# both sentences verbatim and still flip `direction`. These fields travel with the text for that reason.
+_SEMANTIC_FIELDS = ("event_type", "magnitude", "direction", "actionable", "scope", "assets")
+
+
+def _semantics(verdict: Mapping[str, Any]) -> str:
+    return canonical_json({name: verdict.get(name) for name in _SEMANTIC_FIELDS})
 
 
 _IDENTICAL = CardEquivalence(headline_equivalent=True, why_equivalent=True, facts_preserved=True)
@@ -91,6 +105,9 @@ class CardEquivalenceJudge:
             max_tokens=max_tokens,
         )
         self._cache: dict[str, CardEquivalence] = {}
+        # `run_baseline` exposes `num_threads`; without this the counters written into the receipt under-count
+        # and two threads on the same pair each pay for a provider call.
+        self._lock = threading.Lock()
         self.calls = 0
         self.failures = 0
 
@@ -108,22 +125,40 @@ class CardEquivalenceJudge:
 
     @property
     def stats(self) -> dict[str, int]:
-        return {"calls": self.calls, "cache_entries": len(self._cache), "failures": self.failures}
+        with self._lock:
+            return {"calls": self.calls, "cache_entries": len(self._cache), "failures": self.failures}
 
     def equivalence(self, accepted: Mapping[str, Any], candidate: Mapping[str, Any]) -> CardEquivalence:
         accepted_headline = str(accepted.get("headline_zh") or "")
         accepted_why = str(accepted.get("why_zh") or "")
         candidate_headline = str(candidate.get("headline_zh") or "")
         candidate_why = str(candidate.get("why_zh") or "")
-        if accepted_headline == candidate_headline and accepted_why == candidate_why:
+        accepted_semantics = _semantics(accepted)
+        candidate_semantics = _semantics(candidate)
+        # The short-circuit needs the structured judgment too. On text alone, a candidate that copied both
+        # sentences and flipped `direction` would be handed `facts_preserved=True` for free.
+        if (
+            accepted_headline == candidate_headline
+            and accepted_why == candidate_why
+            and accepted_semantics == candidate_semantics
+        ):
             return _IDENTICAL
 
-        key = canonical_sha([accepted_headline, accepted_why, candidate_headline, candidate_why])
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
-
-        self.calls += 1
+        key = canonical_sha(
+            [
+                accepted_headline,
+                accepted_why,
+                accepted_semantics,
+                candidate_headline,
+                candidate_why,
+                candidate_semantics,
+            ]
+        )
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
+            self.calls += 1
         try:
             # Pin the adapter. Under DSPy's default the judge's structured reply fails the chat-format parse
             # and is silently retried as JSON — two provider calls for every one verdict, on a metric that runs
@@ -132,17 +167,21 @@ class CardEquivalenceJudge:
                 prediction = self._predict(
                     accepted_headline_zh=accepted_headline,
                     accepted_why_zh=accepted_why,
+                    accepted_semantics_json=accepted_semantics,
                     candidate_headline_zh=candidate_headline,
                     candidate_why_zh=candidate_why,
+                    candidate_semantics_json=candidate_semantics,
                 )
             verdict = prediction.verdict
             result = verdict if isinstance(verdict, CardEquivalence) else CardEquivalence.model_validate(verdict)
         except Exception:
             # Not cached: a transient provider failure must not pin this pair to "not equivalent" for the
             # rest of the run.
-            self.failures += 1
+            with self._lock:
+                self.failures += 1
             return _UNAVAILABLE
-        self._cache[key] = result
+        with self._lock:
+            self._cache[key] = result
         return result
 
     def retains(

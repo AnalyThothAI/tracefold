@@ -159,3 +159,24 @@ def test_the_drafter_cannot_judge_the_dimensions_it_disagrees_with_humans_on() -
     assert "why_support" not in payload["dimensions"]
     assert "why_value" not in payload["dimensions"]
     assert payload["dimensions"]["magnitude"] == "fail", "the draftable failures still come through"
+
+
+def test_novelty_is_normalised_so_the_rubric_can_accept_it() -> None:
+    """`NoveltyJudgment` requires `duplicate_of` on a restatement and forbids it elsewhere. A draft that
+    breaks either rule would be unacceptable with no repair path."""
+
+    named_but_new = ReviewDraft.model_validate({**_GOOD, "novelty": {"judgment": "new_fact", "duplicate_of": "a" * 64}})
+    payload = submission_payload(named_but_new)
+    assert payload["novelty"]["duplicate_of"] == ""
+    assert EventRubricSubmission(**payload).novelty.judgment == "new_fact"
+
+    unnamed_restatement = ReviewDraft.model_validate(
+        {**_GOOD, "novelty": {"judgment": "restatement", "duplicate_of": ""}}
+    )
+    payload = submission_payload(unnamed_restatement)
+    # Downgraded, not dropped: an unverifiable duplicate claim must not block the whole draft.
+    assert payload["novelty"] == {"judgment": "uncertain", "duplicate_of": ""}
+    assert EventRubricSubmission(**payload).novelty.judgment == "uncertain"
+
+    proper = ReviewDraft.model_validate({**_GOOD, "novelty": {"judgment": "restatement", "duplicate_of": "b" * 64}})
+    assert EventRubricSubmission(**submission_payload(proper)).novelty.duplicate_of == "b" * 64

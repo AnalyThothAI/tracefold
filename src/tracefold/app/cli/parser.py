@@ -138,12 +138,18 @@ def build_parser() -> argparse.ArgumentParser:
         "draft-reviews",
         help="propose news_review_v3 rubrics with gold for a human to accept (writes a file, never the DB)",
     )
-    learning_draft.add_argument("--from-ms", type=_nonnegative_int, required=True)
-    learning_draft.add_argument("--to-ms", type=_positive_int, required=True)
+    # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
+    # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an
+    # absolute range and silently drafted today's Events whatever was passed.
+    learning_draft.add_argument(
+        "--hours", type=_positive_int, default=24, help="look back this many hours from now (max 720)"
+    )
     learning_draft.add_argument("--model", required=True, help="drafting model, e.g. deepseek-v4-pro")
     learning_draft.add_argument("--limit", type=_positive_int, default=50)
     learning_draft.add_argument(
-        "--skip-reviewed", action="store_true", help="skip Events that already carry an accepted review"
+        "--include-reviewed",
+        action="store_true",
+        help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
     learning_propose = learning_subcommands.add_parser("propose", help="seal a Program or policy candidate manifest")

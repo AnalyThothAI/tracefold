@@ -187,29 +187,55 @@ def build_runtime_lm(
     )
 
 
+def build_metric_lm(
+    *,
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    model_kwargs: Mapping[str, Any],
+    timeout: float = 120.0,
+    max_tokens: int = 4_096,
+) -> dspy.LM:
+    """A metric-side endpoint (judge, drafter). `model_kwargs` comes from the app's provider resolution.
+
+    Passing it matters: for `deepseek-v4-*` it carries `extra_body.thinking = disabled`, and this gateway
+    enables thinking by default. Without it the model spends its whole output budget reasoning and returns an
+    empty answer — which is what made every early judge verdict truncate and every early draft fail to parse.
+    Raising `max_tokens` only hid that.
+    """
+
+    return dspy.LM(
+        str(model_name),
+        api_key=str(api_key),
+        api_base=str(api_base),
+        timeout=float(timeout),
+        max_tokens=int(max_tokens),
+        temperature=0,
+        cache=False,
+        num_retries=0,
+        **dict(model_kwargs),
+    )
+
+
 def build_judge(
     *,
     model_name: str,
     api_key: str,
     api_base: str,
+    model_kwargs: Mapping[str, Any] | None = None,
     timeout: float = 120.0,
-    # Three booleans is a tiny answer, but a reasoning model spends its output budget thinking first: at 512
-    # every verdict truncated, and a truncated verdict degrades to "not equivalent" — silently turning the
-    # judge back into the byte-equality rule it exists to replace.
-    max_tokens: int = 8_192,
+    max_tokens: int = 4_096,
 ) -> CardEquivalenceJudge:
     """The semantic-equivalence judge, built here so the CLI layer never imports DSPy."""
 
     return CardEquivalenceJudge(
-        dspy.LM(
-            str(model_name),
-            api_key=str(api_key),
-            api_base=str(api_base),
-            timeout=float(timeout),
-            max_tokens=int(max_tokens),
-            temperature=0,
-            cache=False,
-            num_retries=0,
+        build_metric_lm(
+            model_name=model_name,
+            api_key=api_key,
+            api_base=api_base,
+            model_kwargs=model_kwargs or {},
+            timeout=timeout,
+            max_tokens=max_tokens,
         ),
         max_tokens=int(max_tokens),
     )
@@ -241,6 +267,9 @@ def run_baseline(
     results: list[CaseResult] = []
     provider_failures = 0
     latency: dict[str, Any] = {}
+    # Function scope, not the live branch: `--mode recorded --semantic-judge X` is an advertised combination
+    # (it costs nothing, since the texts match), and the receipt reads this whenever a judge is attached.
+    strict_scores: dict[str, float] = {}
 
     if mode == "recorded":
         for case, example in zip(cases, examples, strict=True):
@@ -251,7 +280,6 @@ def run_baseline(
             raise ValueError("news_program_baseline_requires_program_factory")
         program = program_factory(artifact)
         captured: dict[str, dspy.Prediction] = {}
-        strict_scores: dict[str, float] = {}
 
         strict = bind_metric(None) if judge is not None else None
 
@@ -442,6 +470,7 @@ __all__ = [
     "TriageVerdict",
     "build_baseline_cases",
     "build_judge",
+    "build_metric_lm",
     "compile_program_factory",
     "render_model_evidence_json",
     "run_baseline",

@@ -207,11 +207,21 @@ def submission_payload(draft: ReviewDraft) -> dict[str, Any]:
     # A model that answers anyway is silently dropped rather than trusted: the reviewer owns `why_*`.
     dimensions = {name: label for name, label in draft.dimensions.items() if name in DRAFTABLE_DIMENSIONS}
     expected = draft.expected.model_dump(mode="json", exclude_none=True) if draft.expected else {}
+    # `NoveltyJudgment` requires `duplicate_of` on a restatement and forbids it anywhere else. A model that
+    # names the told entry while judging `new_fact` — or calls a restatement without naming one — would
+    # otherwise produce a draft no reviewer can accept, with no repair path.
+    novelty = draft.novelty.model_dump(mode="json")
+    if novelty["judgment"] != "restatement":
+        novelty["duplicate_of"] = ""
+    elif not str(novelty.get("duplicate_of") or "").strip():
+        # The claim cannot be checked without a target, so it is downgraded rather than dropped: a reviewer
+        # still sees the model thought this was a repeat, in the one field they will read.
+        novelty = {"judgment": "uncertain", "duplicate_of": ""}
     payload: dict[str, Any] = {
         "kind": "event_rubric",
         "should_push": draft.should_push,
         "dimensions": dimensions,
-        "novelty": draft.novelty.model_dump(mode="json"),
+        "novelty": novelty,
         "expected_correction": draft.expected_correction,
     }
     if expected:

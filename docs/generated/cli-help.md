@@ -354,19 +354,18 @@ options:
 ## `news learning draft-reviews`
 
 ```
-usage: tracefold news learning draft-reviews [-h] --from-ms FROM_MS
-                                             --to-ms TO_MS --model MODEL
-                                             [--limit LIMIT] [--skip-reviewed]
-                                             --out OUT
+usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
+                                             --model MODEL [--limit LIMIT]
+                                             [--include-reviewed] --out OUT
 
 options:
-  -h, --help         show this help message and exit
-  --from-ms FROM_MS
-  --to-ms TO_MS
-  --model MODEL      drafting model, e.g. deepseek-v4-pro
+  -h, --help          show this help message and exit
+  --hours HOURS       look back this many hours from now (max 720)
+  --model MODEL       drafting model, e.g. deepseek-v4-pro
   --limit LIMIT
-  --skip-reviewed    skip Events that already carry an accepted review
-  --out OUT          write the draft batch JSON for human review
+  --include-reviewed  also draft Events that already carry an accepted review
+                      (default: only unjudged ones)
+  --out OUT           write the draft batch JSON for human review
 
 ```
 

@@ -870,6 +870,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     """
 
     from tracefold.app.learning_runtime import compose_news_program_runtime
+    from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repositories import postgres_connection
     from tracefold.news import CandidateEvaluator, ClosedWindow
     from tracefold.news.agents.program_baseline import (
@@ -915,7 +916,15 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
         if not source.configured:
             raise ValueError("news_program_baseline_judge_endpoint_not_configured")
-        judge = build_judge(model_name=judge_model, api_key=source.api_key, api_base=source.base_url)
+        endpoint = configured_lm_endpoint(
+            settings, model_name=judge_model, api_key=source.api_key, base_url=source.base_url
+        )
+        judge = build_judge(
+            model_name=endpoint.model_name,
+            api_key=endpoint.api_key,
+            api_base=endpoint.api_base,
+            model_kwargs=endpoint.model_kwargs,
+        )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
         mode=mode,
@@ -972,9 +981,10 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     """
 
     del stable
+    from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repositories import postgres_connection
     from tracefold.news import DeskQuery, Principal, ReviewDesk, TaskRef, canonical_json
-    from tracefold.news.agents.program_baseline import build_judge
+    from tracefold.news.agents.program_baseline import build_metric_lm
     from tracefold.news.agents.program_review_drafter import ReviewDrafter, build_draft_batch
     from tracefold.news.agents.semantic_program import render_model_evidence_json
 
@@ -984,7 +994,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
         raise ValueError("news_review_drafter_endpoint_not_configured")
 
     principal = Principal(subject="operator")
-    hours = max(1, round((int(args.to_ms) - int(args.from_ms)) / 3_600_000))
+    hours = int(args.hours)
     tasks: list[dict[str, Any]] = []
     with postgres_connection(settings, role="serve") as conn:
         desk = ReviewDesk(conn)
@@ -992,15 +1002,13 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             DeskQuery(
                 view="queue",
                 mode="event",
-                status="pending" if bool(args.skip_reviewed) else "all",
+                status="all" if bool(args.include_reviewed) else "pending",
                 hours=hours,
                 limit=min(100, int(args.limit)),
             ),
             principal=principal,
         )
         for row in queue.get("tasks") or ():
-            if int(row.get("opened_at_ms") or 0) < int(args.from_ms):
-                continue
             view = desk.evidence(
                 TaskRef(task_id=str(row["task_id"]), task_version=str(row["task_version"])), principal=principal
             )
@@ -1038,8 +1046,19 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
         return 2, {"ok": False, "error": {"code": "news_review_drafter_nothing_to_draft"}}
 
     # Same endpoint plumbing as the judge: a drafting model is a metric-side tool, not a Program route.
+    endpoint = configured_lm_endpoint(
+        settings, model_name=str(args.model), api_key=source.api_key, base_url=source.base_url
+    )
     batch = build_draft_batch(
-        ReviewDrafter(build_judge(model_name=str(args.model), api_key=source.api_key, api_base=source.base_url).lm),
+        ReviewDrafter(
+            build_metric_lm(
+                model_name=endpoint.model_name,
+                api_key=endpoint.api_key,
+                api_base=endpoint.api_base,
+                model_kwargs=endpoint.model_kwargs,
+                max_tokens=4_096,
+            )
+        ),
         tasks,
     )
     payload = batch.model_dump(mode="json")

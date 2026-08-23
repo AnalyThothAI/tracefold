@@ -14,8 +14,7 @@ from tracefold.news.agents.program_metric import _component, bind_metric, metric
 _ACCEPTED = {
     "headline_zh": "BounceBit Chain 授权漏洞转移 2.865 亿枚 BB，决定永久停止运营",
     "why_zh": (
-        "授权漏洞被利用转移 2.865 亿枚 BB 后链方宣布永久停运，"
-        "BB 代币失去链上支撑，持仓者面临流动性与价值双重损失"
+        "授权漏洞被利用转移 2.865 亿枚 BB 后链方宣布永久停运，BB 代币失去链上支撑，持仓者面临流动性与价值双重损失"
     ),
 }
 # Same facts, same mechanism, different wording — the case that used to score zero.
@@ -151,3 +150,39 @@ def test_bound_metric_still_matches_gepas_two_argument_call() -> None:
     assert outcome.score == 0.0
     with pytest.raises(TypeError):
         metric()  # type: ignore[call-arg]
+
+
+def test_no_judge_is_exactly_the_pre_148_rule() -> None:
+    """`bind_metric(None)` is what the receipt calls `score_byte_equality` and what every earlier baseline
+    was scored with. Relaxing anything on that arm would silently change the number without changing its
+    name — `timeliness` in particular must not become a free pass there."""
+
+    for dimension in ("timeliness", "headline_fidelity", "factual_fidelity", "why_value"):
+        scored = _component({dimension: "pass"}, (dimension,), _REWORDED, _ACCEPTED, None, None)
+        assert scored is not None and scored[0] == 0.0, dimension
+
+
+def test_timeliness_is_retained_only_once_a_judge_is_present() -> None:
+    scored = _component({"timeliness": "pass"}, ("timeliness",), _REWORDED, _ACCEPTED, None, _judge())
+    assert scored is not None and scored[0] == 1.0
+
+
+def test_identical_text_does_not_excuse_a_flipped_direction() -> None:
+    """`factual_fidelity` judges the whole card. A candidate can copy both sentences verbatim and still
+    contradict the accepted verdict, and a text-only judge would hand it the anchor for free."""
+
+    lm = _ScriptedJudgeLM(verdict=CardEquivalence(headline_equivalent=True, why_equivalent=True, facts_preserved=False))
+    judge = CardEquivalenceJudge(lm)
+    accepted = {**_ACCEPTED, "direction": "bullish", "magnitude": 2}
+    flipped = {**_ACCEPTED, "direction": "bearish", "magnitude": 2}
+    scored = _component({"factual_fidelity": "pass"}, ("factual_fidelity",), flipped, accepted, None, judge)
+    assert scored is not None and scored[0] == 0.0
+    assert lm.calls == 1, "the structured fields differ, so the judge must actually be asked"
+
+
+def test_the_short_circuit_still_applies_when_everything_matches() -> None:
+    lm = _ScriptedJudgeLM()
+    judge = CardEquivalenceJudge(lm)
+    same = {**_ACCEPTED, "direction": "bullish", "magnitude": 2}
+    verdict = judge.equivalence(same, dict(same))
+    assert verdict.facts_preserved and lm.calls == 0
