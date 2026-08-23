@@ -26,6 +26,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.app.workers.wiring.trading import _news_trade_candidates, _news_trade_instruments
 from tracefold.trading import (
     ACTIVE_ORDER_STATES,
     TRADING_MANIFEST_VERSION,
@@ -495,6 +496,8 @@ def _runner(conn: Any, *, adapter: PaperAdapter, now: int, config: TradingConfig
         config=config or _config(),
         bars=bars,
         adapter=adapter,
+        candidate_projection=_news_trade_candidates,
+        instrument_projection=_news_trade_instruments,
         program=None,
         clock=lambda: now,
     )
@@ -1076,6 +1079,8 @@ def test_the_frozen_mark_is_the_price_at_the_cutoff_not_the_freshest_bar(conn) -
         config=_config(),
         bars=lambda _venue: feed_result,
         adapter=PaperAdapter(),
+        candidate_projection=_news_trade_candidates,
+        instrument_projection=_news_trade_instruments,
         program=None,
         clock=lambda: now,
     )

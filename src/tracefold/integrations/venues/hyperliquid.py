@@ -13,7 +13,7 @@ from typing import Any, Final
 
 import httpx
 
-from tracefold.news.instruments import Instrument, classify, is_valid_symbol, normalize_symbol
+from tracefold.news.market_review.instruments import Instrument, classify, is_valid_symbol, normalize_symbol
 
 from .errors import VenueExpectedError
 

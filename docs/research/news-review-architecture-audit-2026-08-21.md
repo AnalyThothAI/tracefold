@@ -156,7 +156,7 @@ reader load 已经很高：
 
 ### 4.5 已确认的 storyline bug 会直接造成错误限流
 
-[`storyline.py`](../../src/tracefold/news/storyline.py#L23-L27) 的 `strait` 缺少词界；`oil` 已有词界，但“任何 oil 都属于中东”的 lexicon 又过宽。最终 key 还让 theme 优先于未被 provider grounded 的 model primary：
+[`storyline.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/storyline.py#L23-L27) 的 `strait` 缺少词界；`oil` 已有词界，但“任何 oil 都属于中东”的 lexicon 又过宽。最终 key 还让 theme 优先于未被 provider grounded 的 model primary：
 
 - `aacbcb37ae6320ea6624dbce2fc695b04cddb642a6069c47c7ab08d9ef176849`：`STRAITS: Crypto surge ... $2.7b liquidations` 因来源前缀 `STRAITS` 命中 `strait`，被分进中东桶后触发该 storyline 的 flood ceiling；
 - `901deb2eef01030c6447eb60e089b182368f06ae92d9895c98b952abc20dcd61`：Exxon Guyana FPSO 仅因含 `oil` 被分进中东桶，随后也被该错误 storyline 的 hard ceiling throttled。
@@ -197,11 +197,11 @@ reader load 已经很高：
 
 ### 5.2 已确认的 Review 实现问题
 
-1. [`price_repository.py`](../../src/tracefold/news/price_repository.py) 的 eligible 分母没有排除尚未成熟到 1h/4h 的事件；实测 `hours=1` 会返回 60 eligible、0 priced，正确 eligible 应为 0。
+1. [`price_repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/price_repository.py) 的 eligible 分母没有排除尚未成熟到 1h/4h 的事件；实测 `hours=1` 会返回 60 eligible、0 priced，正确 eligible 应为 0。
 2. Review topbar 聚合所有 triaged Events，不是 delivered cohort，所以展示的 hit rate 不是“推送准确率”。
 3. potential miss 按单 Event 的 `abs(bps_1h)` 排序；榜首四条实际上是同一个 WMT -692 bps 事实，Event-grain 夸大 miss。
 4. 没有 cohort、置信区间、最小 N、市场基线、共同事件标记或 coverage-bias 提示。
-5. Price resolver 只按 symbol 解析、没有使用 Event asset class，且当前 `news_event_assets.market_type` 写入为空；股票/币同名理论上可能污染 reaction。审计未证明该风险在本窗口实际发生，因此它是实现 caveat，不是本窗口已观测错误。[`price_repository.py`](../../src/tracefold/news/price_repository.py#L105-L150)
+5. Price resolver 只按 symbol 解析、没有使用 Event asset class，且当前 `news_event_assets.market_type` 写入为空；股票/币同名理论上可能污染 reaction。审计未证明该风险在本窗口实际发生，因此它是实现 caveat，不是本窗口已观测错误。[`price_repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/price_repository.py#L105-L150)
 
 因此建议把中文“命中复盘”改成更诚实的“市场反应观察”，并将 potential misses 改为 `fact_cluster` grain 的人工队列。
 
@@ -209,7 +209,7 @@ reader load 已经很高：
 
 ### P0-1：reader ledger 不是 delivery truth
 
-[`repository.py`](../../src/tracefold/news/repository.py#L578-L608) 的 told ledger 会把 final decision 为 push/escalate、且 delivery state 不是 terminal 的行纳入。没有 delivery row 或仍 pending 时也会被视为“读者已收到”；相反，真实 sent 的 degraded card 会被排除。
+[`repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L578-L608) 的 told ledger 会把 final decision 为 push/escalate、且 delivery state 不是 terminal 的行纳入。没有 delivery row 或仍 pending 时也会被视为“读者已收到”；相反，真实 sent 的 degraded card 会被排除。
 
 后果：一个 pending 卡可能先污染 restatement/throttle，后来 terminal 后也不触发后续卡重判；真实 degraded 卡又不参与语义去重和 reader load。
 
@@ -224,7 +224,7 @@ Triage/复盘必须明确自己读取哪一个，不能用一个含混 SQL 同�
 
 ### P0-2：Event evidence 在首次 leader 上过早冻结
 
-`event_card()` 只读取 leader item。后来的 stronger member 能升级 Gate facts/assets 并让 suppressed Event 进入 Triage，却不会替换 leader 文本或 provider metadata；已经 judged 的 Event 加强后也不会产生新的判断。[`repository.py`](../../src/tracefold/news/repository.py#L530-L541)；[`pipeline/admission.py`](../../src/tracefold/news/pipeline/admission.py)
+`event_card()` 只读取 leader item。后来的 stronger member 能升级 Gate facts/assets 并让 suppressed Event 进入 Triage，却不会替换 leader 文本或 provider metadata；已经 judged 的 Event 加强后也不会产生新的判断。[`repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L530-L541)；[`pipeline/admission.py`](../../src/tracefold/news/pipeline/admission.py)
 
 这会出现“更强证据使事件入场，但模型仍只看到旧弱标题”的不一致。需要不可变的：
 
@@ -271,7 +271,7 @@ CLI 支持 `--subject` 记录无 Event 的 missed case，但 offline eval 从 `n
 
 ### 7.3 novelty 输入与任务不匹配
 
-Prompt 的 told ledger 上限为 12，v8/v9 基本每次饱和；按当前 ledger SQL 得到的 4h **完整候选集合**平均约 62–71 条、最大约 96–100 条，模型平均只看到约 17%，却被要求声明 new/progression/restatement。这里不能称为完整 reader-received truth，因为当前 SQL 本身会纳入 no-delivery/pending，并排除 sent degraded。[`repository.py`](../../src/tracefold/news/repository.py#L578-L608)
+Prompt 的 told ledger 上限为 12，v8/v9 基本每次饱和；按当前 ledger SQL 得到的 4h **完整候选集合**平均约 62–71 条、最大约 96–100 条，模型平均只看到约 17%，却被要求声明 new/progression/restatement。这里不能称为完整 reader-received truth，因为当前 SQL 本身会纳入 no-delivery/pending，并排除 sent degraded。[`repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L578-L608)
 
 KISS 不是把全部 100 张塞进 Prompt，而是：
 
@@ -558,11 +558,11 @@ LLM、DSPy 或 GEPA 只作为离线 candidate searcher，权限停在 immutable 
 - Prompt：`src/tracefold/news/agents/prompts/__init__.py`
 - Triage 输入/ledger：`src/tracefold/news/agents/triage_model.py`
 - 最终 policy：`src/tracefold/news/triage_rules.py`
-- Event/ledger/labels：`src/tracefold/news/repository.py`
+- Event/ledger/labels：[`src/tracefold/news/repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py)
 - Policy replay：`src/tracefold/news/eval/harness.py`
 - Offline eval：`src/tracefold/news/eval/offline.py`
-- Reaction Review：`src/tracefold/news/price_repository.py`
-- Storyline：`src/tracefold/news/storyline.py`
+- Reaction Review：[`src/tracefold/news/price_repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/price_repository.py)
+- Storyline：[`src/tracefold/news/storyline.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/storyline.py)
 - 本地书稿：`/Users/massis/Documents/Code/ai-agent-book/book/chapter9.md`
 - 本地实验：`/Users/massis/Documents/Code/ai-agent-book/chapter9/`
 

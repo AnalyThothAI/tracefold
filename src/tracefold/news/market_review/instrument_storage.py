@@ -1,4 +1,4 @@
-"""Persistence for the instrument universe (#75, consolidated in #89). Callers own the transaction, like NewsRepository.
+"""Persistence for the instrument universe (#75, consolidated in #89). Callers own the transaction.
 
 The snapshot write is idempotent by ``(venue, venue_symbol)``: re-running it on an unchanged catalogue only moves
 ``last_seen_ms``. The universe answers two questions and no others — what is this issuer's canonical symbol, and is

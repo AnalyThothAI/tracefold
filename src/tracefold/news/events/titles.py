@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
-from .exact_atom_identity import comparison_title
+from .identity import comparison_title
 
 TITLE_NORMALIZATION_VERSION: Final = "news_title_norm_v2"
 MAX_TITLE_CHARS: Final = 500

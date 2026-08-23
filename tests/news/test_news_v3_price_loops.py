@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 
 from tracefold.news.bus import now_ms
-from tracefold.news.price_loops import EventReactionLoop, QuoteSnapshotLoop
-from tracefold.news.pricing import (
+from tracefold.news.market_review.loops import EventReactionLoop, QuoteSnapshotLoop
+from tracefold.news.market_review.pricing import (
     CANDLE_INTERVAL_MS,
     HORIZON_MS,
     QUOTE_DAY_PERIOD_SECONDS,

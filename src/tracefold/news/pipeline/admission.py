@@ -19,16 +19,16 @@ from ..bus import (
     TransientError,
     now_ms,
 )
-from ..exact_atom_identity import event_family, event_window_ms
-from ..facts import FactUnit, extract_fact_units
-from ..gate import GateInput, GateVerdict, evaluate_gate
-from ..minhash import band_keys, minhash_signature
+from ..events.facts import FactUnit, extract_fact_units
+from ..events.gate import GateInput, GateVerdict, evaluate_gate
+from ..events.identity import event_family, event_window_ms
+from ..events.minhash import band_keys, minhash_signature
+from ..events.storyline import preliminary_storyline_key
+from ..events.titles import description_after_title, extract_title
+from ..events.tokens import comparison_tokens, jaccard
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..oi_signals import parse_oi_signal
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
-from ..storyline import preliminary_storyline_key
-from ..titles import description_after_title, extract_title
-from ..tokens import comparison_tokens, jaccard
 from .runtime import _Db
 
 NEAR_DUPLICATE_THRESHOLD = 0.55
@@ -211,20 +211,9 @@ def admit_item(
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
     )
-    existing_membership = repos.conn.execute(
-        """
-        SELECT m.event_id, m.match_kind
-          FROM news_event_members m
-          JOIN news_events e ON e.event_id = m.event_id
-         WHERE m.item_id = %s AND m.fact_id = %s
-         ORDER BY e.opened_at_ms LIMIT 1
-        """,
-        (item_id, fact.fact_id),
-    ).fetchone()
+    existing_membership = news.fact_membership(item_id=item_id, fact_id=fact.fact_id)
     if existing_membership is not None:
-        ev = repos.conn.execute(
-            "SELECT admission, storyline_key FROM news_events WHERE event_id = %s", (existing_membership["event_id"],)
-        ).fetchone()
+        ev = news.event_admission(str(existing_membership["event_id"]))
         return AdmitResult(
             item_id=item_id,
             item_inserted=inserted,
@@ -430,15 +419,7 @@ def _member_result(
 ) -> AdmitResult:
     """Attach a member and, when the member is stronger evidence than the leader, re-gate a suppressed Event."""
 
-    row = repos.conn.execute(
-        """
-        SELECT e.admission, e.storyline_key, e.published_at_ms,
-               i.reporting_origin AS leader_origin, i.provider_metadata AS leader_provider_metadata
-          FROM news_events e JOIN news_items i ON i.item_id = e.leader_item_id
-         WHERE e.event_id = %s
-        """,
-        (event_id,),
-    ).fetchone()
+    row = repos.news.event_regate_context(event_id)
     admission = str(row["admission"]) if row else "candidate"
     upgraded = False
     stronger = False
@@ -493,9 +474,7 @@ def _strong_tag(gate: GateVerdict) -> bool:
 
 
 def _member_score(repos: Any, item_id: str) -> float:
-    row = repos.conn.execute(
-        "SELECT provider_metadata ->> 'score' AS score FROM news_items WHERE item_id = %s", (item_id,)
-    ).fetchone()
+    row = repos.news.item_provider_score(item_id)
     try:
         return float(row["score"]) if row and row["score"] is not None else 0.0
     except (TypeError, ValueError):

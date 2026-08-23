@@ -21,7 +21,7 @@ from typing import Any
 
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 
-from .bus import DeferError, TransientError, now_ms
+from ..bus import DeferError, TransientError, now_ms
 from .pricing import (
     CANDLE_INTERVAL_MS,
     EXTERNAL_CONCURRENCY,

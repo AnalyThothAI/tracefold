@@ -17,7 +17,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.pricing import (
+from tracefold.news.market_review.pricing import (
     QUOTE_TARGET_MAX,
     REACTION_METRIC_VERSION,
     REVIEW_MAX_HOURS,
@@ -300,7 +300,7 @@ def test_the_due_scan_and_review_stay_bounded_against_a_year_of_finished_rows(se
 
 
 def _instrument(base: str) -> Any:
-    from tracefold.news.instruments import Instrument
+    from tracefold.news.market_review.instruments import Instrument
 
     return Instrument(
         venue="binance.perp",

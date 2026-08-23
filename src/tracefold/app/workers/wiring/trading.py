@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import dspy  # type: ignore[import-untyped]
@@ -96,6 +96,37 @@ def trading_config_from_settings(settings: Settings) -> TradingConfig:
     )
 
 
+def _news_trade_candidates(
+    repos: Any,
+    metric_version: str,
+    after_created_at_ms: int,
+    until_created_at_ms: int,
+    max_rank_in_window: int,
+    min_oi_value_usd: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """App-owned handoff from the News projection into Trading's candidate reader."""
+
+    return (
+        repos.news.trade_candidate_oi_rows(
+            metric_version=metric_version,
+            after_created_at_ms=after_created_at_ms,
+            until_created_at_ms=until_created_at_ms,
+            max_rank_in_window=max_rank_in_window,
+            min_oi_value_usd=min_oi_value_usd,
+        ),
+        repos.news.trade_candidate_news_rows(
+            after_created_at_ms=after_created_at_ms,
+            until_created_at_ms=until_created_at_ms,
+        ),
+    )
+
+
+def _news_trade_instruments(repos: Any, base_symbol: str, venues: Sequence[str]) -> list[dict[str, Any]]:
+    """App-owned handoff from News instrument facts into Trading's venue resolver."""
+
+    return repos.news.trade_candidate_instrument(base_symbol=base_symbol, venues=venues)
+
+
 def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> Any | None:
     """#104. Disabled by default; a disabled Trading context constructs no program and no adapter.
 
@@ -132,6 +163,8 @@ def _wire_trading_pipeline(*, settings: Settings, db: WorkerDatabase) -> Any | N
             db=_TradingColdDb(db),
             config=trading_config_from_settings(settings),
             bars=_trading_bar_fetcher(settings),
+            candidate_projection=_news_trade_candidates,
+            instrument_projection=_news_trade_instruments,
             program=program,
         )
     except Exception:

@@ -96,17 +96,17 @@ PUBLIC_NEWS_INTERFACE = {
 
 IO_MODULE_ROOTS = {"aio_pika", "psycopg", "httpx", "aiohttp", "websockets", "requests"}
 PURE_NEWS_MODULES = (
-    "gate.py",
-    "pricing.py",
+    "events/gate.py",
+    "market_review/pricing.py",
     "health.py",
     "outcome.py",
-    "storyline.py",
+    "events/storyline.py",
     "timeline.py",
     "triage_rules.py",
     "oi_signals.py",
-    "tokens.py",
-    "minhash.py",
-    "titles.py",
+    "events/tokens.py",
+    "events/minhash.py",
+    "events/titles.py",
 )
 RETIRED_NEWS_MODULES = (
     "analyst_evidence.py",
@@ -223,7 +223,7 @@ def test_pure_news_modules_do_not_import_io_clients() -> None:
     assert violations == {}
     for name in PURE_NEWS_MODULES:
         modules = _imported_modules(NEWS_ROOT / name)
-        assert not any(module.startswith("tracefold.news.repository") for module in modules), name
+        assert not any(module.startswith("tracefold.news.storage") for module in modules), name
         assert not any(module.startswith("tracefold.news.pipeline") for module in modules), name
         assert not any(module.startswith("tracefold.integrations") for module in modules), name
 
@@ -336,7 +336,7 @@ def test_reader_count_quota_interfaces_are_absent_from_runtime() -> None:
         path.read_text(encoding="utf-8")
         for path in (
             NEWS_ROOT / "triage_rules.py",
-            NEWS_ROOT / "repository.py",
+            *(sorted((NEWS_ROOT / "storage").glob("*.py"))),
             *(sorted((NEWS_ROOT / "pipeline").glob("*.py"))),
             NEWS_ROOT / "candidate_evaluator.py",
             SRC / "platform" / "config" / "models.py",

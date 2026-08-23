@@ -1,8 +1,8 @@
 """Venue adapters: read-only, unauthenticated catalogues (#75), current quotes and candle history (#88).
 
 One adapter per venue family. The catalogue half returns ``Instrument`` values for the pure layer in
-``tracefold.news.instruments``; the price half returns ``ProviderQuote`` / ``Candle`` for
-``tracefold.news.pricing``. All of them raise ``VenueExpectedError`` for every anticipated failure, so one
+``tracefold.news.market_review.instruments``; the price half returns ``ProviderQuote`` / ``Candle`` for
+``tracefold.news.market_review.pricing``. All of them raise ``VenueExpectedError`` for every anticipated failure, so one
 unreachable venue never fails a snapshot and never clears another venue's quotes.
 
 ``us_reference`` is the one adapter that does not describe a venue we could trade on (#91): it answers "is this

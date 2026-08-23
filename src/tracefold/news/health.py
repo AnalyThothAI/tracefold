@@ -1,8 +1,8 @@
 """Status health: thresholded red/amber/green over the status snapshot, plus the 24 h funnel and named reasons (pure).
 
 The console renders ``level`` and ``summary_zh`` verbatim; thresholds live here (code-owned) so the page never has to
-know what "too many" means. Inputs are the plain dicts ``NewsRepository.status_snapshot`` and the HTTP route already
-assemble; nothing here touches I/O.
+know what "too many" means. Inputs are the plain dicts from News storage's ``status_snapshot`` and the HTTP route
+already assembles; nothing here touches I/O.
 """
 
 from __future__ import annotations

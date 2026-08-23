@@ -180,7 +180,13 @@ def _runner_declarations() -> dict[str, Any]:
         quotes=object(),  # type: ignore[arg-type]
         reactions=object(),  # type: ignore[arg-type]
     )
-    trading = build_pipeline(db=object(), config=TradingConfig(), bars=lambda _venue: None)
+    trading = build_pipeline(
+        db=object(),
+        config=TradingConfig(),
+        bars=lambda _venue: None,
+        candidate_projection=lambda *_: ((), ()),
+        instrument_projection=lambda *_: (),
+    )
     return {
         "ordered_task_names": list(worker_task_names(news_pipeline=enabled_news, trading_pipeline=trading)),
         "prefetch_resolved_defaults": {

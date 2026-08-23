@@ -24,9 +24,9 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_sha
+from ..events.storyline import final_storyline_key
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict, base_symbol
 from ..semantic_contract import EditorialEnvelope, ScoredJudgment
-from ..storyline import final_storyline_key
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
 from .semantic_program import TriageContext, render_model_evidence_json
 
@@ -855,7 +855,7 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
         source_objects: dict[str, Any] = {
             "tracefold.news.agents.program_metric": inspect.getmodule(accepted_review_metric),
             "tracefold.news.models.base_symbol": base_symbol,
-            "tracefold.news.storyline": inspect.getmodule(final_storyline_key),
+            "tracefold.news.events.storyline": inspect.getmodule(final_storyline_key),
             "tracefold.news.triage_rules": inspect.getmodule(decide),
         }
         if any(source is None for source in source_objects.values()):
@@ -913,7 +913,7 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             # actually ran rather than whatever this process happened to import. The report pins the exact
             # values it used; recording them here too would only invite the two to disagree.
             "policy_values": "per_example: policy_metric.policy_values, verified against policy_sha256",
-            "storyline": "tracefold.news.storyline.final_storyline_key",
+            "storyline": "tracefold.news.events.storyline.final_storyline_key",
             "operational_controls": "none_the_pause_mute_plane_was_removed_in_137",
         },
         "review_rubric_version": review_rubric_version,

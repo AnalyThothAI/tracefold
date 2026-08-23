@@ -443,7 +443,7 @@ def test_console_read_sites_fill_the_empty_title_sentinel() -> None:
     row — both resolve the sentinel. Neither had an assertion; the timeline test above covers only the collapsed
     technical panel, and the HTTP contract test uses a fake repository."""
 
-    from tracefold.news.repository import _feed_row, _triage_summary
+    from tracefold.news.storage.feed import _feed_row, _triage_summary
 
     sentinel = {"headline_zh": "币安上线 XYZ", "title_zh": "", "direction": "bullish", "magnitude": 2}
     summary = _triage_summary(final_decision="push", verdict=sentinel)

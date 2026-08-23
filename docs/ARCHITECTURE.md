@@ -146,14 +146,16 @@ table-count contract.
 tracefold.news
   opennews.py         canonical OpenNews frame adapter (raw_text, provenance)
   bus.py              broker envelope, routing keys, error classes, Publisher/Consumer protocols
-  titles.py           content-block title extraction + pinned prefix/suffix tables
-  exact_atom_identity.py comparison normalization, event family, windows
-  tokens.py / minhash.py  comparison tokens, MinHash 32x4 band keys
-  gate.py / storyline.py  deterministic admission, queue scheduling priority, grounded assets, storyline keys
-  pricing.py          Price Review domain: source order, quote/candle normalization, reaction_v1 metric
-  price_loops.py      the two cold loops (QuoteSnapshotLoop, EventReactionLoop) and their one-slot DB lane
-  price_repository.py quote snapshots, Event Reactions, and the bounded review aggregates
-  facts.py            atomic fact units and immutable Event evidence snapshots
+  events/
+    facts.py / titles.py  atomic FactUnits and content-block title extraction
+    identity.py / javascript_text.py  exact comparison identity and pinned JavaScript text semantics
+    tokens.py / minhash.py  comparison tokens and MinHash 32x4 band keys
+    gate.py / storyline.py  deterministic admission, scheduling metadata, grounded assets, storyline keys
+  similarity.py       Program-bound reader-card similarity; relocation waits for an approved identity migration
+  market_review/
+    instruments.py / pricing.py  instrument and quote/reaction domain contracts
+    loops.py           the two cold polling loops and their one-slot DB lane
+    storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
   review.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
   candidate_evaluator.py content-addressed program_v6 datasets and stable/candidate evaluation workflow
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
@@ -168,7 +170,12 @@ tracefold.news
     delivery.py       one-attempt reader-card delivery consumer
     maintenance.py    instrument snapshot, retention, broker snapshot, outbox catch-up
     root.py / runtime.py  Workers composition and shared database/stop mechanics
-  repository.py / query_specs.py  news_* access and audited reads
+  storage/
+    events.py / decisions.py  material facts/evidence and verdict/delivery ledgers
+    feed.py / operations.py   bounded public reads and ingest/retention operations
+    trade_projection.py       News-owned point-in-time handoff queried by App for Trading
+    learning.py / root.py     learning persistence and the concrete repository composition
+  query_specs.py      audited News read statements
   eval/               provider-hits Deduper+Gate replay only
 
 tracefold.trading
@@ -496,12 +503,12 @@ a lane admission timeout is a `DeferError` (uncounted requeue), a statement
 overrun is a `TransientError` (counted).
 
 Identity: `news_items.item_id = sha256(source_id, params.id)`;
-`news_events.event_id` is the leader item id. `tracefold.news.titles`
+`news_events.event_id` is the leader item id. `tracefold.news.events.titles`
 extracts the first content block (skipping URL-only, label-only, `reply/quote:`
 lines and pinned wire source labels/suffixes; exchange names and `@handles`
 are subjects and stay — `@Krakenfx launches ...` keeps `Krakenfx`),
-`tracefold.news.exact_atom_identity`
-normalizes for comparison, `tracefold.news.tokens` + `minhash` produce the
+`tracefold.news.events.identity`
+normalizes for comparison, `tracefold.news.events.tokens` + `minhash` produce the
 band keys stored in `news_event_bands`, and `tracefold.news.pipeline.admission.admit_item`
 is the single Deduper transaction. Fingerprints of at most two tokens never
 share an Event.
@@ -527,7 +534,7 @@ days that age is bimodal (2491 within 10 s, 7 beyond 16 h, nothing between) and
 never negative. `published_at_ms` is untouched: `opened_at_ms` derives from it
 and anchors `reaction_v1`.
 
-Gate and storyline (`tracefold.news.gate`, `tracefold.news.storyline`) are pure
+Gate and storyline (`tracefold.news.events.gate`, `tracefold.news.events.storyline`) are pure
 functions and keep no name table of their own: grounded assets are the
 provider's grade B+/A/A+ coin tags plus any literal `$TICKER` cashtag (the
 provider already resolved Bitcoin -> BTC, Home Depot -> HD); `CL`/`XYZ-CL` is

@@ -15,7 +15,7 @@ from tracefold.news.canary import (
     parse_canary_control,
     select_canary_arm,
 )
-from tracefold.news.repository import NewsRepository
+from tracefold.news.storage.root import NewsRepository
 
 
 def test_canary_assignment_is_deterministic_and_uses_only_pre_call_facts() -> None:

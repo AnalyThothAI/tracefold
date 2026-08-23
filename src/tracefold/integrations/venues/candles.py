@@ -14,7 +14,7 @@ from typing import Any, Final
 
 import httpx
 
-from tracefold.news.pricing import CANDLE_INTERVAL, CANDLE_INTERVAL_MS, Candle, parse_price
+from tracefold.news.market_review.pricing import CANDLE_INTERVAL, CANDLE_INTERVAL_MS, Candle, parse_price
 
 from .errors import VenueExpectedError
 from .http import get_json, post_json, price_client

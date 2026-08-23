@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from tracefold.news.pricing import REACTION_METRIC_VERSION
 from tracefold.platform.postgres.postgres_audit import ReadQuerySpec
 
+from .market_review.pricing import REACTION_METRIC_VERSION
 from .review import review_read_statements
 
 

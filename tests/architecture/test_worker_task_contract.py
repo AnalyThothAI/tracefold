@@ -25,7 +25,13 @@ def test_enabled_worker_task_names_are_the_runtime_declarations() -> None:
         quotes=_port(),
         reactions=_port(),
     )
-    trading = build_pipeline(db=object(), config=TradingConfig(), bars=lambda _venue: None)
+    trading = build_pipeline(
+        db=object(),
+        config=TradingConfig(),
+        bars=lambda _venue: None,
+        candidate_projection=lambda *_: ((), ()),
+        instrument_projection=lambda *_: (),
+    )
 
     assert worker_task_names(news_pipeline=news, trading_pipeline=trading) == (
         "workers-probe",

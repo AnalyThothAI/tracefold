@@ -22,6 +22,7 @@ from ..bus import (
     now_ms,
 )
 from ..canary import CanaryRuntimeArm
+from ..events.storyline import final_storyline_key
 from ..models import GATE_POLICY_VERSION, TRIAGE_POLICY_VERSION, TriageVerdict, json_ready
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, evaluate_oi, parse_oi_signal, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
@@ -35,7 +36,6 @@ from ..semantic_contract import (
     SemanticJudgeError,
     TriageContext,
 )
-from ..storyline import final_storyline_key
 from ..triage_rules import (
     DEFAULT_POLICY,
     DecidePolicy,

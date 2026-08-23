@@ -20,7 +20,13 @@ from typing import Any, Final
 
 import httpx
 
-from tracefold.news.instruments import Instrument, InstrumentClass, classify, is_valid_symbol, strip_quote_suffix
+from tracefold.news.market_review.instruments import (
+    Instrument,
+    InstrumentClass,
+    classify,
+    is_valid_symbol,
+    strip_quote_suffix,
+)
 
 from .errors import VenueExpectedError
 

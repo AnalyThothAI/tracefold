@@ -6,10 +6,10 @@ import os
 
 import psycopg
 from psycopg.rows import dict_row
+from tracefold.news.repository import NewsRepository
 
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.repository import NewsRepository
 from tracefold.platform.postgres.postgres_migrations import upgrade_head
 
 NOW_MS = 1_800_000_000_000
