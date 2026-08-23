@@ -111,10 +111,10 @@ Integration tests reset the schema per test through `prepare_postgres_database`
 only when they seed data; validation/auth-only API tests reuse the migrated
 head. Historical migration-path tests are narrow and explicit: they cover the
 preservation/grant cuts that carry user evidence forward and the `0292` to
-`0293`, `0293` to `0294`, `0294` to `0295`, and `0299` to `0300` append-only Program
+`0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through
-`20260823_0300`; schema tests also run against that migrated head. The e2e lane
+`20260823_0301`; schema tests also run against that migrated head. The e2e lane
 (`tests/e2e/test_golden_path.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
 and asserts `/readyz`, the `/api/status` and `/api/news/status` shapes, and
@@ -189,7 +189,7 @@ semantic fast-retry state bug was found in production proof. `0294` preserves
 both prior rows and appends `program_v3` after the expert quality baseline and
 semantic normalization change Program identity. `0295` preserves v1-v3 and
 appends `program_v5` for the candidate-conditioned ToldContext factory and its
-ownership hard cut. `0300` preserves history and starts `program_v6` for
+ownership hard cut. `0301` preserves history and starts `program_v6` for
 factory/executable v4, policy v10, `news_review_v4`, metric v4 and compiler
 protocol/receipt v3. Every earlier review, dataset, recording and release receipt
 remains immutable audit history but is not compiler, DemoBank, validation,

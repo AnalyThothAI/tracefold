@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -17,7 +18,7 @@ from tracefold.platform.config.settings import NewsPolicySettings
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = json.loads((ROOT / "deploy/news-program-v5-schema0300/profile.json").read_text(encoding="utf-8"))
+PROFILE = json.loads((ROOT / "deploy/news-program-v5-schema0301/profile.json").read_text(encoding="utf-8"))
 
 
 def _require(condition: bool, code: str) -> None:
@@ -61,9 +62,22 @@ def verify() -> None:
     query_specs = (ROOT / "src/tracefold/news/query_specs.py").read_text(encoding="utf-8")
     candidate = (ROOT / "src/tracefold/news/candidate_evaluator.py").read_text(encoding="utf-8")
     review = (ROOT / "src/tracefold/news/review.py").read_text(encoding="utf-8")
-    migration = (
-        ROOT / "src/tracefold/platform/postgres/alembic/versions" / "20260823_0300_trade_relevance_program_v6.py"
-    ).read_text(encoding="utf-8")
+    trading_pipeline = (ROOT / "src/tracefold/trading/pipeline.py").read_text(encoding="utf-8")
+    versions = ROOT / "src/tracefold/platform/postgres/alembic/versions"
+    predecessor_path = versions / "20260823_0300_trading_core.py"
+    migration_path = versions / "20260823_0301_trade_relevance_program_v6.py"
+    predecessor = predecessor_path.read_text(encoding="utf-8")
+    migration = migration_path.read_text(encoding="utf-8")
+    _require(
+        hashlib.sha256(predecessor_path.read_bytes()).hexdigest() == PROFILE["predecessor_migration_sha256"],
+        "news_rollback_predecessor_migration_hash_mismatch",
+    )
+    _require(
+        hashlib.sha256(migration_path.read_bytes()).hexdigest() == PROFILE["migration_sha256"],
+        "news_rollback_migration_hash_mismatch",
+    )
+    _require('revision = "20260823_0300"' in predecessor, "news_rollback_predecessor_revision_missing")
+    _require('down_revision = "20260823_0300"' in migration, "news_rollback_migration_chain_invalid")
 
     for source in (repository, events, query_specs):
         _require(
@@ -78,6 +92,16 @@ def verify() -> None:
         'event["priority"] = event["queue_priority"]' in candidate, "news_rollback_learning_evidence_adapter_missing"
     )
     _require('row.get("priority") or row.get("queue_priority")' in review, "news_rollback_review_view_adapter_missing")
+    _require(
+        repository.count("AND false -- News v5 rollback disables new Trading exposure.") == 2,
+        "news_rollback_trading_projection_not_blocked",
+    )
+    _require(
+        "def _news_runtime_allows_new_trading_exposure() -> bool:" in trading_pipeline
+        and 'funnel.count("advance_reject:news_runtime_rollback")' in trading_pipeline
+        and 'return "news_runtime_rollback"' in trading_pipeline,
+        "news_rollback_pending_trading_case_not_blocked",
+    )
     _require("RENAME COLUMN priority TO queue_priority" in migration, "news_rollback_migration_column_contract_missing")
     _require(
         "policy_version <> 'news_triage_policy_v10'" in migration, "news_rollback_v9_null_triplet_contract_missing"

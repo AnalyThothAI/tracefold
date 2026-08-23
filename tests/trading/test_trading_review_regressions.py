@@ -41,7 +41,14 @@ def _oi(symbol: str = "DOGE", at: int = NOW, whale: int = 9_900, value: int = 73
         whale_oi_ratio_bps=21_097,
         rank_in_window=1,
         metric_version="oi_signal_v1",
+        learning_epoch="program_v6",
         program_version="news_oi_signal_v1",
+        program_sha256="a" * 64,
+        policy_version="news_triage_policy_v10",
+        editorial_origin="telemetry_deterministic",
+        editorial_sha256="b" * 64,
+        scored_judgment_sha256="c" * 64,
+        runtime_manifest_sha="d" * 64,
     )
 
 
@@ -65,8 +72,14 @@ def _news(symbol: str = "DOGE", at: int = NOW) -> NewsTradeCandidate:
         novelty="new_fact",
         headline_zh="标题",
         why_zh="机制",
-        program_version="program_v5",
-        policy_version="news_triage_policy_v9",
+        learning_epoch="program_v6",
+        program_version="news_semantic_program_v4",
+        program_sha256="a" * 64,
+        policy_version="news_triage_policy_v10",
+        editorial_origin="model",
+        editorial_sha256="b" * 64,
+        scored_judgment_sha256="c" * 64,
+        runtime_manifest_sha="d" * 64,
     )
 
 

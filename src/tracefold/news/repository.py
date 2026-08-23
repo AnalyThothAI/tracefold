@@ -977,7 +977,14 @@ class NewsRepository:
             SELECT v.event_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
+                   epoch.epoch_id           AS learning_epoch,
                    v.program_version,
+                   v.program_sha256,
+                   v.policy_version,
+                   v.editorial ->> 'editorial_origin' AS editorial_origin,
+                   v.editorial ->> 'editorial_sha256' AS editorial_sha256,
+                   v.scored_judgment_sha256,
+                   v.runtime_manifest_sha,
                    s.metric_version,
                    s.symbol,
                    s.direction,
@@ -993,9 +1000,20 @@ class NewsRepository:
               JOIN news_oi_signals s
                 ON s.event_id = v.event_id AND s.metric_version = %s
               JOIN news_events e ON e.event_id = v.event_id
+              JOIN news_learning_epochs epoch
+                ON epoch.epoch_id = 'program_v6'
+               AND e.opened_at_ms >= epoch.starts_at_ms
+               AND v.created_at_ms >= epoch.starts_at_ms
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
                AND v.program_version = 'news_oi_signal_v1'
+               AND v.policy_version = 'news_triage_policy_v10'
+               AND v.editorial ->> 'editorial_origin' = 'telemetry_deterministic'
+               AND jsonb_typeof(v.editorial -> 'relevance') = 'null'
+               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
+               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{64}$'
+               AND v.scored_judgment_sha256 IS NOT NULL
+               AND v.runtime_manifest_sha IS NOT NULL
                AND v.final_decision IN ('push', 'escalate')
                AND v.degraded = false
                AND e.ingest_mode = 'live'
@@ -1040,8 +1058,14 @@ class NewsRepository:
                    v.evidence_sha256,
                    v.focus_fact_id,
                    v.verdict,
+                   epoch.epoch_id AS learning_epoch,
                    v.program_version,
+                   v.program_sha256,
                    v.policy_version,
+                   v.editorial ->> 'editorial_origin' AS editorial_origin,
+                   v.editorial ->> 'editorial_sha256' AS editorial_sha256,
+                   v.scored_judgment_sha256,
+                   v.runtime_manifest_sha,
                    e.opened_at_ms,
                    e.comparison_fingerprint,
                    e.asset_class,
@@ -1051,9 +1075,20 @@ class NewsRepository:
                    i.canonical_url
               FROM news_verdicts v
               JOIN news_events e ON e.event_id = v.event_id
+              JOIN news_learning_epochs epoch
+                ON epoch.epoch_id = 'program_v6'
+               AND e.opened_at_ms >= epoch.starts_at_ms
+               AND v.created_at_ms >= epoch.starts_at_ms
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
-               AND v.program_version IS DISTINCT FROM 'news_oi_signal_v1'
+               AND v.program_version = 'news_semantic_program_v4'
+               AND v.policy_version = 'news_triage_policy_v10'
+               AND v.editorial ->> 'editorial_origin' = 'model'
+               AND jsonb_typeof(v.editorial -> 'relevance') = 'object'
+               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
+               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{64}$'
+               AND v.scored_judgment_sha256 IS NOT NULL
+               AND v.runtime_manifest_sha IS NOT NULL
                AND v.final_decision IN ('push', 'escalate')
                AND v.degraded = false
                AND e.ingest_mode = 'live'

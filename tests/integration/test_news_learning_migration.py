@@ -67,7 +67,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260823_0300"
+        assert revision["version_num"] == "20260823_0301"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -171,7 +171,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260823_0300"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260823_0301"
     finally:
         if conn is not None:
             conn.close()
@@ -213,7 +213,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260823_0300"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260823_0301"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -429,10 +429,10 @@ def test_0297_to_0298_appends_program_v5_epoch_without_rewriting_prior_epochs() 
             restore.close()
 
 
-def test_0299_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> None:
+def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> None:
     conn: Any | None = None
     try:
-        _fresh_schema_at("20260823_0299")
+        _fresh_schema_at("20260823_0300")
         conn = connect_postgres_test(read_only=False)
         prior_epochs = {
             row["epoch_id"]: dict(row)
@@ -536,7 +536,7 @@ def test_0299_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260823_0300"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260823_0301"
         event_columns = {
             row["column_name"]
             for row in conn.execute(

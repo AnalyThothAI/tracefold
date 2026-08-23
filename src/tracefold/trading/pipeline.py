@@ -20,11 +20,13 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal, cast
+
+from pydantic import ValidationError
 
 from .blacklist import Blacklist
 from .candidates import (
@@ -39,6 +41,7 @@ from .candidates import (
 )
 from .decision_program import TradingDecisionProgram
 from .models import (
+    TRADING_MANIFEST_VERSION,
     Bar,
     CaseKind,
     CaseState,
@@ -102,6 +105,28 @@ _BAR_INTERVAL_MS = 300_000
 
 BarFetcher = Callable[[str, int, int], Awaitable[Sequence[Bar]]]
 BarFetcherFactory = Callable[[str], BarFetcher | None]
+
+
+def _uses_current_news_generation(raw: object) -> bool:
+    """Whether an untrusted persisted manifest names the one executable News generation."""
+
+    if not isinstance(raw, Mapping) or raw.get("manifest_version") != TRADING_MANIFEST_VERSION:
+        return False
+    sources = (("oi", "news_oi_signal_v1"), ("news", "news_semantic_program_v4"))
+    found = False
+    for source_field, expected_program in sources:
+        source = raw.get(source_field)
+        if source is None:
+            continue
+        found = True
+        if (
+            not isinstance(source, Mapping)
+            or source.get("learning_epoch") != "program_v6"
+            or source.get("policy_version") != "news_triage_policy_v10"
+            or source.get("program_version") != expected_program
+        ):
+            return False
+    return found
 
 
 def _now_ms() -> int:
@@ -512,7 +537,27 @@ class CandidateRunner:
             return None
 
         case_id = str(claimed["case_id"])
-        manifest = TradingCaseManifest.model_validate(claimed["manifest"])
+        raw_manifest = claimed.get("manifest")
+        # #160 is a generation hard cut.  Do this check before Pydantic parsing because the old v1
+        # manifest cannot satisfy v2's required upstream identities; letting validation raise would
+        # strand the claimed row in RUNNING until every lease expired.  Only undecided cases reach
+        # this path. Prepared orders are reconciled from their immutable payload and remain untouched.
+        if not _uses_current_news_generation(raw_manifest):
+            funnel.count("advance_reject:news_generation_retired")
+            await self._settle(
+                case_id,
+                CaseState.BLOCKED,
+                "no_trade",
+                "news_generation_retired",
+                now=now,
+            )
+            return "news_generation_retired"
+        try:
+            manifest = TradingCaseManifest.model_validate(raw_manifest)
+        except ValidationError:
+            funnel.count("advance_reject:manifest_invalid")
+            await self._settle(case_id, CaseState.BLOCKED, "no_trade", "manifest_invalid", now=now)
+            return "manifest_invalid"
         kind: CaseKind = str(claimed["case_kind"])  # type: ignore[assignment]
 
         # A case carries a mark frozen at its cutoff. `max_age_ms` gates *creation*; nothing gated how

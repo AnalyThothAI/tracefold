@@ -1,4 +1,4 @@
-"""Exercise the v5 repository against a disposable schema-0300 database."""
+"""Exercise the v5 repository against a disposable schema-0301 database."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from tracefold.news.repository import NewsRepository
 from tracefold.platform.postgres.postgres_migrations import upgrade_head
 
 NOW_MS = 1_800_000_000_000
-EVENT_ID = "rollback-schema0300-drill"
-ITEM_ID = "rollback-schema0300-item"
+EVENT_ID = "rollback-schema0301-drill"
+ITEM_ID = "rollback-schema0301-item"
 FOCUS_ID = "f" * 64
 
 
@@ -31,9 +31,9 @@ def drill(database_url: str) -> None:
         inserted_item = repository.upsert_item(
             item_id=ITEM_ID,
             source_id="rollback-drill",
-            source_item_key="schema0300",
-            title="Rollback schema 0300 drill",
-            raw_first_line="Rollback schema 0300 drill",
+            source_item_key="schema0301",
+            title="Rollback schema 0301 drill",
+            raw_first_line="Rollback schema 0301 drill",
             description="Independent Program v5 image validation",
             canonical_url=None,
             reporting_origin="rollback-drill",
@@ -51,10 +51,10 @@ def drill(database_url: str) -> None:
             leader_item_id=ITEM_ID,
             family="general",
             comparison_fingerprint="a" * 64,
-            comparison_title="rollback schema 0300 drill",
-            leader_title="Rollback schema 0300 drill",
+            comparison_title="rollback schema 0301 drill",
+            leader_title="Rollback schema 0301 drill",
             focus_fact_id=FOCUS_ID,
-            focus_fact_text="Rollback schema 0300 drill",
+            focus_fact_text="Rollback schema 0301 drill",
             focus_fact_context="Independent Program v5 image validation",
             focus_fact_method="whole_item",
             focus_span_start=0,
@@ -146,4 +146,4 @@ if __name__ == "__main__":
     if not dsn:
         raise RuntimeError("TRACEFOLD_ROLLBACK_DRILL_DSN_required")
     drill(dsn)
-    print("news_program_v5_schema0300_rollback_drill_ok")
+    print("news_program_v5_schema0301_rollback_drill_ok")

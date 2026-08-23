@@ -247,7 +247,7 @@ deploy or promote. Migration
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality
 `program_v3` epoch; migration `0295` preserves v1-v3 and starts
-`program_v5`; migration `0300` preserves history and starts `program_v6` for
+`program_v5`; migration `0301` preserves history and starts `program_v6` for
 factory/executable v4, policy v10, review/metric v4 and compiler protocol v3.
 Every earlier cohort remains audit-only, and quality evidence
 restarts from zero at the `program_v6`

@@ -160,7 +160,7 @@ Docker transport failure is never interpreted as proof of cleanup.
 Migration `0292` creates the append-only deployment-time `program_v1` learning
 epoch; `0293`, `0294` and `0295` append the corrected semantic, expert-quality
 and D-generation epochs. `0298` appends `program_v5` for factory/artifact v2
-and the optimizer-ownership hard cut. `0300` preserves all history and appends
+and the optimizer-ownership hard cut. `0301` preserves all history and appends
 `program_v6` for factory/executable v4, policy v10, review v4 and metric/compiler
 protocol v3. Every earlier review, dataset, recording and release receipt is
 retained as audit history but is never training, metric-v4, DemoBank,

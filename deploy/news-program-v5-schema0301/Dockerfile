@@ -50,7 +50,7 @@ RUN python -m pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 COPY src ./src
 COPY scripts ./scripts
-COPY deploy/news-program-v5-schema0300/profile.json ./deploy/news-program-v5-schema0300/profile.json
+COPY deploy/news-program-v5-schema0301/profile.json ./deploy/news-program-v5-schema0301/profile.json
 COPY --from=web-builder /app/web/dist ./src/tracefold/web/dist
 
 RUN --mount=type=secret,id=github_token \
@@ -86,7 +86,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TRACEFOLD_RUNTIME_REVISION=${TRACEFOLD_BUILD_REVISION}
 
 LABEL org.opencontainers.image.revision=${TRACEFOLD_BUILD_REVISION} \
-    io.tracefold.news.rollback.profile=program_v5_schema0300_rollback \
+    io.tracefold.news.rollback.profile=program_v5_schema0301_rollback \
     io.tracefold.news.rollback.source-revision=${TRACEFOLD_ROLLBACK_SOURCE_REVISION} \
     io.tracefold.news.rollback.schema-head=${TRACEFOLD_ROLLBACK_SCHEMA_HEAD} \
     io.tracefold.news.rollback.factory=tracefold.news.semantic_program.factory_v3 \

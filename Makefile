@@ -141,7 +141,7 @@ _up-locked:
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
-build-news-rollback-image: preflight ## build the independent Program-v5/schema-0300 rollback image
+build-news-rollback-image: preflight ## build the independent Program-v5/schema-0301 rollback image
 	@set -eu; \
 		git_dir=$$(git rev-parse --absolute-git-dir); \
 		git_common_dir=$$(git rev-parse --path-format=absolute --git-common-dir); \
@@ -157,7 +157,7 @@ build-news-rollback-image: preflight ## build the independent Program-v5/schema-
 		fi; \
 		relevant_untracked=$$(git ls-files --others --exclude-standard -- ':(exclude)docs/**'); \
 		ignored_deployment_inputs=$$(git ls-files --others -- \
-			Dockerfile .dockerignore deploy/news-program-v5-schema0300); \
+			Dockerfile .dockerignore deploy/news-program-v5-schema0301); \
 		if [ -n "$$relevant_untracked" ] || [ -n "$$ignored_deployment_inputs" ]; then \
 			echo "build-news-rollback-image refuses untracked build inputs outside docs/." >&2; \
 			exit 2; \
@@ -171,7 +171,7 @@ build-news-rollback-image: preflight ## build the independent Program-v5/schema-
 			echo "build-news-rollback-image requires primary main HEAD to equal origin/main." >&2; \
 			exit 2; \
 		fi; \
-		bundle="$$(pwd -P)/deploy/news-program-v5-schema0300"; \
+		bundle="$$(pwd -P)/deploy/news-program-v5-schema0301"; \
 		profile="$${bundle}/profile.json"; \
 		source_revision=$$(uv run python -c \
 			'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["source_revision"])' "$$profile"); \
@@ -204,7 +204,7 @@ build-news-rollback-image: preflight ## build the independent Program-v5/schema-
 		fi; \
 		GITHUB_TOKEN="$$token"; \
 		export GITHUB_TOKEN; \
-		tag="tracefold-app:program-v5-schema0300-rollback-$$(printf '%s' "$$head" | cut -c1-12)"; \
+		tag="tracefold-app:program-v5-schema0301-rollback-$$(printf '%s' "$$head" | cut -c1-12)"; \
 		DOCKER_BUILDKIT=1 docker build \
 			--secret id=github_token,env=GITHUB_TOKEN \
 			--file "$$bundle/Dockerfile" \
@@ -223,7 +223,7 @@ build-news-rollback-image: preflight ## build the independent Program-v5/schema-
 		loaded_factory=$$(printf '%s' "$$runtime_identity" | cut -d '|' -f 2); \
 		loaded_policy=$$(printf '%s' "$$runtime_identity" | cut -d '|' -f 3); \
 		loaded_sha=$$(printf '%s' "$$runtime_identity" | cut -d '|' -f 4); \
-		if [ "$$image_profile" != "program_v5_schema0300_rollback" ] || [ "$$revision" != "$$head" ] || \
+		if [ "$$image_profile" != "program_v5_schema0301_rollback" ] || [ "$$revision" != "$$head" ] || \
 			[ "$$image_source" != "$$source_revision" ] || [ "$$image_schema" != "$$schema_head" ] || \
 			[ "$$loaded_schema" != "$$schema_head" ] || \
 			[ "$$loaded_factory" != "tracefold.news.semantic_program.factory_v3" ] || \

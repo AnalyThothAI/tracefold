@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -333,9 +333,15 @@ def gepa_metric_call_ceiling(
     train_count = compile_call.get("trainset_count")
     val_count = compile_call.get("valset_count")
     values = (requested, minibatch, example_count, train_count, val_count, max_metric_calls, expected_example_count)
+    if any(type(value) is not int for value in values):
+        raise ValueError("news_program_compile_optimizer_metric_budget_invalid")
+    requested = cast(int, requested)
+    minibatch = cast(int, minibatch)
+    example_count = cast(int, example_count)
+    train_count = cast(int, train_count)
+    val_count = cast(int, val_count)
     if (
-        any(type(value) is not int for value in values)
-        or requested != max_metric_calls
+        requested != max_metric_calls
         or max_metric_calls <= 0
         or expected_example_count <= 0
         or example_count != expected_example_count

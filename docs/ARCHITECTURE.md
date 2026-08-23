@@ -902,7 +902,7 @@ deployment time. Corrective migration `0293` preserves that history and appends
 `program_v2` after fixing the semantic retry state machine. Issue #132 migration
 `0294` preserves both prior rows and appends `program_v3` for the expert quality
 baseline and semantic normalization. Issue #134 migration `0295` appends
-`program_v5`. Issue #160 migration `0300` hard-renames persisted `priority` to
+`program_v5`. Issue #160 migration `0301` hard-renames persisted `priority` to
 `queue_priority`, adds atomic editorial/runtime-manifest judgment identity, and
 appends `program_v6` for factory v4/executable v4/policy v10. All earlier reviews, datasets, recordings,
 reports and release receipts remain readable audit evidence, but they are
@@ -1023,7 +1023,7 @@ audit-only for current release decisions. `0294` preserves both earlier Program
 epochs and appends the expert-quality `program_v3` epoch, making `program_v2`
 evidence audit-only for current release decisions. `0295` preserves v1-v3 and
 appends the `program_v5` epoch with factory v3 on the artifact-v2 envelope.
-`0300` performs the #160 hard cut: `news_events.priority` becomes
+`0301` performs the #160 hard cut: `news_events.priority` becomes
 `queue_priority` with no alias; verdicts gain atomic editorial/scored/runtime-
 manifest identity; `program_v6` binds factory v4, executable v4, policy v10,
 review v4 and metric/compiler protocol v3; and older evidence becomes audit-only.
@@ -1060,6 +1060,15 @@ persisted Triage verdict (model, or deterministic OI)
 **The trigger is the persisted verdict, not delivery.** Feishu `sent` is
 notification transport success; capital must not depend on a notification
 channel being reachable.
+
+**The News input is one hard-cut generation.** The public projections emit
+only post-epoch `program_v6` / policy-v10 judgments with the complete Program,
+editorial, scored-judgment and runtime-manifest identity. Model judgments must
+come from executable v4; deterministic OI keeps its arithmetic Program v1.
+`trading_manifest_v2` freezes those identities with the case. A pre-cut v1
+manifest that is still `PENDING`, or whose `RUNNING` lease expires, is blocked
+as `news_generation_retired` before a model call or order; prepared orders keep
+their immutable payload and continue through reconciliation.
 
 **Three case kinds, three authorities.** `oi_only` is arithmetic and is the
 execution-kernel trial lane — it never reaches a live mode, and it never calls

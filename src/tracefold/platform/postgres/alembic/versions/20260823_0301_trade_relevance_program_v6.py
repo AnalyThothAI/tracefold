@@ -7,16 +7,16 @@ envelope; verdict and editorial bytes are persisted atomically and addressed as
 one ``ScoredJudgment``.  Earlier Program/rubric/policy rows remain immutable
 audit history and release evidence reaccrues from this migration.
 
-Revision ID: 20260823_0300
-Revises: 20260823_0299
+Revision ID: 20260823_0301
+Revises: 20260823_0300
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260823_0300"
-down_revision = "20260823_0299"
+revision = "20260823_0301"
+down_revision = "20260823_0300"
 branch_labels = None
 depends_on = None
 
@@ -197,4 +197,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260823_0300 is an irreversible typed-editorial Program epoch hard cut")
+    raise RuntimeError("20260823_0301 is an irreversible typed-editorial Program epoch hard cut")

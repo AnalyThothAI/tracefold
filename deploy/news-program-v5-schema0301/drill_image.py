@@ -102,7 +102,7 @@ def drill(image_id: str) -> None:
         if result.returncode != 0:
             diagnostic = (result.stderr or result.stdout).replace(password, "<redacted>").replace(dsn, "<redacted-dsn>")
             raise RuntimeError(f"news_rollback_drill_container_failed:\n{diagnostic[-4000:]}")
-        if result.stdout.strip() != "news_program_v5_schema0300_rollback_drill_ok":
+        if result.stdout.strip() != "news_program_v5_schema0301_rollback_drill_ok":
             raise RuntimeError("news_rollback_drill_receipt_invalid")
     finally:
         if postgres_created:
@@ -116,7 +116,7 @@ def main() -> int:
     parser.add_argument("--image-id", required=True)
     args = parser.parse_args()
     drill(args.image_id)
-    print("news_program_v5_schema0300_rollback_image_drilled")
+    print("news_program_v5_schema0301_rollback_image_drilled")
     return 0
 
 

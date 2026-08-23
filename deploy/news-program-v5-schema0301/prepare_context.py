@@ -1,4 +1,4 @@
-"""Materialize the pinned Program-v5 source plus the schema-0300 adapter."""
+"""Materialize pinned Program-v5 source plus the complete schema-0301 migration chain."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 PROFILE_SCHEMA = "tracefold_news_rollback_image_profile_v1"
-MIGRATION_NAME = "20260823_0300_trade_relevance_program_v6.py"
+PREDECESSOR_MIGRATION_NAME = "20260823_0300_trading_core.py"
+MIGRATION_NAME = "20260823_0301_trade_relevance_program_v6.py"
 
 
 def _sha256(path: Path) -> str:
@@ -63,13 +64,12 @@ def prepare(*, repo: Path, output: Path) -> dict[str, Any]:
     _run("git", "cat-file", "-e", f"{revision}^{{commit}}", cwd=repo)
     _run("git", "merge-base", "--is-ancestor", revision, "HEAD", cwd=repo)
 
-    adapter = bundle / "schema0300.patch"
+    adapter = bundle / "schema0301.patch"
     migration = repo / "src/tracefold/platform/postgres/alembic/versions" / MIGRATION_NAME
     if _sha256(adapter) != profile.get("adapter_patch_sha256"):
         raise ValueError("news_rollback_adapter_hash_mismatch")
     if _sha256(migration) != profile.get("migration_sha256"):
         raise ValueError("news_rollback_migration_hash_mismatch")
-
     _extract_git_archive(repo, revision, output)
     registry = output / "src/tracefold/news/agents/programs/registry.json"
     if _sha256(registry) != profile.get("registry_sha256"):
@@ -78,13 +78,17 @@ def prepare(*, repo: Path, output: Path) -> dict[str, Any]:
     _run("git", "apply", "--check", "--whitespace=error-all", str(adapter), cwd=output)
     _run("git", "apply", "--whitespace=error-all", str(adapter), cwd=output)
 
-    migration_target = output / "src/tracefold/platform/postgres/alembic/versions" / MIGRATION_NAME
+    versions = output / "src/tracefold/platform/postgres/alembic/versions"
+    predecessor_target = versions / PREDECESSOR_MIGRATION_NAME
+    if _sha256(predecessor_target) != profile.get("predecessor_migration_sha256"):
+        raise ValueError("news_rollback_predecessor_migration_hash_mismatch")
+    migration_target = versions / MIGRATION_NAME
     shutil.copy2(migration, migration_target)
     verifier_target = output / "scripts/verify_news_rollback.py"
     shutil.copy2(bundle / "verify_runtime.py", verifier_target)
     drill_target = output / "scripts/drill_news_rollback.py"
     shutil.copy2(bundle / "drill_schema.py", drill_target)
-    profile_target = output / "deploy/news-program-v5-schema0300/profile.json"
+    profile_target = output / "deploy/news-program-v5-schema0301/profile.json"
     profile_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(bundle / "profile.json", profile_target)
     return profile

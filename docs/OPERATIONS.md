@@ -64,17 +64,23 @@ Compose command whose exit status ignores an unhealthy Worker.
 ### Exact-image rollback with the current database schema
 
 An image rollback is a runtime replacement, not an Alembic downgrade. The #160
-physical `priority -> queue_priority` rename means the pre-0300 image cannot run
+physical `priority -> queue_priority` rename means the pre-0301 image cannot run
 against the current schema. Before the first v6/v10 deployment, build, retain
 and drill the reviewed new-schema/v5-behaviour rollback image from the clean
 primary checkout:
+
+The same release hard-cuts the News-to-Trading input contract. New projections
+expose only post-epoch v10 judgments and new cases freeze
+`trading_manifest_v2`. Any undecided v1 case is blocked as
+`news_generation_retired` before model or order work; existing prepared orders
+remain owned by reconciliation and are never rewritten by the News migration.
 
 ```bash
 cd ~/Documents/Code/tracefold
 make build-news-rollback-image
 ```
 
-The target verifies a rollback binary that understands schema 0300 while
+The target verifies a rollback binary that understands schema 0301 while
 reproducing v5 behaviour, then checks its source revision, exact behavior-
 profile identity and image label. It does not deploy or mutate PostgreSQL.
 Record the full `sha256:` image ID it prints; that ID, not its local tag, is the
@@ -86,7 +92,7 @@ or drill fails the release gate.
 
 For the #160 drill and rollback, use the full image ID printed by
 `build-news-rollback-image` directly. After both sides of a later deployment
-already use schema 0300, the most recent recorded previous runtime image may
+already use schema 0301, the most recent recorded previous runtime image may
 also be used. From the primary checkout on `main`, verify the chosen ID locally;
 the SQL below is only the later same-schema lookup:
 
@@ -698,7 +704,7 @@ the expert quality baseline and semantic normalization, making `program_v2`
 evidence audit-only for its release decisions. `0295` preserves v1-v3 and
 appends `program_v5` for the candidate-conditioned ToldContext factory and
 ownership hard cut, making every earlier cohort audit-only for current release
-decisions. `0300` hard-renames persisted `priority` to `queue_priority`, adds
+decisions. `0301` hard-renames persisted `priority` to `queue_priority`, adds
 atomic editorial/scored/runtime-manifest judgment identity, trips old canaries,
 and starts `program_v6` for factory/executable v4 and policy v10. None of these migrations
 deletes history or claims a release PASS.

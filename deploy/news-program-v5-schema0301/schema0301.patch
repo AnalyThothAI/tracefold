@@ -59,21 +59,68 @@ diff --git a/src/tracefold/news/repository.py b/src/tracefold/news/repository.py
 +        if "priority" not in card and card.get("queue_priority"):
 +            card["priority"] = card["queue_priority"]
          card.update(
-@@ -1594,3 +1597,3 @@ class NewsRepository:
+@@ -991,6 +994,7 @@ class NewsRepository:
+               JOIN news_events e ON e.event_id = v.event_id
+               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
+              WHERE v.stage = 'triage'
++               AND false -- News v5 rollback disables new Trading exposure.
+                AND v.program_version = 'news_oi_signal_v1'
+                AND v.final_decision IN ('push', 'escalate')
+                AND v.degraded = false
+@@ -1049,6 +1053,7 @@ class NewsRepository:
+               JOIN news_events e ON e.event_id = v.event_id
+               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
+              WHERE v.stage = 'triage'
++               AND false -- News v5 rollback disables new Trading exposure.
+                AND v.program_version IS DISTINCT FROM 'news_oi_signal_v1'
+                AND v.final_decision IN ('push', 'escalate')
+                AND v.degraded = false
+@@ -1594,3 +1599,3 @@ class NewsRepository:
          if priority:
 -            where.append("e.priority = %s")
 +            where.append("e.queue_priority = %s")
              params.append(priority)
-@@ -1614,3 +1617,3 @@ class NewsRepository:
+@@ -1614,3 +1619,3 @@ class NewsRepository:
          order = (
 -            "e.priority = 'high' DESC, e.opened_at_ms DESC, e.event_id DESC"
 +            "e.queue_priority = 'high' DESC, e.opened_at_ms DESC, e.event_id DESC"
              if sort == "priority"
-@@ -1621,3 +1624,3 @@ class NewsRepository:
+@@ -1621,3 +1626,4 @@ class NewsRepository:
              SELECT e.event_id, e.family, e.leader_title, e.opened_at_ms, e.last_member_at_ms, e.member_count,
 -                   e.admission, e.priority, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
-+                   e.admission, e.queue_priority AS priority, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
++                   e.admission, e.queue_priority AS priority, e.provider_score_max, e.engine_type,
++                   e.asset_class, e.grounded_assets,
                     e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
+diff --git a/src/tracefold/trading/pipeline.py b/src/tracefold/trading/pipeline.py
+--- a/src/tracefold/trading/pipeline.py
++++ b/src/tracefold/trading/pipeline.py
+@@ -104,5 +104,10 @@ BarFetcher = Callable[[str, int, int], Awaitable[Sequence[Bar]]]
+ BarFetcherFactory = Callable[[str], BarFetcher | None]
+-
+-
++
++
++def _news_runtime_allows_new_trading_exposure() -> bool:
++    """The rollback keeps reconciliation live but admits no new capital intent."""
++    return False
++
++
+ def _now_ms() -> int:
+     return int(datetime.now(tz=UTC).timestamp() * 1000)
+@@ -514,3 +519,13 @@ class CandidateRunner:
+         case_id = str(claimed["case_id"])
++        if not _news_runtime_allows_new_trading_exposure():
++            funnel.count("advance_reject:news_runtime_rollback")
++            await self._settle(
++                case_id,
++                CaseState.BLOCKED,
++                "no_trade",
++                "news_runtime_rollback",
++                now=now,
++            )
++            return "news_runtime_rollback"
+         manifest = TradingCaseManifest.model_validate(claimed["manifest"])
+         kind: CaseKind = str(claimed["case_kind"])  # type: ignore[assignment]
 diff --git a/src/tracefold/news/review.py b/src/tracefold/news/review.py
 --- a/src/tracefold/news/review.py
 +++ b/src/tracefold/news/review.py

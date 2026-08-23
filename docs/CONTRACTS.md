@@ -536,7 +536,7 @@ that history and appends the corrected `program_v2` epoch; Prompt-era and
 `20260822_0294` preserves both rows and appends the expert-quality `program_v3`
 epoch; Prompt-era, `program_v1`, and `program_v2` rows are audit-only for the
 then-current release chain. `20260822_0295` preserves v1-v3 and appends the
-`program_v5` epoch with factory v3 on the artifact-v2 envelope. `20260823_0300`
+`program_v5` epoch with factory v3 on the artifact-v2 envelope. `20260823_0301`
 hard-renames `news_events.priority` to `queue_priority`, appends atomic
 editorial/scored/runtime-manifest identity to verdicts, trips prior canaries,
 and starts `program_v6` with factory/executable v4 and policy v10. Every earlier
@@ -632,7 +632,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260823_0300`). Since
+append without rewrite access (current at migration `20260823_0301`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.
@@ -877,6 +877,14 @@ control (`CLOSE_ONLY` and `PAUSED` still permit reconciliation and the
 deterministic safety close), and `trading approve|reject <order-id> --digest`
 settles one order bound to its exact frozen payload digest, idempotent by state
 so a second approval of an already-approved order changes nothing.
+
+Trading's News projection contract is `program_v6` / policy v10 only.
+`trading_manifest_v2` freezes the learning epoch, lane-specific Program
+version and SHA, policy version, editorial origin and SHA, scored-judgment SHA,
+and runtime-manifest SHA. Older v1 cases remain readable audit rows but cannot
+advance: an undecided case is terminalized as
+`BLOCKED/no_trade/news_generation_retired`; an already prepared order is not
+rewritten and remains owned by the reconciliation state machine.
 
 The `ops` family is exactly `validate-projections`. It constructs only the
 dependencies required by the named domain operation and invokes that bounded

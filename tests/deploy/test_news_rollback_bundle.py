@@ -8,33 +8,34 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BUNDLE = ROOT / "deploy/news-program-v5-schema0300"
+BUNDLE = ROOT / "deploy/news-program-v5-schema0301"
 
 
 def _profile() -> dict[str, object]:
     return json.loads((BUNDLE / "profile.json").read_text(encoding="utf-8"))
 
 
-def test_rollback_profile_pins_reviewed_v5_and_schema_0300() -> None:
+def test_rollback_profile_pins_reviewed_v5_and_schema_0301() -> None:
     profile = _profile()
     assert profile == {
-        "adapter_patch_sha256": "8f0f1d91df151ddd7dbd5ddbdce712ec6cb8e1ac76772965a6c879c6bbee5dde",
+        "adapter_patch_sha256": "574d7ea77cd57bc36a09270f9701323e79ac7ccaf5f10b6a039cd39957402f9f",
         "factory_id": "tracefold.news.semantic_program.factory_v3",
         "learning_epoch": "program_v5",
-        "migration_head": "20260823_0300",
-        "migration_sha256": "82b81e1de52cced149240691bb2eb7149376cc6182a9daadd9769903fa5bce5f",
+        "migration_head": "20260823_0301",
+        "migration_sha256": "5184f2ecffce9dc205b563f89f8315dca0c2e275f6816a58f8a337f93e690222",
         "policy_version": "news_triage_policy_v9",
-        "profile_id": "program_v5_schema0300_rollback",
+        "predecessor_migration_sha256": "d8e3d1d0733bc41f75e08615c94b68393cdc6a74ab574d6f81df55d2506c9d5e",
+        "profile_id": "program_v5_schema0301_rollback",
         "program_sha256": "c62e0d69bf6c1901b3e8a1a716ca153acaf92793421d5af2701030c0477cac3b",
         "program_version": "news_semantic_program_v3",
         "registry_sha256": "07a40af24a081b480f75bab879239a36ebe690b19828905917ae6fea773f50d7",
         "schema_version": "tracefold_news_rollback_image_profile_v1",
-        "source_revision": "7ab44ef00e539486954f6a73c6266dcd5d67dd4f",
+        "source_revision": "66fc5dadcf44585fa4cd83f3c7495a62f32c047d",
     }
-    assert hashlib.sha256((BUNDLE / "schema0300.patch").read_bytes()).hexdigest() == profile["adapter_patch_sha256"]
+    assert hashlib.sha256((BUNDLE / "schema0301.patch").read_bytes()).hexdigest() == profile["adapter_patch_sha256"]
 
 
-def test_prepare_context_builds_runnable_v5_with_only_schema_adapter(tmp_path: Path) -> None:
+def test_prepare_context_builds_runnable_v5_with_schema_0301_adapter(tmp_path: Path) -> None:
     subprocess.run(
         [
             sys.executable,
@@ -49,6 +50,13 @@ def test_prepare_context_builds_runnable_v5_with_only_schema_adapter(tmp_path: P
         text=True,
     )
     assert (tmp_path / "scripts/drill_news_rollback.py").is_file()
+    versions = tmp_path / "src/tracefold/platform/postgres/alembic/versions"
+    assert (versions / "20260823_0300_trading_core.py").is_file()
+    assert (versions / "20260823_0301_trade_relevance_program_v6.py").is_file()
+    repository = (tmp_path / "src/tracefold/news/repository.py").read_text(encoding="utf-8")
+    trading_pipeline = (tmp_path / "src/tracefold/trading/pipeline.py").read_text(encoding="utf-8")
+    assert repository.count("AND false -- News v5 rollback disables new Trading exposure.") == 2
+    assert 'funnel.count("advance_reject:news_runtime_rollback")' in trading_pipeline
     environment = {
         **os.environ,
         "PYTHONDONTWRITEBYTECODE": "1",
