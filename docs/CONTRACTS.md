@@ -15,8 +15,8 @@ reservations are code-owned and are not configuration fields.
 
 Repository fixtures, `.env` files, and generated docs are not runtime
 configuration. No static example is a second schema authority: the
-`tracefold init` command generates the default directly from the typed settings
-implementation.
+`tracefold init` command generates the default directly from the typed config
+model and loader implementation.
 `uv run tracefold config` reports the effective paths and redacted settings.
 Unknown settings or worker keys fail validation.
 

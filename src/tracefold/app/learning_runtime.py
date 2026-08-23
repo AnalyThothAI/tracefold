@@ -23,7 +23,7 @@ from tracefold.news.agents.semantic_program import (
     load_program_artifact,
     load_stable_program_artifact,
 )
-from tracefold.platform.config.settings import news_model_availability
+from tracefold.platform.config.models import news_model_availability
 
 
 @dataclass(frozen=True, slots=True)

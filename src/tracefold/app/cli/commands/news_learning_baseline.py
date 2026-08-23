@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+from argparse import Namespace
+from collections.abc import Mapping
+from typing import Any
+
+from .news_learning_documents import _write_json
+
+
+def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+    """Score the stable Program offline. Read-only: no sandbox, no tariff, no container, no writes.
+
+    DSPy lives behind `program_baseline`; this layer only reads the corpus and prints the receipt, so the
+    architecture boundary that keeps DSPy out of the CLI still holds.
+    """
+
+    from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
+    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.app.repository_session import postgres_connection
+    from tracefold.news import CandidateEvaluator, ClosedWindow
+    from tracefold.news.agents.program_baseline import (
+        build_baseline_cases,
+        build_judge,
+        build_runtime_lm,
+        compile_program_factory,
+        run_baseline,
+    )
+    from tracefold.news.agents.semantic_program import load_program_artifact
+
+    mode = str(args.mode)
+    action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
+    if mode == "recorded" and action_source != "recorded":
+        # Scoring a retired arm's verdict against today's `decide()` compares two things that never coexisted.
+        raise ValueError("news_program_baseline_recorded_mode_requires_recorded_decision")
+    if mode != "recorded" and action_source == "recorded":
+        # A live mode must score the fresh judgment through the frozen policy. Reusing a recorded decision
+        # would compare outputs that never coexisted and invalidate the 45% final-action component.
+        raise ValueError("news_program_baseline_live_mode_requires_policy_action")
+    # Every other model-spending command in this plane makes its budget `required=True`; before #150 this one
+    # defaulted to 500 cases, which in `runtime_live` is 1,000-3,000 sequential provider calls against the
+    # single-slot box that is simultaneously serving live Triage. A sentence in OPERATIONS.md is not a bound.
+    max_model_cases = int(getattr(args, "max_model_cases", 0) or 0)
+    if mode != "recorded" and max_model_cases <= 0:
+        raise ValueError("news_program_baseline_live_mode_requires_max_model_cases")
+    window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
+    with postgres_connection(settings, role="serve") as conn:
+        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+        limit = int(args.limit) if mode == "recorded" else min(int(args.limit), max_model_cases)
+        episodes = evaluator.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
+    if not episodes:
+        return 2, {"ok": False, "error": {"code": "news_program_baseline_no_accepted_reviews_in_window"}}
+    artifact = load_program_artifact(stable.program_sha256)
+    composition = compose_news_program_runtime(settings) if mode != "recorded" else None
+    lm = None
+    semantic_judge = None
+    runtime_identity: dict[str, Any] = {}
+    if mode == "compile_live":
+        # One task endpoint driving the graph GEPA optimizes. Deliberately *not* the production route: this
+        # measures what the optimizer maximizes, and the report says so in `execution_scope`.
+        #
+        # Fail closed the way `runtime_live` does. `compose_news_program_runtime` falls back to the literal
+        # model name "unconfigured" with an empty key and base, `configured_lm_endpoint` never raises, and the
+        # resulting object is not None — so on an unconfigured host every case ran, swallowed the same
+        # connection error, and the run ended reporting a total Program failure instead of a missing config.
+        if not composition.program_configured:
+            raise ValueError("news_program_baseline_compile_route_not_configured")
+        endpoint = composition.event_semantics_primary
+        lm = build_runtime_lm(
+            model_name=endpoint.model_name,
+            api_key=endpoint.api_key,
+            api_base=endpoint.api_base,
+            timeout=float(artifact.execution.route_deadline_seconds),
+            max_tokens=max(artifact.route_spec.event_semantics_max_tokens, artifact.route_spec.reader_card_max_tokens),
+            model_kwargs=endpoint.model_kwargs,
+        )
+        # The model name alone cannot tell two endpoints apart: the local box and a hosted gateway can serve
+        # the same name and produce different baselines. `runtime_live` records a per-slot fingerprint; this
+        # mode records the same kind of thing for its one slot.
+        runtime_identity = {
+            "compile_task_model": endpoint.model_name,
+            "compile_task_endpoint_sha256": _endpoint_model_sha256(endpoint),
+        }
+    elif mode == "runtime_live":
+        # The configured four-slot Program with its own retry, fallback, deadline and circuit — built by the
+        # same seam the Workers use, so a dedicated ReaderCard binding is honoured rather than silently
+        # aliased to the EventSemantics primary.
+        semantic_judge = composition.semantic_judge(artifact)
+        if semantic_judge is None:
+            raise ValueError("news_program_baseline_runtime_route_not_configured")
+        runtime_identity = {
+            "slots": composition.secret_free_slot_identities(),
+            "aliases": composition.slot_aliases(),
+            "runtime_model_bindings_sha256": composition.runtime_model_bindings_sha256,
+        }
+    judge_model = str(args.semantic_judge).strip()
+    judge = None
+    if judge_model:
+        # The judge belongs to the metric, not the Program, so it gets its own endpoint rather than the task
+        # route: the compiler reflection endpoint when configured, otherwise the Triage fallback.
+        reflection = getattr(settings.llm, "news_compiler_reflection", None)
+        source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+        if not source.configured:
+            raise ValueError("news_program_baseline_judge_endpoint_not_configured")
+        endpoint = configured_lm_endpoint(
+            settings, model_name=judge_model, api_key=source.api_key, base_url=source.base_url
+        )
+        judge = build_judge(
+            model_name=endpoint.model_name,
+            api_key=endpoint.api_key,
+            api_base=endpoint.api_base,
+            model_kwargs=endpoint.model_kwargs,
+        )
+    report = run_baseline(
+        build_baseline_cases(episodes, action_source=action_source),
+        cohort_scope="all" if bool(args.all_cohorts) else "current",
+        mode=mode,
+        artifact=artifact,
+        program_factory=compile_program_factory if mode == "compile_live" else None,
+        lm=lm,
+        judge=judge,
+        semantic_judge=semantic_judge,
+        runtime_identity=runtime_identity,
+    )
+    payload = report.model_dump(mode="json")
+    payload["report_sha256"] = report.report_sha256
+    if str(args.out):
+        _write_json(str(args.out), payload)
+    summary = {key: value for key, value in payload.items() if key != "cases"}
+    summary["cases_written_to"] = str(args.out) or None
+    return 0, {"ok": True, "data": summary}
+
+
+def _drafter_context(view: Mapping[str, Any]) -> Any:
+    """Rebuild the bounded TriageContext from a ReviewDesk evidence view.
+
+    Mirrors `CandidateEvaluator._build_context`: the focus fact is what the Program treats as the headline,
+    and the card carries the Gate facts.
+    """
+
+    from tracefold.news import TriageContext
+
+    evidence = dict(view.get("evidence") or {})
+    card = dict(evidence.get("card") or {})
+    focus = dict(evidence.get("focus_fact") or {})
+    card["focus_fact_id"] = focus.get("fact_id")
+    card["leader_title"] = focus.get("text") or card.get("leader_title")
+    card["leader_description"] = focus.get("context") or card.get("leader_description")
+    return TriageContext.from_card(
+        card,
+        watchlist=(),
+        told_rows=[],
+        now_ms=int(card.get("opened_at_ms") or 0),
+        queue_lag_ms=0,
+    )
+
+
+def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+    """Propose `news_review_v4` rubrics with exact gold. The output is a file, never a review.
+
+    `ReviewDesk.submit` appends an acceptance row unconditionally, so a draft written through that path would
+    be accepted release evidence the instant it landed. The human stays the acceptance authority; this only
+    turns "compose a judgment from scratch" into "confirm or reject one".
+
+    Tasks come from the ReviewDesk queue rather than from `baseline_episodes`, which starts at
+    `news_reviews` and therefore only ever returns Events that already have one — 170 against 6,186
+    unreviewed. Drafting is for the ones nobody has judged yet, and the queue is also what gives the drafter
+    the same task identity and the same evidence view a human reviewer opens.
+    """
+
+    del stable
+    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.app.repository_session import postgres_connection
+    from tracefold.news import DeskQuery, Principal, ReviewDesk, TaskRef, canonical_json
+    from tracefold.news.agents.program_baseline import build_metric_lm
+    from tracefold.news.agents.program_review_drafter import ReviewDrafter, build_draft_batch
+    from tracefold.news.agents.semantic_program import render_model_evidence_json
+
+    reflection = getattr(settings.llm, "news_compiler_reflection", None)
+    source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+    if not source.configured:
+        raise ValueError("news_review_drafter_endpoint_not_configured")
+
+    principal = Principal(subject="operator")
+    hours = int(args.hours)
+    tasks: list[dict[str, Any]] = []
+    wanted = int(args.limit)
+    with postgres_connection(settings, role="serve") as conn:
+        desk = ReviewDesk(conn)
+        # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through it
+        # keeps that stratification — which is what makes a corpus carry the boundary/negative/retention mix
+        # the release thresholds require — instead of bypassing the desk with a raw query.
+        rows: list[Mapping[str, Any]] = []
+        cursor = ""
+        while len(rows) < wanted:
+            queue = desk.open(
+                DeskQuery(
+                    view="queue",
+                    mode="event",
+                    status="all" if bool(args.include_reviewed) else "pending",
+                    hours=hours,
+                    limit=min(100, wanted - len(rows)),
+                    cursor=cursor,
+                ),
+                principal=principal,
+            )
+            page = list(queue.get("tasks") or ())
+            rows.extend(page)
+            cursor = str(queue.get("next_cursor") or "")
+            if not page or not cursor:
+                break
+        for row in rows:
+            view = desk.evidence(
+                TaskRef(task_id=str(row["task_id"]), task_version=str(row["task_version"])), principal=principal
+            )
+            agent = dict(view.get("agent") or {})
+            verdict = dict(agent.get("verdict") or {})
+            if not verdict:
+                continue  # degraded or unjudged: there is no card to review
+            tasks.append(
+                {
+                    "task_id": str(row["task_id"]),
+                    "task_version": str(row["task_version"]),
+                    "event_id": str(row["event_id"]),
+                    "headline_zh": str(verdict.get("headline_zh") or ""),
+                    # The Program's own bounded projection, not the whole reviewer view. The full view
+                    # carries every de-duplicated member and all provenance; handing that to a reasoning
+                    # model made it think until it hit the output ceiling and returned nothing at all
+                    # (6/6 empty on the first attempt). This is also the fairer question: judge the card
+                    # against what the Program was actually shown.
+                    "evidence_json": render_model_evidence_json(
+                        _drafter_context(view).event_semantics_payload(), predictor="event_semantics"
+                    ),
+                    "card_json": canonical_json(
+                        {
+                            "verdict": verdict,
+                            "final_decision": agent.get("final_decision"),
+                            "override_rule": agent.get("override_rule"),
+                        }
+                    ),
+                    # The ledger the model was shown when it judged, so the drafter can check novelty against
+                    # the same history rather than against hindsight.
+                    "told_json": canonical_json(list((agent.get("trace") or {}).get("told") or ())),
+                }
+            )
+    if not tasks:
+        return 2, {"ok": False, "error": {"code": "news_review_drafter_nothing_to_draft"}}
+
+    # Same endpoint plumbing as the judge: a drafting model is a metric-side tool, not a Program route.
+    endpoint = configured_lm_endpoint(
+        settings, model_name=str(args.model), api_key=source.api_key, base_url=source.base_url
+    )
+    batch = build_draft_batch(
+        ReviewDrafter(
+            build_metric_lm(
+                model_name=endpoint.model_name,
+                api_key=endpoint.api_key,
+                api_base=endpoint.api_base,
+                model_kwargs=endpoint.model_kwargs,
+                max_tokens=4_096,
+            )
+        ),
+        tasks,
+    )
+    payload = batch.model_dump(mode="json")
+    payload["batch_sha256"] = batch.batch_sha256
+    _write_json(str(args.out), payload)
+    drafted = [entry for entry in batch.drafts if entry.error is None]
+    with_gold = [entry for entry in drafted if entry.draft.expected is not None]
+    return 0, {
+        "ok": True,
+        "data": {
+            "drafts_written_to": str(args.out),
+            "batch_sha256": batch.batch_sha256,
+            "drafter": batch.drafter,
+            "tasks": len(tasks),
+            "drafted": len(drafted),
+            "with_gold": len(with_gold),
+            "failed": len(batch.drafts) - len(drafted),
+            "note": "proposals only - a human must accept each one through `tracefold news review submit`",
+        },
+    }

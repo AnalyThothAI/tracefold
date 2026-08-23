@@ -18,7 +18,8 @@ from pathlib import Path
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Connection
 
-from tracefold.platform.config.settings import Settings, load_settings
+from tracefold.platform.config.loader import load_settings
+from tracefold.platform.config.models import Settings
 from tracefold.platform.postgres.postgres_client import local_docker_host_dsn, with_password_from_file
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version
 

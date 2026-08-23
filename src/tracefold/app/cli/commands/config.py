@@ -4,11 +4,10 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from tracefold.platform.config.settings import (
-    load_settings,
+from tracefold.platform.config.loader import load_settings, write_default_config
+from tracefold.platform.config.models import (
     news_model_availability,
     news_push_availability,
-    write_default_config,
 )
 from tracefold.platform.paths import config_path
 

@@ -220,7 +220,7 @@ def test_private_business_import_rules_follow_consumer_families() -> None:
         "tracefold.news.agents.program_baseline",
     )
     assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.repository")
-    assert not _private_import_allowed("tracefold.app.http.routes_news", "tracefold.news.repository")
+    assert not _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.repository")
 
 
 def test_backend_has_only_the_expected_package_shape() -> None:

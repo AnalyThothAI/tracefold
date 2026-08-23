@@ -1,5 +1,7 @@
 """Fail-closed identity and schema checks for the independent rollback image."""
 
+# ruff: noqa: I001 -- copied onto the pinned v5 tree, where config.settings is the current module.
+
 from __future__ import annotations
 
 import hashlib

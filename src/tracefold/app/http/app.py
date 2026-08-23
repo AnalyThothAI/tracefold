@@ -11,7 +11,12 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.middleware.gzip import GZipMiddleware
 
-from tracefold.app.http.exceptions import (
+from tracefold.app.serve_runtime import ServeRuntime, bootstrap_serve
+from tracefold.platform.config.loader import load_settings
+from tracefold.platform.config.models import Settings
+from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
+
+from .exceptions import (
     ApiBadRequest,
     ApiConflict,
     ApiUnauthorized,
@@ -21,12 +26,9 @@ from tracefold.app.http.exceptions import (
     api_unauthorized_response,
     api_unavailable_response,
 )
-from tracefold.app.http.http import create_api_router
-from tracefold.app.http.responses import _validated_json
-from tracefold.app.http.schemas import ReadinessData
-from tracefold.app.serve_runtime import ServeRuntime, bootstrap_serve
-from tracefold.platform.config.settings import Settings, load_settings
-from tracefold.platform.observability import PROMETHEUS_CONTENT_TYPE
+from .responses import _validated_json
+from .router import create_api_router
+from .schemas.common import ReadinessData
 
 FRONTEND_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate"
 REVIEW_MUTATION_BODY_MAX_BYTES = 32_768

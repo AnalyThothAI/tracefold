@@ -17,7 +17,8 @@ from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.app.cli.parser import build_parser
 from tracefold.cli import main
-from tracefold.platform.config.settings import Settings, default_config_yaml
+from tracefold.platform.config.loader import default_config_yaml
+from tracefold.platform.config.models import Settings
 
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 

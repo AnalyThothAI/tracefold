@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
-from tracefold.platform.config.settings import load_settings
+from tracefold.platform.config.loader import load_settings
 from tracefold.trading import canonical_base_symbol
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}

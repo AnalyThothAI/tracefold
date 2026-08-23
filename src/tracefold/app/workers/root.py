@@ -28,7 +28,7 @@ from tracefold.app.workers.task_contract import (
     worker_business_runners,
 )
 from tracefold.app.workers.wiring.components import _Components, _wire_components
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.postgres_client import postgres_health_check
 from tracefold.platform.postgres.postgres_migrations import latest_migration_version

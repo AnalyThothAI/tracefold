@@ -182,12 +182,15 @@ tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu
 
 tracefold.platform
-  config, PostgreSQL/Alembic, telemetry, paths,
+  config models/loader, PostgreSQL/Alembic, telemetry, paths,
   bounded resource primitives, docker host translation
 
 tracefold.app
   Serve/Workers database composition, `repository_session.py`, HTTP, CLI,
-  and the Workers lifecycle root plus capability wiring (`app/workers/`)
+  and the Workers lifecycle root plus capability wiring (`app/workers/`).
+  News CLI commands are owned by their bus/instrument/review/learning/diagnostic
+  modules; HTTP routes and exact schemas are owned by feed/event/review/status
+  resource modules under `app/http/`.
 ```
 
 Each business package root is its public Python interface: `tracefold.news`

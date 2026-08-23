@@ -70,6 +70,10 @@ def _validated_etag_json(
     return response
 
 
+def _etagged(data: dict[str, Any], request: Request, *, envelope: type[BaseModel]) -> JSONResponse | Response:
+    return _validated_etag_json(envelope, {"ok": True, "data": data}, data=data, request=request)
+
+
 def _if_none_match_matches(header: str | None, current_opaque_tag: str) -> bool:
     """Apply GET/HEAD weak comparison for a bounded server-generated ETag."""
 

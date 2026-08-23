@@ -34,7 +34,7 @@ def main() -> int:
 
     # Import after env validation to keep error pretty.
     from tracefold.app.http.app import create_app
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     settings = Settings(
         ws_token=ws_token,

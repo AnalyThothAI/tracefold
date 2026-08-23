@@ -16,7 +16,7 @@ from tracefold.news.opennews import (
     parse_opennews_strategy_hits,
     parse_opennews_strategy_list,
 )
-from tracefold.platform.config.settings import NewsSettings
+from tracefold.platform.config.models import NewsSettings
 
 
 def test_opennews_source_id_is_stable() -> None:

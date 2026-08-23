@@ -6,9 +6,9 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from tracefold.app.http import schemas as api_schemas
-from tracefold.app.http.dependencies import _authenticated_runtime, _runtime
-from tracefold.app.http.responses import _validated_json
+from ..dependencies import _authenticated_runtime, _runtime
+from ..responses import _validated_json
+from ..schemas import common as api_schemas
 
 router = APIRouter()
 

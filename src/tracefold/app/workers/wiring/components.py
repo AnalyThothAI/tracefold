@@ -8,7 +8,7 @@ from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import _wire_trading_pipeline
 from tracefold.news.consumers import NewsPipeline
-from tracefold.platform.config.settings import Settings
+from tracefold.platform.config.models import Settings
 
 
 @dataclass(slots=True)

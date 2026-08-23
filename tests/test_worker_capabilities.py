@@ -532,7 +532,7 @@ def test_late_wrapped_failure_after_caller_cancellation_is_retrieved() -> None:
 
 # ---------------------------------------------------------------------------- #88 price loop composition
 def _settings(**venues: Any):
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     return Settings(ws_token="wiring-token", news={"enabled": True, "venues": venues or {}})
 

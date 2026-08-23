@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from tracefold.app.workers import run_workers
-from tracefold.platform.config.settings import load_settings
+from tracefold.platform.config.loader import load_settings
 from tracefold.platform.observability import setup_logging
 
 

@@ -134,7 +134,7 @@ async def _main() -> None:
     arguments = _arguments()
     from tracefold.app.workers import root as workers
     from tracefold.app.workers.wiring import components as workers_wiring
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     workers._WORKER_INTERNAL_PORT = arguments.port
     workers._HEARTBEAT_SECONDS = 0.1

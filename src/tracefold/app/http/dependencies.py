@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import Request
 
-from tracefold.app.http.exceptions import ApiUnauthorized
+from .exceptions import ApiBadRequest, ApiUnauthorized
 
 
 def _runtime(request: Request) -> Any:
@@ -33,3 +33,9 @@ def _request_token(request: Request, *, allow_query_token: bool = True) -> str |
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _validate_query_params(request: Request, *, supported: set[str]) -> None:
+    for name in request.query_params:
+        if name not in supported:
+            raise ApiBadRequest("unsupported_query_param", field=name)

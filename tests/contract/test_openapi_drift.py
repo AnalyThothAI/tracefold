@@ -30,7 +30,7 @@ FRONTEND_CONTRACTS_PATH = ROOT / "web" / "src" / "lib" / "types" / "frontend-con
 def test_openapi_json_matches_committed_artefact(tmp_path: Path) -> None:
     """Regenerate openapi.json into a tmp dir and compare bytes with the committed one."""
     from tracefold.app.http.app import create_app
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     settings = Settings(ws_token="schema-gen-placeholder")
     app = create_app(settings=settings)
@@ -84,7 +84,7 @@ def test_public_api_is_status_news_and_macro_only() -> None:
     """#47 removed Radar, #50 removed the GMGN lane: no market/search/token/live routes or schemas remain."""
 
     from tracefold.app.http.app import create_app
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     components = schema["components"]["schemas"]
@@ -118,7 +118,7 @@ def test_public_api_is_status_news_and_macro_only() -> None:
 @pytest.mark.contract
 def test_news_routes_publish_exact_named_data_contracts() -> None:
     from tracefold.app.http.app import create_app
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     expected = {
@@ -209,7 +209,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
 @pytest.mark.contract
 def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces() -> None:
     from tracefold.app.http.app import create_app
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     components = schema["components"]["schemas"]
@@ -229,7 +229,7 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
 @pytest.mark.contract
 def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     from tracefold.app.http.app import create_app
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
     operation = schema["paths"]["/api/news/feed"]["get"]

@@ -130,7 +130,7 @@ def test_the_public_interface_is_the_package_root() -> None:
 
 def test_a_disabled_trading_context_constructs_nothing() -> None:
     from tracefold.app.workers.wiring.trading import _wire_trading_pipeline
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     settings = Settings()
     assert settings.trading.enabled is False
@@ -140,7 +140,7 @@ def test_a_disabled_trading_context_constructs_nothing() -> None:
 def test_a_live_mode_without_a_provider_contract_fails_at_startup() -> None:
     from pydantic import ValidationError
 
-    from tracefold.platform.config.settings import TradingSettings
+    from tracefold.platform.config.models import TradingSettings
 
     with pytest.raises(ValidationError, match="trading_live_mode_requires_opentrade"):
         TradingSettings(enabled=True, mode="live_bounded")
@@ -158,7 +158,7 @@ def test_the_regime_band_must_have_a_ceiling() -> None:
 
     from pydantic import ValidationError
 
-    from tracefold.platform.config.settings import TradingRegimeSettings
+    from tracefold.platform.config.models import TradingRegimeSettings
 
     with pytest.raises(ValidationError, match="trading_regime_band_invalid"):
         TradingRegimeSettings(min_price_move_bps=600, max_price_move_bps=100)
@@ -172,7 +172,7 @@ def test_the_pipeline_exposes_exactly_two_runners() -> None:
 
 
 def test_the_worst_case_daily_envelope_is_derivable_from_configuration_alone() -> None:
-    from tracefold.platform.config.settings import TradingOrderSettings
+    from tracefold.platform.config.models import TradingOrderSettings
 
     order = TradingOrderSettings()
     # notional 50 x 200 bps x 4 orders = 4 USD. An operator can sign off on a multiplication.
@@ -214,7 +214,7 @@ def test_the_bar_fetcher_reads_the_same_venue_switch_the_router_reads() -> None:
     """
 
     from tracefold.app.workers.wiring.trading import _trading_bar_fetcher
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     settings = Settings.model_validate(
         {
@@ -233,7 +233,7 @@ class _FakeDb:
 
 
 def _live_reviewed_settings() -> object:
-    from tracefold.platform.config.settings import Settings
+    from tracefold.platform.config.models import Settings
 
     return Settings.model_validate(
         {

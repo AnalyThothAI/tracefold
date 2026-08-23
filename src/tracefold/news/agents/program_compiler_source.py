@@ -14,7 +14,6 @@ from ..artifact_identity import canonical_sha
 
 _NEWS_ROOT = Path(__file__).resolve().parents[1]
 _TRACEFOLD_ROOT = _NEWS_ROOT.parent
-_CLI_NEWS = _TRACEFOLD_ROOT / "app" / "cli" / "commands" / "news.py"
 
 
 def compiler_source_sha256(*, tracefold_root: Path | None = None) -> str:
@@ -28,12 +27,13 @@ def proxy_source_sha256(*, tracefold_root: Path | None = None) -> str:
 def _source_root(schema: str, *, tracefold_root: Path | None) -> str:
     root = (tracefold_root or _TRACEFOLD_ROOT).resolve(strict=True)
     news_root = root / "news"
-    cli_news = root / "app" / "cli" / "commands" / "news.py"
+    cli_commands = root / "app" / "cli" / "commands"
+    cli_news = sorted(cli_commands.glob("news_*.py"))
     cli_parser = root / "app" / "cli" / "parser.py"
-    if not news_root.is_dir() or not cli_news.is_file() or not cli_parser.is_file():
+    if not news_root.is_dir() or not cli_news or not cli_parser.is_file():
         raise ValueError("news_program_compile_source_tree_invalid")
     paths = [path for path in news_root.rglob("*.py") if "__pycache__" not in path.parts]
-    paths.extend((root / "__init__.py", cli_news, cli_parser))
+    paths.extend((root / "__init__.py", cli_parser, *cli_news))
     payload: dict[str, str] = {}
     for path in sorted(set(paths)):
         resolved = path.resolve(strict=True)

@@ -9,7 +9,7 @@ from tracefold.news.agents.program_compiler_source import compiler_source_sha256
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
-CLI_NEWS = SRC / "app" / "cli" / "commands" / "news.py"
+CLI_NEWS = tuple(sorted((SRC / "app" / "cli" / "commands").glob("news_*.py")))
 AGENTS = SRC / "news" / "agents"
 OPTIMIZER_MODULE = "tracefold.news.agents.program_compiler"
 
@@ -31,7 +31,7 @@ def test_optimizer_is_imported_only_by_the_fixed_container_runner() -> None:
 
 
 def test_host_cli_and_trusted_seam_do_not_import_optimizer_or_gepa() -> None:
-    for path in (CLI_NEWS, AGENTS / "program_compiler_trusted.py", AGENTS / "program_compiler_launcher.py"):
+    for path in (*CLI_NEWS, AGENTS / "program_compiler_trusted.py", AGENTS / "program_compiler_launcher.py"):
         modules = _imports(path)
         assert OPTIMIZER_MODULE not in modules, path
         assert "gepa" not in modules, path
@@ -46,12 +46,18 @@ def test_compiler_source_identity_includes_package_initializer_before_secrets_mo
     news.mkdir()
     (tracefold / "__init__.py").write_text("PACKAGE_SENTINEL = 'reviewed'\n", encoding="utf-8")
     (news / "__init__.py").write_text("NEWS_SENTINEL = 'reviewed'\n", encoding="utf-8")
-    (commands / "news.py").write_text("CLI_SENTINEL = 'reviewed'\n", encoding="utf-8")
+    (commands / "news_learning.py").write_text("CLI_SENTINEL = 'reviewed'\n", encoding="utf-8")
     (commands.parent / "parser.py").write_text("PARSER_SENTINEL = 'reviewed'\n", encoding="utf-8")
 
     compiler_before = compiler_source_sha256(tracefold_root=tracefold)
     proxy_before = proxy_source_sha256(tracefold_root=tracefold)
     (tracefold / "__init__.py").write_text("PACKAGE_SENTINEL = 'malicious-before-import'\n", encoding="utf-8")
+
+    assert compiler_source_sha256(tracefold_root=tracefold) != compiler_before
+    assert proxy_source_sha256(tracefold_root=tracefold) != proxy_before
+
+    (tracefold / "__init__.py").write_text("PACKAGE_SENTINEL = 'reviewed'\n", encoding="utf-8")
+    (commands / "news_learning.py").write_text("CLI_SENTINEL = 'malicious-before-import'\n", encoding="utf-8")
 
     assert compiler_source_sha256(tracefold_root=tracefold) != compiler_before
     assert proxy_source_sha256(tracefold_root=tracefold) != proxy_before

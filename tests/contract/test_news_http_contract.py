@@ -9,9 +9,14 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from tracefold.app.http import routes_news, schemas_news
 from tracefold.app.http.app import create_app
-from tracefold.platform.config.settings import Settings
+from tracefold.app.http.routes import review as review_routes
+from tracefold.app.http.schemas import events as event_schemas
+from tracefold.app.http.schemas import feed as feed_schemas
+from tracefold.app.http.schemas import news_common as news_common_schemas
+from tracefold.app.http.schemas import review as review_schemas
+from tracefold.app.http.schemas import status as status_schemas
+from tracefold.platform.config.models import Settings
 
 TOKEN = "contract-token"
 
@@ -319,37 +324,38 @@ def client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _FakeNewsReposi
     settings = Settings(ws_token=TOKEN)
     app = create_app(settings=settings)
     news = _FakeNewsRepository()
-    monkeypatch.setattr(routes_news, "ReviewDesk", _FakeReviewDesk)
+    monkeypatch.setattr(review_routes, "ReviewDesk", _FakeReviewDesk)
     app.state.service = _FakeRuntime(settings, news)
     return TestClient(app), news
 
 
 def test_news_exposes_read_routes_and_only_the_two_review_mutations() -> None:
+    app = create_app(settings=Settings(ws_token=TOKEN))
     routes = {
         (method, route.path)
-        for route in routes_news.router.routes
-        if isinstance(route, APIRoute)
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.path.startswith("/api/news/")
         for method in route.methods
     }
 
     assert routes == {
-        ("GET", "/news/feed"),
-        ("GET", "/news/events/{event_id}"),
-        ("GET", "/news/status"),
+        ("GET", "/api/news/feed"),
+        ("GET", "/api/news/events/{event_id}"),
+        ("GET", "/api/news/status"),
         # #88: current quotes and 命中复盘. Both are read-only and bounded; quotes stay off the feed so a
         # price tick cannot invalidate the feed's ETag every three seconds.
-        ("GET", "/news/quotes"),
-        ("GET", "/news/review"),
-        ("GET", "/news/review/tasks/{task_id}/evidence"),
-        ("POST", "/news/review/tasks/{task_id}/responses"),
-        ("POST", "/news/review/external-misses"),
+        ("GET", "/api/news/quotes"),
+        ("GET", "/api/news/review"),
+        ("GET", "/api/news/review/tasks/{task_id}/evidence"),
+        ("POST", "/api/news/review/tasks/{task_id}/responses"),
+        ("POST", "/api/news/review/external-misses"),
     }
 
 
 def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> None:
-    assert set(schemas_news.NewsFeedData.model_fields) == {"events", "next_cursor", "counts", "filters"}
-    assert set(schemas_news.NewsFeedCountsData.model_fields) == {"total", "pushed", "held", "pending"}
-    assert set(schemas_news.NewsFeedFiltersData.model_fields) == {
+    assert set(feed_schemas.NewsFeedData.model_fields) == {"events", "next_cursor", "counts", "filters"}
+    assert set(feed_schemas.NewsFeedCountsData.model_fields) == {"total", "pushed", "held", "pending"}
+    assert set(feed_schemas.NewsFeedFiltersData.model_fields) == {
         "family",
         "admission",
         "decision",
@@ -359,7 +365,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "outcome",
         "hours",
     }
-    assert set(schemas_news.NewsFeedEventData.model_fields) - set(schemas_news.NewsEventData.model_fields) == {
+    assert set(feed_schemas.NewsFeedEventData.model_fields) - set(event_schemas.NewsEventData.model_fields) == {
         "title_zh",
         "outcome",
         "triage",
@@ -367,7 +373,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         # #88: the fixed post-Event return. The *current* quote is deliberately not a feed field.
         "reaction",
     }
-    assert set(schemas_news.NewsEventDetailData.model_fields) == {
+    assert set(event_schemas.NewsEventDetailData.model_fields) == {
         "event",
         "outcome",
         "triage",
@@ -383,10 +389,10 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "reaction",
         "reactions",
     }
-    assert set(schemas_news.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
-    assert set(schemas_news.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
-    assert set(schemas_news.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
-    assert set(schemas_news.NewsStatusData.model_fields) == {
+    assert set(news_common_schemas.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
+    assert set(news_common_schemas.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
+    assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
+    assert set(status_schemas.NewsStatusData.model_fields) == {
         "state",
         "workers_state",
         "health",
@@ -403,7 +409,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "price",
         "measured_at_ms",
     }
-    assert set(schemas_news.NewsIngestStatusData.model_fields) == {
+    assert set(status_schemas.NewsIngestStatusData.model_fields) == {
         "connected",
         "last_frame_at_ms",
         "last_publish_at_ms",
@@ -411,7 +417,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "open_incidents",
         "token_configured",
     }
-    assert set(schemas_news.NewsDeliveryStatusData.model_fields) == {
+    assert set(status_schemas.NewsDeliveryStatusData.model_fields) == {
         "sent_24h",
         "sent_1h",
         "terminal_24h",
@@ -419,7 +425,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "e2e_p95_ms",
         "delivery_available",
     }
-    assert set(schemas_news.NewsLearningRetentionStatusData.model_fields) == {
+    assert set(status_schemas.NewsLearningRetentionStatusData.model_fields) == {
         "last_run_at_ms",
         "eligible_recordings",
         "eligible_cases",
@@ -433,8 +439,17 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "last_error_code",
         "updated_at_ms",
     }
-    for name in dir(schemas_news):
-        assert not any(marker in name for marker in ("Story", "Brief", "Rss", "TitleTranslation", "Notification")), name
+    for schema_module in (
+        event_schemas,
+        feed_schemas,
+        news_common_schemas,
+        review_schemas,
+        status_schemas,
+    ):
+        for name in dir(schema_module):
+            assert not any(
+                marker in name for marker in ("Story", "Brief", "Rss", "TitleTranslation", "Notification")
+            ), name
 
 
 def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) -> None:
@@ -610,7 +625,7 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
         }
     )
     app = create_app(settings=settings)
-    monkeypatch.setattr(routes_news, "ReviewDesk", _FakeReviewDesk)
+    monkeypatch.setattr(review_routes, "ReviewDesk", _FakeReviewDesk)
     app.state.service = _FakeRuntime(settings, _FakeNewsRepository())
 
     with TestClient(app) as http:
@@ -699,7 +714,7 @@ def test_current_quotes_never_travel_in_the_feed_body(client) -> None:
     body = api.get("/api/news/feed", params={"token": TOKEN}).json()["data"]
     serialized = repr(body)
     assert "price_kind" not in serialized and "change_basis" not in serialized
-    assert set(schemas_news.NewsFeedEventData.model_fields).isdisjoint({"quote", "quotes", "price"})
+    assert set(feed_schemas.NewsFeedEventData.model_fields).isdisjoint({"quote", "quotes", "price"})
 
 
 def test_event_detail_keeps_the_two_market_meanings_in_separate_fields(client) -> None:
@@ -708,9 +723,9 @@ def test_event_detail_keeps_the_two_market_meanings_in_separate_fields(client) -
 
     assert "reaction" in detail and "reactions" in detail
     # Nothing in either contract is called simply `change`, which could mean either meaning.
-    assert "change" not in schemas_news.NewsReactionSummaryData.model_fields
-    assert "change_pct" in schemas_news.NewsQuoteData.model_fields
-    assert "change_basis" in schemas_news.NewsQuoteData.model_fields
+    assert "change" not in event_schemas.NewsReactionSummaryData.model_fields
+    assert "change_pct" in event_schemas.NewsQuoteData.model_fields
+    assert "change_basis" in event_schemas.NewsQuoteData.model_fields
 
 
 def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
