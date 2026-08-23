@@ -570,6 +570,17 @@ class CandidateRunner:
 
         def _insert(repos: Any) -> bool:
             repos.trading.lock_account(self._config.account_ref)
+            # Re-check the two count caps *here*, under the account lock and inside the transaction
+            # that inserts. `_plan` reads them once at the top of a turn, which bounds how many cases
+            # are created but not how many orders a single turn places: four cases claimed in one turn
+            # could each place an order past a daily cap of one. The partial unique index only
+            # enforces one order per underlying, so a count cap has to be counted where it is spent.
+            if repos.trading.orders_today(day_key=_day_key(now)) >= self._config.order.max_orders_per_day:
+                funnel.count("risk_reject:daily_order_cap")
+                return False
+            if len(repos.trading.active_underlyings()) >= self._config.order.max_open_underlyings:
+                funnel.count("risk_reject:max_open_underlyings")
+                return False
             return bool(
                 repos.trading.insert_prepared_order(
                     order_id=order_id,

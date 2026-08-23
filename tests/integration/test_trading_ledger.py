@@ -626,3 +626,51 @@ def test_a_read_only_transaction_cannot_touch_the_deny_list(conn) -> None:
     conn.rollback()
     conn.execute("SET default_transaction_read_only = off")
     conn.commit()
+
+
+# ---------------------------------------------------------------------------- count caps and the day roll
+def test_a_single_turn_cannot_place_more_orders_than_the_daily_cap(conn) -> None:
+    """`_plan` reads the cap once per turn; the cap has to be counted where it is spent.
+
+    Four eligible symbols in one turn used to become four orders under a daily cap of one, because
+    the only per-order authority was the partial unique index, and that is keyed on the underlying.
+    """
+
+    now = NOW
+    for index, symbol in enumerate(("DOGE", "PENGU", "FET", "UNI")):
+        _seed_oi_event(conn, event_id=f"e{index}", symbol=symbol, observed_at_ms=now - MINUTE)
+    config = _config(order=OrderPolicy(max_holding_ms=900_000, max_orders_per_day=1, max_open_underlyings=4))
+    asyncio.run(_runner(conn, adapter=PaperAdapter(), now=now, config=config).turn())
+    assert int(conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"]) == 1
+
+
+def test_a_single_turn_cannot_exceed_the_open_underlying_cap(conn) -> None:
+    now = NOW
+    for index, symbol in enumerate(("DOGE", "PENGU", "FET", "UNI")):
+        _seed_oi_event(conn, event_id=f"e{index}", symbol=symbol, observed_at_ms=now - MINUTE)
+    config = _config(order=OrderPolicy(max_holding_ms=900_000, max_orders_per_day=10, max_open_underlyings=2))
+    asyncio.run(_runner(conn, adapter=PaperAdapter(), now=now, config=config).turn())
+    assert int(conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"]) == 2
+
+
+def test_the_day_roll_clears_every_per_day_counter_whichever_one_runs_first(conn) -> None:
+    """Each counter used to roll only its own field, so the first writer of a new UTC day stamped the
+    new key and left the others holding yesterday's numbers under it."""
+
+    trading = _repos(conn).trading
+    trading.bump_orders_today(day_key="2026-08-22", now_ms=NOW)
+    trading.bump_dspy_calls(day_key="2026-08-22", now_ms=NOW)
+    trading.merge_funnel(day_key="2026-08-22", counts={"oi_eligible": 5}, now_ms=NOW)
+    conn.commit()
+    assert trading.dspy_calls_today(day_key="2026-08-22") == 1
+
+    # The new day's first writer is the order counter, not the model counter.
+    trading.bump_orders_today(day_key="2026-08-23", now_ms=NOW)
+    conn.commit()
+    state = trading.runtime_state()
+    assert state is not None
+    assert state["day_key"] == "2026-08-23"
+    assert int(state["orders_today"]) == 1
+    assert int(state["dspy_calls_today"]) == 0
+    assert state["funnel"] == {}
+    assert trading.dspy_calls_today(day_key="2026-08-23") == 0

@@ -76,17 +76,25 @@ class TradingRepository:
         return dict(row) if row is not None else None
 
     def bump_dspy_calls(self, *, day_key: str, now_ms: int) -> int:
+        """Increment today's model-call budget. The day roll clears **every** per-day field.
+
+        Each counter used to roll only the fields it cared about, so whichever one happened to run
+        first on a new UTC day stamped the new `day_key` and left the others holding yesterday's
+        numbers under today's key — a model budget that could be exhausted before the first call.
+        """
+
         row = self.conn.execute(
             """
             UPDATE trading_runtime_state
-               SET dspy_calls_today = CASE WHEN day_key = %s THEN dspy_calls_today + 1 ELSE 1 END,
-                   orders_today = CASE WHEN day_key = %s THEN orders_today ELSE 0 END,
-                   day_key = %s,
-                   updated_at_ms = %s
+               SET dspy_calls_today = CASE WHEN day_key = %(day)s THEN dspy_calls_today + 1 ELSE 1 END,
+                   orders_today = CASE WHEN day_key = %(day)s THEN orders_today ELSE 0 END,
+                   funnel = CASE WHEN day_key = %(day)s THEN funnel ELSE '{}'::jsonb END,
+                   day_key = %(day)s,
+                   updated_at_ms = %(now)s
              WHERE id = 1
          RETURNING dspy_calls_today
             """,
-            (day_key, day_key, day_key, int(now_ms)),
+            {"day": day_key, "now": int(now_ms)},
         ).fetchone()
         return int(row["dspy_calls_today"]) if row is not None else 0
 
@@ -117,20 +125,20 @@ class TradingRepository:
                                 sum(v)::bigint AS v
                            FROM (
                              SELECT key AS k, value::text::bigint AS v
-                               FROM jsonb_each(CASE WHEN day_key = %s THEN funnel ELSE '{}'::jsonb END)
+                               FROM jsonb_each(CASE WHEN day_key = %(day)s THEN funnel ELSE '{}'::jsonb END)
                              UNION ALL
-                             SELECT key AS k, value::text::bigint AS v FROM jsonb_each(%s::jsonb)
+                             SELECT key AS k, value::text::bigint AS v FROM jsonb_each(%(counts)s::jsonb)
                            ) merged
                           GROUP BY k
                        ) totals
                    ),
-                   day_key = %s,
-                   orders_today = CASE WHEN day_key = %s THEN orders_today ELSE 0 END,
-                   dspy_calls_today = CASE WHEN day_key = %s THEN dspy_calls_today ELSE 0 END,
-                   updated_at_ms = %s
+                   orders_today = CASE WHEN day_key = %(day)s THEN orders_today ELSE 0 END,
+                   dspy_calls_today = CASE WHEN day_key = %(day)s THEN dspy_calls_today ELSE 0 END,
+                   day_key = %(day)s,
+                   updated_at_ms = %(now)s
              WHERE id = 1
             """,
-            (day_key, _dumps(payload), day_key, day_key, day_key, int(now_ms)),
+            {"day": day_key, "counts": _dumps(payload), "now": int(now_ms)},
         )
 
     def set_control(self, *, control: str, now_ms: int) -> None:
@@ -145,13 +153,15 @@ class TradingRepository:
         row = self.conn.execute(
             """
             UPDATE trading_runtime_state
-               SET orders_today = CASE WHEN day_key = %s THEN orders_today + 1 ELSE 1 END,
-                   day_key = %s,
-                   updated_at_ms = %s
+               SET orders_today = CASE WHEN day_key = %(day)s THEN orders_today + 1 ELSE 1 END,
+                   dspy_calls_today = CASE WHEN day_key = %(day)s THEN dspy_calls_today ELSE 0 END,
+                   funnel = CASE WHEN day_key = %(day)s THEN funnel ELSE '{}'::jsonb END,
+                   day_key = %(day)s,
+                   updated_at_ms = %(now)s
              WHERE id = 1
          RETURNING orders_today
             """,
-            (day_key, day_key, int(now_ms)),
+            {"day": day_key, "now": int(now_ms)},
         ).fetchone()
         return int(row["orders_today"]) if row is not None else 0
 
