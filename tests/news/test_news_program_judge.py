@@ -13,7 +13,10 @@ from tracefold.news.agents.program_metric import _component, bind_metric, metric
 
 _ACCEPTED = {
     "headline_zh": "BounceBit Chain 授权漏洞转移 2.865 亿枚 BB，决定永久停止运营",
-    "why_zh": "授权漏洞被利用转移 2.865 亿枚 BB 后链方宣布永久停运，BB 代币失去链上支撑，持仓者面临流动性与价值双重损失",
+    "why_zh": (
+        "授权漏洞被利用转移 2.865 亿枚 BB 后链方宣布永久停运，"
+        "BB 代币失去链上支撑，持仓者面临流动性与价值双重损失"
+    ),
 }
 # Same facts, same mechanism, different wording — the case that used to score zero.
 _REWORDED = {

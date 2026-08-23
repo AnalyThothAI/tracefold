@@ -140,7 +140,10 @@ class ReviewDraftBatch(BaseModel):
 class ReviewDrafter:
     """One bounded model call per Event. Reads nothing, writes nothing — it returns proposals."""
 
-    def __init__(self, lm: dspy.LM, *, max_tokens: int = 1_024) -> None:
+    # A rubric is a small object, but a reasoning model spends its output budget thinking first and only then
+    # emits the answer. At 1,024 every call came back with `text: ''` and the whole rubric stranded in
+    # `reasoning_content` — 6/6, then 4/4, reported as parse failures rather than as a budget problem.
+    def __init__(self, lm: dspy.LM, *, max_tokens: int = 16_384) -> None:
         self._lm = lm
         self._predict = dspy.Predict(
             _ReviewDraftSignature.with_instructions(_INSTRUCTION),

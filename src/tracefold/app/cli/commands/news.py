@@ -934,17 +934,47 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     return 0, {"ok": True, "data": summary}
 
 
+def _drafter_context(view: Mapping[str, Any]) -> Any:
+    """Rebuild the bounded TriageContext from a ReviewDesk evidence view.
+
+    Mirrors `CandidateEvaluator._build_context`: the focus fact is what the Program treats as the headline,
+    and the card carries the Gate facts.
+    """
+
+    from tracefold.news import TriageContext
+
+    evidence = dict(view.get("evidence") or {})
+    card = dict(evidence.get("card") or {})
+    focus = dict(evidence.get("focus_fact") or {})
+    card["focus_fact_id"] = focus.get("fact_id")
+    card["leader_title"] = focus.get("text") or card.get("leader_title")
+    card["leader_description"] = focus.get("context") or card.get("leader_description")
+    return TriageContext.from_card(
+        card,
+        watchlist=(),
+        told_rows=[],
+        now_ms=int(card.get("opened_at_ms") or 0),
+        queue_lag_ms=0,
+    )
+
+
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """Propose `news_review_v3` rubrics with gold. Read-only: the output is a file, never a review.
 
     `ReviewDesk.submit` appends an acceptance row unconditionally, so a draft written through that path would
     be accepted release evidence the instant it landed. The human stays the acceptance authority; this only
     turns "compose a judgment from scratch" into "confirm or reject one".
+
+    Tasks come from the ReviewDesk queue rather than from `baseline_episodes`, which starts at
+    `news_reviews` and therefore only ever returns Events that already have one — 170 against 6,186
+    unreviewed. Drafting is for the ones nobody has judged yet, and the queue is also what gives the drafter
+    the same task identity and the same evidence view a human reviewer opens.
     """
 
+    del stable
     from tracefold.app.repositories import postgres_connection
-    from tracefold.news import CandidateEvaluator, ClosedWindow, canonical_json
-    from tracefold.news.agents.program_baseline import build_baseline_cases, build_judge
+    from tracefold.news import DeskQuery, Principal, ReviewDesk, TaskRef, canonical_json
+    from tracefold.news.agents.program_baseline import build_judge
     from tracefold.news.agents.program_review_drafter import ReviewDrafter, build_draft_batch
     from tracefold.news.agents.semantic_program import render_model_evidence_json
 
@@ -953,43 +983,63 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     if not source.configured:
         raise ValueError("news_review_drafter_endpoint_not_configured")
 
-    window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
-    with postgres_connection(settings, role="serve") as conn:
-        evaluator = CandidateEvaluator(conn, stable=stable, judges={})
-        episodes = evaluator.baseline_episodes(window, cohort=False, limit=int(args.limit))
-    if not episodes:
-        return 2, {"ok": False, "error": {"code": "news_review_drafter_no_events_in_window"}}
-
-    cases = build_baseline_cases(episodes, action_source="recorded")
+    principal = Principal(subject="operator")
+    hours = max(1, round((int(args.to_ms) - int(args.from_ms)) / 3_600_000))
     tasks: list[dict[str, Any]] = []
-    for case, raw in zip(cases, episodes, strict=True):
-        episode = case.episode
-        if bool(args.skip_reviewed) and episode.accepted_review.get("should_push"):
-            continue
-        verdict = dict(episode.production_verdict or {})
-        tasks.append(
-            {
-                # The task identity a human needs for `review submit`; `evidence_version` comes from the
-                # snapshot the episode was projected from.
-                "task_id": f"evt.{raw.get('event_id') or ''}.{episode.context.event.evidence_version}",
-                "task_version": str(episode.context.event.evidence_sha256 or ""),
-                "event_id": str(raw.get("event_id") or ""),
-                "headline_zh": str(verdict.get("headline_zh") or ""),
-                "evidence_json": render_model_evidence_json(
-                    episode.context.event_semantics_payload(), predictor="event_semantics"
-                ),
-                "card_json": canonical_json(verdict),
-                "told_json": canonical_json(list(episode.policy_metric.get("told") or ())),
-            }
+    with postgres_connection(settings, role="serve") as conn:
+        desk = ReviewDesk(conn)
+        queue = desk.open(
+            DeskQuery(
+                view="queue",
+                mode="event",
+                status="pending" if bool(args.skip_reviewed) else "all",
+                hours=hours,
+                limit=min(100, int(args.limit)),
+            ),
+            principal=principal,
         )
+        for row in queue.get("tasks") or ():
+            if int(row.get("opened_at_ms") or 0) < int(args.from_ms):
+                continue
+            view = desk.evidence(
+                TaskRef(task_id=str(row["task_id"]), task_version=str(row["task_version"])), principal=principal
+            )
+            agent = dict(view.get("agent") or {})
+            verdict = dict(agent.get("verdict") or {})
+            if not verdict:
+                continue  # degraded or unjudged: there is no card to review
+            tasks.append(
+                {
+                    "task_id": str(row["task_id"]),
+                    "task_version": str(row["task_version"]),
+                    "event_id": str(row["event_id"]),
+                    "headline_zh": str(verdict.get("headline_zh") or ""),
+                    # The Program's own bounded projection, not the whole reviewer view. The full view
+                    # carries every de-duplicated member and all provenance; handing that to a reasoning
+                    # model made it think until it hit the output ceiling and returned nothing at all
+                    # (6/6 empty on the first attempt). This is also the fairer question: judge the card
+                    # against what the Program was actually shown.
+                    "evidence_json": render_model_evidence_json(
+                        _drafter_context(view).event_semantics_payload(), predictor="event_semantics"
+                    ),
+                    "card_json": canonical_json(
+                        {
+                            "verdict": verdict,
+                            "final_decision": agent.get("final_decision"),
+                            "override_rule": agent.get("override_rule"),
+                        }
+                    ),
+                    # The ledger the model was shown when it judged, so the drafter can check novelty against
+                    # the same history rather than against hindsight.
+                    "told_json": canonical_json(list((agent.get("trace") or {}).get("told") or ())),
+                }
+            )
     if not tasks:
         return 2, {"ok": False, "error": {"code": "news_review_drafter_nothing_to_draft"}}
 
     # Same endpoint plumbing as the judge: a drafting model is a metric-side tool, not a Program route.
     batch = build_draft_batch(
-        ReviewDrafter(
-            build_judge(model_name=str(args.model), api_key=source.api_key, api_base=source.base_url).lm
-        ),
+        ReviewDrafter(build_judge(model_name=str(args.model), api_key=source.api_key, api_base=source.base_url).lm),
         tasks,
     )
     payload = batch.model_dump(mode="json")
@@ -1007,7 +1057,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "drafted": len(drafted),
             "with_gold": len(with_gold),
             "failed": len(batch.drafts) - len(drafted),
-            "note": "proposals only — a human must accept each one through `tracefold news review submit`",
+            "note": "proposals only - a human must accept each one through `tracefold news review submit`",
         },
     }
 
