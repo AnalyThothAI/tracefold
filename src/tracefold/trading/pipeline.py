@@ -1,17 +1,5 @@
-"""The two Trading runners: one scans and decides, one reconciles. No queue, no second deployable.
-
-Both are bounded polling loops in the existing Workers root. They read their own work from PostgreSQL,
-call public venue REST with no database connection held, and write short transactions through the same
-one-slot **cold** admission the price loops use — the four News lane slots belong to the Deduper,
-Triage and the Deliverer, and a trading backlog must never compete for them.
-
-Failure is local by construction. A venue that times out, a model that will not answer, a blacklist
-read that fails: each is a named no-trade for that turn. None of them can affect News ingestion,
-judgment, delivery, readiness or shutdown.
-
-Ordering inside a turn is not cosmetic. Blacklist, class, listing, cooldown and the deterministic
-regime all run *before* any model or account work, so the cheap deny paths never spend a provider call
-— which is what keeps ~77 telemetry frames a day from becoming 77 model calls.
+"""Two bounded Trading runners over the Workers cold database lane, with no queue or second deployable.
+Provider/model failures stay local; injected projections keep the News/Trading handoff in App wiring.
 """
 
 from __future__ import annotations
@@ -105,6 +93,11 @@ _BAR_INTERVAL_MS = 300_000
 
 BarFetcher = Callable[[str, int, int], Awaitable[Sequence[Bar]]]
 BarFetcherFactory = Callable[[str], BarFetcher | None]
+_CandidateProjectionReader = Callable[
+    [Any, str, int, int, int, int],
+    tuple[Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]]],
+]
+_InstrumentProjectionReader = Callable[[Any, str, Sequence[str]], Sequence[Mapping[str, Any]]]
 
 
 def _uses_current_news_generation(raw: object) -> bool:
@@ -177,12 +170,7 @@ def _fuse(
     *,
     policy: EligibilityPolicy,
 ) -> _Plan | None:
-    """Reduce one underlying's newest OI frame and newest News verdict to at most one plan.
-
-    Whichever fired later is the primary, and the other is attached only when it falls inside its own
-    lookback and **at or before** the primary's trigger. Point-in-time in both directions: attaching a
-    counterpart from after the cutoff would put the future into a frozen manifest.
-    """
+    """Reduce one underlying to one plan; the counterpart must be inside lookback and before the cutoff."""
 
     if news is None:
         if oi is None:  # pragma: no cover - the caller only passes keys that have at least one side
@@ -240,6 +228,8 @@ class CandidateRunner:
         config: TradingConfig,
         bars: BarFetcherFactory,
         adapter: Any,
+        candidate_projection: _CandidateProjectionReader,
+        instrument_projection: _InstrumentProjectionReader,
         program: TradingDecisionProgram | None = None,
         clock: Callable[[], int] = _now_ms,
     ) -> None:
@@ -247,6 +237,8 @@ class CandidateRunner:
         self._config = config
         self._bars = bars
         self._adapter = adapter
+        self._candidate_projection = candidate_projection
+        self._instrument_projection = instrument_projection
         self._program = program
         self._clock = clock
         self._run_id = uuid.uuid4().hex
@@ -315,23 +307,25 @@ class CandidateRunner:
             except Exception:
                 log.exception("trading blacklist read failed")
                 blacklist = Blacklist.unavailable()
+            orders_today = trading.orders_today(day_key=_day_key(now))
+            dspy_calls_today = trading.dspy_calls_today(day_key=_day_key(now))
+            active = set(trading.active_underlyings())
+            oi_rows, news_rows = self._candidate_projection(
+                repos,
+                self._config.oi_metric_version,
+                now - window,
+                now,
+                elig.max_rank_in_window,
+                elig.min_oi_value_usd,
+            )
             return {
                 "control": runtime.get("control", "RUNNING"),
-                "orders_today": trading.orders_today(day_key=_day_key(now)),
-                "dspy_calls_today": trading.dspy_calls_today(day_key=_day_key(now)),
+                "orders_today": orders_today,
+                "dspy_calls_today": dspy_calls_today,
                 "blacklist": blacklist,
-                "active": set(trading.active_underlyings()),
-                "oi_rows": repos.news.trade_candidate_oi_rows(
-                    metric_version=self._config.oi_metric_version,
-                    after_created_at_ms=now - window,
-                    until_created_at_ms=now,
-                    max_rank_in_window=elig.max_rank_in_window,
-                    min_oi_value_usd=elig.min_oi_value_usd,
-                ),
-                "news_rows": repos.news.trade_candidate_news_rows(
-                    after_created_at_ms=now - window,
-                    until_created_at_ms=now,
-                ),
+                "active": active,
+                "oi_rows": oi_rows,
+                "news_rows": news_rows,
             }
 
         try:
@@ -370,11 +364,8 @@ class CandidateRunner:
             funnel.count("scan_skipped:max_open_underlyings")
             return []
 
-        # One pass per underlying, not two loops over two lists. The two-loop shape had a fatal
-        # property: the News loop skipped any underlying the OI loop had already planned, so
-        # `attach_oi` could only ever be reached for an underlying with no OI candidate — which is
-        # exactly when it must return None. `oi_lookback_seconds` was dead configuration and the News
-        # loop could emit nothing but `news_only`.
+        # One pass per underlying: two separate loops made `attach_oi` unreachable whenever OI existed,
+        # leaving `oi_lookback_seconds` dead and the News loop able to emit only `news_only`.
         newest_oi: dict[str, OiTradeCandidate] = {}
         for candidate in oi_all:
             key = underlying_key(candidate.base_symbol)
@@ -409,7 +400,7 @@ class CandidateRunner:
             lambda repos: (
                 repos.trading.has_source_key(primary_source_key=plan.source_key),
                 repos.trading.last_close_at_ms(underlying_key=underlying_key(plan.base_symbol)),
-                repos.news.trade_candidate_instrument(base_symbol=plan.base_symbol, venues=("binance.perp", "hl.perp")),
+                self._instrument_projection(repos, plan.base_symbol, ("binance.perp", "hl.perp")),
             ),
             timeout_seconds=_COLD_READ_TIMEOUT_SECONDS,
         )
@@ -443,16 +434,12 @@ class CandidateRunner:
             funnel.count(f"freeze_reject:regime_{regime.reason}")
             return False
         if plan.kind == "news_only" and regime.reason in _NEWS_ONLY_BLOCKING_REASONS:
-            # A News-only case has no OI frame and therefore no quadrant — rejecting it on UNCLEAR is
-            # what made the kind structurally unreachable. What it does *not* lose is the measured
-            # ceiling: a symbol that has already run 12% in the hour is the loss bucket whatever fired
-            # the case, and it still needs a price at the cutoff to have an entry at all.
+            # News-only has no OI quadrant, but still needs a cutoff price and obeys the measured
+            # chasing ceiling.
             funnel.count(f"freeze_reject:regime_{regime.reason}")
             return False
 
-        # The mark is the bar closed at or before the cutoff, not the newest bar fetched. The manifest
-        # is a point-in-time document stamped `cutoff_ms`; taking the freshest close would put a price
-        # from after the cutoff into the frozen evidence the model reads and the entry references.
+        # The mark is the bar closed at or before the cutoff; a fresher close would leak future evidence.
         anchor_bar = select_bar(
             bars, target_ms=plan.observed_at_ms, gap_tolerance_ms=self._config.regime.bar_gap_tolerance_ms
         )
@@ -1369,6 +1356,8 @@ def build_pipeline(
     db: Any,
     config: TradingConfig,
     bars: BarFetcherFactory,
+    candidate_projection: _CandidateProjectionReader,
+    instrument_projection: _InstrumentProjectionReader,
     program: TradingDecisionProgram | None = None,
     adapter: Any | None = None,
 ) -> TradingPipeline:
@@ -1379,7 +1368,15 @@ def build_pipeline(
             raise ValueError("trading_live_mode_requires_execution_adapter")
         adapter = PaperAdapter()
     return TradingPipeline(
-        candidate=CandidateRunner(db=db, config=config, bars=bars, adapter=adapter, program=program),
+        candidate=CandidateRunner(
+            db=db,
+            config=config,
+            bars=bars,
+            adapter=adapter,
+            candidate_projection=candidate_projection,
+            instrument_projection=instrument_projection,
+            program=program,
+        ),
         reconcile=ReconcileRunner(db=db, config=config, bars=bars, adapter=adapter),
     )
 

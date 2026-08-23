@@ -35,7 +35,7 @@
 | 一次语义判断 | 一个 Event 只有一次 Triage structured call、一个 verdict、一个首卡；旧 Analyst lane 不再运行。[架构](../ARCHITECTURE.md#product-flows) | 深度研究是下游新产品，不写 <code>news_verdicts(stage='deep')</code>，不发布 <code>verdict.deep</code>，不发 follow-up News 卡。 |
 | News 真相 | <code>news_items</code> 是 material facts；<code>news_events</code> 是可重建 read model；provider raw frame 不是事实。[架构](../ARCHITECTURE.md#truth-control-state-and-derived-state) | Trading Case 保存“读取到的 Event 快照 + hash + 时间”，不重新解释 raw frame 为另一份 News 真相。 |
 | 只读公开面 | News 公开面只有 <code>/api/news/feed</code>、<code>/api/news/events/{event_id}</code>、<code>/api/news/status</code>，read endpoint 不调用 provider/model、也不写事实。[合同](../CONTRACTS.md#news) | 使用拥有方 HTTP adapter；禁止 Trading 模块直连 Tracefold DB 或 package-private repository。 |
-| “已推送”的定义 | <code>outcome=pushed</code> 对应第一张卡 <code>delivery.state='sent'</code>，不是仅有 <code>final_decision=push|escalate</code>。[outcome](../../src/tracefold/news/outcome.py) [feed SQL](../../src/tracefold/news/repository.py) | 72 小时 corpus 从 <code>GET /api/news/feed?hours=72&outcome=pushed</code> 分页取得；失败送达和处理中不能冒充读者已收到。 |
+| “已推送”的定义 | <code>outcome=pushed</code> 对应第一张卡 <code>delivery.state='sent'</code>，不是仅有 <code>final_decision=push|escalate</code>。[outcome](../../src/tracefold/news/outcome.py) [feed SQL（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py) | 72 小时 corpus 从 <code>GET /api/news/feed?hours=72&outcome=pushed</code> 分页取得；失败送达和处理中不能冒充读者已收到。 |
 | 无价格反应面 | market-mark / price-reaction lane 已删除。[架构](../ARCHITECTURE.md#product-flows) | 价格、成交量、benchmark、spread、borrow、funding 来自外部 market adapter，绝不回写 News 表。 |
 | checkpoint 已删除 | 旧 LangGraph checkpoint 表从 Tracefold schema 硬删除，且从未在 runtime 使用。[migration](../../src/tracefold/platform/postgres/alembic/versions/20260818_0276_review_49_hard_cut.py) | Deep Agents checkpointer 和 Trading Case ledger 不能偷偷重建在当前 Tracefold schema；若落地，应是独立 deployable/owned store，除非先接受新的架构 Issue。 |
 
@@ -452,7 +452,7 @@ MRNA 是最重要的安全反例：wire headline 写的是 INTerpath-001 个性�
 - [Domain router](../agents/domain.md)
 - [News public Interface](../../src/tracefold/news/__init__.py)
 - [News outcome](../../src/tracefold/news/outcome.py)
-- [News feed repository](../../src/tracefold/news/repository.py)
+- [News feed repository（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py)
 - [LangGraph checkpoint hard cut](../../src/tracefold/platform/postgres/alembic/versions/20260818_0276_review_49_hard_cut.py)
 
 ### OpenTrade

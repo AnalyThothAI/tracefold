@@ -31,11 +31,9 @@ GRANDFATHERED_MODULE_LINES = {
     # PR4 moved the 823-line TriageConsumer atomically. Its body is deliberately untouched here;
     # later ownership PRs may reduce this final module exception without changing the live route.
     "news/pipeline/triage.py": 966,
-    "news/price_repository.py": 1048,
-    "news/repository.py": 2588,
     "news/review.py": 2456,
     "news/semantic_contract.py": 902,
-    "trading/pipeline.py": 1396,
+    "trading/pipeline.py": 1393,
     "trading/repository.py": 715,
 }
 
@@ -75,19 +73,19 @@ GRANDFATHERED_FUNCTION_LINES = {
     ("news/pipeline/triage.py", "TriageConsumer.handle"): 419,
     ("news/pipeline/triage.py", "TriageConsumer._judge_telemetry"): 126,
     ("news/eval/replay.py", "replay_hits"): 133,
-    ("news/pipeline/admission.py", "admit_item"): 261,
-    ("news/price_loops.py", "EventReactionLoop.turn"): 104,
+    ("news/pipeline/admission.py", "admit_item"): 250,
+    ("news/market_review/loops.py", "EventReactionLoop.turn"): 104,
     ("news/query_specs.py", "news_query_specs"): 145,
-    ("news/repository.py", "NewsRepository.insert_event"): 103,
-    ("news/repository.py", "NewsRepository.append_evidence_snapshot"): 178,
-    ("news/repository.py", "NewsRepository.status_snapshot"): 116,
+    ("news/storage/events.py", "EventStorage.insert_event"): 103,
+    ("news/storage/events.py", "EventStorage.append_evidence_snapshot"): 178,
+    ("news/storage/feed.py", "FeedStorage.status_snapshot"): 116,
     ("news/review.py", "ReviewDesk._proposals"): 101,
     ("news/review.py", "ReviewDesk._coverage"): 142,
     ("news/review.py", "ReviewDesk._submit_external"): 132,
     ("news/timeline.py", "event_timeline"): 194,
     ("news/triage_rules.py", "decide"): 103,
     ("platform/postgres/runtime_roles.py", "runtime_role_contract"): 154,
-    ("trading/pipeline.py", "CandidateRunner._freeze"): 107,
+    ("trading/pipeline.py", "CandidateRunner._freeze"): 103,
     ("trading/pipeline.py", "CandidateRunner._advance"): 144,
     ("trading/pipeline.py", "CandidateRunner._place"): 128,
     ("trading/pipeline.py", "ReconcileRunner._manage_open"): 122,
@@ -133,7 +131,6 @@ LEGACY_INTERNAL_ABSOLUTE_IMPORTS = {
     ("news/candidate_evaluator.py", "tracefold.news.SemanticJudge"),
     ("news/candidate_evaluator.py", "tracefold.news.SemanticJudgeError"),
     ("news/candidate_evaluator.py", "tracefold.news.TriageContext"),
-    ("news/query_specs.py", "tracefold.news.pricing"),
     ("news/recording_replay.py", "tracefold.news.SemanticJudgment"),
     ("news/recording_replay.py", "tracefold.news.TriageContext"),
 }
@@ -285,6 +282,51 @@ def test_news_pipeline_split_has_no_compatibility_aliases() -> None:
         "triage.py",
         "triage_audit.py",
     } <= {path.name for path in (SRC / "news" / "pipeline").glob("*.py")}
+
+
+def test_news_event_storage_and_market_review_splits_have_no_compatibility_aliases() -> None:
+    retired = {
+        "exact_atom_identity.py",
+        "facts.py",
+        "gate.py",
+        "identity.py",
+        "instruments.py",
+        "instruments_repository.py",
+        "minhash.py",
+        "price_loops.py",
+        "price_repository.py",
+        "pricing.py",
+        "repository.py",
+        "storyline.py",
+        "titles.py",
+        "tokens.py",
+    }
+    assert sorted(path.name for path in (SRC / "news").iterdir() if path.name in retired) == []
+    assert {
+        "facts.py",
+        "gate.py",
+        "identity.py",
+        "javascript_text.py",
+        "minhash.py",
+        "storyline.py",
+        "titles.py",
+        "tokens.py",
+    } == {path.name for path in (SRC / "news" / "events").glob("*.py") if path.name != "__init__.py"}
+    assert {"events.py", "decisions.py", "feed.py", "trade_projection.py"} <= {
+        path.name for path in (SRC / "news" / "storage").glob("*.py")
+    }
+    assert {"instruments.py", "pricing.py", "loops.py", "storage.py"} <= {
+        path.name for path in (SRC / "news" / "market_review").glob("*.py")
+    }
+
+
+def test_news_domain_modules_do_not_reach_through_repository_connections() -> None:
+    violations = [
+        path.relative_to(ROOT).as_posix()
+        for path in sorted((SRC / "news").rglob("*.py"))
+        if "repos.conn" in path.read_text(encoding="utf-8")
+    ]
+    assert violations == []
 
 
 def test_business_modules_do_not_add_package_root_back_imports() -> None:

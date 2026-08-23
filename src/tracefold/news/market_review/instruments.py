@@ -16,7 +16,7 @@ not a source of listing events either — OpenNews pushes those as frames and th
 41% of the frames and was removed in #89.
 
 Everything here is pure: fetching lives in ``tracefold.integrations.venues``, persistence in
-``InstrumentsRepository``.
+``market_review.instrument_storage.InstrumentsRepository``.
 """
 
 from __future__ import annotations

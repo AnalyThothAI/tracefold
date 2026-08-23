@@ -11,8 +11,9 @@ import pytest
 from tracefold.integrations.venues.binance import fetch_binance_instruments
 from tracefold.integrations.venues.errors import VenueExpectedError
 from tracefold.integrations.venues.us_reference import fetch_us_reference_instruments
-from tracefold.news.gate import GateInput, asset_class_of, evaluate_gate, grounded_assets
-from tracefold.news.instruments import (
+from tracefold.news.events.gate import GateInput, asset_class_of, evaluate_gate, grounded_assets
+from tracefold.news.events.storyline import final_storyline_key, storyline_key
+from tracefold.news.market_review.instruments import (
     ALIAS_SEEDS,
     classify,
     grounding_rollup,
@@ -22,7 +23,6 @@ from tracefold.news.instruments import (
     resolve_base_symbol,
     strip_quote_suffix,
 )
-from tracefold.news.storyline import final_storyline_key, storyline_key
 
 
 def test_normalize_strips_provider_prefix_and_dex_namespace() -> None:

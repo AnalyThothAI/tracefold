@@ -15,8 +15,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-from .instruments import NON_CRYPTO_CLASSES
-from .models import Admission, AssetClass, EngineType
+from ..market_review.instruments import NON_CRYPTO_CLASSES
+from ..models import Admission, AssetClass, EngineType
 
 GATE_LEXICON_VERSION: Final = "news_gate_lexicon_v2"
 

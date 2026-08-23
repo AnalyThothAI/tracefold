@@ -1,7 +1,6 @@
-"""Pinned JavaScript text semantics shared by News adapters and Brief code.
+"""Pinned JavaScript text semantics shared by News provider adapters and Event normalization.
 
-Story identity itself lives exclusively in ``story_projection``.  This module
-contains no similarity score or clustering behavior.
+This module contains no identity, similarity, or clustering behavior.
 """
 
 from __future__ import annotations

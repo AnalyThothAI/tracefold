@@ -23,7 +23,7 @@ from tracefold.integrations.venues.quotes import (
     fetch_binance_spot_quotes,
     fetch_hyperliquid_quotes,
 )
-from tracefold.news.pricing import (
+from tracefold.news.market_review.pricing import (
     CANDLE_INTERVAL_MS,
     HORIZON_MS,
     QUOTE_FRESH_MAX_AGE_MS,

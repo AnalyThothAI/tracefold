@@ -96,6 +96,47 @@ def test_trading_reads_only_trading_tables() -> None:
     assert offenders == []
 
 
+def test_trading_does_not_reach_through_the_app_repository_session_for_news() -> None:
+    offenders: list[str] = []
+    for path in _trading_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        repository_names = {"repos"}
+        changed = True
+        while changed:
+            changed = False
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    continue
+                value = node.value
+                if not isinstance(value, ast.Name) or value.id not in repository_names:
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id not in repository_names:
+                        repository_names.add(target.id)
+                        changed = True
+        for node in ast.walk(tree):
+            direct = (
+                isinstance(node, ast.Attribute)
+                and node.attr == "news"
+                and isinstance(node.value, ast.Name)
+                and node.value.id in repository_names
+            )
+            dynamic = (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id in repository_names
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "news"
+            )
+            if direct or dynamic:
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert offenders == []
+
+
 def test_news_never_reads_or_writes_a_trading_table() -> None:
     offenders: list[str] = []
     for path in NEWS.rglob("*.py"):
@@ -150,7 +191,13 @@ def test_a_live_mode_without_an_execution_adapter_refuses_to_compose() -> None:
     from tracefold.trading import TradingConfig, build_pipeline
 
     with pytest.raises(ValueError, match="trading_live_mode_requires_execution_adapter"):
-        build_pipeline(db=object(), config=TradingConfig(mode="live_bounded"), bars=lambda _venue: None)
+        build_pipeline(
+            db=object(),
+            config=TradingConfig(mode="live_bounded"),
+            bars=lambda _venue: None,
+            candidate_projection=lambda *_: ((), ()),
+            instrument_projection=lambda *_: (),
+        )
 
 
 def test_the_regime_band_must_have_a_ceiling() -> None:
@@ -167,7 +214,13 @@ def test_the_regime_band_must_have_a_ceiling() -> None:
 def test_the_pipeline_exposes_exactly_two_runners() -> None:
     from tracefold.trading import TradingConfig, build_pipeline
 
-    pipeline = build_pipeline(db=object(), config=TradingConfig(), bars=lambda _venue: None)
+    pipeline = build_pipeline(
+        db=object(),
+        config=TradingConfig(),
+        bars=lambda _venue: None,
+        candidate_projection=lambda *_: ((), ()),
+        instrument_projection=lambda *_: (),
+    )
     assert [name for name, _ in pipeline.runners()] == ["trading-candidate", "trading-reconcile"]
 
 

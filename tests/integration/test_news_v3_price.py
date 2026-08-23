@@ -14,8 +14,8 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.instruments import Instrument
-from tracefold.news.pricing import (
+from tracefold.news.market_review.instruments import Instrument
+from tracefold.news.market_review.pricing import (
     HORIZON_MS,
     QUOTE_FRESH_MAX_AGE_MS,
     REACTION_METRIC_VERSION,

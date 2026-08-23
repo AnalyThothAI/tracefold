@@ -1,4 +1,4 @@
-from tracefold.news.exact_atom_identity import describe_exact_atom
+from tracefold.news.events.identity import describe_exact_atom
 
 
 def test_exact_atom_identity_normalizes_presentation_noise_but_preserves_numbers() -> None:

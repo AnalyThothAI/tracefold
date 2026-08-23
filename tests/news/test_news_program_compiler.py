@@ -799,7 +799,7 @@ def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
     assert set(source_units) == {
         "tracefold.news.agents.program_metric",
         "tracefold.news.models.base_symbol",
-        "tracefold.news.storyline",
+        "tracefold.news.events.storyline",
         "tracefold.news.triage_rules",
     }
     assert receipt["implementation"]["helper_source_root_sha256"] == canonical_sha(source_units)

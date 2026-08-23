@@ -32,9 +32,9 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from math import isfinite
 from typing import Any
 
+from .market_review.pricing import parse_price
 from .oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
-from .pricing import parse_price
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"(?<!\w)@[\w]{1,32}")

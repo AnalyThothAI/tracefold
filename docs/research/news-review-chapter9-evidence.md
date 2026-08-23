@@ -7,7 +7,7 @@
 ## 0. 结论先行
 
 1. **Tracefold 不是缺一个“会反思的 Agent”，而是缺一个能评价并发布 Triage prompt 候选的离线 instrument。** 当前 `decide()` / `news.policy` 已有按时间顺序重建 ledger 的 release gate，而且代码主动声明“冻结 verdict 的 gate 只能评 policy，不能评 prompt”；这是最明确的架构断点。证据：`src/tracefold/news/eval/harness.py:1-19,285-344,433-471`。
-2. **当前“命中复盘”是观察面，不是学习闭环。** 它把未送达事件按 1H 绝对波动排队，并明确“不证明因果、不写 label”；方向命中则只是 bullish 对应正收益、bearish 对应负收益。这个克制是正确的，但它不能告诉系统该改 Gate、Triage prompt、`decide()` 还是 delivery。证据：`src/tracefold/news/price_repository.py:557-626,652-657,801-845`；`web/src/features/news/ui/review/NewsReviewPage.tsx:23-32,74-110`。
+2. **当前“命中复盘”是观察面，不是学习闭环。** 它把未送达事件按 1H 绝对波动排队，并明确“不证明因果、不写 label”；方向命中则只是 bullish 对应正收益、bearish 对应负收益。这个克制是正确的，但它不能告诉系统该改 Gate、Triage prompt、`decide()` 还是 delivery。证据：[`src/tracefold/news/price_repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/price_repository.py)；`web/src/features/news/ui/review/NewsReviewPage.tsx:23-32,74-110`。
 3. **Chapter 9 的成熟内核不是“自动改 prompt”，而是在线执行与离线进化分离、外部验证、最小候选、保留集/边界集/安全集、灰度和回滚。** “反思”只能提出假设，不能自证。证据：`/Users/massis/Documents/Code/ai-agent-book/book/chapter9.md:19-29,102-124,265-306,321-341,382-390`。
 4. **书中代码应当当作机制骨架，不应直接复制成生产系统。** 本地证据诚实保留了小样本、未复现与负迁移：9-1 只有 8 个虚构样本且一个维度失败召回为 0；9-2 的知识文档组反而从 50% 降到 25%；9-3 只有 5 个保留例和 5 个边界例，而且 Coding Agent 的提示里已经写死目标规则。证据：`/Users/massis/Documents/Code/ai-agent-book/chapter9/README.md:19-35`；`/Users/massis/Documents/Code/ai-agent-book/chapter9/trajectory-verifier/validation/latest.json:18-26,4635-4671,4725`；`/Users/massis/Documents/Code/ai-agent-book/chapter9/gaia-experience/validation/latest.json:2587-2610,9663-9667`；`/Users/massis/Documents/Code/ai-agent-book/chapter9/prompt-auto-optimization/airline_env.py:247-321`；`/Users/massis/Documents/Code/ai-agent-book/chapter9/prompt-auto-optimization/coding_agent.py:96-106`。
 5. **遵循 KISS 的正确方向是保留单次 Triage 调用，不恢复 Analyst lane，不在生产流量上增加“复盘 Agent”。** 先补：多维人工 rubric、prompt 双臂重跑、候选 manifest、独立发布门、shadow/canary。OpenAI 的官方 eval 指南也建议以任务特定、真实分布的数据持续评价，自动评分须以人工校准，并优先用分类/成对比较而非含糊总分；复杂 Agent 架构应由 eval 证明其必要性。[OpenAI Evaluation Best Practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices)
@@ -111,7 +111,7 @@ Reflexion 展示了把语言反思放入 episodic memory、用任务反馈改善
 
 ### 3.3 Price Review 的定位是克制且正确的
 
-Reaction 指标版本化、可重建，固定 5 分钟 candle 对齐、gap tolerance 和 1H/4H horizon；页面先报 coverage，再报命中率；potential miss 只是一条人工检查队列。证据：`src/tracefold/news/pricing.py:1-41`；`src/tracefold/news/price_repository.py:557-626,652-657`；`web/src/features/news/ui/review/NewsReviewPage.tsx:23-32,74-110`。
+Reaction 指标版本化、可重建，固定 5 分钟 candle 对齐、gap tolerance 和 1H/4H horizon；页面先报 coverage，再报命中率；potential miss 只是一条人工检查队列。证据：[`src/tracefold/news/pricing.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/pricing.py#L1-L41)；[`src/tracefold/news/price_repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/price_repository.py)；`web/src/features/news/ui/review/NewsReviewPage.tsx:23-32,74-110`。
 
 这里的问题不是实现“太玩具”，而是若把它升级为自动 reward 就会越界。经典事件研究要用相对正常表现的 **abnormal return** 来估计事件影响，而不是把事件后的 raw return 直接等同于因果；即便做了 event study，也仍需处理共同消息、市场因子、事件聚集等识别问题。[MacKinlay, *Event Studies in Economics and Finance*（作者机构 PDF）](https://www.bu.edu/econ/files/2011/01/MacKinlay-1996-Event-Studies-in-Economics-and-Finance.pdf)
 
@@ -131,7 +131,7 @@ SHA pin 证明“是什么版本”，不证明“版本更好”。当前源码
 
 ### P0-B：Operator label 是单标签 outcome，不是可归因 rubric
 
-目前 label payload 的核心是 `label + note`，同一 operator/event/version 会被纠正覆盖，并支持没有 Event 的 miss；这使 recall 上界可被观察，是优点。证据：`src/tracefold/news/repository.py:815-856`。
+目前 label payload 的核心是 `label + note`，同一 operator/event/version 会被纠正覆盖，并支持没有 Event 的 miss；这使 recall 上界可被观察，是优点。证据：[`src/tracefold/news/repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L815-L856)。
 
 但离线评价把 `good / wrong_direction / late / missed / must_push` 全部折成 `moved`，把 `noise / dup` 折成 `flat`。因此：
 
@@ -169,17 +169,17 @@ SHA pin 证明“是什么版本”，不证明“版本更好”。当前源码
 
 ### P1-B：价格 raw sign 是弱代理，不能成为方向或“该不该推”的真值
 
-当前 direction section 直接计数 `bps_1h > 0` / `< 0`，再将 bullish-up 或 bearish-down 视为 hit；潜在漏推按 `abs(bps_1h)` 排序。证据：`src/tracefold/news/price_repository.py:579-626,801-845`。
+当前 direction section 直接计数 `bps_1h > 0` / `< 0`，再将 bullish-up 或 bearish-down 视为 hit；潜在漏推按 `abs(bps_1h)` 排序。证据：[`src/tracefold/news/price_repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/price_repository.py)。
 
 它适合回答“事件之后市场怎么走、哪些 held 值得人看”，不适合回答“模型方向为什么错”或“事件造成了走势”。最低限度也应先引入相对 BTC/指数/行业的 abnormal-return 观察、事件重叠标记与 dead zone；但即使如此，它仍只能作为 reviewer evidence，不自动写 operator label。事件研究的一手方法边界见 [MacKinlay](https://www.bu.edu/econ/files/2011/01/MacKinlay-1996-Event-Studies-in-Economics-and-Finance.pdf)。
 
 ### P1-C：模型 `confidence` 尚不是校准信号
 
-schema 要求 0–1 confidence，但代码搜索显示它主要被存储/展示；`decide()` 没有用它作门槛。证据：`src/tracefold/news/models.py:106-113`；`src/tracefold/news/repository.py:1404`；`src/tracefold/news/timeline.py:168`；`web/src/features/news/ui/detail/NewsEventDetailPage.tsx:305`。这比盲目用自报信心更安全；下一步不是“接上阈值”，而是先用人工 rubric 画 reliability/calibration，再决定它是否有信息增益。Chapter 9 也明确说模型自报 confidence 不能充当批准门槛：`/Users/massis/Documents/Code/ai-agent-book/book/chapter9.md:321-329`。
+schema 要求 0–1 confidence，但代码搜索显示它主要被存储/展示；`decide()` 没有用它作门槛。证据：`src/tracefold/news/models.py:106-113`；[`src/tracefold/news/repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L1404)；`src/tracefold/news/timeline.py:168`；`web/src/features/news/ui/detail/NewsEventDetailPage.tsx:305`。这比盲目用自报信心更安全；下一步不是“接上阈值”，而是先用人工 rubric 画 reliability/calibration，再决定它是否有信息增益。Chapter 9 也明确说模型自报 confidence 不能充当批准门槛：`/Users/massis/Documents/Code/ai-agent-book/book/chapter9.md:321-329`。
 
 ### P1-D：架构文档与实际代码已有漂移
 
-`docs/ARCHITECTURE.md` 的 learning-plane 段仍写着“没有 price-reaction lane”，而当前 `pricing.py`、`price_repository.py` 和 `NewsReviewPage.tsx` 已完整实现 Reaction/Review；同一段对 label/learning surface 的描述也落后于当前 `must_push` 与 release gate。证据：`docs/ARCHITECTURE.md:530-549`；`src/tracefold/news/pricing.py:1-41`；`src/tracefold/news/price_repository.py:519-657`；`web/src/features/news/ui/review/NewsReviewPage.tsx:23-110`。
+`docs/ARCHITECTURE.md` 的 learning-plane 段仍写着“没有 price-reaction lane”，而当前 `pricing.py`、`price_repository.py` 和 `NewsReviewPage.tsx` 已完整实现 Reaction/Review；同一段对 label/learning surface 的描述也落后于当前 `must_push` 与 release gate。证据：`docs/ARCHITECTURE.md:530-549`；[`src/tracefold/news/pricing.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/pricing.py#L1-L41)；[`src/tracefold/news/price_repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/price_repository.py)；`web/src/features/news/ui/review/NewsReviewPage.tsx:23-110`。
 
 这不是运行 bug，但会让后续 Agent 从错误的架构地图出发，继续把“学习面”和“价格观察面”混在一起。持续进化首先要求 evidence contract 与 owner map 可追溯；因此在实现新链路前，应把 canonical architecture 对齐实际代码，但不要把 Price Review 改写成 learning truth。
 
@@ -206,7 +206,7 @@ schema 要求 0–1 confidence，但代码搜索显示它主要被存储/展示�
 }
 ```
 
-该 shape 是建议，不是要求立即迁移表。现有 JSONB 与 correctable label identity 已能承载版本化 payload：`src/tracefold/news/repository.py:815-856`。
+该 shape 是建议，不是要求立即迁移表。现有 JSONB 与 correctable label identity 已能承载版本化 payload：[`src/tracefold/news/repository.py`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L815-L856)。
 
 建议的 News rubric：
 

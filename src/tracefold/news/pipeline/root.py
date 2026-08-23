@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..price_loops import EventReactionLoop, QuoteSnapshotLoop
+from ..market_review.loops import EventReactionLoop, QuoteSnapshotLoop
 from .admission import DeduperConsumer
 from .delivery import DelivererConsumer
 from .maintenance import InstrumentSnapshotLoop, JanitorLoop

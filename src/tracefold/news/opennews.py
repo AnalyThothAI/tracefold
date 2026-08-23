@@ -9,7 +9,7 @@ from math import isfinite
 from typing import Any, Literal, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .identity import (
+from .events.javascript_text import (
     collapse_javascript_whitespace,
     javascript_trim,
     utf16_length,

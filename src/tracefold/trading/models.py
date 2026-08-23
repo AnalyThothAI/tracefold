@@ -138,7 +138,7 @@ class _Frozen(BaseModel):
 class Bar(_Frozen):
     """One closed interval from a public venue REST catalogue.
 
-    Trading keeps its own shape rather than importing `tracefold.news.pricing.Candle`: the dependency
+    Trading keeps its own shape rather than importing `tracefold.news.market_review.pricing.Candle`: the dependency
     rule is `trading -> platform`, and the composition root converts. `close_at_ms` is the exclusive end.
     """
 

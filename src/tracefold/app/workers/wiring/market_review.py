@@ -16,8 +16,8 @@ from tracefold.integrations.venues import (
     fetch_hyperliquid_quotes,
     fetch_us_reference_instruments,
 )
+from tracefold.news.market_review.loops import EventReactionLoop, QuoteSnapshotLoop
 from tracefold.news.pipeline.maintenance import InstrumentSnapshotLoop
-from tracefold.news.price_loops import EventReactionLoop, QuoteSnapshotLoop
 
 
 def _price_venue_enabled(settings: Any, source_key: str) -> bool:

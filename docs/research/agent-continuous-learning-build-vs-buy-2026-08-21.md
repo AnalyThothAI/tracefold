@@ -232,7 +232,7 @@ GEPA 是唯一值得为“候选生成”保留接口位置的库，但现在就
 | eventless miss | 通用 dataset row 可存文本 | Tracefold 需要把“pipeline 根本没建 Event”作为 recall 上界证据，而不是伪造 Event |
 | 不得 promote | 平台可能把 experiment/prompt/release 放同一 UI | ReviewDesk 必须只收 judgment，不创建 candidate、不改 threshold、不发布 |
 
-当前代码证据：旧 label 按确定性 key `ON CONFLICT DO UPDATE`，是“可改的一行”，不是 append-only judgment。[`repository.insert_label()`](../../src/tracefold/news/repository.py#L815-L856)；详情页按钮只复制 CLI 命令，API 读而不写。[`NewsEventDetailPage.tsx`](../../web/src/features/news/ui/detail/NewsEventDetailPage.tsx#L422-L462)。因此平台 UI 不是当前断点的最短修复，自建一个窄 `ReviewDesk` HTTP/CLI seam 才是。
+当前代码证据：旧 label 按确定性 key `ON CONFLICT DO UPDATE`，是“可改的一行”，不是 append-only judgment。[`repository.insert_label()`（PR5 前证据）](https://github.com/AnalyThothAI/tracefold/blob/91acc7378d3d81512bd035934e87e2ec6650f334/src/tracefold/news/repository.py#L815-L856)；详情页按钮只复制 CLI 命令，API 读而不写。[`NewsEventDetailPage.tsx`](../../web/src/features/news/ui/detail/NewsEventDetailPage.tsx#L422-L462)。因此平台 UI 不是当前断点的最短修复，自建一个窄 `ReviewDesk` HTTP/CLI seam 才是。
 
 ### 7.2 CandidateEvaluator：build 编排，Promptfoo 仅可插拔
 

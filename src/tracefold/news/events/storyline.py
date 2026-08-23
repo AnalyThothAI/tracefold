@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Final
 
-from .instruments import resolve_base_symbol
+from ..market_review.instruments import resolve_base_symbol
 
 STORYLINE_LEXICON_VERSION: Final = "news_storyline_lexicon_v2"
 

@@ -36,10 +36,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     ),
     "app.composition": (
         "tracefold.news.agents.semantic_program",
-        "tracefold.news.instruments_repository",
-        "tracefold.news.price_repository",
+        "tracefold.news.market_review.storage",
         "tracefold.news.query_specs",
-        "tracefold.news.repository",
+        "tracefold.news.storage.root",
         "tracefold.trading.repository",
     ),
     "app.workers": (
@@ -47,11 +46,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.agents.semantic_program",
         "tracefold.news.canary",
         "tracefold.news.pipeline",
-        "tracefold.news.price_loops",
+        "tracefold.news.market_review.loops",
     ),
     "integrations.opennews": ("tracefold.news.opennews",),
     "integrations.rabbitmq": ("tracefold.news.bus",),
-    "integrations.venues": ("tracefold.news.instruments", "tracefold.news.pricing"),
+    "integrations.venues": ("tracefold.news.market_review.instruments", "tracefold.news.market_review.pricing"),
 }
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge
 # would have to be named here; no News module may write another business package's tables.
@@ -220,8 +219,8 @@ def test_private_business_import_rules_follow_consumer_families() -> None:
         "tracefold.app.cli.commands.news_learning",
         "tracefold.news.agents.program_baseline",
     )
-    assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.repository")
-    assert not _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.repository")
+    assert _private_import_allowed("tracefold.app.repository_session", "tracefold.news.storage.root")
+    assert not _private_import_allowed("tracefold.app.http.routes.review", "tracefold.news.storage.root")
 
 
 def test_backend_has_only_the_expected_package_shape() -> None:

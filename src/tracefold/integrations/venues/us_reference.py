@@ -21,7 +21,7 @@ from typing import Final
 
 import httpx
 
-from tracefold.news.instruments import Instrument, is_valid_symbol
+from tracefold.news.market_review.instruments import Instrument, is_valid_symbol
 
 from .errors import VenueExpectedError
 

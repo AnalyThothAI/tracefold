@@ -20,8 +20,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from .artifact_identity import canonical_json, canonical_sha
+from .market_review.storage import MarketReviewCohort, PriceRepository
 from .outcome import decision_zh
-from .price_repository import MarketReviewCohort, PriceRepository
 from .semantic_contract import (
     TRADE_AFFECTED_MARKET_ORDER,
     TRADE_CHANNEL_ORDER,

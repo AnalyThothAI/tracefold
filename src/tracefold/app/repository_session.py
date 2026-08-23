@@ -8,9 +8,8 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from tracefold.news.instruments_repository import InstrumentsRepository
-from tracefold.news.price_repository import PriceRepository
-from tracefold.news.repository import NewsRepository
+from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.postgres.postgres_client import (
     connect_postgres,
     require_transaction,
