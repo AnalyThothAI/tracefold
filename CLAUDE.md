@@ -184,7 +184,8 @@ quality-given-an-answer and the failure-as-zero lower bound are published side
 by side (29 unanswered cases had turned a 0.482 lower bound into a printed
 0.587), `review_label_distribution` is corpus metadata while
 `prediction_dimensions` is what the candidate did, and `timeliness` is
-delivery-owned and never scored against EventSemantics. Policy is frozen into
+delivery-owned: it leaves the EventSemantics score and stays visible under the
+label distribution's `delivery` group. Policy is frozen into
 each scored example (`policy_values` + `policy_sha256`, verified) instead of
 imported from `DEFAULT_POLICY`, and a missing or tampered policy raises rather
 than scoring. The recorded calibration is pinned to a checked-in redacted corpus

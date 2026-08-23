@@ -68,8 +68,15 @@ _CARD_WEIGHT = 0.15
 # distribution under its real owner; giving the model a freshness judgment needs a typed output and a gold
 # contract of its own, not a borrowed one.
 _SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude")
-_DELIVERY_DIMENSIONS = ("timeliness",)
 _CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
+_DELIVERY_DIMENSIONS = ("timeliness",)
+# Who owns each rubric dimension. The label distribution is grouped by this, so a reader can see that
+# `timeliness` was labelled without it looking like something a Predictor was scored on.
+DIMENSION_OWNERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("event_semantics", _SEMANTICS_DIMENSIONS),
+    ("reader_card", _CARD_DIMENSIONS),
+    ("delivery", _DELIVERY_DIMENSIONS),
+)
 # A sentinel, because `None` is a legitimate absence of a reviewer opinion and must not read as "gold = null".
 _NO_GOLD: Final = object()
 # `news_review_v3` gold keys, per dimension. `why_support`/`why_value`/`headline_fidelity`/`factual_fidelity`/
@@ -714,6 +721,7 @@ retrieval_receipt = _retrieval_receipt
 
 
 __all__ = [
+    "DIMENSION_OWNERS",
     "METRIC_ID",
     "DevelopmentEpisode",
     "accepted_review_metric",

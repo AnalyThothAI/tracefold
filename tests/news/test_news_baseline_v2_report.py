@@ -204,11 +204,37 @@ def test_prediction_dimensions_move_with_predictions_while_labels_do_not() -> No
     assert kept.prediction_dimensions["magnitude"]["retention_hit"] == 1
 
 
-def test_timeliness_never_reaches_event_semantics_scoring() -> None:
-    """It is delivery-owned, and `TriageVerdict` has no timeliness field — scoring it here handed
-    EventSemantics feedback about latency it cannot repair."""
+def test_timeliness_is_delivery_owned_and_still_visible_as_a_label() -> None:
+    """It is delivery-owned, and `TriageVerdict` has no timeliness field — scoring it against
+    EventSemantics handed a Predictor feedback about latency it cannot repair.
+
+    Dropping it from the report would have been the other half of the same mistake: operators keep labelling
+    it, so it stays in the corpus distribution under `delivery` where it cannot be read as something a
+    Predictor was graded on.
+    """
 
     assert "timeliness" not in _SEMANTICS_DIMENSIONS
+    labelled = _case(1)
+    dimensions = {**labelled.episode.accepted_review["dimensions"], "timeliness": "fail"}
+    review = {**labelled.episode.accepted_review, "dimensions": dimensions}
+    report = _report(
+        [
+            BaselineCase(
+                episode=labelled.episode.model_copy(update={"accepted_review": review}),
+                recorded_action="push",
+            )
+        ]
+    )
+    assert report.review_label_distribution["delivery"]["timeliness"] == {
+        "pass": 0,
+        "fail": 1,
+        "n": 1,
+        "pass_rate": 0.0,
+    }
+    assert "timeliness" not in report.review_label_distribution["event_semantics"]
+    assert "timeliness" not in report.review_label_distribution.get("reader_card", {})
+    # No prediction exists to score against it, so it never appears in the candidate's own table.
+    assert "timeliness" not in report.prediction_dimensions
 
 
 def test_report_identity_pins_program_policy_and_corpus() -> None:

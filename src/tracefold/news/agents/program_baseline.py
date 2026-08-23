@@ -44,8 +44,7 @@ from ..models import TriageVerdict
 from ..semantic_contract import TriageContext
 from .program_judge import CardEquivalenceJudge
 from .program_metric import (
-    _CARD_DIMENSIONS,
-    _SEMANTICS_DIMENSIONS,
+    DIMENSION_OWNERS,
     METRIC_ID,
     DevelopmentEpisode,
     bind_metric,
@@ -176,18 +175,34 @@ def _stored_prediction(case: BaselineCase) -> dspy.Prediction:
 
 
 def _dimension_tally(cases: Sequence[BaselineCase]) -> dict[str, Any]:
-    tally: dict[str, dict[str, int]] = {}
+    """What reviewers labelled, grouped by who owns the dimension.
+
+    Grouped rather than flat because #150's Stage D is an *ownership* repair: `timeliness` is delivery-owned
+    and no longer scored against EventSemantics, but dropping it from the report would hide that operators
+    keep labelling it. Under `delivery` it stays visible as corpus metadata and can never be mistaken for
+    something a Predictor was graded on.
+    """
+
+    tally: dict[str, dict[str, dict[str, int]]] = {}
     for case in cases:
         dimensions = dict(case.episode.accepted_review.get("dimensions") or {})
-        for name in (*_SEMANTICS_DIMENSIONS, *_CARD_DIMENSIONS):
-            label = str(dimensions.get(name) or "")
-            if label not in {"pass", "fail"}:
-                continue
-            row = tally.setdefault(name, {"pass": 0, "fail": 0})
-            row[label] += 1
+        for owner, names in DIMENSION_OWNERS:
+            for name in names:
+                label = str(dimensions.get(name) or "")
+                if label not in {"pass", "fail"}:
+                    continue
+                row = tally.setdefault(owner, {}).setdefault(name, {"pass": 0, "fail": 0})
+                row[label] += 1
     return {
-        name: {**row, "n": row["pass"] + row["fail"], "pass_rate": round(row["pass"] / (row["pass"] + row["fail"]), 6)}
-        for name, row in sorted(tally.items())
+        owner: {
+            name: {
+                **row,
+                "n": row["pass"] + row["fail"],
+                "pass_rate": round(row["pass"] / (row["pass"] + row["fail"]), 6),
+            }
+            for name, row in sorted(rows.items())
+        }
+        for owner, rows in sorted(tally.items())
     }
 
 

@@ -621,8 +621,10 @@ evaluator's seed/replicate convention. `population` carries
 requested/answered/failure counts, `failures.by_code` keeps each error code
 separate, and `action_confusion` splits agreement by `must_push`,
 `should_push`, `must_hold` and `should_hold`. `review_label_distribution` is
-corpus metadata (what reviewers labelled); `prediction_dimensions` is what this
-candidate did — gold hit/miss, accepted-retention hit/miss including #148
+corpus metadata (what reviewers labelled), grouped by the dimension's owner —
+`event_semantics`, `reader_card` and `delivery`, which is where `timeliness`
+lives now that it no longer reaches EventSemantics scoring;
+`prediction_dimensions` is what this candidate did — gold hit/miss, accepted-retention hit/miss including #148
 semantic-equivalence decisions, the ungolded-change proxy and not-labelled — and
 moves when predictions move. `runtime_live` adds `route` (primary/fallback,
 call and physical-call counts, input/output tokens, known provider cost and

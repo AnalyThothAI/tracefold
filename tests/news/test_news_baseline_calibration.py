@@ -82,12 +82,16 @@ def test_timeliness_is_labelled_by_reviewers_but_never_scored(report: Any) -> No
     """#150 Stage D: `timeliness` is delivery-owned. It stays visible as corpus metadata and leaves the
     EventSemantics score, so the number above is not the one #143 published."""
 
+    # `not_applicable` is the usual answer and is not a label, so only pass/fail is counted — the same rule
+    # every other dimension follows.
     labelled = sum(
         1
         for episode in load_calibration_corpus()["episodes"]
-        if "timeliness" in (episode["accepted_review"].get("dimensions") or {})
+        if (episode["accepted_review"].get("dimensions") or {}).get("timeliness") in {"pass", "fail"}
     )
     assert labelled > 0, "the corpus must still contain the labels, or this test proves nothing"
-    assert "timeliness" not in report.review_label_distribution
+    assert report.review_label_distribution["delivery"]["timeliness"]["n"] == labelled
+    assert "timeliness" not in report.review_label_distribution["event_semantics"]
+    assert "timeliness" not in report.review_label_distribution["reader_card"]
     assert "timeliness" not in report.prediction_dimensions
     assert all("timeliness" not in dict(case.dimension_outcomes) for case in report.cases)

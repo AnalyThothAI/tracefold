@@ -245,7 +245,10 @@ the first, so 29 provider failures turned a 0.482 lower bound into a published
 0.587 by disappearing from the mean. `review_label_distribution` is what
 reviewers labelled and is byte-identical however predictions change;
 `prediction_dimensions` is what the candidate did. Read the second when
-comparing two runs.
+comparing two runs. The label distribution is grouped by dimension owner, so
+`timeliness` is visible under `delivery` — operators keep labelling it, and it
+is no longer scored against EventSemantics, which has no field that could
+repair it.
 
 Policy travels with the example. `policy_metric.policy_values` plus
 `policy_sha256` is the exact arm policy, verified before `decide()` replays it,
