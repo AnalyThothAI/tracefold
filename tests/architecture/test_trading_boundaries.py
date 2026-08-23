@@ -129,7 +129,7 @@ def test_the_public_interface_is_the_package_root() -> None:
 
 
 def test_a_disabled_trading_context_constructs_nothing() -> None:
-    from tracefold.app.workers import _wire_trading_pipeline
+    from tracefold.app.workers.wiring.trading import _wire_trading_pipeline
     from tracefold.platform.config.settings import Settings
 
     settings = Settings()
@@ -187,7 +187,7 @@ def test_a_trading_wiring_failure_never_takes_the_workers_process_down() -> None
     `_wire_components` into the fatal path and crash-looped the process — News never started either.
     """
 
-    from tracefold.app import workers as workers_module
+    from tracefold.app.workers.wiring import trading as workers_module
 
     calls: list[str] = []
 
@@ -213,7 +213,7 @@ def test_the_bar_fetcher_reads_the_same_venue_switch_the_router_reads() -> None:
     with nothing naming the contradiction.
     """
 
-    from tracefold.app.workers import _trading_bar_fetcher
+    from tracefold.app.workers.wiring.trading import _trading_bar_fetcher
     from tracefold.platform.config.settings import Settings
 
     settings = Settings.model_validate(

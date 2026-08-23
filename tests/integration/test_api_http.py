@@ -14,7 +14,7 @@ from tests.postgres_test_utils import (
 )
 from tracefold.app.http.app import create_app
 from tracefold.app.http.responses import _json
-from tracefold.app.repositories import repositories_for_connection
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.platform.config.settings import NewsSettings, Settings

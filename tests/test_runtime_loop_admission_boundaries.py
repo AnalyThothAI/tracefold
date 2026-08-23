@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from psycopg import OperationalError
 
-from tracefold.app import workers as workers_module
+from tracefold.app.workers import root as workers_module
 from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
 
 

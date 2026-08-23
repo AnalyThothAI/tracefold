@@ -88,7 +88,7 @@ class _ManifestBarrierPipeline(_TurnPipeline):
         from psycopg import connect
         from psycopg.rows import dict_row
 
-        from tracefold.app.repositories import repositories_for_connection
+        from tracefold.app.repository_session import repositories_for_connection
 
         conn = connect(self._dsn, row_factory=dict_row)
         try:
@@ -132,7 +132,8 @@ def _components(
 
 async def _main() -> None:
     arguments = _arguments()
-    from tracefold.app import workers
+    from tracefold.app.workers import root as workers
+    from tracefold.app.workers.wiring import components as workers_wiring
     from tracefold.platform.config.settings import Settings
 
     workers._WORKER_INTERNAL_PORT = arguments.port
@@ -194,7 +195,7 @@ async def _main() -> None:
         workers._runtime_transition = shutdown_runtime_transition
 
     if arguments.mode == "control_native_timeout":
-        from tracefold.app import database as database_module
+        from tracefold.app import worker_database as database_module
 
         database_module._WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS = 0.1
         database_module._WORKER_TRANSACTION_TIMEOUT_MARGIN_SECONDS = -0.9
@@ -325,7 +326,7 @@ async def _main() -> None:
         async def wire_news_pipeline(**_kwargs: Any) -> tuple[None, _ManifestBarrierPipeline]:
             return None, _ManifestBarrierPipeline(dsn=arguments.dsn, release_gate=release_gate)
 
-        workers._wire_news_pipeline = wire_news_pipeline
+        workers_wiring._wire_news_pipeline = wire_news_pipeline
     else:
         workers._wire_components = wire_components
     settings = Settings(

@@ -12,7 +12,7 @@ def test_runtime_code_has_no_default_or_nested_thread_pools():
         source = path.read_text(encoding="utf-8")
         relative = str(path.relative_to(ROOT))
         owns_explicit_executor = relative in {
-            "src/tracefold/app/database.py",
+            "src/tracefold/app/worker_database.py",
             "src/tracefold/app/workers/capabilities.py",
             "src/tracefold/app/http/ws.py",
         }

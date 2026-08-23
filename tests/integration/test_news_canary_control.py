@@ -10,9 +10,10 @@ from tests.integration.test_news_review_desk import NOW, _open_event
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tracefold.app import learning_runtime, workers
-from tracefold.app.database import WorkerDatabase
-from tracefold.app.repositories import repositories_for_connection
+from tracefold.app import learning_runtime
+from tracefold.app.repository_session import repositories_for_connection
+from tracefold.app.worker_database import WorkerDatabase
+from tracefold.app.workers.wiring import news as workers
 from tracefold.news import apply_canary_control, parse_canary_control
 from tracefold.news.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,

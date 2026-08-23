@@ -1,3 +1,5 @@
+"""Application-owned repository session composition for News, Price, and Trading."""
+
 from __future__ import annotations
 
 import time

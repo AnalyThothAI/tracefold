@@ -6,9 +6,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from tracefold.app.database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.http.exceptions import ApiUnavailable
-from tracefold.app.repositories import RepositorySession
+from tracefold.app.repository_session import RepositorySession
+from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
 from tracefold.platform.config.settings import Settings
 from tracefold.platform.observability import TelemetryRegistry

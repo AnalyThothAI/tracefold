@@ -186,7 +186,8 @@ tracefold.platform
   bounded resource primitives, docker host translation
 
 tracefold.app
-  composition, repositories, the worker root package (`app/workers/`), HTTP, and CLI
+  Serve/Workers database composition, `repository_session.py`, HTTP, CLI,
+  and the Workers lifecycle root plus capability wiring (`app/workers/`)
 ```
 
 Each business package root is its public Python interface: `tracefold.news`
@@ -197,9 +198,9 @@ subpackages may change without creating a repository-wide import graph.
 The application composition root and concrete provider adapters are private
 implementation collaborators, not product consumers. Where one of them must
 construct a repository, schedule an internal worker, or reuse the exact pinned
-parser/composer implementation behind a public protocol, its package-private
-import is enumerated exactly by the architecture harness. Those named seams are
-not re-exported, compatibility interfaces, or available to feature callers;
+parser/composer implementation behind a public protocol, its consumer family
+and allowed contract family are bounded by the architecture harness. Those
+seams are not re-exported, compatibility interfaces, or available to feature callers;
 all public models and protocols still come from the package root.
 
 The dependency direction is:
@@ -218,8 +219,9 @@ Trading can consume News truth without a cross-domain import or a reach-through
 read.
 
 Business packages never import `tracefold.app`, provider integrations, or each
-other. Transport adapters do not own business rules. The Workers root and its
-private TaskGroup loops live in `tracefold.app.workers`; platform exposes only
+other. Transport adapters do not own business rules. `app/workers/root.py` owns
+only process lifecycle and TaskGroup coordination; concrete News, Market Review,
+and Trading construction lives under `app/workers/wiring/`. Platform exposes only
 bounded resource contracts. Queue state machines and
 read-model behavior stay with their business owner. These rules are executable
 in `tests/architecture/test_backend_boundaries.py`.
@@ -476,7 +478,7 @@ on startup and after any gap.
 Ownership: `tracefold.integrations.rabbitmq` is the only module that imports
 `aio_pika`; `tracefold.news.bus` owns the envelope, routing keys, error classes,
 and Publisher/Consumer protocols. `tracefold.news.consumers` holds the six
-consumers wired by `tracefold.app.workers._wire_news_pipeline`; they run as
+consumers wired by `tracefold.app.workers.wiring.news`; they run as
 asyncio tasks in the single Workers process but coordinate only through the
 broker and PostgreSQL keys, so they can be scaled out without code changes.
 News consumers use their own four-slot database lane
