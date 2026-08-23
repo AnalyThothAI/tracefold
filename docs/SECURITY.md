@@ -14,8 +14,18 @@
   observations, evaluation reports, and deployment receipts carry no
   credentials, but may carry provider news content, prompts and reader-facing
   copy. Treat exported copies as business data: keep them outside the
-  repository and do not commit them. The database copies are content-addressed
-  audit evidence and append-only. Program artifact exports are canonical JSON
+  repository and do not commit them. One narrow exception, and only on these
+  terms: a *structure-only* derivative may be committed as a test fixture when
+  every string outside an explicit structural allowlist — rubric labels, verdict
+  enums, symbols, content hashes, opaque identifiers, stable keys — has been
+  replaced by a content hash, and a test scans the committed bytes for the shape
+  of human language rather than for a list of key names. The allowlist direction
+  is the requirement, not a preference: `tests/support/baseline_calibration.py`
+  first enumerated the text keys instead and shipped 60 reader-facing Chinese
+  cards under a `title_zh` nobody had listed, guarded by an assertion that was a
+  tautology for a key-based redactor. Anything richer than that — raw evidence,
+  prompts, cards, reviewer prose — stays out of the repository. The database
+  copies are content-addressed audit evidence and append-only. Program artifact exports are canonical JSON
   but can contain proprietary instructions, demonstrations and reviewed News
   examples, so “no credentials” does not make them public. Automated
   proposal/optimizer paths may never
