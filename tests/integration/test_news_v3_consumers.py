@@ -26,8 +26,10 @@ from tracefold.news.bus import (
     new_trace_id,
     now_ms,
 )
-from tracefold.news.consumers import DeduperConsumer, DelivererConsumer, TriageConsumer
 from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION
+from tracefold.news.pipeline.admission import DeduperConsumer
+from tracefold.news.pipeline.delivery import DelivererConsumer
+from tracefold.news.pipeline.triage import TriageConsumer
 
 pytestmark = pytest.mark.integration
 

@@ -15,7 +15,9 @@ import inspect
 from pathlib import Path
 
 from tracefold.news import opennews
-from tracefold.news.consumers import DeduperConsumer, OpenNewsReceiver, RecoveryRunner
+from tracefold.news.pipeline.admission import DeduperConsumer
+from tracefold.news.pipeline.receiver import OpenNewsReceiver
+from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.platform.config.models import NewsSettings
 
 ROOT = Path(__file__).resolve().parents[2]

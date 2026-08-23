@@ -31,8 +31,8 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.probe import _create_workers_probe_app
 from tracefold.app.workers.root import _ProbeState
 from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
-from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import Settings
 from tracefold.platform.postgres.runtime_roles import (
     RUNTIME_LOGIN_ROLES,

@@ -49,10 +49,10 @@ from tracefold.news.agents.semantic_program import (
     load_stable_program_artifact,
 )
 from tracefold.news.bus import MAX_TRANSIENT_ATTEMPTS, RETRY_TTL_MS
-from tracefold.news.consumers import NewsPipeline
 from tracefold.news.delivery import render_first_card
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.models import ReaderReceipt, TriageVerdict
+from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.triage_rules import GateFacts
 from tracefold.news.triage_rules import decide as news_decide
 from tracefold.platform.config.models import Settings

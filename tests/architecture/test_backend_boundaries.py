@@ -46,7 +46,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.agents.programs.candidates",
         "tracefold.news.agents.semantic_program",
         "tracefold.news.canary",
-        "tracefold.news.consumers",
+        "tracefold.news.pipeline",
+        "tracefold.news.price_loops",
     ),
     "integrations.opennews": ("tracefold.news.opennews",),
     "integrations.rabbitmq": ("tracefold.news.bus",),
@@ -145,7 +146,7 @@ def _imports(path: Path) -> set[str]:
                 continue
             imports.add(module)
             # ``from tracefold.news import consumers`` imports the private submodule just as surely
-            # as ``import tracefold.news.consumers``. Record that edge without mistaking public
+            # as ``import tracefold.news.pipeline.root``. Record that edge without mistaking public
             # symbols exported by the package root for modules.
             imports.update(
                 candidate

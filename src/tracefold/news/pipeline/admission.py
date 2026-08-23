@@ -1,26 +1,35 @@
-"""Deduper transaction: Item upsert -> title/identity -> exact/near Event assignment -> Gate -> storyline key.
-
-Runs inside one worker_session transaction; the caller publishes the returned event message after commit.
-"""
+"""Atomic Item-to-Event admission and the broker admission consumer."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .exact_atom_identity import event_family, event_window_ms
-from .facts import FactUnit, extract_fact_units
-from .gate import GateInput, GateVerdict, evaluate_gate
-from .minhash import band_keys, minhash_signature
-from .models import EVENT_IDENTITY_VERSION
-from .oi_signals import parse_oi_signal
-from .opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent
-from .storyline import preliminary_storyline_key
-from .titles import description_after_title, extract_title
-from .tokens import comparison_tokens, jaccard
+from ..bus import (
+    Q_RAW,
+    RK_EVENT,
+    BusMessage,
+    DeferError,
+    PermanentError,
+    TransientError,
+    now_ms,
+)
+from ..exact_atom_identity import event_family, event_window_ms
+from ..facts import FactUnit, extract_fact_units
+from ..gate import GateInput, GateVerdict, evaluate_gate
+from ..minhash import band_keys, minhash_signature
+from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
+from ..oi_signals import parse_oi_signal
+from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
+from ..storyline import preliminary_storyline_key
+from ..titles import description_after_title, extract_title
+from ..tokens import comparison_tokens, jaccard
+from .runtime import _Db
 
 NEAR_DUPLICATE_THRESHOLD = 0.55
 # How far back an exact *artifact* match may reach (#154). The family windows bound how long two texts stay
@@ -29,6 +38,14 @@ NEAR_DUPLICATE_THRESHOLD = 0.55
 ARTIFACT_WINDOW_MS = 7 * 24 * 60 * 60_000
 _TICKER_RE = re.compile(r"\$([A-Z]{2,6})\b")
 _NUMBER_RE = re.compile(r"(\d[\d,]*\.?\d*)\s*(%|bn|billion|m|million|k|bps|tn|trillion)?", re.IGNORECASE)
+
+# Admissions a stronger member may not overwrite. `telemetry_deterministic` is decided by the
+# provider's strategy id, and upgrading it to `candidate` would route a fixed-format frame back into
+# the model call the admission exists to avoid (#137).
+_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "telemetry_deterministic", "recovery"})
+_STRONG_MEMBER_SCORE = 80.0
+
+_INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,13 +414,6 @@ def admit_item(
     )
 
 
-# Admissions a stronger member may not overwrite. `telemetry_deterministic` is decided by the
-# provider's strategy id, and upgrading it to `candidate` would route a fixed-format frame back into
-# the model call the admission exists to avoid (#137).
-_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "telemetry_deterministic", "recovery"})
-_STRONG_MEMBER_SCORE = 80.0
-
-
 def _member_result(
     repos: Any,
     *,
@@ -501,12 +511,106 @@ def _reconstruct_text(event: OpenNewsEvent) -> str:
     return "<br/>".join(p for p in parts if p)
 
 
+async def publish_event(bus: Any, db: _Db, *, event_id: str, family: str, queue_priority: str, trace_id: str) -> None:
+    """Publish one candidate Event to Triage and mark it published (commit-then-publish outbox step)."""
+
+    stamp = now_ms()
+    await bus.publish(
+        BusMessage(
+            kind="event",
+            message_id=f"event:{event_id}",
+            routing_key=RK_EVENT.format(family=family, queue_priority=queue_priority),
+            payload={"event_id": event_id},
+            trace_id=trace_id,
+            occurred_at_ms=stamp,
+            priority=5 if queue_priority == "high" else 0,
+        )
+    )
+    with contextlib.suppress(TransientError, DeferError):
+        await db.tx(
+            "news_event_mark_published",
+            lambda repos: repos.news.mark_event_published(event_id=event_id, now_ms=stamp),
+            timeout_seconds=1.0,
+        )
+
+
+class DeduperConsumer:
+    def __init__(
+        self,
+        *,
+        bus: Any,
+        db: Any,
+        watchlist_symbols: frozenset[str],
+        suppress_low_signal: bool = False,
+    ) -> None:
+        self.bus = bus
+        self.db = _Db(db)
+        self.watchlist_symbols = watchlist_symbols
+        self.suppress_low_signal = bool(suppress_low_signal)
+        # #89: symbol -> instrument_class, which is how the Gate tells a stock headline from a coin headline. The
+        # universe changes about once a day, so it is cached per consumer.
+        self._classes: Mapping[str, str] | None = None
+        self._classes_at_ms = 0
+
+    def _current_instrument_classes(self, repos: Any, *, now: int) -> Mapping[str, str] | None:
+        """Cached instrument classes for the Gate, refreshed at most once per `_INSTRUMENT_CACHE_TTL_MS`."""
+
+        if self._classes is not None and now - self._classes_at_ms < _INSTRUMENT_CACHE_TTL_MS:
+            return self._classes
+        classes = repos.instruments.instrument_classes()
+        self._classes_at_ms = now
+        # An empty universe means no snapshot has landed: fall back to the prefix heuristic, not to "no assets".
+        self._classes = classes or None
+        return self._classes
+
+    async def run(self, *, stop_event: asyncio.Event) -> None:
+        await self.bus.consume(Q_RAW, self.handle, prefetch=1, stop_event=stop_event)
+
+    async def handle(self, message: BusMessage) -> None:
+        params = message.payload.get("params")
+        if not isinstance(params, Mapping):
+            raise PermanentError("news_raw_params_missing")
+        event = parse_opennews_message({"method": "strategy.triggered", "params": dict(params)})
+        if event is None:
+            return  # malformed frame: settle silently
+        ingest_mode = "recovery" if str(message.payload.get("ingest_mode")) == "recovery" else "live"
+        observed = int(message.payload.get("observed_at_ms") or message.occurred_at_ms or now_ms())
+        stamp = now_ms()
+        batch = await self.db.tx(
+            "news_deduper_admit",
+            lambda repos: admit_frame(
+                repos,
+                event=event,
+                ingest_mode=ingest_mode,
+                observed_at_ms=observed,
+                trace_id=message.trace_id,
+                watchlist_symbols=self.watchlist_symbols,
+                now_ms=stamp,
+                suppress_low_signal=self.suppress_low_signal,
+                instrument_classes=self._current_instrument_classes(repos, now=stamp),
+            ),
+            timeout_seconds=5.0,
+        )
+        for result in batch.results:
+            if result.event_created and result.admission in ADMITTED_ADMISSIONS:
+                await publish_event(
+                    self.bus,
+                    self.db,
+                    event_id=result.event_id,
+                    family=result.family,
+                    queue_priority=result.gate.queue_priority if result.gate else "normal",
+                    trace_id=message.trace_id,
+                )
+
+
 __all__ = [
     "EVENT_IDENTITY_VERSION",
     "NEAR_DUPLICATE_THRESHOLD",
     "AdmitBatchResult",
     "AdmitResult",
+    "DeduperConsumer",
     "admit_frame",
     "admit_item",
     "item_identity",
+    "publish_event",
 ]

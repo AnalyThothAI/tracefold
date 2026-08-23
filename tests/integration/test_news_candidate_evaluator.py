@@ -77,8 +77,8 @@ from tracefold.news.canary import (
     CANARY_ROLLING_PROFILE_SHA,
     CANARY_SELECTOR_VERSION,
 )
-from tracefold.news.events import admit_item
 from tracefold.news.opennews import parse_opennews_message
+from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.review import REVIEW_RUBRIC_VERSION
 from tracefold.news.triage_rules import DEFAULT_POLICY
 

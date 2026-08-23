@@ -24,15 +24,13 @@ from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenN
 from tracefold.news import CandidateManifest, DecidePolicy, OiPolicy
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.canary import CanaryRuntimeArm
-from tracefold.news.consumers import (
-    DeduperConsumer,
-    DelivererConsumer,
-    JanitorLoop,
-    NewsPipeline,
-    OpenNewsReceiver,
-    RecoveryRunner,
-    TriageConsumer,
-)
+from tracefold.news.pipeline.admission import DeduperConsumer
+from tracefold.news.pipeline.delivery import DelivererConsumer
+from tracefold.news.pipeline.maintenance import JanitorLoop
+from tracefold.news.pipeline.receiver import OpenNewsReceiver
+from tracefold.news.pipeline.recovery import RecoveryRunner
+from tracefold.news.pipeline.root import NewsPipeline
+from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.runtime_identity import runtime_identity
 

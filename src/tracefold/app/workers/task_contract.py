@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from tracefold.news.consumers import NewsPipeline
+from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.trading import TradingPipeline
 
 WORKERS_PROBE_TASK_NAME = "workers-probe"
