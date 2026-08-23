@@ -136,20 +136,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     learning_baseline.add_argument("--from-ms", type=_nonnegative_int, required=True)
     learning_baseline.add_argument("--to-ms", type=_positive_int, required=True)
-    # `replay` (re-run the graph over a recorded Predictor corpus) is deliberately absent: the harness supports
-    # the mode, but nothing here builds the recording corpus yet, so exposing it would run a live provider
-    # while the flag said otherwise. A mode that quietly does something else is worse than a missing one.
+    # `live` is gone, not aliased. It answered two different questions under one name: the graph GEPA
+    # optimizes, and the production route's reliability. Keeping an alias would keep the ambiguity alive.
     learning_baseline.add_argument(
         "--mode",
-        choices=("recorded", "live"),
+        choices=("recorded", "compile_live", "runtime_live"),
         default="recorded",
-        help="recorded: score the persisted verdict, no model call; live: re-run the Program against the provider",
+        help=(
+            "recorded: score the persisted verdict against the action that shipped, no model call; "
+            "compile_live: the graph GEPA optimizes, one task endpoint, no fallback/retry/deadline/circuit; "
+            "runtime_live: the configured four-slot production Program route (excludes consumer transaction, "
+            "advisory lock, stale re-ask, degraded wire card, broker and delivery)"
+        ),
     )
     learning_baseline.add_argument(
         "--action-source",
         choices=("recorded", "policy"),
         default="",
-        help="recorded: the action that shipped; policy: re-run decide(). Defaults to recorded for --mode recorded",
+        help=(
+            "recorded: the action that shipped, valid only with --mode recorded; policy: re-run decide(), "
+            "required by the live modes. Defaults to the only valid value for the chosen mode"
+        ),
+    )
+    learning_baseline.add_argument(
+        "--max-model-cases",
+        type=int,
+        default=0,
+        help=(
+            "required by --mode compile_live and runtime_live: the most cases allowed to reach a provider. "
+            "runtime_live spends 2-6 real calls per case, sequentially, on the endpoints that also serve "
+            "production Triage"
+        ),
     )
     learning_baseline.add_argument(
         "--all-cohorts",

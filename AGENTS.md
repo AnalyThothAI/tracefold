@@ -170,9 +170,29 @@ Artifact; the optimizer can never accept, deploy, promote, or edit the trusted
 root. `news learning baseline` (#143) is the cold, read-only `dspy.Evaluate`
 step that has to come first: same graph, same `decide()`, and literally the same
 `accepted_review_metric` object the optimizer maximizes, with no dataset,
-sandbox, tariff, container or write of any kind. `--mode recorded` scores the
-persisted verdict against the action that actually shipped and spends no
-provider call. `dspy.GEPA` only rewrites instructions and never writes demos, so
+sandbox, tariff, container or write of any kind, and one `serve` connection that
+closes before the first model call. #150 split its one ambiguous `live` mode
+into three that answer three questions: `recorded` scores the persisted verdict
+against the action that shipped and spends no provider call, `compile_live` runs
+exactly the graph GEPA optimizes on one task endpoint with no fallback, retry,
+deadline or breaker, and `runtime_live` runs the configured four-slot production
+Program route sequentially in `(opened_at_ms, case_id)` order so circuit state
+is a property of the run — while naming the consumer transaction, advisory lock,
+stale re-ask, degraded wire card, broker and delivery it still excludes. The v2
+report has no single ambiguous scalar: a provider failure is an outcome, so
+quality-given-an-answer and the failure-as-zero lower bound are published side
+by side (29 unanswered cases had turned a 0.482 lower bound into a printed
+0.587), `review_label_distribution` is corpus metadata while
+`prediction_dimensions` is what the candidate did, a hard-gated case keeps its
+action and its per-dimension outcomes so a zero enters every denominator rather
+than leaving it, and `timeliness` is delivery-owned: it leaves the EventSemantics
+score and stays visible under the label distribution's `not_scored` group. Policy is frozen into
+each scored example (`policy_values` + `policy_sha256`, verified) instead of
+imported from `DEFAULT_POLICY`, and a missing or tampered policy raises rather
+than scoring. The recorded calibration is pinned to a checked-in redacted corpus
+(`0.888426 / n=243`) rather than to the live database, because a number that
+moves when the corpus grows cannot prove that metric wiring is unchanged.
+`dspy.GEPA` only rewrites instructions and never writes demos, so
 DemoBank stays empty under this optimizer by construction; the reflection
 endpoint is configured separately from the task endpoint with its own 32k-token,
 temperature-1.0 budget, and a code-owned proposer shows the reflection model the

@@ -17,6 +17,26 @@ from tracefold.news.agents.program_metric import DevelopmentEpisode, accepted_re
 from tracefold.news.agents.semantic_program import load_stable_program_artifact
 from tracefold.news.review import EventRubricSubmission
 
+
+def _frozen_policy_projection() -> dict[str, object]:
+    """The exact-policy fields `_production_action` now requires of any policy-scored example.
+
+    The metric no longer falls back to `DEFAULT_POLICY`: an example that cannot prove which policy scored it
+    is a different question wearing the same name. Tests carry the defaults explicitly, so a fixture that
+    forgets them fails loudly instead of quietly scoring the wrong arm.
+    """
+
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.triage_rules import DEFAULT_POLICY
+
+    values = DEFAULT_POLICY.as_dict()
+    return {
+        "policy_version": "news_triage_policy_v8",
+        "policy_values": values,
+        "policy_sha256": canonical_sha(values),
+    }
+
+
 _VERDICT: dict[str, Any] = {
     "event_type": "product",
     "assets": [{"symbol": "TSLA", "role": "primary"}],
@@ -93,7 +113,12 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
             "expected_correction": "",
         },
         production_verdict=dict(_VERDICT),
-        policy_metric={"gate": {"grounded_assets": ["TSLA"]}, "storyline": {"title": "Tesla"}, "seen": []},
+        policy_metric={
+            "gate": {"grounded_assets": ["TSLA"]},
+            "storyline": {"title": "Tesla"},
+            "seen": [],
+            **_frozen_policy_projection(),
+        },
     )
 
 
@@ -174,8 +199,10 @@ def test_recorded_mode_scores_the_shipped_action_not_todays_policy() -> None:
     )
     assert held.cases[0].action == "drop" and pushed.cases[0].action == "push"
     # The reviewer wanted this pushed, so only the pushed arm satisfies the action component.
-    assert pushed.score > held.score
-    assert pushed.mode == "recorded" and pushed.provider_failure_n == 0
+    assert pushed.scores["case_macro_answered"] > held.scores["case_macro_answered"]
+    assert pushed.mode == "recorded" and pushed.population["failure_n"] == 0
+    # With nothing unanswered the two means are the same number; they may only diverge on a failure.
+    assert pushed.scores["case_macro_answered"] == pushed.scores["case_macro_failure_as_zero"]
 
 
 def test_baseline_report_is_content_addressable_and_names_its_subject() -> None:

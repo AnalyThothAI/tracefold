@@ -143,12 +143,18 @@ uv run tracefold news review submit TASK --version TASK_VERSION \
 
 # Measure before you change anything. This is the only command in the learning
 # plane that needs no dataset, sandbox, tariff or container, and it writes
-# nothing. `--mode recorded` scores the verdict production actually persisted
-# against the action it actually shipped, so it costs no provider call and stays
-# reproducible across policy revisions; `--mode live` re-runs the Program and is
-# the only mode that can measure a Prompt or RulePack change.
+# nothing. Three modes, three different questions — pick the one you actually
+# mean (#150 removed the ambiguous `live`):
+#   recorded     — the persisted verdict against the action that shipped. No
+#                  provider call, reproducible across policy revisions.
+#   compile_live — the graph GEPA optimizes, on one task endpoint. No fallback,
+#                  no fast retry, no deadline, no circuit breaker.
+#   runtime_live — the configured four-slot production Program route, run
+#                  sequentially so circuit state means something.
 uv run tracefold news learning baseline --from-ms START --to-ms END \
   --mode recorded --out /tmp/baseline.json
+uv run tracefold news learning baseline --from-ms START --to-ms END \
+  --mode runtime_live --max-model-cases 30 --out /tmp/baseline-runtime.json
 
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out /tmp/development.json
@@ -225,6 +231,51 @@ single-slot GPU that serves production Triage. A code-owned
 `RulePackAwareProposer` puts the full rendered instruction in front of the
 reflection model as read-only context; before it, `<curr_param>` was one space
 and the model was rewriting 8.5 KB of rules it could not see.
+
+`learning baseline` answers one question per mode, and #150 exists because the
+first version answered two under one name. `compile_live` is the optimizer's
+object; `runtime_live` is the reader's. The same broken ReaderCard answer is
+fatal to the first and survivable on the second, so their failure rates are not
+comparable and the report says which contract it executed in `execution_scope`.
+
+The report publishes no single ambiguous number. `case_macro_answered` is
+quality given an answer; `case_macro_failure_as_zero` is the end-to-end lower
+bound; they differ by exactly the unanswered cases. The v1 report computed only
+the first, so 29 provider failures turned a 0.482 lower bound into a published
+0.587 by disappearing from the mean. `review_label_distribution` is what
+reviewers labelled and is byte-identical however predictions change;
+`prediction_dimensions` is what the candidate did. Read the second when
+comparing two runs. The label distribution is grouped by which Predictor's
+score each label feeds, so `timeliness` is visible under `not_scored` —
+operators keep labelling it, and it is no longer scored against EventSemantics,
+which has no field that could repair it. A hard-gated case keeps its action and
+its per-dimension outcomes, so its zero enters every denominator: leaving them
+out let a candidate with more hard failures publish a higher hit rate.
+
+Policy travels with the example. `policy_metric.policy_values` plus
+`policy_sha256` is the exact arm policy, verified before `decide()` replays it,
+and a missing or tampered policy raises rather than scoring — a corpus that
+cannot verify its own policy is a construction bug, and scoring it 0 would blame
+the Program for it.
+
+The recorded calibration lives in
+`tests/fixtures/news_baseline_calibration_v1.json.gz`, not in the operator's
+database. #143 published `0.896373 / n=162`; a day later the same command
+answered `0.888426 / n=243` because #148 added 81 reviews. Nothing was wrong,
+but a check that moves with the data cannot prove the *wiring* is unchanged.
+Every string in the fixture outside an explicit structural allowlist is redacted
+through an equality-preserving map (`tests/support/baseline_calibration.py`),
+which keeps every comparison the recorded metric makes — all equality — while
+publishing no provider or reviewer prose. The allowlist direction matters: the
+first version listed the *text* keys instead and shipped 60 reader-facing
+Chinese cards under `title_zh`, guarded by a test that re-ran the redactor and
+compared, which is a tautology for a key-based redactor. The guard now scans the
+shipped bytes for the shape of human language. The fixture is it is therefore valid for `--mode recorded` only, because `decide()`'s
+character-bigram duplicate check would read different neighbours out of redacted
+headlines. Regenerate it with
+`uv run python -m tests.support.baseline_calibration <path>` and update the
+pinned numbers in `tests/news/test_news_baseline_calibration.py` in the same
+commit.
 
 The tariff is not optional bookkeeping. Neither the local llama.cpp endpoint nor
 DeepSeek returns a price litellm can resolve, so `provider_cost_microusd` is

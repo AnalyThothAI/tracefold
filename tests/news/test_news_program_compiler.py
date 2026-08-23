@@ -35,6 +35,25 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.semantic_contract import ToldLedgerEntry
 
 
+def _frozen_policy_projection() -> dict[str, object]:
+    """The exact-policy fields `_production_action` now requires of any policy-scored example.
+
+    The metric no longer falls back to `DEFAULT_POLICY`: an example that cannot prove which policy scored it
+    is a different question wearing the same name. Tests carry the defaults explicitly, so a fixture that
+    forgets them fails loudly instead of quietly scoring the wrong arm.
+    """
+
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.triage_rules import DEFAULT_POLICY
+
+    values = DEFAULT_POLICY.as_dict()
+    return {
+        "policy_version": "news_triage_policy_v8",
+        "policy_values": values,
+        "policy_sha256": canonical_sha(values),
+    }
+
+
 class _MeteredFakeLM:
     cache = False
     num_retries = 0
@@ -149,6 +168,7 @@ def _request(*, max_calls: int = 4) -> CompileRequest:
                     },
                     "storyline": {"title": "Issuer files a material update", "family": "filing"},
                     "seen": [],
+                    **_frozen_policy_projection(),
                 },
                 "accepted_review": {
                     "should_push": should_push,
@@ -448,6 +468,7 @@ def _metric_gold(**overrides: Any) -> Any:
             "storyline": {"title": "Issuer files a material update", "family": "filing"},
             "seen": [],
             "told": [],
+            **_frozen_policy_projection(),
         },
     }
     for key, value in overrides.items():
@@ -492,7 +513,7 @@ def test_metric_scores_the_production_action_not_the_models_intent() -> None:
     ]
     gold = _metric_gold(
         accepted_review={"should_push": "should_hold"},
-        policy_metric={"told": told, "seen": [dict(told[0], direction="bullish")]},
+        policy_metric={"told": told, "seen": [dict(told[0], direction="bullish")], **_frozen_policy_projection()},
     )
     # The model asks to push; the policy drops it as a grounded restatement, which is what the reviewer wanted.
     restatement = _metric_verdict(decision="push", novelty="restatement", restates=0)
@@ -581,7 +602,9 @@ def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
     assert receipt["weights"] == {"final_action": 0.50, "event_semantics": 0.35, "reader_card": 0.15}
     assert receipt["action_source"]["policy"] == "tracefold.news.triage_rules.decide"
     assert receipt["action_source"]["operational_controls"].startswith("none_")
-    assert receipt["action_source"]["policy_values"]["similarity_max"] is not None
+    # The receipt no longer carries a policy *value*: the policy that scores an example travels with that
+    # example and is verified against its own SHA, so a receipt value could only ever disagree with it.
+    assert "per_example" in receipt["action_source"]["policy_values"]
     assert receipt["review_rubric_version"]
     # Reweighting, repointing at another policy, or moving rubric all move the receipt hash.
     assert canonical_sha({**receipt, "weights": {"final_action": 1.0}}) != canonical_sha(receipt)
@@ -616,7 +639,7 @@ def _split_episode(cluster: str, case: str, should_push: str, order: int) -> Any
                 "novelty": {"judgment": "new_fact", "duplicate_of": ""},
             },
             "production_verdict": {"decision": "push"},
-            "policy_metric": {"seen": [], "told": []},
+            "policy_metric": {"seen": [], "told": [], **_frozen_policy_projection()},
         }
     )
 

@@ -584,22 +584,120 @@ per-queue message/consumer counts.
 ReviewDesk contract as HTTP; submissions require the task version and an
 idempotency key.
 
-`news learning baseline --from-ms N --to-ms N [--mode recorded|live]
-[--action-source recorded|policy] [--all-cohorts] [--limit N] [--out FILE]`
-scores the stable Program over accepted reviews and returns one
-content-addressed report: total score, action agreement, per-dimension pass
-rates, hard-gate counts with reasons, `gold_coverage`, the retrieval receipt,
-provider failures, latency and the full subject identity (program, state,
-policy, metric, corpus roots). It is read-only — no dataset, sandbox, tariff or
-container, and no writes to any table. `--mode recorded` scores the persisted
-verdict against the action that actually shipped and makes no provider call;
-`--all-cohorts` drops release-plane eligibility — for the seed sent ledger too,
-not only the cases — so a retired arm's corpus is measured against the ledger
-`decide()` would actually have read. A `replay` mode over a recorded Predictor
-corpus exists in the harness but is deliberately not offered by the CLI: nothing
-builds that corpus yet, and a flag that silently reaches a live provider is
-worse than a missing one. Reviews whose `evidence_version` has been superseded are not
-replayable and are excluded, the same rule `_load_case` already enforced.
+`news learning baseline --from-ms N --to-ms N [--mode
+recorded|compile_live|runtime_live] [--action-source recorded|policy]
+[--max-model-cases N] [--all-cohorts] [--semantic-judge MODEL] [--limit N]
+[--out FILE]` scores the
+stable Program over accepted reviews and returns one content-addressed
+`tracefold.news.program_baseline_report.v2`. It is read-only — no dataset,
+sandbox, tariff or container, no write to any table, and the only database
+contact is one `serve` connection that closes before the first model call.
+
+The three modes answer three different questions and are never interchangeable
+(#150 removed the single ambiguous `live`, with no alias):
+
+| Mode | Executes | Question |
+| --- | --- | --- |
+| `recorded` | the persisted verdict against the action that shipped | is metric wiring reproducible over history? |
+| `compile_live` | `DspyCompileProgram` on one task endpoint | what baseline does GEPA optimize against? |
+| `runtime_live` | the configured four-slot `DspyNewsSemanticProgram` | does the production Program route answer these cases? |
+
+`compile_live` is exactly the graph GEPA maximizes and deliberately has no
+fallback route, no fast retry, no per-route deadline and no circuit breaker, so
+its failure rate is not the reader's. `runtime_live` is built by the same seam
+the Workers use — a dedicated ReaderCard binding is honoured rather than
+silently aliased to the EventSemantics primary — and runs cases sequentially in
+`(opened_at_ms, case_id)` order so circuit state is a property of the run rather
+than of scheduling. It is a **Program-route** replay only: `execution_scope`
+names what it still excludes (the consumer transaction, the advisory lock,
+stale-evidence re-ask, the degraded wire-card fallback, the broker and
+delivery).
+
+`--action-source` has exactly one valid value per mode and the handler rejects
+the other: `recorded` outside `--mode recorded` short-circuits the policy replay,
+so a live mode would generate a fresh verdict and score it against the action a
+*different* verdict shipped, silently emptying the metric's heaviest component.
+`--max-model-cases N` is required by both live modes and caps the corpus read —
+`runtime_live` spends two to six sequential provider calls per case on the
+endpoints that also serve production Triage, and every other model-spending
+command in this plane makes its budget mandatory.
+
+The report has no single ambiguous `score`. A provider failure is an outcome,
+not an absence, so it is published twice: `scores.case_macro_answered` is
+quality given an answer and `scores.case_macro_failure_as_zero` is the
+end-to-end lower bound, with the same pair at connected-fact-cluster grain
+(one cluster, one vote) plus a deterministic bootstrap interval on the release
+evaluator's seed/replicate convention. `population` carries
+requested/answered/failure counts, `failures.by_code` keeps each error code
+separate — a raise inside the metric is a `metric_error:*` code and never a
+provider failure, because one is a defect in the ruler and the other is route
+availability — and `action_confusion` splits agreement by `must_push`,
+`should_push`, `must_hold` and `should_hold`. `hard_gates.by_gate` names which
+gate zeroed each case (`must_push_miss`, `must_hold_send`,
+`factual_contradiction_unchanged`, `ungrounded_primary_asset`, `schema_invalid`,
+`advisory_rejected`). A gated case keeps its resolved action and its per-dimension
+outcomes: the zero enters every denominator rather than leaving it, or a
+candidate with more hard failures could publish a higher per-dimension hit rate.
+A run where nothing answered publishes a null `case_macro_answered` and the full
+failure breakdown rather than refusing — "the route answered nothing" is a
+result, and it used to be the only one that produced no receipt at all. `review_label_distribution` is
+corpus metadata (what reviewers labelled) over every requested case, grouped by
+which Predictor's score the label feeds — `event_semantics`, `reader_card`, and
+`not_scored` for anything the verdict has no field for, which is where
+`timeliness` lives. That grouping is deliberately not called "owner":
+`review._OWNER_BY_DIMENSION` owns that word for a different question (who is to
+blame), under which `asset_grounding` is a Gate defect. `prediction_dimensions`
+is what this candidate did — gold hit/miss, accepted-retention hit/miss including #148
+semantic-equivalence decisions, the ungolded-change proxy and not-labelled — and
+moves when predictions move. `runtime_live` adds `route` (primary/fallback,
+`unanswered_n`, call and physical-call counts, input/output tokens, known
+provider cost and `cost_unknown_n` rather than a fabricated zero) and
+`latency_ms` p50/p95/max. A case that failed still reports what it spent, read
+from the `SemanticJudgeError` partial trace: a route that exhausts the chain
+costs six calls, and counting zero made the receipt least accurate exactly where
+the route was worst.
+`report_sha256` covers the measurement with wall-clock latency excluded, so two
+runs with identical predictions publish the same address; `latency_sha256`
+addresses the timings separately.
+`compile_live` reports wall clock only, because in that mode `dspy.Evaluate`
+owns the program call and per-case provider timing is not observable. Neither
+receipt contains a credential or an endpoint URL.
+
+Policy is frozen into each scored example rather than read from process-global
+state: `policy_metric` carries the exact `policy_values` and `policy_sha256` of
+the arm, `_production_action()` builds `DecidePolicy(**policy_values)` and
+verifies the hash, and a missing or mismatched policy fails closed instead of
+falling back to `DEFAULT_POLICY`. A report spanning two policies is refused
+rather than labelled with one of them. `recorded` returns before policy replay,
+so a retired cohort's shipped action stays reproducible after the policy it ran
+under was replaced, and its `identity.policy_sha256` is an explicit `null` —
+naming a policy the number does not depend on would be the same ambient-state
+confusion in a different place. `identity.policy_source` says where the replayed
+values came from: `active_arm_manifest` is the configured arm, which is the arm
+that ran only for current-cohort episodes, so `--all-cohorts --action-source
+policy` applies today's rules to a retired corpus by design. An episode with no
+recorded action is refused in `recorded` mode rather than quietly falling through
+to a policy replay. The sealed compile projection is
+`tracefold.news.development_compile_episode.v3`; a dataset frozen under v2
+carries no policy and is refused at validation instead of failing inside every
+metric call.
+
+`--mode recorded` makes no provider call; `--all-cohorts` drops release-plane
+eligibility — for the seed sent ledger too, not only the cases — so a retired
+arm's corpus is measured against the ledger `decide()` would actually have read.
+`--semantic-judge MODEL` scores free-text retention anchors by meaning instead of
+byte equality (#148); enum dimensions stay exact and the strict byte-equality
+mean is reported alongside as `scores.case_macro_answered_byte_equality`.
+Reviews whose `evidence_version` has been superseded are not replayable and are
+excluded, the same rule `_load_case` already enforced.
+
+The recorded calibration is pinned to a checked-in corpus
+(`tests/fixtures/news_baseline_calibration_v1.json.gz`), not to the live
+database, so it proves metric wiring rather than tracking corpus growth. Every
+string outside an explicit structural allowlist is redacted by an
+equality-preserving map, which keeps every comparison the recorded metric makes
+and is why the fixture is valid for `--mode recorded` only. The allowlist is the
+design: a key nobody thought of is redacted rather than published.
 
 Reviews are accepted under `news_review_v3`, which adds one optional `expected`
 object (magnitude, direction, assets, novelty, should_reach_reader) stating the
